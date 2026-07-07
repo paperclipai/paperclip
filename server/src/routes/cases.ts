@@ -4,6 +4,7 @@ import { z } from "zod";
 import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agents,
   assets,
   caseAttachments,
   caseDocuments,
@@ -82,6 +83,7 @@ const listCasesQuerySchema = z.object({
   projectId: z.string().uuid().optional(),
   label: z.string().uuid().optional(),
   labelId: z.string().uuid().optional(),
+  parent: z.string().uuid().optional(),
   q: z.string().trim().min(1).max(200).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional().default(100),
 }).strict();
@@ -212,6 +214,59 @@ async function resolveIssueForRun(db: CaseRouteDb, companyId: string, runId: str
     .then((rows) => rows[0] ?? null);
 }
 
+/** Batch resolve agent display names for a set of agent ids. */
+async function resolveAgentNames(db: CaseRouteDb, agentIds: (string | null)[]) {
+  const valid = [...new Set(agentIds.filter((id): id is string => !!id))];
+  if (valid.length === 0) return new Map<string, string>();
+  const rows = await db
+    .select({ id: agents.id, name: agents.name })
+    .from(agents)
+    .where(inArray(agents.id, valid));
+  return new Map(rows.map((row) => [row.id, row.name]));
+}
+
+/**
+ * Batch resolve run → issue attribution. Mirrors resolveIssueForRun's precedence
+ * (latest-updated issue whose execution/checkout/origin run matches), but for a
+ * whole set of runs at once so the activity feed / revisions rail avoid N+1s.
+ */
+async function resolveIssuesForRuns(db: CaseRouteDb, companyId: string, runIds: (string | null)[]) {
+  const valid = [...new Set(runIds.filter((id): id is string => !!id && isUuidLike(id)))];
+  const map = new Map<string, { id: string; identifier: string; title: string; status: string }>();
+  if (valid.length === 0) return map;
+  const rows = await db
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      status: issues.status,
+      executionRunId: issues.executionRunId,
+      checkoutRunId: issues.checkoutRunId,
+      originRunId: issues.originRunId,
+      updatedAt: issues.updatedAt,
+      createdAt: issues.createdAt,
+    })
+    .from(issues)
+    .where(and(
+      eq(issues.companyId, companyId),
+      or(
+        inArray(issues.executionRunId, valid),
+        inArray(issues.checkoutRunId, valid),
+        inArray(issues.originRunId, valid),
+      ),
+    ))
+    .orderBy(desc(issues.updatedAt), desc(issues.createdAt));
+  for (const runId of valid) {
+    const match = rows.find(
+      (row) => row.executionRunId === runId || row.checkoutRunId === runId || row.originRunId === runId,
+    );
+    if (match) {
+      map.set(runId, { id: match.id, identifier: match.identifier ?? "", title: match.title, status: match.status });
+    }
+  }
+  return map;
+}
+
 async function autoLinkRunIssue(db: CaseRouteDb, input: {
   companyId: string;
   caseId: string;
@@ -294,8 +349,23 @@ async function loadCaseDetail(db: CaseRouteDb, row: typeof cases.$inferSelect) {
       .where(and(eq(caseAttachments.companyId, row.companyId), eq(caseAttachments.caseId, row.id)))
       .orderBy(asc(caseAttachments.createdAt)),
   ]);
+  const parent = row.parentCaseId
+    ? await db
+      .select({
+        id: cases.id,
+        identifier: cases.identifier,
+        title: cases.title,
+        caseType: cases.caseType,
+        status: cases.status,
+      })
+      .from(cases)
+      .where(eq(cases.id, row.parentCaseId))
+      .limit(1)
+      .then((rows) => rows[0] ?? null)
+    : null;
   return {
     ...row,
+    parent,
     labels: labelRows.map((item) => item.label),
     issueLinks: linkRows.map((item) => ({
       ...item.link,
@@ -432,6 +502,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
     }
     const projectId = query.projectId ?? query.project;
     if (projectId) filters.push(eq(cases.projectId, projectId));
+    if (query.parent) filters.push(eq(cases.parentCaseId, query.parent));
     const labelId = query.labelId ?? query.label;
     if (labelId) {
       filters.push(sql`${cases.id} in (
@@ -708,7 +779,105 @@ export function caseRoutes(db: Db, storage: StorageService) {
       .where(and(eq(caseEvents.companyId, caseRow.companyId), eq(caseEvents.caseId, caseRow.id)))
       .orderBy(desc(caseEvents.createdAt), desc(caseEvents.id))
       .limit(parsed.data.limit);
-    res.json(rows);
+    // Enrich each row with its actor's display name and the run→issue
+    // attribution so the activity feed can show "agent X, via ISSUE-123".
+    const [agentNames, issueMap] = await Promise.all([
+      resolveAgentNames(db, rows.map((row) => row.actorAgentId)),
+      resolveIssuesForRuns(db, caseRow.companyId, rows.map((row) => row.runId)),
+    ]);
+    res.json(rows.map((row) => ({
+      ...row,
+      actorAgentName: row.actorAgentId ? agentNames.get(row.actorAgentId) ?? null : null,
+      issue: row.runId ? issueMap.get(row.runId) ?? null : null,
+    })));
+  });
+
+  router.get("/cases/:id/documents/:key/revisions", async (req, res) => {
+    await assertCasesEnabled(db);
+    const caseRow = await assertCaseAccess(db, req, req.params.id as string);
+    const key = parseDocumentKey(req.params.key as string);
+    const link = await db
+      .select({ documentId: caseDocuments.documentId, document: documents })
+      .from(caseDocuments)
+      .innerJoin(documents, eq(caseDocuments.documentId, documents.id))
+      .where(and(
+        eq(caseDocuments.companyId, caseRow.companyId),
+        eq(caseDocuments.caseId, caseRow.id),
+        eq(caseDocuments.key, key),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!link) throw notFound("Case document not found");
+    const revisions = await db
+      .select()
+      .from(documentRevisions)
+      .where(and(
+        eq(documentRevisions.companyId, caseRow.companyId),
+        eq(documentRevisions.documentId, link.documentId),
+      ))
+      .orderBy(desc(documentRevisions.revisionNumber));
+    const [agentNames, issueMap] = await Promise.all([
+      resolveAgentNames(db, revisions.map((rev) => rev.createdByAgentId)),
+      resolveIssuesForRuns(db, caseRow.companyId, revisions.map((rev) => rev.createdByRunId)),
+    ]);
+    res.json({
+      key,
+      document: {
+        id: link.document.id,
+        title: link.document.title,
+        format: link.document.format,
+        latestRevisionId: link.document.latestRevisionId,
+        latestRevisionNumber: link.document.latestRevisionNumber,
+      },
+      revisions: revisions.map((rev) => ({
+        id: rev.id,
+        revisionNumber: rev.revisionNumber,
+        title: rev.title,
+        format: rev.format,
+        body: rev.body,
+        changeSummary: rev.changeSummary,
+        createdAt: rev.createdAt,
+        createdByAgentId: rev.createdByAgentId,
+        createdByUserId: rev.createdByUserId,
+        createdByRunId: rev.createdByRunId,
+        actorAgentName: rev.createdByAgentId ? agentNames.get(rev.createdByAgentId) ?? null : null,
+        issue: rev.createdByRunId ? issueMap.get(rev.createdByRunId) ?? null : null,
+      })),
+    });
+  });
+
+  router.get("/issues/:issueId/cases", async (req, res) => {
+    await assertCasesEnabled(db);
+    const issueIdOrIdentifier = (req.params.issueId as string).trim();
+    const where = isUuidLike(issueIdOrIdentifier)
+      ? or(eq(issues.id, issueIdOrIdentifier), eq(issues.identifier, issueIdOrIdentifier.toUpperCase()))
+      : eq(issues.identifier, issueIdOrIdentifier.toUpperCase());
+    const issue = await db
+      .select({ id: issues.id, companyId: issues.companyId })
+      .from(issues)
+      .where(where)
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!issue) throw notFound("Issue not found");
+    assertCompanyAccess(req, issue.companyId);
+    const rows = await db
+      .select({ link: caseIssueLinks, caseRow: cases })
+      .from(caseIssueLinks)
+      .innerJoin(cases, eq(caseIssueLinks.caseId, cases.id))
+      .where(and(eq(caseIssueLinks.companyId, issue.companyId), eq(caseIssueLinks.issueId, issue.id)))
+      .orderBy(asc(caseIssueLinks.createdAt));
+    res.json(rows.map((row) => ({
+      id: row.link.id,
+      role: row.link.role,
+      createdAt: row.link.createdAt,
+      case: {
+        id: row.caseRow.id,
+        identifier: row.caseRow.identifier,
+        title: row.caseRow.title,
+        caseType: row.caseRow.caseType,
+        status: row.caseRow.status,
+      },
+    })));
   });
 
   router.get("/cases/:id", async (req, res) => {

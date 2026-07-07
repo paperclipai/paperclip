@@ -500,4 +500,103 @@ describeEmbeddedPostgres("cases routes", () => {
       expect.arrayContaining(["created", "label_added", "document_revised", "issue_linked", "attachment_added"]),
     );
   });
+
+  it("enriches events and revisions with actor name and run→issue attribution", async () => {
+    await enableCases();
+    const company = await seedCompany("ATT");
+    const agent = await seedAgent(company.id);
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: company.id,
+      agentId: agent.id,
+      status: "running",
+    });
+    const [issue] = await db.insert(issues).values({
+      companyId: company.id,
+      title: "Attribution source task",
+      status: "in_progress",
+      executionRunId: runId,
+    }).returning();
+
+    const agentActor: Express.Request["actor"] = {
+      type: "agent",
+      companyId: company.id,
+      agentId: agent.id,
+      runId,
+      source: "agent_jwt",
+      onBehalfOfUserId: null,
+      onBehalfOfMemberships: [],
+    };
+    const http = request(app(agentActor));
+
+    const created = await http
+      .post(`/api/companies/${company.id}/cases`)
+      .send({ caseType: "blog_post", title: "Attribution post" })
+      .expect(201);
+    // Two revisions on the body document.
+    const rev1 = await http
+      .put(`/api/cases/${created.body.id}/documents/body`)
+      .send({ body: "# v1" })
+      .expect(200);
+    await http
+      .put(`/api/cases/${created.body.id}/documents/body`)
+      .send({ body: "# v2", baseRevisionId: rev1.body.revision.id, changeSummary: "polish" })
+      .expect(200);
+
+    const events = await http.get(`/api/cases/${created.body.id}/events`).expect(200);
+    const revisedEvent = events.body.find((e: { kind: string }) => e.kind === "document_revised");
+    expect(revisedEvent.actorAgentName).toBe("Cases Agent");
+    expect(revisedEvent.issue).toMatchObject({ id: issue!.id, title: "Attribution source task" });
+
+    const revisions = await http
+      .get(`/api/cases/${created.body.id}/documents/body/revisions`)
+      .expect(200);
+    expect(revisions.body.revisions).toHaveLength(2);
+    expect(revisions.body.revisions[0].revisionNumber).toBe(2);
+    expect(revisions.body.revisions[0].body).toBe("# v2");
+    expect(revisions.body.revisions[0].changeSummary).toBe("polish");
+    expect(revisions.body.revisions[0].actorAgentName).toBe("Cases Agent");
+    expect(revisions.body.revisions[0].issue).toMatchObject({ id: issue!.id });
+  });
+
+  it("lists children by parent, exposes parent in detail, and lists cases for an issue", async () => {
+    await enableCases();
+    const company = await seedCompany("TREE");
+    const boardHttp = request(app(boardActor));
+    const parent = await boardHttp
+      .post(`/api/companies/${company.id}/cases`)
+      .send({ caseType: "epic", title: "Parent epic" })
+      .expect(201);
+    const child = await boardHttp
+      .post(`/api/companies/${company.id}/cases`)
+      .send({ caseType: "task", title: "Child task", parentCaseId: parent.body.id })
+      .expect(201);
+
+    const children = await boardHttp
+      .get(`/api/companies/${company.id}/cases`)
+      .query({ parent: parent.body.id })
+      .expect(200);
+    expect(children.body).toHaveLength(1);
+    expect(children.body[0].id).toBe(child.body.id);
+
+    const childDetail = await boardHttp.get(`/api/cases/${child.body.id}`).expect(200);
+    expect(childDetail.body.parent).toMatchObject({ id: parent.body.id, identifier: parent.body.identifier });
+
+    // Link the child case to an issue, then resolve cases-for-issue.
+    const [issue] = await db.insert(issues).values({
+      companyId: company.id,
+      title: "Issue with cases",
+      status: "todo",
+    }).returning();
+    await boardHttp
+      .post(`/api/cases/${child.body.id}/links`)
+      .send({ issueId: issue!.id, role: "work" })
+      .expect(201);
+
+    const forIssue = await boardHttp.get(`/api/issues/${issue!.id}/cases`).expect(200);
+    expect(forIssue.body).toHaveLength(1);
+    expect(forIssue.body[0]).toMatchObject({ role: "work" });
+    expect(forIssue.body[0].case).toMatchObject({ id: child.body.id, identifier: child.body.identifier, status: child.body.status });
+  });
 });
