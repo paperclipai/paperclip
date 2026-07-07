@@ -45,6 +45,7 @@ import {
   reconcileCloudUpstreamRunsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
+  resolveHeartbeatSchedulingSuppression,
   routineService,
 } from "./services/index.js";
 import {
@@ -800,7 +801,13 @@ export async function startServer(): Promise<StartedServer> {
     throw err;
   }
 
-  if (config.heartbeatSchedulerEnabled) {
+  const heartbeatSchedulingSuppression = resolveHeartbeatSchedulingSuppression();
+  if (config.heartbeatSchedulerEnabled && heartbeatSchedulingSuppression.suppressed) {
+    logger.warn(
+      { reason: heartbeatSchedulingSuppression.reason },
+      "heartbeat scheduler suppressed for this runtime instance",
+    );
+  } else if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
