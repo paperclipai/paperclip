@@ -1445,7 +1445,7 @@ function buildIssueSubtreeDiagnosticsResponse(input: {
 
     nodeResponses.push({
       issue: toIssueBlockerDiagnosticSummary(node),
-      parentId: node.parentId,
+      parentId: node.parentId && visibleNodeIds.has(node.parentId) ? node.parentId : null,
       depth: node.depth,
       diagnosis: nodeDiagnosis,
       likelyReason: nodeDiagnosis,

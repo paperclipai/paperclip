@@ -5202,7 +5202,7 @@ export function issueService(db: Db) {
       const rowsWithinDepth = subtreeRows.filter((row) => row.depth <= maxDepth);
       const nodes = rowsWithinDepth.slice(0, maxNodes) as IssueSubtreeDiagnosticsIssueRow[];
       const truncatedNodes = rowsWithinDepth.length > maxNodes;
-      const truncatedDepth = subtreeRows.some((row) => row.depth > maxDepth);
+      const truncatedDepth = truncatedNodes || subtreeRows.some((row) => row.depth > maxDepth);
       const nodeIds = nodes.map((node) => node.id);
 
       const readiness = nodeIds.length > 0
