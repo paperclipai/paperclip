@@ -489,7 +489,7 @@ function WorkspaceOperationStatusBadge({ status }: { status: WorkspaceOperation[
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full border px-2 py-0.5 text-(length:--fs-11) font-medium capitalize",
+        "inline-flex items-center rounded-full border px-2 py-0.5 text-(length:--text-micro) font-medium capitalize",
         workspaceOperationStatusTone(status),
       )}
     >
@@ -522,7 +522,7 @@ function WorkspaceOperationLogViewer({
     <div className="space-y-2">
       <button
         type="button"
-        className="text-(length:--fs-11) text-muted-foreground underline underline-offset-2 hover:text-foreground"
+        className="text-(length:--text-micro) text-muted-foreground underline underline-offset-2 hover:text-foreground"
         onClick={() => setOpen((value) => !value)}
       >
         {open ? "Hide full log" : "Show full log"}
@@ -590,7 +590,7 @@ function WorkspaceOperationsSection({
               <div className="flex flex-wrap items-center gap-2">
                 <div className="text-sm font-medium">{workspaceOperationPhaseLabel(operation.phase)}</div>
                 <WorkspaceOperationStatusBadge status={operation.status} />
-                <div className="text-(length:--fs-11) text-muted-foreground">
+                <div className="text-(length:--text-micro) text-muted-foreground">
                   {relativeTime(operation.startedAt)}
                   {operation.finishedAt && ` to ${relativeTime(operation.finishedAt)}`}
                 </div>
@@ -1068,7 +1068,7 @@ export function AgentDetail() {
                   <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
                 </span>
-                <span className="text-(length:--fs-11) font-medium text-blue-600 dark:text-blue-400">Live</span>
+                <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">Live</span>
               </Link>
             )}
           </AgentActionButtons>
@@ -1306,7 +1306,7 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
           <StatusBadge status={run.status} />
           <span className="font-mono text-xs text-muted-foreground">{run.id.slice(0, 8)}</span>
           <span className={cn(
-            "inline-flex items-center rounded-full px-1.5 py-0.5 text-(length:--fs-10) font-medium",
+            "inline-flex items-center rounded-full px-1.5 py-0.5 text-(length:--text-nano) font-medium",
             run.invocationSource === "timer" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
               : run.invocationSource === "assignment" ? "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
               : run.invocationSource === "on_demand" ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"
@@ -2435,7 +2435,7 @@ function PromptsTab({
                 return (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <span className="ml-3 shrink-0 rounded border border-amber-500/40 bg-amber-500/10 text-amber-200 px-1.5 py-0.5 text-(length:--fs-10) uppercase tracking-wide cursor-help">
+                      <span className="ml-3 shrink-0 rounded border border-amber-500/40 bg-amber-500/10 text-amber-200 px-1.5 py-0.5 text-(length:--text-nano) uppercase tracking-wide cursor-help">
                         virtual file
                       </span>
                     </TooltipTrigger>
@@ -2446,7 +2446,7 @@ function PromptsTab({
                 );
               }
               return (
-                <span className="ml-3 shrink-0 rounded border border-border text-muted-foreground px-1.5 py-0.5 text-(length:--fs-10) uppercase tracking-wide">
+                <span className="ml-3 shrink-0 rounded border border-border text-muted-foreground px-1.5 py-0.5 text-(length:--text-nano) uppercase tracking-wide">
                   {file.isEntryFile ? "entry" : `${file.size}b`}
                 </span>
               );
@@ -3043,7 +3043,7 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
           {run.id.slice(0, 8)}
         </span>
         <span className={cn(
-          "inline-flex items-center rounded-full px-1.5 py-0.5 text-(length:--fs-10) font-medium shrink-0",
+          "inline-flex items-center rounded-full px-1.5 py-0.5 text-(length:--text-nano) font-medium shrink-0",
           run.invocationSource === "timer" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
             : run.invocationSource === "assignment" ? "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
             : run.invocationSource === "on_demand" ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"
@@ -3051,8 +3051,8 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
         )}>
           {sourceLabels[run.invocationSource] ?? run.invocationSource}
         </span>
-        {sourceResolvedFold ? <SourceResolvedFoldBadge showIcon={false} className="shrink-0 text-(length:--fs-10) py-0" /> : null}
-        <span className="ml-auto text-(length:--fs-11) text-muted-foreground shrink-0">
+        {sourceResolvedFold ? <SourceResolvedFoldBadge showIcon={false} className="shrink-0 text-(length:--text-nano) py-0" /> : null}
+        <span className="ml-auto text-(length:--text-micro) text-muted-foreground shrink-0">
           {relativeTime(run.createdAt)}
         </span>
       </div>
@@ -3062,7 +3062,7 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
         </span>
       )}
       {(metrics.totalTokens > 0 || metrics.cost > 0) && (
-        <div className="flex items-center gap-2 pl-5.5 text-(length:--fs-11) text-muted-foreground tabular-nums">
+        <div className="flex items-center gap-2 pl-5.5 text-(length:--text-micro) text-muted-foreground tabular-nums">
           {metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)} tok</span>}
           {metrics.cost > 0 && <span>${metrics.cost.toFixed(3)}</span>}
         </div>
@@ -3372,9 +3372,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 ?? asNonEmptyString(adapterConfig?.model);
               if (!adapterType && !displayProvider && !displayModel) return null;
               return (
-                <div className="text-(length:--fs-11) text-muted-foreground font-mono flex items-center gap-1.5 flex-wrap">
+                <div className="text-(length:--text-micro) text-muted-foreground font-mono flex items-center gap-1.5 flex-wrap">
                   {adapterType && (
-                    <span className="bg-muted rounded px-1.5 py-0.5 text-(length:--fs-10) font-medium uppercase tracking-wide">{adapterType.replace(/_/g, " ")}</span>
+                    <span className="bg-muted rounded px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide">{adapterType.replace(/_/g, " ")}</span>
                   )}
                   {displayProvider && displayModel && (
                     <span>{displayProvider}/{displayModel}</span>
@@ -3413,7 +3413,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   {endTime && <span className="text-muted-foreground"> &rarr; </span>}
                   {endTime}
                 </div>
-                <div className="text-(length:--fs-11) text-muted-foreground">
+                <div className="text-(length:--text-micro) text-muted-foreground">
                   {relativeTime(run.startedAt!)}
                   {run.finishedAt && <> &rarr; {relativeTime(run.finishedAt)}</>}
                 </div>
@@ -3494,7 +3494,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 <div className="flex flex-wrap items-center gap-2">
                   <span
                     className={cn(
-                      "rounded-md border px-1.5 py-0.5 text-(length:--fs-11) font-medium",
+                      "rounded-md border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
                       retryState.tone,
                     )}
                   >
@@ -3567,7 +3567,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   <div className="pt-1">
                     <button
                       type="button"
-                      className="text-(length:--fs-11) text-muted-foreground underline underline-offset-2 hover:text-foreground disabled:opacity-60"
+                      className="text-(length:--text-micro) text-muted-foreground underline underline-offset-2 hover:text-foreground disabled:opacity-60"
                       disabled={clearSessionsForTouchedIssues.isPending}
                       onClick={() => {
                         const issueCount = touchedIssueIds.length;
@@ -3583,7 +3583,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                         : "clear session for these tasks"}
                     </button>
                     {clearSessionsForTouchedIssues.isError && (
-                      <p className="text-(length:--fs-11) text-destructive mt-1">
+                      <p className="text-(length:--text-micro) text-destructive mt-1">
                         {clearSessionsForTouchedIssues.error instanceof Error
                           ? clearSessionsForTouchedIssues.error.message
                           : "Failed to clear sessions"}
@@ -4105,7 +4105,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
                 key={mode}
                 type="button"
                 className={cn(
-                  "rounded-md px-2.5 py-1 text-(length:--fs-11) font-medium capitalize transition-colors",
+                  "rounded-md px-2.5 py-1 text-(length:--text-micro) font-medium capitalize transition-colors",
                   transcriptMode === mode
                     ? "bg-accent text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground",

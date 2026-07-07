@@ -271,7 +271,7 @@ export function Search() {
     function pill(value: number) {
       if (!data) return null;
       return (
-        <Badge variant="outline" className="ml-1.5 px-1.5 py-0 text-(length:--fs-10) tabular-nums font-normal">
+        <Badge variant="outline" className="ml-1.5 px-1.5 py-0 text-(length:--text-nano) tabular-nums font-normal">
           {value}
         </Badge>
       );
@@ -362,7 +362,7 @@ export function Search() {
           ) : null}
           <kbd
             aria-hidden
-            className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-(length:--fs-10) font-medium text-muted-foreground"
+            className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-(length:--text-nano) font-medium text-muted-foreground"
           >
             ⌘K
           </kbd>
@@ -461,7 +461,7 @@ function SearchTabContent({
         </div>
         {recentSearches.length > 0 ? (
           <div>
-            <div className="mb-2 text-(length:--fs-11) font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="mb-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
               Recent searches
             </div>
             <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
@@ -483,7 +483,7 @@ function SearchTabContent({
         <ul className="space-y-1 text-xs text-muted-foreground">
           <li>
             <span className="font-medium text-foreground">Identifier lookup:</span> type{" "}
-            <code className="rounded bg-muted px-1 py-0.5 text-(length:--fs-11)">PAP-123</code> to jump straight to a task.
+            <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)">PAP-123</code> to jump straight to a task.
           </li>
           <li>
             <span className="font-medium text-foreground">Quoted phrases:</span> wrap a phrase in quotes to match the
@@ -582,7 +582,7 @@ function SearchTabContent({
 
   return (
     <div className="flex w-full max-w-(--sz-960px) flex-col px-2 sm:px-4" data-testid="search-results">
-      <div className="flex items-center justify-between py-2 text-(length:--fs-11) uppercase tracking-wide text-muted-foreground">
+      <div className="flex items-center justify-between py-2 text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
         <span>
           {totalResults === 1 ? "1 result" : `${totalResults} results`} · sorted by relevance
         </span>
@@ -603,7 +603,7 @@ function SearchTabContent({
                     {group.results.length}
                   </span>
                 }
-                className="pt-2 pb-1 text-(length:--fs-11) tracking-wider text-muted-foreground"
+                className="pt-2 pb-1 text-(length:--text-micro) tracking-wider text-muted-foreground"
               />
               <div className="flex flex-col gap-y-1">
                 {group.results.map((result) => (

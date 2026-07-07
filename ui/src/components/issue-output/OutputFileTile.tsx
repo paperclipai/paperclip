@@ -22,7 +22,7 @@ export function OutputFileTile({ contentType, className, sizeClassName = "h-8 w-
   return (
     <span
       className={cn(
-        "flex shrink-0 items-center justify-center rounded-md text-(length:--fs-10) font-semibold tabular-nums",
+        "flex shrink-0 items-center justify-center rounded-md text-(length:--text-nano) font-semibold tabular-nums",
         sizeClassName,
         TONE_CLASSES[glyph.tone],
         className,

@@ -859,7 +859,7 @@ export function OnboardingWizard() {
                       glow="blue"
                       size="md"
                     />
-                    <p className="text-(length:--fs-11) text-muted-foreground">
+                    <p className="text-(length:--text-micro) text-muted-foreground">
                       {step === 3 ? (
                         "an empty slot for an agent"
                       ) : step === 4 ? (
@@ -954,7 +954,7 @@ export function OnboardingWizard() {
                     </>
                   )}
                   <button
-                    className="text-(length:--fs-11) text-muted-foreground hover:text-foreground transition-colors"
+                    className="text-(length:--text-micro) text-muted-foreground hover:text-foreground transition-colors"
                     onClick={() => { setOnboardingPath(null); setStep(0); }}
                   >
                     ← Back to start
@@ -1003,7 +1003,7 @@ export function OnboardingWizard() {
                     />
                   </div>
                   <button
-                    className="text-(length:--fs-11) text-muted-foreground hover:text-foreground transition-colors"
+                    className="text-(length:--text-micro) text-muted-foreground hover:text-foreground transition-colors"
                     onClick={() => { setOnboardingPath(null); setStep(0); }}
                   >
                     ← Back to start
@@ -1043,7 +1043,7 @@ export function OnboardingWizard() {
                       >
                         <Sparkles className="h-4 w-4" />
                         <span className="font-medium">I know my mission</span>
-                        <span className="text-muted-foreground text-(length:--fs-10)">
+                        <span className="text-muted-foreground text-(length:--text-nano)">
                           Type it directly
                         </span>
                       </button>
@@ -1058,7 +1058,7 @@ export function OnboardingWizard() {
                       >
                         <ListTodo className="h-4 w-4" />
                         <span className="font-medium">Help me figure it out</span>
-                        <span className="text-muted-foreground text-(length:--fs-10)">
+                        <span className="text-muted-foreground text-(length:--text-nano)">
                           Answer a few questions
                         </span>
                       </button>
@@ -1093,7 +1093,7 @@ export function OnboardingWizard() {
                           <button
                             key={chip}
                             className={cn(
-                              "rounded-full border px-2.5 py-1 text-(length:--fs-11) transition-colors",
+                              "rounded-full border px-2.5 py-1 text-(length:--text-micro) transition-colors",
                               companyGoal === chip
                                 ? "border-foreground bg-accent text-foreground"
                                 : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/50"
@@ -1185,7 +1185,7 @@ export function OnboardingWizard() {
                         />
                       </div>
                       <button
-                        className="text-(length:--fs-11) text-muted-foreground hover:text-foreground transition-colors"
+                        className="text-(length:--text-micro) text-muted-foreground hover:text-foreground transition-colors"
                         onClick={() => { setMissionConfirmed(false); setCompanyGoal(""); }}
                       >
                         ← Back to questions
@@ -1195,13 +1195,13 @@ export function OnboardingWizard() {
 
                   {/* Confirm mission note */}
                   {companyGoal.trim() && (
-                    <p className="text-(length:--fs-11) text-muted-foreground italic">
+                    <p className="text-(length:--text-micro) text-muted-foreground italic">
                       You can always change your mission later in settings.
                     </p>
                   )}
 
                   <button
-                    className="text-(length:--fs-11) text-muted-foreground hover:text-foreground transition-colors"
+                    className="text-(length:--text-micro) text-muted-foreground hover:text-foreground transition-colors"
                     onClick={() => setStep(1)}
                   >
                     ← Change company name
@@ -1265,13 +1265,13 @@ export function OnboardingWizard() {
                           }}
                         >
                           {opt.recommended && (
-                            <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-(length:--fs-9) font-semibold px-1.5 py-0.5 rounded-full leading-none">
+                            <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-(length:--text-nano) font-semibold px-1.5 py-0.5 rounded-full leading-none">
                               Recommended
                             </span>
                           )}
                           <opt.icon className="h-4 w-4" />
                           <span className="font-medium">{opt.label}</span>
-                          <span className="text-muted-foreground text-(length:--fs-10)">
+                          <span className="text-muted-foreground text-(length:--text-nano)">
                             {opt.description}
                           </span>
                         </button>
@@ -1326,7 +1326,7 @@ export function OnboardingWizard() {
                           >
                             <opt.icon className="h-4 w-4" />
                             <span className="font-medium">{opt.label}</span>
-                            <span className="text-muted-foreground text-(length:--fs-10)">
+                            <span className="text-muted-foreground text-(length:--text-nano)">
                               {opt.comingSoon
                                 ? opt.disabledLabel ?? "Coming soon"
                                 : opt.description}
@@ -1400,7 +1400,7 @@ export function OnboardingWizard() {
                                   className="mb-1 last:mb-0"
                                 >
                                   {adapterType === "opencode_local" && (
-                                    <div className="px-2 py-1 text-(length:--fs-10) uppercase tracking-wide text-muted-foreground">
+                                    <div className="px-2 py-1 text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                                       {group.provider} ({group.entries.length})
                                     </div>
                                   )}
@@ -1447,7 +1447,7 @@ export function OnboardingWizard() {
                           <p className="text-xs font-medium">
                             Adapter environment check
                           </p>
-                          <p className="text-(length:--fs-11) text-muted-foreground">
+                          <p className="text-(length:--text-micro) text-muted-foreground">
                             Runs a live probe that asks the adapter CLI to
                             respond with hello.
                           </p>
@@ -1464,7 +1464,7 @@ export function OnboardingWizard() {
                       </div>
 
                       {adapterEnvError && (
-                        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-(length:--fs-11) text-destructive">
+                        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-(length:--text-micro) text-destructive">
                           {adapterEnvError}
                         </div>
                       )}
@@ -1481,7 +1481,7 @@ export function OnboardingWizard() {
 
                       {shouldSuggestUnsetAnthropicApiKey && (
                         <div className="rounded-md border border-amber-300/60 bg-amber-50/40 px-2.5 py-2 space-y-2">
-                          <p className="text-(length:--fs-11) text-amber-900/90 leading-relaxed">
+                          <p className="text-(length:--text-micro) text-amber-900/90 leading-relaxed">
                             Claude failed while{" "}
                             <span className="font-mono">ANTHROPIC_API_KEY</span>{" "}
                             is set. You can clear it in this adapter config
@@ -1504,7 +1504,7 @@ export function OnboardingWizard() {
                       )}
 
                       {adapterEnvResult && adapterEnvResult.status === "fail" && (
-                        <div className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-2 text-(length:--fs-11) space-y-1.5">
+                        <div className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-2 text-(length:--text-micro) space-y-1.5">
                           <p className="font-medium">Manual debug</p>
                           <p className="text-muted-foreground font-mono break-all">
                             {adapterType === "cursor"
@@ -1750,7 +1750,7 @@ function AdapterEnvironmentResult({
       : "text-red-700 dark:text-red-300 border-red-300 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10";
 
   return (
-    <div className={`rounded-md border px-2.5 py-2 text-(length:--fs-11) ${statusClass}`}>
+    <div className={`rounded-md border px-2.5 py-2 text-(length:--text-micro) ${statusClass}`}>
       <div className="flex items-center justify-between gap-2">
         <span className="font-medium">{statusLabel}</span>
         <span className="opacity-80">

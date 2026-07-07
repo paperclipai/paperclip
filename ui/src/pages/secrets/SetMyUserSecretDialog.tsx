@@ -135,7 +135,7 @@ export function SetMyUserSecretDialog({
                   className="font-mono text-sm"
                   autoFocus
                 />
-                <p className="text-(length:--fs-11) text-muted-foreground">
+                <p className="text-(length:--text-micro) text-muted-foreground">
                   Points at your own credential in the configured provider. Paperclip stores the
                   reference, not the value.
                 </p>
@@ -150,7 +150,7 @@ export function SetMyUserSecretDialog({
                   className="font-mono text-sm min-h-(--sz-80px)"
                   autoFocus
                 />
-                <p className="text-(length:--fs-11) text-muted-foreground">
+                <p className="text-(length:--text-micro) text-muted-foreground">
                   Stored encrypted. Never shown back to anyone, including admins.
                 </p>
               </div>

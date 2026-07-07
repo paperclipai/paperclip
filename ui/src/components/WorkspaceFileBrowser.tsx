@@ -128,7 +128,7 @@ function WorkspaceFileBreadcrumbs({
   if (!rootLabel && segments.length === 0) return null;
 
   return (
-    <nav aria-label="Current folder" className="min-w-0 overflow-hidden text-(length:--fs-11) text-muted-foreground">
+    <nav aria-label="Current folder" className="min-w-0 overflow-hidden text-(length:--text-micro) text-muted-foreground">
       <ol className="flex min-w-0 items-center gap-1 overflow-hidden">
         {rootLabel ? (
           <li className="min-w-0 shrink">
@@ -1072,7 +1072,7 @@ export function WorkspaceFileBrowser({
       <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-y-auto">{body}</div>
 
       {lazyTruncatedFolders.has(currentFolderKey) || (data?.truncated && !isLazyBrowse) ? (
-        <div className="border-t border-border pt-2 text-(length:--fs-11) text-muted-foreground">
+        <div className="border-t border-border pt-2 text-(length:--text-micro) text-muted-foreground">
           {isLazyBrowse ? (
             <button
               type="button"

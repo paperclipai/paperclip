@@ -281,15 +281,15 @@ export function EnvironmentVariableRow({
                 <DropdownMenuContent align="start" className="w-56">
                   <DropdownMenuItem className="flex-col items-start gap-0.5" onSelect={() => switchSource("text")}>
                     <span className="text-sm">Text value</span>
-                    <span className="text-(length:--fs-11) text-muted-foreground">Store the value inline as plain text.</span>
+                    <span className="text-(length:--text-micro) text-muted-foreground">Store the value inline as plain text.</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem className="flex-col items-start gap-0.5" onSelect={() => switchSource("secret")}>
                     <span className="text-sm">Company secret</span>
-                    <span className="text-(length:--fs-11) text-muted-foreground">Resolve a stored company secret at run start.</span>
+                    <span className="text-(length:--text-micro) text-muted-foreground">Resolve a stored company secret at run start.</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem className="flex-col items-start gap-0.5" onSelect={() => switchSource("user_secret")}>
                     <span className="text-sm">User secret</span>
-                    <span className="text-(length:--fs-11) text-muted-foreground">
+                    <span className="text-(length:--text-micro) text-muted-foreground">
                       Resolve the responsible user&apos;s own value at run start.
                     </span>
                   </DropdownMenuItem>
@@ -321,7 +321,7 @@ export function EnvironmentVariableRow({
                         type="button"
                         onClick={openStoreAsSecret}
                         disabled={disabled}
-                        className="flex items-center gap-1 px-2 text-(length:--fs-11) text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
+                        className="flex items-center gap-1 px-2 text-(length:--text-micro) text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
                         title="This value looks sensitive — store it as a secret"
                       >
                         <ShieldAlert className="size-3.5" />
@@ -369,7 +369,7 @@ export function EnvironmentVariableRow({
                           }}
                           aria-label="Version"
                           className={cn(
-                            "absolute right-8 top-1/2 z-10 -translate-y-1/2 rounded px-1.5 py-0.5 text-(length:--fs-10) font-medium",
+                            "absolute right-8 top-1/2 z-10 -translate-y-1/2 rounded px-1.5 py-0.5 text-(length:--text-nano) font-medium",
                             versionPinned
                               ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
                               : "text-muted-foreground hover:bg-accent",
@@ -392,7 +392,7 @@ export function EnvironmentVariableRow({
                             row.version === "latest" && "font-medium",
                           )}
                         >
-                          latest <span className="text-(length:--fs-11) text-muted-foreground">(recommended)</span>
+                          latest <span className="text-(length:--text-micro) text-muted-foreground">(recommended)</span>
                         </button>
                         {Array.from({ length: versions }, (_, idx) => versions - idx)
                           .filter((v) => v > 0)
@@ -522,7 +522,7 @@ export function EnvironmentVariableRow({
             id={healthId}
             role="status"
             className={cn(
-              "mt-0.5 text-(length:--fs-11)",
+              "mt-0.5 text-(length:--text-micro)",
               health.level === "error" ? "text-destructive" : "text-amber-600 dark:text-amber-400",
             )}
           >
@@ -532,7 +532,7 @@ export function EnvironmentVariableRow({
 
         {/* 5s undo after Secret→Text */}
         {undoPrev ? (
-          <p className="mt-0.5 inline-flex items-center gap-2 text-(length:--fs-11) text-muted-foreground">
+          <p className="mt-0.5 inline-flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
             Reverted to text —{" "}
             <button
               type="button"
@@ -552,7 +552,7 @@ export function EnvironmentVariableRow({
         <p
           id={nameErrorId}
           className={cn(
-            "col-span-2 col-start-1 row-start-3 min-w-0 text-(length:--fs-11) @[40rem]/env:col-span-2 @[40rem]/env:row-start-2",
+            "col-span-2 col-start-1 row-start-3 min-w-0 text-(length:--text-micro) @[40rem]/env:col-span-2 @[40rem]/env:row-start-2",
             nameIssue.level === "error" ? "text-destructive" : "text-amber-600 dark:text-amber-400",
           )}
         >

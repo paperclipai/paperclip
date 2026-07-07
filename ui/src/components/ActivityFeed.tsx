@@ -470,7 +470,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
         separator = (
           <div className="flex items-center gap-2 px-4 py-1.5" key={`sep-${index}`}>
             <div className="h-px flex-1 bg-border" />
-            <span className="text-(length:--fs-10) font-medium text-muted-foreground uppercase tracking-wider">
+            <span className="text-(length:--text-nano) font-medium text-muted-foreground uppercase tracking-wider">
               Earlier
             </span>
             <div className="h-px flex-1 bg-border" />

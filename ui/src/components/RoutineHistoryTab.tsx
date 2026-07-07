@@ -427,10 +427,10 @@ function RevisionList({
   return (
     <aside className="space-y-1">
       <header className="flex items-center justify-between pb-2">
-        <p className="text-xs font-medium uppercase tracking-(--ls-0_18) text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
           Revisions
         </p>
-        <span className="text-(length:--fs-11) text-muted-foreground">{totalRevisions} total</span>
+        <span className="text-(length:--text-micro) text-muted-foreground">{totalRevisions} total</span>
       </header>
       {revisions.map((revision) => {
         const isSelected = revision.id === selectedRevisionId;
@@ -460,12 +460,12 @@ function RevisionList({
             <div className="flex items-center gap-2 text-sm font-medium">
               <span>rev {revision.revisionNumber}</span>
               {isCurrent && (
-                <span className="rounded-full border border-border px-1.5 text-(length:--fs-10) uppercase tracking-(--ls-0_12) text-muted-foreground">
+                <span className="rounded-full border border-border px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                   Current
                 </span>
               )}
               {revision.restoredFromRevisionId && (
-                <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--fs-10) uppercase tracking-(--ls-0_12) text-amber-200">
+                <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-200">
                   Restored
                 </span>
               )}
@@ -601,17 +601,17 @@ function RevisionPreview({
       </header>
 
       <div className={`${cardWrapper} p-3`}>
-        <p className="pb-2 text-xs font-medium uppercase tracking-(--ls-0_18) text-muted-foreground">
+        <p className="pb-2 text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
           Structured fields
         </p>
         <div className="grid gap-3 md:grid-cols-2 divide-y md:divide-y-0 divide-border">
           {fieldRows.map((row) => (
             <div key={row.key} className="space-y-1 p-2">
-              <p className="text-(length:--fs-11) uppercase tracking-wide text-muted-foreground">{row.label}</p>
+              <p className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">{row.label}</p>
               <p className="text-sm">
                 {row.value || <span className="text-muted-foreground">—</span>}
                 {row.differs && (
-                  <span className="ml-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--fs-10) uppercase tracking-(--ls-0_12) text-amber-200">
+                  <span className="ml-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-200">
                     differs from current
                   </span>
                 )}
@@ -622,7 +622,7 @@ function RevisionPreview({
       </div>
 
       <div className={`${cardWrapper} p-3 space-y-2`}>
-        <p className="text-xs font-medium uppercase tracking-(--ls-0_18) text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
           Description
         </p>
         <div className="rounded-md bg-background/40 p-3 text-sm leading-7">
@@ -635,7 +635,7 @@ function RevisionPreview({
       </div>
 
       <div className={`${cardWrapper} p-3 space-y-2`}>
-        <p className="text-xs font-medium uppercase tracking-(--ls-0_18) text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
           Triggers ({triggers.length})
         </p>
         {triggers.length === 0 ? (
@@ -644,7 +644,7 @@ function RevisionPreview({
           <ul className="divide-y divide-border">
             {triggers.map((trigger) => (
               <li key={trigger.id} className="py-2 flex flex-wrap items-center gap-2 text-sm">
-                <span className="rounded-full border border-border px-2 py-0.5 text-(length:--fs-10) uppercase tracking-(--ls-0_12) text-muted-foreground">
+                <span className="rounded-full border border-border px-2 py-0.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                   {trigger.kind}
                 </span>
                 <span className="font-medium">{trigger.label ?? trigger.kind}</span>
@@ -668,7 +668,7 @@ function RevisionPreview({
 
       {snapshot.variables.length > 0 && (
         <div className={`${cardWrapper} p-3 space-y-2`}>
-          <p className="text-xs font-medium uppercase tracking-(--ls-0_18) text-muted-foreground">
+          <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
             Variables ({snapshot.variables.length})
           </p>
           <ul className="divide-y divide-border">
@@ -840,7 +840,7 @@ function RoutineRevisionDiffModal({
         </div>
         <div className="overflow-auto flex-1 space-y-4">
           <section className="space-y-2">
-            <p className="text-xs font-medium uppercase tracking-(--ls-0_18) text-muted-foreground">
+            <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
               Field changes
             </p>
             {fieldChanges.length === 0 ? (
@@ -871,7 +871,7 @@ function RoutineRevisionDiffModal({
             )}
           </section>
           <section className="space-y-2">
-            <p className="text-xs font-medium uppercase tracking-(--ls-0_18) text-muted-foreground">
+            <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
               Description diff
             </p>
             <DiffTable rows={descriptionDiff} />
@@ -912,7 +912,7 @@ function RevisionPicker({
   return (
     <div className="flex items-center gap-2">
       <span
-        className={`rounded-full border px-2 py-0.5 text-(length:--fs-10) font-medium uppercase tracking-wider ${toneClass}`}
+        className={`rounded-full border px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wider ${toneClass}`}
       >
         {label}
       </span>
@@ -951,7 +951,7 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
   };
   return (
     <div className="rounded-md border border-border text-xs font-mono leading-6 overflow-hidden">
-      <div className="grid grid-cols-(--gtc-1) border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--fs-11) uppercase tracking-wide text-muted-foreground">
+      <div className="grid grid-cols-(--gtc-1) border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
         <span>Old</span>
         <span>New</span>
         <span />

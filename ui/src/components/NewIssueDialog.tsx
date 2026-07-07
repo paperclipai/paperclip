@@ -1334,7 +1334,7 @@ export function NewIssueDialog() {
                   >
                     <span
                       className={cn(
-                        "px-1 py-0.5 rounded text-(length:--fs-10) font-semibold leading-none",
+                        "px-1 py-0.5 rounded text-(length:--text-nano) font-semibold leading-none",
                         !c.brandColor && "bg-muted",
                       )}
                       style={
@@ -1779,7 +1779,7 @@ export function NewIssueDialog() {
             <div className="px-4 py-3 space-y-2">
             <div className="space-y-1.5">
               <div className="text-xs font-medium">Execution workspace</div>
-              <div className="text-(length:--fs-11) text-muted-foreground">
+              <div className="text-(length:--text-micro) text-muted-foreground">
                 Control whether this task runs in the shared workspace, a new isolated workspace, or an existing one.
               </div>
               <select
@@ -1809,12 +1809,12 @@ export function NewIssueDialog() {
                 />
               )}
               {executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace && (
-                <div className="text-(length:--fs-11) text-muted-foreground">
+                <div className="text-(length:--text-micro) text-muted-foreground">
                   Reusing {selectedReusableExecutionWorkspace.name} from {selectedReusableExecutionWorkspace.branchName ?? selectedReusableExecutionWorkspace.cwd ?? "existing execution workspace"}.
                 </div>
               )}
               {showParentWorkspaceWarning ? (
-                <div className="rounded-md border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-(length:--fs-11) text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
+                <div className="rounded-md border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-(length:--text-micro) text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
                   Warning: this sub-task will no longer use the parent task workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
                 </div>
               ) : null}
@@ -1861,7 +1861,7 @@ export function NewIssueDialog() {
                     ))}
                   </div>
                   {assigneeModelLane === "cheap" && (
-                    <p className="text-(length:--fs-11) text-muted-foreground">
+                    <p className="text-(length:--text-micro) text-muted-foreground">
                       Sends <code>modelProfile: "cheap"</code>{" "}
                       {assigneeCheapProfile?.adapterConfig && typeof (assigneeCheapProfile.adapterConfig as Record<string, unknown>).model === "string"
                         ? <>· adapter default <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
@@ -1871,10 +1871,10 @@ export function NewIssueDialog() {
                     </p>
                   )}
                   {assigneeModelLane === "primary" && (
-                    <p className="text-(length:--fs-11) text-muted-foreground">Runs on the agent's primary model.</p>
+                    <p className="text-(length:--text-micro) text-muted-foreground">Runs on the agent's primary model.</p>
                   )}
                   {assigneeModelLane === "custom" && (
-                    <p className="text-(length:--fs-11) text-muted-foreground">Override the model and effort for this task only.</p>
+                    <p className="text-(length:--text-micro) text-muted-foreground">Override the model and effort for this task only.</p>
                   )}
                 </div>
                 {assigneeModelLane === "custom" && (
@@ -1958,12 +1958,12 @@ export function NewIssueDialog() {
                       <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className="rounded-full border border-border px-2 py-0.5 font-mono text-(length:--fs-10) uppercase tracking-(--ls-0_16) text-muted-foreground">
+                            <span className="rounded-full border border-border px-2 py-0.5 font-mono text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                               {file.documentKey}
                             </span>
                             <span className="truncate text-sm">{file.file.name}</span>
                           </div>
-                          <div className="mt-1 flex items-center gap-2 text-(length:--fs-11) text-muted-foreground">
+                          <div className="mt-1 flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
                             <FileText className="h-3.5 w-3.5" />
                             <span>{file.title || file.file.name}</span>
                             <span>•</span>
@@ -1997,7 +1997,7 @@ export function NewIssueDialog() {
                             <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                             <span className="truncate text-sm">{file.file.name}</span>
                           </div>
-                          <div className="mt-1 text-(length:--fs-11) text-muted-foreground">
+                          <div className="mt-1 text-(length:--text-micro) text-muted-foreground">
                             {file.file.type || "application/octet-stream"} • {formatFileSize(file.file)}
                           </div>
                         </div>
@@ -2045,7 +2045,7 @@ export function NewIssueDialog() {
                   <span className="flex flex-col text-left leading-tight">
                     <span>{s.label}</span>
                     {s.description ? (
-                      <span className="text-(length:--fs-10) text-muted-foreground">{s.description}</span>
+                      <span className="text-(length:--text-nano) text-muted-foreground">{s.description}</span>
                     ) : null}
                   </span>
                 </button>
@@ -2169,7 +2169,7 @@ export function NewIssueDialog() {
             </PopoverTrigger>
             <PopoverContent className="w-44 p-1" align="start" data-testid="new-issue-more-menu">
               <div className="sm:hidden">
-                <div className="px-2 py-1 text-(length:--fs-10) font-medium uppercase text-muted-foreground">
+                <div className="px-2 py-1 text-(length:--text-nano) font-medium uppercase text-muted-foreground">
                   Priority
                 </div>
                 {priorities.map((p) => (

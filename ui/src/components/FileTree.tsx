@@ -466,7 +466,7 @@ export function FileTree({
             {badge && (
               <span
                 className={cn(
-                  "ml-3 shrink-0 rounded-full px-2 py-0.5 text-(length:--fs-10) font-medium uppercase tracking-wide",
+                  "ml-3 shrink-0 rounded-full px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide",
                   statusBadge[badge.status] ?? statusBadgeDefault,
                 )}
                 title={badge.tooltip}

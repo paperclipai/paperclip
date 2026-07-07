@@ -48,7 +48,7 @@ export function BudgetIncidentCard({
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <div className="text-(length:--fs-11) uppercase tracking-(--ls-0_22) text-red-200/80">
+              <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-red-200/80">
                 {incident.scopeType} hard stop
               </div>
               <Badge variant={incident.status === "resolved" ? "outline" : "secondary"}>
@@ -76,7 +76,7 @@ export function BudgetIncidentCard({
         </div>
 
         <div className="rounded-xl border border-border/60 bg-background/60 p-3">
-          <label className="text-(length:--fs-11) uppercase tracking-(--ls-0_18) text-muted-foreground">
+          <label className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">
             New budget (USD)
           </label>
           <div className="mt-2 flex flex-col gap-3 sm:flex-row">

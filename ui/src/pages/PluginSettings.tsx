@@ -359,7 +359,7 @@ export function PluginSettings() {
                                   <span className="truncate font-mono text-xs" title={run.jobKey ?? run.jobId}>
                                     {run.jobKey ?? run.jobId.slice(0, 8)}
                                   </span>
-                                  <Badge variant="outline" className="px-1 py-0 text-(length:--fs-10)">
+                                  <Badge variant="outline" className="px-1 py-0 text-(length:--text-nano)">
                                     {run.trigger}
                                   </Badge>
                                 </div>
@@ -445,7 +445,7 @@ export function PluginSettings() {
                           }`}
                         >
                           <span className="shrink-0 text-muted-foreground/50">{new Date(entry.createdAt).toLocaleTimeString()}</span>
-                          <Badge variant="outline" className="h-4 shrink-0 px-1 text-(length:--fs-10)">{entry.level}</Badge>
+                          <Badge variant="outline" className="h-4 shrink-0 px-1 text-(length:--text-nano)">{entry.level}</Badge>
                           <span className="truncate" title={entry.message}>{entry.message}</span>
                         </div>
                       ))}
@@ -695,7 +695,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
             <h4 className="text-sm font-medium">{declaration.displayName}</h4>
-            <Badge variant="outline" className="font-mono text-(length:--fs-10)">
+            <Badge variant="outline" className="font-mono text-(length:--text-nano)">
               {declaration.folderKey}
             </Badge>
             <Badge variant={status?.healthy ? "default" : "secondary"}>
@@ -863,15 +863,15 @@ function RequirementList({
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-medium text-muted-foreground">{title}</span>
         {inspectionUnavailable ? (
-          <Badge variant="secondary" className="text-(length:--fs-10)">
+          <Badge variant="secondary" className="text-(length:--text-nano)">
             Not inspected
           </Badge>
         ) : missingItems.length > 0 ? (
-          <Badge variant="destructive" className="text-(length:--fs-10)">
+          <Badge variant="destructive" className="text-(length:--text-nano)">
             {missingItems.length} missing
           </Badge>
         ) : (
-          <Badge variant="outline" className="text-(length:--fs-10)">Present</Badge>
+          <Badge variant="outline" className="text-(length:--text-nano)">Present</Badge>
         )}
       </div>
       {items.length > 0 ? (
@@ -881,7 +881,7 @@ function RequirementList({
             return (
               <span
                 key={item}
-                className={`rounded border px-1.5 py-0.5 font-mono text-(length:--fs-11) ${
+                className={`rounded border px-1.5 py-0.5 font-mono text-(length:--text-micro) ${
                   inspectionUnavailable
                     ? "border-amber-300/60 bg-amber-50 text-amber-700 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-300"
                     : missing

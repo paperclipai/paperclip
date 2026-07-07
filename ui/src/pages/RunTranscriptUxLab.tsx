@@ -67,7 +67,7 @@ function RunDetailPreview({
     <div className="overflow-hidden rounded-xl border border-border/70 bg-background/80 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
       <div className="border-b border-border/60 bg-background/90 px-5 py-4">
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline" className="uppercase tracking-(--ls-0_18) text-(length:--fs-10)">
+          <Badge variant="outline" className="uppercase tracking-(--tracking-caps) text-(length:--text-nano)">
             Run Detail
           </Badge>
           <StatusBadge status={streaming ? "running" : "succeeded"} />
@@ -103,7 +103,7 @@ function LiveWidgetPreview({
   return (
     <div className="overflow-hidden rounded-xl border border-cyan-500/25 bg-background/85 shadow-[0_20px_50px_rgba(6,182,212,0.10)]">
       <div className="border-b border-border/60 bg-cyan-500/[0.05] px-5 py-4">
-        <div className="text-xs font-semibold uppercase tracking-(--ls-0_2) text-cyan-700 dark:text-cyan-300">
+        <div className="text-xs font-semibold uppercase tracking-(--tracking-caps) text-cyan-700 dark:text-cyan-300">
           Live Runs
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
@@ -122,7 +122,7 @@ function LiveWidgetPreview({
               <span>{formatDateTime(runTranscriptFixtureMeta.startedAt)}</span>
             </div>
           </div>
-          <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2.5 py-1 text-(length:--fs-11) text-muted-foreground">
+          <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2.5 py-1 text-(length:--text-micro) text-muted-foreground">
             Open run
             <ExternalLink className="h-3 w-3" />
           </span>
@@ -168,11 +168,11 @@ function DashboardPreview({
                 )} />
                 <Identity name={runTranscriptFixtureMeta.agentName} size="sm" />
               </div>
-              <div className="mt-2 text-(length:--fs-11) text-muted-foreground">
+              <div className="mt-2 text-(length:--text-micro) text-muted-foreground">
                 {streaming ? "Live now" : "Finished 2m ago"}
               </div>
             </div>
-            <span className="rounded-full border border-border/70 bg-background/70 px-2 py-1 text-(length:--fs-10) text-muted-foreground">
+            <span className="rounded-full border border-border/70 bg-background/70 px-2 py-1 text-(length:--text-nano) text-muted-foreground">
               <ExternalLink className="h-2.5 w-2.5" />
             </span>
           </div>
@@ -208,7 +208,7 @@ export function RunTranscriptUxLab() {
         <div className="grid gap-6 lg:grid-cols-(--gtc-19)">
           <aside className="border-b border-border/60 bg-background/75 p-5 lg:border-b-0 lg:border-r">
             <div className="mb-5">
-              <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/[0.08] px-3 py-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_24) text-cyan-700 dark:text-cyan-300">
+              <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/[0.08] px-3 py-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-cyan-700 dark:text-cyan-300">
                 <FlaskConical className="h-3.5 w-3.5" />
                 UX Lab
               </div>
@@ -238,7 +238,7 @@ export function RunTranscriptUxLab() {
                         <Icon className="h-4 w-4" />
                       </span>
                       <span className="min-w-0">
-                        <span className="block text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_18) text-muted-foreground">
+                        <span className="block text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
                           {option.eyebrow}
                         </span>
                         <span className="mt-1 block text-sm font-medium">{option.label}</span>
@@ -256,7 +256,7 @@ export function RunTranscriptUxLab() {
           <main className="min-w-0 p-5">
             <div className="mb-5 flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
               <div>
-                <div className="text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_22) text-muted-foreground">
+                <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
                   {selected.eyebrow}
                 </div>
                 <h2 className="mt-1 text-2xl font-semibold">{selected.label}</h2>
@@ -266,17 +266,17 @@ export function RunTranscriptUxLab() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--fs-10) uppercase tracking-(--ls-0_18)">
+                <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--text-nano) uppercase tracking-(--tracking-caps)">
                   Source run {runTranscriptFixtureMeta.sourceRunId.slice(0, 8)}
                 </Badge>
-                <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--fs-10) uppercase tracking-(--ls-0_18)">
+                <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--text-nano) uppercase tracking-(--tracking-caps)">
                   {runTranscriptFixtureMeta.issueIdentifier}
                 </Badge>
               </div>
             </div>
 
             <div className="mb-5 flex flex-wrap items-center gap-2">
-              <span className="text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_18) text-muted-foreground">
+              <span className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
                 Controls
               </span>
               <div className="inline-flex rounded-full border border-border/70 bg-background/80 p-1">

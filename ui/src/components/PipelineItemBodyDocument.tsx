@@ -242,7 +242,7 @@ export function PipelineItemBodyDocument({
     [conversationIssueId, doc?.latestRevisionId, latestBody, onStartConversation, pushToast, saveMutation],
   );
 
-  const bodyContentClassName = "paperclip-edit-in-place-content min-h-(--sz-220px) text-(length:--fs-15) leading-7";
+  const bodyContentClassName = "paperclip-edit-in-place-content min-h-(--sz-220px) text-sm leading-7";
 
   const renderReadOnlyBody = (body: string) => (
     <FoldCurtain className="max-w-3xl">
@@ -276,7 +276,7 @@ export function PipelineItemBodyDocument({
           />
         </div>
         <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-          <span className="text-(length:--fs-11) text-muted-foreground">
+          <span className="text-(length:--text-micro) text-muted-foreground">
             Saving creates rev {(doc?.latestRevisionNumber ?? 0) + 1} · ⌘↵ to save · Esc to cancel
           </span>
           <div className="flex items-center gap-2">
@@ -415,7 +415,7 @@ export function PipelineItemBodyDocument({
           />
         ) : null}
         actionsSlot={editing ? (
-          <span className="text-(length:--fs-11) font-medium text-amber-300">● Editing · unsaved</span>
+          <span className="text-(length:--text-micro) font-medium text-amber-300">● Editing · unsaved</span>
         ) : (
           <Button variant="ghost" size="sm" className="h-auto gap-1.5 px-2 py-1 text-xs" onClick={beginEdit}>
             <FilePenLine className="h-3.5 w-3.5" />

@@ -336,7 +336,7 @@ function SourceFilterMenu({
         >
           <Filter className="h-3.5 w-3.5" />
           {activeFilterCount > 0 ? (
-            <span className="absolute -right-0.5 -top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-(length:--fs-9) font-bold text-white">
+            <span className="absolute -right-0.5 -top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-(length:--text-nano) font-bold text-white">
               {activeFilterCount}
             </span>
           ) : null}
@@ -382,7 +382,7 @@ function CatalogFilterMenu({
         >
           <Filter className="h-3.5 w-3.5" />
           {activeFilterCount > 0 ? (
-            <span className="absolute -right-0.5 -top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-(length:--fs-9) font-bold text-white">
+            <span className="absolute -right-0.5 -top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-(length:--text-nano) font-bold text-white">
               {activeFilterCount}
             </span>
           ) : null}
@@ -436,7 +436,7 @@ function TrustChip({ level }: { level: CompanySkillTrustLevel }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--fs-11)", config.className)}>
+        <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-micro)", config.className)}>
           <Icon className="h-3 w-3" aria-hidden="true" />
           {config.label}
         </span>
@@ -467,7 +467,7 @@ function CompatChip({ compatibility }: { compatibility: CompanySkillCompatibilit
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--fs-11)", config.className)}>
+        <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-micro)", config.className)}>
           <Icon className="h-3 w-3" aria-hidden="true" />
           {config.label}
         </span>
@@ -482,7 +482,7 @@ function ProvenanceBadge({ packageName, packageVersion }: { packageName: string 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="inline-flex items-center gap-1 rounded border border-border bg-muted/30 px-1.5 py-0.5 font-mono text-(length:--fs-10) text-muted-foreground">
+        <span className="inline-flex items-center gap-1 rounded border border-border bg-muted/30 px-1.5 py-0.5 font-mono text-(length:--text-nano) text-muted-foreground">
           <Boxes className="h-3 w-3" aria-hidden="true" />
           <span>{packageName}{packageVersion ? ` v${packageVersion}` : ""}</span>
         </span>
@@ -792,7 +792,7 @@ function SkillStat({ icon: Icon, value }: { icon: typeof Star; value: string }) 
 
 function SkillCategoryChip({ label }: { label: string }) {
   return (
-    <span className="inline-flex items-center rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--fs-10) capitalize text-muted-foreground">
+    <span className="inline-flex items-center rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--text-nano) capitalize text-muted-foreground">
       {label}
     </span>
   );
@@ -829,7 +829,7 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
       </div>
 
       {card.forkedFrom ? (
-        <div className="mt-2 inline-flex items-center gap-1 text-(length:--fs-11) text-muted-foreground">
+        <div className="mt-2 inline-flex items-center gap-1 text-(length:--text-micro) text-muted-foreground">
           <GitFork className="h-3 w-3" aria-hidden="true" />
           Forked
         </div>
@@ -847,7 +847,7 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
 
       <div className="mt-auto pt-3">
         {/* Stats: installed agents · stars · forks — stars/forks only when > 0. */}
-        <div className="flex items-center gap-2 text-(length:--fs-11) text-muted-foreground">
+        <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
           <span>{card.agentCount} {card.agentCount === 1 ? "agent" : "agents"}</span>
           {card.starCount > 0 ? (
             <>
@@ -864,7 +864,7 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-1">
           {card.installed ? (
-            <span className="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-(length:--fs-10) text-emerald-300">
+            <span className="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-(length:--text-nano) text-emerald-300">
               Installed
             </span>
           ) : null}
@@ -872,7 +872,7 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
             <SkillCategoryChip key={category} label={category} />
           ))}
           {card.required ? (
-            <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-border bg-muted/60 px-2 py-0.5 text-(length:--fs-10) text-muted-foreground">
+            <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-border bg-muted/60 px-2 py-0.5 text-(length:--text-nano) text-muted-foreground">
               <Lock className="h-3 w-3" aria-hidden="true" />
               Bundled
             </span>
@@ -1005,7 +1005,7 @@ export function DiscoveryGrid({
           <h2 className="text-sm font-semibold text-foreground">Skills Store</h2>
           <p className="text-xs text-muted-foreground">Discover, install, fork, share</p>
         </div>
-        <div className="px-4 pb-1 pt-3 text-(length:--fs-11) font-medium uppercase tracking-wide text-muted-foreground">
+        <div className="px-4 pb-1 pt-3 text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
           Categories
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto pb-4">
@@ -1138,19 +1138,19 @@ export function DiscoveryGrid({
             <TabsList variant="line" className="p-0">
               <TabsTrigger value="all" className="px-3">
                 <span>All</span>
-                <span className="ml-1.5 text-(length:--fs-11) text-muted-foreground">{tabCounts.all}</span>
+                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.all}</span>
               </TabsTrigger>
               <TabsTrigger value="installed" className="px-3">
                 <span>Installed</span>
-                <span className="ml-1.5 text-(length:--fs-11) text-muted-foreground">{tabCounts.installed}</span>
+                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.installed}</span>
               </TabsTrigger>
               <TabsTrigger value="catalog" className="px-3">
                 <span>Catalog</span>
-                <span className="ml-1.5 text-(length:--fs-11) text-muted-foreground">{tabCounts.catalog}</span>
+                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.catalog}</span>
               </TabsTrigger>
               <TabsTrigger value="bundled" className="px-3">
                 <span>Bundled</span>
-                <span className="ml-1.5 text-(length:--fs-11) text-muted-foreground">{tabCounts.bundled}</span>
+                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.bundled}</span>
               </TabsTrigger>
             </TabsList>
           </Tabs>
@@ -1602,7 +1602,7 @@ function CatalogList({
               <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground opacity-75 transition-opacity group-hover:opacity-100">
                 <Boxes className={cn("h-3.5 w-3.5", skill.kind === "optional" && "opacity-70")} aria-hidden="true" />
               </span>
-              <span className="min-w-0 overflow-hidden text-(length:--fs-13) font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
+              <span className="min-w-0 overflow-hidden text-(length:--text-compact) font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
                 {skill.name}
               </span>
             </span>
@@ -1770,7 +1770,7 @@ function CatalogDetailPane({
           {hashOutOfSync ? (
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-(length:--fs-11) text-amber-200">
+                <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-(length:--text-micro) text-amber-200">
                   <ArrowUpCircle className="h-3 w-3" aria-hidden="true" />
                   Update available
                 </span>
@@ -1779,27 +1779,27 @@ function CatalogDetailPane({
             </Tooltip>
           ) : null}
           {skill.requires.length > 0 ? (
-            <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--fs-11) text-muted-foreground">
+            <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--text-micro) text-muted-foreground">
               Requires: {skill.requires.join(", ")}
             </span>
           ) : null}
           {skill.recommendedForRoles.length > 0 ? (
-            <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--fs-11) text-muted-foreground">
+            <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--text-micro) text-muted-foreground">
               Roles: {skill.recommendedForRoles.join(" · ")}
             </span>
           ) : null}
           {skill.tags.length > 0 ? (
-            <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--fs-11) text-muted-foreground">
+            <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--text-micro) text-muted-foreground">
               Tags: {skill.tags.join(" · ")}
             </span>
           ) : null}
         </div>
 
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <span className="uppercase tracking-(--ls-0_18)">Key</span>
+          <span className="uppercase tracking-(--tracking-caps)">Key</span>
           <span className="font-mono">{skill.key}</span>
-          <span className="uppercase tracking-(--ls-0_18)">·</span>
-          <span className="uppercase tracking-(--ls-0_18)">Hash</span>
+          <span className="uppercase tracking-(--tracking-caps)">·</span>
+          <span className="uppercase tracking-(--tracking-caps)">Hash</span>
           <span className="font-mono">{skill.contentHash.slice(0, 24)}…</span>
           <CopyText
             text={skill.contentHash}
@@ -1931,7 +1931,7 @@ function InstallPreviewDialog({
               <div className="text-muted-foreground">Provenance</div>
               <div className="min-w-0">
                 <div className="truncate">{packageName ?? "—"}{packageVersion ? ` v${packageVersion}` : ""}</div>
-                <div className="truncate font-mono text-(length:--fs-11) text-muted-foreground">{skill.contentHash}</div>
+                <div className="truncate font-mono text-(length:--text-micro) text-muted-foreground">{skill.contentHash}</div>
               </div>
             </div>
           </div>
@@ -1944,8 +1944,8 @@ function InstallPreviewDialog({
               {skill.files.map((file) => (
                 <div key={file.path} className="grid grid-cols-(--gtc-27) items-center gap-x-3 border-b border-border/50 px-3 py-1.5 text-xs last:border-b-0">
                   <span className="truncate font-mono text-muted-foreground">{file.path}</span>
-                  <span className="rounded border border-border bg-muted/40 px-1 py-0.5 text-(length:--fs-10) uppercase text-muted-foreground">{file.kind}</span>
-                  <span className="text-(length:--fs-11) text-muted-foreground">{formatBytes(file.sizeBytes)}</span>
+                  <span className="rounded border border-border bg-muted/40 px-1 py-0.5 text-(length:--text-nano) uppercase text-muted-foreground">{file.kind}</span>
+                  <span className="text-(length:--text-micro) text-muted-foreground">{formatBytes(file.sizeBytes)}</span>
                 </div>
               ))}
             </div>
@@ -2127,13 +2127,13 @@ function AttachAgentsPopover({
                     <span className="flex items-center gap-1.5">
                       <span className="truncate">{agent.name}</span>
                       {agent.paused ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-(length:--fs-9) font-medium uppercase tracking-wide text-amber-500">
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide text-amber-500">
                           <Pause className="h-2.5 w-2.5" aria-hidden="true" />
                           Paused
                         </span>
                       ) : null}
                     </span>
-                    <span className="text-(length:--fs-10) uppercase tracking-wide text-muted-foreground">
+                    <span className="text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                       {agent.adapterType}
                       {agent.required ? " · required" : ""}
                       {!agent.supportsSkills ? " · skills not supported" : ""}
@@ -2342,7 +2342,7 @@ function SkillList({
                     </TooltipTrigger>
                     <TooltipContent side="top">{source.managedLabel}</TooltipContent>
                   </Tooltip>
-                  <span className="min-w-0 overflow-hidden text-(length:--fs-13) font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
+                  <span className="min-w-0 overflow-hidden text-(length:--text-compact) font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
                     {skill.name}
                   </span>
                 </span>
@@ -2529,8 +2529,8 @@ function SkillVersionDiffDialog({
             ) : left?.id === right.id ? (
               <div className="p-6 text-center text-sm text-muted-foreground">Both sides are the same version.</div>
             ) : (
-              <div className="font-mono text-(length:--fs-12) leading-6">
-                <div className="grid grid-cols-(--gtc-1) border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--fs-11) uppercase tracking-wide text-muted-foreground">
+              <div className="font-mono text-xs leading-6">
+                <div className="grid grid-cols-(--gtc-1) border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
                   <span>Old</span>
                   <span>New</span>
                   <span />
@@ -2934,7 +2934,7 @@ export function SkillDetailPage({
                     <div className="flex items-center gap-1.5">
                       <span className="truncate font-medium">{agent.name}</span>
                       {meta?.paused ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-(length:--fs-9) font-medium uppercase tracking-wide text-amber-500">
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide text-amber-500">
                           <Pause className="h-2.5 w-2.5" aria-hidden="true" />
                           Paused
                         </span>
@@ -3174,7 +3174,7 @@ export function SkillDetailPage({
                     <span className="truncate">{githubRepoText}</span>
                     <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
                   </a>
-                  <div className="mt-0.5 truncate font-mono text-(length:--fs-11) text-muted-foreground" title={githubSource.commit}>
+                  <div className="mt-0.5 truncate font-mono text-(length:--text-micro) text-muted-foreground" title={githubSource.commit}>
                     {githubSource.ref}
                     {githubSource.commit ? ` · ${githubSource.commit.slice(0, 7)}` : ""}
                   </div>
@@ -3479,7 +3479,7 @@ function SkillPane({
         <div className="mt-4 space-y-3 border-t border-border pt-4 text-sm">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <div className="flex min-w-0 items-center gap-2">
-              <span className="text-(length:--fs-11) uppercase tracking-(--ls-0_18) text-muted-foreground">Source</span>
+              <span className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Source</span>
               <span className="flex min-w-0 items-center gap-2">
                 <SourceIcon className="h-3.5 w-3.5 text-muted-foreground" />
                 {detail.sourcePath && displaySourcePath ? (
@@ -3507,7 +3507,7 @@ function SkillPane({
             </div>
             {detail.sourceType === "github" && (
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-(length:--fs-11) uppercase tracking-(--ls-0_18) text-muted-foreground">Pin</span>
+                <span className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Pin</span>
                 <span className="font-mono text-xs">{currentPin ?? "untracked"}</span>
                 {updateStatus?.trackingRef && (
                   <span className="text-xs text-muted-foreground">tracking {updateStatus.trackingRef}</span>
@@ -3540,22 +3540,22 @@ function SkillPane({
               </div>
             )}
             <div className="flex items-center gap-2">
-              <span className="text-(length:--fs-11) uppercase tracking-(--ls-0_18) text-muted-foreground">Key</span>
+              <span className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Key</span>
               <span className="font-mono text-xs">{detail.key}</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-(length:--fs-11) uppercase tracking-(--ls-0_18) text-muted-foreground">Mode</span>
+              <span className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Mode</span>
               <span>{detail.editable ? "Editable" : "Read only"}</span>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-(length:--fs-11) uppercase tracking-(--ls-0_18) text-muted-foreground">Trust</span>
+            <span className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Trust</span>
             <TrustChip level={detail.trustLevel} />
             <CompatChip compatibility={detail.compatibility} />
             {readonlyMetadataValue(detail.metadata, "userModifiedAt") ? (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/40 bg-violet-500/10 px-2 py-0.5 text-(length:--fs-11) text-violet-200">
+                  <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/40 bg-violet-500/10 px-2 py-0.5 text-(length:--text-micro) text-violet-200">
                     <Pencil className="h-3 w-3" aria-hidden="true" />
                     Locally modified
                   </span>
@@ -3571,7 +3571,7 @@ function SkillPane({
           </div>
           <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
             <div className="flex items-center gap-2">
-              <span className="text-(length:--fs-11) uppercase tracking-(--ls-0_18) text-muted-foreground">Used by</span>
+              <span className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Used by</span>
               <AttachAgentsPopover
                 agents={attachAgents}
                 attachedAgentIds={usedBy.map((agent) => agent.id)}

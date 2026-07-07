@@ -221,7 +221,7 @@ function findArbitraryBracketIssues(content) {
 // ── Gate 3: raw font-size declarations ──────────────────────────────────
 const FONT_SIZE_CLASS_RE = /\btext-\[(?:[0-9.]+(?:px|rem|em)|[0-9.]+\/[0-9.]+)\]/g;
 // A raw literal font-size value: starts with a digit (px/rem/em number) —
-// EXCLUDES `fontSize: "var(--fs-11)"`-style token references, which start
+// EXCLUDES `fontSize: "var(--text-micro)"`-style token references, which start
 // with `var(` and are the desired post-extraction form, not a violation.
 const FONT_SIZE_INLINE_RE = /\bfontSize\s*:\s*["'][0-9][^"']*["']/g;
 const FONT_SIZE_CSS_PROP_RE = /(?<!-)\bfont-size\s*:\s*["'`][0-9][^"'`]*["'`]/g;

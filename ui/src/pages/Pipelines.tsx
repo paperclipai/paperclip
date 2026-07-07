@@ -735,7 +735,7 @@ export function PipelinesIndexTable({
         <div className="overflow-x-auto">
           <table className="w-full min-w-(--sz-780px) border-collapse text-sm">
             <thead>
-              <tr className="border-b border-border text-left text-(length:--fs-11) font-semibold uppercase tracking-widest text-muted-foreground">
+              <tr className="border-b border-border text-left text-(length:--text-micro) font-semibold uppercase tracking-widest text-muted-foreground">
                 <th className="py-2 pl-3 pr-4">Name</th>
                 <th className="px-4 py-2">Attention</th>
                 <th className="px-4 py-2">Open items</th>
@@ -950,7 +950,7 @@ function PipelinesIndex() {
     <div className="w-full max-w-6xl px-6 py-8">
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-(--ls-0_16) text-muted-foreground">Work</p>
+          <p className="text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Work</p>
           <h1 className="text-2xl font-semibold text-foreground">Pipelines</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {formatNumber(pipelines.length)} pipeline{pipelines.length === 1 ? "" : "s"}. Connected ones are grouped from upstream work into downstream work.
@@ -1253,23 +1253,23 @@ function PipelineCaseCard({
         <p className="font-medium leading-snug text-foreground">{title}</p>
         <div className="mt-1.5 flex flex-wrap gap-1.5">
           {isWorking ? (
-            <span className="relative inline-flex items-center rounded-full border border-emerald-400/40 bg-emerald-50 px-2 py-0.5 text-(length:--fs-10) font-medium text-emerald-700 dark:border-emerald-300/30 dark:bg-emerald-900/30 dark:text-emerald-300">
+            <span className="relative inline-flex items-center rounded-full border border-emerald-400/40 bg-emerald-50 px-2 py-0.5 text-(length:--text-nano) font-medium text-emerald-700 dark:border-emerald-300/30 dark:bg-emerald-900/30 dark:text-emerald-300">
               <span className="absolute -left-1 -top-1 h-2 w-2 animate-pulse rounded-full bg-emerald-500"></span>
               Working
             </span>
           ) : null}
           {hasNeedsAttention ? (
-            <span className="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-50 px-2 py-0.5 text-(length:--fs-10) font-medium text-amber-700 dark:border-amber-300/30 dark:bg-amber-900/25 dark:text-amber-300">
+            <span className="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-50 px-2 py-0.5 text-(length:--text-nano) font-medium text-amber-700 dark:border-amber-300/30 dark:bg-amber-900/25 dark:text-amber-300">
               Needs attention
             </span>
           ) : null}
           {hasChangedNotice ? (
-            <span className="inline-flex items-center rounded-full border border-indigo-400/40 bg-indigo-50 px-2 py-0.5 text-(length:--fs-10) font-medium text-indigo-700 dark:border-indigo-300/30 dark:bg-indigo-900/25 dark:text-indigo-300">
+            <span className="inline-flex items-center rounded-full border border-indigo-400/40 bg-indigo-50 px-2 py-0.5 text-(length:--text-nano) font-medium text-indigo-700 dark:border-indigo-300/30 dark:bg-indigo-900/25 dark:text-indigo-300">
               This changed
             </span>
           ) : null}
           {liveDownstreamCount > 0 ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/35 bg-emerald-50 px-2 py-0.5 text-(length:--fs-10) font-medium text-emerald-700 dark:border-emerald-300/30 dark:bg-emerald-900/25 dark:text-emerald-300">
+            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/35 bg-emerald-50 px-2 py-0.5 text-(length:--text-nano) font-medium text-emerald-700 dark:border-emerald-300/30 dark:bg-emerald-900/25 dark:text-emerald-300">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
               {formatLiveDownstream(liveDownstreamCount)}
             </span>
@@ -1385,7 +1385,7 @@ function PipelineBoardColumn({
         )}
       >
         {isBlockedDropTarget ? (
-          <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-(length:--fs-11) text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200">
+          <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-(length:--text-micro) text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200">
             This move skips the normal flow
           </p>
         ) : null}
@@ -1394,7 +1394,7 @@ function PipelineBoardColumn({
             caseGroups.map((group) => (
               <div key={group.key} className="space-y-2">
                 {groupBy === "builtFor" ? (
-                  <div className="flex items-center justify-between gap-2 px-1 pt-1 text-(length:--fs-11) font-medium text-muted-foreground">
+                  <div className="flex items-center justify-between gap-2 px-1 pt-1 text-(length:--text-micro) font-medium text-muted-foreground">
                     {group.href ? (
                       <Link to={group.href} className="min-w-0 truncate hover:text-foreground hover:underline">
                         {group.label}
@@ -1707,7 +1707,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
     return (
       <div className="mx-auto max-w-6xl space-y-4 px-6 py-8">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-(--ls-0_16) text-muted-foreground">Pipeline</p>
+          <p className="text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Pipeline</p>
           <h1 className="text-2xl font-semibold text-foreground">{pipeline.name}</h1>
           <p className="text-sm text-muted-foreground">No stages are set up for this pipeline yet.</p>
         </div>
@@ -1727,7 +1727,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
     <div className="w-full space-y-4 px-6 py-8">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-(--ls-0_16) text-muted-foreground">Pipeline</p>
+          <p className="text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Pipeline</p>
           <h1 className="text-2xl font-semibold text-foreground">{pipeline.name}</h1>
           {pipeline.description ? <p className="mt-1 text-sm text-muted-foreground">{pipeline.description}</p> : null}
           <p className="mt-1 text-xs text-muted-foreground">{cases.length} total item{cases.length === 1 ? "" : "s"}</p>
@@ -3252,7 +3252,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm font-semibold text-foreground [&::-webkit-details-marker]:hidden">
                 <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-open:rotate-90" />
                 More details
-                <span className="text-(length:--fs-11) font-normal text-muted-foreground">
+                <span className="text-(length:--text-micro) font-normal text-muted-foreground">
                   {mainPaneFields.length} {mainPaneFields.length === 1 ? "field" : "fields"}
                 </span>
               </summary>
@@ -3262,7 +3262,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                     <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                       {field.label}
                     </h3>
-                    <MarkdownBody className="text-(length:--fs-15) leading-7 text-foreground">
+                    <MarkdownBody className="text-sm leading-7 text-foreground">
                       {field.value}
                     </MarkdownBody>
                   </div>
@@ -3643,7 +3643,7 @@ function ReviewDecisionPanel({
 
   return (
     <section>
-      <h2 className="mb-3 text-xs font-semibold uppercase tracking-(--ls-0_14) text-muted-foreground">Review</h2>
+      <h2 className="mb-3 text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Review</h2>
       <div className="border-y border-amber-300 bg-amber-50/70 p-5 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100 sm:p-6">
         <div className="space-y-5">
           <div className="flex items-start gap-3">
@@ -3773,7 +3773,7 @@ function DetailSection({
 }) {
   return (
     <section>
-      <h2 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-(--ls-0_14) text-muted-foreground">
+      <h2 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
         <span>{title}</span>
         {trailing}
       </h2>
@@ -3855,7 +3855,7 @@ function OutputMetaDot() {
 
 function OutputDeliverableTag({ label }: { label: string }) {
   return (
-    <span className="shrink-0 rounded-full border border-green-600 px-1.5 text-(length:--fs-10) font-semibold uppercase text-green-600 dark:border-green-400 dark:text-green-400">
+    <span className="shrink-0 rounded-full border border-green-600 px-1.5 text-(length:--text-nano) font-semibold uppercase text-green-600 dark:border-green-400 dark:text-green-400">
       {label}
     </span>
   );
@@ -3863,7 +3863,7 @@ function OutputDeliverableTag({ label }: { label: string }) {
 
 function OutputUnverifiedTag() {
   return (
-    <span className="shrink-0 rounded-full border border-border px-1.5 text-(length:--fs-10) font-semibold uppercase text-muted-foreground">
+    <span className="shrink-0 rounded-full border border-border px-1.5 text-(length:--text-nano) font-semibold uppercase text-muted-foreground">
       Unverified
     </span>
   );
@@ -3881,10 +3881,10 @@ function ItemOutputMeta({ item, children }: { item: PipelineCaseOutputItem; chil
   const statusClass = issueStatusText[item.sourceIssueStatus] ?? issueStatusTextDefault;
   const roleLabel = OUTPUT_SOURCE_ROLE_LABELS[item.sourceRole] ?? humanizeOutputStatus(item.sourceRole);
   return (
-    <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-(length:--fs-11) text-muted-foreground">
+    <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-(length:--text-micro) text-muted-foreground">
       <Link
         to={issueDetailPath({ id: item.sourceIssueId, identifier: item.sourceIssueIdentifier })}
-        className="font-mono text-(length:--fs-11) text-muted-foreground hover:text-foreground hover:underline"
+        className="font-mono text-(length:--text-micro) text-muted-foreground hover:text-foreground hover:underline"
         title={item.sourceIssueTitle}
       >
         {item.sourceIssueIdentifier ?? "Source task"}
@@ -3914,7 +3914,7 @@ function ItemOutputDocumentRow({ item }: { item: PipelineCaseDocumentOutputItem 
       />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
-          <Link to={href} className="truncate text-(length:--fs-13) font-medium text-foreground hover:underline" title={item.title}>
+          <Link to={href} className="truncate text-(length:--text-compact) font-medium text-foreground hover:underline" title={item.title}>
             {item.title}
           </Link>
           {deliverable ? <OutputDeliverableTag label={deliverable} /> : null}
@@ -3943,7 +3943,7 @@ function ItemOutputWorkProductRow({ item }: { item: PipelineCaseWorkProductOutpu
       <Package className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
-          <OutputLink to={href} className="truncate text-(length:--fs-13) font-medium text-foreground hover:underline" title={item.title}>
+          <OutputLink to={href} className="truncate text-(length:--text-compact) font-medium text-foreground hover:underline" title={item.title}>
             {item.title}
           </OutputLink>
           {lowTrust ? <OutputUnverifiedTag /> : null}
@@ -3990,7 +3990,7 @@ function ItemOutputAttachmentRow({ item }: { item: PipelineCaseAttachmentOutputI
             href={item.openPath}
             target="_blank"
             rel="noreferrer"
-            className="truncate text-(length:--fs-13) font-medium text-foreground hover:underline"
+            className="truncate text-(length:--text-compact) font-medium text-foreground hover:underline"
             title={filename}
           >
             {filename}
@@ -4073,7 +4073,7 @@ function ItemOutputsSection({
       title="Item outputs"
       trailing={
         loading ? null : (
-          <span className="rounded-full bg-muted px-2 py-0.5 text-(length:--fs-11) font-medium normal-case tracking-normal text-muted-foreground">
+          <span className="rounded-full bg-muted px-2 py-0.5 text-(length:--text-micro) font-medium normal-case tracking-normal text-muted-foreground">
             {items.length}
           </span>
         )
@@ -4104,7 +4104,7 @@ function ItemOutputsSection({
         <div>
           {groups.map((group, index) => (
             <div key={group.key} className={index > 0 ? "border-t border-border" : undefined}>
-              <div className="flex items-center gap-1.5 pb-1.5 pt-2 text-(length:--fs-11) font-semibold uppercase tracking-wide text-muted-foreground">
+              <div className="flex items-center gap-1.5 pb-1.5 pt-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
                 {group.icon}
                 <span>{group.label}</span>
                 <span>· {group.rows.length}</span>
@@ -4226,7 +4226,7 @@ function PipelineAddItems({ pipelineId }: { pipelineId: string }) {
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
       <div className="mb-6">
-        <p className="text-xs font-semibold uppercase tracking-(--ls-0_16) text-muted-foreground">
+        <p className="text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
           Add to {pipeline.data.name}
         </p>
         <h1 className="text-2xl font-semibold text-foreground">Build your list, then submit it all at once</h1>
@@ -4325,7 +4325,7 @@ function DraftItemRow({
     <section className={cn("border border-border bg-background", row.expanded && "border-primary")}>
       <div className="grid grid-cols-(--gtc-17) items-center gap-3 px-4 py-3">
         <button type="button" className="min-w-0 text-left" onClick={onToggle}>
-          <span className="block text-xs font-semibold uppercase tracking-(--ls-0_14) text-muted-foreground">Item {index + 1}</span>
+          <span className="block text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Item {index + 1}</span>
           <span className="block truncate text-sm font-semibold text-foreground">{title}</span>
           {!row.expanded && preview ? <span className="block truncate text-xs text-muted-foreground">{preview}</span> : null}
           {!row.expanded && row.serverError ? <span className="block text-xs text-destructive">{row.serverError}</span> : null}
@@ -4355,7 +4355,7 @@ function DraftItemRow({
             {row.serverError ? <p className="md:col-span-2 text-sm text-destructive">{row.serverError}</p> : null}
           </div>
           <aside className="border border-border p-4 text-sm">
-            <p className="mb-3 text-xs font-semibold uppercase tracking-(--ls-0_14) text-muted-foreground">Preview</p>
+            <p className="mb-3 text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Preview</p>
             <p className="font-semibold text-foreground">{title}</p>
             <p className="mt-3 text-xs text-muted-foreground">First stage on submit:</p>
             <p className="font-semibold text-foreground">{intake.stageName ?? "First stage"}</p>
@@ -4766,7 +4766,7 @@ function ReviewQueueSection({
                 <div className="min-w-0">
                   <div className="flex min-w-0 items-center gap-2">
                     <p className="truncate font-semibold text-foreground">{row.title}</p>
-                    <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-(length:--fs-11) font-semibold text-muted-foreground">
+                    <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-(length:--text-micro) font-semibold text-muted-foreground">
                       {row.pipelineName}
                     </span>
                     <ReviewQueueStatusChip failed={failed} />

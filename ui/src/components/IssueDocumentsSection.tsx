@@ -762,7 +762,7 @@ export function IssueDocumentsSection({
 
   const documentBodyShellClassName = "mt-3";
   const documentBodyPaddingClassName = "";
-  const documentBodyContentClassName = "paperclip-edit-in-place-content min-h-(--sz-220px) text-(length:--fs-15) leading-7";
+  const documentBodyContentClassName = "paperclip-edit-in-place-content min-h-(--sz-220px) text-sm leading-7";
   const toggleFoldedDocument = (key: string) => {
     setFoldedDocumentKeys((current) =>
       current.includes(key)
@@ -850,7 +850,7 @@ export function IssueDocumentsSection({
             placeholder="Markdown body"
             bordered={false}
             className="bg-transparent"
-            contentClassName="min-h-(--sz-220px) text-(length:--fs-15) leading-7"
+            contentClassName="min-h-(--sz-220px) text-sm leading-7"
             mentions={mentions}
             imageUploadHandler={imageUploadHandler}
             onSubmit={() => void commitDraft(draft, { clearAfterSave: false, trackAutosave: false })}
@@ -881,7 +881,7 @@ export function IssueDocumentsSection({
         >
           <div className="mb-2 flex items-center gap-2">
             <FileText className="h-4 w-4 text-amber-600" />
-            <span className="rounded-full border border-amber-500/30 px-2 py-0.5 font-mono text-(length:--fs-10) uppercase tracking-(--ls-0_16) text-amber-700 dark:text-amber-300">
+            <span className="rounded-full border border-amber-500/30 px-2 py-0.5 font-mono text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-700 dark:text-amber-300">
               PLAN
             </span>
           </div>
@@ -1144,7 +1144,7 @@ export function IssueDocumentsSection({
                       </div>
                       {activeConflict.showRemote && (
                         <div className="mt-3 rounded-md border border-border/70 bg-background/60 p-3">
-                          <div className="mb-2 flex items-center gap-2 text-(length:--fs-11) text-muted-foreground">
+                          <div className="mb-2 flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
                             <span>Remote revision {activeConflict.serverDocument.latestRevisionNumber}</span>
                             <span>•</span>
                             <span>updated {relativeTime(activeConflict.serverDocument.updatedAt)}</span>
@@ -1152,7 +1152,7 @@ export function IssueDocumentsSection({
                           {!isPlanKey(doc.key) && activeConflict.serverDocument.title ? (
                             <p className="mb-2 text-sm font-medium">{activeConflict.serverDocument.title}</p>
                           ) : null}
-                          {renderFoldableBody(activeConflict.serverDocument.body, "text-(length:--fs-14) leading-7", externalReferences)}
+                          {renderFoldableBody(activeConflict.serverDocument.body, "text-sm leading-7", externalReferences)}
                         </div>
                       )}
                     </div>
@@ -1218,7 +1218,7 @@ export function IssueDocumentsSection({
                   </div>
                   <div className="flex min-h-4 items-center justify-end px-1">
                     <span
-                      className={`text-(length:--fs-11) transition-opacity duration-150 ${
+                      className={`text-(length:--text-micro) transition-opacity duration-150 ${
                         isHistoricalPreview
                           ? "text-amber-300"
                           : activeConflict

@@ -228,7 +228,7 @@ export function InstanceSettings() {
                       >
                         <Badge
                           variant={agent.schedulerActive ? "default" : "outline"}
-                          className="shrink-0 text-(length:--fs-10) px-1.5 py-0"
+                          className="shrink-0 text-(length:--text-nano) px-1.5 py-0"
                         >
                           {agent.schedulerActive ? "On" : "Off"}
                         </Badge>

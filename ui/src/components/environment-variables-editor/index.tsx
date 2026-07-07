@@ -377,7 +377,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     <TooltipProvider>
       <div ref={editorRootRef} className="@container/env space-y-2">
       {attentionCount > 1 ? (
-        <p className="inline-flex items-center gap-1.5 text-(length:--fs-11) font-medium text-amber-700 dark:text-amber-400">
+        <p className="inline-flex items-center gap-1.5 text-(length:--text-micro) font-medium text-amber-700 dark:text-amber-400">
           <AlertCircle className="size-3.5" />
           {attentionCount} bindings need attention
         </p>
@@ -387,8 +387,8 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
         <>
           {/* Header (desktop only) */}
           <div className="hidden gap-x-1.5 @[40rem]/env:grid @[40rem]/env:grid-cols-(--gtc-14)">
-            <span className="text-(length:--fs-11) font-medium uppercase tracking-wide text-muted-foreground">Name</span>
-            <span className="text-(length:--fs-11) font-medium uppercase tracking-wide text-muted-foreground">Value</span>
+            <span className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">Name</span>
+            <span className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">Value</span>
             <span />
           </div>
 
@@ -438,7 +438,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
 
         {quickBind.length > 0 && !disabled ? (
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="inline-flex items-center gap-1 text-(length:--fs-11) text-muted-foreground/70">
+            <span className="inline-flex items-center gap-1 text-(length:--text-micro) text-muted-foreground/70">
               <KeyRound className="size-3" />
               Recently used:
             </span>
@@ -447,7 +447,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
                 key={secret.id}
                 type="button"
                 onClick={() => bindRecentSecret(secret)}
-                className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 font-mono text-(length:--fs-11) text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 font-mono text-(length:--text-micro) text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
                 title={`Bind ${secret.name}`}
               >
                 + {secret.name}
@@ -488,9 +488,9 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
         </div>
       ) : null}
 
-      {hint ? <p className="text-(length:--fs-11) text-muted-foreground/70">{hint}</p> : null}
+      {hint ? <p className="text-(length:--text-micro) text-muted-foreground/70">{hint}</p> : null}
       {rows.some((row) => row.source === "user_secret" && row.userSecretKey) ? (
-        <p className="inline-flex items-start gap-1 text-(length:--fs-11) text-muted-foreground/70">
+        <p className="inline-flex items-start gap-1 text-(length:--text-micro) text-muted-foreground/70">
           <UserRound className="mt-0.5 size-3 shrink-0" />
           <span>
             User secrets resolve from the user responsible for the run. Required bindings fail until that user

@@ -1201,7 +1201,7 @@ function StageSubSidebar({
       >
         {groups.map((group) => (
           <div key={group.label} className="flex flex-col gap-0.5">
-            <p className="px-3 py-2 text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_12) text-muted-foreground/80">
+            <p className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground/80">
               {group.label}
             </p>
             {group.items.map((item) => {
@@ -3093,7 +3093,7 @@ export function PipelineSettings() {
                                   : "Tell the agent exactly what to do when an item enters this step..."
                               }
                               bordered={false}
-                              contentClassName="min-h-(--sz-120px) text-(length:--fs-15) leading-7"
+                              contentClassName="min-h-(--sz-120px) text-sm leading-7"
                               mentions={mentionOptions}
                               onSubmit={() => {
                                 if (!saveStage.isPending && stageName.trim() && !reviewTargetsMissing && canSaveAutomationWorkspace) {

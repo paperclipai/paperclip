@@ -160,10 +160,10 @@ function KanbanColumn({
         title={`${statusLabel(status)}: ${issues.length}`}
       >
         <StatusIcon status={status} />
-        <span className={cn("mt-2 [writing-mode:vertical-rl] rotate-180 text-(length:--fs-10) font-semibold uppercase tracking-wide", tone.header)}>
+        <span className={cn("mt-2 [writing-mode:vertical-rl] rotate-180 text-(length:--text-nano) font-semibold uppercase tracking-wide", tone.header)}>
           {statusLabel(status)}
         </span>
-        <span className={cn("mt-auto rounded-full bg-background px-1.5 py-0.5 text-(length:--fs-10) font-medium tabular-nums", tone.header)}>
+        <span className={cn("mt-auto rounded-full bg-background px-1.5 py-0.5 text-(length:--text-nano) font-medium tabular-nums", tone.header)}>
           {issues.length}
         </span>
       </div>
@@ -219,7 +219,7 @@ function KanbanColumn({
           </button>
         ) : null}
         {issues.length > 0 && (hiddenCount > 0 || issues.length >= visibleCount) ? (
-          <p className="px-1 pt-1 text-(length:--fs-11) text-muted-foreground">
+          <p className="px-1 pt-1 text-(length:--text-micro) text-muted-foreground">
             Showing {visibleIssues.length} of {issues.length}
           </p>
         ) : null}
@@ -295,7 +295,7 @@ function KanbanCard({
           </span>
           {isSuccessfulRunHandoffRequired(issue) ? (
             <span
-              className="inline-flex items-center gap-1 rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-(length:--fs-10) font-medium text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
+              className="inline-flex items-center gap-1 rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-(length:--text-nano) font-medium text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
               title="This task needs a next step"
               aria-label="Needs next step"
             >
@@ -304,7 +304,7 @@ function KanbanCard({
             </span>
           ) : null}
           {isLive && (
-            <span className="inline-flex shrink-0 items-center gap-1 text-(length:--fs-10) font-medium text-blue-600 dark:text-blue-400">
+            <span className="inline-flex shrink-0 items-center gap-1 text-(length:--text-nano) font-medium text-blue-600 dark:text-blue-400">
               <span className="relative flex h-2 w-2">
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
@@ -314,7 +314,7 @@ function KanbanCard({
           )}
           {!isLive && subtreeLiveCount > 0 && (
             <span
-              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-(length:--fs-10) font-medium text-muted-foreground"
+              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-(length:--text-nano) font-medium text-muted-foreground"
               title={`${subtreeLiveCount} sub-task${subtreeLiveCount === 1 ? "" : "s"} running below`}
             >
               <span className="h-2 w-2 shrink-0 rounded-full border border-muted-foreground/60" aria-hidden="true" />

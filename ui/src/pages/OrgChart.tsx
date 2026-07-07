@@ -510,7 +510,7 @@ export function OrgChart() {
             <Minus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
           <button
-            className="flex size-9 items-center justify-center rounded border border-border bg-background text-(length:--fs-10) transition-colors hover:bg-accent sm:size-7"
+            className="flex size-9 items-center justify-center rounded border border-border bg-background text-(length:--text-nano) transition-colors hover:bg-accent sm:size-7"
             onClick={fitToScreen}
             title="Fit to screen"
             aria-label="Fit chart to screen"
@@ -596,16 +596,16 @@ export function OrgChart() {
                     <span className="text-sm font-semibold text-foreground leading-tight">
                       {node.name}
                     </span>
-                    <span className="text-(length:--fs-11) text-muted-foreground leading-tight mt-0.5">
+                    <span className="text-(length:--text-micro) text-muted-foreground leading-tight mt-0.5">
                       {agent?.title ?? roleLabel(node.role)}
                     </span>
                     {agent && (
-                      <span className="text-(length:--fs-10) text-muted-foreground/60 font-mono leading-tight mt-1">
+                      <span className="text-(length:--text-nano) text-muted-foreground/60 font-mono leading-tight mt-1">
                         {getAdapterLabel(agent.adapterType)}
                       </span>
                     )}
                     {agent && agent.capabilities && (
-                      <span className="text-(length:--fs-10) text-muted-foreground/80 leading-tight mt-1 line-clamp-2">
+                      <span className="text-(length:--text-nano) text-muted-foreground/80 leading-tight mt-1 line-clamp-2">
                         {agent.capabilities}
                       </span>
                     )}

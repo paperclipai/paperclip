@@ -42,7 +42,7 @@ function LabSection({
     >
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_22) text-muted-foreground">
+          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
             {eyebrow}
           </div>
           <h2 className="mt-1 text-xl font-semibold tracking-tight">{title}</h2>
@@ -57,7 +57,7 @@ function LabSection({
 function FixtureFrame({ caption, children }: { caption: string; children: ReactNode }) {
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2 text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_16) text-muted-foreground">
+      <div className="flex items-center gap-2 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
         <CircleDashed className="h-3.5 w-3.5" />
         {caption}
       </div>
@@ -144,7 +144,7 @@ export function SystemNoticeUxLab() {
       <div className="overflow-hidden rounded-(--rad-32) border border-border/70 bg-[linear-gradient(135deg,rgba(245,158,11,0.10),transparent_28%),linear-gradient(180deg,rgba(8,145,178,0.08),transparent_44%),var(--background)] shadow-[0_30px_80px_rgba(15,23,42,0.10)]">
         <div className="grid gap-6 lg:grid-cols-(--gtc-39)">
           <div className="p-6 sm:p-7">
-            <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/25 bg-amber-500/[0.08] px-3 py-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_24) text-amber-700 dark:text-amber-300">
+            <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/25 bg-amber-500/[0.08] px-3 py-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-amber-700 dark:text-amber-300">
               <FlaskConical className="h-3.5 w-3.5" />
               System Notice Lab
             </div>
@@ -158,20 +158,20 @@ export function SystemNoticeUxLab() {
             </p>
 
             <div className="mt-5 flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--fs-10) uppercase tracking-(--ls-0_18)">
+              <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--text-nano) uppercase tracking-(--tracking-caps)">
                 PAP-3525 plan
               </Badge>
-              <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--fs-10) uppercase tracking-(--ls-0_18)">
+              <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--text-nano) uppercase tracking-(--tracking-caps)">
                 phase 1 — UX
               </Badge>
-              <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--fs-10) uppercase tracking-(--ls-0_18)">
+              <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--text-nano) uppercase tracking-(--tracking-caps)">
                 tones: warning · danger · neutral
               </Badge>
             </div>
           </div>
 
           <aside className="border-t border-border/60 bg-background/70 p-6 lg:border-l lg:border-t-0">
-            <div className="mb-4 flex items-center gap-2 text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_2) text-muted-foreground">
+            <div className="mb-4 flex items-center gap-2 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
               <ListChecks className="h-4 w-4 text-amber-700 dark:text-amber-300" />
               What this lab proves
             </div>
@@ -305,7 +305,7 @@ export function SystemNoticeUxLab() {
                       <Sparkles className="mt-1 h-4 w-4 shrink-0 text-red-600 dark:text-red-300" />
                       <div className="min-w-0">
                         <p className="m-0 font-semibold">Successful run handoff missing</p>
-                        <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-(length:--fs-13) leading-5">
+                        <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-(length:--text-compact) leading-5">
                           <li>Source issue: PAP-3440</li>
                           <li>Source run: 9cdba892-c7ca-4d93-8604-4843873b127c</li>
                           <li>Recovery run: 61fdb79b-8012-4676-ac71-2971830e126a</li>
@@ -348,7 +348,7 @@ export function SystemNoticeUxLab() {
 
       <Card className="gap-4 border-border/70 bg-background/85 py-0">
         <CardHeader className="px-5 pt-5 pb-0">
-          <div className="flex items-center gap-2 text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_18) text-muted-foreground">
+          <div className="flex items-center gap-2 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
             <Layers className="h-4 w-4 text-amber-700 dark:text-amber-300" />
             Implementation notes
           </div>
@@ -360,42 +360,42 @@ export function SystemNoticeUxLab() {
         <CardContent className="space-y-3 px-5 pb-5 pt-0 text-sm text-muted-foreground">
           <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3">
             <div className="mb-1 font-medium text-foreground">Component</div>
-            Use <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">{`<SystemNotice />`}</code>{" "}
-            from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">@/components/SystemNotice</code>.
-            It accepts <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">tone</code>,{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">label</code>,{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">body</code>,{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">metadata</code>, and{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">detailsDefaultOpen</code>.
+            Use <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{`<SystemNotice />`}</code>{" "}
+            from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">@/components/SystemNotice</code>.
+            It accepts <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">tone</code>,{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">label</code>,{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">body</code>,{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">metadata</code>, and{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">detailsDefaultOpen</code>.
           </div>
           <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3">
             <div className="mb-1 font-medium text-foreground">Routing in IssueChatThread</div>
             Comments where{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">authorType === &quot;system&quot;</code>{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">authorType === &quot;system&quot;</code>{" "}
             or{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">presentation.kind === &quot;system_notice&quot;</code>{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">presentation.kind === &quot;system_notice&quot;</code>{" "}
             should render as a SystemNotice row at full content width — never inside an{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">IssueChatUserMessage</code>{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">IssueChatUserMessage</code>{" "}
             or assistant bubble.
           </div>
           <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3">
             <div className="mb-1 font-medium text-foreground">Accessibility</div>
             The Details button has{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">aria-expanded</code>{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">aria-expanded</code>{" "}
             and{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">aria-controls</code>{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">aria-controls</code>{" "}
             wired to the panel id. The container exposes{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">role=&quot;status&quot;</code>{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">role=&quot;status&quot;</code>{" "}
             and an{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">aria-label</code>{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">aria-label</code>{" "}
             equal to the visible tone label so screen readers announce tone with text.
           </div>
           <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3">
             <div className="mb-1 font-medium text-foreground">Legacy fallback</div>
             Existing comments without{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">presentation</code>{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">presentation</code>{" "}
             keep rendering through the current{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-12)">SuccessfulRunHandoffCommentCallout</code>{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">SuccessfulRunHandoffCommentCallout</code>{" "}
             string-detector. The new contract is opt-in for the system generators in Phase 5.
           </div>
         </CardContent>

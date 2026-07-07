@@ -290,7 +290,7 @@ export function OnboardingChat({
               <div className="flex items-center gap-1.5 mb-1">
                 <span
                   className={cn(
-                    "text-(length:--fs-10) font-medium uppercase tracking-wide",
+                    "text-(length:--text-nano) font-medium uppercase tracking-wide",
                     isAgent
                       ? "text-muted-foreground"
                       : "text-foreground/70",
@@ -299,7 +299,7 @@ export function OnboardingChat({
                   {isAgent ? agentName : "You"}
                 </span>
                 {isPlan && (
-                  <span className="inline-flex items-center gap-0.5 text-(length:--fs-10) text-green-600 dark:text-green-400 font-medium">
+                  <span className="inline-flex items-center gap-0.5 text-(length:--text-nano) text-green-600 dark:text-green-400 font-medium">
                     <CheckCircle2 className="h-3 w-3" />
                     Hiring plan detected
                   </span>
@@ -335,7 +335,7 @@ export function OnboardingChat({
                 </>
               )}
             </div>
-            <span className="text-(length:--fs-11) text-muted-foreground/60 tabular-nums shrink-0">
+            <span className="text-(length:--text-micro) text-muted-foreground/60 tabular-nums shrink-0">
               {elapsedStr}
             </span>
           </div>
@@ -352,7 +352,7 @@ export function OnboardingChat({
                 <p className="text-sm font-medium">
                   {agentName} has prepared a hiring plan
                 </p>
-                <p className="text-(length:--fs-11) text-muted-foreground">
+                <p className="text-(length:--text-micro) text-muted-foreground">
                   Review it, make edits, then approve.
                 </p>
               </div>
@@ -427,7 +427,7 @@ function WelcomeMessage({
       {showMessage && (
         <div className="rounded-md px-3 py-2 text-sm bg-muted/50 border border-border mr-8 animate-in fade-in duration-300">
           <div className="flex items-center gap-1.5 mb-1">
-            <span className="text-(length:--fs-10) font-medium uppercase tracking-wide text-muted-foreground">
+            <span className="text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">
               {agentName}
             </span>
           </div>

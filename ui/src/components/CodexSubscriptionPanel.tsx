@@ -65,7 +65,7 @@ export function CodexSubscriptionPanel({
     <div className="border border-border px-4 py-4">
       <div className="flex items-start justify-between gap-3 border-b border-border pb-3">
         <div className="min-w-0">
-          <div className="text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_2) text-muted-foreground">
+          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
             Codex subscription
           </div>
           <div className="mt-1 text-sm text-muted-foreground">
@@ -73,7 +73,7 @@ export function CodexSubscriptionPanel({
           </div>
         </div>
         {source ? (
-          <span className="shrink-0 border border-border px-2.5 py-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_16) text-muted-foreground">
+          <span className="shrink-0 border border-border px-2.5 py-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
             {quotaSourceDisplayName(source)}
           </span>
         ) : null}
@@ -87,7 +87,7 @@ export function CodexSubscriptionPanel({
 
       <div className="mt-4 space-y-5">
         <div className="space-y-3">
-          <div className="text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_18) text-muted-foreground">
+          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
             Account windows
           </div>
           <div className="space-y-3">
@@ -99,7 +99,7 @@ export function CodexSubscriptionPanel({
 
         {modelWindows.length > 0 ? (
           <div className="space-y-3">
-            <div className="text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_18) text-muted-foreground">
+            <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
               Model windows
             </div>
             <div className="space-y-3">

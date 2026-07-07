@@ -41,7 +41,7 @@ function formatMs(value: number | null) {
 function MetricTile({ label, value, testId }: { label: string; value: string; testId: string }) {
   return (
     <div className="rounded-md border border-border bg-background px-3 py-2">
-      <div className="text-(length:--fs-11) font-medium uppercase tracking-(--ls-0_14) text-muted-foreground">
+      <div className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
         {label}
       </div>
       <div data-testid={testId} className="mt-1 font-mono text-sm text-foreground">
@@ -109,7 +109,7 @@ export function IssueChatLongThreadPerf() {
       <div className="flex flex-col gap-3 border-b border-border pb-5 lg:flex-row lg:items-end lg:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="font-mono text-(length:--fs-11)">
+            <Badge variant="outline" className="font-mono text-(length:--text-micro)">
               {fixture.issue.identifier}
             </Badge>
             <Badge variant="secondary">{fixture.issue.status.replace(/_/g, " ")}</Badge>

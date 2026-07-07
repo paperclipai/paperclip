@@ -272,7 +272,7 @@ export function ProviderQuotaCard({
                         <span className="text-xs text-muted-foreground truncate font-mono block">
                           {row.model}
                         </span>
-                        <span className="text-(length:--fs-11) text-muted-foreground truncate block">
+                        <span className="text-(length:--text-micro) text-muted-foreground truncate block">
                           {providerDisplayName(row.biller)} · {billingTypeDisplayName(row.billingType)}
                         </span>
                       </div>
@@ -314,7 +314,7 @@ export function ProviderQuotaCard({
                   Subscription quota
                 </p>
                 {quotaSource && !isClaudeQuotaPanel && !isCodexQuotaPanel ? (
-                  <span className="text-(length:--fs-10) uppercase tracking-(--ls-0_16) text-muted-foreground">
+                  <span className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                     {quotaSourceDisplayName(quotaSource)}
                   </span>
                 ) : null}

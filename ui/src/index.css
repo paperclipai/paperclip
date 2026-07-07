@@ -1493,23 +1493,31 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
      runtime from a prop; not a static literal, nothing to extract.
 */
 :root {
-  --fs-10: 10px; /* Extracted from ui/src/components/ActiveAgentsPanel.tsx (text-[10px]). */
-  --fs-11: 11px; /* Extracted from ui/src/components/ActiveAgentsPanel.tsx (text-[11px]). */
-  --fs-9: 9px; /* Extracted from ui/src/components/ActivityCharts.tsx (text-[9px]). */
-  --fs-13: 13px; /* Extracted from ui/src/components/ArtifactsPanel.tsx (text-[13px]). */
-  --fs-12: 12px; /* Extracted from ui/src/components/DevRestartBanner.tsx (text-[12px]). */
-  --fs-15: 15px; /* Extracted from ui/src/components/IssueAttachmentsSection.tsx (text-[15px]). */
-  --fs-14: 14px; /* Extracted from ui/src/components/IssueDocumentsSection.tsx (text-[14px]). */
-  --fs-0_7rem: 0.7rem; /* Extracted from ui/src/components/MarkdownBody.tsx (inline style fontSize: "0.7rem"). */
-  --ls-0_22: 0.22em; /* Extracted from ui/src/components/AccountingModelCard.tsx (tracking-[0.22em]). */
-  --ls-0_08: 0.08em; /* Extracted from ui/src/components/ApprovalCard.tsx (tracking-[0.08em]). */
-  --ls-0_18: 0.18em; /* Extracted from ui/src/components/BudgetIncidentCard.tsx (tracking-[0.18em]). */
-  --ls-0_2: 0.2em; /* Extracted from ui/src/components/ClaudeSubscriptionPanel.tsx (tracking-[0.2em]). */
-  --ls-0_16: 0.16em; /* Extracted from ui/src/components/ClaudeSubscriptionPanel.tsx (tracking-[0.16em]). */
-  --ls-0_14: 0.14em; /* Extracted from ui/src/components/CommentThread.tsx (tracking-[0.14em]). */
-  --ls-0_12: 0.12em; /* Extracted from ui/src/components/DocumentFrameHeader.tsx (tracking-[0.12em]). */
-  --ls-0_1: 0.1em; /* Extracted from ui/src/components/transcript/RunTranscriptView.tsx (tracking-[0.1em]). */
-  --ls-0_24: 0.24em; /* Extracted from ui/src/pages/InviteLanding.tsx (tracking-[0.24em]). */
+  /* ── Named type ladder (DECISION-SHEET.md B3, preset-tune session) ──
+     Collapses the 8 verbatim --fs-* font-size tokens and 9 --ls-*
+     letter-spacing tokens (extracted in Batch 2 above) into named steps.
+     Codemod: scripts/codemod-type-ladder.mjs. Mapping:
+       9px + 10px    -> --text-nano   (9 -> 10 bump per locked ladder)
+       11px + 0.7rem -> --text-micro  (0.7rem = 11.2px -> 11px)
+       12px          -> Tailwind `text-xs` class (12px exact match; scale
+                        class preferred over a redundant token per DESIGN.md)
+       13px          -> --text-compact (PRIOR-ART named this tier "sm 13",
+                        but that collides with Tailwind text-sm = 14px,
+                        hence "compact")
+       14px + 15px   -> Tailwind `text-sm` class (14px; 15 -> 14)
+     Letter-spacing, nearest-step mapping:
+       0.08em, 0.1em                 -> --tracking-label
+       0.12em, 0.14em, 0.16em        -> --tracking-eyebrow
+       0.18em, 0.2em, 0.22em, 0.24em -> --tracking-caps
+     NOTE: sites moved to text-xs/text-sm also pick up the Tailwind scale
+     line-height (text-(length:--x) set font-size only) — intentional,
+     reviewed on the post-preset contact sheet. */
+  --text-nano: 10px;
+  --text-micro: 11px;
+  --text-compact: 13px;
+  --tracking-label: 0.08em;
+  --tracking-eyebrow: 0.14em;
+  --tracking-caps: 0.2em;
 }
 
 /* ── Extracted verbatim SIZE/SPACING/RADIUS/SHADOW tokens (Phase 2 Batch 3, design/token-extraction) ── */

@@ -154,7 +154,7 @@ export function RoutineSaveBar({
               >
                 {isSaving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
                 Save changes
-                <kbd className="ml-2 hidden rounded bg-foreground/10 px-1 text-(length:--fs-10) font-medium sm:inline">
+                <kbd className="ml-2 hidden rounded bg-foreground/10 px-1 text-(length:--text-nano) font-medium sm:inline">
                   ⌘S
                 </kbd>
               </Button>
