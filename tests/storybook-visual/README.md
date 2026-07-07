@@ -18,6 +18,26 @@ pnpm test:storybook-visual:update
 `tests/storybook-visual/.snapshots/`, and checks the PNG count. The same snapshot
 directory can be overridden with `STORYBOOK_VISUAL_SNAPSHOT_DIR`.
 
+## CI and Review Artifacts
+
+Storybook visual tests are opt-in while the suite stabilizes. Add the
+`storybook-visual` label to a pull request, or run the `Storybook Visual`
+workflow manually, to download the pinned baseline, build Storybook, and run the
+Playwright visual suite on GitHub Actions.
+
+The workflow uploads `tests/storybook-visual/playwright-report/` and
+`tests/storybook-visual/test-results/` as a `storybook-visual-report-*` artifact
+on every run. When screenshots differ, Playwright writes the actual, expected,
+and diff PNGs into `test-results`, so reviewers can inspect the failure without
+rerunning the suite locally.
+
+Normal PR visual runs use repository read-only permissions and never upload or
+modify baseline objects. To review intentional visual changes before updating
+`baseline-manifest.json`, run the workflow manually with `update_snapshots`
+enabled. That produces a `storybook-visual-baseline-review-*` artifact containing
+the packed candidate snapshot archive for review. Publishing that bundle to the
+baseline bucket still requires the explicit maintainer upload command below.
+
 ## Updating Baselines
 
 1. Run `pnpm test:storybook-visual:update` after reviewing intentional visual
