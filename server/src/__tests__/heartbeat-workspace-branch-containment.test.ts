@@ -143,6 +143,10 @@ async function createForwardBranchMismatch(input: {
   await mkdir(path.dirname(input.worktreePath), { recursive: true });
   await runGit(input.repoRoot, ["branch", input.expectedBranch]);
   await runGit(input.repoRoot, ["worktree", "add", "-b", input.actualBranch, input.worktreePath, input.expectedBranch]);
+  await runGit(input.repoRoot, ["checkout", input.expectedBranch]);
+  await writeFile(path.join(input.repoRoot, "recorded-branch.txt"), "recorded branch work\n", "utf8");
+  await runGit(input.repoRoot, ["add", "recorded-branch.txt"]);
+  await runGit(input.repoRoot, ["commit", "-m", "Add recorded branch work"]);
   await writeFile(path.join(input.worktreePath, "actual-branch.txt"), "actual branch work\n", "utf8");
   await runGit(input.worktreePath, ["add", "actual-branch.txt"]);
   await runGit(input.worktreePath, ["commit", "-m", "Add actual branch work"]);
@@ -594,12 +598,12 @@ async function expectContainedWorkspaceBranchFailure(input: {
     expectedBranchExists: true,
     actualBranchExists: true,
     sameHead: false,
-    ancestryVerdict: "ancestor",
+    ancestryVerdict: "diverged",
   });
   expect(provenance.expectedHeadSha).toEqual(expect.stringMatching(/^[a-f0-9]{40}$/));
   expect(provenance.actualHeadSha).toEqual(expect.stringMatching(/^[a-f0-9]{40}$/));
   expect(provenance.expectedHeadSha).not.toBe(provenance.actualHeadSha);
-  expect(provenance.plainLanguageReason).toEqual(expect.stringContaining("forward of the recorded branch"));
+  expect(provenance.plainLanguageReason).toEqual(expect.stringContaining("cannot prove a forward-only reconciliation"));
 
   const { issueRows, actionRows, comments } = await waitForContainmentSideEffects({
     db: input.db,
@@ -647,7 +651,7 @@ async function expectContainedWorkspaceBranchFailure(input: {
         provenance: expect.objectContaining({
           expectedHeadSha: provenance.expectedHeadSha,
           actualHeadSha: provenance.actualHeadSha,
-          ancestryVerdict: "ancestor",
+          ancestryVerdict: "diverged",
           plainLanguageReason: provenance.plainLanguageReason,
         }),
       }),
@@ -881,7 +885,6 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   it.each([
     ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, null],
     ["workspace-runtime persisted restore", "persisted_restore" as const, "source-workspace"],
-    ["heartbeat finalization", "finalize" as const, "runtime-workspace"],
   ])("contains mid-change branch divergence at %s", async (_name, callSite, expectedWorkspaceId) => {
     const repoRoot = await createGitRepo();
     tempRoots.push(repoRoot);

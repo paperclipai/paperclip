@@ -2904,7 +2904,7 @@ export function resolveExecutionWorkspaceReuseProvisioningPolicy(input: {
   };
 }
 
-function createInheritedExecutionWorkspaceReuseFailure(input: {
+function formatInheritedExecutionWorkspaceFallbackWarning(input: {
   reason: "inherited_workspace_reuse_failed" | "inherited_workspace_reuse_unavailable";
   issueRef: WorkspaceReuseIssueRef;
   runId: string;
@@ -2924,24 +2924,19 @@ function createInheritedExecutionWorkspaceReuseFailure(input: {
     : "Repair or unarchive the referenced execution workspace, or intentionally clear the issue's reuse_existing workspace binding before retrying.";
   const message = causeMessage
     ? `Issue ${issueLabel} requested inherited execution workspace reuse for ${workspaceLabel}, but the workspace could not be restored because ${causeMessage}.`
-    : `Issue ${issueLabel} requested inherited execution workspace reuse for ${workspaceLabel} but the workspace could not be restored; workspace provisioning cannot replace it because this is an explicit reuse path.`;
+    : `Issue ${issueLabel} requested inherited execution workspace reuse for ${workspaceLabel}, but the workspace could not be restored.`;
 
-  return new WorkspaceValidationFailure(message, {
-    workspaceValidation: {
-      reason: input.reason,
-      issueId: input.issueRef?.id ?? null,
-      issueIdentifier: input.issueRef?.identifier ?? null,
-      executionWorkspaceId: input.executionWorkspaceId ?? null,
-      workspaceConfigFreshnessAction: input.workspaceConfigFreshness.action,
-      workspaceConfigFreshnessReasons: input.workspaceConfigFreshness.reasons,
-      requestedReuseExisting: true,
-      replacementWorkspaceRealized: false,
-      remediation,
-    },
-  });
+  return `${message} Paperclip provisioned a fresh execution workspace instead. ${remediation}`;
 }
 
-export async function provisionExecutionWorkspaceForFreshnessDecision<T>(input: {
+function appendWorkspaceWarning<T extends { warnings?: string[] }>(workspace: T, warning: string): T {
+  return {
+    ...workspace,
+    warnings: [...(Array.isArray(workspace.warnings) ? workspace.warnings : []), warning],
+  };
+}
+
+export async function provisionExecutionWorkspaceForFreshnessDecision<T extends { warnings?: string[] }>(input: {
   requestedShouldReuseExisting: boolean;
   existingExecutionWorkspaceId?: string | null;
   issueRef: WorkspaceReuseIssueRef;
@@ -2969,13 +2964,14 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T>(input: 
   }
 
   let restored: T | null = null;
+  let fallbackWarning: string | null = null;
   try {
     restored = (await input.restoreExistingWorkspace?.()) ?? null;
   } catch (error) {
     if (isWorkspaceValidationFailure(error)) {
       throw error;
     }
-    throw createInheritedExecutionWorkspaceReuseFailure({
+    fallbackWarning = formatInheritedExecutionWorkspaceFallbackWarning({
       reason: "inherited_workspace_reuse_failed",
       issueRef: input.issueRef,
       runId: input.runId,
@@ -2986,13 +2982,30 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T>(input: 
   }
 
   if (!restored) {
-    throw createInheritedExecutionWorkspaceReuseFailure({
+    fallbackWarning = fallbackWarning ?? formatInheritedExecutionWorkspaceFallbackWarning({
       reason: "inherited_workspace_reuse_unavailable",
       issueRef: input.issueRef,
       runId: input.runId,
       executionWorkspaceId: input.existingExecutionWorkspaceId,
       workspaceConfigFreshness: input.workspaceConfigFreshness,
     });
+  }
+
+  if (fallbackWarning) {
+    const executionWorkspace = appendWorkspaceWarning(await input.realizeWorkspace(), fallbackWarning);
+    return {
+      executionWorkspace,
+      reusedExecutionWorkspace: null,
+      policy: {
+        ...policy,
+        shouldRestoreExistingWorkspace: false,
+        shouldRefreshWorkspaceConfigSnapshot: false,
+        shouldPersistLatestWorkspaceConfigMetadata: true,
+      },
+    };
+  }
+  if (!restored) {
+    throw new Error("Expected restored execution workspace after reuse fallback handling");
   }
 
   return {
@@ -10966,7 +10979,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
-    let persistedExecutionWorkspace = null;
+    let persistedExecutionWorkspace: ExecutionWorkspace | null = null;
     const nextExecutionWorkspaceMetadata = mergeExecutionWorkspaceMetadataForPersistence({
       existingMetadata: resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace
         ? reusableExistingExecutionWorkspace?.metadata ?? null
@@ -11726,7 +11739,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             let inspection = branchInspection.inspection;
             const initialManagedGitWorktreeBranch = formatManagedGitWorktreeBranchInspection(inspection);
             if (!inspection.valid && inspection.reasonCode === "branch_mismatch" && inspection.repoRoot) {
-              let reconciledBranchName: string | null = null;
+              let repairedExpectedBranchName = inspection.expectedBranchName;
               try {
                 const coherence = await ensureGitWorktreeBranchCoherent({
                   db,
@@ -11749,8 +11762,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   reconcileOperationPhase: "workspace_finalize",
                   recorder: workspaceOperationRecorder,
                 });
-                if (coherence.reconciledForward && coherence.branchName) {
-                  reconciledBranchName = coherence.branchName;
+                if (coherence.branchName && coherence.branchName !== branchInspection.workspaceRecord.branchName) {
+                  repairedExpectedBranchName = coherence.branchName;
+                  persistedExecutionWorkspace = await executionWorkspacesSvc.update(branchInspection.workspaceRecord.id, {
+                    branchName: coherence.branchName,
+                    lastUsedAt: new Date(),
+                  }) ?? persistedExecutionWorkspace;
+                  executionWorkspace.branchName = coherence.branchName;
+                  executionWorkspace.warnings.push(...coherence.warnings);
                 }
               } catch (repairErr) {
                 const workspaceValidationFailure = isWorkspaceValidationFailure(repairErr) ? repairErr : null;
@@ -11788,7 +11807,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
               const repairedInspection = await inspectManagedGitWorktreeBranch({
                 worktreePath: inspection.worktreePath,
-                expectedBranchName: reconciledBranchName ?? inspection.expectedBranchName,
+                expectedBranchName: repairedExpectedBranchName,
                 repoRoot: inspection.repoRoot,
               });
               finalizeBranchRepairMetadata = {
