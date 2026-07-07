@@ -14,4 +14,4 @@ Rules:
 - Every rewrite happens through a codemod script committed to scripts/ before it is run. Scripts must be idempotent and reviewable.
 - Third-party style overrides that cannot use tokens go on a documented allowlist in the token source, each with an inline comment saying why.
 - Verify after every script run: rg gates (zero hardcoded hex, zero arbitrary px/bracket values in ui/src/components/** and ui/src/pages/** outside the allowlist), pnpm typecheck, and the Storybook snapshot suite. Snapshots must match the Phase 0 baseline exactly.
-- If a replacement cannot be made without visual change, skip it and record it in TOKEN-AUDIT.md under "Needs human decision".
+- If a replacement cannot be made without visual change, skip it and record it in doc/design/TOKEN-AUDIT.md under "Needs human decision".

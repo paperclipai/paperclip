@@ -1,11 +1,11 @@
 ---
 name: token-auditor
-description: Scans ui/src/ for hardcoded visual values, duplicate components, and shadcn replacement candidates; produces TOKEN-AUDIT.md and COMPONENT-INVENTORY.md. Read-only on source — never modifies component files. Use for Phase 1 of the design simplification run.
+description: Scans ui/src/ for hardcoded visual values, duplicate components, and shadcn replacement candidates; produces doc/design/TOKEN-AUDIT.md and doc/design/COMPONENT-INVENTORY.md. Read-only on source — never modifies component files. Use for Phase 1 of the design simplification run.
 tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
 
-You inventory design-system debt in this repository. Follow DESIGN.md at the repo root; read PRIOR-ART.md first — a previous audit found only 6 of ~220 drift sites were exact-value-mappable to existing tokens, so expect most hardcoded values to need new verbatim tokens.
+You inventory design-system debt in this repository. Follow DESIGN.md at the repo root; read doc/design/PRIOR-ART.md first — a previous audit found only 6 of ~220 drift sites were exact-value-mappable to existing tokens, so expect most hardcoded values to need new verbatim tokens.
 
 Your outputs (written to the repo root):
 
