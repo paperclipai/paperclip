@@ -66,7 +66,7 @@ apt_install() { run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "
 ensure_base_packages() {
   log "Memastikan package dasar host terpasang..."
   run_root apt-get update -y
-  apt_install ca-certificates curl gnupg lsb-release git openssl iproute2 jq
+  apt_install ca-certificates curl gnupg lsb-release git openssl iproute2 jq tmux
 }
 
 ensure_docker() {
@@ -182,22 +182,18 @@ install_9router() {
 start_9router() {
   local router_port="${NINE_ROUTER_PORT:-20128}"
   local log_file="$PROJECT_DIR/9router.log"
-  local pid_file="$PROJECT_DIR/9router.pid"
+  local tmux_session="router9"
 
   log "Memastikan 9Router berjalan di background..."
 
-  # Hentikan instance lama jika ada
-  if [[ -f "$pid_file" ]]; then
-    local old_pid
-    old_pid=$(cat "$pid_file")
-    if kill -0 "$old_pid" 2>/dev/null; then
-      log "9Router instance lama ditemukan (PID: $old_pid), menghentikan..."
-      kill "$old_pid" 2>/dev/null || true
-      sleep 1
-    fi
+  # Hentikan tmux session lama jika ada
+  if tmux has-session -t "$tmux_session" 2>/dev/null; then
+    log "9Router tmux session '$tmux_session' ditemukan, menghentikan..."
+    tmux kill-session -t "$tmux_session"
+    sleep 2
   fi
 
-  # Kill any orphan 9router on the port
+  # Kill any orphan process on the port
   local existing_pid
   existing_pid=$(ss -tlnp "( sport = :${router_port} )" 2>/dev/null | grep -oP 'pid=\K[0-9]+' || true)
   if [[ -n "$existing_pid" ]]; then
@@ -206,15 +202,15 @@ start_9router() {
     sleep 1
   fi
 
-  # Start 9Router di background
-  # Pipe "1" untuk auto-select "Web UI (Open in Browser)" secara non-interaktif
-  echo "1" | nohup 9router > "$log_file" 2>&1 &
-  local pid=$!
-  echo "$pid" > "$pid_file"
-  log "9Router berjalan di background (PID: $pid) — log: $log_file"
+  # Start 9Router di dalam tmux session (required: menu interaktif butuh TTY)
+  tmux new-session -d -s "$tmux_session" '9router'
+  sleep 3
+  # Auto-select "Web UI (Open in Browser)" — kirim "1" ke menu
+  tmux send-keys -t "$tmux_session" '1' Enter
+  log "9Router started in tmux session '$tmux_session'"
 
   # Tunggu startup
-  sleep 4
+  sleep 6
 
   # Verifikasi port
   if ss -ltn "( sport = :${router_port} )" 2>/dev/null | awk 'NR>1 {found=1} END {exit found ? 0 : 1}'; then
@@ -222,6 +218,9 @@ start_9router() {
   else
     warn "9Router mungkin belum siap di port ${router_port}. Cek log: $log_file"
   fi
+
+  # Simpan tmux log untuk referensi
+  tmux capture-pane -t "$tmux_session" -p -S -50 > "$log_file" 2>/dev/null || true
 
   # Tampilkan URL (browser jika ada display, log URL jika headless)
   if [[ -n "${DISPLAY:-}" ]] || [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
@@ -845,7 +844,7 @@ show_access_info() {
   printf '  9Router WebUI    : http://localhost:%s/login\n' "$router_port"
   printf '  9Router Dashboard: http://localhost:%s/dashboard\n' "$router_port"
   printf '  9Router API      : http://localhost:%s/v1\n' "$router_port"
-  printf '  9Router PID file : %s\n' "$PROJECT_DIR/9router.pid"
+  printf '  9Router Session  : tmux attach -t router9\n'
   printf '  9Router Log      : %s\n' "$PROJECT_DIR/9router.log"
 }
 
@@ -903,16 +902,11 @@ cmd_down() {
     compose down --remove-orphans
   fi
 
-  # Stop 9Router
-  if [[ -f "$PROJECT_DIR/9router.pid" ]]; then
-    local pid
-    pid=$(cat "$PROJECT_DIR/9router.pid")
-    if kill -0 "$pid" 2>/dev/null; then
-      log "Menghentikan 9Router (PID: $pid)..."
-      kill "$pid" 2>/dev/null || true
-      sleep 1
-    fi
-    rm -f "$PROJECT_DIR/9router.pid"
+  # Stop 9Router via tmux
+  if tmux has-session -t "router9" 2>/dev/null; then
+    log "Menghentikan 9Router (tmux session: router9)..."
+    tmux kill-session -t "router9"
+    sleep 1
   fi
 }
 
