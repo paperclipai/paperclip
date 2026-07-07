@@ -253,6 +253,60 @@ export interface IssueBlockerDiagnosticsResponse {
   };
 }
 
+export type IssueWakeDiagnosticWakeFailureClass = "failed" | "cancelled" | "skipped";
+
+export interface IssueWakeDiagnosticWakeRequest {
+  kind: "wake_request";
+  agentId: string;
+  source: string;
+  reason: string | null;
+  status: string;
+  coalescedCount: number;
+  runId: string | null;
+  requestedAt: string;
+  claimedAt: string | null;
+  finishedAt: string | null;
+  failureClass: IssueWakeDiagnosticWakeFailureClass | null;
+}
+
+export interface IssueWakeDiagnosticActivityRecord {
+  kind: "activity";
+  action: string;
+  entityType: string;
+  agentId: string | null;
+  runId: string | null;
+  createdAt: string;
+  source: string | null;
+  requestedReason: string | null;
+  previousReason: string | null;
+  rootIssueId: string | null;
+  holdId: string | null;
+  summary: string;
+}
+
+export type IssueWakeDiagnosticEvent =
+  | IssueWakeDiagnosticWakeRequest
+  | IssueWakeDiagnosticActivityRecord;
+
+export interface IssueWakeDiagnosticsResponse {
+  issue: IssueBlockerDiagnosticIssueSummary;
+  diagnosis: string | null;
+  likelyReason: string | null;
+  events: IssueWakeDiagnosticEvent[];
+  wakeRequestCount: number;
+  activityRecordCount: number;
+  truncated: boolean;
+  truncatedSections: {
+    wakeRequests: boolean;
+    activityRecords: boolean;
+  };
+  caps: {
+    maxWakeRequests: number;
+    maxActivityRecords: number;
+    lookbackDays: number;
+  };
+}
+
 export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs_attention";
 
 export type IssueBlockerAttentionReason =

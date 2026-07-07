@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -101,6 +101,9 @@ const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
 export const ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS = 100;
+export const ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS = 50;
+export const ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS = 50;
+export const ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS = 14;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
@@ -115,6 +118,25 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
 const DELETED_ISSUE_COMMENT_BODY = "";
+const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferred"] as const;
+
+function wakeRequestTargetsIssue(issueId: string) {
+  return sql`(
+    ${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}
+    or ${agentWakeupRequests.payload} ->> 'taskId' = ${issueId}
+    or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId' = ${issueId}
+    or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId' = ${issueId}
+  )`;
+}
+
+function wakeDiagnosticActivityTargetsIssue(issueId: string) {
+  return sql`(
+    (${activityLog.entityType} = 'issue' and ${activityLog.entityId} = ${issueId})
+    or ${activityLog.details} ->> 'issueId' = ${issueId}
+    or ${activityLog.details} ->> 'rootIssueId' = ${issueId}
+  )`;
+}
+
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -504,6 +526,27 @@ type IssueBlockerDiagnosticsIssueRow = {
   priority: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+};
+type IssueWakeDiagnosticsWakeRequestRow = {
+  agentId: string;
+  source: string;
+  reason: string | null;
+  status: string;
+  coalescedCount: number;
+  runId: string | null;
+  requestedAt: Date;
+  claimedAt: Date | null;
+  finishedAt: Date | null;
+  error: string | null;
+};
+type IssueWakeDiagnosticsActivityRow = {
+  action: string;
+  entityType: string;
+  entityId: string;
+  agentId: string | null;
+  runId: string | null;
+  details: Record<string, unknown> | null;
+  createdAt: Date;
 };
 export type IssueDependencyReadiness = {
   issueId: string;
@@ -4909,6 +4952,103 @@ export function issueService(db: Db) {
         blockers: blockerRows.slice(0, cappedMax) as IssueBlockerDiagnosticsIssueRow[],
         readiness: readiness.get(issue.id) ?? createIssueDependencyReadiness(issue.id),
         truncated: blockerRows.length > cappedMax,
+      };
+    },
+
+    getWakeDiagnostics: async (
+      issueId: string,
+      opts?: {
+        maxWakeRequests?: number;
+        maxActivityRecords?: number;
+        lookbackDays?: number;
+      },
+    ) => {
+      const issue = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+
+      const maxWakeRequests = Math.max(
+        0,
+        Math.min(
+          opts?.maxWakeRequests ?? ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
+          ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
+        ),
+      );
+      const maxActivityRecords = Math.max(
+        0,
+        Math.min(
+          opts?.maxActivityRecords ?? ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
+          ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
+        ),
+      );
+      const lookbackDays = Math.max(
+        1,
+        Math.min(
+          opts?.lookbackDays ?? ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
+          ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
+        ),
+      );
+      const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
+
+      const wakeRows = await db
+        .select({
+          agentId: agentWakeupRequests.agentId,
+          source: agentWakeupRequests.source,
+          reason: agentWakeupRequests.reason,
+          status: agentWakeupRequests.status,
+          coalescedCount: agentWakeupRequests.coalescedCount,
+          runId: agentWakeupRequests.runId,
+          requestedAt: agentWakeupRequests.requestedAt,
+          claimedAt: agentWakeupRequests.claimedAt,
+          finishedAt: agentWakeupRequests.finishedAt,
+          error: agentWakeupRequests.error,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, issue.companyId),
+            gte(agentWakeupRequests.requestedAt, since),
+            wakeRequestTargetsIssue(issue.id),
+          ),
+        )
+        .orderBy(desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.createdAt))
+        .limit(maxWakeRequests + 1);
+
+      const activityRows = await db
+        .select({
+          action: activityLog.action,
+          entityType: activityLog.entityType,
+          entityId: activityLog.entityId,
+          agentId: activityLog.agentId,
+          runId: activityLog.runId,
+          details: activityLog.details,
+          createdAt: activityLog.createdAt,
+        })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, issue.companyId),
+            gte(activityLog.createdAt, since),
+            inArray(activityLog.action, [...ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS]),
+            wakeDiagnosticActivityTargetsIssue(issue.id),
+          ),
+        )
+        .orderBy(desc(activityLog.createdAt))
+        .limit(maxActivityRecords + 1);
+
+      return {
+        wakeRequests: wakeRows.slice(0, maxWakeRequests) as IssueWakeDiagnosticsWakeRequestRow[],
+        activityRecords: activityRows.slice(0, maxActivityRecords) as IssueWakeDiagnosticsActivityRow[],
+        truncatedWakeRequests: wakeRows.length > maxWakeRequests,
+        truncatedActivityRecords: activityRows.length > maxActivityRecords,
+        caps: {
+          maxWakeRequests: ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
+          maxActivityRecords: ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
+          lookbackDays: ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
+        },
       };
     },
 

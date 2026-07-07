@@ -4965,6 +4965,13 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "get",
+  path: "/api/issues/{id}/diagnostics/wakes",
+  tags: ["issues"],
+  summary: "Get wake diagnostics for an issue",
+});
+
+registerCurrentRoute({
+  method: "get",
   path: "/api/issues/{id}/recovery-actions",
   tags: ["issues"],
   summary: "List issue recovery actions",

@@ -230,6 +230,49 @@ Security and bounds:
 - If blockers are omitted or the result is truncated, `readiness` is `null` and `diagnosis` does not mention hidden blocker ids, statuses, assignees, or reasons.
 - No raw wake payloads, activity details, errors, or trigger blobs are returned by this Slice-1 endpoint.
 
+### Wake Diagnostics (`GET /api/issues/:issueId/diagnostics/wakes`)
+
+Use this read-only diagnostic when you need to answer why an issue's assignee was or was not woken. Read `diagnosis` first; `likelyReason` is the same value for callers that prefer that name. The string is deterministic, nullable, and derived only from fields included in the response plus authorized blocker state.
+
+The endpoint returns bounded wake/activity events, newest-first across both event kinds:
+
+```json
+{
+  "issue": { "id": "issue-99", "identifier": "PAP-99", "title": "Ship API", "status": "blocked", "priority": "medium", "assigneeAgentId": "agent-1", "assigneeUserId": null },
+  "diagnosis": "No wake row exists for PAP-99 in the bounded window. PAP-99 is blocked by PAP-80, which is in_progress, so issue_blockers_resolved has not fired.",
+  "likelyReason": "No wake row exists for PAP-99 in the bounded window. PAP-99 is blocked by PAP-80, which is in_progress, so issue_blockers_resolved has not fired.",
+  "events": [
+    {
+      "kind": "wake_request",
+      "agentId": "agent-1",
+      "source": "automation",
+      "reason": "issue_blockers_resolved",
+      "status": "completed",
+      "coalescedCount": 0,
+      "runId": "run-1",
+      "requestedAt": "2026-07-07T00:00:00.000Z",
+      "claimedAt": "2026-07-07T00:00:01.000Z",
+      "finishedAt": "2026-07-07T00:00:10.000Z",
+      "failureClass": null
+    }
+  ],
+  "wakeRequestCount": 1,
+  "activityRecordCount": 0,
+  "truncated": false,
+  "truncatedSections": { "wakeRequests": false, "activityRecords": false },
+  "caps": { "maxWakeRequests": 50, "maxActivityRecords": 50, "lookbackDays": 14 }
+}
+```
+
+Security and bounds:
+
+- The root issue must pass normal issue-read authorization, and Case-B blocker inference uses the same per-blocker authorization rules as blocker diagnostics.
+- Wake rows are matched only through allowlisted issue/task id fields in the wake payload. Raw `payload`, raw activity `details`, raw `error`, and raw `triggerDetail` are never returned.
+- Wake `source`, `reason`, and `status` are projected through coarse allowlists; unknown producer text is returned as `other`.
+- Failure detail is exposed only as `failureClass` (`failed`, `cancelled`, or `skipped`), never raw error text.
+- Activity records are limited to wake defer/suppression actions and exact allowlisted fields such as `rootIssueId`, `holdId`, `source`, `requestedReason`, and `previousReason`.
+- Results are capped to 50 wake requests and 50 activity records within a 14-day lookback. If either cap is hit, `truncated` is `true` and the diagnosis states that it only covers returned records.
+
 ### Execution Policy Fields On An Issue
 
 When an issue has review or approval gates, `GET /api/issues/:issueId` can also include `executionPolicy` and `executionState`:
@@ -967,6 +1010,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId`             | Issue details + ancestors                                                                |
 | GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor  |
 | GET    | `/api/issues/:issueId/diagnostics/blockers` | Read-only blocker diagnostic with `diagnosis`, readiness, and bounded anomaly flags |
+| GET    | `/api/issues/:issueId/diagnostics/wakes` | Read-only wake-history diagnostic with `diagnosis`, bounded events, and Case-B inference |
 | POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies)                   |
 | PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field; `blockedByIssueIds` replaces blocker set)        |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |

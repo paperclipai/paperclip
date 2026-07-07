@@ -69,6 +69,11 @@ import {
   type IssueBlockerDiagnosticNode,
   type IssueBlockerDiagnosticsReadiness,
   type IssueBlockerDiagnosticsResponse,
+  type IssueWakeDiagnosticActivityRecord,
+  type IssueWakeDiagnosticEvent,
+  type IssueWakeDiagnosticWakeFailureClass,
+  type IssueWakeDiagnosticWakeRequest,
+  type IssueWakeDiagnosticsResponse,
   type IssueRelationIssueSummary,
   type IssueWatchdogDiscoveryKind,
   type SourceTrustMetadata,
@@ -135,6 +140,9 @@ import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
   ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
+  ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
+  ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
+  ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
 } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
@@ -924,6 +932,307 @@ function buildIssueBlockerDiagnosis(input: {
   }
 
   return null;
+}
+
+const ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES = new Set([
+  "timer",
+  "assignment",
+  "on_demand",
+  "automation",
+]);
+
+const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
+  "issue_assigned",
+  "issue_blockers_resolved",
+  "issue_commented",
+  "issue_comment_mentioned",
+  "issue_dependencies_blocked",
+  "issue_tree_hold_active",
+  "missing_issue_comment",
+  "process_lost_retry",
+  "run_liveness_continuation",
+  "heartbeat.disabled",
+  "heartbeat.timer.no_actionable_work",
+  "heartbeat.wakeOnDemand.disabled",
+]);
+
+const ISSUE_WAKE_DIAGNOSTIC_KNOWN_STATUSES = new Set([
+  "queued",
+  "claimed",
+  "coalesced",
+  "skipped",
+  "completed",
+  "failed",
+  "cancelled",
+  "deferred_issue_execution",
+]);
+
+function dateToIso(value: Date | string | null | undefined) {
+  if (!value) return null;
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function projectWakeDiagnosticSource(value: string | null) {
+  if (!value) return null;
+  return ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES.has(value) ? value : "other";
+}
+
+function projectWakeDiagnosticReason(value: string | null) {
+  if (!value) return null;
+  return ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS.has(value) ? value : "other";
+}
+
+function projectWakeDiagnosticStatus(value: string) {
+  return ISSUE_WAKE_DIAGNOSTIC_KNOWN_STATUSES.has(value) ? value : "other";
+}
+
+function wakeFailureClass(
+  status: string,
+  rawError: string | null,
+): IssueWakeDiagnosticWakeFailureClass | null {
+  if (status === "failed" || rawError) return "failed";
+  if (status === "cancelled") return "cancelled";
+  if (status === "skipped") return "skipped";
+  return null;
+}
+
+function projectIssueWakeRequest(row: {
+  agentId: string;
+  source: string;
+  reason: string | null;
+  status: string;
+  coalescedCount: number;
+  runId: string | null;
+  requestedAt: Date | string;
+  claimedAt: Date | string | null;
+  finishedAt: Date | string | null;
+  error: string | null;
+}): IssueWakeDiagnosticWakeRequest {
+  const status = projectWakeDiagnosticStatus(row.status);
+  return {
+    kind: "wake_request",
+    agentId: row.agentId,
+    source: projectWakeDiagnosticSource(row.source) ?? "other",
+    reason: projectWakeDiagnosticReason(row.reason),
+    status,
+    coalescedCount: row.coalescedCount,
+    runId: row.runId,
+    requestedAt: dateToIso(row.requestedAt)!,
+    claimedAt: dateToIso(row.claimedAt),
+    finishedAt: dateToIso(row.finishedAt),
+    failureClass: wakeFailureClass(status, row.error),
+  };
+}
+
+function wakeDiagnosticActivityAction(action: string) {
+  return action === "issue.tree_hold_wakeup_deferred" ? action : "other";
+}
+
+function wakeDiagnosticActivityEntityType(entityType: string) {
+  return entityType === "issue" || entityType === "agent_wakeup_request" ? entityType : "other";
+}
+
+function projectIssueWakeActivityRecord(
+  row: {
+    action: string;
+    entityType: string;
+    entityId: string;
+    agentId: string | null;
+    runId: string | null;
+    details: Record<string, unknown> | null;
+    createdAt: Date | string;
+  },
+  issueId: string,
+): IssueWakeDiagnosticActivityRecord {
+  const details = row.details && typeof row.details === "object" ? row.details : {};
+  const action = wakeDiagnosticActivityAction(row.action);
+  const rootIssueId = readNonEmptyString(details["rootIssueId"]);
+  const detailIssueId = readNonEmptyString(details["issueId"]);
+  const projectedRootIssueId =
+    rootIssueId === issueId || detailIssueId === issueId || (row.entityType === "issue" && row.entityId === issueId)
+      ? issueId
+      : null;
+
+  return {
+    kind: "activity",
+    action,
+    entityType: wakeDiagnosticActivityEntityType(row.entityType),
+    agentId: row.agentId ?? readNonEmptyString(details["agentId"]),
+    runId: row.runId,
+    createdAt: dateToIso(row.createdAt)!,
+    source: projectWakeDiagnosticSource(readNonEmptyString(details["source"])),
+    requestedReason: projectWakeDiagnosticReason(readNonEmptyString(details["requestedReason"])),
+    previousReason: projectWakeDiagnosticReason(readNonEmptyString(details["previousReason"])),
+    rootIssueId: projectedRootIssueId,
+    holdId: readNonEmptyString(details["holdId"]),
+    summary: action === "issue.tree_hold_wakeup_deferred"
+      ? "Wake was deferred because an active issue-tree hold was present."
+      : "Wake-related activity was recorded.",
+  };
+}
+
+function issueWakeDiagnosticEventTimestamp(event: IssueWakeDiagnosticEvent) {
+  const timestamp = event.kind === "wake_request" ? event.requestedAt : event.createdAt;
+  return new Date(timestamp).getTime();
+}
+
+function wakeDiagnosticReasonPhrase(reason: string | null) {
+  return reason ? ` for ${reason}` : "";
+}
+
+function buildIssueWakeDiagnosis(input: {
+  issue: IssueBlockerDiagnosticIssueSummary;
+  events: IssueWakeDiagnosticEvent[];
+  blockerDiagnostics: IssueBlockerDiagnosticsResponse;
+  truncated: boolean;
+}) {
+  if (input.truncated) {
+    return `Wake diagnostics for ${blockerDiagnosticLabel(input.issue)} are truncated to ${
+      ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS
+    } wake requests and ${ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS} activity records over ${
+      ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS
+    } days, so the diagnosis only covers returned records.`;
+  }
+
+  const latest = input.events[0];
+  if (latest?.kind === "activity" && latest.action === "issue.tree_hold_wakeup_deferred") {
+    return `The most recent wake-related activity for ${blockerDiagnosticLabel(
+      input.issue,
+    )} was deferred by an active issue-tree hold.`;
+  }
+  if (latest?.kind === "wake_request") {
+    if (latest.status === "deferred_issue_execution") {
+      return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} is deferred${wakeDiagnosticReasonPhrase(
+        latest.reason,
+      )}.`;
+    }
+    if (latest.status === "failed") {
+      return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} failed${wakeDiagnosticReasonPhrase(
+        latest.reason,
+      )}; raw error text is withheld.`;
+    }
+    if (latest.status === "skipped" || latest.status === "cancelled" || latest.status === "coalesced") {
+      const coalesced =
+        latest.coalescedCount > 0 ? ` and coalesced ${latest.coalescedCount} additional request(s)` : "";
+      return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} was ${latest.status}${wakeDiagnosticReasonPhrase(
+        latest.reason,
+      )}${coalesced}.`;
+    }
+    if (latest.status === "queued" || latest.status === "claimed") {
+      return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} is currently ${latest.status}${wakeDiagnosticReasonPhrase(
+        latest.reason,
+      )}.`;
+    }
+    if (latest.status === "completed") {
+      return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} completed${wakeDiagnosticReasonPhrase(
+        latest.reason,
+      )}.`;
+    }
+  }
+
+  if (input.events.length > 0) return null;
+
+  const blockerDiagnostics = input.blockerDiagnostics;
+  if (blockerDiagnostics.truncated) {
+    return `No wake rows are visible for ${blockerDiagnosticLabel(
+      input.issue,
+    )} in the bounded window, and blocker diagnostics are truncated, so no wake cause is inferred.`;
+  }
+  if ((blockerDiagnostics.omittedUnauthorizedBlockerCount ?? 0) > 0) {
+    return `No wake rows are visible for ${blockerDiagnosticLabel(
+      input.issue,
+    )} in the bounded window, and one or more blockers are outside this actor's authorization boundary.`;
+  }
+  if (input.issue.status !== "blocked" || blockerDiagnostics.blockers.length === 0) return null;
+
+  const pendingFinalize = blockerDiagnostics.blockers.find((blocker) => blocker.isPendingFinalize);
+  if (pendingFinalize) {
+    return `No wake row exists for ${blockerDiagnosticLabel(input.issue)} in the bounded window. ${blockerDiagnosticLabel(
+      input.issue,
+    )} is waiting for ${blockerDiagnosticLabel(pendingFinalize)} to finish workspace finalization, so issue_blockers_resolved has not fired.`;
+  }
+
+  const cancelled = blockerDiagnostics.blockers.find((blocker) => blocker.status === "cancelled");
+  if (cancelled) {
+    return `No wake row exists for ${blockerDiagnosticLabel(input.issue)} in the bounded window. ${blockerDiagnosticLabel(
+      input.issue,
+    )} is blocked by ${blockerDiagnosticLabel(cancelled)}, which is cancelled; cancelled blockers do not fire issue_blockers_resolved.`;
+  }
+
+  const unresolved = blockerDiagnostics.blockers.find((blocker) => blocker.isUnresolved);
+  if (unresolved) {
+    return `No wake row exists for ${blockerDiagnosticLabel(input.issue)} in the bounded window. ${blockerDiagnosticLabel(
+      input.issue,
+    )} is blocked by ${blockerDiagnosticLabel(unresolved)}, which is ${unresolved.status}, so issue_blockers_resolved has not fired.`;
+  }
+
+  if (blockerDiagnostics.readiness?.isDependencyReady) {
+    return `No wake row exists for ${blockerDiagnosticLabel(
+      input.issue,
+    )} in the bounded window. All visible blockers are resolved, but the issue is still blocked; this is likely a stale blocker hold or an older wake outside the lookback window.`;
+  }
+
+  return null;
+}
+
+function buildIssueWakeDiagnosticsResponse(input: {
+  issue: IssueBlockerDiagnosticReadableIssue;
+  wakeRequests: Array<{
+    agentId: string;
+    source: string;
+    reason: string | null;
+    status: string;
+    coalescedCount: number;
+    runId: string | null;
+    requestedAt: Date | string;
+    claimedAt: Date | string | null;
+    finishedAt: Date | string | null;
+    error: string | null;
+  }>;
+  activityRecords: Array<{
+    action: string;
+    entityType: string;
+    entityId: string;
+    agentId: string | null;
+    runId: string | null;
+    details: Record<string, unknown> | null;
+    createdAt: Date | string;
+  }>;
+  blockerDiagnostics: IssueBlockerDiagnosticsResponse;
+  truncatedWakeRequests: boolean;
+  truncatedActivityRecords: boolean;
+}): IssueWakeDiagnosticsResponse {
+  const issue = toIssueBlockerDiagnosticSummary(input.issue);
+  const events: IssueWakeDiagnosticEvent[] = [
+    ...input.wakeRequests.map(projectIssueWakeRequest),
+    ...input.activityRecords.map((record) => projectIssueWakeActivityRecord(record, issue.id)),
+  ].sort((left, right) => issueWakeDiagnosticEventTimestamp(right) - issueWakeDiagnosticEventTimestamp(left));
+  const truncated = input.truncatedWakeRequests || input.truncatedActivityRecords;
+  const diagnosis = buildIssueWakeDiagnosis({
+    issue,
+    events,
+    blockerDiagnostics: input.blockerDiagnostics,
+    truncated,
+  });
+
+  return {
+    issue,
+    diagnosis,
+    likelyReason: diagnosis,
+    events,
+    wakeRequestCount: input.wakeRequests.length,
+    activityRecordCount: input.activityRecords.length,
+    truncated,
+    truncatedSections: {
+      wakeRequests: input.truncatedWakeRequests,
+      activityRecords: input.truncatedActivityRecords,
+    },
+    caps: {
+      maxWakeRequests: ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
+      maxActivityRecords: ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
+      lookbackDays: ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
+    },
+  };
 }
 
 const ACTIVE_REVIEW_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
@@ -3819,6 +4128,52 @@ export function issueRoutes(
         truncated: response.truncated,
       },
       "issue blocker diagnostics read",
+    );
+
+    res.json(response);
+  });
+
+  router.get("/issues/:id/diagnostics/wakes", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    const [wakeDiagnostic, blockerDiagnostic] = await Promise.all([
+      svc.getWakeDiagnostics(issue.id),
+      svc.getBlockerDiagnostics(issue.id),
+    ]);
+    const visibleBlockers = await filterIssuesForActor(req, blockerDiagnostic.blockers);
+    const blockerResponse = buildIssueBlockerDiagnosticsResponse({
+      issue,
+      blockers: blockerDiagnostic.blockers,
+      visibleBlockers,
+      readiness: blockerDiagnostic.readiness,
+      truncated: blockerDiagnostic.truncated,
+    });
+    const response = buildIssueWakeDiagnosticsResponse({
+      issue,
+      wakeRequests: wakeDiagnostic.wakeRequests,
+      activityRecords: wakeDiagnostic.activityRecords,
+      blockerDiagnostics: blockerResponse,
+      truncatedWakeRequests: wakeDiagnostic.truncatedWakeRequests,
+      truncatedActivityRecords: wakeDiagnostic.truncatedActivityRecords,
+    });
+
+    logger.info(
+      {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        actorType: req.actor.type,
+        wakeRequestCount: response.wakeRequestCount,
+        activityRecordCount: response.activityRecordCount,
+        truncated: response.truncated,
+      },
+      "issue wake diagnostics read",
     );
 
     res.json(response);
