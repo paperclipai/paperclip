@@ -1,5 +1,6 @@
 import type { UsageSummary } from "@paperclipai/adapter-utils";
 import {
+  asBoolean,
   asString,
   asNumber,
   parseObject,
@@ -148,7 +149,16 @@ export function detectClaudeLoginRequired(input: {
   };
 }
 
+export function isClaudeSuccessResult(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+  const subtype = asString(parsed.subtype, "").trim().toLowerCase();
+  return subtype === "success" && !asBoolean(parsed.is_error, false);
+}
+
 export function describeClaudeFailure(parsed: Record<string, unknown>): string | null {
+  // A subtype=success result without is_error is not a failure; describing it
+  // would surface the agent's own success summary as the error message.
+  if (isClaudeSuccessResult(parsed)) return null;
   const subtype = asString(parsed.subtype, "");
   const resultText = asString(parsed.result, "").trim();
   const errors = extractClaudeErrorMessages(parsed);
