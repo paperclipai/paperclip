@@ -11,8 +11,9 @@
  * - Retrieving UI slot contributions for frontend rendering
  * - Discovering and executing plugin-contributed agent tools
  *
- * All routes require board-level authentication, and sensitive instance-wide
+ * Most routes require board-level authentication, and sensitive instance-wide
  * mutations such as install/upgrade require instance-admin privileges.
+ * Plugin tool discovery and execution routes allow both board and agent access.
  *
  * @module server/routes/plugins
  * @see doc/plugins/PLUGIN_SPEC.md for the full plugin specification
@@ -46,7 +47,12 @@ import {
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
-import { getPluginUiContributionMetadata, pluginLoader } from "../services/plugin-loader.js";
+import {
+  getPluginUiContributionMetadata,
+  listMissingDeclaredPluginEntrypoints,
+  pluginLoader,
+  REPO_ROOT,
+} from "../services/plugin-loader.js";
 import { logActivity } from "../services/activity-log.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
 import { issueService } from "../services/issues.js";
@@ -60,6 +66,7 @@ import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sd
 import {
   assertAuthenticated,
   assertBoard,
+  assertBoardOrAgent,
   assertBoardOrgAccess,
   assertCompanyAccess,
   assertInstanceAdmin,
@@ -122,6 +129,7 @@ interface AvailableBundledPlugin {
   localPath: string;
   tag: "example" | "first-party";
   experimental: boolean;
+  hasBuiltEntrypoints: boolean;
 }
 
 /** Response body for GET /api/plugins/:pluginId/health */
@@ -150,13 +158,24 @@ const PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST = new Set([
 ]);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, "../../..");
 const EXPERIMENTAL_BUNDLED_PLUGIN_PACKAGE_NAMES = new Set([
   "@paperclipai/plugin-llm-wiki",
   "@paperclipai/plugin-modal",
   "@paperclipai/plugin-workspace-diff",
 ]);
-let bundledPluginsCache: Promise<AvailableBundledPlugin[]> | null = null;
+/**
+ * Cached bundled-plugin discovery. Static metadata (name, key, display, paths)
+ * is expensive to compute and never changes at runtime, so it is cached. The
+ * `hasBuiltEntrypoints` flag is filesystem state that flips when a plugin is
+ * auto-built on install, so it is recomputed per request in `listBundledPlugins`
+ * rather than cached.
+ */
+type DiscoveredBundledPlugin = {
+  entry: Omit<AvailableBundledPlugin, "hasBuiltEntrypoints">;
+  packageRoot: string;
+  pkgJson: Record<string, unknown>;
+};
+let bundledPluginsCache: Promise<DiscoveredBundledPlugin[]> | null = null;
 
 function titleCasePluginName(packageName: string): string {
   const localName = packageName.split("/").pop() ?? packageName;
@@ -264,9 +283,9 @@ function isExperimentalBundledPlugin(packageRoot: string, packageName: string): 
   );
 }
 
-async function discoverBundledPlugins(): Promise<AvailableBundledPlugin[]> {
+async function discoverBundledPlugins(): Promise<DiscoveredBundledPlugin[]> {
   const pluginRoot = path.resolve(REPO_ROOT, "packages/plugins");
-  const bundledPlugins: AvailableBundledPlugin[] = [];
+  const bundledPlugins: DiscoveredBundledPlugin[] = [];
   for (const packageJsonPath of await findPackageJsonFiles(pluginRoot)) {
     const packageRoot = path.dirname(packageJsonPath);
     const pkgJson = await readJsonFile(packageJsonPath);
@@ -286,20 +305,24 @@ async function discoverBundledPlugins(): Promise<AvailableBundledPlugin[]> {
     const metadata = await bundledPluginMetadata(packageRoot, pkgJson);
     const tag = packageRoot.includes(`${path.sep}examples${path.sep}`) ? "example" : "first-party";
     bundledPlugins.push({
-      packageName,
-      pluginKey: metadata.pluginKey ?? packageName,
-      displayName: metadata.displayName ?? titleCasePluginName(packageName),
-      description: metadata.description
-        ?? `Bundled Paperclip plugin from ${path.relative(REPO_ROOT, packageRoot)}.`,
-      localPath: packageRoot,
-      tag,
-      experimental: isExperimentalBundledPlugin(packageRoot, packageName),
+      entry: {
+        packageName,
+        pluginKey: metadata.pluginKey ?? packageName,
+        displayName: metadata.displayName ?? titleCasePluginName(packageName),
+        description: metadata.description
+          ?? `Bundled Paperclip plugin from ${path.relative(REPO_ROOT, packageRoot)}.`,
+        localPath: packageRoot,
+        tag,
+        experimental: isExperimentalBundledPlugin(packageRoot, packageName),
+      },
+      packageRoot,
+      pkgJson,
     });
   }
 
   return bundledPlugins.sort((left, right) => {
-    if (left.tag !== right.tag) return left.tag === "first-party" ? -1 : 1;
-    return left.displayName.localeCompare(right.displayName);
+    if (left.entry.tag !== right.entry.tag) return left.entry.tag === "first-party" ? -1 : 1;
+    return left.entry.displayName.localeCompare(right.entry.displayName);
   });
 }
 
@@ -308,7 +331,13 @@ async function listBundledPlugins(): Promise<AvailableBundledPlugin[]> {
     bundledPluginsCache = null;
     throw error;
   });
-  return bundledPluginsCache;
+  const discovered = await bundledPluginsCache;
+  // Recompute the filesystem-dependent flag per request so a plugin auto-built
+  // during install is no longer reported as missing its entrypoints.
+  return discovered.map(({ entry, packageRoot, pkgJson }) => ({
+    ...entry,
+    hasBuiltEntrypoints: listMissingDeclaredPluginEntrypoints(packageRoot, pkgJson).length === 0,
+  }));
 }
 
 /**
@@ -878,7 +907,7 @@ export function pluginRoutes(
    * Errors: 501 if tool dispatcher is not configured
    */
   router.get("/plugins/tools", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertBoardOrAgent(req);
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
@@ -912,7 +941,7 @@ export function pluginRoutes(
    * - 502 if the plugin worker is unavailable or the RPC call fails
    */
   router.post("/plugins/tools/execute", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertBoardOrAgent(req);
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });

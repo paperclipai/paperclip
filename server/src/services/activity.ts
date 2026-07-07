@@ -387,6 +387,8 @@ export function activityService(db: Db) {
           finishedAt: heartbeatRuns.finishedAt,
           createdAt: heartbeatRuns.createdAt,
           invocationSource: heartbeatRuns.invocationSource,
+          responsibleUserId: heartbeatRuns.responsibleUserId,
+          errorCode: heartbeatRuns.errorCode,
           usageJson: summarizedUsageJson,
           resultJson: summarizedResultJson,
           logBytes: heartbeatRuns.logBytes,

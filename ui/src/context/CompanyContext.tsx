@@ -176,3 +176,13 @@ export function useCompany() {
   }
   return ctx;
 }
+
+/**
+ * Non-throwing variant of {@link useCompany}. Returns null when called outside a
+ * CompanyProvider instead of throwing, so components that may render in
+ * provider-less surfaces (e.g. exported/standalone markdown) can read company
+ * state without crashing.
+ */
+export function useOptionalCompany(): CompanyContextValue | null {
+  return useContext(CompanyContext);
+}

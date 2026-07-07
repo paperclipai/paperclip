@@ -1,7 +1,7 @@
 import { useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { IssueAttachment } from "@paperclipai/shared";
-import { Download, ExternalLink, FileText, Paperclip, Trash2 } from "lucide-react";
+import { Download, ExternalLink, FileText, Maximize2, Paperclip, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { FoldCurtain } from "./FoldCurtain";
 import { MarkdownBody } from "./MarkdownBody";
@@ -47,14 +47,27 @@ function AttachmentActions({
   attachment,
   onDelete,
   deletePending,
+  onPreview,
 }: {
   attachment: IssueAttachment;
   onDelete: (attachmentId: string) => void;
   deletePending?: boolean;
+  onPreview?: (attachment: IssueAttachment) => void;
 }) {
   const filename = attachmentFilename(attachment);
   return (
     <div className="flex shrink-0 items-center gap-1">
+      {onPreview ? (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          title="Browse gallery"
+          aria-label={`Browse ${filename} in gallery`}
+          onClick={() => onPreview(attachment)}
+        >
+          <Maximize2 className="h-4 w-4" />
+        </Button>
+      ) : null}
       <Button asChild variant="ghost" size="icon-sm" title="Open in new tab">
         <a href={attachmentOpenPath(attachment)} target="_blank" rel="noreferrer" aria-label={`Open ${filename}`}>
           <ExternalLink className="h-4 w-4" />
@@ -103,7 +116,7 @@ function MarkdownAttachmentCard({
   });
 
   return (
-    <div className="rounded-lg border border-border p-3">
+    <div id={`attachment-${attachment.id}`} className="scroll-mt-20 rounded-lg border border-border p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
@@ -135,21 +148,28 @@ function VideoAttachmentCard({
   attachment,
   onDelete,
   deletePending,
+  onPreview,
 }: {
   attachment: IssueAttachment;
   onDelete: (attachmentId: string) => void;
   deletePending?: boolean;
+  onPreview?: (attachment: IssueAttachment) => void;
 }) {
   const filename = attachmentFilename(attachment);
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-card">
+    <div id={`attachment-${attachment.id}`} className="scroll-mt-20 overflow-hidden rounded-md border border-border bg-card">
       <OutputVideoPlayer src={attachment.contentPath} title={filename} />
       <div className="flex flex-col gap-2 p-3 md:flex-row md:items-center md:justify-between">
         <div className="min-w-0">
           <p className="break-words text-sm font-semibold text-foreground">{filename}</p>
           <AttachmentMeta attachment={attachment} />
         </div>
-        <AttachmentActions attachment={attachment} onDelete={onDelete} deletePending={deletePending} />
+        <AttachmentActions
+          attachment={attachment}
+          onDelete={onDelete}
+          deletePending={deletePending}
+          onPreview={onPreview}
+        />
       </div>
     </div>
   );
@@ -166,7 +186,7 @@ function GenericAttachmentRow({
 }) {
   const filename = attachmentFilename(attachment);
   return (
-    <div className="flex items-center gap-2.5 rounded-md border border-border bg-card p-2">
+    <div id={`attachment-${attachment.id}`} className="flex scroll-mt-20 items-center gap-2.5 rounded-md border border-border bg-card p-2">
       <OutputFileTile contentType={attachment.contentType} />
       <div className="min-w-0 flex-1">
         <a
@@ -257,7 +277,8 @@ export function IssueAttachmentsSection({
           {imageAttachments.map((attachment) => (
             <div
               key={attachment.id}
-              className="group relative aspect-square cursor-pointer overflow-hidden rounded-lg border border-border bg-accent/10"
+              id={`attachment-${attachment.id}`}
+              className="group relative aspect-square cursor-pointer scroll-mt-20 overflow-hidden rounded-lg border border-border bg-accent/10"
               onClick={() => onImageClick(attachment)}
             >
               <img
@@ -336,6 +357,7 @@ export function IssueAttachmentsSection({
               attachment={attachment}
               onDelete={requestDelete}
               deletePending={deletePending}
+              onPreview={onImageClick}
             />
           ))}
         </div>

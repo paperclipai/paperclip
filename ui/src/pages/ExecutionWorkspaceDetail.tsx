@@ -40,6 +40,7 @@ import { cn, formatDateTime, issueUrl, projectRouteRef, projectWorkspaceUrl } fr
 import {
   getWorkspaceSpecificRoutineVariableNames,
   routineHasWorkspaceSpecificVariables,
+  sortWorkspaceRoutinesByName,
 } from "../lib/workspace-routines";
 
 type WorkspaceFormState = {
@@ -67,7 +68,7 @@ type OrderedExecutionWorkspaceTabItem = {
 
 const DEFAULT_PLUGIN_DETAIL_TAB_ORDER = 100;
 const EXECUTION_WORKSPACE_BASE_TAB_ITEMS: OrderedExecutionWorkspaceTabItem[] = [
-  { value: "issues", label: "Issues", order: 10 },
+  { value: "issues", label: "Tasks", order: 10 },
   { value: "services", label: "Services", order: 20 },
   { value: "configuration", label: "Configuration", order: 30 },
   { value: "runtime_logs", label: "Runtime logs", order: 40 },
@@ -258,6 +259,25 @@ function Field({
   );
 }
 
+function workspaceOperationPhaseLabel(phase: string) {
+  switch (phase) {
+    case "worktree_prepare":
+      return "Worktree setup";
+    case "workspace_config_freshness":
+      return "Config freshness";
+    case "workspace_provision":
+      return "Provision";
+    case "workspace_teardown":
+      return "Teardown";
+    case "worktree_cleanup":
+      return "Worktree cleanup";
+    case "workspace_finalize":
+      return "Finalize";
+    default:
+      return phase;
+  }
+}
+
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5 py-1.5 sm:flex-row sm:items-start sm:gap-3">
@@ -445,7 +465,7 @@ function ExecutionWorkspaceRoutinesList({
   });
 
   const workspaceRoutines = useMemo(
-    () => (routines ?? []).filter(routineHasWorkspaceSpecificVariables),
+    () => sortWorkspaceRoutinesByName((routines ?? []).filter(routineHasWorkspaceSpecificVariables)),
     [routines],
   );
 
@@ -703,6 +723,7 @@ export function ExecutionWorkspaceDetail() {
       executionWorkspacesApi.controlRuntimeCommands(workspace!.id, request.action, request),
     onSuccess: (result, request) => {
       queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(result.workspace.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
       setRuntimeActionErrorMessage(null);
@@ -843,7 +864,7 @@ export function ExecutionWorkspaceDetail() {
               <CardHeader>
                 <CardTitle>Workspace settings</CardTitle>
                 <CardDescription>
-                  Edit the concrete path, repo, branch, provisioning, teardown, and runtime overrides attached to this execution workspace.
+                  Edit the concrete path, repo, branch, provisioning, teardown, and runtime overrides attached to this execution workspace. Saved changes affect future runs; Paperclip may refresh or replace a reused workspace when config changes.
                 </CardDescription>
                 <CardAction>
                   <Button
@@ -1077,7 +1098,7 @@ export function ExecutionWorkspaceDetail() {
                   "None"
                 )}
               </DetailRow>
-              <DetailRow label="Source issue">
+              <DetailRow label="Source task">
                 {sourceIssue ? (
                   <Link to={issueUrl(sourceIssue)} className="hover:underline">
                     {sourceIssue.identifier ?? sourceIssue.id} · {sourceIssue.title}
@@ -1171,7 +1192,7 @@ export function ExecutionWorkspaceDetail() {
                   <div key={operation.id} className="rounded-none border border-border/80 bg-background px-4 py-3">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="space-y-1">
-                        <div className="text-sm font-medium">{operation.command ?? operation.phase}</div>
+                        <div className="text-sm font-medium">{operation.command ?? workspaceOperationPhaseLabel(operation.phase)}</div>
                         <div className="text-xs text-muted-foreground">
                           {formatDateTime(operation.startedAt)}
                           {operation.finishedAt ? ` → ${formatDateTime(operation.finishedAt)}` : ""}
@@ -1218,7 +1239,7 @@ export function ExecutionWorkspaceDetail() {
         ) : isExecutionWorkspacePluginTab(activeTab) ? (
           <MissingPluginTabPlaceholder
             defaultTabHref={executionWorkspaceTabPath(workspace.id, "issues")}
-            defaultTabLabel="Back to issues"
+            defaultTabLabel="Back to tasks"
           />
         ) : activeTab === "routines" ? (
           <ExecutionWorkspaceRoutinesList
@@ -1237,6 +1258,7 @@ export function ExecutionWorkspaceDetail() {
         onOpenChange={setCloseDialogOpen}
         onClosed={(nextWorkspace) => {
           queryClient.setQueryData(queryKeys.executionWorkspaces.detail(nextWorkspace.id), nextWorkspace);
+          queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(nextWorkspace.companyId) });
           queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.closeReadiness(nextWorkspace.id) });
           queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(nextWorkspace.id) });
           if (project) {

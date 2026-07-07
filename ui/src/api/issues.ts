@@ -18,9 +18,11 @@ import type {
   IssueThreadInteraction,
   IssueTreeControlPreview,
   IssueTreeHold,
+  IssueWatchdog,
   IssueWorkProduct,
   PreviewIssueTreeControl,
   ReleaseIssueTreeHold,
+  UpsertIssueWatchdog,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -58,6 +60,8 @@ export const issuesApi = {
       includeRoutineExecutions?: boolean;
       includeBlockedBy?: boolean;
       includeBlockedInboxAttention?: boolean;
+      includeLiveDescendantSummary?: boolean;
+      hasPlanDocument?: boolean;
       q?: string;
       limit?: number;
       offset?: number;
@@ -86,6 +90,10 @@ export const issuesApi = {
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
     if (filters?.includeBlockedInboxAttention) params.set("includeBlockedInboxAttention", "true");
+    if (filters?.includeLiveDescendantSummary) params.set("includeLiveDescendantSummary", "true");
+    if (filters?.hasPlanDocument !== undefined) {
+      params.set("hasPlanDocument", filters.hasPlanDocument ? "true" : "false");
+    }
     if (filters?.q) params.set("q", filters.q);
     if (filters?.limit) params.set("limit", String(filters.limit));
     if (filters?.offset !== undefined) params.set("offset", String(filters.offset));
@@ -121,6 +129,10 @@ export const issuesApi = {
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
   get: (id: string) => api.get<Issue>(`/issues/${id}`),
+  getWatchdog: (id: string) => api.get<IssueWatchdog | null>(`/issues/${id}/watchdog`),
+  upsertWatchdog: (id: string, data: UpsertIssueWatchdog) =>
+    api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),
+  deleteWatchdog: (id: string) => api.delete<{ ok: true }>(`/issues/${id}/watchdog`),
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
   markUnread: (id: string) => api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
   archiveFromInbox: (id: string) =>
@@ -209,7 +221,7 @@ export const issuesApi = {
   acceptInteraction: (
     id: string,
     interactionId: string,
-    data?: { selectedClientKeys?: string[] },
+    data?: { selectedClientKeys?: string[]; selectedOptionIds?: string[] },
   ) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/accept`, data ?? {}),
   rejectInteraction: (id: string, interactionId: string, reason?: string) =>
@@ -258,6 +270,8 @@ export const issuesApi = {
       },
     ),
   cancelComment: (id: string, commentId: string) =>
+    api.delete<IssueComment>(`/issues/${id}/comments/${commentId}?mode=cancel`),
+  deleteComment: (id: string, commentId: string) =>
     api.delete<IssueComment>(`/issues/${id}/comments/${commentId}`),
   listDocuments: (id: string, options?: { includeSystem?: boolean }) =>
     api.get<IssueDocument[]>(

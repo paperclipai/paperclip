@@ -5,6 +5,7 @@ import {
   getUIAdapter,
   listUIAdapters,
   registerUIAdapter,
+  syncExternalAdapters,
   unregisterUIAdapter,
 } from "./registry";
 import { processUIAdapter } from "./process";
@@ -21,10 +22,12 @@ const externalUIAdapter: UIAdapterModule = {
 describe("ui adapter registry", () => {
   beforeEach(() => {
     unregisterUIAdapter("external_test");
+    syncExternalAdapters([]);
   });
 
   afterEach(() => {
     unregisterUIAdapter("external_test");
+    syncExternalAdapters([]);
   });
 
   it("registers adapters for lookup and listing", () => {
@@ -47,5 +50,31 @@ describe("ui adapter registry", () => {
     expect(fallback.type).toBe("external_test");
     // But it uses the schema-based config fields for external adapter forms.
     expect(fallback.ConfigFields).toBe(SchemaConfigFields);
+  });
+
+  it("restores built-in Hermes adapters when external overrides are paused or removed", () => {
+    for (const type of ["hermes_local", "hermes_gateway"]) {
+      const builtin = getUIAdapter(type);
+
+      syncExternalAdapters([{ type, label: "External Hermes" }]);
+
+      const overridden = getUIAdapter(type);
+      expect(overridden).not.toBe(builtin);
+      expect(overridden.type).toBe(type);
+      expect(overridden.label).toBe("External Hermes");
+      expect(overridden.ConfigFields).toBe(builtin.ConfigFields);
+      expect(overridden.buildAdapterConfig).toBe(builtin.buildAdapterConfig);
+
+      syncExternalAdapters([{ type, label: "External Hermes", overrideDisabled: true }]);
+
+      expect(getUIAdapter(type)).toBe(builtin);
+
+      syncExternalAdapters([{ type, label: "External Hermes" }]);
+      expect(getUIAdapter(type)).not.toBe(builtin);
+
+      syncExternalAdapters([]);
+
+      expect(getUIAdapter(type)).toBe(builtin);
+    }
   });
 });

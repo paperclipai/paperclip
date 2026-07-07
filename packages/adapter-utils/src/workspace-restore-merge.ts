@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
+import { shouldExcludePath } from "./exclude-patterns.js";
 
 type SnapshotEntry =
   | { kind: "dir" }
@@ -11,14 +12,6 @@ type SnapshotEntry =
 export interface DirectorySnapshot {
   exclude: string[];
   entries: Map<string, SnapshotEntry>;
-}
-
-function isRelativePathOrDescendant(relative: string, candidate: string): boolean {
-  return relative === candidate || relative.startsWith(`${candidate}/`);
-}
-
-function shouldExclude(relative: string, exclude: readonly string[]): boolean {
-  return exclude.some((candidate) => isRelativePathOrDescendant(relative, candidate));
 }
 
 async function hashFile(filePath: string): Promise<string> {
@@ -43,7 +36,7 @@ async function walkDirectory(
 
   for (const entry of entries) {
     const nextRelative = relative ? path.posix.join(relative, entry.name) : entry.name;
-    if (shouldExclude(nextRelative, exclude)) continue;
+    if (shouldExcludePath(nextRelative, exclude)) continue;
 
     const fullPath = path.join(root, nextRelative);
     const stats = await fs.lstat(fullPath);
@@ -222,6 +215,7 @@ export async function mergeDirectoryWithBaseline(input: {
   sourceDir: string;
   targetDir: string;
   beforeApply?: () => Promise<void>;
+  afterApply?: () => Promise<void>;
 }): Promise<void> {
   const source = await captureDirectorySnapshot(input.sourceDir, { exclude: input.baseline.exclude });
   await withDirectoryMergeLock(input.targetDir, async () => {
@@ -251,6 +245,8 @@ export async function mergeDirectoryWithBaseline(input: {
     for (const [relative, entry] of changedSourceEntries) {
       await copySnapshotEntry(input.sourceDir, input.targetDir, relative, entry);
     }
+
+    await input.afterApply?.();
   });
 }
 

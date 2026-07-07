@@ -50,12 +50,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cursor/sdk": "^1.0.12",
+    "@cursor/sdk": "^1.0.19",
     "@paperclipai/adapter-utils": "workspace:*",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
-    "@types/node": "^24.6.0",
+    "@types/node": "^22.19.21",
     "typescript": "^5.7.3"
   }
 }

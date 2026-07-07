@@ -5,6 +5,7 @@ import type {
   Approval,
   DashboardSummary,
   ExecutionWorkspace,
+  ExternalObjectSummary,
   HeartbeatRun,
   Issue,
   JoinRequest,
@@ -132,6 +133,7 @@ function makeRun(id: string, status: HeartbeatRun["status"], createdAt: string, 
     id,
     companyId: "company-1",
     agentId,
+    responsibleUserId: null,
     invocationSource: "assignment",
     triggerDetail: null,
     status,
@@ -189,6 +191,7 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
+    responsibleUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
     issueNumber: 1,
@@ -909,6 +912,7 @@ describe("inbox helpers", () => {
           projects: [],
           workspaces: [],
           liveOnly: false,
+          externalObjectStatuses: [],
           hideRoutineExecutions: true,
         },
       }).map((issue) => issue.id),
@@ -929,6 +933,7 @@ describe("inbox helpers", () => {
           projects: [],
           workspaces: [],
           liveOnly: false,
+          externalObjectStatuses: [],
           hideRoutineExecutions: true,
         },
       }),
@@ -949,10 +954,63 @@ describe("inbox helpers", () => {
           projects: [],
           workspaces: [],
           liveOnly: false,
+          externalObjectStatuses: [],
           hideRoutineExecutions: true,
         },
       }),
     ).toEqual([]);
+  });
+
+  it("applies external-object filters to remote inbox search supplements", () => {
+    const failedMatch = makeIssue("failed-match", false);
+    const freshMatch = makeIssue("fresh-match", false);
+    const summaries = new Map<string, ExternalObjectSummary>([
+      ["failed-match", {
+        total: 1,
+        byStatusCategory: { failed: 1 },
+        byLiveness: { fresh: 1 },
+        highestSeverity: "danger",
+        staleCount: 0,
+        authRequiredCount: 0,
+        unreachableCount: 0,
+        objects: [],
+      }],
+      ["fresh-match", {
+        total: 1,
+        byStatusCategory: { succeeded: 1 },
+        byLiveness: { fresh: 1 },
+        highestSeverity: "success",
+        staleCount: 0,
+        authRequiredCount: 0,
+        unreachableCount: 0,
+        objects: [],
+      }],
+    ]);
+
+    expect(
+      getInboxSearchSupplementIssues({
+        query: "github",
+        filteredWorkItems: [],
+        archivedSearchIssues: [],
+        remoteIssues: [failedMatch, freshMatch],
+        issueFilters: {
+          statuses: [],
+          priorities: [],
+          assignees: [],
+          creators: [],
+          labels: [],
+          projects: [],
+          workspaces: [],
+          liveOnly: false,
+          externalObjectStatuses: ["failed"],
+          hideRoutineExecutions: true,
+        },
+        issueFilterContext: {
+          externalObjectSummaryByIssueId: summaries,
+          externalObjectSummariesReady: true,
+        },
+      }).map((issue) => issue.id),
+    ).toEqual(["failed-match"]);
   });
 
   it("keeps inbox search matches ahead of archived and other result sections", () => {
@@ -1021,6 +1079,7 @@ describe("inbox helpers", () => {
         projects: ["project-1"],
         workspaces: ["workspace-1"],
         liveOnly: true,
+        externalObjectStatuses: [],
         hideRoutineExecutions: false,
       },
     });
@@ -1036,6 +1095,7 @@ describe("inbox helpers", () => {
         projects: [],
         workspaces: [],
         liveOnly: false,
+        externalObjectStatuses: [],
         hideRoutineExecutions: true,
       },
     });
@@ -1052,6 +1112,7 @@ describe("inbox helpers", () => {
         projects: ["project-1"],
         workspaces: ["workspace-1"],
         liveOnly: true,
+        externalObjectStatuses: [],
         hideRoutineExecutions: false,
       },
     });
@@ -1067,6 +1128,7 @@ describe("inbox helpers", () => {
         projects: [],
         workspaces: [],
         liveOnly: false,
+        externalObjectStatuses: [],
         hideRoutineExecutions: true,
       },
     });
@@ -1101,6 +1163,7 @@ describe("inbox helpers", () => {
         projects: ["project-1"],
         workspaces: ["workspace-1"],
         liveOnly: false,
+        externalObjectStatuses: [],
         hideRoutineExecutions: false,
       },
     });
@@ -1131,11 +1194,21 @@ describe("inbox helpers", () => {
   });
 
   it("hides the workspace column option unless isolated workspaces are enabled", () => {
-    expect(getAvailableInboxIssueColumns(false)).toEqual(["status", "id", "assignee", "project", "parent", "labels", "updated"]);
+    expect(getAvailableInboxIssueColumns(false)).toEqual([
+      "status",
+      "id",
+      "assignee",
+      "kickedOffBy",
+      "project",
+      "parent",
+      "labels",
+      "updated",
+    ]);
     expect(getAvailableInboxIssueColumns(true)).toEqual([
       "status",
       "id",
       "assignee",
+      "kickedOffBy",
       "project",
       "workspace",
       "parent",
@@ -1274,7 +1347,7 @@ describe("inbox helpers", () => {
 
     expect(groupInboxWorkItems(items, "none")).toEqual([{ key: "__all", label: null, items }]);
     expect(groupInboxWorkItems(items, "type")).toEqual([
-      { key: "issue", label: "Issues", items: [items[1], items[2]] },
+      { key: "issue", label: "Tasks", items: [items[1], items[2]] },
       { key: "approval", label: "Approvals", items: [items[0]] },
       { key: "failed_run", label: "Failed runs", items: [items[3]] },
       { key: "join_request", label: "Join requests", items: [items[4]] },

@@ -48,10 +48,12 @@ export const createDocumentAnnotationThreadSchema = z.object({
   baseRevisionNumber: z.number().int().positive(),
   selector: documentAnnotationAnchorSelectorSchema,
   body: multilineTextSchema.pipe(z.string().min(1).max(20_000)),
+  issueCommentId: z.string().uuid().nullable().optional(),
 }).strict();
 
 export const createDocumentAnnotationCommentSchema = z.object({
   body: multilineTextSchema.pipe(z.string().min(1).max(20_000)),
+  issueCommentId: z.string().uuid().nullable().optional(),
 }).strict();
 
 export const updateDocumentAnnotationThreadSchema = z.object({

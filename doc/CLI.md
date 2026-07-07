@@ -119,6 +119,7 @@ export PAPERCLIP_API_KEY=...
 ```sh
 pnpm paperclipai company list
 pnpm paperclipai company get <company-id>
+pnpm paperclipai company current [--company-id <company-id>]
 pnpm paperclipai company stats
 pnpm paperclipai company create --payload-json '{...}'
 pnpm paperclipai company update <company-id> --payload-json '{...}'
@@ -142,6 +143,12 @@ pnpm paperclipai company delete 5cbe79ee-acb3-4597-896e-7662742593cd --yes --con
 
 Notes:
 
+- With agent authentication, `company list` and `company current` are
+  agent-safe company selectors. `company list` first tries the board-wide list;
+  if that is forbidden, it uses `--company-id`, `PAPERCLIP_COMPANY_ID`, context,
+  or `/api/agents/me` and then reads only that scoped company.
+- `company create` requires board/instance-admin authentication because it is
+  an instance-wide setup command.
 - Deletion is server-gated by `PAPERCLIP_ENABLE_COMPANY_DELETION`.
 - With agent authentication, company deletion is company-scoped. Use the current company ID/prefix (for example via `--company-id` or `PAPERCLIP_COMPANY_ID`), not another company.
 
@@ -275,7 +282,7 @@ pnpm paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-i
 Agent configuration and runtime endpoints:
 
 ```sh
-pnpm paperclipai agent permissions:update <agent-id> --payload-json '{"canCreateAgents":true,"canAssignTasks":true}'
+pnpm paperclipai agent permissions:update <agent-id> --payload-json '{"canCreateAgents":true,"canCreateSkills":true,"canAssignTasks":true}'
 pnpm paperclipai agent configuration <agent-id>
 pnpm paperclipai agent config-revisions <agent-id>
 pnpm paperclipai agent config-revision:get <agent-id> <revision-id>
@@ -292,6 +299,8 @@ pnpm paperclipai agent instructions-file:get <agent-id> --path AGENTS.md
 pnpm paperclipai agent instructions-file:put <agent-id> --path AGENTS.md --content-file ./AGENTS.md
 pnpm paperclipai agent instructions-file:delete <agent-id> --path AGENTS.md
 ```
+
+Agent config, instructions, skills, project env, environment, secret, and workspace edits affect the next run. Active runs finish with the config they started with. When a saved session, reused workspace, or sandbox lease no longer matches the effective next-run config, Paperclip may start fresh execution and records non-sensitive freshness categories in run result JSON and workspace operation logs.
 
 `agent local-cli` is the quickest way to run local Claude/Codex manually as a Paperclip agent:
 
@@ -391,6 +400,11 @@ By default the command creates a `todo` issue assigned to the target agent and w
 
 Required Paperclip runtime skills (heartbeat, etc.) remain server-enforced and
 are added on top of whatever the desired set names.
+
+Company skill mutations (`skills install`, `skills import`, `skills create`, and
+`skills scan-projects`) require board authentication, an explicit `skills:create`
+grant, or an agent whose permissions keep `canCreateSkills` enabled. They do not
+require `agents:create` unless the command also creates agents.
 
 ### Catalog (app-shipped skills)
 
@@ -492,6 +506,43 @@ still enforced by the server in both cases.
 - `skills remove`, `skills reset`, and `skills agent clear` prompt in a TTY and
   require `--yes` in non-interactive use.
 - `--json` prints the raw API result for each command.
+
+## Teams Commands
+
+`paperclipai teams` works with the app-shipped team catalog in
+`@paperclipai/teams-catalog`. Browse, search, inspect, and file reads do not
+change company state. `preview` runs the company import planner, and `install`
+imports the catalog team into an existing company.
+
+```sh
+pnpm paperclipai teams browse [--kind bundled|optional] [--category <slug>] [--query <text>]
+pnpm paperclipai teams search "<text>" [--kind bundled|optional] [--category <slug>]
+pnpm paperclipai teams inspect <catalog-id-or-key-or-slug> [--file TEAM.md]
+pnpm paperclipai teams preview <catalog-id-or-key-or-slug> --company-id <company-id>
+pnpm paperclipai teams install <catalog-id-or-key-or-slug> --company-id <company-id>
+```
+
+Preview/install options:
+
+- Under agent authentication, use `paperclipai company list --json`,
+  `paperclipai company current --json`, or `PAPERCLIP_COMPANY_ID` to select the
+  target company. `company list` falls back to the scoped current company when
+  board-wide listing is forbidden. `teams install` creates agents and therefore
+  requires board authentication, an `agents:create` grant, or an agent with
+  explicit `canCreateAgents` permission.
+- `--request-approval-on-forbidden` turns a 403 install denial into a linked
+  board approval request instead of a raw failed command; use
+  `--approval-issue-id <id>` to attach it to a specific issue. During Paperclip
+  task runs with `PAPERCLIP_TASK_ID` set, this fallback is automatic so
+  agent-run walkthroughs leave a pending approval path instead of a raw 403.
+- `--target-manager-agent-id <id>` or `--target-manager-slug <slug>` reparents
+  catalog root agents under an existing manager.
+- `--agent <slug>` and `--selected-file <path>` narrow the import.
+- `--collision-strategy rename|skip|replace` controls name/key collisions.
+- `--allow-external-sources`, `--allow-unpinned-optional-sources`, and
+  `--allow-local-path-sources` explicitly opt into higher-trust source policy.
+  Local-path sources are development-only and stay blocked unless that flag is
+  passed.
 
 ## Secrets Commands
 
@@ -607,6 +658,8 @@ pnpm paperclipai auth revoke-current
 
 `--token <challenge-secret>` is still supported for compatibility, but `--token-env` avoids putting challenge secrets in shell history or process arguments.
 
+## Instance Settings Commands
+
 ```sh
 pnpm paperclipai instance scheduler-heartbeats
 pnpm paperclipai instance settings:general
@@ -614,6 +667,11 @@ pnpm paperclipai instance settings:general:update --payload-json '{...}'
 pnpm paperclipai instance settings:experimental
 pnpm paperclipai instance settings:experimental:update --payload-json '{...}'
 pnpm paperclipai instance database-backup
+```
+
+Experimental features are opt-in and are provided without compatibility guarantees. They may break, change, or be removed at any time. Use them at your own risk.
+
+```sh
 pnpm paperclipai sidebar preferences
 pnpm paperclipai sidebar preferences:update --payload-json '{...}'
 pnpm paperclipai sidebar project-preferences --company-id <company-id>
@@ -631,6 +689,13 @@ pnpm paperclipai llm agent-configuration
 pnpm paperclipai llm agent-configuration:adapter <adapter-type>
 pnpm paperclipai llm agent-icons
 ```
+
+Hermes gateway uses the generic invite/join commands above rather than
+`openclaw invite-prompt`. Create an agent invite, read
+`invite onboarding:text`, submit a join request with
+`adapterType: "hermes_gateway"` and `agentDefaultsPayload.apiBaseUrl` /
+`agentDefaultsPayload.apiKey`, then approve and claim the key with the `join`
+commands. See [HERMES_GATEWAY_ONBOARDING.md](./HERMES_GATEWAY_ONBOARDING.md).
 
 ## Adapter, Asset, And Skill Commands
 

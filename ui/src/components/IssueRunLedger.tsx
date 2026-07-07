@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { ActivityEvent, Issue, Agent } from "@paperclipai/shared";
+import { isResponsibleUserDenialCode, responsibleUserLabel } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { accessApi, type CurrentBoardAccess } from "../api/access";
@@ -18,6 +19,7 @@ import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data"
 import { describeRunRetryState } from "../lib/runRetryState";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { SourceResolvedFoldBadge } from "./SourceResolvedFoldBadge";
+import { ResponsibleUserDenialNotice } from "./ResponsibleUserDenialNotice";
 
 type IssueRunLedgerProps = {
   issueId: string;
@@ -28,6 +30,7 @@ type IssueRunLedgerProps = {
   hasLiveRuns: boolean;
   activityEvents?: ActivityEvent[];
   renderActivityEvent?: (event: ActivityEvent) => ReactNode;
+  resolveUserLabel?: (userId: string) => string | null | undefined;
 };
 
 type IssueRunLedgerContentProps = {
@@ -39,6 +42,7 @@ type IssueRunLedgerContentProps = {
   agentMap: ReadonlyMap<string, Pick<Agent, "name">>;
   activityEvents?: ActivityEvent[];
   renderActivityEvent?: (event: ActivityEvent) => ReactNode;
+  resolveUserLabel?: (userId: string) => string | null | undefined;
   pendingWatchdogDecision?: WatchdogDecisionInput["decision"] | null;
   canRecordWatchdogDecisions?: boolean;
   watchdogDecisionError?: string | null;
@@ -75,7 +79,7 @@ const LIVENESS_COPY: Record<RunLivenessState, LivenessCopy> = {
   completed: {
     label: "Completed",
     tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-    description: "Issue reached a terminal state.",
+    description: "Task reached a terminal state.",
   },
   advanced: {
     label: "Advanced",
@@ -95,7 +99,7 @@ const LIVENESS_COPY: Record<RunLivenessState, LivenessCopy> = {
   blocked: {
     label: "Blocked",
     tone: "border-yellow-500/30 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300",
-    description: "Run or issue declared a blocker.",
+    description: "Run or task declared a blocker.",
   },
   failed: {
     label: "Failed",
@@ -407,6 +411,7 @@ export function IssueRunLedger({
   hasLiveRuns,
   activityEvents,
   renderActivityEvent,
+  resolveUserLabel,
 }: IssueRunLedgerProps) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
@@ -469,6 +474,7 @@ export function IssueRunLedger({
       agentMap={agentMap}
       activityEvents={activityEvents}
       renderActivityEvent={renderActivityEvent}
+      resolveUserLabel={resolveUserLabel}
       pendingWatchdogDecision={watchdogDecision.variables?.decision ?? null}
       canRecordWatchdogDecisions={canBoardRecordWatchdogDecision(companyId, boardAccess)}
       watchdogDecisionError={watchdogDecisionError}
@@ -486,6 +492,7 @@ export function IssueRunLedgerContent({
   agentMap,
   activityEvents,
   renderActivityEvent,
+  resolveUserLabel,
   pendingWatchdogDecision,
   canRecordWatchdogDecisions = true,
   watchdogDecisionError,
@@ -535,7 +542,7 @@ export function IssueRunLedgerContent({
   }, [activityEvents, canRenderActivityEvents, ledgerRuns]);
 
   return (
-    <section className="space-y-3" aria-label="Issue run ledger">
+    <section className="space-y-3" aria-label="Task run ledger">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <h3 className="text-sm font-medium text-muted-foreground">Run ledger</h3>
@@ -678,8 +685,8 @@ export function IssueRunLedgerContent({
       {feedItems.length === 0 ? (
         <div className="rounded-md border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
           {renderActivityEvent
-            ? "Runs and activity will appear here once this issue has history."
-            : "Historical runs without liveness metadata will appear here once linked to this issue."}
+            ? "Runs and activity will appear here once this task has history."
+            : "Historical runs without liveness metadata will appear here once linked to this task."}
         </div>
       ) : (
         <div className="space-y-1.5">
@@ -695,6 +702,10 @@ export function IssueRunLedgerContent({
             const continuation = continuationLabel(run);
             const retryState = describeRunRetryState(run);
             const agentName = compactAgentName(run, agentMap);
+            const onBehalfOfLabel = run.responsibleUserId
+              ? responsibleUserLabel(resolveUserLabel?.(run.responsibleUserId))
+              : null;
+            const denialCode = isResponsibleUserDenialCode(run.errorCode) ? run.errorCode : null;
             const sourceResolvedFold = readSourceResolvedWatchdogFold(run.resultJson);
             return (
               <article
@@ -710,6 +721,15 @@ export function IssueRunLedgerContent({
                     {run.runId.slice(0, 8)}
                   </Link>
                   <span>by {agentName}</span>
+                  {onBehalfOfLabel ? (
+                    <span
+                      data-testid="run-on-behalf-of"
+                      className="min-w-0 max-w-full truncate text-muted-foreground"
+                      title={`Acting on behalf of ${onBehalfOfLabel}`}
+                    >
+                      on behalf of <span className="text-foreground">{onBehalfOfLabel}</span>
+                    </span>
+                  ) : null}
                   <span className="rounded-md border border-border px-1.5 py-0.5 text-[11px] capitalize text-muted-foreground">
                     {statusLabel(run.status)}
                   </span>
@@ -831,6 +851,13 @@ export function IssueRunLedgerContent({
                   <p className="min-w-0 break-words text-xs leading-5 text-muted-foreground">
                     {run.livenessReason}
                   </p>
+                ) : null}
+
+                {denialCode ? (
+                  <ResponsibleUserDenialNotice
+                    code={denialCode}
+                    userName={run.responsibleUserId ? resolveUserLabel?.(run.responsibleUserId) : null}
+                  />
                 ) : null}
 
                 {run.nextAction ? (
