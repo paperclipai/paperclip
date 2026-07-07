@@ -20,7 +20,7 @@ import type {
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
 } from "@paperclipai/shared";
-import { AlertTriangle, ArrowUpDown, ArrowUpRight, BookOpenText, Check, ChevronDown, ChevronRight, ChevronUp, CircleDot, Download, ExternalLink, FileText, GitBranch, Hexagon, Image as ImageIcon, Info, Layers, List, ListTree, Loader2, MessageSquare, MoreHorizontal, Package, Paperclip, Plus, Search, Settings, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArrowUpDown, ArrowUpRight, BookOpenText, Check, ChevronDown, ChevronRight, ChevronUp, CircleDot, Download, ExternalLink, FileText, GitBranch, Hexagon, Image as ImageIcon, Info, Layers, List, ListTree, Loader2, Map as MapIcon, MessageSquare, MoreHorizontal, Package, Paperclip, Plus, Search, Settings, Trash2, X } from "lucide-react";
 import {
   DndContext,
   DragOverlay,
@@ -355,7 +355,71 @@ export function Pipelines() {
 // Pipelines index
 // ---------------------------------------------------------------------------
 
-export type PipelineViewMode = "nested" | "flat";
+export type PipelineViewMode = "map" | "nested" | "flat";
+
+export type PipelineOperatingArea =
+  | "demand_generation"
+  | "sales"
+  | "production"
+  | "business_operations"
+  | "unclassified";
+
+type OperatingEdgeKind = "trigger" | "output" | "support";
+
+interface PipelineOperatingNode {
+  pipeline: PipelineListItem;
+  area: PipelineOperatingArea;
+  metricDriven: string | null;
+  runHealth: string;
+  upstreamIds: string[];
+  downstreamIds: string[];
+}
+
+interface PipelineOperatingEdge {
+  id: string;
+  fromId: string;
+  toId: string;
+  kind: OperatingEdgeKind;
+  explanation: string;
+}
+
+interface PipelineOperatingAreaColumn {
+  area: PipelineOperatingArea;
+  nodes: PipelineOperatingNode[];
+  visibleNodes: PipelineOperatingNode[];
+  clusteredCount: number;
+  unconnectedCount: number;
+}
+
+interface PipelineOperatingMapModel {
+  areas: PipelineOperatingAreaColumn[];
+  edges: PipelineOperatingEdge[];
+}
+
+const VALUE_STREAM_AREAS: PipelineOperatingArea[] = ["demand_generation", "sales", "production"];
+const OPERATING_AREAS: PipelineOperatingArea[] = [
+  ...VALUE_STREAM_AREAS,
+  "business_operations",
+  "unclassified",
+];
+
+const OPERATING_AREA_LABELS: Record<PipelineOperatingArea, string> = {
+  demand_generation: "Demand Generation",
+  sales: "Sales",
+  production: "Production",
+  business_operations: "Business Operations",
+  unclassified: "Unclassified",
+};
+
+const OPERATING_AREA_DESCRIPTIONS: Record<PipelineOperatingArea, string> = {
+  demand_generation: "Creates audience, traffic, leads, and market attention.",
+  sales: "Qualifies demand and moves opportunities to won work.",
+  production: "Delivers the work after an opportunity is won.",
+  business_operations: "Supports, governs, or measures the operating system.",
+  unclassified: "Visible because no generated area metadata is available.",
+};
+
+const OPERATING_AREA_MAX_VISIBLE = 9;
 
 export interface PipelineTableRow {
   pipeline: PipelineListItem;
@@ -396,8 +460,166 @@ function downstreamPipelineIds(connections: PipelineConnections | null | undefin
   return ids.filter((id): id is string => Boolean(id));
 }
 
+function upstreamPipelineIds(connections: PipelineConnections | null | undefined): string[] {
+  if (!connections) return [];
+
+  const ids = [
+    ...(connections.upstreamPipelineIds ?? []),
+    ...connectionListIds(connections.fedBy),
+    ...connectionListIds(connections.upstream),
+  ];
+
+  return ids.filter((id): id is string => Boolean(id));
+}
+
 function hasConnectionsField(pipeline: PipelineListItem): boolean {
   return Object.prototype.hasOwnProperty.call(pipeline, "connections");
+}
+
+function uniqueIds(ids: string[]) {
+  return [...new Set(ids.filter(Boolean))];
+}
+
+function textIncludesAny(value: string, terms: readonly string[]) {
+  return terms.some((term) => value.includes(term));
+}
+
+function readStringMetadata(value: unknown, keys: readonly string[]): string | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  for (const key of keys) {
+    const raw = record[key];
+    if (typeof raw === "string" && raw.trim()) return raw.trim();
+  }
+  return null;
+}
+
+function pipelineMetadataText(pipeline: PipelineListItem) {
+  return [
+    pipeline.key,
+    pipeline.name,
+    pipeline.description ?? "",
+    readStringMetadata(pipeline.connections, ["area", "primaryArea", "workflowArea", "category", "group"]),
+  ]
+    .join(" ")
+    .toLowerCase();
+}
+
+export function classifyPipelineOperatingArea(pipeline: PipelineListItem): PipelineOperatingArea {
+  const explicitArea = readStringMetadata(pipeline.connections, ["area", "primaryArea", "workflowArea", "category", "group"]);
+  const explicit = explicitArea?.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() ?? "";
+  const text = pipelineMetadataText(pipeline);
+  const source = `${explicit} ${text}`;
+
+  if (textIncludesAny(source, ["demand generation", "demand gen", "lead gen", "lead generation", "traffic", "seo", "content", "campaign", "marketing", "audience", "search health"])) {
+    return "demand_generation";
+  }
+  if (textIncludesAny(source, ["sales", "deal", "opportunit", "crm", "proposal", "close", "qualified", "qualification"])) {
+    return "sales";
+  }
+  if (textIncludesAny(source, ["production", "delivery", "fulfillment", "client work", "render", "edit", "creative", "asset", "video", "shoot"])) {
+    return "production";
+  }
+  if (textIncludesAny(source, ["business operations", "biz ops", "ops", "governance", "finance", "reporting", "weekly business review", "compliance", "admin", "hiring", "agent", "board", "review"])) {
+    return "business_operations";
+  }
+  return "unclassified";
+}
+
+function pipelineMetricDriven(pipeline: PipelineListItem) {
+  return readStringMetadata(pipeline.connections, ["metricDriven", "metric", "businessMetric", "outcomeMetric"]);
+}
+
+function pipelineRunHealth(pipeline: PipelineListItem) {
+  if (pipeline.archivedAt) return "Paused";
+  const attention = pipelineAttentionCount(pipeline);
+  if (attention > 0) return `${formatNumber(attention)} to review`;
+  const inMotion = pipelineInMotionCount(pipeline);
+  if (inMotion > 0) return `${formatNumber(inMotion)} in motion`;
+  return "Healthy";
+}
+
+function operatingEdgeKind(
+  from: PipelineOperatingNode,
+  to: PipelineOperatingNode,
+  connections: PipelineConnections | null | undefined,
+): OperatingEdgeKind {
+  const source = readStringMetadata(connections, ["edgeKind", "relationship", "connectionKind", "type"]);
+  const normalized = source?.toLowerCase() ?? "";
+  if (normalized.includes("trigger")) return "trigger";
+  if (normalized.includes("support") || normalized.includes("govern")) return "support";
+  if (from.area === "business_operations" || to.area === "business_operations") return "support";
+  return "output";
+}
+
+function operatingEdgeExplanation(kind: OperatingEdgeKind) {
+  if (kind === "trigger") return "Trigger link: generated from workflow connection metadata.";
+  if (kind === "support") return "Support/governance link: generated from workflow relationship metadata or Business Operations placement.";
+  return "Output-feed link: generated from parent/child pipeline item relationships.";
+}
+
+export function buildPipelineOperatingMapModel(pipelines: PipelineListItem[]): PipelineOperatingMapModel {
+  const nodes = pipelines.map<PipelineOperatingNode>((pipeline) => ({
+    pipeline,
+    area: classifyPipelineOperatingArea(pipeline),
+    metricDriven: pipelineMetricDriven(pipeline),
+    runHealth: pipelineRunHealth(pipeline),
+    upstreamIds: uniqueIds(upstreamPipelineIds(pipeline.connections)),
+    downstreamIds: uniqueIds(downstreamPipelineIds(pipeline.connections)),
+  }));
+  const nodeById = new Map(nodes.map((node) => [node.pipeline.id, node]));
+  const edges: PipelineOperatingEdge[] = [];
+  const edgeIds = new Set<string>();
+
+  for (const node of nodes) {
+    for (const downstreamId of node.downstreamIds) {
+      const to = nodeById.get(downstreamId);
+      if (!to || to.pipeline.id === node.pipeline.id) continue;
+      const kind = operatingEdgeKind(node, to, node.pipeline.connections);
+      const id = `${node.pipeline.id}->${to.pipeline.id}:${kind}`;
+      if (edgeIds.has(id)) continue;
+      edgeIds.add(id);
+      edges.push({
+        id,
+        fromId: node.pipeline.id,
+        toId: to.pipeline.id,
+        kind,
+        explanation: operatingEdgeExplanation(kind),
+      });
+    }
+  }
+
+  for (const node of nodes) {
+    for (const upstreamId of node.upstreamIds) {
+      const from = nodeById.get(upstreamId);
+      if (!from || from.pipeline.id === node.pipeline.id) continue;
+      const kind = operatingEdgeKind(from, node, from.pipeline.connections);
+      const id = `${from.pipeline.id}->${node.pipeline.id}:${kind}`;
+      if (edgeIds.has(id)) continue;
+      edgeIds.add(id);
+      edges.push({
+        id,
+        fromId: from.pipeline.id,
+        toId: node.pipeline.id,
+        kind,
+        explanation: operatingEdgeExplanation(kind),
+      });
+    }
+  }
+
+  const areas = OPERATING_AREAS.map((area) => {
+    const areaNodes = nodes
+      .filter((node) => node.area === area)
+      .sort((left, right) => left.pipeline.name.localeCompare(right.pipeline.name, undefined, { sensitivity: "base" }));
+    const visibleNodes = areaNodes.slice(0, OPERATING_AREA_MAX_VISIBLE);
+    const clusteredCount = Math.max(0, areaNodes.length - visibleNodes.length);
+    const unconnectedCount = areaNodes.filter(
+      (node) => node.upstreamIds.length === 0 && node.downstreamIds.length === 0,
+    ).length;
+    return { area, nodes: areaNodes, visibleNodes, clusteredCount, unconnectedCount };
+  });
+
+  return { areas, edges };
 }
 
 function pipelineOpenItemCount(pipeline: PipelineListItem) {
@@ -598,6 +820,259 @@ function PipelineStatusChip({ archivedAt }: { archivedAt: Date | string | null }
   );
 }
 
+function PipelineOperatingEdgePill({ edge }: { edge: PipelineOperatingEdge }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold",
+        edge.kind === "trigger" && "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-300",
+        edge.kind === "output" && "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300",
+        edge.kind === "support" && "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300",
+      )}
+      title={edge.explanation}
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />
+      {edge.kind === "trigger" ? "Trigger" : edge.kind === "support" ? "Support" : "Output feed"}
+    </span>
+  );
+}
+
+function PipelineOperatingMap({ pipelines, search }: { pipelines: PipelineListItem[]; search: string }) {
+  const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(null);
+  const filteredPipelines = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return pipelines;
+    return pipelines.filter((pipeline) =>
+      [pipeline.name, pipeline.description ?? "", pipeline.key].join(" ").toLowerCase().includes(q),
+    );
+  }, [pipelines, search]);
+  const model = useMemo(() => buildPipelineOperatingMapModel(filteredPipelines), [filteredPipelines]);
+  const nodes = useMemo(() => model.areas.flatMap((area) => area.nodes), [model.areas]);
+  const nodeById = useMemo(() => new Map(nodes.map((node) => [node.pipeline.id, node])), [nodes]);
+  const selectedNode = selectedPipelineId ? nodeById.get(selectedPipelineId) ?? null : null;
+  const relatedIds = useMemo(() => {
+    if (!selectedNode) return new Set<string>();
+    return new Set([
+      selectedNode.pipeline.id,
+      ...selectedNode.upstreamIds,
+      ...selectedNode.downstreamIds,
+      ...model.edges.filter((edge) => edge.toId === selectedNode.pipeline.id).map((edge) => edge.fromId),
+      ...model.edges.filter((edge) => edge.fromId === selectedNode.pipeline.id).map((edge) => edge.toId),
+    ]);
+  }, [model.edges, selectedNode]);
+  const selectedEdges = selectedNode
+    ? model.edges.filter((edge) => edge.fromId === selectedNode.pipeline.id || edge.toId === selectedNode.pipeline.id)
+    : [];
+  const selectedUpstream = selectedNode
+    ? selectedEdges.filter((edge) => edge.toId === selectedNode.pipeline.id).map((edge) => nodeById.get(edge.fromId)).filter((node): node is PipelineOperatingNode => Boolean(node))
+    : [];
+  const selectedDownstream = selectedNode
+    ? selectedEdges.filter((edge) => edge.fromId === selectedNode.pipeline.id).map((edge) => nodeById.get(edge.toId)).filter((node): node is PipelineOperatingNode => Boolean(node))
+    : [];
+  const hasLargeCluster = model.areas.some((area) => area.clusteredCount > 0);
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <section className="min-w-0 rounded-md border border-border bg-card">
+        <div className="border-b border-border px-4 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <PipelineOperatingEdgePill edge={{ id: "legend-trigger", fromId: "", toId: "", kind: "trigger", explanation: operatingEdgeExplanation("trigger") }} />
+            <PipelineOperatingEdgePill edge={{ id: "legend-output", fromId: "", toId: "", kind: "output", explanation: operatingEdgeExplanation("output") }} />
+            <PipelineOperatingEdgePill edge={{ id: "legend-support", fromId: "", toId: "", kind: "support", explanation: operatingEdgeExplanation("support") }} />
+            {hasLargeCluster ? (
+              <span className="text-xs text-muted-foreground">Large areas are clustered to keep the board readable.</span>
+            ) : null}
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <div className="min-w-[980px] p-4">
+            <div className="grid grid-cols-3 gap-3">
+              {VALUE_STREAM_AREAS.map((area) => (
+                <PipelineOperatingAreaPanel
+                  key={area}
+                  area={model.areas.find((entry) => entry.area === area)!}
+                  relatedIds={relatedIds}
+                  selectedPipelineId={selectedPipelineId}
+                  onSelect={setSelectedPipelineId}
+                />
+              ))}
+            </div>
+            <div className="mt-4 grid grid-cols-[2fr_1fr] gap-3">
+              <PipelineOperatingAreaPanel
+                area={model.areas.find((entry) => entry.area === "business_operations")!}
+                relatedIds={relatedIds}
+                selectedPipelineId={selectedPipelineId}
+                onSelect={setSelectedPipelineId}
+                supportBand
+              />
+              <PipelineOperatingAreaPanel
+                area={model.areas.find((entry) => entry.area === "unclassified")!}
+                relatedIds={relatedIds}
+                selectedPipelineId={selectedPipelineId}
+                onSelect={setSelectedPipelineId}
+              />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside className="rounded-md border border-border bg-card p-4">
+        {selectedNode ? (
+          <div className="space-y-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Selected workflow</p>
+              <h2 className="mt-1 text-lg font-semibold text-foreground">{selectedNode.pipeline.name}</h2>
+              <p className="mt-1 text-sm text-muted-foreground">{selectedNode.pipeline.description || "_TBD_"}</p>
+            </div>
+            <dl className="grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Area</dt>
+                <dd className="mt-1">{OPERATING_AREA_LABELS[selectedNode.area]}</dd>
+              </div>
+              <div>
+                <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Run health</dt>
+                <dd className="mt-1">{selectedNode.runHealth}</dd>
+              </div>
+              <div className="col-span-2">
+                <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Metric driven</dt>
+                <dd className="mt-1">{selectedNode.metricDriven ?? "_TBD_"}</dd>
+              </div>
+            </dl>
+            <PipelineOperatingInspectorList title="Fed by" nodes={selectedUpstream} />
+            <PipelineOperatingInspectorList title="Feeds" nodes={selectedDownstream} />
+            {selectedEdges.length > 0 ? (
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Links</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {selectedEdges.map((edge) => <PipelineOperatingEdgePill key={edge.id} edge={edge} />)}
+                </div>
+              </div>
+            ) : (
+              <p className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">
+                No generated upstream or downstream links.
+              </p>
+            )}
+            {selectedNode.area === "unclassified" ? (
+              <p className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
+                Primary area is _TBD_ because no generated classification matched this workflow.
+              </p>
+            ) : null}
+            <Button asChild className="w-full">
+              <Link to={`/pipelines/${selectedNode.pipeline.id}`}>
+                <ExternalLink className="mr-2 h-4 w-4" />
+                Open detail
+              </Link>
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Focus</p>
+            <p className="text-sm text-muted-foreground">
+              Select a workflow to inspect its generated upstream and downstream chain.
+            </p>
+            <div className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">
+              {formatNumber(filteredPipelines.length)} workflows visible across {formatNumber(model.areas.filter((area) => area.nodes.length > 0).length)} areas.
+            </div>
+          </div>
+        )}
+      </aside>
+    </div>
+  );
+}
+
+function PipelineOperatingAreaPanel({
+  area,
+  relatedIds,
+  selectedPipelineId,
+  onSelect,
+  supportBand = false,
+}: {
+  area: PipelineOperatingAreaColumn;
+  relatedIds: Set<string>;
+  selectedPipelineId: string | null;
+  onSelect: (id: string) => void;
+  supportBand?: boolean;
+}) {
+  return (
+    <section className={cn("min-h-[320px] rounded-md border border-border bg-background p-3", supportBand && "min-h-[220px]")}>
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-foreground">{OPERATING_AREA_LABELS[area.area]}</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">{OPERATING_AREA_DESCRIPTIONS[area.area]}</p>
+        </div>
+        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground">
+          {formatNumber(area.nodes.length)}
+        </span>
+      </div>
+      <div className={cn("grid gap-2", supportBand && "grid-cols-2")}>
+        {area.visibleNodes.map((node) => {
+          const focused = selectedPipelineId === node.pipeline.id;
+          const dimmed = selectedPipelineId != null && !relatedIds.has(node.pipeline.id);
+          return (
+            <button
+              key={node.pipeline.id}
+              type="button"
+              onClick={() => onSelect(node.pipeline.id)}
+              className={cn(
+                "min-h-[88px] rounded-md border p-3 text-left transition-colors",
+                focused
+                  ? "border-primary bg-primary/5 shadow-sm"
+                  : "border-border bg-card hover:border-primary/40 hover:bg-accent/40",
+                dimmed && "opacity-35",
+              )}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="line-clamp-2 text-sm font-semibold text-foreground">{node.pipeline.name}</span>
+                <span className="shrink-0 text-[11px] text-muted-foreground">{formatOpenItems(pipelineOpenItemCount(node.pipeline))}</span>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {node.upstreamIds.length > 0 ? <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">Fed by {formatNumber(node.upstreamIds.length)}</span> : null}
+                {node.downstreamIds.length > 0 ? <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">Feeds {formatNumber(node.downstreamIds.length)}</span> : null}
+                {node.upstreamIds.length === 0 && node.downstreamIds.length === 0 ? <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">Unconnected</span> : null}
+              </div>
+              <p className="mt-2 truncate text-xs text-muted-foreground">{node.metricDriven ?? "_TBD_"}</p>
+            </button>
+          );
+        })}
+        {area.clusteredCount > 0 ? (
+          <div className="rounded-md border border-dashed border-border bg-muted/40 p-3 text-sm text-muted-foreground">
+            <span className="font-semibold text-foreground">+{formatNumber(area.clusteredCount)} clustered</span>
+            <span className="block text-xs">{formatNumber(area.unconnectedCount)} unconnected in this area.</span>
+          </div>
+        ) : null}
+        {area.nodes.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            No workflows in this area.
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function PipelineOperatingInspectorList({ title, nodes }: { title: string; nodes: PipelineOperatingNode[] }) {
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">{title}</p>
+      {nodes.length > 0 ? (
+        <div className="space-y-1.5">
+          {nodes.map((node) => (
+            <Link
+              key={node.pipeline.id}
+              to={`/pipelines/${node.pipeline.id}`}
+              className="block truncate rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground hover:bg-accent/50"
+            >
+              {node.pipeline.name}
+            </Link>
+          ))}
+        </div>
+      ) : (
+        <p className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">_TBD_</p>
+      )}
+    </div>
+  );
+}
+
 interface PipelinesIndexTableProps {
   pipelines: PipelineListItem[];
   viewMode: PipelineViewMode;
@@ -627,11 +1102,11 @@ export function PipelinesIndexTable({
     () => [...filteredPipelines].sort(comparePipelinesBySort(sortField, sortDir)),
     [filteredPipelines, sortField, sortDir],
   );
-  const effectiveViewMode = connectionsAvailable ? viewMode : "flat";
+  const effectiveViewMode = viewMode === "map" ? "map" : connectionsAvailable ? viewMode : "flat";
   const rows = useMemo(
     () =>
       buildPipelineTableRows(sortedPipelines, {
-        viewMode: effectiveViewMode,
+        viewMode: effectiveViewMode === "map" ? "nested" : effectiveViewMode,
         collapsedPipelineIds,
       }),
     [collapsedPipelineIds, effectiveViewMode, sortedPipelines],
@@ -670,6 +1145,19 @@ export function PipelinesIndexTable({
         </label>
         <div className="flex items-center gap-1 shrink-0">
           <div className="flex items-center overflow-hidden rounded-md border border-border">
+            <button
+              type="button"
+              className={cn(
+                "p-1.5 transition-colors",
+                effectiveViewMode === "map"
+                  ? "bg-accent text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => onViewModeChange("map")}
+              title="Full map"
+            >
+              <MapIcon className="h-3.5 w-3.5" />
+            </button>
             <button
               type="button"
               className={cn(
@@ -729,7 +1217,9 @@ export function PipelinesIndexTable({
         </div>
       </div>
 
-      {rows.length === 0 ? (
+      {effectiveViewMode === "map" ? (
+        <PipelineOperatingMap pipelines={sortedPipelines} search="" />
+      ) : rows.length === 0 ? (
         <EmptyState icon={Hexagon} message="No pipelines match your search." />
       ) : (
         <div className="overflow-x-auto">
@@ -900,7 +1390,7 @@ function PipelinesIndex() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
-  const [viewMode, setViewMode] = useState<PipelineViewMode>("nested");
+  const [viewMode, setViewMode] = useState<PipelineViewMode>("map");
   const [newPipelineOpen, setNewPipelineOpen] = useState(false);
 
   useEffect(() => setBreadcrumbs([{ label: "Pipelines" }]), [setBreadcrumbs]);
