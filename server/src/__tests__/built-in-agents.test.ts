@@ -132,6 +132,22 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("rejects adapter types outside the built-in definition allowlist", async () => {
+    const companyId = await seedCompany();
+
+    await expect(builtInAgentService(db).ensure(companyId, "briefs", {
+      adapterType: "http",
+      adapterConfig: { url: "https://example.test/webhook" },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "built_in_agent_adapter_not_allowed",
+        key: "briefs",
+        allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "process"],
+      },
+    });
+  });
+
   it("recovers an orphaned marked row instead of creating a duplicate", async () => {
     const companyId = await seedCompany();
     const orphanId = randomUUID();
@@ -177,6 +193,83 @@ describeEmbeddedPostgres("built-in agents", () => {
       status: "paused",
       agentId: ready.agentId,
       pauseReason: "manual",
+    });
+  });
+
+  it("requires configured built-ins with typed precondition failures and paused warnings", async () => {
+    const companyId = await seedCompany();
+    const builtIns = builtInAgentService(db);
+
+    await expect(builtIns.requireBuiltInAgent(companyId, "briefs")).rejects.toMatchObject({
+      status: 412,
+      details: {
+        code: "built_in_agent_not_configured",
+        key: "briefs",
+        status: "not_provisioned",
+        agentId: null,
+      },
+    });
+
+    const needsSetup = await builtIns.ensure(companyId, "briefs");
+    await expect(builtIns.requireBuiltInAgent(companyId, "briefs")).rejects.toMatchObject({
+      status: 412,
+      details: {
+        code: "built_in_agent_not_configured",
+        key: "briefs",
+        status: "needs_setup",
+        agentId: needsSetup.agentId,
+      },
+    });
+
+    const ready = await builtIns.ensure(companyId, "briefs", {
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+    });
+    await expect(builtIns.requireBuiltInAgent(companyId, "briefs")).resolves.toMatchObject({
+      agent: { id: ready.agentId },
+      warning: null,
+    });
+
+    await agentService(db).pause(ready.agentId!, "maintenance");
+    await expect(builtIns.requireBuiltInAgent(companyId, "briefs")).resolves.toMatchObject({
+      agent: { id: ready.agentId },
+      warning: {
+        code: "built_in_agent_paused",
+        key: "briefs",
+        agentId: ready.agentId,
+        pauseReason: "maintenance",
+      },
+    });
+  });
+
+  it("resets marked agents back to registry display defaults without replacing adapter setup", async () => {
+    const companyId = await seedCompany();
+    const builtIns = builtInAgentService(db);
+    const ready = await builtIns.ensure(companyId, "briefs", {
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+    });
+
+    await agentService(db).update(ready.agentId!, {
+      name: "Custom Briefs",
+      role: "engineer",
+      title: "Custom",
+      capabilities: "Custom purpose",
+    });
+
+    const reset = await builtIns.reset(companyId, "briefs");
+
+    expect(reset).toMatchObject({
+      status: "ready",
+      agentId: ready.agentId,
+      agent: {
+        name: "Briefs Agent",
+        role: "general",
+        title: null,
+        capabilities: "Prepares concise operational briefs for the board and agent company.",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.4" },
+      },
     });
   });
 

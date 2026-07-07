@@ -88,6 +88,13 @@ export const createAgentSchema = z.object({
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;
 
+export const builtInAgentProvisionSchema = z.object({
+  adapterType: agentAdapterTypeSchema.optional(),
+  adapterConfig: adapterConfigSchema.optional(),
+}).strict();
+
+export type BuiltInAgentProvision = z.infer<typeof builtInAgentProvisionSchema>;
+
 export const createAgentHireSchema = createAgentSchema.extend({
   sourceIssueId: z.string().uuid().optional().nullable(),
   sourceIssueIds: z.array(z.string().uuid()).optional(),

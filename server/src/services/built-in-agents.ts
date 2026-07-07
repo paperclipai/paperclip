@@ -2,7 +2,7 @@ import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companies } from "@paperclipai/db";
 import type { Agent } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { agentService } from "./agents.js";
 import {
@@ -34,6 +34,20 @@ export interface BuiltInAgentState {
 export interface BuiltInAgentProvisionInput {
   adapterType?: string;
   adapterConfig?: Record<string, unknown>;
+}
+
+export interface RequiredBuiltInAgentWarning {
+  code: "built_in_agent_paused";
+  key: string;
+  agentId: string;
+  message: string;
+  pauseReason: string | null;
+}
+
+export interface RequiredBuiltInAgent {
+  definition: BuiltInAgentDefinition;
+  agent: Agent;
+  warning: RequiredBuiltInAgentWarning | null;
 }
 
 const BUILT_IN_AGENT_KEY_PATTERN = /^[a-z][a-z0-9_-]*$/;
@@ -202,6 +216,16 @@ function definitionPatch(definition: BuiltInAgentDefinition, input: BuiltInAgent
   };
 }
 
+function builtInAgentNotConfiguredError(state: BuiltInAgentState) {
+  return new HttpError(412, `Built-in agent is not configured: ${state.definition.key}`, {
+    code: "built_in_agent_not_configured",
+    key: state.definition.key,
+    status: state.status,
+    agentId: state.agentId,
+    featureKeys: state.definition.featureKeys,
+  });
+}
+
 function rowIsBuiltInAgent(row: typeof agents.$inferSelect, key: string) {
   const marker = readBuiltInAgentMarker(row.metadata);
   return marker?.key === key;
@@ -333,11 +357,39 @@ export function builtInAgentService(db: Db) {
     return state(definition, updated as Agent);
   }
 
+  async function reset(companyId: string, key: string) {
+    return reconcileDefinitionDefaults(companyId, key);
+  }
+
+  async function requireBuiltInAgent(companyId: string, key: string): Promise<RequiredBuiltInAgent> {
+    const current = await get(companyId, key);
+    if (!current.agent) throw builtInAgentNotConfiguredError(current);
+    if (current.status === "ready") {
+      return { definition: current.definition, agent: current.agent, warning: null };
+    }
+    if (current.status === "paused") {
+      return {
+        definition: current.definition,
+        agent: current.agent,
+        warning: {
+          code: "built_in_agent_paused",
+          key: current.definition.key,
+          agentId: current.agent.id,
+          message: `Built-in agent ${current.definition.key} is paused; scheduled/background work should be skipped.`,
+          pauseReason: current.pauseReason,
+        },
+      };
+    }
+    throw builtInAgentNotConfiguredError(current);
+  }
+
   return {
     definitions: listBuiltInAgentDefinitions,
     get,
     ensure,
     list,
+    reset,
+    requireBuiltInAgent,
     reconcileDefinitionDefaults,
   };
 }
