@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import type { HeartbeatRun } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,13 +22,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  act(() => root.unmount());
+  flushSync(() => root.unmount());
   container.remove();
   vi.useRealTimers();
 });
 
 function render(ui: ReactNode) {
-  act(() => {
+  flushSync(() => {
     root.render(ui);
   });
 }
