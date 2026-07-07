@@ -125,12 +125,13 @@ Example:
 
 ```sh
 PAPERCLIP_PERF_BASE_URL=http://localhost:3100 \
-PAPERCLIP_PERF_COMPANY_PREFIX=acme \
 PAPERCLIP_PERF_BEARER_TOKEN=$TOKEN \
 pnpm perf:issue-chat-long-thread
 ```
 
-The command exits with a JSON payload containing:
+For dev builds that register prefixed benchmark routes, add `PAPERCLIP_PERF_COMPANY_PREFIX=<prefix>` to target `/<prefix>/tests/perf/long-thread`.
+
+The script writes a JSON payload to stdout, including:
 
 - `fixtureRowTarget`
 - `virtualized`
