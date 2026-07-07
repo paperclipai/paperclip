@@ -1,9 +1,36 @@
 import { describe, expect, it } from "vitest";
 import {
   buildRuntimeApiCandidateUrls,
+  chooseAgentRuntimeApiUrl,
   choosePrimaryRuntimeApiUrl,
   collectReachableInterfaceHosts,
 } from "../runtime-api.js";
+
+describe("chooseAgentRuntimeApiUrl", () => {
+  it("ignores the auth-proxied public base URL for co-located local_trusted agents", () => {
+    expect(
+      chooseAgentRuntimeApiUrl({
+        deploymentMode: "local_trusted",
+        authPublicBaseUrl: "https://paperclip.example.com",
+        allowedHostnames: ["paperclip.example.com"],
+        bindHost: "127.0.0.1",
+        port: 3100,
+      }),
+    ).toBe("http://127.0.0.1:3100");
+  });
+
+  it("keeps the public base URL for non-local deployment modes", () => {
+    expect(
+      chooseAgentRuntimeApiUrl({
+        deploymentMode: "authenticated",
+        authPublicBaseUrl: "https://paperclip.example.com",
+        allowedHostnames: ["paperclip.example.com"],
+        bindHost: "127.0.0.1",
+        port: 3100,
+      }),
+    ).toBe("https://paperclip.example.com");
+  });
+});
 
 describe("runtime API discovery", () => {
   it("prefers the explicit public base URL for the primary runtime URL", () => {
