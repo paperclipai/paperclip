@@ -113,7 +113,7 @@ type RecoveryWakeup = (
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
+  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "finishedAt"
 > | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
@@ -196,6 +196,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+const QUOTA_LIMIT_RECOVERY_BASE_BACKOFF_MS = CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS;
 
 type ContinuationRetryClassification = {
   kind: "transient_infra" | "non_retryable" | "default";
@@ -491,6 +492,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        finishedAt: heartbeatRuns.finishedAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -504,9 +506,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
-  async function summarizeRecentContinuationRetries(
+  async function summarizeRecentIssueRetries(
     companyId: string,
     issueId: string,
+    retryReasonToMatch: "assignment_recovery" | "issue_continuation_needed",
     errorCodeToMatch: string | null,
   ) {
     const rows = await db
@@ -532,7 +535,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     for (const row of rows) {
       const ctx = parseObject(row.contextSnapshot);
       const retryReason = readNonEmptyString(ctx.retryReason);
-      if (retryReason !== "issue_continuation_needed") break;
+      if (retryReason !== retryReasonToMatch) break;
       if (
         !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
           row.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
@@ -550,6 +553,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (latestFinishedAt === null) latestFinishedAt = row.finishedAt ?? null;
     }
     return { consecutive, latestFinishedAt };
+  }
+
+  async function summarizeRecentContinuationRetries(
+    companyId: string,
+    issueId: string,
+    errorCodeToMatch: string | null,
+  ) {
+    return summarizeRecentIssueRetries(
+      companyId,
+      issueId,
+      "issue_continuation_needed",
+      errorCodeToMatch,
+    );
+  }
+
+  function shouldDelayQuotaLimitRetry(input: {
+    latestFinishedAt: Date | null;
+    consecutive: number;
+  }) {
+    if (!input.latestFinishedAt) return false;
+    const elapsed = Date.now() - input.latestFinishedAt.getTime();
+    const requiredDelay = QUOTA_LIMIT_RECOVERY_BASE_BACKOFF_MS *
+      Math.pow(2, Math.max(0, input.consecutive - 1));
+    return elapsed < requiredDelay;
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
@@ -2742,7 +2769,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
-          if (!isQuotaLimitExhaustionRun(latestRun)) {
+          const isQuotaLimitExhaustion = isQuotaLimitExhaustionRun(latestRun);
+          if (!isQuotaLimitExhaustion) {
             const failureSummary = summarizeRunFailureForIssueComment(latestRun);
             const updated = await escalateStrandedAssignedIssue({
               issue,
@@ -2761,8 +2789,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             }
             continue;
           }
-          // Quota exhaustion: do not create a recovery ticket; fall through to re-enqueue
-          // so the issue retries on the next recovery cron cycle once quota is restored.
+
+          const retrySummary = await summarizeRecentIssueRetries(
+            issue.companyId,
+            issue.id,
+            "assignment_recovery",
+            readNonEmptyString(latestRun.errorCode),
+          );
+          if (shouldDelayQuotaLimitRetry(retrySummary)) {
+            result.skipped += 1;
+            continue;
+          }
         }
 
         if (await isInvocationBudgetBlocked(issue, agentId)) {
@@ -2874,10 +2911,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
         continue;
       }
-      if (isUnsuccessfulTerminalIssueRun(latestRun) && !isQuotaLimitExhaustionRun(latestRun)) {
+      if (isUnsuccessfulTerminalIssueRun(latestRun)) {
+        const isQuotaLimitExhaustion = isQuotaLimitExhaustionRun(latestRun);
         const classification = classifyContinuationFailure(latestRun);
 
-        if (classification.kind === "non_retryable") {
+        if (!isQuotaLimitExhaustion && classification.kind === "non_retryable") {
           const failureSummary = summarizeRunFailureForIssueComment(latestRun);
           const updated = await escalateStrandedAssignedIssue({
             issue,
@@ -2903,7 +2941,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             issue.id,
             classification.errorCode,
           );
-          if (consecutive >= classification.maxAttempts) {
+          if (!isQuotaLimitExhaustion && consecutive >= classification.maxAttempts) {
             const failureSummary = summarizeRunFailureForIssueComment(latestRun);
             const attemptCopy = consecutive <= 1 ? "" : ` (${consecutive}× attempts)`;
             const causeCopy = classification.errorCode
@@ -2927,9 +2965,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             continue;
           }
 
-          if (classification.baseBackoffMs > 0 && latestFinishedAt) {
+          const baseBackoffMs = isQuotaLimitExhaustion
+            ? QUOTA_LIMIT_RECOVERY_BASE_BACKOFF_MS
+            : classification.baseBackoffMs;
+          if (baseBackoffMs > 0 && latestFinishedAt) {
             const elapsed = Date.now() - latestFinishedAt.getTime();
-            const requiredDelay = classification.baseBackoffMs *
+            const requiredDelay = baseBackoffMs *
               Math.pow(2, Math.max(0, consecutive - 1));
             if (elapsed < requiredDelay) {
               result.skipped += 1;
@@ -2937,8 +2978,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             }
           }
         }
-        // Quota exhaustion: isQuotaLimitExhaustionRun guard above skips this block entirely;
-        // fall through to re-enqueue so the issue retries once quota is restored.
       }
 
       if (await isInvocationBudgetBlocked(issue, agentId)) {
