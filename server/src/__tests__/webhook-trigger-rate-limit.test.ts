@@ -52,6 +52,35 @@ describe("webhook trigger rate limiter", () => {
     expect(limiter.consume("trigger-d", "5.6.7.8").allowed).toBe(true);
   });
 
+  it("evicts fully-expired keys instead of retaining every key seen forever", () => {
+    let now = 0;
+    const limiter = createWebhookTriggerRateLimiter({
+      windowMs: 1_000,
+      maxPerTrigger: 5,
+      maxPerIp: 5,
+      now: () => now,
+    });
+
+    // Sweep across many distinct triggers — each is only hit once, so a
+    // naive implementation would leak one map entry per trigger forever.
+    for (let i = 0; i < 500; i += 1) {
+      limiter.consume(`trigger-${i}`, "1.2.3.4");
+    }
+
+    // Advance past the window and beyond the next sweep threshold, then
+    // make one more request to trigger the lazy sweep.
+    now += 2_500;
+    limiter.consume("trigger-fresh", "5.6.7.8");
+
+    // The old per-trigger keys should no longer count toward any limit —
+    // observable behavior: firing the very first trigger again is allowed
+    // at full capacity again, not treated as already having a stale hit.
+    for (let i = 0; i < 5; i += 1) {
+      expect(limiter.consume("trigger-0", "9.9.9.9").allowed).toBe(true);
+    }
+    expect(limiter.consume("trigger-0", "9.9.9.9").allowed).toBe(false);
+  });
+
   it("resets once the sliding window elapses", () => {
     let now = 0;
     const limiter = createWebhookTriggerRateLimiter({

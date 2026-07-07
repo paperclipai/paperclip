@@ -31,9 +31,29 @@ export type WebhookTriggerRateLimiter = {
 
 function createSlidingWindowBucket(options: { windowMs: number; maxRequests: number; now: () => number }) {
   const hitsByKey = new Map<string, number[]>();
+  // A distinct publicId/IP is seen once per bucket key; without eviction a
+  // sustained sweep across many distinct keys (e.g. probing publicIds) would
+  // grow this map forever even though each individual key goes quiet.
+  // Sweeping once per window bounds memory to "keys active in the last
+  // window" instead of "every key ever seen" for the life of the process.
+  let lastSweepAt = options.now();
+
+  function sweepExpiredKeys(currentTime: number) {
+    const cutoff = currentTime - options.windowMs;
+    for (const [existingKey, hits] of hitsByKey) {
+      if (hits.every((hit) => hit <= cutoff)) {
+        hitsByKey.delete(existingKey);
+      }
+    }
+    lastSweepAt = currentTime;
+  }
+
   return {
     consume(key: string): WebhookTriggerRateLimitResult {
       const currentTime = options.now();
+      if (currentTime - lastSweepAt >= options.windowMs) {
+        sweepExpiredKeys(currentTime);
+      }
       const cutoff = currentTime - options.windowMs;
       const recentHits = (hitsByKey.get(key) ?? []).filter((hit) => hit > cutoff);
 
