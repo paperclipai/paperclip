@@ -157,6 +157,12 @@ async function waitForContainmentSideEffects(input: {
     const source = issueById.get(input.sourceIssueId);
     const sameWorkspaceSibling = issueById.get(input.sameWorkspaceSiblingId);
     const otherWorkspaceSibling = issueById.get(input.otherWorkspaceSiblingId);
+    const recoveryActionId = actionRows.length === 1 ? actionRows[0]?.id : null;
+    const hasRecoveryActionComment = recoveryActionId
+      ? comments.some((comment) =>
+          comment.issueId === input.sourceIssueId &&
+          comment.body.includes(`Recovery action: \`${recoveryActionId}\``))
+      : false;
     if (
       source?.status === "blocked" &&
       source.executionRunId === null &&
@@ -168,7 +174,7 @@ async function waitForContainmentSideEffects(input: {
       otherWorkspaceSibling.executionRunId === null &&
       otherWorkspaceSibling.checkoutRunId === null &&
       actionRows.length === 1 &&
-      comments.some((comment) => comment.issueId === input.sourceIssueId)
+      hasRecoveryActionComment
     ) {
       return latest;
     }
