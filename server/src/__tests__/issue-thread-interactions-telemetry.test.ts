@@ -238,18 +238,25 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
     const { companyId, issueId } = await seedIssue("Reject confirmation telemetry");
     const resolverAgentId = await seedAgent(companyId, "SecurityEngineer");
 
-    const created = await interactionsSvc.create({
-      id: issueId,
+    // The fork enforces `assertInteractionResolutionOwner` (TWX decision-owner):
+    // a request_confirmation with a resolved `targetUserId` may only be resolved
+    // by that board user, never by an agent. This telemetry case exercises an
+    // agent resolver, so the interaction must be board-wide (legacy null target)
+    // — the same untargeted path the service supports for `targetUserId: null`.
+    const [created] = await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
       companyId,
-    }, {
+      issueId,
       kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
       payload: {
         version: 1,
         prompt: "Approve this?",
       },
-    }, {
-      userId: "local-board",
-    });
+      createdByUserId: "local-board",
+      targetUserId: null,
+    }).returning();
 
     await interactionsSvc.rejectInteraction({
       id: issueId,
