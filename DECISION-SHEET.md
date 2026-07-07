@@ -65,3 +65,7 @@ User rulings from the tune-session gallery review; all intentionally visible, sn
 - `pnpm check:token-gates` — re-run independently: 3/3 CLEAN (468 files, 31 allowlist entries).
 - `pnpm typecheck` + full `pnpm test:storybook-visual` — re-running independently (in progress).
 - Eyeball-pass note: the Phase 0 baseline was captured at the master fork point before any change, and the suite compares current rendering to it at `maxDiffPixels: 0` — pixel-equality with master-at-fork is machine-proven; side-by-side Storybook remains available on request (`pnpm storybook` here + `-p 6007` on master).
+
+## Tune session — CLOSED (Jul 6, 2026)
+
+User approved the complete new design language via gallery v4 + live test drive on the :3300 worktree instance ("ship it"). Merged origin/master (12 commits; one conflict — upstream deliberately removed the Wakes-on-confirm chip, deletion accepted). 296 snapshots re-baselined; gates 3/3 CLEAN; typecheck green; final suite verification run against the new baseline. Remaining roadmap: Run 3 (cards/pills/C11 sidebar + investigations + AgentDetail story), issue→task rename run, Run 4 (palette classes + toast), ESLint ratchet.
