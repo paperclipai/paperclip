@@ -48,6 +48,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
