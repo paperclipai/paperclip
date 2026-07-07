@@ -62,7 +62,8 @@ describe("initPushFanout", () => {
     await flushFanout();
 
     expect(mockSendToBoard).toHaveBeenCalledOnce();
-    expect(mockSendToBoard.mock.calls[0][0]).toMatchObject({
+    expect(mockSendToBoard.mock.calls[0][0]).toBe("company-1");
+    expect(mockSendToBoard.mock.calls[0][1]).toMatchObject({
       title: expect.stringContaining("Action needed"),
     });
   });
@@ -74,7 +75,8 @@ describe("initPushFanout", () => {
     await flushFanout();
 
     expect(mockSendToBoard).toHaveBeenCalledOnce();
-    expect(mockSendToBoard.mock.calls[0][0]).toMatchObject({
+    expect(mockSendToBoard.mock.calls[0][0]).toBe("company-1");
+    expect(mockSendToBoard.mock.calls[0][1]).toMatchObject({
       title: expect.stringContaining("input needed"),
     });
   });
@@ -121,10 +123,48 @@ describe("initPushFanout", () => {
     await flushFanout();
 
     expect(mockSendToBoard).toHaveBeenCalledOnce();
-    expect(mockSendToBoard.mock.calls[0][0]).toMatchObject({
+    expect(mockSendToBoard.mock.calls[0][0]).toBe("company-1");
+    expect(mockSendToBoard.mock.calls[0][1]).toMatchObject({
       title: "1 blocked, 1 stale — tap to view",
       data: { kind: "digest", blockedCount: 1, staleCount: 1 },
     });
+  });
+
+  it("keeps digest items queued when sending fails and retries on the next eligible flush", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-07T15:00:00Z"));
+    mockSendToBoard.mockRejectedValueOnce(new Error("temporary push outage"));
+    startFanout();
+
+    publishIssueEvent("issue.blocked", "issue-retry-blocked");
+    vi.setSystemTime(new Date("2026-07-07T16:01:00Z"));
+    publishIssueEvent("issue.stale", "issue-retry-stale");
+    await flushFanout();
+
+    expect(mockSendToBoard).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(new Date("2026-07-07T16:02:00Z"));
+    publishIssueEvent("issue.blocked", "issue-retry-trigger");
+    await flushFanout();
+
+    expect(mockSendToBoard).toHaveBeenCalledTimes(2);
+    expect(mockSendToBoard.mock.calls[1][1]).toMatchObject({
+      data: { kind: "digest", blockedCount: 2, staleCount: 1 },
+    });
+  });
+
+  it("evicts expired immediate dedup entries", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-07T15:00:00Z"));
+    process.env.PAPERCLIP_PUSH_DEDUP_TTL_HOURS = "1";
+    startFanout();
+
+    publishIssueEvent("issue.user_assigned", "issue-dedup-expire");
+    vi.setSystemTime(new Date("2026-07-07T16:01:00Z"));
+    publishIssueEvent("issue.user_assigned", "issue-dedup-expire");
+    await flushFanout();
+
+    expect(mockSendToBoard).toHaveBeenCalledTimes(2);
   });
 
   it("defers blocked and stale digest pushes during quiet hours", async () => {

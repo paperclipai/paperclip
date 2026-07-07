@@ -271,7 +271,7 @@ export function ProfileSettings() {
         </form>
       </section>
 
-      <PushNotificationSection />
+      <PushNotificationSection companyId={selectedCompanyId} />
     </div>
   );
 }

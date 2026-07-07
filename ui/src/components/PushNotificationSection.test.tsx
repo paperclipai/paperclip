@@ -20,7 +20,7 @@ function renderSection() {
   const createdRoot = createRoot(container);
   root = createdRoot;
   act(() => {
-    createdRoot.render(<PushNotificationSection />);
+    createdRoot.render(<PushNotificationSection companyId="company-1" />);
   });
   return { text: () => container?.textContent ?? "" };
 }

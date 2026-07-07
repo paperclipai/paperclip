@@ -3,8 +3,12 @@ import { usePushNotifications } from "@/hooks/use-push-notifications";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Card, CardContent } from "@/components/ui/card";
 
-export function PushNotificationSection() {
-  const { state, isToggling, subscriptions, enable, disable } = usePushNotifications();
+type PushNotificationSectionProps = {
+  companyId: string | null;
+};
+
+export function PushNotificationSection({ companyId }: PushNotificationSectionProps) {
+  const { state, isToggling, subscriptions, enable, disable } = usePushNotifications(companyId);
   const currentEndpoint = state.status === "subscribed" ? state.endpoint : null;
 
   return (

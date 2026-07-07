@@ -32,16 +32,25 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = event.notification.data?.url ?? "/";
+  let targetUrl = "/";
+  try {
+    const rawUrl = event.notification.data?.url ?? "/";
+    const parsedUrl = new URL(rawUrl, self.location.origin);
+    if (parsedUrl.origin === self.location.origin) {
+      targetUrl = parsedUrl.href;
+    }
+  } catch {
+    targetUrl = "/";
+  }
   event.waitUntil(
     self.clients
       .matchAll({ type: "window", includeUncontrolled: true })
       .then((clients) => {
         const match = clients.find((c) => c.url.includes(self.location.origin));
         if (match) {
-          return match.focus().then((client) => client.navigate(url));
+          return match.focus().then((client) => client.navigate(targetUrl));
         }
-        return self.clients.openWindow(url);
+        return self.clients.openWindow(targetUrl);
       })
   );
 });
