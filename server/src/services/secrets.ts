@@ -147,6 +147,46 @@ function remoteProviderWriteHttpError(error: unknown, context: {
   });
 }
 
+async function throwProviderWriteOrReservedRowRollbackError(input: {
+  error: unknown;
+  rollbackReservedRow: () => Promise<unknown>;
+  companyId: string;
+  provider: SecretProvider;
+  providerConfigId?: string | null;
+  providerConfig: SecretProviderVaultRuntimeConfig | null;
+  operation: string;
+}): Promise<never> {
+  const providerError = remoteProviderWriteHttpError(input.error, input);
+  try {
+    await input.rollbackReservedRow();
+  } catch (rollbackError) {
+    const providerConfigId = input.providerConfig?.id ?? input.providerConfigId ?? "deployment-default";
+    logger.warn(
+      {
+        err: rollbackError,
+        providerErr: providerError,
+        companyId: input.companyId,
+        provider: input.provider,
+        providerConfigId,
+        operation: input.operation,
+      },
+      "remote secret provider write failed and reserved secret rollback failed",
+    );
+    throw new HttpError(500, "Secret create failed and Paperclip could not roll back the local secret reservation.", {
+      code: "secret_create_rollback_failed",
+      provider: input.provider,
+      operation: input.operation,
+      providerConfigId,
+      providerError: {
+        status: providerError.status,
+        message: providerError.message,
+        details: providerError.details ?? null,
+      },
+    });
+  }
+  throw providerError;
+}
+
 function safeRemoteProviderErrorDetails(
   error: { code: string } | null,
   context: {
@@ -1632,8 +1672,9 @@ export function secretService(db: Db) {
               context: providerWriteContext,
             });
     } catch (error) {
-      await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
-      throw remoteProviderWriteHttpError(error, {
+      throw await throwProviderWriteOrReservedRowRollbackError({
+        error,
+        rollbackReservedRow: () => db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)),
         companyId,
         provider: provider.id,
         providerConfigId,
@@ -2902,8 +2943,9 @@ export function secretService(db: Db) {
                 context: providerWriteContext,
               });
       } catch (error) {
-        await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
-        throw remoteProviderWriteHttpError(error, {
+        throw await throwProviderWriteOrReservedRowRollbackError({
+          error,
+          rollbackReservedRow: () => db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)),
           companyId,
           provider: provider.id,
           providerConfigId: input.providerConfigId ?? null,

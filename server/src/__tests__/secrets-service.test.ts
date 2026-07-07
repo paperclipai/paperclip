@@ -654,6 +654,68 @@ describeEmbeddedPostgres("secretService", () => {
     expect(rows.filter((row) => row.ownerUserId === "user-1" && row.status === "active")).toHaveLength(1);
   });
 
+  it("reports current-user secret rollback failures when AWS create cleanup cannot remove the reserved row", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+    });
+
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockRejectedValueOnce(
+      new SecretProviderClientError({
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "createSecret",
+        message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        rawMessage:
+          "AccessDeniedException: arn:aws:sts::123456789012:assumed-role/prod/Paperclip cannot create secret",
+      }),
+    );
+    vi.spyOn(db, "delete").mockImplementationOnce(() => {
+      throw new Error("reserved row delete failed");
+    });
+
+    await expect(
+      svc.createCurrentUserSecretValue(companyId, "user-1", {
+        definitionId: definition.id,
+        value: "runtime-secret",
+      }),
+    ).rejects.toMatchObject({
+      status: 500,
+      message: "Secret create failed and Paperclip could not roll back the local secret reservation.",
+      details: {
+        code: "secret_create_rollback_failed",
+        provider: "aws_secrets_manager",
+        operation: "secret.create",
+        providerConfigId: awsVault.id,
+        providerError: {
+          status: 403,
+          message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+          details: {
+            code: "access_denied",
+            requiredCapability: "secretsmanager:CreateSecret",
+          },
+        },
+      },
+    });
+
+    const persisted = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.companyId, companyId));
+    expect(persisted).toHaveLength(1);
+    expect(JSON.stringify(persisted)).not.toContain("runtime-secret");
+  });
+
   it("returns conflict when concurrent user secret definition creation races the unique index", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -2058,6 +2120,65 @@ describeEmbeddedPostgres("secretService", () => {
       .from(companySecrets)
       .where(eq(companySecrets.companyId, companyId));
     expect(persisted).toHaveLength(0);
+  });
+
+  it("reports rollback failures when AWS managed secret create cleanup cannot remove the reserved row", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockRejectedValueOnce(
+      new SecretProviderClientError({
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "createSecret",
+        message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        rawMessage:
+          "AccessDeniedException: arn:aws:sts::123456789012:assumed-role/prod/Paperclip cannot create secret",
+      }),
+    );
+    vi.spyOn(db, "delete").mockImplementationOnce(() => {
+      throw new Error("reserved row delete failed");
+    });
+
+    await expect(
+      svc.create(companyId, {
+        name: "Vercel token",
+        key: "vercel_token",
+        provider: "aws_secrets_manager",
+        providerConfigId: awsVault.id,
+        managedMode: "paperclip_managed",
+        value: "vcp_test",
+      }),
+    ).rejects.toMatchObject({
+      status: 500,
+      message: "Secret create failed and Paperclip could not roll back the local secret reservation.",
+      details: {
+        code: "secret_create_rollback_failed",
+        provider: "aws_secrets_manager",
+        operation: "secret.create",
+        providerConfigId: awsVault.id,
+        providerError: {
+          status: 403,
+          message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+          details: {
+            code: "access_denied",
+            requiredCapability: "secretsmanager:CreateSecret",
+          },
+        },
+      },
+    });
+
+    const persisted = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.companyId, companyId));
+    expect(persisted).toHaveLength(1);
+    expect(JSON.stringify(persisted)).not.toContain("vcp_test");
   });
 
   it("previews AWS provider vault discovery from draft config without persisting a provider vault", async () => {
