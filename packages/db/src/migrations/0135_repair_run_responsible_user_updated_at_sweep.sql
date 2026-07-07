@@ -21,6 +21,11 @@ HAVING count(*) > 100;
 UPDATE "issues" AS i
 SET "updated_at" = GREATEST(
   i."created_at",
+  COALESCE(CASE WHEN i."started_at" <= sweep."sweep_at" THEN i."started_at" END, i."created_at"),
+  COALESCE(CASE WHEN i."completed_at" <= sweep."sweep_at" THEN i."completed_at" END, i."created_at"),
+  COALESCE(CASE WHEN i."cancelled_at" <= sweep."sweep_at" THEN i."cancelled_at" END, i."created_at"),
+  COALESCE(CASE WHEN i."monitor_wake_requested_at" <= sweep."sweep_at" THEN i."monitor_wake_requested_at" END, i."created_at"),
+  COALESCE(CASE WHEN i."monitor_last_triggered_at" <= sweep."sweep_at" THEN i."monitor_last_triggered_at" END, i."created_at"),
   COALESCE(
     (
       SELECT max(GREATEST(c."created_at", c."updated_at"))
@@ -40,11 +45,11 @@ WHERE i."company_id" = sweep."company_id"
 UPDATE "heartbeat_runs" AS h
 SET "updated_at" = GREATEST(
   h."created_at",
-  COALESCE(
-    CASE WHEN h."finished_at" <= sweep."sweep_at" THEN h."finished_at" END,
-    CASE WHEN h."started_at" <= sweep."sweep_at" THEN h."started_at" END,
-    h."created_at"
-  )
+  COALESCE(CASE WHEN h."started_at" <= sweep."sweep_at" THEN h."started_at" END, h."created_at"),
+  COALESCE(CASE WHEN h."process_started_at" <= sweep."sweep_at" THEN h."process_started_at" END, h."created_at"),
+  COALESCE(CASE WHEN h."last_output_at" <= sweep."sweep_at" THEN h."last_output_at" END, h."created_at"),
+  COALESCE(CASE WHEN h."scheduled_retry_at" <= sweep."sweep_at" THEN h."scheduled_retry_at" END, h."created_at"),
+  COALESCE(CASE WHEN h."finished_at" <= sweep."sweep_at" THEN h."finished_at" END, h."created_at")
 )
 FROM "run_responsible_user_updated_at_sweeps" AS sweep
 WHERE h."company_id" = sweep."company_id"
@@ -53,10 +58,8 @@ WHERE h."company_id" = sweep."company_id"
 UPDATE "routine_runs" AS rr
 SET "updated_at" = GREATEST(
   rr."created_at",
-  COALESCE(
-    CASE WHEN rr."completed_at" <= sweep."sweep_at" THEN rr."completed_at" END,
-    rr."created_at"
-  )
+  COALESCE(CASE WHEN rr."triggered_at" <= sweep."sweep_at" THEN rr."triggered_at" END, rr."created_at"),
+  COALESCE(CASE WHEN rr."completed_at" <= sweep."sweep_at" THEN rr."completed_at" END, rr."created_at")
 )
 FROM "run_responsible_user_updated_at_sweeps" AS sweep
 WHERE rr."company_id" = sweep."company_id"
