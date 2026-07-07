@@ -49,6 +49,7 @@ type RuleMetadata = {
 type CreateIndexInfo = {
   readonly table: string;
   readonly columns: readonly string[];
+  readonly predicate: string | null;
   readonly predicateColumns: readonly string[];
   readonly concurrently: boolean;
   readonly statement: string;
@@ -427,6 +428,198 @@ function predicateColumns(statement: string): string[] {
   return [...columns];
 }
 
+type KeywordOccurrence = {
+  readonly index: number;
+  readonly depth: number;
+  readonly length: number;
+};
+
+function keywordOccurrenceAt(
+  sql: string,
+  index: number,
+  pattern: RegExp,
+): RegExpMatchArray | null {
+  const previous = sql[index - 1];
+  if (previous && /[A-Za-z0-9_]/.test(previous)) return null;
+  return sql.slice(index).match(pattern);
+}
+
+function keywordOccurrences(sql: string, pattern: RegExp): KeywordOccurrence[] {
+  const occurrences: KeywordOccurrence[] = [];
+  let depth = 0;
+  let index = 0;
+
+  while (index < sql.length) {
+    const char = sql[index];
+
+    if (char === "'") {
+      index = skipSingleQuotedLiteral(sql, index);
+      continue;
+    }
+
+    if (char === '"') {
+      index = skipDoubleQuotedIdentifier(sql, index);
+      continue;
+    }
+
+    if (char === "(") {
+      depth += 1;
+      index += 1;
+      continue;
+    }
+
+    if (char === ")") {
+      depth = Math.max(0, depth - 1);
+      index += 1;
+      continue;
+    }
+
+    const match = keywordOccurrenceAt(sql, index, pattern);
+    if (match) {
+      occurrences.push({ index, depth, length: match[0].length });
+      index += match[0].length;
+      continue;
+    }
+
+    index += 1;
+  }
+
+  return occurrences;
+}
+
+function batchWhereClausesBeforeOrderBy(statement: string): string[] {
+  const sql = stripSqlComments(statement);
+  const whereOccurrences = keywordOccurrences(sql, /^\bWHERE\b/i);
+  const orderByOccurrences = keywordOccurrences(sql, /^\bORDER\s+BY\b/i);
+  const clauses: string[] = [];
+
+  for (const orderBy of orderByOccurrences) {
+    const where = whereOccurrences
+      .filter((candidate) => candidate.depth === orderBy.depth && candidate.index < orderBy.index)
+      .at(-1);
+    if (!where) continue;
+
+    const clause = sql.slice(where.index + where.length, orderBy.index).trim();
+    if (clause) clauses.push(clause);
+  }
+
+  return clauses;
+}
+
+function hasBalancedOuterParens(value: string): boolean {
+  if (!value.startsWith("(") || !value.endsWith(")")) return false;
+  let depth = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (char === "'") {
+      index = skipSingleQuotedLiteral(value, index) - 1;
+      continue;
+    }
+    if (char === '"') {
+      index = skipDoubleQuotedIdentifier(value, index) - 1;
+      continue;
+    }
+    if (char === "(") depth += 1;
+    if (char === ")") depth -= 1;
+    if (depth === 0 && index < value.length - 1) return false;
+  }
+
+  return depth === 0;
+}
+
+function stripOuterParens(value: string): string {
+  let stripped = normalizeSql(value).replace(/;$/, "").trim();
+  while (hasBalancedOuterParens(stripped)) {
+    stripped = normalizeSql(stripped.slice(1, -1));
+  }
+  return stripped;
+}
+
+function splitConjunctivePredicate(value: string): string[] {
+  const terms: string[] = [];
+  const sql = stripOuterParens(value);
+  let depth = 0;
+  let start = 0;
+  let index = 0;
+
+  while (index < sql.length) {
+    const char = sql[index];
+
+    if (char === "'") {
+      index = skipSingleQuotedLiteral(sql, index);
+      continue;
+    }
+
+    if (char === '"') {
+      index = skipDoubleQuotedIdentifier(sql, index);
+      continue;
+    }
+
+    if (char === "(") {
+      depth += 1;
+      index += 1;
+      continue;
+    }
+
+    if (char === ")") {
+      depth = Math.max(0, depth - 1);
+      index += 1;
+      continue;
+    }
+
+    const match = depth === 0 ? keywordOccurrenceAt(sql, index, /^\bAND\b/i) : null;
+    if (match) {
+      const term = stripOuterParens(sql.slice(start, index));
+      if (term) terms.push(term);
+      start = index + match[0].length;
+      index = start;
+      continue;
+    }
+
+    index += 1;
+  }
+
+  const tail = stripOuterParens(sql.slice(start));
+  if (tail) terms.push(tail);
+  return terms;
+}
+
+function lowercaseSqlOutsideSingleQuotedLiterals(value: string): string {
+  let lowered = "";
+  let index = 0;
+
+  while (index < value.length) {
+    if (value[index] === "'") {
+      const end = skipSingleQuotedLiteral(value, index);
+      lowered += value.slice(index, end);
+      index = end;
+      continue;
+    }
+
+    lowered += value[index]?.toLowerCase() ?? "";
+    index += 1;
+  }
+
+  return lowered;
+}
+
+function normalizePredicateTerm(term: string): string {
+  const normalized = stripOuterParens(term)
+    .replace(
+      /(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s*\.\s*("[^"]+"|[A-Za-z_][A-Za-z0-9_]*)/g,
+      "$1",
+    )
+    .replace(/"([^"]+)"/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+  return lowercaseSqlOutsideSingleQuotedLiterals(normalized);
+}
+
+function predicateTerms(value: string): Set<string> {
+  return new Set(splitConjunctivePredicate(value).map(normalizePredicateTerm));
+}
+
 function orderByColumns(statement: string): string[] {
   const columns: string[] = [];
   const sql = stripSqlComments(statement);
@@ -451,10 +644,12 @@ function parseCreateIndexes(statement: string): CreateIndexInfo[] {
   for (const match of sql.matchAll(pattern)) {
     const table = normalizeIdentifier(match[2] ?? match[3] ?? "");
     if (!table) continue;
+    const predicate = match[5]?.trim().replace(/;$/, "").trim() ?? "";
     indexes.push({
       table,
       columns: plainIndexColumns(match[4] ?? ""),
-      predicateColumns: predicateColumns(match[5] ?? ""),
+      predicate: predicate.length > 0 ? predicate : null,
+      predicateColumns: predicateColumns(predicate),
       concurrently: Boolean(match[1]),
       statement,
     });
@@ -582,15 +777,33 @@ function hasSelectiveWhere(mutation: MutationInfo): boolean {
 }
 
 function hasLeadingOrderPrefix(
-  indexedColumns: readonly string[],
+  supportIndex: CreateIndexInfo,
   orderColumns: readonly string[],
+  statement: string,
 ): boolean {
+  const indexedColumns = supportIndex.columns;
   const prefixLength = Math.min(indexedColumns.length, orderColumns.length);
   if (prefixLength === 0) return false;
   for (let index = 0; index < prefixLength; index += 1) {
     if (indexedColumns[index] !== orderColumns[index]) return false;
   }
-  return true;
+  if (!supportIndex.predicate) return true;
+
+  const indexPredicateTerms = predicateTerms(supportIndex.predicate);
+  if (indexPredicateTerms.size === 0) return false;
+
+  return batchWhereClausesBeforeOrderBy(statement).some((whereClause) => {
+    const batchTerms = predicateTerms(whereClause);
+    return [...indexPredicateTerms].every((term) => batchTerms.has(term));
+  });
+}
+
+function hasOrderPrefixCompatibleIndex(
+  supportIndex: CreateIndexInfo,
+  orderColumns: readonly string[],
+  statement: string,
+): boolean {
+  return hasLeadingOrderPrefix(supportIndex, orderColumns, statement);
 }
 
 function hasMatchingSupportIndex(
@@ -609,7 +822,9 @@ function hasMatchingSupportIndex(
   if (allPredicateCols.size === 0) return true;
 
   if (orderCols.length > 0) {
-    return matchingIndexes.some((index) => hasLeadingOrderPrefix(index.columns, orderCols));
+    return matchingIndexes.some((index) =>
+      hasOrderPrefixCompatibleIndex(index, orderCols, statement),
+    );
   }
 
   return matchingIndexes.some((index) => {

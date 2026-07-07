@@ -104,6 +104,39 @@ describe("migration safety check", () => {
     expect(result.newFindings).toEqual([]);
   });
 
+  it("does not suppress missing-index finding when a partial support index predicate is incompatible with the batch WHERE", () => {
+    const result = analyze(`
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS "issue_comments_fixture_backfill_idx"
+        ON "issue_comments" USING btree ("id")
+        WHERE "author_agent_id" IS NOT NULL;--> statement-breakpoint
+      DO $$
+      DECLARE
+        last_comment_id uuid := '00000000-0000-0000-0000-000000000000'::uuid;
+      BEGIN
+        LOOP
+          WITH batch AS MATERIALIZED (
+            SELECT c."id"
+            FROM "issue_comments" c
+            WHERE c."id" > last_comment_id
+              AND c."author_agent_id" IS NULL
+            ORDER BY c."id"
+            LIMIT 5000
+          )
+          UPDATE "issue_comments" c
+          SET "derived_author_agent_id" = NULL
+          FROM batch b
+          WHERE c."id" = b."id";
+
+          EXIT WHEN NOT FOUND;
+        END LOOP;
+      END $$;
+    `);
+
+    expect(result.newFindings.map((finding) => finding.rule)).toContain(
+      "batched-mutation-large-table-missing-index",
+    );
+  });
+
   it("passes a batched backfill over a small-bucket table", () => {
     const result = analyze(`
       DO $$
