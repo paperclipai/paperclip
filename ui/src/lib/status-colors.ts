@@ -43,16 +43,41 @@ export const issueStatusText: Record<string, string> = {
 export const issueStatusTextDefault = "text-muted-foreground";
 
 // ---------------------------------------------------------------------------
+// Brand `.task-chip` status palette (PAP-75 / status-reference.html)
+//
+// Colour-named, 1px border, light + dark — values straight from paperclip.ing
+// `brand.css`. Shared by the agents section (PAP-80) and the All Projects page
+// (PAP-91); PAP-99 brings it to issue/task status chips, adding `violet` for
+// `in_review`.
+// ---------------------------------------------------------------------------
+
+export type BrandChipColor = "gray" | "blue" | "amber" | "green" | "violet" | "red";
+
+export const brandChipBadge: Record<BrandChipColor, string> = {
+  gray: "bg-[#F5F3F0] text-[#52585D] border-[#A8AEB2] dark:bg-[#6e696024] dark:text-[#9A958A] dark:border-[#9e958a73]",
+  blue: "bg-[#DBEAFE] text-[#1D4ED8] border-[#2563EB] dark:bg-[#2563eb2e] dark:text-[#2563EB] dark:border-[#2563eb73]",
+  amber: "bg-[#FEF3C7] text-[#B45309] border-[#F59E0B] dark:bg-[#f59e0b24] dark:text-[#F59E0B] dark:border-[#f59e0b73]",
+  green: "bg-[#DCFCE7] text-[#188A3C] border-[#22C55E] dark:bg-[#22c55e1f] dark:text-[#22C55E] dark:border-[#22c55e73]",
+  violet: "bg-[#EDE9FE] text-[#5B21B6] border-[#7C3AED] dark:bg-[#7c3aed2e] dark:text-[#7C3AED] dark:border-[#7c3aed73]",
+  red: "bg-[#FEE2E2] text-[#991B1B] border-[#DC2626] dark:bg-[#dc26262e] dark:text-[#DC2626] dark:border-[#dc262673]",
+};
+
+// ---------------------------------------------------------------------------
 // Badge colors — used by StatusBadge for all entity types
 // ---------------------------------------------------------------------------
 
 export const statusBadge: Record<string, string> = {
   // Agent statuses
-  active: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
-  running: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300", // Gallery feedback r1: running = status blue (matches in_progress liveness), not cyan.
+  // Gallery feedback r3: agent chips route through the brand chip families
+  // (bordered .task-chip recipes) instead of ad-hoc tints. NOTE: `active` has
+  // no canonical agent status — user-ruled mapping to the brand GREEN family;
+  // `idle` is the gray family (was a yellow/amber tint); `error` rides the
+  // shared run-status red entry below.
+  active: `border ${brandChipBadge.green}`,
+  running: `border ${brandChipBadge.blue}`, // r1 made this blue; r3 routes through brandChipBadge.blue.
   scheduled_retry: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
-  paused: "bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300",
-  idle: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
+  paused: `border ${brandChipBadge.amber}`,
+  idle: `border ${brandChipBadge.gray}`,
   archived: "bg-muted text-muted-foreground",
 
   // Goal statuses
@@ -126,25 +151,6 @@ export const agentStatusMotion: Record<string, string> = {
   error: "hb-blink",
 };
 
-// ---------------------------------------------------------------------------
-// Brand `.task-chip` status palette (PAP-75 / status-reference.html)
-//
-// Colour-named, 1px border, light + dark — values straight from paperclip.ing
-// `brand.css`. Shared by the agents section (PAP-80) and the All Projects page
-// (PAP-91); PAP-99 brings it to issue/task status chips, adding `violet` for
-// `in_review`.
-// ---------------------------------------------------------------------------
-
-export type BrandChipColor = "gray" | "blue" | "amber" | "green" | "violet" | "red";
-
-export const brandChipBadge: Record<BrandChipColor, string> = {
-  gray: "bg-[#F5F3F0] text-[#52585D] border-[#A8AEB2] dark:bg-[#6e696024] dark:text-[#9A958A] dark:border-[#9e958a73]",
-  blue: "bg-[#DBEAFE] text-[#1D4ED8] border-[#2563EB] dark:bg-[#2563eb2e] dark:text-[#2563EB] dark:border-[#2563eb73]",
-  amber: "bg-[#FEF3C7] text-[#B45309] border-[#F59E0B] dark:bg-[#f59e0b24] dark:text-[#F59E0B] dark:border-[#f59e0b73]",
-  green: "bg-[#DCFCE7] text-[#188A3C] border-[#22C55E] dark:bg-[#22c55e1f] dark:text-[#22C55E] dark:border-[#22c55e73]",
-  violet: "bg-[#EDE9FE] text-[#5B21B6] border-[#7C3AED] dark:bg-[#7c3aed2e] dark:text-[#7C3AED] dark:border-[#7c3aed73]",
-  red: "bg-[#FEE2E2] text-[#991B1B] border-[#DC2626] dark:bg-[#dc26262e] dark:text-[#DC2626] dark:border-[#dc262673]",
-};
 
 /**
  * Brand blue TEXT pair (the text hues of `brandChipBadge.blue`) for non-chip

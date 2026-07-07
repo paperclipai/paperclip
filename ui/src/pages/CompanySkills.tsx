@@ -422,13 +422,13 @@ function TrustChip({ level }: { level: CompanySkillTrustLevel }) {
       icon: Folder,
       label: "Includes assets",
       tooltip: "Ships images, fonts, or other non-script files.",
-      className: "border-cyan-500/30 bg-cyan-500/10 text-cyan-200",
+      className: "border-cyan-500/30 bg-cyan-500/10 text-cyan-800 dark:text-cyan-200",
     },
     scripts_executables: {
       icon: AlertTriangle,
       label: "Includes scripts",
       tooltip: "Ships executable scripts. Review before installing.",
-      className: "border-amber-500/40 bg-amber-500/10 text-amber-200",
+      className: "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200",
     },
   } as const;
   const config = map[level] ?? map.markdown_only;
@@ -453,7 +453,7 @@ function CompatChip({ compatibility }: { compatibility: CompanySkillCompatibilit
       icon: HelpCircle,
       label: "Unknown format",
       tooltip: "Paperclip could not validate this skill as Agent Skills markdown. Install at your own risk.",
-      className: "border-yellow-500/40 bg-yellow-500/10 text-yellow-200",
+      className: "border-yellow-500/40 bg-yellow-500/10 text-yellow-800 dark:text-yellow-200",
     },
     invalid: {
       icon: XOctagon,
@@ -864,7 +864,7 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-1">
           {card.installed ? (
-            <span className="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-(length:--text-nano) text-emerald-300">
+            <span className="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-(length:--text-nano) text-emerald-700 dark:text-emerald-300">
               Installed
             </span>
           ) : null}
@@ -1727,7 +1727,7 @@ function CatalogDetailPane({
     );
   } else if (hashOutOfSync) {
     cta = (
-      <Button onClick={onUpdate} disabled={loadingPrimaryAction} className="border-amber-500/40 bg-amber-500/20 text-amber-100 hover:bg-amber-500/30">
+      <Button onClick={onUpdate} disabled={loadingPrimaryAction} className="border-amber-500/40 bg-amber-500/20 text-amber-900 dark:text-amber-100 hover:bg-amber-500/30">
         <ArrowUpCircle className="mr-1.5 h-3.5 w-3.5" />
         Update from catalog
       </Button>
@@ -1770,7 +1770,7 @@ function CatalogDetailPane({
           {hashOutOfSync ? (
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-(length:--text-micro) text-amber-200">
+                <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-(length:--text-micro) text-amber-800 dark:text-amber-200">
                   <ArrowUpCircle className="h-3 w-3" aria-hidden="true" />
                   Update available
                 </span>
@@ -1908,7 +1908,7 @@ function InstallPreviewDialog({
                 {skill.trustLevel === "markdown_only" ? (
                   <span className="text-muted-foreground">Safe</span>
                 ) : skill.trustLevel === "scripts_executables" ? (
-                  <span className="text-amber-200">Review required</span>
+                  <span className="text-amber-800 dark:text-amber-200">Review required</span>
                 ) : (
                   <span className="text-muted-foreground">Non-script assets</span>
                 )}
@@ -1952,7 +1952,7 @@ function InstallPreviewDialog({
           </div>
 
           {conflict ? (
-            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200">
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
               An existing skill with key <span className="font-mono">{conflict.key}</span> is installed (
               {conflict.sourceLabel ?? conflict.sourceType}). Installing will {defaultAction === "update" ? "overwrite the catalog content" : "replace the existing skill"}.
             </div>
@@ -2456,8 +2456,8 @@ function SkillVersionDiffDialog({
   );
   const lineClassesByKind: Record<DiffRow["kind"], string> = {
     context: "bg-transparent",
-    removed: "bg-red-500/10 text-red-100",
-    added: "bg-green-500/10 text-green-100",
+    removed: "bg-red-500/10 text-red-900 dark:text-red-100",
+    added: "bg-green-500/10 text-green-900 dark:text-green-100",
   };
   const markerByKind: Record<DiffRow["kind"], string> = {
     context: " ",

@@ -335,7 +335,7 @@ function HistoricalPreviewBanner({
     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
-          <p className="text-sm font-medium text-amber-200">
+          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
             Viewing revision {revisionNumber} (read-only)
           </p>
           <p className="text-xs text-muted-foreground">
@@ -374,7 +374,7 @@ function ConflictBanner({
     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
-          <p className="text-sm font-medium text-amber-200">Unsaved routine edits</p>
+          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Unsaved routine edits</p>
           <p className="text-xs text-muted-foreground">
             You changed {fieldsText} but haven&apos;t saved yet. Save or discard before previewing or
             restoring an older revision.
@@ -465,7 +465,7 @@ function RevisionList({
                 </span>
               )}
               {revision.restoredFromRevisionId && (
-                <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-200">
+                <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:text-amber-200">
                   Restored
                 </span>
               )}
@@ -611,7 +611,7 @@ function RevisionPreview({
               <p className="text-sm">
                 {row.value || <span className="text-muted-foreground">—</span>}
                 {row.differs && (
-                  <span className="ml-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-200">
+                  <span className="ml-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:text-amber-200">
                     differs from current
                   </span>
                 )}
@@ -738,7 +738,7 @@ function RestoreConfirmDialog({
             Previous run history is preserved.
           </li>
           {recreatedWebhookLabels.map((label) => (
-            <li key={label} className="flex items-start gap-2 text-amber-200">
+            <li key={label} className="flex items-start gap-2 text-amber-800 dark:text-amber-200">
               <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
               The webhook trigger {label} will be recreated with a new URL and secret. Paperclip will
               show the secret once after restore — copy it before closing.
@@ -858,10 +858,10 @@ function RoutineRevisionDiffModal({
                   {fieldChanges.map((change) => (
                     <tr key={change.field} className="border-t border-border/60">
                       <td className="px-3 py-2 align-top text-xs font-medium">{change.field}</td>
-                      <td className="px-3 py-2 align-top text-xs text-red-300">
+                      <td className="px-3 py-2 align-top text-xs text-red-700 dark:text-red-300">
                         {change.oldValue ?? "—"}
                       </td>
-                      <td className="px-3 py-2 align-top text-xs text-emerald-300">
+                      <td className="px-3 py-2 align-top text-xs text-emerald-700 dark:text-emerald-300">
                         {change.newValue ?? "—"}
                       </td>
                     </tr>
@@ -907,8 +907,8 @@ function RevisionPicker({
   tone: "red" | "green";
 }) {
   const toneClass = tone === "red"
-    ? "border-red-500/30 bg-red-500/10 text-red-300"
-    : "border-green-500/30 bg-green-500/10 text-green-300";
+    ? "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300"
+    : "border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-300";
   return (
     <div className="flex items-center gap-2">
       <span
@@ -941,8 +941,8 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
   }
   const lineClassesByKind: Record<DiffRow["kind"], string> = {
     context: "bg-transparent",
-    removed: "bg-red-500/10 text-red-100",
-    added: "bg-green-500/10 text-green-100",
+    removed: "bg-red-500/10 text-red-900 dark:text-red-100",
+    added: "bg-green-500/10 text-green-900 dark:text-green-100",
   };
   const markerByKind: Record<DiffRow["kind"], string> = {
     context: " ",

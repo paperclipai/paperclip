@@ -166,9 +166,9 @@ export function BudgetPolicyCard({
             className={cn(
               "inline-flex items-center gap-2 text-(length:--text-micro) uppercase tracking-(--tracking-caps)",
               summary.status === "hard_stop"
-                ? "text-red-300"
+                ? "text-red-700 dark:text-red-300"
                 : summary.status === "warning"
-                  ? "text-amber-200"
+                  ? "text-amber-800 dark:text-amber-200"
                   : "text-muted-foreground",
             )}
           >

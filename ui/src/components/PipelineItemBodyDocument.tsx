@@ -297,7 +297,7 @@ export function PipelineItemBodyDocument({
         <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="space-y-1">
-              <p className="text-sm font-medium text-amber-200">
+              <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
                 Viewing revision {selectedHistoricalRevision.revisionNumber}
               </p>
               <p className="text-xs text-muted-foreground">
@@ -415,7 +415,7 @@ export function PipelineItemBodyDocument({
           />
         ) : null}
         actionsSlot={editing ? (
-          <span className="text-(length:--text-micro) font-medium text-amber-300">● Editing · unsaved</span>
+          <span className="text-(length:--text-micro) font-medium text-amber-700 dark:text-amber-300">● Editing · unsaved</span>
         ) : (
           <Button variant="ghost" size="sm" className="h-auto gap-1.5 px-2 py-1 text-xs" onClick={beginEdit}>
             <FilePenLine className="h-3.5 w-3.5" />

@@ -92,7 +92,7 @@ export function DocumentFrameHeader({
                   size="sm"
                   className={cn(
                     "h-auto px-1.5 py-0 text-(length:--text-micro) font-normal text-muted-foreground hover:text-foreground",
-                    revisionMenu.historicalPreview && "text-amber-300 hover:text-amber-200",
+                    revisionMenu.historicalPreview && "text-amber-700 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200",
                   )}
                 >
                   rev {revisionMenu.displayedRevisionNumber}
