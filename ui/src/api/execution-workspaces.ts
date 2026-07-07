@@ -115,4 +115,13 @@ export const executionWorkspacesApi = {
       sanitizeWorkspaceRuntimeControlTarget(target),
     ),
   update: (id: string, data: Record<string, unknown>) => api.patch<ExecutionWorkspace>(`/execution-workspaces/${id}`, data),
+  /**
+   * Reconcile a git-worktree branch divergence via the S4 (`PAP-1586`) op.
+   * - `mode: "forward"` — server re-verifies `ancestryVerdict === "ancestor"` (client hint is
+   *   never trusted); no `reason` needed.
+   * - `mode: "override"` — audited break-glass; the server rejects agent actors, re-checks
+   *   runtime-manage permission, and requires a non-empty operator `reason`.
+   */
+  reconcile: (id: string, body: { mode: "forward" } | { mode: "override"; reason: string }) =>
+    api.post<ExecutionWorkspace>(`/execution-workspaces/${id}/reconcile`, body),
 };

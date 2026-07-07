@@ -12,6 +12,7 @@ import { accessApi, type CurrentBoardAccess } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
@@ -837,6 +838,10 @@ type IssueDetailChatTabProps = {
   onResolveRecoveryAction?: (outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome) => void;
   onReissueIsolatedRecoveryAction?: (request: import("../components/IssueRecoveryActionCard").RecoveryReissueRequest) => void;
   reissueIsolatedRecoveryActionPending?: boolean;
+  onReconcileForwardRecoveryAction?: () => void;
+  onBreakGlassOverrideRecoveryAction?: (reason: string) => void;
+  canBreakGlassRecoveryAction?: boolean;
+  reconcileRecoveryActionPending?: boolean;
   canFalsePositiveRecoveryAction?: boolean;
   legacyRecoverySourceIssue?: {
     identifier: string | null;
@@ -916,6 +921,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onResolveRecoveryAction,
   onReissueIsolatedRecoveryAction,
   reissueIsolatedRecoveryActionPending,
+  onReconcileForwardRecoveryAction,
+  onBreakGlassOverrideRecoveryAction,
+  canBreakGlassRecoveryAction,
+  reconcileRecoveryActionPending,
   canFalsePositiveRecoveryAction,
   legacyRecoverySourceIssue,
   comments,
@@ -1135,6 +1144,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         onResolveRecoveryAction={onResolveRecoveryAction}
         onReissueIsolatedRecoveryAction={onReissueIsolatedRecoveryAction}
         reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryActionPending}
+        onReconcileForwardRecoveryAction={onReconcileForwardRecoveryAction}
+        onBreakGlassOverrideRecoveryAction={onBreakGlassOverrideRecoveryAction}
+        canBreakGlassRecoveryAction={canBreakGlassRecoveryAction}
+        reconcileRecoveryActionPending={reconcileRecoveryActionPending}
         canFalsePositiveRecoveryAction={canFalsePositiveRecoveryAction}
         legacyRecoverySourceIssue={legacyRecoverySourceIssue ?? null}
         companyId={companyId}
@@ -3629,6 +3642,44 @@ export function IssueDetail() {
     [reissueIsolatedRecoveryAction.mutateAsync],
   );
 
+  // Actions 1 & 2 (workspace_validation): reconcile the recorded workspace branch to the live one
+  // via the S4 (PAP-1586) op. `forward` is the ancestry-proven safe path (server re-verifies);
+  // `override` is the audited, permission-gated break-glass carrying the operator's reason. Both
+  // resolve the matching recovery action server-side, so the task resumes via the existing flow.
+  const reconcileRecoveryAction = useMutation({
+    mutationFn: async (input: { mode: "forward" } | { mode: "override"; reason: string }) => {
+      const workspaceId = issue?.executionWorkspaceId;
+      if (!workspaceId) {
+        throw new Error("This task has no execution workspace to reconcile.");
+      }
+      return executionWorkspacesApi.reconcile(workspaceId, input);
+    },
+    onSuccess: () => {
+      invalidateIssueCollections();
+      pushToast({
+        title: "Workspace branch reconciled",
+        body: "The recorded branch now matches the live branch; the task will resume.",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Reconcile failed",
+        body: err instanceof Error ? err.message : "Unable to reconcile the workspace branch.",
+        tone: "error",
+      });
+    },
+  });
+  const handleReconcileForwardRecoveryAction = useCallback(() => {
+    void reconcileRecoveryAction.mutateAsync({ mode: "forward" });
+  }, [reconcileRecoveryAction.mutateAsync]);
+  const handleBreakGlassOverrideRecoveryAction = useCallback(
+    (reason: string) => {
+      void reconcileRecoveryAction.mutateAsync({ mode: "override", reason });
+    },
+    [reconcileRecoveryAction.mutateAsync],
+  );
+
   const treePreviewAffectedIssues = useMemo(
     () => (treeControlPreview?.issues ?? []).filter((candidate) => !candidate.skipped),
     [treeControlPreview],
@@ -4522,6 +4573,10 @@ export function IssueDetail() {
               onResolveRecoveryAction={handleResolveRecoveryAction}
               onReissueIsolatedRecoveryAction={handleReissueIsolatedRecoveryAction}
               reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryAction.isPending}
+              onReconcileForwardRecoveryAction={handleReconcileForwardRecoveryAction}
+              onBreakGlassOverrideRecoveryAction={handleBreakGlassOverrideRecoveryAction}
+              canBreakGlassRecoveryAction={canResolveBoardRecoveryAction}
+              reconcileRecoveryActionPending={reconcileRecoveryAction.isPending}
               canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}
               legacyRecoverySourceIssue={legacyRecoverySourceIssue}
               comments={threadComments}
