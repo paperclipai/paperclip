@@ -651,6 +651,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function summarizeZeroCostProcessLostStreak(companyId: string, issueId: string) {
     const rows = await db
       .select({
+        id: heartbeatRuns.id,
         status: heartbeatRuns.status,
         errorCode: heartbeatRuns.errorCode,
         usageJson: heartbeatRuns.usageJson,
@@ -668,8 +669,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const breakerRuns = rows.map((row) => breakerRunFromRow(row));
     const streak = zcplStreakFromRuns(breakerRuns);
-    const latestRunHadUsage = rows.length > 0 ? rows[0].usageJson != null : false;
-    return { streak, latestRunHadUsage };
+    // Derive the latest-run id AND its usage flag from this same query snapshot so the shadow log
+    // pairs a consistent (run id, had-usage). Reading the id from a separate earlier query could
+    // mismatch it against usage/streak data if a run is inserted between the two queries — the
+    // paid-run cross-check must reference the run it actually measured.
+    const latestRow = rows[0] ?? null;
+    const latestRunId = latestRow?.id ?? null;
+    const latestRunHadUsage = latestRow ? latestRow.usageJson != null : false;
+    return { streak, latestRunId, latestRunHadUsage };
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string, agentId?: string | null) {
@@ -3244,7 +3251,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         // + manager notify + persisted trip state) lands in the tracked Stage-2 follow-up once
         // the zero-false-trip gate passes. See recovery/continuation-breaker.ts.
         if (continuationBreakerCfg.enabled) {
-          const { streak, latestRunHadUsage } = await summarizeZeroCostProcessLostStreak(
+          const { streak, latestRunId, latestRunHadUsage } = await summarizeZeroCostProcessLostStreak(
             issue.companyId,
             issue.id,
           );
@@ -3258,7 +3265,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
                 mode: continuationBreakerCfg.mode,
                 issueId: issue.id,
                 issueIdentifier: issue.identifier,
-                latestRunId: latestRun?.id ?? null,
+                // latestRunId + latestRunHadUsage come from the SAME query snapshot as `streak`, so
+                // the paid-run cross-check always references the run it actually measured. The scan's
+                // own latest-run id is logged separately for correlation.
+                latestRunId,
+                scanLatestRunId: latestRun?.id ?? null,
                 streak,
                 threshold: continuationBreakerCfg.N,
                 verdict: decision.verdict,

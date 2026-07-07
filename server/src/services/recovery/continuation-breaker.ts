@@ -95,6 +95,12 @@ export interface BreakerRun {
   errorCode: string | null | undefined;
   usageJson: Record<string, unknown> | null | undefined;
   secretManifest?: readonly BreakerSecretManifestEntry[] | null;
+  // True when a secret manifest was expected but could not be read (a present-but-malformed
+  // contextSnapshot, or a `paperclipSecrets` block whose `manifest` is not an array). We cannot
+  // then confirm the absence of a failed secret, so — conservatively — such a run is NOT treated
+  // as a clean startup loss. This keeps the load-bearing "never false-trip" guarantee: an
+  // unreadable manifest resets the streak instead of counting as clean.
+  secretManifestUnreadable?: boolean;
 }
 
 /**
@@ -104,6 +110,7 @@ export interface BreakerRun {
 export function isZeroCostProcessLost(run: BreakerRun): boolean {
   if (!(run.status === "failed" && run.errorCode === "process_lost")) return false;
   if (run.usageJson != null) return false; // paid / usage-bearing run can never match
+  if (run.secretManifestUnreadable) return false; // cannot confirm no auth defect => not clean
   const manifest = run.secretManifest;
   if (manifest && manifest.length > 0) {
     if (!manifest.every((entry) => entry.outcome === "success")) return false;
@@ -121,25 +128,48 @@ export function breakerRunFromRow(row: {
   usageJson: Record<string, unknown> | null | undefined;
   contextSnapshot: unknown;
 }): BreakerRun {
+  const { manifest, unreadable } = readSecretManifest(row.contextSnapshot);
   return {
     status: row.status,
     errorCode: row.errorCode,
     usageJson: row.usageJson,
-    secretManifest: readSecretManifest(row.contextSnapshot),
+    secretManifest: manifest,
+    secretManifestUnreadable: unreadable,
   };
 }
 
-function readSecretManifest(contextSnapshot: unknown): BreakerSecretManifestEntry[] | null {
-  if (!contextSnapshot || typeof contextSnapshot !== "object") return null;
+/**
+ * Resolve the secret manifest from a run's contextSnapshot, distinguishing three cases:
+ * - **Absent** (`manifest: null, unreadable: false`): no run-scoped secrets recorded. The platform
+ *   only writes `contextSnapshot.paperclipSecrets` when secrets exist, so its absence is a positive
+ *   "no secrets" signal — a clean startup loss can legitimately match.
+ * - **Readable** (`manifest: Entry[], unreadable: false`): each entry's outcome is inspected;
+ *   any non-`success` (including a malformed entry) is treated as a `failure`, never dropped.
+ * - **Unreadable** (`manifest: null, unreadable: true`): the contextSnapshot is present but not an
+ *   inspectable object, or `paperclipSecrets` exists but its `manifest` is not an array. We cannot
+ *   confirm the absence of a failed secret, so the caller must not count the run as clean.
+ */
+function readSecretManifest(
+  contextSnapshot: unknown,
+): { manifest: BreakerSecretManifestEntry[] | null; unreadable: boolean } {
+  if (contextSnapshot == null) return { manifest: null, unreadable: false };
+  if (typeof contextSnapshot !== "object") return { manifest: null, unreadable: true };
   const secrets = (contextSnapshot as Record<string, unknown>).paperclipSecrets;
-  if (!secrets || typeof secrets !== "object") return null;
+  if (secrets == null) return { manifest: null, unreadable: false };
+  if (typeof secrets !== "object") return { manifest: null, unreadable: true };
   const manifest = (secrets as Record<string, unknown>).manifest;
-  if (!Array.isArray(manifest)) return null;
-  return manifest
-    .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
-    .map((entry): BreakerSecretManifestEntry => ({
-      outcome: entry.outcome === "success" ? "success" : "failure",
-    }));
+  if (!Array.isArray(manifest)) return { manifest: null, unreadable: true };
+  return {
+    manifest: manifest.map((entry): BreakerSecretManifestEntry => ({
+      outcome:
+        entry != null &&
+        typeof entry === "object" &&
+        (entry as Record<string, unknown>).outcome === "success"
+          ? "success"
+          : "failure",
+    })),
+    unreadable: false,
+  };
 }
 
 /**

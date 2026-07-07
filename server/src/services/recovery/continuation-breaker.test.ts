@@ -77,9 +77,37 @@ describe("breakerRunFromRow — real heartbeat_runs shape", () => {
     expect(isZeroCostProcessLost(mapped)).toBe(false);
   });
 
-  it("tolerates missing/garbage contextSnapshot", () => {
+  it("absent contextSnapshot / no paperclipSecrets => clean (no secrets recorded) => TRUE", () => {
+    // null snapshot or a snapshot without paperclipSecrets is a positive "no secrets" signal.
     expect(isZeroCostProcessLost(breakerRunFromRow({ status: "failed", errorCode: "process_lost", usageJson: null, contextSnapshot: null }))).toBe(true);
-    expect(isZeroCostProcessLost(breakerRunFromRow({ status: "failed", errorCode: "process_lost", usageJson: null, contextSnapshot: "nope" }))).toBe(true);
+    expect(isZeroCostProcessLost(breakerRunFromRow({ status: "failed", errorCode: "process_lost", usageJson: null, contextSnapshot: { issueId: "x" } }))).toBe(true);
+  });
+
+  it("UNREADABLE manifest is NOT counted clean (conservative — no false trips)", () => {
+    // Malformed snapshot: cannot confirm the absence of a failed secret.
+    const garbage = breakerRunFromRow({ status: "failed", errorCode: "process_lost", usageJson: null, contextSnapshot: "nope" });
+    expect(garbage.secretManifestUnreadable).toBe(true);
+    expect(isZeroCostProcessLost(garbage)).toBe(false);
+    // paperclipSecrets present but manifest is not an array.
+    const badManifest = breakerRunFromRow({ status: "failed", errorCode: "process_lost", usageJson: null, contextSnapshot: { paperclipSecrets: { manifest: "oops" } } });
+    expect(badManifest.secretManifestUnreadable).toBe(true);
+    expect(isZeroCostProcessLost(badManifest)).toBe(false);
+    // paperclipSecrets is a non-object.
+    expect(isZeroCostProcessLost(breakerRunFromRow({ status: "failed", errorCode: "process_lost", usageJson: null, contextSnapshot: { paperclipSecrets: 42 } }))).toBe(false);
+  });
+
+  it("a malformed manifest ENTRY is treated as failure (not dropped) => FALSE", () => {
+    const mapped = breakerRunFromRow({
+      status: "failed",
+      errorCode: "process_lost",
+      usageJson: null,
+      contextSnapshot: { paperclipSecrets: { manifest: [{ outcome: "success" }, "bogus"] } },
+    });
+    expect(isZeroCostProcessLost(mapped)).toBe(false);
+  });
+
+  it("explicit secretManifestUnreadable flag short-circuits the matcher", () => {
+    expect(isZeroCostProcessLost({ status: "failed", errorCode: "process_lost", usageJson: null, secretManifest: null, secretManifestUnreadable: true })).toBe(false);
   });
 });
 
