@@ -192,6 +192,55 @@ describe("DocumentAnnotationLayer", () => {
     }
   });
 
+  it("does not capture annotation comments from bare contenteditable selections", async () => {
+    const body = document.createElement("div");
+    const editable = document.createElement("div");
+    editable.setAttribute("contenteditable", "");
+    const text = document.createTextNode("Editing routine instructions");
+    editable.appendChild(text);
+    body.appendChild(editable);
+
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, "Editing".length);
+    const getSelectionSpy = vi.spyOn(window, "getSelection").mockReturnValue({
+      rangeCount: 1,
+      isCollapsed: false,
+      getRangeAt: () => range,
+    } as unknown as Selection);
+    const onPendingAnchorChange = vi.fn();
+    root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root?.render(
+          <DocumentAnnotationLayer
+            containerRef={{ current: body }}
+            markdown="Editing routine instructions"
+            threads={[]}
+            focusedThreadId={null}
+            onThreadFocus={vi.fn()}
+            pendingAnchor={null}
+            onPendingAnchorChange={onPendingAnchorChange}
+            onRequestComment={vi.fn()}
+          />,
+        );
+        await new Promise((resolve) => window.requestAnimationFrame(resolve));
+      });
+
+      await act(async () => {
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+
+      expect(mockGetContainerTextOffset).not.toHaveBeenCalled();
+      expect(mockBuildAnchorFromContainerSelection).not.toHaveBeenCalled();
+      expect(onPendingAnchorChange).toHaveBeenCalledWith(null);
+      expect(container.querySelector('[data-testid="document-annotation-selection-toolbar"]')).toBeNull();
+    } finally {
+      getSelectionSpy.mockRestore();
+    }
+  });
+
   it("uses native CSS highlights for visual paint when the browser supports them", async () => {
     const originalCss = globalThis.CSS;
     const originalHighlight = (globalThis as { Highlight?: unknown }).Highlight;

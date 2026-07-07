@@ -151,7 +151,14 @@ function selectionTouchesEditableElement(container: HTMLElement, range: Range) {
   for (const node of [range.startContainer, range.endContainer, range.commonAncestorContainer]) {
     const element = elementFromNode(node);
     if (!element || !container.contains(element)) continue;
-    if (element.closest("input, textarea, select, [contenteditable='true'], [contenteditable='plaintext-only']")) {
+    const editableElement = element.closest("input, textarea, select, [contenteditable]");
+    if (!(editableElement instanceof HTMLElement)) continue;
+    if (editableElement.matches("input, textarea, select")) return true;
+    const contentEditableValue = editableElement.getAttribute("contenteditable");
+    if (
+      editableElement.isContentEditable ||
+      (contentEditableValue !== null && contentEditableValue.toLowerCase() !== "false")
+    ) {
       return true;
     }
   }
