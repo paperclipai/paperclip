@@ -37,6 +37,9 @@ vi.mock("@/components/ui/tooltip", () => ({
   TooltipContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   TooltipTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => ({ selectedCompany: null }),
+}));
 vi.mock("./AgentIconPicker", () => ({ AgentIcon: () => null }));
 vi.mock("./StatusBadge", () => ({ StatusBadge: ({ status }: { status: string }) => <span>{status}</span> }));
 vi.mock("./IssueLinkQuicklook", () => ({
@@ -183,6 +186,66 @@ describe("IssueChatThread system notice routing", () => {
     expect(container.textContent).toContain("CTO");
     const toggle = container.querySelector("button[aria-expanded]");
     expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("renders child review escalations as a compact linked action card", () => {
+    const comment: IssueChatComment = {
+      id: "comment-child-review-escalation",
+      companyId: "company-1",
+      issueId: "parent-1",
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      body: [
+        "Paperclip escalated a child review lane without a reviewer handoff.",
+        "",
+        "Parent issue:",
+        "Drive this 4 issue to sign off please",
+        "SME-6140",
+        "Child issue:",
+        "Re-QA to sign-off: Contact & Company Phone Number Finding (S12)",
+        "SME-6141",
+        "Child assignee: ee68341a-c7e9-4517-a1a8-2ea62ed40137",
+        "Source child comment: adcb75d1-8f3a-4992-8606-5966a1dc792c",
+        "Live decision card is now up on this issue.",
+      ].join("\n"),
+      presentation: {
+        kind: "system_notice",
+        tone: "warning",
+        title: "Review handoff needed",
+        detailsDefaultOpen: false,
+      },
+      metadata: {
+        version: 1,
+        sections: [
+          {
+            title: "Escalation",
+            rows: [
+              { type: "key_value", label: "kind", value: "child_in_review_without_reviewer_handoff" },
+              { type: "issue_link", label: "Parent issue", identifier: "SME-6140", title: "Drive this 4 issue to sign off please" },
+              { type: "issue_link", label: "Child issue", identifier: "SME-6141", title: "Re-QA to sign-off: Contact & Company Phone Number Finding (S12)" },
+              { type: "key_value", label: "sourceCommentId", value: "adcb75d1-8f3a-4992-8606-5966a1dc792c" },
+            ],
+          },
+        ],
+      },
+      ...baseTimestamps,
+    };
+
+    renderThread([comment]);
+
+    const notice = container.querySelector('[data-testid="child-review-escalation-notice"]');
+    expect(notice).not.toBeNull();
+    expect(notice?.textContent).toContain("Open child issue");
+    expect(notice?.textContent).toContain("Open parent");
+    expect(notice?.textContent).toContain("SME-6141");
+    expect(notice?.textContent).toContain("SME-6140");
+    expect(notice?.textContent).not.toContain("ee68341a-c7e9-4517-a1a8-2ea62ed40137");
+    expect(notice?.textContent).not.toContain("Live decision card is now up");
+
+    const links = Array.from(notice?.querySelectorAll("a") ?? []).map((link) => link.getAttribute("href"));
+    expect(links).toContain("/issues/SME-6141");
+    expect(links).toContain("/issues/SME-6140");
   });
 
   it("falls back to legacy user bubble + handoff callout for old text-only comments", () => {

@@ -503,6 +503,62 @@ const issueThreadNoticeReviewComments: IssueChatComment[] = [
     },
     createdAt: new Date("2026-04-20T13:48:00.000Z"),
   }),
+  createComment({
+    id: "comment-child-review-escalation",
+    authorType: "system",
+    authorAgentId: null,
+    authorUserId: null,
+    body: [
+      "Paperclip escalated a child review lane without a reviewer handoff.",
+      "",
+      "Parent issue:",
+      "Drive this 4 issue to sign off please, create dedicated execution lane for each of it",
+      "SME-6140",
+      "Child issue:",
+      "Re-QA to sign-off: Contact & Company Phone Number Finding (S12)",
+      "SME-6141",
+      "Child assignee: ee68341a-c7e9-4517-a1a8-2ea62ed40137",
+      "Review actor: ee68341a-c7e9-4517-a1a8-2ea62ed40137",
+      "Source child comment: adcb75d1-8f3a-4992-8606-5966a1dc792c",
+      "Live decision card is now up on this issue: how do you want to proceed on the two dead paid-tier keys.",
+    ].join("\n"),
+    presentation: {
+      kind: "system_notice",
+      tone: "warning",
+      title: "Review handoff needed",
+      detailsDefaultOpen: false,
+    },
+    metadata: {
+      version: 1,
+      sections: [
+        {
+          title: "Escalation",
+          rows: [
+            { type: "key_value", label: "kind", value: "child_in_review_without_reviewer_handoff" },
+            {
+              type: "issue_link",
+              label: "Parent issue",
+              identifier: "SME-6140",
+              title: "Drive this 4 issue to sign off please, create dedicated execution lane for each of it",
+            },
+            {
+              type: "issue_link",
+              label: "Child issue",
+              identifier: "SME-6141",
+              title: "Re-QA to sign-off: Contact & Company Phone Number Finding (S12)",
+            },
+            { type: "key_value", label: "sourceCommentId", value: "adcb75d1-8f3a-4992-8606-5966a1dc792c" },
+            {
+              type: "key_value",
+              label: "sourceCommentExcerpt",
+              value: "Live decision card is now up on this issue: how do you want to proceed on the two dead paid-tier keys.",
+            },
+          ],
+        },
+      ],
+    },
+    createdAt: new Date("2026-04-20T13:52:00.000Z"),
+  }),
 ];
 
 const issueThreadNoticeReviewTimelineEvents: IssueTimelineEvent[] = [

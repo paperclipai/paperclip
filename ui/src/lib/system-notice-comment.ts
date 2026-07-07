@@ -10,6 +10,22 @@ import type {
   SystemNoticeTone,
 } from "../components/SystemNotice";
 
+export type ChildReviewEscalationIssueLink = {
+  id?: string;
+  identifier: string;
+  title?: string;
+  href: string;
+};
+
+export type ChildReviewEscalationNotice = {
+  parent?: ChildReviewEscalationIssueLink;
+  child: ChildReviewEscalationIssueLink;
+  sourceCommentId?: string;
+  sourceCommentExcerpt?: string;
+  childAssigneeAgentId?: string;
+  reviewActorAgentId?: string;
+};
+
 const TONE_LABEL: Record<SystemNoticeTone, string> = {
   neutral: "System notice",
   info: "System notice",
@@ -88,6 +104,165 @@ export function mapCommentMetadataToSystemNoticeSections(
       return out;
     })
     .filter((s): s is SystemNoticeMetadataSection => s !== null);
+}
+
+function commentMetadataKeyValue(
+  metadata: IssueCommentMetadata | null | undefined,
+  label: string,
+) {
+  if (!metadata?.sections) return null;
+  for (const section of metadata.sections) {
+    for (const row of section.rows) {
+      if (row.type === "key_value" && row.label === label) return row.value;
+    }
+  }
+  return null;
+}
+
+function nonEmptyMetadataValue(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed === "none" || trimmed === "unknown" || trimmed === "unassigned") {
+    return null;
+  }
+  return trimmed;
+}
+
+function commentMetadataIssueLink(
+  metadata: IssueCommentMetadata | null | undefined,
+  labels: readonly string[],
+) {
+  const labelSet = new Set(labels);
+  for (const section of metadata?.sections ?? []) {
+    for (const row of section.rows) {
+      if (row.type === "issue_link" && row.label && labelSet.has(row.label)) {
+        return row;
+      }
+    }
+  }
+  return null;
+}
+
+function issueHref(identifier: string) {
+  return `/issues/${encodeURIComponent(identifier)}`;
+}
+
+function issueLinkFromMetadata(input: {
+  metadata: IssueCommentMetadata | null | undefined;
+  labels: readonly string[];
+  identifierKey: string;
+  idKey: string;
+  titleKey: string;
+  fallbackIdentifier?: string | null;
+}): ChildReviewEscalationIssueLink | null {
+  const issueRow = commentMetadataIssueLink(input.metadata, input.labels);
+  const identifier =
+    nonEmptyMetadataValue(issueRow?.identifier ?? undefined)
+    ?? nonEmptyMetadataValue(commentMetadataKeyValue(input.metadata, input.identifierKey))
+    ?? nonEmptyMetadataValue(input.fallbackIdentifier)
+    ?? nonEmptyMetadataValue(issueRow?.issueId ?? undefined)
+    ?? nonEmptyMetadataValue(commentMetadataKeyValue(input.metadata, input.idKey));
+  if (!identifier) return null;
+
+  const title =
+    nonEmptyMetadataValue(issueRow?.title ?? undefined)
+    ?? nonEmptyMetadataValue(commentMetadataKeyValue(input.metadata, input.titleKey))
+    ?? undefined;
+  const id =
+    nonEmptyMetadataValue(issueRow?.issueId ?? undefined)
+    ?? nonEmptyMetadataValue(commentMetadataKeyValue(input.metadata, input.idKey))
+    ?? undefined;
+
+  return {
+    id,
+    identifier,
+    title,
+    href: issueHref(identifier),
+  };
+}
+
+const ISSUE_IDENTIFIER_RE = /\b[A-Z][A-Z0-9]+-\d+\b/;
+
+function issueIdentifierFromBodySection(
+  bodyText: string,
+  label: string,
+  stopLabels: readonly string[],
+) {
+  const start = bodyText.indexOf(`${label}:`);
+  if (start < 0) return null;
+  let end = bodyText.length;
+  for (const stopLabel of stopLabels) {
+    const stop = bodyText.indexOf(`${stopLabel}:`, start + label.length + 1);
+    if (stop >= 0 && stop < end) end = stop;
+  }
+  const section = bodyText.slice(start, end);
+  return section.match(ISSUE_IDENTIFIER_RE)?.[0] ?? null;
+}
+
+export function getChildReviewEscalationNotice(input: {
+  metadata: IssueCommentMetadata | null | undefined;
+  bodyText: string;
+}): ChildReviewEscalationNotice | null {
+  const kind = commentMetadataKeyValue(input.metadata, "kind");
+  const bodyLooksLikeChildReviewEscalation =
+    input.bodyText.includes("child review lane without a reviewer handoff");
+  if (kind !== "child_in_review_without_reviewer_handoff" && !bodyLooksLikeChildReviewEscalation) {
+    return null;
+  }
+
+  const parentIdentifierFromBody = issueIdentifierFromBodySection(input.bodyText, "Parent issue", [
+    "Child issue",
+    "Child assignee",
+    "Review actor",
+    "Reason",
+  ]);
+  const childIdentifierFromBody = issueIdentifierFromBodySection(input.bodyText, "Child issue", [
+    "Child assignee",
+    "Review actor",
+    "Reason",
+    "Source child comment",
+  ]);
+
+  const child = issueLinkFromMetadata({
+    metadata: input.metadata,
+    labels: ["Child issue", "Child"],
+    identifierKey: "childIdentifier",
+    idKey: "childIssueId",
+    titleKey: "childTitle",
+    fallbackIdentifier: childIdentifierFromBody,
+  });
+  if (!child) return null;
+
+  const parent = issueLinkFromMetadata({
+    metadata: input.metadata,
+    labels: ["Parent issue", "Parent"],
+    identifierKey: "parentIdentifier",
+    idKey: "parentIssueId",
+    titleKey: "parentTitle",
+    fallbackIdentifier: parentIdentifierFromBody,
+  });
+
+  return {
+    child,
+    parent: parent ?? undefined,
+    sourceCommentId: nonEmptyMetadataValue(commentMetadataKeyValue(input.metadata, "sourceCommentId")) ?? undefined,
+    sourceCommentExcerpt: nonEmptyMetadataValue(commentMetadataKeyValue(input.metadata, "sourceCommentExcerpt")) ?? undefined,
+    childAssigneeAgentId: nonEmptyMetadataValue(commentMetadataKeyValue(input.metadata, "childAssigneeAgentId")) ?? undefined,
+    reviewActorAgentId: nonEmptyMetadataValue(commentMetadataKeyValue(input.metadata, "actorAgentId")) ?? undefined,
+  };
+}
+
+export function compactSystemNoticeBodyText(input: {
+  metadata: IssueCommentMetadata | null | undefined;
+  bodyText: string;
+}) {
+  const childReviewEscalation = getChildReviewEscalationNotice(input);
+  if (!childReviewEscalation) return input.bodyText;
+
+  return [
+    "Paperclip found a child review lane without a reviewer handoff.",
+    "",
+    `Action needed: take ownership of ${childReviewEscalation.child.identifier} now. Reassign it to a reviewer/worker, answer the pending decision, create a real blocker, escalate to board/user, or record an intentional manual resolution.`,
+  ].join("\n");
 }
 
 export function systemNoticeLabelForTone(

@@ -6,6 +6,7 @@ import { BreadcrumbProvider } from "@/context/BreadcrumbContext";
 import { CompanyProvider } from "@/context/CompanyContext";
 import { DialogProvider } from "@/context/DialogContext";
 import { EditorAutocompleteProvider } from "@/context/EditorAutocompleteContext";
+import { OrgProvider } from "@/context/OrgContext";
 import { PanelProvider } from "@/context/PanelContext";
 import { SidebarProvider } from "@/context/SidebarContext";
 import { ThemeProvider } from "@/context/ThemeContext";
@@ -64,6 +65,10 @@ function installStorybookApiFixtures() {
       return Response.json(storybookCompanies);
     }
 
+    if (url.pathname === "/api/organizations") {
+      return Response.json([]);
+    }
+
     if (url.pathname === "/api/companies/company-storybook/user-directory") {
       return Response.json({
         users: [
@@ -95,6 +100,19 @@ function installStorybookApiFixtures() {
       return Response.json({
         enableIsolatedWorkspaces: true,
         autoRestartDevServerWhenIdle: false,
+      });
+    }
+
+    if (url.pathname === "/api/instance/settings/general") {
+      return Response.json({
+        censorUsernameInLogs: false,
+        keyboardShortcuts: true,
+        feedbackDataSharingPreference: "prompt",
+        backupRetention: {
+          dailyDays: 7,
+          weeklyWeeks: 4,
+          monthlyMonths: 1,
+        },
       });
     }
 
@@ -208,6 +226,9 @@ function installStorybookApiFixtures() {
       if (resource === "agents") {
         return Response.json(companyId === "company-storybook" ? storybookAgents : []);
       }
+      if (resource === "skills") {
+        return Response.json([]);
+      }
       if (resource === "projects") {
         return Response.json(companyId === "company-storybook" ? storybookProjects : []);
       }
@@ -302,21 +323,23 @@ function StorybookProviders({
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <MemoryRouter initialEntries={["/PAP/storybook"]}>
-          <CompanyProvider>
-            <EditorAutocompleteProvider>
-              <ToastProvider>
-                <TooltipProvider>
-                  <BreadcrumbProvider>
-                    <SidebarProvider>
-                      <PanelProvider>
-                        <DialogProvider>{children}</DialogProvider>
-                      </PanelProvider>
-                    </SidebarProvider>
-                  </BreadcrumbProvider>
-                </TooltipProvider>
-              </ToastProvider>
-            </EditorAutocompleteProvider>
-          </CompanyProvider>
+          <OrgProvider>
+            <CompanyProvider>
+              <EditorAutocompleteProvider>
+                <ToastProvider>
+                  <TooltipProvider>
+                    <BreadcrumbProvider>
+                      <SidebarProvider>
+                        <PanelProvider>
+                          <DialogProvider>{children}</DialogProvider>
+                        </PanelProvider>
+                      </SidebarProvider>
+                    </BreadcrumbProvider>
+                  </TooltipProvider>
+                </ToastProvider>
+              </EditorAutocompleteProvider>
+            </CompanyProvider>
+          </OrgProvider>
         </MemoryRouter>
       </ThemeProvider>
     </QueryClientProvider>

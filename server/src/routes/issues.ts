@@ -587,6 +587,10 @@ function buildChildReviewEscalationMarker(input: { childIssueId: string; sourceC
   return `${CHILD_REVIEW_ESCALATION_MARKER}: \`${input.childIssueId}:${input.sourceCommentId ?? "status"}\``;
 }
 
+function buildChildReviewEscalationDedupeKey(input: { childIssueId: string; sourceCommentId?: string | null }) {
+  return `${input.childIssueId}:${input.sourceCommentId ?? "status"}`;
+}
+
 function issueLabel(issue: { identifier?: string | null; id: string }) {
   return issue.identifier ?? issue.id;
 }
@@ -612,6 +616,53 @@ function childBlockedEscalationCommentMatches(input: {
   if (!createdAt || Number.isNaN(createdAt.getTime())) return true;
 
   return input.now.getTime() - createdAt.getTime() <= CHILD_BLOCKED_ESCALATION_COOLDOWN_MS;
+}
+
+function commentMetadataKeyValue(metadata: unknown, label: string) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const sections = (metadata as { sections?: unknown }).sections;
+  if (!Array.isArray(sections)) return null;
+
+  for (const section of sections) {
+    if (!section || typeof section !== "object" || Array.isArray(section)) continue;
+    const rows = (section as { rows?: unknown }).rows;
+    if (!Array.isArray(rows)) continue;
+    for (const row of rows) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+      const candidate = row as { type?: unknown; label?: unknown; value?: unknown };
+      if (candidate.type === "key_value" && candidate.label === label && typeof candidate.value === "string") {
+        return candidate.value;
+      }
+    }
+  }
+
+  return null;
+}
+
+function childReviewEscalationCommentMatches(input: {
+  comment: { body: string; metadata?: unknown };
+  childIssueId: string;
+  sourceCommentId?: string | null;
+}) {
+  const marker = buildChildReviewEscalationMarker({
+    childIssueId: input.childIssueId,
+    sourceCommentId: input.sourceCommentId,
+  });
+  if (input.comment.body.includes(marker)) return true;
+
+  const kind = commentMetadataKeyValue(input.comment.metadata, "kind");
+  if (kind !== "child_in_review_without_reviewer_handoff") return false;
+
+  const expectedDedupeKey = buildChildReviewEscalationDedupeKey({
+    childIssueId: input.childIssueId,
+    sourceCommentId: input.sourceCommentId,
+  });
+  const dedupeKey = commentMetadataKeyValue(input.comment.metadata, "dedupeKey");
+  if (dedupeKey) return dedupeKey === expectedDedupeKey;
+
+  const childIssueId = commentMetadataKeyValue(input.comment.metadata, "childIssueId");
+  const sourceCommentId = commentMetadataKeyValue(input.comment.metadata, "sourceCommentId");
+  return childIssueId === input.childIssueId && sourceCommentId === (input.sourceCommentId ?? "none");
 }
 
 function buildChildBlockedEscalationComment(input: {
@@ -655,24 +706,11 @@ function buildChildReviewEscalationComment(input: {
   };
   actorAgentId: string | null;
   childComment: { id: string; body: string } | null;
-  marker: string;
 }) {
-  const childCommentSnippet = input.childComment?.body.trim().slice(0, 700) ?? "";
   return [
-    "Paperclip escalated a child review lane without a reviewer handoff.",
+    "Paperclip found a child review lane without a reviewer handoff.",
     "",
-    `- Parent issue: ${issueLabel(input.parent)} ${input.parent.title}`,
-    `- Child issue: ${issueLabel(input.child)} ${input.child.title}`,
-    `- Child assignee: ${input.child.assigneeAgentId ?? "unassigned"}`,
-    `- Review actor: ${input.actorAgentId ?? "unknown"}`,
-    "- Reason: child lane is `in_review`, but it remains assigned to the same agent that is asking for manager/CEO action. That is not a live review path.",
-    input.childComment
-      ? `- Source child comment: \`${input.childComment.id}\`${childCommentSnippet ? `\n\n${childCommentSnippet}` : ""}`
-      : "- Source child comment: none",
-    "",
-    "Manager next action: take ownership of the review path now. Answer the clarification, reassign the child to the correct reviewer/worker, create a real blocker issue if outside input is required, escalate to board/user, or record an intentional manual resolution. Do not leave the parent waiting on a self-owned review lane.",
-    "",
-    input.marker,
+    `Action needed: take ownership of ${issueLabel(input.child)} now. Reassign it to a reviewer/worker, answer the pending decision, create a real blocker, escalate to board/user, or record an intentional manual resolution.`,
   ].join("\n");
 }
 
@@ -5169,14 +5207,21 @@ export function issueRoutes(
             issueAllowsAgentWakeups(parent) &&
             !["done", "cancelled"].includes(parent.status)
           ) {
-            const marker = buildChildReviewEscalationMarker({
+            const dedupeKey = buildChildReviewEscalationDedupeKey({
               childIssueId: issue.id,
               sourceCommentId: comment?.id ?? null,
             });
             const recentParentComments = await svc.listComments(parent.id, { order: "desc", limit: 50 });
-            const alreadyEscalated = recentParentComments.some((candidate) => candidate.body.includes(marker));
+            const alreadyEscalated = recentParentComments.some((candidate) =>
+              childReviewEscalationCommentMatches({
+                comment: candidate,
+                childIssueId: issue.id,
+                sourceCommentId: comment?.id ?? null,
+              }),
+            );
             let escalationCommentId: string | null = null;
             if (!alreadyEscalated) {
+              const sourceCommentExcerpt = comment ? collapseWhitespace(comment.body).slice(0, 700) : null;
               const escalationComment = await svc.addComment(
                 parent.id,
                 buildChildReviewEscalationComment({
@@ -5194,11 +5239,16 @@ export function issueRoutes(
                   },
                   actorAgentId: actor.agentId,
                   childComment: comment ? { id: comment.id, body: comment.body } : null,
-                  marker,
                 }),
                 {},
                 {
                   authorType: "system",
+                  presentation: {
+                    kind: "system_notice",
+                    tone: "warning",
+                    title: "Review handoff needed",
+                    detailsDefaultOpen: false,
+                  },
                   metadata: {
                     version: 1,
                     sections: [
@@ -5206,10 +5256,29 @@ export function issueRoutes(
                         title: "Escalation",
                         rows: [
                           { type: "key_value", label: "kind", value: "child_in_review_without_reviewer_handoff" },
+                          {
+                            type: "issue_link",
+                            label: "Parent issue",
+                            identifier: parent.identifier ?? parent.id,
+                            title: collapseWhitespace(parent.title).slice(0, 240),
+                          },
+                          {
+                            type: "issue_link",
+                            label: "Child issue",
+                            identifier: issue.identifier ?? issue.id,
+                            title: collapseWhitespace(issue.title).slice(0, 240),
+                          },
+                          { type: "key_value", label: "parentIssueId", value: parent.id },
+                          { type: "key_value", label: "parentIdentifier", value: parent.identifier ?? parent.id },
+                          { type: "key_value", label: "parentTitle", value: collapseWhitespace(parent.title).slice(0, 700) },
                           { type: "key_value", label: "childIssueId", value: issue.id },
                           { type: "key_value", label: "childIdentifier", value: issue.identifier ?? issue.id },
+                          { type: "key_value", label: "childTitle", value: collapseWhitespace(issue.title).slice(0, 700) },
+                          { type: "key_value", label: "childAssigneeAgentId", value: issue.assigneeAgentId ?? "unassigned" },
                           { type: "key_value", label: "sourceCommentId", value: comment?.id ?? "none" },
+                          { type: "key_value", label: "sourceCommentExcerpt", value: sourceCommentExcerpt ?? "none" },
                           { type: "key_value", label: "actorAgentId", value: actor.agentId ?? "unknown" },
+                          { type: "key_value", label: "dedupeKey", value: dedupeKey },
                         ],
                       },
                     ],

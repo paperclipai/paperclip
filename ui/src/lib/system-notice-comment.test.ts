@@ -1,7 +1,12 @@
 // @vitest-environment node
 
 import { describe, expect, it } from "vitest";
-import { buildSystemNoticeProps, mapCommentMetadataToSystemNoticeSections } from "./system-notice-comment";
+import {
+  buildSystemNoticeProps,
+  compactSystemNoticeBodyText,
+  getChildReviewEscalationNotice,
+  mapCommentMetadataToSystemNoticeSections,
+} from "./system-notice-comment";
 
 describe("mapCommentMetadataToSystemNoticeSections", () => {
   it("maps server metadata row types to SystemNotice rows", () => {
@@ -78,6 +83,102 @@ describe("mapCommentMetadataToSystemNoticeSections", () => {
   it("returns an empty array for null metadata", () => {
     expect(mapCommentMetadataToSystemNoticeSections(null)).toEqual([]);
     expect(mapCommentMetadataToSystemNoticeSections(undefined)).toEqual([]);
+  });
+});
+
+describe("compactSystemNoticeBodyText", () => {
+  it("extracts linked parent and child issue targets for child review escalation notices", () => {
+    const notice = getChildReviewEscalationNotice({
+      metadata: {
+        version: 1,
+        sections: [
+          {
+            title: "Escalation",
+            rows: [
+              { type: "key_value", label: "kind", value: "child_in_review_without_reviewer_handoff" },
+              { type: "issue_link", label: "Parent issue", identifier: "SME-6140", title: "Drive the lanes to sign off" },
+              { type: "issue_link", label: "Child issue", identifier: "SME-6141", title: "Re-QA to sign-off" },
+              { type: "key_value", label: "sourceCommentId", value: "child-comment-1" },
+              { type: "key_value", label: "sourceCommentExcerpt", value: "Live decision card is now up." },
+            ],
+          },
+        ],
+      },
+      bodyText: "Paperclip escalated a child review lane without a reviewer handoff.",
+    });
+
+    expect(notice?.parent).toEqual({
+      identifier: "SME-6140",
+      title: "Drive the lanes to sign off",
+      href: "/issues/SME-6140",
+    });
+    expect(notice?.child).toEqual({
+      identifier: "SME-6141",
+      title: "Re-QA to sign-off",
+      href: "/issues/SME-6141",
+    });
+    expect(notice?.sourceCommentId).toBe("child-comment-1");
+    expect(notice?.sourceCommentExcerpt).toBe("Live decision card is now up.");
+  });
+
+  it("extracts issue targets from older long child review escalation bodies", () => {
+    const notice = getChildReviewEscalationNotice({
+      metadata: null,
+      bodyText: [
+        "Paperclip escalated a child review lane without a reviewer handoff.",
+        "",
+        "Parent issue:",
+        "Drive this 4 issue to sign off please",
+        "SME-6140",
+        "Child issue:",
+        "Re-QA to sign-off",
+        "SME-6141",
+        "Child assignee: agent-1",
+      ].join("\n"),
+    });
+
+    expect(notice?.parent?.href).toBe("/issues/SME-6140");
+    expect(notice?.child.href).toBe("/issues/SME-6141");
+  });
+
+  it("compacts self-owned child review escalation notices from metadata", () => {
+    const compacted = compactSystemNoticeBodyText({
+      metadata: {
+        version: 1,
+        sections: [
+          {
+            title: "Escalation",
+            rows: [
+              { type: "key_value", label: "kind", value: "child_in_review_without_reviewer_handoff" },
+              { type: "key_value", label: "childIssueId", value: "child-1" },
+              { type: "key_value", label: "childIdentifier", value: "SME-6056" },
+              { type: "key_value", label: "sourceCommentId", value: "child-comment-1" },
+            ],
+          },
+        ],
+      },
+      bodyText: [
+        "Paperclip escalated a child review lane without a reviewer handoff.",
+        "",
+        "- Parent issue: SME-6048 Parent",
+        "- Child issue: SME-6056 Child",
+        "- Source child comment: `child-comment-1`",
+        "",
+        "Phase 3 packaged - awaiting board decision",
+      ].join("\n"),
+    });
+
+    expect(compacted).toContain("Paperclip found a child review lane without a reviewer handoff.");
+    expect(compacted).toContain("take ownership of SME-6056 now");
+    expect(compacted).not.toContain("Phase 3 packaged");
+    expect(compacted).not.toContain("Source child comment");
+  });
+
+  it("leaves unrelated system notice bodies unchanged", () => {
+    expect(compactSystemNoticeBodyText({
+      metadata: null,
+      bodyText: "Keep this body",
+    })).toBe("Keep this body");
   });
 });
 

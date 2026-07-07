@@ -119,7 +119,11 @@ import {
 } from "./SystemNotice";
 import {
   buildSystemNoticeProps,
+  compactSystemNoticeBodyText,
+  getChildReviewEscalationNotice,
   mapCommentMetadataToSystemNoticeSections,
+  type ChildReviewEscalationIssueLink,
+  type ChildReviewEscalationNotice,
 } from "../lib/system-notice-comment";
 import type {
   IssueCommentMetadata,
@@ -2737,6 +2741,80 @@ function StaleDispositionWarningRow({
   );
 }
 
+function ChildReviewEscalationIssueRow({
+  label,
+  issue,
+}: {
+  label: string;
+  issue: ChildReviewEscalationIssueLink;
+}) {
+  return (
+    <Link
+      to={issue.href}
+      className="group grid min-w-0 grid-cols-[4.5rem_minmax(0,1fr)_auto] gap-x-2 gap-y-0.5 py-2 text-left underline-offset-2 hover:underline sm:flex sm:items-center"
+    >
+      <span className="pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground sm:w-16 sm:shrink-0 sm:pt-0">
+        {label}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block font-semibold text-foreground sm:inline">{issue.identifier}</span>
+        {issue.title ? (
+          <span className="block text-muted-foreground sm:ml-2 sm:inline">{issue.title}</span>
+        ) : null}
+      </span>
+      <ExternalLink className="mt-1 h-3.5 w-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground sm:mt-0" />
+    </Link>
+  );
+}
+
+function ChildReviewEscalationNoticeBody({
+  notice,
+}: {
+  notice: ChildReviewEscalationNotice;
+}) {
+  return (
+    <div data-testid="child-review-escalation-notice" className="space-y-3 text-sm leading-6">
+      <p>
+        Paperclip found a child review lane that is marked in review, but it does not have a real reviewer handoff.
+      </p>
+
+      <div className="divide-y divide-border/60 border-y border-border/60">
+        {notice.parent ? (
+          <ChildReviewEscalationIssueRow label="Parent" issue={notice.parent} />
+        ) : null}
+        <ChildReviewEscalationIssueRow label="Child" issue={notice.child} />
+      </div>
+
+      <div className="space-y-1">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          Manager next action
+        </div>
+        <p>
+          Open the child issue, then reassign it to the correct reviewer or worker, answer the pending decision,
+          create a real blocker, escalate to board/user, or record an intentional manual resolution.
+        </p>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <Button asChild size="sm" className="h-8">
+          <Link to={notice.child.href} disableIssueQuicklook>
+            <ExternalLink className="h-3.5 w-3.5" />
+            Open child issue
+          </Link>
+        </Button>
+        {notice.parent ? (
+          <Button asChild size="sm" variant="outline" className="h-8">
+            <Link to={notice.parent.href} disableIssueQuicklook>
+              Open parent
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function SystemNoticeCommentRow({
   message,
   anchorId,
@@ -2756,6 +2834,14 @@ function SystemNoticeCommentRow({
     .filter((p): p is { type: "text"; text: string } => p.type === "text")
     .map((p) => p.text)
     .join("\n\n");
+  const childReviewEscalation = getChildReviewEscalationNotice({
+    metadata: commentMetadata,
+    bodyText,
+  });
+  const displayBodyText = compactSystemNoticeBodyText({
+    metadata: commentMetadata,
+    bodyText,
+  });
   const staleSuccessfulRunHandoffNotice = isStaleSuccessfulRunHandoffNotice({
     bodyText,
     issueStatus,
@@ -2785,12 +2871,16 @@ function SystemNoticeCommentRow({
     metadata: commentMetadata,
     body: (
       <div className="space-y-3">
-        <IssueChatMarkdownText
-          text={bodyText}
-          className="text-sm leading-6"
-          softBreaks
-          onImageClick={onImageClick}
-        />
+        {childReviewEscalation ? (
+          <ChildReviewEscalationNoticeBody notice={childReviewEscalation} />
+        ) : (
+          <IssueChatMarkdownText
+            text={displayBodyText}
+            className="text-sm leading-6"
+            softBreaks
+            onImageClick={onImageClick}
+          />
+        )}
         <IssueChatCommentAttachments message={message} />
       </div>
     ),

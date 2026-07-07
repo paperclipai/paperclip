@@ -931,10 +931,16 @@ describe("issue dependency wakeups in issue routes", () => {
     await vi.waitFor(() => {
       expect(mockIssueService.addComment).toHaveBeenCalledWith(
         "parent-1",
-        expect.stringContaining("Child review escalation: `child-1:child-comment-1`"),
+        expect.stringContaining("Paperclip found a child review lane without a reviewer handoff."),
         {},
         expect.objectContaining({
           authorType: "system",
+          presentation: expect.objectContaining({
+            kind: "system_notice",
+            tone: "warning",
+            title: "Review handoff needed",
+            detailsDefaultOpen: false,
+          }),
           metadata: expect.objectContaining({
             version: 1,
             sections: expect.arrayContaining([
@@ -942,14 +948,24 @@ describe("issue dependency wakeups in issue routes", () => {
                 title: "Escalation",
                 rows: expect.arrayContaining([
                   expect.objectContaining({ type: "key_value", label: "kind", value: "child_in_review_without_reviewer_handoff" }),
+                  expect.objectContaining({ type: "issue_link", label: "Parent issue", identifier: "PAP-220", title: "Parent delivery" }),
+                  expect.objectContaining({ type: "issue_link", label: "Child issue", identifier: "PAP-221", title: "QA lane waiting on CEO" }),
+                  expect.objectContaining({ type: "key_value", label: "parentIssueId", value: "parent-1" }),
+                  expect.objectContaining({ type: "key_value", label: "parentIdentifier", value: "PAP-220" }),
                   expect.objectContaining({ type: "key_value", label: "childIssueId", value: "child-1" }),
+                  expect.objectContaining({ type: "key_value", label: "childTitle", value: "QA lane waiting on CEO" }),
                   expect.objectContaining({ type: "key_value", label: "sourceCommentId", value: "child-comment-1" }),
+                  expect.objectContaining({ type: "key_value", label: "sourceCommentExcerpt", value: "Waiting for CEO to choose the correct HubSpot list id." }),
+                  expect.objectContaining({ type: "key_value", label: "dedupeKey", value: "child-1:child-comment-1" }),
                 ]),
               }),
             ]),
           }),
         }),
       );
+      const parentCommentBody = mockIssueService.addComment.mock.calls.find((call) => call[0] === "parent-1")?.[1] as string;
+      expect(parentCommentBody).not.toContain("Waiting for CEO to choose the correct HubSpot list id.");
+      expect(parentCommentBody).not.toContain("Child review escalation:");
       expect(mockWakeup).toHaveBeenCalledWith(
         "ceo-agent",
         expect.objectContaining({
@@ -968,6 +984,101 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
+  });
+
+  it("dedupes self-owned child review escalation from hidden metadata", async () => {
+    const childIssue = {
+      id: "child-1",
+      companyId: "company-1",
+      identifier: "PAP-221",
+      title: "QA lane waiting on CEO",
+      description: null,
+      status: "in_review",
+      priority: "medium",
+      parentId: "parent-1",
+      assigneeAgentId: "cmo-agent",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    };
+    mockIssueService.getById
+      .mockResolvedValueOnce(childIssue)
+      .mockResolvedValueOnce({
+        id: "parent-1",
+        companyId: "company-1",
+        identifier: "PAP-220",
+        title: "Parent delivery",
+        description: null,
+        status: "blocked",
+        priority: "medium",
+        parentId: null,
+        assigneeAgentId: "ceo-agent",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      });
+    mockIssueService.addComment.mockResolvedValueOnce({
+      id: "child-comment-1",
+      body: "Waiting for CEO to choose the correct HubSpot list id.",
+      issueId: "child-1",
+    });
+    mockIssueService.listComments.mockResolvedValueOnce([
+      {
+        id: "parent-comment-1",
+        body: "Paperclip found a child review lane without a reviewer handoff.",
+        metadata: {
+          version: 1,
+          sections: [
+            {
+              title: "Escalation",
+              rows: [
+                { type: "key_value", label: "kind", value: "child_in_review_without_reviewer_handoff" },
+                { type: "key_value", label: "childIssueId", value: "child-1" },
+                { type: "key_value", label: "sourceCommentId", value: "child-comment-1" },
+                { type: "key_value", label: "dedupeKey", value: "child-1:child-comment-1" },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "cmo-agent",
+      companyId: "company-1",
+      source: "api_key",
+      runId: "run-review-stall",
+    });
+    const res = await request(app)
+      .patch("/api/issues/child-1")
+      .send({ comment: "Waiting for CEO to choose the correct HubSpot list id." });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockIssueService.listComments).toHaveBeenCalledWith("parent-1", { order: "desc", limit: 50 });
+    });
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "child-1",
+      "Waiting for CEO to choose the correct HubSpot list id.",
+      expect.any(Object),
+    );
+    expect(mockWakeup).toHaveBeenCalledWith(
+      "ceo-agent",
+      expect.objectContaining({
+        reason: "child_in_review_without_reviewer_handoff",
+        payload: expect.objectContaining({
+          escalationCommentId: null,
+        }),
+      }),
+    );
   });
 
   it("routes explicit review-required agent completion attempts to the parent reviewer", async () => {

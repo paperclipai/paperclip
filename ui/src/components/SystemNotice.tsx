@@ -241,7 +241,7 @@ export function SystemNotice({
         className,
       )}
     >
-      <header className="flex items-start gap-3 px-3 py-2.5 sm:px-4">
+      <header className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-2 px-3 py-2.5 sm:flex sm:gap-3 sm:px-4">
         <span
           className={cn(
             "mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
@@ -289,7 +289,7 @@ export function SystemNotice({
             aria-expanded={open}
             aria-controls={detailsId}
             className={cn(
-              "ml-1 inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-transparent px-2 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground transition-[background-color,border-color,color]",
+              "col-start-2 row-start-2 inline-flex h-7 shrink-0 items-center gap-1 justify-self-start rounded-md border border-transparent px-2 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground transition-[background-color,border-color,color] sm:ml-1",
               "hover:border-border/70 hover:bg-background/70 hover:text-foreground",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
             )}
