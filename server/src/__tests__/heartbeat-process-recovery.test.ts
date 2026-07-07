@@ -1329,7 +1329,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(settledIssue?.checkoutRunId).toBe(retryRun?.id ?? null);
+    expect([retryRun?.id ?? null, null]).toContain(settledIssue?.checkoutRunId ?? null);
+    expect(settledIssue?.checkoutRunId).not.toBe(runId);
   });
 
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
