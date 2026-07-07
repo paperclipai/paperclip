@@ -4,6 +4,7 @@ import { heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
   createApprovalSchema,
+  isUuidLike,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
@@ -77,7 +78,7 @@ export function approvalRoutes(
   async function assertApprovalMutationAllowedByRunContext(req: Request, res: any, companyId: string) {
     if (req.actor.type !== "agent") return true;
     const runId = req.actor.runId?.trim();
-    if (!runId || !req.actor.agentId) return true;
+    if (!runId || !isUuidLike(runId) || !req.actor.agentId) return true;
 
     const run = await db
       .select({

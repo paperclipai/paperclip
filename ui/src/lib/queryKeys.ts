@@ -278,7 +278,11 @@ export const queryKeys = {
     ["usage-window-spend", companyId] as const,
   usageQuotaWindows: (companyId: string) =>
     ["usage-quota-windows", companyId] as const,
-  claudeAccountsUsage: () => ["claude-accounts-usage"] as const,
+  // `mode` keeps the live-probing AI-usage page ("live") on a separate cache
+  // entry from lightweight persisted-only readers ("persisted", e.g. the Agents
+  // page) so their different queryFns/intervals never collide on one key.
+  claudeAccountsUsage: (mode: "persisted" | "live" = "persisted") =>
+    ["claude-accounts-usage", mode] as const,
   heartbeats: (companyId: string, agentId?: string) =>
     ["heartbeats", companyId, agentId] as const,
   runDetail: (runId: string) => ["heartbeat-run", runId] as const,

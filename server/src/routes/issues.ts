@@ -1208,7 +1208,7 @@ export function issueRoutes(
     companyId: string,
     actor: ReturnType<typeof getActorInfo>,
   ): Promise<string | null> {
-    if (actor.actorType !== "agent" || !actor.agentId || !actor.runId) return null;
+    if (actor.actorType !== "agent" || !actor.agentId || !actor.runId || !isUuidLike(actor.runId)) return null;
     const run = await db
       .select({
         agentId: heartbeatRuns.agentId,
@@ -1242,7 +1242,7 @@ export function issueRoutes(
     if (!input.agentId) return null;
     const [agent, run] = await Promise.all([
       agentsSvc.getById(input.agentId),
-      input.runId
+      input.runId && isUuidLike(input.runId)
         ? db
             .select({
               companyId: heartbeatRuns.companyId,
@@ -2501,7 +2501,7 @@ export function issueRoutes(
   async function loadActorRunContext(req: Request, companyId: string) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
-    if (!runId) return null;
+    if (!runId || !isUuidLike(runId)) return null;
     const run = await db
       .select({
         id: heartbeatRuns.id,
@@ -2584,6 +2584,7 @@ export function issueRoutes(
   }
 
   async function loadWorkProductRunAttribution(runId: string) {
+    if (!isUuidLike(runId)) return null;
     return await db
       .select({
         id: heartbeatRuns.id,

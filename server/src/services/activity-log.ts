@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog } from "@paperclipai/db";
-import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
+import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { PLUGIN_EVENT_TYPES, isUuidLike, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
@@ -68,6 +69,25 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
+/**
+ * activity_log.run_id is a uuid column with an FK to heartbeat_runs.id. Synthetic /
+ * non-persisted heartbeat run identifiers (e.g. "ceo-heartbeat", or a run id whose row
+ * was never written) reach this path via req.actor.runId and would otherwise 500 the
+ * caller — either "invalid input syntax for type uuid" (non-uuid) or a foreign key
+ * constraint violation (uuid with no matching row). Resolve to null unless the id is a
+ * real persisted run so activity logging never breaks the originating write.
+ */
+async function resolvePersistedRunId(db: Db, runId: string | null | undefined): Promise<string | null> {
+  if (!runId || !isUuidLike(runId)) return null;
+  const row = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return row ? runId : null;
+}
+
 export async function logActivity(db: Db, input: LogActivityInput) {
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
@@ -76,6 +96,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = sanitizedDetails
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
+  const persistedRunId = await resolvePersistedRunId(db, input.runId);
   await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -84,7 +105,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId: persistedRunId,
     details: redactedDetails,
   });
 

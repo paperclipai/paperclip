@@ -18,7 +18,7 @@ import type {
   PrincipalType,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, isUuidLike, type LowTrustBoundary } from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -650,7 +650,10 @@ export function authorizationService(db: Db) {
   }
 
   async function loadRunPolicy(runId: string | null | undefined, companyId: string, agentId: string) {
-    if (!runId) return null;
+    // Synthetic heartbeat run ids (e.g. "ceo-heartbeat") are not UUIDs and can never
+    // match the uuid heartbeat_runs.id PK. Skip the lookup rather than let Postgres
+    // throw "invalid input syntax for type uuid" (500 on GET /api/agents/me + issue writes).
+    if (!runId || !isUuidLike(runId)) return null;
     const row = await db
       .select({
         id: heartbeatRuns.id,

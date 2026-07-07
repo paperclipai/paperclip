@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { agents, heartbeatRuns, projects } from "@paperclipai/db";
 import {
   LOW_TRUST_REVIEW_PRESET,
+  isUuidLike,
   type SourceTrustMetadata,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
@@ -120,7 +121,7 @@ export async function resolveActorSourceTrustForIssue(input: {
           .where(and(eq(projects.id, input.issue.projectId), eq(projects.companyId, input.issue.companyId)))
           .then((rows) => rows[0] ?? null)
       : Promise.resolve(null),
-    input.actor.runId
+    input.actor.runId && isUuidLike(input.actor.runId)
       ? input.db
           .select({
             companyId: heartbeatRuns.companyId,

@@ -88,7 +88,7 @@ async function assertAgentCanManageRuntimeServicesForWorkspace(
     throw forbidden("Agent key cannot access another company");
   }
 
-  const actorRun = req.actor.runId
+  const actorRun = req.actor.runId && isUuidLike(req.actor.runId)
     ? await db
         .select({
           companyId: heartbeatRuns.companyId,

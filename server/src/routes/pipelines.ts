@@ -60,6 +60,7 @@ import {
   computePipelineHealth,
   deriveCaseType,
   envConfigSchema,
+  isUuidLike,
   issueDocumentKeySchema,
   PIPELINE_CASE_BODY_DOCUMENT_KEY,
   pipelineAutomationRetryRequestSchema,
@@ -661,18 +662,20 @@ async function sourceTrustForPipelineCaseDocumentWrite(
   let issue = conversationSource?.isActive ? conversationSource.issue : null;
 
   if (!issue) {
-    const runIssueId = await dbOrTx
-      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
-      .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.companyId, input.companyId),
-        eq(heartbeatRuns.id, input.actor.runId),
-        eq(heartbeatRuns.agentId, input.actor.agentId),
-      ))
-      .limit(1)
-      .then((rows: Array<{ contextSnapshot: unknown }>) =>
-        issueIdFromPipelineRouteRunContext(rows[0]?.contextSnapshot),
-      );
+    const runIssueId = input.actor.runId && isUuidLike(input.actor.runId)
+      ? await dbOrTx
+          .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.companyId, input.companyId),
+            eq(heartbeatRuns.id, input.actor.runId),
+            eq(heartbeatRuns.agentId, input.actor.agentId),
+          ))
+          .limit(1)
+          .then((rows: Array<{ contextSnapshot: unknown }>) =>
+            issueIdFromPipelineRouteRunContext(rows[0]?.contextSnapshot),
+          )
+      : null;
 
     issue = runIssueId
       ? await dbOrTx

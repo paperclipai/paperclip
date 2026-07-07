@@ -278,7 +278,7 @@ export function SubscriptionUsage() {
     queryKey: queryKeys.usageQuotaWindows(companyId),
     queryFn: () => costsApi.quotaWindows(companyId),
     enabled: !!selectedCompanyId,
-    refetchInterval: 300_000,
+    refetchInterval: 120_000,
     staleTime: 60_000,
   });
 
@@ -289,11 +289,20 @@ export function SubscriptionUsage() {
     isLoading: accountsIsLoading,
     refetch: refetchAccounts,
   } = useQuery({
-    queryKey: queryKeys.claudeAccountsUsage(),
-    queryFn: () => claudeAccountsApi.usage(),
+    // Dedicated "live" key so this probing query never shares a cache entry with
+    // the Agents page's persisted-only reader (which would otherwise leave a
+    // stale DB snapshot showing until the first interval fires).
+    queryKey: queryKeys.claudeAccountsUsage("live"),
+    // Actively re-probe each profile's subscription usage. The server enforces
+    // <=1 real probe/min/account and backs off on 429, so both the 60s poll and
+    // the manual Refresh below are safe — they serve cache within that window.
+    // (`usage()` without refresh only reads the last persisted DB snapshot, which
+    // is why the panel used to look frozen at the last hourly auto-switch tick.)
+    queryFn: () => claudeAccountsApi.usage({ refresh: true }),
     enabled: !!selectedCompanyId,
-    refetchInterval: 300_000,
-    staleTime: 60_000,
+    refetchInterval: 60_000,
+    refetchOnMount: "always",
+    staleTime: 30_000,
   });
 
   const accountsErrorMessage = accountsError

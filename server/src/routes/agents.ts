@@ -579,7 +579,7 @@ export function agentRoutes(
     if (req.actor.type !== "agent" || req.actor.agentId !== agent.id) {
       return { kind: "standard" as const };
     }
-    const run = req.actor.type === "agent" && req.actor.runId
+    const run = req.actor.type === "agent" && req.actor.runId && isUuidLike(req.actor.runId)
       ? await db
           .select({
             companyId: heartbeatRuns.companyId,
