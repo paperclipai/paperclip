@@ -842,7 +842,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
             '10000000-0000-0000-0000-000000000001',
             'Latest pre-sweep activity',
             '2026-03-01T15:30:00.000Z',
-            '2026-03-01T15:30:00.000Z'
+            '2026-03-02T16:45:00.000Z'
           )
         `);
         await afterCleanReplay.unsafe(`
@@ -868,11 +868,21 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           )
         `);
         await afterCleanReplay.unsafe(`
-          INSERT INTO "routines" ("id", "company_id", "title", "created_at", "updated_at")
+          INSERT INTO "routines" (
+            "id",
+            "company_id",
+            "title",
+            "last_triggered_at",
+            "last_enqueued_at",
+            "created_at",
+            "updated_at"
+          )
           VALUES (
             '00000000-0000-0000-0000-000000000254',
             '00000000-0000-0000-0000-000000000250',
             'Swept routine',
+            '2026-03-20T10:00:00.000Z',
+            '2026-03-21T11:00:00.000Z',
             '2026-02-11T00:00:00.000Z',
             '2026-04-03T12:00:00.123456Z'
           )
@@ -896,6 +906,61 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
             'completed',
             '2026-02-12T12:00:00.000Z',
             '2026-02-12T11:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000260',
+            'Coincident Timestamp Co',
+            'CTS134',
+            '2026-01-05T00:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "agents" ("id", "company_id", "name", "role", "adapter_type", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000261',
+            '00000000-0000-0000-0000-000000000260',
+            'Coincident Agent',
+            'general',
+            'process',
+            '2026-01-05T00:10:00.000Z',
+            '2026-01-05T00:10:00.000Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "issues" ("id", "company_id", "title", "status", "created_at", "updated_at")
+          VALUES (
+            '20000000-0000-0000-0000-000000000001',
+            '00000000-0000-0000-0000-000000000260',
+            'Coincident timestamp issue should not be touched',
+            'todo',
+            '2026-02-05T00:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "heartbeat_runs" (
+            "id",
+            "company_id",
+            "agent_id",
+            "status",
+            "started_at",
+            "finished_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000262',
+            '00000000-0000-0000-0000-000000000260',
+            '00000000-0000-0000-0000-000000000261',
+            'completed',
+            '2026-02-05T10:00:00.000Z',
+            '2026-02-05T10:30:00.000Z',
+            '2026-02-05T09:55:00.000Z',
             '2026-04-03T12:00:00.123456Z'
           )
         `);
@@ -930,6 +995,18 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           FROM "heartbeat_runs"
           WHERE "id" = '00000000-0000-0000-0000-000000000253'
           UNION ALL
+          SELECT 'other_company' AS subject, "updated_at"
+          FROM "companies"
+          WHERE "id" = '00000000-0000-0000-0000-000000000260'
+          UNION ALL
+          SELECT 'other_heartbeat_run' AS subject, "updated_at"
+          FROM "heartbeat_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000262'
+          UNION ALL
+          SELECT 'other_issue' AS subject, "updated_at"
+          FROM "issues"
+          WHERE "id" = '20000000-0000-0000-0000-000000000001'
+          UNION ALL
           SELECT 'routine' AS subject, "updated_at"
           FROM "routines"
           WHERE "id" = '00000000-0000-0000-0000-000000000254'
@@ -945,9 +1022,12 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         expect(repaired).toEqual({
           company: "2026-01-01T00:00:00.000Z",
           heartbeat_run: "2026-02-10T10:30:00.000Z",
-          issue_with_comment: "2026-03-01T15:30:00.000Z",
+          issue_with_comment: "2026-03-02T16:45:00.000Z",
           issue_without_comment: "2026-02-01T00:02:00.000Z",
-          routine: "2026-02-11T00:00:00.000Z",
+          other_company: "2026-04-03T12:00:00.123Z",
+          other_heartbeat_run: "2026-04-03T12:00:00.123Z",
+          other_issue: "2026-04-03T12:00:00.123Z",
+          routine: "2026-03-21T11:00:00.000Z",
           routine_run: "2026-02-12T12:00:00.000Z",
         });
 
@@ -967,7 +1047,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           FROM "issues"
           WHERE "id" = '10000000-0000-0000-0000-000000000001'
         `);
-        expect(secondRunRows[0]?.updated_at.toISOString()).toBe("2026-03-01T15:30:00.000Z");
+        expect(secondRunRows[0]?.updated_at.toISOString()).toBe("2026-03-02T16:45:00.000Z");
       } finally {
         await afterSecondRun.end();
       }
