@@ -41,6 +41,23 @@ describe("heartbeat model profile application", () => {
     });
   });
 
+  it("uses the cheap model as the effective model even when the primary Codex model is explicit", async () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: await listAdapterModelProfiles("codex_local"),
+      agentRuntimeConfig: {},
+      issueModelProfile: null,
+      contextSnapshot: { modelProfile: "cheap" },
+    });
+
+    const merged = mergeModelProfileAdapterConfig({
+      baseConfig: { model: "gpt-5.5" },
+      modelProfile,
+      issueAdapterConfig: null,
+    });
+
+    expect(merged.model).toBe("gpt-5.3-codex-spark");
+  });
+
   it("applies cheap profile patches before explicit issue adapter config overrides", () => {
     const modelProfile = resolveModelProfileApplication({
       adapterModelProfiles: [cheapProfile],

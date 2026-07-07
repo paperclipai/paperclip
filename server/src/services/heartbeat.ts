@@ -2340,6 +2340,100 @@ type ResumeSessionRow = {
   lastRunId: string | null;
 };
 
+function readSessionIdentity(
+  sessionParams: Record<string, unknown> | null | undefined,
+  sessionDisplayId: string | null | undefined,
+) {
+  return (
+    readNonEmptyString(sessionParams?.sessionId) ??
+    readNonEmptyString(sessionParams?.session_id) ??
+    readNonEmptyString(sessionDisplayId)
+  );
+}
+
+export function resolveExplicitResumeSessionCompatibility(input: {
+  adapterType: string | null | undefined;
+  explicitResumeRequested: boolean;
+  explicitResumeSessionParams: Record<string, unknown> | null | undefined;
+  explicitResumeSessionDisplayId: string | null | undefined;
+  explicitResumeConfigFingerprint: string | null | undefined;
+  explicitResumeConfiguredModel: string | null | undefined;
+  taskSessionParams: Record<string, unknown> | null | undefined;
+  taskSessionDisplayId: string | null | undefined;
+  taskSessionConfigVerified: boolean;
+  currentConfigFingerprint: string | null | undefined;
+  currentConfiguredModel: string | null | undefined;
+}) {
+  if (!input.explicitResumeRequested) {
+    return { reset: false, reason: null as string | null };
+  }
+
+  const explicitSessionIdentity = readSessionIdentity(
+    input.explicitResumeSessionParams,
+    input.explicitResumeSessionDisplayId,
+  );
+  if (!explicitSessionIdentity) {
+    return {
+      reset: true,
+      reason: "explicit resume session identity is missing",
+    };
+  }
+
+  const taskSessionIdentity = readSessionIdentity(
+    input.taskSessionParams,
+    input.taskSessionDisplayId,
+  );
+  if (
+    input.taskSessionConfigVerified &&
+    taskSessionIdentity &&
+    explicitSessionIdentity === taskSessionIdentity
+  ) {
+    // The normal task-session freshness check validates the effective config
+    // for this exact session identity.
+    return { reset: false, reason: null as string | null };
+  }
+
+  const explicitConfigFingerprint = readNonEmptyString(input.explicitResumeConfigFingerprint);
+  const currentConfigFingerprint = readNonEmptyString(input.currentConfigFingerprint);
+  if (explicitConfigFingerprint && currentConfigFingerprint) {
+    if (explicitConfigFingerprint === currentConfigFingerprint) {
+      return { reset: false, reason: null as string | null };
+    }
+    return {
+      reset: true,
+      reason: "explicit resume session effective configuration differs from the current run",
+    };
+  }
+
+  const explicitConfiguredModel = readNonEmptyString(input.explicitResumeConfiguredModel);
+  if (explicitConfiguredModel) {
+    if (explicitConfiguredModel === input.currentConfiguredModel) {
+      return { reset: false, reason: null as string | null };
+    }
+    const nextModel = input.currentConfiguredModel
+      ? `"${input.currentConfiguredModel}"`
+      : "the adapter/CLI default";
+    return {
+      reset: true,
+      reason: `explicit resume session model changed from "${explicitConfiguredModel}" to ${nextModel}`,
+    };
+  }
+
+  // Codex can compact before the selected model samples. If the selected
+  // historical session cannot be tied to a known effective config/model, a
+  // speculative resume can therefore fail before doing any useful work.
+  if (input.adapterType === "codex_local") {
+    return {
+      reset: true,
+      reason: "explicit Codex resume session compatibility cannot be verified",
+    };
+  }
+
+  // Preserve the established explicit-resume behavior for adapters that do
+  // not currently persist enough metadata for a compatibility decision.
+  return { reset: false, reason: null as string | null };
+}
+
 export function buildExplicitResumeSessionOverride(input: {
   adapterType?: string | null;
   resumeFromRunId: string;
@@ -3640,7 +3734,7 @@ export function shouldResetTaskSessionForModelChange(input: {
   taskSessionParams: Record<string, unknown> | null | undefined;
 }) {
   const { configuredModel, taskSessionParams } = input;
-  if (!configuredModel || !taskSessionParams) return false;
+  if (!taskSessionParams) return false;
   const sessionModel = readConfiguredModelFromSessionParams(taskSessionParams);
   return !!sessionModel && sessionModel !== configuredModel;
 }
@@ -3691,7 +3785,10 @@ export function resolveTaskSessionConfigFreshness(input: {
     taskSessionParams: input.taskSessionParams,
   });
   if (modelChangedSinceTaskSession && taskSessionConfiguredModel) {
-    reasons.push(`configured model changed from "${taskSessionConfiguredModel}" to "${input.configuredModel}"`);
+    const nextModel = input.configuredModel
+      ? `"${input.configuredModel}"`
+      : "the adapter/CLI default";
+    reasons.push(`configured model changed from "${taskSessionConfiguredModel}" to ${nextModel}`);
   }
 
   let changedCategories: EffectiveRunSessionConfigCategory[] = [];
@@ -4716,6 +4813,21 @@ function getAdapterSessionCodec(adapterType: string) {
 export function normalizeSessionParams(params: Record<string, unknown> | null | undefined) {
   if (!params) return null;
   return Object.keys(params).length > 0 ? params : null;
+}
+
+export function decodePersistedTaskSessionParams(input: {
+  sessionCodec: AdapterSessionCodec;
+  sessionParamsJson: Record<string, unknown> | null | undefined;
+}) {
+  // Adapter codecs intentionally keep only adapter-owned resume fields. Read
+  // Paperclip's freshness metadata from the persisted envelope before the
+  // codec strips unknown keys.
+  const freshnessParams = normalizeSessionParams(parseObject(input.sessionParamsJson));
+  const resumeParams = normalizeSessionParams(input.sessionCodec.deserialize(freshnessParams));
+  return {
+    freshnessParams,
+    resumeParams,
+  };
 }
 
 type RunSessionOutcome = "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out";
@@ -6255,8 +6367,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resumeRun = await db
       .select({
         id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         resultJson: heartbeatRuns.resultJson,
+        usageJson: heartbeatRuns.usageJson,
         sessionIdBefore: heartbeatRuns.sessionIdBefore,
         sessionIdAfter: heartbeatRuns.sessionIdAfter,
       })
@@ -6278,6 +6392,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : null;
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const resumeRunResult = parseObject(resumeRun.resultJson);
+    const resumeRunConfigFreshness = parseObject(resumeRunResult.configFreshness);
+    const resumeRunSessionConfigFreshness = parseObject(resumeRunConfigFreshness.session);
+    const resumeRunUsage = parseObject(resumeRun.usageJson);
+    // Attempted config/model metadata does not prove that a failed run ever
+    // sampled with it. Only a successful source run can establish metadata
+    // for a historical session that is no longer the current task session.
+    const resumeSessionConfigFingerprint = resumeRun.status === "succeeded"
+      ? readNonEmptyString(resumeRunSessionConfigFreshness.nextFingerprint)
+      : null;
+    const resumeSessionConfiguredModel = resumeRun.status === "succeeded"
+      ? readNonEmptyString(resumeRunUsage.model) ?? readNonEmptyString(resumeRunResult.model)
+      : null;
     const resumeRunSessionId = requiresCanonicalSessionIds(agent.adapterType)
       ? readNonEmptyString(resumeRunResult.sessionId) ?? readNonEmptyString(resumeRunResult.session_id)
       : null;
@@ -6299,6 +6425,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       taskId: readNonEmptyString(resumeContext.taskId) ?? readNonEmptyString(resumeContext.issueId),
       sessionDisplayId: sessionOverride.sessionDisplayId,
       sessionParams: sessionOverride.sessionParams,
+      sessionConfigFingerprint: resumeSessionConfigFingerprint,
+      sessionConfiguredModel: resumeSessionConfiguredModel,
     };
   }
 
@@ -10362,8 +10490,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
-    const taskSessionDecodedParams = normalizeSessionParams(
-      sessionCodec.deserialize(taskSession?.sessionParamsJson ?? null),
+    const {
+      freshnessParams: taskSessionFreshnessParams,
+      resumeParams: taskSessionDecodedParams,
+    } = decodePersistedTaskSessionParams({
+      sessionCodec,
+      sessionParamsJson: taskSession?.sessionParamsJson,
+    });
+    const taskSessionDisplayId = truncateDisplayId(
+      (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(taskSessionDecodedParams) : null) ??
+        readNonEmptyString(taskSessionDecodedParams?.sessionId) ??
+        taskSession?.sessionDisplayId,
     );
     const explicitResumeSessionParams = normalizeResumeParamsForAdapter(
       agent.adapterType,
@@ -10747,18 +10884,53 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const sessionConfigFreshness = resolveTaskSessionConfigFreshness({
       hasTaskSession: taskSession != null,
       configuredModel,
-      taskSessionParams: taskSessionDecodedParams,
+      taskSessionParams: taskSessionFreshnessParams,
       configMetadata: sessionConfigMetadata,
       wakeResetReason: wakeSessionResetReason,
       preserveLegacySessionWithoutConfigMetadata: acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision,
     });
-    const resetTaskSession = shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
-    const sessionResetReason = sessionConfigFreshness.reasons.join("; ") || null;
+    const taskSessionConfiguredModel = readConfiguredModelFromSessionParams(taskSessionFreshnessParams);
+    const explicitResumeSessionCompatibility = resolveExplicitResumeSessionCompatibility({
+      adapterType: agent.adapterType,
+      explicitResumeRequested: Boolean(
+        readNonEmptyString(context.resumeFromRunId) ||
+        explicitResumeSessionParams ||
+        explicitResumeSessionDisplayId,
+      ),
+      explicitResumeSessionParams,
+      explicitResumeSessionDisplayId,
+      explicitResumeConfigFingerprint: readNonEmptyString(context.resumeSessionConfigFingerprint),
+      explicitResumeConfiguredModel: readNonEmptyString(context.resumeSessionConfiguredModel),
+      taskSessionParams: taskSessionDecodedParams,
+      taskSessionDisplayId,
+      taskSessionConfigVerified:
+        !sessionConfigFreshness.reset &&
+        (
+          Boolean(sessionConfigFreshness.storedFingerprint) ||
+          (
+            taskSessionConfiguredModel != null &&
+            taskSessionConfiguredModel === configuredModel
+          )
+        ),
+      currentConfigFingerprint: sessionConfigMetadata.fingerprint,
+      currentConfiguredModel: configuredModel,
+    });
+    const taskSessionResetReasons = [
+      ...sessionConfigFreshness.reasons,
+      ...(explicitResumeSessionCompatibility.reason ? [explicitResumeSessionCompatibility.reason] : []),
+    ];
+    const resetTaskSession =
+      shouldResetTaskSessionForWake(context) ||
+      sessionConfigFreshness.reset ||
+      explicitResumeSessionCompatibility.reset;
+    const sessionResetReason = taskSessionResetReasons.join("; ") || null;
     const taskSessionForRun = resetTaskSession ? null : taskSession;
+    const explicitResumeSessionParamsForRun = resetTaskSession ? null : explicitResumeSessionParams;
+    const explicitResumeSessionDisplayIdForRun = resetTaskSession ? null : explicitResumeSessionDisplayId;
     const previousSessionParams =
-      explicitResumeSessionParams ??
-      (isCanonicalSessionIdForAdapter(agent.adapterType, explicitResumeSessionDisplayId)
-        ? { sessionId: explicitResumeSessionDisplayId }
+      explicitResumeSessionParamsForRun ??
+      (isCanonicalSessionIdForAdapter(agent.adapterType, explicitResumeSessionDisplayIdForRun)
+        ? { sessionId: explicitResumeSessionDisplayIdForRun }
         : null) ??
       normalizeResumeParamsForAdapter(
         agent.adapterType,
@@ -11282,7 +11454,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? runtime.sessionId
         : null;
     const runtimeSessionDisplayId = truncateDisplayId(
-      explicitResumeSessionDisplayId ??
+      explicitResumeSessionDisplayIdForRun ??
         taskSessionForRun?.sessionDisplayId ??
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(runtimeSessionParams) : null) ??
         readNonEmptyString(runtimeSessionParams?.sessionId) ??
@@ -11337,7 +11509,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         fingerprintVersion: sessionConfigMetadata.version,
         categories: sessionConfigMetadata.categories,
         reset: resetTaskSession,
-        resetReasons: sessionConfigFreshness.reasons,
+        resetReasons: taskSessionResetReasons,
         changedCategories: sessionConfigFreshness.changedCategories,
         taskSessionAvailable: taskSession != null,
         taskSessionReused: taskSessionForRun != null,
@@ -13379,6 +13551,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       enrichedContextSnapshot.resumeFromRunId = explicitResumeSession.resumeFromRunId;
       enrichedContextSnapshot.resumeSessionDisplayId = explicitResumeSession.sessionDisplayId;
       enrichedContextSnapshot.resumeSessionParams = explicitResumeSession.sessionParams;
+      if (explicitResumeSession.sessionConfigFingerprint) {
+        enrichedContextSnapshot.resumeSessionConfigFingerprint = explicitResumeSession.sessionConfigFingerprint;
+      } else {
+        delete enrichedContextSnapshot.resumeSessionConfigFingerprint;
+      }
+      if (explicitResumeSession.sessionConfiguredModel) {
+        enrichedContextSnapshot.resumeSessionConfiguredModel = explicitResumeSession.sessionConfiguredModel;
+      } else {
+        delete enrichedContextSnapshot.resumeSessionConfiguredModel;
+      }
       if (!readNonEmptyString(enrichedContextSnapshot.issueId) && explicitResumeSession.issueId) {
         enrichedContextSnapshot.issueId = explicitResumeSession.issueId;
       }
