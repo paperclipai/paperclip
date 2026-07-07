@@ -56,6 +56,8 @@ type CreateIndexInfo = {
 
 type MutationInfo = {
   readonly table: string;
+  readonly statementSql: string;
+  readonly keywordIndex: number;
 };
 
 const RULE_METADATA: Record<MigrationSafetyRule, RuleMetadata> = {
@@ -210,6 +212,80 @@ function identifierList(value: string): string[] {
     .filter((identifier) => !RESERVED_ALIAS_WORDS.has(identifier.toLowerCase()));
 }
 
+function splitSqlList(value: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let singleQuoted = false;
+  let doubleQuoted = false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+
+    if (singleQuoted) {
+      if (char === "'" && value[index + 1] === "'") {
+        index += 1;
+      } else if (char === "'") {
+        singleQuoted = false;
+      }
+      continue;
+    }
+
+    if (doubleQuoted) {
+      if (char === '"' && value[index + 1] === '"') {
+        index += 1;
+      } else if (char === '"') {
+        doubleQuoted = false;
+      }
+      continue;
+    }
+
+    if (char === "'") {
+      singleQuoted = true;
+      continue;
+    }
+
+    if (char === '"') {
+      doubleQuoted = true;
+      continue;
+    }
+
+    if (char === "(") {
+      depth += 1;
+      continue;
+    }
+
+    if (char === ")") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+
+    if (char === "," && depth === 0) {
+      const part = value.slice(start, index).trim();
+      if (part) parts.push(part);
+      start = index + 1;
+    }
+  }
+
+  const tail = value.slice(start).trim();
+  if (tail) parts.push(tail);
+  return parts;
+}
+
+function orderByExpressionColumn(value: string): string | null {
+  const withoutSortModifiers = value
+    .replace(/\bCOLLATE\s+(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)/gi, " ")
+    .replace(/\bNULLS\s+(?:FIRST|LAST)\b/gi, " ")
+    .replace(/\b(?:ASC|DESC)\b/gi, " ");
+  const identifiers = [
+    ...withoutSortModifiers.matchAll(/"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*)/g),
+  ]
+    .map((match) => normalizeIdentifier(match[1] ?? match[2] ?? ""))
+    .filter((identifier) => identifier.length > 0)
+    .filter((identifier) => !RESERVED_ALIAS_WORDS.has(identifier.toLowerCase()));
+  return identifiers[identifiers.length - 1] ?? null;
+}
+
 function predicateColumns(statement: string): string[] {
   const columns = new Set<string>();
   const predicatePattern = /\b(?:WHERE|ORDER\s+BY|ON)\b([\s\S]*?)(?=\b(?:LIMIT|RETURNING|GROUP\s+BY|ORDER\s+BY|SET|FROM)\b|$)/gi;
@@ -222,14 +298,17 @@ function predicateColumns(statement: string): string[] {
 }
 
 function orderByColumns(statement: string): string[] {
-  const columns = new Set<string>();
+  const columns: string[] = [];
   const pattern = /\bORDER\s+BY\b([\s\S]*?)(?=\b(?:LIMIT|RETURNING|GROUP\s+BY|WHERE|SET|FROM|END|LOOP)\b|$)/gi;
   for (const match of statement.matchAll(pattern)) {
-    for (const identifier of identifierList(match[1] ?? "")) {
-      columns.add(identifier);
+    for (const expression of splitSqlList(match[1] ?? "")) {
+      const column = orderByExpressionColumn(expression);
+      if (column && !columns.includes(column)) {
+        columns.push(column);
+      }
     }
   }
-  return [...columns];
+  return columns;
 }
 
 function parseCreateIndexes(statement: string): CreateIndexInfo[] {
@@ -264,14 +343,14 @@ function parseMutations(statement: string): MutationInfo[] {
   for (const match of sql.matchAll(updatePattern)) {
     const table = normalizeIdentifier(match[1] ?? match[2] ?? "");
     if (table) {
-      mutations.push({ table });
+      mutations.push({ table, statementSql: sql, keywordIndex: match.index ?? 0 });
     }
   }
 
   for (const match of sql.matchAll(deletePattern)) {
     const table = normalizeIdentifier(match[1] ?? match[2] ?? "");
     if (table) {
-      mutations.push({ table });
+      mutations.push({ table, statementSql: sql, keywordIndex: match.index ?? 0 });
     }
   }
 
@@ -283,22 +362,16 @@ function hasDoLoop(statement: string): boolean {
 }
 
 function hasBatchedLimitMutation(statement: string): boolean {
-  // CTE-style batch: WITH cte AS (SELECT ... LIMIT N) UPDATE/DELETE ...
-  if (/\bWITH\b[\s\S]*\bLIMIT\s+(?:\d+|[A-Za-z_][A-Za-z0-9_]*|\$[0-9]+)[\s\S]*\b(?:UPDATE|DELETE)\b/i.test(statement)) {
-    return true;
-  }
-  // Subquery-style batch: UPDATE/DELETE ... FROM (SELECT ... LIMIT N ...)
-  if (/\b(?:UPDATE|DELETE)\b[\s\S]*\bFROM\b[\s\S]*\bLIMIT\s+(?:\d+|[A-Za-z_][A-Za-z0-9_]*|\$[0-9]+)/i.test(statement)) {
-    return true;
-  }
-  return false;
+  const hasLimit = /\bLIMIT\s+(?:\d+|[A-Za-z_][A-Za-z0-9_]*|\$[0-9]+)\b/i.test(statement);
+  const hasDml = /\b(?:UPDATE|DELETE)\b/i.test(statement);
+  return hasLimit && hasDml;
 }
 
-function topLevelWhereClause(statement: string): string | null {
+function topLevelWhereClause(statement: string, startIndex: number): string | null {
   // Walk character-by-character, tracking paren depth.
-  // Only consider WHERE keywords at depth 0 (not inside CTEs or subqueries).
+  // Only consider WHERE keywords at depth 0 after the target mutation.
   let depth = 0;
-  let i = 0;
+  let i = startIndex;
   while (i < statement.length) {
     const ch = statement[i];
     if (ch === "(") {
@@ -307,7 +380,7 @@ function topLevelWhereClause(statement: string): string | null {
       continue;
     }
     if (ch === ")") {
-      depth--;
+      depth = Math.max(0, depth - 1);
       i++;
       continue;
     }
@@ -321,13 +394,25 @@ function topLevelWhereClause(statement: string): string | null {
   return null;
 }
 
-function hasSelectiveWhere(statement: string): boolean {
-  const afterWhere = topLevelWhereClause(statement);
+function hasSelectiveWhere(mutation: MutationInfo): boolean {
+  const afterWhere = topLevelWhereClause(mutation.statementSql, mutation.keywordIndex);
   if (!afterWhere) return false;
 
   const whereClause = normalizeSql(afterWhere).replace(/;$/, "");
   if (/^(?:true|1\s*=\s*1)$/i.test(whereClause)) return false;
   return /(?:=|<>|!=|<|>|\bIN\s*\(|\bEXISTS\s*\(|\bLIKE\b|\bIS\s+(?:NOT\s+)?NULL\b)/i.test(whereClause);
+}
+
+function hasLeadingOrderPrefix(
+  indexedColumns: readonly string[],
+  orderColumns: readonly string[],
+): boolean {
+  const prefixLength = Math.min(indexedColumns.length, orderColumns.length);
+  if (prefixLength === 0) return false;
+  for (let index = 0; index < prefixLength; index += 1) {
+    if (indexedColumns[index] !== orderColumns[index]) return false;
+  }
+  return true;
 }
 
 function hasMatchingSupportIndex(
@@ -339,18 +424,19 @@ function hasMatchingSupportIndex(
   if (matchingIndexes.length === 0) return false;
 
   // ORDER BY columns are the batch-progression key. If the statement orders its
-  // batch, the support index must cover at least one ORDER BY column — an index
-  // on an unrelated predicate column (e.g. author_agent_id) cannot stand in for
-  // an unindexed ordering key (e.g. id). When no ORDER BY is present, fall back
-  // to: any predicate column from the mutation is covered by the index.
-  const orderCols = new Set(orderByColumns(statement));
+  // batch, the support index must cover the ordered key prefix using index key
+  // columns; predicate-only overlap cannot stand in for an unindexed cursor.
+  const orderCols = orderByColumns(statement);
   const allPredicateCols = new Set(predicateColumns(statement));
   if (allPredicateCols.size === 0) return true;
 
-  const keyCols = orderCols.size > 0 ? orderCols : allPredicateCols;
+  if (orderCols.length > 0) {
+    return matchingIndexes.some((index) => hasLeadingOrderPrefix(index.columns, orderCols));
+  }
+
   return matchingIndexes.some((index) => {
     const indexedColumns = new Set([...index.columns, ...index.predicateColumns]);
-    return [...keyCols].some((col) => indexedColumns.has(col));
+    return [...allPredicateCols].some((col) => indexedColumns.has(col));
   });
 }
 
@@ -480,7 +566,7 @@ export function analyzeMigrationSafety(
         }
 
         if (
-          !hasSelectiveWhere(statement) &&
+          !hasSelectiveWhere(mutation) &&
           !isIgnored(statement, "full-table-mutation-large-table")
         ) {
           addFindingOnce(

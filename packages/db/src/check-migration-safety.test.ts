@@ -147,6 +147,24 @@ describe("migration safety check", () => {
     );
   });
 
+  it("flags UPDATE ... WHERE IN (SELECT ... LIMIT N) subquery batch on a large table", () => {
+    const result = analyze(`
+      UPDATE "issue_comments"
+      SET "derived_author_agent_id" = NULL
+      WHERE "id" IN (
+        SELECT "id"
+        FROM "issue_comments"
+        WHERE "author_agent_id" IS NULL
+        ORDER BY "id"
+        LIMIT 5000
+      );
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "batched-mutation-large-table-missing-index",
+    );
+  });
+
   it("flags a CTE with a selective WHERE when the outer UPDATE has no WHERE clause", () => {
     const result = analyze(`
       WITH selective AS (
@@ -176,6 +194,37 @@ describe("migration safety check", () => {
             FROM "issue_comments"
             WHERE "id" > last_id
             ORDER BY "id"
+            LIMIT 5000
+          )
+          UPDATE "issue_comments" c
+          SET "derived_author_agent_id" = NULL
+          FROM batch b
+          WHERE c."id" = b."id";
+
+          EXIT WHEN NOT FOUND;
+        END LOOP;
+      END $$;
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "batched-mutation-large-table-missing-index",
+    );
+  });
+
+  it("flags a batch backfill when the support index only covers a later ORDER BY column", () => {
+    const result = analyze(`
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS "issue_comments_created_idx"
+        ON "issue_comments" ("created_at");--> statement-breakpoint
+      DO $$
+      DECLARE
+        last_id uuid := '00000000-0000-0000-0000-000000000000'::uuid;
+      BEGIN
+        LOOP
+          WITH batch AS MATERIALIZED (
+            SELECT "id"
+            FROM "issue_comments"
+            WHERE "id" > last_id
+            ORDER BY "id", "created_at"
             LIMIT 5000
           )
           UPDATE "issue_comments" c
