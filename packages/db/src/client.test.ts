@@ -47,6 +47,10 @@ const migrationUpdatedAtUpdateAllowlist = new Map<string, ReadonlySet<string>>([
     "0131_repair_run_responsible_user_context_refs.sql",
     new Set(["heartbeat_runs"]),
   ],
+  [
+    "0134_repair_run_responsible_user_updated_at_sweep.sql",
+    new Set(["companies", "heartbeat_runs", "issues", "routine_runs", "routines"]),
+  ],
 ]);
 
 function findUserVisibleUpdatedAtBackfillViolations(
@@ -741,6 +745,231 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         expect(rows[0]?.inbox_archive_still_current).toBe(true);
       } finally {
         await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "replays migration 0134 to repair updated_at sweeps and no-op when clean",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const repairSweepHash = await migrationHash(
+        "0134_repair_run_responsible_user_updated_at_sweep.sql",
+      );
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000240',
+            'Clean Migration Co',
+            'CLN134',
+            '2026-04-01T09:00:00.000Z',
+            '2026-04-02T09:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issues" ("id", "company_id", "title", "status", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000241',
+            '00000000-0000-0000-0000-000000000240',
+            'Clean issue should not be touched',
+            'todo',
+            '2026-04-01T10:00:00.000Z',
+            '2026-04-02T10:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${repairSweepHash}'`,
+        );
+      } finally {
+        await sql.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const afterCleanReplay = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const cleanRows = await afterCleanReplay.unsafe<{ updated_at: Date }[]>(`
+          SELECT "updated_at"
+          FROM "issues"
+          WHERE "id" = '00000000-0000-0000-0000-000000000241'
+        `);
+        expect(cleanRows[0]?.updated_at.toISOString()).toBe("2026-04-02T10:00:00.000Z");
+
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000250',
+            'Sweep Migration Co',
+            'SWP134',
+            '2026-01-01T00:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "agents" ("id", "company_id", "name", "role", "adapter_type", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000251',
+            '00000000-0000-0000-0000-000000000250',
+            'Sweep Agent',
+            'general',
+            'process',
+            '2026-01-02T00:00:00.000Z',
+            '2026-01-02T00:00:00.000Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "issues" ("id", "company_id", "title", "status", "created_at", "updated_at")
+          SELECT
+            ('10000000-0000-0000-0000-' || lpad(gs::text, 12, '0'))::uuid,
+            '00000000-0000-0000-0000-000000000250',
+            'Swept issue ' || gs::text,
+            'todo',
+            '2026-02-01T00:00:00.000Z'::timestamptz + (gs::text || ' minutes')::interval,
+            '2026-04-03T12:00:00.123456Z'
+          FROM generate_series(1, 101) AS gs
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "issue_comments" ("id", "company_id", "issue_id", "body", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000252',
+            '00000000-0000-0000-0000-000000000250',
+            '10000000-0000-0000-0000-000000000001',
+            'Latest pre-sweep activity',
+            '2026-03-01T15:30:00.000Z',
+            '2026-03-01T15:30:00.000Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "heartbeat_runs" (
+            "id",
+            "company_id",
+            "agent_id",
+            "status",
+            "started_at",
+            "finished_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000253',
+            '00000000-0000-0000-0000-000000000250',
+            '00000000-0000-0000-0000-000000000251',
+            'completed',
+            '2026-02-10T10:00:00.000Z',
+            '2026-02-10T10:30:00.000Z',
+            '2026-02-10T09:55:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "routines" ("id", "company_id", "title", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000254',
+            '00000000-0000-0000-0000-000000000250',
+            'Swept routine',
+            '2026-02-11T00:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "routine_runs" (
+            "id",
+            "company_id",
+            "routine_id",
+            "source",
+            "status",
+            "completed_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000255',
+            '00000000-0000-0000-0000-000000000250',
+            '00000000-0000-0000-0000-000000000254',
+            'schedule',
+            'completed',
+            '2026-02-12T12:00:00.000Z',
+            '2026-02-12T11:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${repairSweepHash}'`,
+        );
+      } finally {
+        await afterCleanReplay.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const afterRepair = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const repairedRows = await afterRepair.unsafe<{
+          subject: string;
+          updated_at: Date;
+        }[]>(`
+          SELECT 'company' AS subject, "updated_at"
+          FROM "companies"
+          WHERE "id" = '00000000-0000-0000-0000-000000000250'
+          UNION ALL
+          SELECT 'issue_with_comment' AS subject, "updated_at"
+          FROM "issues"
+          WHERE "id" = '10000000-0000-0000-0000-000000000001'
+          UNION ALL
+          SELECT 'issue_without_comment' AS subject, "updated_at"
+          FROM "issues"
+          WHERE "id" = '10000000-0000-0000-0000-000000000002'
+          UNION ALL
+          SELECT 'heartbeat_run' AS subject, "updated_at"
+          FROM "heartbeat_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000253'
+          UNION ALL
+          SELECT 'routine' AS subject, "updated_at"
+          FROM "routines"
+          WHERE "id" = '00000000-0000-0000-0000-000000000254'
+          UNION ALL
+          SELECT 'routine_run' AS subject, "updated_at"
+          FROM "routine_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000255'
+          ORDER BY subject
+        `);
+        const repaired = Object.fromEntries(
+          repairedRows.map((row) => [row.subject, row.updated_at.toISOString()]),
+        );
+        expect(repaired).toEqual({
+          company: "2026-01-01T00:00:00.000Z",
+          heartbeat_run: "2026-02-10T10:30:00.000Z",
+          issue_with_comment: "2026-03-01T15:30:00.000Z",
+          issue_without_comment: "2026-02-01T00:02:00.000Z",
+          routine: "2026-02-11T00:00:00.000Z",
+          routine_run: "2026-02-12T12:00:00.000Z",
+        });
+
+        await afterRepair.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${repairSweepHash}'`,
+        );
+      } finally {
+        await afterRepair.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const afterSecondRun = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const secondRunRows = await afterSecondRun.unsafe<{ updated_at: Date }[]>(`
+          SELECT "updated_at"
+          FROM "issues"
+          WHERE "id" = '10000000-0000-0000-0000-000000000001'
+        `);
+        expect(secondRunRows[0]?.updated_at.toISOString()).toBe("2026-03-01T15:30:00.000Z");
+      } finally {
+        await afterSecondRun.end();
       }
     },
     20_000,
