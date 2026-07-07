@@ -6313,6 +6313,9 @@ export function issueRoutes(
     const createBody = {
       ...rawCreateBody,
       parentId: effectiveParentId,
+      ...(rawCreateBody.dueAt !== undefined
+        ? { dueAt: rawCreateBody.dueAt ? new Date(rawCreateBody.dueAt) : null }
+        : {}),
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
       ...(runWorkspaceInheritanceSourceIssueId
         ? { inheritExecutionWorkspaceFromIssueId: runWorkspaceInheritanceSourceIssueId }
@@ -7636,8 +7639,8 @@ export function issueRoutes(
       }
     }
 
-    // FUS-660: when a recurring issue is completed, spawn its next instance so
-    // cadence work (weekly/monthly reports, review asks) does not depend on memory.
+    // When a recurring issue is completed, spawn its next instance so cadence
+    // work (weekly/monthly reports, review asks) does not depend on memory.
     if (
       issue.status === "done" &&
       existing.status !== "done" &&

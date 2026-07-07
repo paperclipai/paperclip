@@ -1,5 +1,5 @@
 /**
- * Recurrence support for issues (FUS-660).
+ * Recurrence support for issues.
  *
  * A recurring issue carries an {@link IssueRecurrence} config plus a `dueAt`.
  * When the issue is completed, the server spawns the next instance with its
