@@ -56,6 +56,141 @@ function parseModelId(model: string | null): string | null {
   return trimmed.slice(trimmed.indexOf("/") + 1).trim() || null;
 }
 
+function safeJsonParse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function readString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function truncateSummary(value: string, maxChars: number): string {
+  const normalized = value.trim().replace(/\s+/g, " ");
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+function summarizeRecordFieldCount(record: Record<string, unknown>): string | null {
+  const keyCount = Object.keys(record).length;
+  if (keyCount === 0) return null;
+  return `${keyCount} field${keyCount === 1 ? "" : "s"}`;
+}
+
+export function summarizeProgressToolInput(input: unknown): string | null {
+  if (typeof input === "string") {
+    return null;
+  }
+  const record = asRecord(input);
+  if (!record) return null;
+
+  return summarizeRecordFieldCount(record);
+}
+
+type PiProgressState = {
+  sawThinking: boolean;
+};
+
+export function formatPiProgressMessage(line: string, state: PiProgressState): string | null {
+  const parsed = asRecord(safeJsonParse(line));
+  if (!parsed) return null;
+
+  const type = readString(parsed.type);
+
+  if (type === "agent_start") {
+    state.sawThinking = false;
+    return "[paperclip] Pi agent started.";
+  }
+
+  if (type === "turn_start") {
+    state.sawThinking = false;
+    return "[paperclip] Pi turn started.";
+  }
+
+  if (type === "message_update") {
+    const assistantEvent = asRecord(parsed.assistantMessageEvent);
+    if (!assistantEvent) return null;
+    const msgType = readString(assistantEvent.type);
+    if (msgType === "thinking_delta" && !state.sawThinking) {
+      state.sawThinking = true;
+      return "[paperclip] Pi thinking...";
+    }
+    return null;
+  }
+
+  if (type === "tool_execution_start") {
+    const toolName = readString(parsed.toolName, "tool");
+    const inputSummary = summarizeProgressToolInput(parsed.args);
+    return inputSummary
+      ? `[paperclip] Pi tool running: ${toolName} (${inputSummary}).`
+      : `[paperclip] Pi tool running: ${toolName}.`;
+  }
+
+  if (type === "tool_execution_end") {
+    const toolName = readString(parsed.toolName, "tool");
+    const isError = parsed.isError === true;
+    const result = parsed.result;
+    const resultType =
+      typeof result === "string"
+        ? "text"
+        : Array.isArray(result)
+          ? "array"
+          : result && typeof result === "object"
+            ? "object"
+            : typeof result;
+    return isError
+      ? `[paperclip] Pi tool failed: ${toolName} (${resultType}).`
+      : `[paperclip] Pi tool completed: ${toolName} (${resultType}).`;
+  }
+
+  if (type === "turn_end") {
+    const message = asRecord(parsed.message);
+    const toolResults = Array.isArray(parsed.toolResults) ? parsed.toolResults : [];
+    const usage = message ? asRecord(message.usage) : null;
+    const tokenSummary = usage
+      ? `input ${asNumber(usage.inputTokens ?? usage.input, 0)}, output ${asNumber(usage.outputTokens ?? usage.output, 0)}`
+      : null;
+    const toolCount = toolResults.length > 0 ? `${toolResults.length} tool result${toolResults.length === 1 ? "" : "s"}` : null;
+    const details = [toolCount, tokenSummary].filter((value): value is string => typeof value === "string" && value.length > 0);
+    return details.length > 0
+      ? `[paperclip] Pi turn completed (${details.join("; ")}).`
+      : "[paperclip] Pi turn completed.";
+  }
+
+  if (type === "auto_retry_end") {
+    const succeeded = parsed.success === true;
+    if (succeeded) return "[paperclip] Pi automatic retry cycle completed.";
+    const attempt = asNumber(parsed.attempt, 0);
+    return attempt > 0
+      ? `[paperclip] Pi automatic retries exhausted after ${attempt} attempts.`
+      : "[paperclip] Pi automatic retries exhausted.";
+  }
+
+  if (type === "agent_end") {
+    const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+    return messages.length > 0
+      ? `[paperclip] Pi agent finished (${messages.length} message${messages.length === 1 ? "" : "s"}).`
+      : "[paperclip] Pi agent finished.";
+  }
+
+  if (type === "error") {
+    const message = readString(parsed.message, "").trim();
+    return message
+      ? `[paperclip] Pi error: ${truncateSummary(message, 72)}`
+      : "[paperclip] Pi error.";
+  }
+
+  return null;
+}
+
 async function ensurePiSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   skillsEntries: Array<{ key: string; runtimeName: string; source: string }>,
@@ -111,6 +246,8 @@ function buildSessionPath(agentId: string, timestamp: string): string {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const progressPlaceholder =
+    "[paperclip] Pi autonomous run is in progress. Watching for safe milestones.\n";
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -369,6 +506,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runAttempt = async (sessionFile: string) => {
     const args = buildArgs(sessionFile);
+    const progressState: PiProgressState = { sawThinking: false };
+    let stdoutBuffer = "";
+    const sanitizedStdoutChunks: string[] = [];
     if (onMeta) {
       await onMeta({
         adapterType: "pi_local",
@@ -383,25 +523,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    // Buffer stdout by lines to handle partial JSON chunks
-    let stdoutBuffer = "";
+    // Keep Pi runs readable in heartbeat logs without leaking the raw stdout stream.
+    await onLog("stdout", progressPlaceholder);
+    sanitizedStdoutChunks.push(progressPlaceholder);
+
     const bufferedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
       if (stream === "stderr") {
         // Pass stderr through immediately (not JSONL)
         await onLog(stream, chunk);
         return;
       }
-      
-      // Buffer stdout and emit only complete lines
+
       stdoutBuffer += chunk;
       const lines = stdoutBuffer.split("\n");
-      // Keep the last (potentially incomplete) line in the buffer
       stdoutBuffer = lines.pop() || "";
-      
-      // Emit complete lines
-      for (const line of lines) {
-        if (line) {
-          await onLog(stream, line + "\n");
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        const progressMessage = formatPiProgressMessage(line, progressState);
+        if (progressMessage) {
+          const sanitizedChunk = `${progressMessage}\n`;
+          sanitizedStdoutChunks.push(sanitizedChunk);
+          await onLog("stdout", sanitizedChunk);
         }
       }
     };
@@ -414,15 +558,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onSpawn,
       onLog: bufferedOnLog,
     });
-    
-    // Flush any remaining buffer content
-    if (stdoutBuffer) {
-      await onLog("stdout", stdoutBuffer);
+
+    if (stdoutBuffer.trim().length > 0) {
+      const progressMessage = formatPiProgressMessage(stdoutBuffer.trim(), progressState);
+      if (progressMessage) {
+        const sanitizedChunk = `${progressMessage}\n`;
+        sanitizedStdoutChunks.push(sanitizedChunk);
+        await onLog("stdout", sanitizedChunk);
+      }
     }
-    
+
     return {
       proc,
       rawStderr: proc.stderr,
+      sanitizedStdout: sanitizedStdoutChunks.join(""),
       parsed: parsePiJsonl(proc.stdout),
     };
   };
@@ -431,6 +580,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     attempt: {
       proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string };
       rawStderr: string;
+      sanitizedStdout: string;
       parsed: ReturnType<typeof parsePiJsonl>;
     },
     clearSessionOnMissingSession = false,
@@ -475,7 +625,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       billingType: "unknown",
       costUsd: attempt.parsed.usage.costUsd,
       resultJson: {
-        stdout: attempt.proc.stdout,
+        stdout: attempt.sanitizedStdout,
         stderr: attempt.proc.stderr,
       },
       summary: attempt.parsed.finalMessage ?? attempt.parsed.messages.join("\n\n").trim(),
