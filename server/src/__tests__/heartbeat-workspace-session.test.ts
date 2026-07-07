@@ -128,6 +128,38 @@ describe("ensureProjectWorkspacePath", () => {
     }
   });
 
+  it("repairs an invalid managed git checkout by moving it aside and recloning", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-path-"));
+    try {
+      const expectedRepo = await createGitSource(root, "expected-repo");
+      const target = path.join(root, "managed", "ab-dashboard");
+      await fs.mkdir(path.join(target, "paperclip-work"), { recursive: true });
+      await fs.writeFile(path.join(target, "paperclip-work", "orphaned.txt"), "orphaned\n");
+
+      const result = await ensureProjectWorkspacePath({
+        cwd: target,
+        repoUrl: expectedRepo,
+        label: "managed project workspace",
+        repairInvalidCheckout: true,
+      });
+
+      const origin = (await git(result.cwd, ["config", "--get", "remote.origin.url"])).stdout.trim();
+      expect(result.cwd).toBe(target);
+      expect(origin).toBe(expectedRepo);
+      expect(result.warning).toContain("Repaired managed project workspace path");
+      expect(result.warning).toContain("Previous contents were moved");
+
+      const siblingNames = await fs.readdir(path.dirname(target));
+      const movedAsideName = siblingNames.find((name) => name.startsWith("ab-dashboard.invalid-"));
+      expect(movedAsideName).toBeTruthy();
+      await expect(
+        fs.readFile(path.join(path.dirname(target), movedAsideName!, "paperclip-work", "orphaned.txt"), "utf8"),
+      ).resolves.toBe("orphaned\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("creates a plain configured project directory when no repo is configured", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-path-"));
     try {

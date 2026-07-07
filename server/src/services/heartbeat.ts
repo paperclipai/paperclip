@@ -753,6 +753,66 @@ async function cloneProjectWorkspaceRepo(input: {
   }
 }
 
+function readErrorCode(error: unknown): string | null {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : null;
+}
+
+async function moveAsideProjectWorkspacePath(cwd: string): Promise<string | null> {
+  const stats = await fs.stat(cwd).catch(() => null);
+  if (!stats) return null;
+
+  const parent = path.dirname(cwd);
+  const baseName = path.basename(cwd);
+  const stamp = new Date().toISOString().replace(/[^0-9A-Za-z_-]/g, "");
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const suffix = attempt === 0 ? "" : `-${attempt + 1}`;
+    const target = path.join(parent, `${baseName}.invalid-${stamp}${suffix}`);
+    try {
+      await fs.rename(cwd, target);
+      return target;
+    } catch (error) {
+      const code = readErrorCode(error);
+      if (code === "ENOENT") return null;
+      if (code === "EEXIST" || code === "ENOTEMPTY") continue;
+      throw error;
+    }
+  }
+
+  throw new Error(`Could not move aside invalid project workspace path "${cwd}".`);
+}
+
+async function repairInvalidProjectWorkspaceCheckout(input: {
+  repoUrl: string;
+  cwd: string;
+  label: string;
+  reason: string;
+}): Promise<{ cwd: string; warning: string | null }> {
+  const movedAsidePath = await moveAsideProjectWorkspacePath(input.cwd);
+  try {
+    await cloneProjectWorkspaceRepo({
+      repoUrl: input.repoUrl,
+      cwd: input.cwd,
+      label: input.label,
+    });
+  } catch (error) {
+    return useEmptyProjectWorkspaceAfterRepoAccessFailure({
+      repoUrl: input.repoUrl,
+      cwd: input.cwd,
+      label: input.label,
+      error,
+    });
+  }
+
+  return {
+    cwd: input.cwd,
+    warning:
+      `Repaired ${input.label} path "${input.cwd}" because ${input.reason}.` +
+      (movedAsidePath ? ` Previous contents were moved to "${movedAsidePath}".` : ""),
+  };
+}
+
 async function useEmptyProjectWorkspaceAfterRepoAccessFailure(input: {
   repoUrl: string;
   cwd: string;
@@ -776,6 +836,7 @@ export async function ensureProjectWorkspacePath(input: {
   cwd: string;
   repoUrl: string | null;
   label?: string | null;
+  repairInvalidCheckout?: boolean;
 }): Promise<{ cwd: string; warning: string | null }> {
   const cwd = path.resolve(input.cwd);
   const repoUrl = input.repoUrl?.trim() || null;
@@ -817,10 +878,26 @@ export async function ensureProjectWorkspacePath(input: {
 
   const git = await inspectProjectWorkspaceGit(cwd);
   if (!git.isRepoRoot) {
+    if (input.repairInvalidCheckout) {
+      return repairInvalidProjectWorkspaceCheckout({
+        repoUrl,
+        cwd,
+        label,
+        reason: `it was not a git checkout for "${repoUrl}"`,
+      });
+    }
     throw new Error(`Configured ${label} path "${cwd}" exists but is not a git checkout for "${repoUrl}".`);
   }
 
   if (!repoUrlsMatch(git.originUrl, repoUrl)) {
+    if (input.repairInvalidCheckout) {
+      return repairInvalidProjectWorkspaceCheckout({
+        repoUrl,
+        cwd,
+        label,
+        reason: `it was a git checkout for "${git.originUrl ?? "unknown origin"}" but project expects "${repoUrl}"`,
+      });
+    }
     throw new Error(
       `Configured ${label} path "${cwd}" is a git checkout for "${git.originUrl ?? "unknown origin"}" but project expects "${repoUrl}".`,
     );
@@ -880,6 +957,7 @@ async function ensureManagedProjectWorkspace(input: {
     cwd,
     repoUrl: input.repoUrl,
     label: "managed project workspace",
+    repairInvalidCheckout: true,
   });
 }
 
