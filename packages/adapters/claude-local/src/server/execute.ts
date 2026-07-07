@@ -65,6 +65,7 @@ import {
 import { claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
+import { computeCostUsdFromUsage } from "./pricing.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -132,9 +133,46 @@ function isBedrockAuth(env: Record<string, string>): boolean {
   );
 }
 
+function isVertexAuth(env: Record<string, string>): boolean {
+  return (
+    env.CLAUDE_CODE_USE_VERTEX === "1" ||
+    env.CLAUDE_CODE_USE_VERTEX === "true" ||
+    hasNonEmptyEnvValue(env, "ANTHROPIC_VERTEX_PROJECT_ID")
+  );
+}
+
 function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
+  // Bedrock and Vertex are pay-per-token (metered) platforms, not a Claude
+  // subscription. Without these branches a Vertex/Bedrock run with no
+  // ANTHROPIC_API_KEY falls through to "subscription", which the ledger treats
+  // as included-in-plan and books at $0 even though tokens are billed (WOR-47).
   if (isBedrockAuth(env)) return "metered_api";
+  if (isVertexAuth(env)) return "metered_api";
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
+}
+
+/**
+ * Resolve the USD cost for a run. Prefer the cost the Claude CLI reports
+ * (`total_cost_usd`), which is authoritative on the first-party API. On metered
+ * platforms (Vertex, Bedrock) the CLI does not price the request, so when it
+ * reports nothing usable we recompute from token usage and per-model rates so
+ * cost reporting isn't stuck at $0 (WOR-47). Subscription runs are left as-is
+ * (the ledger zeroes them). Returns null when we can't determine a cost.
+ */
+function resolveCostUsd(
+  cliCostUsd: number | null,
+  billingType: "api" | "subscription" | "metered_api",
+  model: string | null | undefined,
+  usage: ReturnType<typeof parseClaudeStreamJson>["usage"],
+): number | null {
+  if (typeof cliCostUsd === "number" && Number.isFinite(cliCostUsd) && cliCostUsd > 0) {
+    return cliCostUsd;
+  }
+  if (billingType === "metered_api" || billingType === "api") {
+    const computed = computeCostUsdFromUsage(model, usage);
+    if (computed !== null) return computed;
+  }
+  return cliCostUsd;
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
@@ -1030,10 +1068,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
       provider: "anthropic",
-      biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
+      biller: isBedrockAuth(effectiveEnv)
+        ? "aws_bedrock"
+        : isVertexAuth(effectiveEnv)
+        ? "google_vertex"
+        : "anthropic",
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
-      costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
+      costUsd: resolveCostUsd(
+        parsedStream.costUsd ?? (typeof parsed.total_cost_usd === "number" ? parsed.total_cost_usd : null),
+        billingType,
+        parsedStream.model || asString(parsed.model, model),
+        usage,
+      ),
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession:
