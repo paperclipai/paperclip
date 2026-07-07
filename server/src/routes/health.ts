@@ -9,6 +9,8 @@ import { logger } from "../middleware/logger.js";
 import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../server-info.js";
 import {
   inspectDatabaseBackupHealth,
+  type DatabaseBackupHealthStatus,
+  type DatabaseBackupHealthWarning,
   type InspectDatabaseBackupHealthOptions,
 } from "../services/database-backup-health.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -31,6 +33,27 @@ function hasDevServerStatusToken(providedToken: string | undefined) {
   const provided = Buffer.from(token);
   if (expected.length !== provided.length) return false;
   return timingSafeEqual(expected, provided);
+}
+
+function redactedDatabaseBackupWarning(warning: DatabaseBackupHealthWarning): DatabaseBackupHealthWarning {
+  const messages: Record<DatabaseBackupHealthWarning["code"], string> = {
+    database_backup_check_failed: "Database backup health check failed.",
+    database_backup_last_failure: "Database backup failure marker is present.",
+    database_backup_missing: "No recent database backup was found.",
+    database_backup_stale: "Latest database backup is stale.",
+  };
+  return {
+    code: warning.code,
+    message: messages[warning.code],
+  };
+}
+
+function redactedDatabaseBackupHealth(databaseBackup: DatabaseBackupHealthStatus) {
+  return {
+    enabled: databaseBackup.enabled,
+    status: databaseBackup.status,
+    warnings: databaseBackup.warnings.map(redactedDatabaseBackupWarning),
+  };
 }
 
 export function healthRoutes(
@@ -167,18 +190,22 @@ export function healthRoutes(
       });
     }
 
-    const databaseBackup = exposeFullDetails && opts.databaseBackupHealth
+    const databaseBackup = opts.databaseBackupHealth
       ? inspectDatabaseBackupHealth(opts.databaseBackupHealth)
       : undefined;
     const warnings = databaseBackup?.warnings.length ? databaseBackup.warnings : undefined;
 
     if (!exposeFullDetails) {
+      const redactedDatabaseBackup = databaseBackup ? redactedDatabaseBackupHealth(databaseBackup) : undefined;
+      const redactedWarnings = redactedDatabaseBackup?.warnings.length ? redactedDatabaseBackup.warnings : undefined;
       res.json({
         status: "ok",
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
         bootstrapStatus,
         bootstrapInviteActive,
+        ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
+        ...(redactedWarnings ? { warnings: redactedWarnings } : {}),
         ...(devServer ? { devServer } : {}),
       });
       return;

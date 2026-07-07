@@ -591,6 +591,11 @@ export async function startServer(): Promise<StartedServer> {
   const databaseBackupAlertFile =
     process.env.PAPERCLIP_DB_BACKUP_ALERT_FILE ||
     resolve(config.databaseBackupDir, "..", "health", "db-backup-to-s3.failure");
+  const databaseBackupAlertFiles = [
+    databaseBackupAlertFile,
+    resolve(config.databaseBackupDir, "db-backup-to-s3.failure"),
+    resolve(config.databaseBackupDir, "..", "db-backup-to-s3.failure"),
+  ];
   let databaseBackupInFlight = false;
   const runServerDatabaseBackup = async (
     trigger: InstanceDatabaseBackupTrigger,
@@ -671,6 +676,7 @@ export async function startServer(): Promise<StartedServer> {
           backupDir: config.databaseBackupDir,
           maxAgeHours: databaseBackupMaxAgeHours,
           alertFile: databaseBackupAlertFile,
+          alertFiles: databaseBackupAlertFiles,
         }
       : undefined,
     deploymentMode: config.deploymentMode,

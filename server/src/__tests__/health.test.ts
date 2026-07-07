@@ -198,6 +198,107 @@ describe("GET /health", () => {
     });
   });
 
+  it("finds conventional database backup failure markers without an explicit alert file", async () => {
+    const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-backups-root-"));
+    const backupDir = path.join(backupRoot, "backups");
+    fs.mkdirSync(backupDir);
+    const backupFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
+    const alertFile = path.join(backupRoot, "db-backup-to-s3.failure");
+    fs.writeFileSync(backupFile, "backup");
+    fs.writeFileSync(alertFile, "db-backup-to-s3 failed beside backups\n");
+    const app = createApp(createHealthyDb(), testServerInfo, {
+      enabled: true,
+      backupDir,
+      maxAgeHours: 26,
+      now: new Date("2026-07-06T04:00:00.000Z"),
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.databaseBackup).toMatchObject({
+      status: "warning",
+      lastFailure: {
+        path: alertFile,
+        message: "db-backup-to-s3 failed beside backups",
+      },
+      warnings: [
+        {
+          code: "database_backup_last_failure",
+          message: "db-backup-to-s3 failed beside backups",
+        },
+      ],
+    });
+  });
+
+  it("surfaces redacted database backup warnings for anonymous authenticated probes", async () => {
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-redacted-backups-"));
+    const backupFile = path.join(backupDir, "paperclip-20260705-031702.sql.gz");
+    fs.writeFileSync(backupFile, "backup");
+    fs.utimesSync(
+      backupFile,
+      new Date("2026-07-05T03:17:02.000Z"),
+      new Date("2026-07-05T03:17:02.000Z"),
+    );
+    const { healthRoutes } = await import("../routes/health.js");
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([{ count: 1 }]),
+        })),
+      })),
+    } as unknown as Db;
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as any).actor = { type: "none", source: "none" };
+      next();
+    });
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        authReady: true,
+        companyDeletionEnabled: false,
+        serverInfo: testServerInfo,
+        databaseBackupHealth: {
+          enabled: true,
+          backupDir,
+          maxAgeHours: 26,
+          now: new Date("2026-07-06T13:00:00.000Z"),
+        },
+      }),
+    );
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      status: "ok",
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+      bootstrapStatus: "ready",
+      bootstrapInviteActive: false,
+      databaseBackup: {
+        enabled: true,
+        status: "warning",
+        warnings: [
+          {
+            code: "database_backup_stale",
+            message: "Latest database backup is stale.",
+          },
+        ],
+      },
+      warnings: [
+        {
+          code: "database_backup_stale",
+          message: "Latest database backup is stale.",
+        },
+      ],
+    });
+  });
+
   it("redacts detailed metadata for anonymous requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
     vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);

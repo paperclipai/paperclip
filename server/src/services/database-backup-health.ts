@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 export type DatabaseBackupHealthWarningCode =
   | "database_backup_check_failed"
@@ -37,6 +37,7 @@ export type InspectDatabaseBackupHealthOptions = {
   backupDir: string;
   maxAgeHours: number;
   alertFile?: string;
+  alertFiles?: string[];
   now?: Date;
 };
 
@@ -44,15 +45,36 @@ function roundHours(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
-function readLastFailure(alertFile: string | undefined) {
-  if (!alertFile || !existsSync(alertFile)) return null;
+function alertFileCandidates(opts: InspectDatabaseBackupHealthOptions) {
+  return [...new Set([
+    opts.alertFile,
+    ...(opts.alertFiles ?? []),
+    join(opts.backupDir, "db-backup-to-s3.failure"),
+    resolve(opts.backupDir, "..", "db-backup-to-s3.failure"),
+  ].filter((value): value is string => Boolean(value)))];
+}
 
-  const stat = statSync(alertFile);
-  const message = readFileSync(alertFile, "utf8").trim().split(/\r?\n/)[0] || "Database backup failure marker is present.";
+function readLastFailure(alertFiles: string[]) {
+  const failures = alertFiles
+    .filter((alertFile) => existsSync(alertFile))
+    .map((alertFile) => {
+      const stat = statSync(alertFile);
+      const message = readFileSync(alertFile, "utf8").trim().split(/\r?\n/)[0] ||
+        "Database backup failure marker is present.";
+      return {
+        path: alertFile,
+        mtime: new Date(stat.mtimeMs).toISOString(),
+        mtimeMs: stat.mtimeMs,
+        message,
+      };
+    })
+    .sort((left, right) => right.mtimeMs - left.mtimeMs);
+  const latest = failures[0];
+  if (!latest) return null;
   return {
-    path: alertFile,
-    mtime: new Date(stat.mtimeMs).toISOString(),
-    message,
+    path: latest.path,
+    mtime: latest.mtime,
+    message: latest.message,
   };
 }
 
@@ -92,7 +114,7 @@ export function inspectDatabaseBackupHealth(
 
   try {
     latestBackup = findLatestBackup(opts.backupDir, now.getTime());
-    lastFailure = readLastFailure(opts.alertFile);
+    lastFailure = readLastFailure(alertFileCandidates(opts));
 
     if (!latestBackup) {
       warnings.push({

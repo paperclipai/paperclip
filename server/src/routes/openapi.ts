@@ -883,20 +883,20 @@ registry.registerPath({
       databaseBackup: z.object({
         enabled: z.boolean(),
         status: z.enum(["ok", "warning"]),
-        backupDir: z.string(),
-        maxAgeHours: z.number(),
+        backupDir: z.string().optional(),
+        maxAgeHours: z.number().optional(),
         latestBackup: z.object({
           name: z.string(),
           path: z.string(),
           mtime: z.string().datetime(),
           ageHours: z.number(),
           sizeBytes: z.number(),
-        }).nullable(),
+        }).nullable().optional(),
         lastFailure: z.object({
           path: z.string(),
           mtime: z.string().datetime(),
           message: z.string(),
-        }).nullable(),
+        }).nullable().optional(),
         warnings: z.array(z.object({
           code: z.enum([
             "database_backup_check_failed",
