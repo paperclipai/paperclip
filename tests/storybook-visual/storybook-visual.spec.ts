@@ -4,17 +4,13 @@ import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 
 // One screenshot test per story per theme, generated from the built
-// Storybook's index.json. The committed __snapshots__/ folder is the Phase 0
-// zero-visual-change baseline; any later refactor must keep every image
-// byte-identical.
-
+// Storybook's index.json. Baselines live outside git and are downloaded into
+// the configured Playwright snapshot directory before this suite runs.
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const indexJsonPath = join(repoRoot, "ui", "storybook-static", "index.json");
 
 if (!existsSync(indexJsonPath)) {
-  throw new Error(
-    `Missing ${indexJsonPath} — run \`pnpm build-storybook\` before the visual suite.`,
-  );
+  throw new Error(`Missing ${indexJsonPath}; run \`pnpm build-storybook\` first.`);
 }
 
 type IndexEntry = { id: string; type: string; title: string; name: string };

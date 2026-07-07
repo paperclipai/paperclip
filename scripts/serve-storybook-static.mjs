@@ -16,9 +16,7 @@ const root = resolve(
 const port = Number(process.env.PORT ?? 6106);
 
 if (!existsSync(join(root, "index.html"))) {
-  console.error(
-    `No built Storybook at ${root}. Run \`pnpm build-storybook\` first.`,
-  );
+  console.error(`No built Storybook at ${root}. Run \`pnpm build-storybook\` first.`);
   process.exit(1);
 }
 

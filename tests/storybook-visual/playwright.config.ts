@@ -1,10 +1,17 @@
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
 
+const testDir = dirname(fileURLToPath(import.meta.url));
+const snapshotDir = process.env.STORYBOOK_VISUAL_SNAPSHOT_DIR
+  ? isAbsolute(process.env.STORYBOOK_VISUAL_SNAPSHOT_DIR)
+    ? process.env.STORYBOOK_VISUAL_SNAPSHOT_DIR
+    : resolve(testDir, "..", "..", process.env.STORYBOOK_VISUAL_SNAPSHOT_DIR)
+  : join(testDir, ".snapshots");
+
 // Visual snapshot suite for the design-token extraction run: screenshots every
-// built Storybook story in both themes and compares against the committed
-// Phase 0 baseline. Run via `pnpm test:storybook-visual` (builds Storybook
-// first) or `SKIP_SB_BUILD=1` + `npx playwright test -c tests/storybook-visual`
-// against an existing ui/storybook-static build.
+// built Storybook story in both themes and compares against the external Phase
+// 0 baseline downloaded by scripts/storybook-visual-baseline.mjs.
 export default defineConfig({
   testDir: ".",
   outputDir: "./test-results",
@@ -18,11 +25,10 @@ export default defineConfig({
       animations: "disabled",
       caret: "hide",
       scale: "css",
-      // Same machine, same browser build: require byte-identical rendering.
       maxDiffPixels: 0,
     },
   },
-  snapshotPathTemplate: "{testDir}/__snapshots__/{arg}{ext}",
+  snapshotPathTemplate: `${snapshotDir}/{arg}{ext}`,
   use: {
     browserName: "chromium",
     viewport: { width: 1200, height: 800 },
