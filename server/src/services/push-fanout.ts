@@ -49,6 +49,12 @@ interface DigestItem {
 const digestBuffer: DigestItem[] = [];
 let lastDigestFlushAt = 0;
 
+export function __resetPushFanoutForTests(): void {
+  immediateDedup.clear();
+  digestBuffer.splice(0, digestBuffer.length);
+  lastDigestFlushAt = 0;
+}
+
 function getDigestFlushIntervalMs(): number {
   // min interval between digest flushes (default 4 h → ≤2 flushes per 8-h active window)
   const hours = parseInt(process.env.PAPERCLIP_PUSH_DIGEST_INTERVAL_HOURS ?? "4", 10);
@@ -100,16 +106,23 @@ export function initPushFanout(db: Db): () => void {
           }
 
           // Immediate lane — assignment overrides quiet hours per spec; interactions follow same rule.
-          const title = type === "issue.user_assigned"
-            ? `Action needed: ${issueIdentifier}`
-            : `Your input needed: ${issueIdentifier}`;
+          const title =
+            type === "issue.user_assigned"
+              ? `Action needed: ${issueIdentifier}`
+              : `Your input needed: ${issueIdentifier}`;
 
           await push.sendToBoard({ title, body: issueTitle, data: { issueId, eventType: type } });
           logger.info({ issueId, type }, "push-fanout: sent immediate push");
         }
 
-        if (type === "issue.blocked") {
-          digestBuffer.push({ issueId, issueTitle, issueIdentifier, kind: "blocked", queuedAt: Date.now() });
+        if (type === "issue.blocked" || type === "issue.stale") {
+          digestBuffer.push({
+            issueId,
+            issueTitle,
+            issueIdentifier,
+            kind: type === "issue.blocked" ? "blocked" : "stale",
+            queuedAt: Date.now(),
+          });
           await maybeFlushDigest(push);
         }
       } catch (err) {
