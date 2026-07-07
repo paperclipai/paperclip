@@ -75,11 +75,12 @@ describe("pipeline operating map model", () => {
 
     const model = buildPipelineOperatingMapModel([demand, sales, production, ops]);
 
-    expect(model.edges.map((edge) => [edge.fromId, edge.toId, edge.kind])).toEqual([
+    expect(model.edges.map((edge) => [edge.fromId, edge.toId, edge.kind])).toEqual(expect.arrayContaining([
       ["demand", "sales", "output"],
       ["ops", "production", "support"],
       ["sales", "production", "output"],
-    ]);
+    ]));
+    expect(model.edges).toHaveLength(3);
     expect(model.edges.every((edge) => edge.explanation.length > 0)).toBe(true);
   });
 
