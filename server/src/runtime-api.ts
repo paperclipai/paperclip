@@ -80,6 +80,37 @@ export function choosePrimaryRuntimeApiUrl(input: {
   return formatOrigin("http:", "localhost", input.port);
 }
 
+/**
+ * Chooses the API URL that a **local agent** should use to reach the control
+ * plane. Local agents run on the same host as the server, so for co-located
+ * (`local_trusted`) deployments the agent must reach the API over the
+ * loopback/bind address.
+ *
+ * The public base URL (`authPublicBaseUrl`) is meant for browser login and
+ * outbound webhooks and may sit behind an authenticating proxy (e.g. Cloudflare
+ * Access). If the agent is handed that public host, every service-to-service
+ * call is redirected to the proxy's login flow (a 302) and fails. So for
+ * `local_trusted` we deliberately ignore `authPublicBaseUrl` here and let
+ * {@link choosePrimaryRuntimeApiUrl} derive the loopback/bind origin. Other
+ * deployment modes keep the existing behaviour.
+ */
+export function chooseAgentRuntimeApiUrl(input: {
+  deploymentMode: string;
+  authPublicBaseUrl?: string | null;
+  allowedHostnames: string[];
+  bindHost: string;
+  port: number;
+}): string {
+  const authPublicBaseUrl =
+    input.deploymentMode === "local_trusted" ? null : input.authPublicBaseUrl ?? null;
+  return choosePrimaryRuntimeApiUrl({
+    authPublicBaseUrl,
+    allowedHostnames: input.allowedHostnames,
+    bindHost: input.bindHost,
+    port: input.port,
+  });
+}
+
 export function collectReachableInterfaceHosts(input: {
   networkInterfacesMap?: NodeJS.Dict<os.NetworkInterfaceInfo[]>;
 } = {}): string[] {
