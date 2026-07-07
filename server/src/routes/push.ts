@@ -64,5 +64,19 @@ export function pushRoutes(db: Db) {
     res.json(result);
   });
 
+  router.post("/push/digest/test", async (req, res) => {
+    assertBoard(req);
+    if (!isVapidConfigured()) {
+      res.status(503).json({ error: "vapid_not_configured" });
+      return;
+    }
+    const result = await svc.sendToBoard({
+      title: "Paperclip digest test",
+      body: "Digest Web Push is working.",
+      data: { kind: "digest", blockedCount: 1, staleCount: 1, test: true },
+    });
+    res.json(result);
+  });
+
   return router;
 }
