@@ -76,6 +76,11 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
 };
 
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
+// Upper bound for companies.maxConcurrentAgentRuns (see GRO-60): an opt-in,
+// company-wide ceiling on simultaneously "running" heartbeat runs across every
+// agent, independent of each agent's own maxConcurrentRuns. Null (the default)
+// means no company-wide ceiling is enforced.
+export const MAX_COMPANY_CONCURRENT_AGENT_RUNS = 500;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
 export const MODEL_PROFILE_KEYS = ["cheap"] as const;

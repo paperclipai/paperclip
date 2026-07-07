@@ -171,7 +171,7 @@ import {
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
-import { withAgentStartLock } from "./agent-start-lock.js";
+import { withAgentStartLock, withCompanyRunDispatchLock } from "./agent-start-lock.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -8631,6 +8631,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countRunningRunsForCompany(companyId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+    return Number(count ?? 0);
+  }
+
+  async function getCompanyMaxConcurrentRuns(companyId: string) {
+    const [row] = await db
+      .select({ maxConcurrentAgentRuns: companies.maxConcurrentAgentRuns })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .limit(1);
+    return row?.maxConcurrentAgentRuns ?? null;
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -9592,7 +9609,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      let availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
 
       const queuedRuns = await db
@@ -9640,12 +9657,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return left.createdAt.getTime() - right.createdAt.getTime();
       });
 
-      const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of prioritizedRuns) {
-        if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun, companyAgents);
-        if (claimed) claimedRuns.push(claimed);
-      }
+      const claimNextRuns = async () => {
+        const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+        for (const queuedRun of prioritizedRuns) {
+          if (claimedRuns.length >= availableSlots) break;
+          const claimed = await claimQueuedRun(queuedRun, companyAgents);
+          if (claimed) claimedRuns.push(claimed);
+        }
+        return claimedRuns;
+      };
+
+      // GRO-60: per-agent maxConcurrentRuns has no cross-agent coordination, so
+      // N distinct agents in the same company could each legitimately run up to
+      // their own cap at once with no company-wide ceiling. When an operator has
+      // opted into companies.maxConcurrentAgentRuns, clamp this dispatch to
+      // whichever cap is tighter, and serialize the recheck-and-claim against
+      // every other agent's dispatch in the same company so two agents can't
+      // both read a stale company running-count and jointly overshoot it.
+      const companyMaxConcurrentRuns = await getCompanyMaxConcurrentRuns(agent.companyId);
+      const claimedRuns = companyMaxConcurrentRuns === null
+        ? await claimNextRuns()
+        : await withCompanyRunDispatchLock(agent.companyId, async () => {
+            const companyRunningCount = await countRunningRunsForCompany(agent.companyId);
+            const companyAvailableSlots = Math.max(0, companyMaxConcurrentRuns - companyRunningCount);
+            if (companyAvailableSlots < availableSlots) {
+              logger.info(
+                {
+                  agentId,
+                  companyId: agent.companyId,
+                  companyMaxConcurrentRuns,
+                  companyRunningCount,
+                  agentAvailableSlots: availableSlots,
+                  companyAvailableSlots,
+                },
+                "startNextQueuedRunForAgent: company-wide concurrency ceiling constrained dispatch",
+              );
+            }
+            availableSlots = Math.min(availableSlots, companyAvailableSlots);
+            if (availableSlots <= 0) return [];
+            return claimNextRuns();
+          });
       if (claimedRuns.length === 0) return [];
 
       for (const claimedRun of claimedRuns) {

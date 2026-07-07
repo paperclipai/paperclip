@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   COMPANY_STATUSES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
+  MAX_COMPANY_CONCURRENT_AGENT_RUNS,
 } from "../constants.js";
 
 const logoAssetIdSchema = z.string().uuid().nullable().optional();
@@ -12,6 +13,12 @@ const attachmentMaxBytesSchema = z
   .int()
   .min(1)
   .max(MAX_COMPANY_ATTACHMENT_MAX_BYTES);
+const maxConcurrentAgentRunsSchema = z
+  .number()
+  .int()
+  .min(1)
+  .max(MAX_COMPANY_CONCURRENT_AGENT_RUNS)
+  .nullable();
 
 export const createCompanySchema = z.object({
   name: z.string().min(1),
@@ -35,6 +42,7 @@ export const updateCompanySchema = createCompanySchema
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
     attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
+    maxConcurrentAgentRuns: maxConcurrentAgentRunsSchema.optional(),
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;
