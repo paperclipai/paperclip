@@ -2,6 +2,7 @@ import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
+import { getCompanyBudgetAggregateCents } from "./budget-aggregates.js";
 import { budgetService } from "./budgets.js";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
@@ -128,11 +129,14 @@ export function dashboardService(db: Db) {
         bucket.total += count;
       }
 
+      const [budgetMonthlyCents, budgetOverview] = await Promise.all([
+        getCompanyBudgetAggregateCents(db, company),
+        budgets.overview(companyId),
+      ]);
       const utilization =
-        company.budgetMonthlyCents > 0
-          ? (monthSpendCents / company.budgetMonthlyCents) * 100
+        budgetMonthlyCents > 0
+          ? (monthSpendCents / budgetMonthlyCents) * 100
           : 0;
-      const budgetOverview = await budgets.overview(companyId);
 
       return {
         companyId,
@@ -145,7 +149,7 @@ export function dashboardService(db: Db) {
         tasks: taskCounts,
         costs: {
           monthSpendCents,
-          monthBudgetCents: company.budgetMonthlyCents,
+          monthBudgetCents: budgetMonthlyCents,
           monthUtilizationPercent: Number(utilization.toFixed(2)),
         },
         pendingApprovals,
