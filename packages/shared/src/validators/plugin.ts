@@ -117,6 +117,42 @@ export const pluginToolDeclarationSchema = z.object({
   parametersSchema: jsonSchemaSchema,
 });
 
+const pluginEnvironmentTemplateConfigFieldSchema = z.string()
+  .min(1)
+  .max(100)
+  .regex(
+    /^[A-Za-z_][A-Za-z0-9_-]*$/,
+    "Template config binding fields must be top-level config keys using letters, digits, underscores, or hyphens",
+  )
+  .refine((value) => value !== "provider", {
+    message: "Template config binding must not replace the sandbox provider key",
+  });
+
+export const pluginEnvironmentTemplateConfigBindingSchema = z.object({
+  field: pluginEnvironmentTemplateConfigFieldSchema,
+  unsetFields: z.array(pluginEnvironmentTemplateConfigFieldSchema).max(20).optional(),
+}).strict().superRefine((value, ctx) => {
+  const unsetFields = value.unsetFields ?? [];
+  const seen = new Set<string>();
+  for (const [index, field] of unsetFields.entries()) {
+    if (field === value.field) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Template config binding cannot unset the same field it sets",
+        path: ["unsetFields", index],
+      });
+    }
+    if (seen.has(field)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Template config binding unsetFields must be unique",
+        path: ["unsetFields", index],
+      });
+    }
+    seen.add(field);
+  }
+});
+
 export const pluginEnvironmentDriverDeclarationSchema = z.object({
   driverKey: z.string().min(1).regex(
     /^[a-z0-9][a-z0-9._-]*$/,
@@ -126,6 +162,12 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   displayName: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
   supportsReusableLeases: z.boolean().optional(),
+  supportsInteractiveSetup: z.boolean().optional(),
+  interactiveSetupConnectionTypes: z.array(z.string().min(1).max(100)).max(10).optional(),
+  supportsTemplateCapture: z.boolean().optional(),
+  templateRefKind: z.string().min(1).max(100).optional(),
+  templateConfigBinding: pluginEnvironmentTemplateConfigBindingSchema.optional(),
+  supportsTemplateDelete: z.boolean().optional(),
   configSchema: jsonSchemaSchema,
 });
 

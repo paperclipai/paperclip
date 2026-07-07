@@ -72,7 +72,10 @@ function AdapterRow({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className={cn("font-medium", adapter.disabled && "text-muted-foreground line-through")}>
-              {adapter.label || getAdapterLabel(adapter.type)}
+              {/* The server reports label = raw type id, so prefer the display
+                  registry's human label; keep a real self-reported label if an
+                  external adapter ever provides one. */}
+              {adapter.label && adapter.label !== adapter.type ? adapter.label : getAdapterLabel(adapter.type)}
             </span>
             <Badge variant="outline">{adapter.source === "external" ? "External" : "Built-in"}</Badge>
             {adapter.source === "external" && (

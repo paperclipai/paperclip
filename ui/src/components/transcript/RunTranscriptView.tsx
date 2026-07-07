@@ -206,6 +206,21 @@ function summarizeRecord(record: Record<string, unknown>, keys: string[]): strin
   return null;
 }
 
+/** Merge a streamed tool_call status update into the input captured so far. */
+function mergeToolInput(previous: unknown, incoming: unknown): unknown {
+  if (incoming === null || incoming === undefined) return previous;
+  if (typeof incoming === "string") {
+    return incoming.trim().length > 0 ? incoming : previous;
+  }
+  const previousRecord = asRecord(previous);
+  const incomingRecord = asRecord(incoming);
+  if (incomingRecord) {
+    if (Object.keys(incomingRecord).length === 0) return previous;
+    return previousRecord ? { ...previousRecord, ...incomingRecord } : incoming;
+  }
+  return incoming;
+}
+
 function summarizeToolInput(name: string, input: unknown, density: TranscriptDensity): string {
   const compactMax = density === "compact" ? 72 : 120;
   if (typeof input === "string") {
@@ -229,7 +244,7 @@ function summarizeToolInput(name: string, input: unknown, density: TranscriptDen
 
   const direct =
     summarizeRecord(record, ["command", "cmd", "path", "filePath", "file_path", "query", "url", "prompt", "message"])
-    ?? summarizeRecord(record, ["pattern", "name", "title", "target", "tool"])
+    ?? summarizeRecord(record, ["pattern", "name", "title", "target", "tool", "text"])
     ?? null;
   if (direct) return truncate(direct, compactMax);
 
@@ -454,11 +469,20 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
     }
 
     if (entry.kind === "tool_call") {
+      const toolUseId = entry.toolUseId ?? extractToolUseId(entry.input);
+      // Streaming runtimes (e.g. ACPX) re-emit the same tool call as its
+      // status progresses. Fold updates into the existing running card
+      // instead of stacking duplicate "Running" blocks.
+      const pending = toolUseId ? pendingToolBlocks.get(toolUseId) : undefined;
+      if (pending && pending.status === "running") {
+        pending.input = mergeToolInput(pending.input, entry.input);
+        continue;
+      }
       const toolBlock: Extract<TranscriptBlock, { type: "tool" }> = {
         type: "tool",
         ts: entry.ts,
         name: displayToolName(entry.name, entry.input),
-        toolUseId: entry.toolUseId ?? extractToolUseId(entry.input),
+        toolUseId,
         input: entry.input,
         status: "running",
       };

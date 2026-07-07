@@ -3029,7 +3029,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                             {retryPlan.data.routine.assigneeAgent.name}
                           </Link>
                         ) : (
-                          <span className="font-medium text-muted-foreground">No assignee</span>
+                          <span className="font-medium text-muted-foreground">No responsible</span>
                         )}
                       </>
                     ) : (

@@ -147,6 +147,24 @@ function elementFromNode(node: Node | null | undefined): HTMLElement | null {
   return parent instanceof HTMLElement ? parent : null;
 }
 
+function selectionTouchesEditableElement(container: HTMLElement, range: Range) {
+  for (const node of [range.startContainer, range.endContainer, range.commonAncestorContainer]) {
+    const element = elementFromNode(node);
+    if (!element || !container.contains(element)) continue;
+    const editableElement = element.closest("input, textarea, select, [contenteditable]");
+    if (!(editableElement instanceof HTMLElement)) continue;
+    if (editableElement.matches("input, textarea, select")) return true;
+    const contentEditableValue = editableElement.getAttribute("contenteditable");
+    if (
+      editableElement.isContentEditable ||
+      (contentEditableValue !== null && contentEditableValue.toLowerCase() !== "false")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function intersectRects(a: DOMRect, b: DOMRect): DOMRect | null {
   const left = Math.max(a.left, b.left);
   const top = Math.max(a.top, b.top);
@@ -384,6 +402,7 @@ export function DocumentAnnotationLayer({
     if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
     const range = selection.getRangeAt(0);
     if (!container.contains(range.commonAncestorContainer)) return null;
+    if (selectionTouchesEditableElement(container, range)) return null;
     const containerOffset = getContainerTextOffset(container, range);
     if (!containerOffset) return null;
     const anchor = buildAnchorFromContainerSelection({ markdown, containerOffset });

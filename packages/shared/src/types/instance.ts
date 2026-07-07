@@ -108,6 +108,7 @@ export interface InstanceExperimentalSettings {
   enableServerInfoDebugView: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
+  enableWorkspaceBranchReconcileForward: boolean;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
   masterRuntimeFailover: MasterRuntimeFailoverSettings;
   // TWB-305: when enabled, the scheduler tick auto-clears transient agent

@@ -9,6 +9,7 @@ describe("agent local JWT", () => {
   const issuerEnv = "PAPERCLIP_AGENT_JWT_ISSUER";
   const audienceEnv = "PAPERCLIP_AGENT_JWT_AUDIENCE";
   const disableLegacyFallbackEnv = "PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK";
+  const instanceIdEnv = "PAPERCLIP_INSTANCE_ID";
 
   const originalEnv = {
     secret: process.env[secretEnv],
@@ -17,6 +18,7 @@ describe("agent local JWT", () => {
     issuer: process.env[issuerEnv],
     audience: process.env[audienceEnv],
     disableLegacyFallback: process.env[disableLegacyFallbackEnv],
+    instanceId: process.env[instanceIdEnv],
   };
 
   beforeEach(() => {
@@ -26,6 +28,7 @@ describe("agent local JWT", () => {
     delete process.env[issuerEnv];
     delete process.env[audienceEnv];
     delete process.env[disableLegacyFallbackEnv];
+    delete process.env[instanceIdEnv];
     vi.useFakeTimers();
   });
 
@@ -43,11 +46,13 @@ describe("agent local JWT", () => {
     else process.env[audienceEnv] = originalEnv.audience;
     if (originalEnv.disableLegacyFallback === undefined) delete process.env[disableLegacyFallbackEnv];
     else process.env[disableLegacyFallbackEnv] = originalEnv.disableLegacyFallback;
+    if (originalEnv.instanceId === undefined) delete process.env[instanceIdEnv];
+    else process.env[instanceIdEnv] = originalEnv.instanceId;
   });
 
   it("creates and verifies a token", () => {
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1", "user-1");
     expect(typeof token).toBe("string");
 
     const claims = verifyLocalAgentJwt(token!);
@@ -56,6 +61,7 @@ describe("agent local JWT", () => {
       company_id: "company-1",
       adapter_type: "claude_local",
       run_id: "run-1",
+      responsible_user_id: "user-1",
       iss: "paperclip",
       aud: "paperclip-api",
     });
@@ -157,6 +163,82 @@ describe("agent local JWT", () => {
       adapter_type: "claude_local",
       run_id: "run-legacy",
     });
+  });
+
+  // --- Instance isolation (PAP-12899) ---------------------------------------
+  // A worktree/fork control-plane instance runs under a distinct
+  // PAPERCLIP_INSTANCE_ID but deliberately shares PAPERCLIP_AGENT_JWT_SECRET
+  // with its source instance (provisioning copies the secret). Before this
+  // change, a fork-minted run JWT validated successfully against the live plane
+  // (reads worked; writes then failed on missing heartbeat_runs FK rows). These
+  // tests pin the boundary that keeps fork tokens out of the live plane.
+
+  it("stamps the minting instance id into the token claims", () => {
+    process.env[instanceIdEnv] = "default";
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims?.instance_id).toBe("default");
+  });
+
+  it("rejects a fork/worktree-minted token on the live control plane", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    // Mint on a worktree/fork instance (distinct instance id, SAME secret).
+    process.env[instanceIdEnv] = "pap-12899-worktree";
+    const forkToken = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    expect(forkToken).not.toBeNull();
+    // Sanity: it verifies on the instance that minted it.
+    expect(verifyLocalAgentJwt(forkToken!)?.company_id).toBe("company-1");
+
+    // Now switch to the live control plane (same shared secret, "default"
+    // instance) and confirm the fork token no longer authenticates — neither
+    // its instance-scoped signature nor the legacy master-secret fallback
+    // matches, so reads and writes are both refused.
+    process.env[instanceIdEnv] = "default";
+    expect(verifyLocalAgentJwt(forkToken!)).toBeNull();
+  });
+
+  it("keeps live-plane heartbeat tokens authenticating across mint/verify", () => {
+    process.env[instanceIdEnv] = "default";
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1", "user-1");
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).toMatchObject({
+      sub: "agent-1",
+      company_id: "company-1",
+      run_id: "run-1",
+      instance_id: "default",
+    });
+  });
+
+  it("rejects a token whose instance_id claim is forged to match the live plane", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    // Mint a fork token, then tamper the instance_id claim to impersonate the
+    // live "default" instance. The signature was bound to the fork instance's
+    // derived key, so re-encoding the claim cannot make it validate on the
+    // live plane — the claim check is defense-in-depth, the key is the boundary.
+    process.env[instanceIdEnv] = "pap-12899-worktree";
+    const forkToken = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    const [headerB64, claimsB64, signature] = forkToken!.split(".");
+    const claims = JSON.parse(Buffer.from(claimsB64, "base64url").toString("utf8"));
+    claims.instance_id = "default";
+    const tamperedClaimsB64 = Buffer.from(JSON.stringify(claims), "utf8").toString("base64url");
+    const tampered = `${headerB64}.${tamperedClaimsB64}.${signature}`;
+
+    process.env[instanceIdEnv] = "default";
+    expect(verifyLocalAgentJwt(tampered)).toBeNull();
+  });
+
+  it("still rejects the master-secret legacy fallback once it is disabled (full instance isolation)", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    process.env[disableLegacyFallbackEnv] = "true";
+    process.env[instanceIdEnv] = "default";
+    // The legacy fallback signs with the raw shared secret and is therefore
+    // instance-agnostic; disabling it closes that residual cross-instance hole.
+    const legacyToken = craftLegacyMasterSecretToken(process.env[secretEnv]!, "company-1");
+    expect(verifyLocalAgentJwt(legacyToken)).toBeNull();
   });
 
   it("defaults TTL to 1h when PAPERCLIP_AGENT_JWT_TTL_SECONDS is unset", () => {

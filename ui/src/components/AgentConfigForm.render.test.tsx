@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { createRoot, type Root } from "react-dom/client";
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Environment } from "@paperclipai/shared";
@@ -117,6 +117,14 @@ vi.mock("./MarkdownEditor", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
+
 async function flushReact() {
   await act(async () => {
     for (let i = 0; i < 4; i += 1) {
@@ -167,6 +175,12 @@ function makeEnvironment(overrides: Partial<Environment>): Environment {
     updatedAt: new Date(0),
     ...overrides,
   };
+}
+
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 async function renderForm(
@@ -355,6 +369,51 @@ describe("AgentConfigForm environment selector", () => {
         provider: "budget-provider",
       }),
     });
+  });
+
+  it("flushes pending environment variable edits before testing adapter config", async () => {
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ], {
+      adapterConfig: {
+        model: "gpt-5.4",
+        env: { API_TOKEN: { type: "plain", value: "old-token" } },
+      },
+    }, {
+      showAdapterTestEnvironmentButton: true,
+    });
+    roots.push(result.root);
+
+    const valueInput = result.container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]');
+    expect(valueInput).toBeTruthy();
+
+    await act(async () => {
+      setInputValue(valueInput!, "draft-token");
+    });
+    await flushReact();
+
+    const testButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Test",
+    );
+    expect(testButton).toBeTruthy();
+
+    await act(async () => {
+      testButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
+    for (const call of mockAgentsApi.testEnvironment.mock.calls) {
+      expect(call).toEqual([
+        "company-1",
+        "codex_local",
+        expect.objectContaining({
+          adapterConfig: expect.objectContaining({
+            env: { API_TOKEN: { type: "plain", value: "draft-token" } },
+          }),
+        }),
+      ]);
+    }
   });
 
   it("surfaces request failures instead of converting them into model test checks", async () => {

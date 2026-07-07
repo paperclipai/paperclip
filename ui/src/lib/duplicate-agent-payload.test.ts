@@ -16,7 +16,7 @@ const baseAgent: AgentDetail = {
   capabilities: "Builds product features.",
   adapterType: "codex_local",
   adapterConfig: {
-    model: "gpt-5.3-codex",
+    model: "gpt-5.5",
     instructionsBundleMode: "managed",
     instructionsRootPath: "/tmp/original/instructions",
     instructionsEntryFile: "AGENTS.md",
@@ -68,7 +68,7 @@ describe("duplicate agent payload", () => {
       reportsTo: "manager-1",
       capabilities: "Builds product features.",
       adapterType: "codex_local",
-      adapterConfig: { model: "gpt-5.3-codex" },
+      adapterConfig: { model: "gpt-5.5" },
       runtimeConfig: { heartbeat: { enabled: true } },
       defaultEnvironmentId: "environment-1",
       budgetMonthlyCents: 500,

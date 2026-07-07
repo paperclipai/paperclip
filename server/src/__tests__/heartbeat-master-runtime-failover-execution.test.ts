@@ -110,6 +110,10 @@ describeEmbeddedPostgres("heartbeat master runtime failover execution", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      // Satisfy the run-dispatch responsible-user invariant (heartbeat.ts
+      // resolveResponsibleUserIdForRun → 422 responsible_user_unresolved) via
+      // the company default, since these runs seed no per-run/issue responsible user.
+      defaultResponsibleUserId: "responsible-user",
     });
     await db.insert(agents).values({
       id: agentId,

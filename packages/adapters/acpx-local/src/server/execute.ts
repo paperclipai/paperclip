@@ -1100,6 +1100,8 @@ async function emitRuntimeEvent(ctx: AdapterExecutionContext, event: AcpRuntimeE
     return;
   }
   if (event.type === "tool_call") {
+    const eventRecord = event as Record<string, unknown>;
+    const toolInput = eventRecord.input;
     await emitAcpxLog(ctx, {
       type: "acpx.tool_call",
       name: event.title ?? "acp_tool",
@@ -1107,6 +1109,7 @@ async function emitRuntimeEvent(ctx: AdapterExecutionContext, event: AcpRuntimeE
       status: event.status,
       text: event.text,
       tag: event.tag,
+      ...(toolInput !== undefined ? { input: toolInput } : {}),
     });
     return;
   }

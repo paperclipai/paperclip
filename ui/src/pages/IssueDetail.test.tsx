@@ -7,8 +7,13 @@ import { NavigationType } from "react-router-dom";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { canBoardResolveRecoveryAction, IssueDetail, shouldScrollIssueDetailToTopOnNavigation } from "./IssueDetail";
+import {
+  canBoardResolveRecoveryAction,
+  IssueDetail,
+  shouldScrollIssueDetailToTopOnNavigation,
+} from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
+import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -68,6 +73,12 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 }));
 
 const mockNavigate = vi.hoisted(() => vi.fn());
+const mockLocation = vi.hoisted(() => ({
+  pathname: "/issues/PAP-1",
+  search: "",
+  hash: "",
+  state: null as unknown,
+}));
 const mockOpenPanel = vi.hoisted(() => vi.fn());
 const mockClosePanel = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
@@ -77,6 +88,14 @@ const mockIssuesListRender = vi.hoisted(() => vi.fn());
 const mockIssueChatThreadRender = vi.hoisted(() => vi.fn());
 const mockImageGalleryRender = vi.hoisted(() => vi.fn());
 const mockIssueWorkspaceCardRender = vi.hoisted(() => vi.fn());
+
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+(globalThis as any).ResizeObserver = (globalThis as any).ResizeObserver ?? ResizeObserverStub;
 
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
@@ -136,7 +155,7 @@ vi.mock("@/lib/router", () => ({
   } & AnchorHTMLAttributes<HTMLAnchorElement>) => (
     <a href={to} {...props}>{children}</a>
   ),
-  useLocation: () => ({ pathname: "/issues/PAP-1", search: "", hash: "", state: null }),
+  useLocation: () => mockLocation,
   useNavigate: () => mockNavigate,
   useNavigationType: () => "PUSH",
   useParams: () => ({ issueId: "PAP-1" }),
@@ -309,7 +328,7 @@ vi.mock("../components/IssueWorkspaceCard", () => ({
 }));
 
 vi.mock("../components/ImageGalleryModal", () => ({
-  ImageGalleryModal: (props: { images: IssueAttachment[]; initialIndex: number; open: boolean }) => {
+  ImageGalleryModal: (props: { items: IssueAttachment[]; initialIndex: number; open: boolean }) => {
     mockImageGalleryRender(props);
     return null;
   },
@@ -334,7 +353,7 @@ vi.mock("../components/ApprovalCard", () => ({
 }));
 
 vi.mock("../components/Identity", () => ({
-  Identity: () => <span>Identity</span>,
+  Identity: ({ name, shape }: { name: string; shape?: string }) => <span data-shape={shape ?? "circle"}>{name}</span>,
 }));
 
 vi.mock("@/components/ui/button", () => ({
@@ -950,6 +969,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.listWorkProducts.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
+    mockIssuesApi.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
     mockIssuesApi.getTreeControlState.mockResolvedValue({ activePauseHold: null });
     mockIssuesApi.listTreeHolds.mockResolvedValue([]);
     mockActivityApi.forIssue.mockResolvedValue([]);
@@ -984,6 +1004,11 @@ describe("IssueDetail", () => {
     mockIssueChatThreadClassicRender.mockClear();
     mockImageGalleryRender.mockClear();
     mockIssueWorkspaceCardRender.mockClear();
+    mockNavigate.mockClear();
+    mockLocation.pathname = "/issues/PAP-1";
+    mockLocation.search = "";
+    mockLocation.hash = "";
+    mockLocation.state = null;
   });
 
   afterEach(async () => {
@@ -1019,6 +1044,185 @@ describe("IssueDetail", () => {
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("removes an inbox-origin archived issue from cached inbox variants before navigating back", async () => {
+    const issue = createIssue({ id: "issue-1", identifier: "PAP-1", title: "Archive me from detail" });
+    const otherIssue = createIssue({ id: "issue-2", identifier: "PAP-2", title: "Keep me in inbox" });
+    const archiveRequest = createDeferred<{ id: string; archivedAt: Date }>();
+    mockLocation.state = createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox");
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.archiveFromInbox.mockReturnValue(archiveRequest.promise);
+
+    const mineKey = [
+      ...queryKeys.issues.listMineByMe("company-1"),
+      "with-routine-executions",
+      "live-descendant-summary",
+    ] as const;
+    const touchedKey = [
+      ...queryKeys.issues.listTouchedByMe("company-1"),
+      "with-routine-executions",
+      "live-descendant-summary",
+    ] as const;
+    const unreadKey = queryKeys.issues.listUnreadTouchedByMe("company-1");
+    queryClient.setQueryData<Issue[]>(mineKey, [issue, otherIssue]);
+    queryClient.setQueryData<Issue[]>(touchedKey, [issue, otherIssue]);
+    queryClient.setQueryData<Issue[]>(unreadKey, [issue, otherIssue]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const archiveButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Archive from inbox"]',
+    );
+    expect(archiveButton).not.toBeNull();
+
+    await act(async () => {
+      archiveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(queryClient.getQueryData<Issue[]>(mineKey)?.map((item) => item.id)).toEqual(["issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(touchedKey)?.map((item) => item.id)).toEqual(["issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(unreadKey)?.map((item) => item.id)).toEqual(["issue-2"]);
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
+    await act(async () => {
+      archiveRequest.resolve({ id: "issue-1", archivedAt: new Date() });
+    });
+    await flushReact();
+
+    expect(mockNavigate).toHaveBeenCalledWith("/inbox/mine", { replace: true });
+    expect(mockPushToast).toHaveBeenCalledWith({ title: "Task archived from inbox", tone: "success" });
+  });
+
+  it("shows assignee and originating avatars in the issue header metadata", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      assigneeAgentId: "agent-1",
+      projectId: "project-1",
+      createdByUserId: "user-1",
+    }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ name: "CodexCoder" })]);
+    mockProjectsApi.list.mockResolvedValue([{ id: "project-1", name: "Core Product", color: "#2563eb" }]);
+    mockAccessApi.listUserDirectory.mockResolvedValue({
+      users: [
+        {
+          principalId: "user-1",
+          status: "active",
+          user: { id: "user-1", name: "Dotta", email: "dotta@example.com", image: null },
+        },
+      ],
+    });
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      const avatarStack = container.querySelector('[data-testid="issue-attribution-avatar-stack"]');
+      const assigneeAvatar = container.querySelector('[data-testid="issue-assignee-avatar"]');
+      const originatingAvatar = container.querySelector('[data-testid="issue-originating-avatar"]');
+
+      expect(container.textContent).toContain("Core Product");
+      expect(avatarStack).toBeTruthy();
+      expect(assigneeAvatar?.getAttribute("aria-label")).toBe("Assignee: CodexCoder");
+      expect(originatingAvatar?.getAttribute("aria-label")).toBe("Originating: Dotta");
+      expect(assigneeAvatar?.getAttribute("title")).toBeNull();
+      expect(originatingAvatar?.getAttribute("title")).toBeNull();
+      expect(avatarStack?.textContent).not.toContain("Assignee");
+      expect(avatarStack?.textContent).not.toContain("Originating");
+      expect(avatarStack?.textContent).not.toContain("CodexCoder");
+      expect(avatarStack?.textContent).not.toContain("Dotta");
+    });
+
+    const pointerEvent = window.PointerEvent ?? MouseEvent;
+    const assigneeAvatar = container.querySelector('[data-testid="issue-assignee-avatar"]');
+    const originatingAvatar = container.querySelector('[data-testid="issue-originating-avatar"]');
+
+    await act(async () => {
+      assigneeAvatar?.dispatchEvent(new pointerEvent("pointermove", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      const tooltip = document.body.querySelector('[data-testid="issue-assignee-tooltip"]');
+      expect(tooltip?.textContent).toContain("Assignee");
+      expect(tooltip?.textContent).toContain("CodexCoder");
+    });
+
+    await act(async () => {
+      originatingAvatar?.dispatchEvent(new pointerEvent("pointermove", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      const tooltip = document.body.querySelector('[data-testid="issue-originating-tooltip"]');
+      expect(tooltip?.textContent).toContain("Originating");
+      expect(tooltip?.textContent).toContain("Dotta");
+    });
+  });
+
+  it("attributes an agent-created issue to the transitive responsible user with a via affordance", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      assigneeAgentId: "agent-1",
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      responsibleUserId: "user-1",
+    }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ name: "CodexCoder" })]);
+    mockAccessApi.listUserDirectory.mockResolvedValue({
+      users: [
+        {
+          principalId: "user-1",
+          status: "active",
+          user: { id: "user-1", name: "Dotta", email: "dotta@example.com", image: null },
+        },
+      ],
+    });
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      const originatingAvatar = container.querySelector('[data-testid="issue-originating-avatar"]');
+      expect(originatingAvatar?.getAttribute("aria-label")).toBe("Originating: Dotta · via CodexCoder");
+    });
+
+    const pointerEvent = window.PointerEvent ?? MouseEvent;
+    const originatingAvatar = container.querySelector('[data-testid="issue-originating-avatar"]');
+    await act(async () => {
+      originatingAvatar?.dispatchEvent(new pointerEvent("pointermove", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      const tooltip = document.body.querySelector('[data-testid="issue-originating-tooltip"]');
+      expect(tooltip?.textContent).toContain("Dotta");
+      expect(tooltip?.textContent).toContain("via CodexCoder");
+    });
   });
 
   it("does not mark the wake comment for the current live run as queued when active-run cache is stale", async () => {
@@ -1796,6 +2000,11 @@ describe("IssueDetail", () => {
     const execCommand = vi.fn(() => true);
     const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
     const originalExecCommand = Object.getOwnPropertyDescriptor(document, "execCommand");
+    const originalSecureContext = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+    Object.defineProperty(window, "isSecureContext", {
+      configurable: true,
+      value: false,
+    });
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: clipboardWrite },
@@ -1829,7 +2038,7 @@ describe("IssueDetail", () => {
         await Promise.resolve();
       });
 
-      expect(clipboardWrite).toHaveBeenCalledWith("# PAP-1: Copy me\n\nTask body");
+      expect(clipboardWrite).not.toHaveBeenCalled();
       expect(execCommand).toHaveBeenCalledWith("copy");
       expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
         title: "Copied to clipboard",
@@ -1847,6 +2056,12 @@ describe("IssueDetail", () => {
       } else {
         // @ts-expect-error test cleanup for optional browser API
         delete document.execCommand;
+      }
+      if (originalSecureContext) {
+        Object.defineProperty(window, "isSecureContext", originalSecureContext);
+      } else {
+        // @ts-expect-error test cleanup for optional browser API
+        delete window.isSecureContext;
       }
     }
   });
@@ -2084,7 +2299,8 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("report.md");
     expect(container.textContent).toContain("Attachments1");
     expect(container.querySelectorAll("video")).toHaveLength(1);
-    expect(mockImageGalleryRender.mock.calls.at(-1)?.[0].images.map((attachment: IssueAttachment) => attachment.id)).toEqual([
+    expect(mockImageGalleryRender.mock.calls.at(-1)?.[0].items.map((attachment: IssueAttachment) => attachment.id)).toEqual([
+      videoAttachment.id,
       imageAttachment.id,
     ]);
   });

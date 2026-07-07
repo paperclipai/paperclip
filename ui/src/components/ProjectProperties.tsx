@@ -21,7 +21,7 @@ import { ChoosePathButton } from "./PathInstructionsModal";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
-import { EnvVarEditor } from "./EnvVarEditor";
+import { EnvironmentVariablesEditor } from "./environment-variables-editor";
 
 const PROJECT_STATUSES = [
   { value: "backlog", label: "Backlog" },
@@ -255,6 +255,14 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     queryKey: selectedCompanyId ? queryKeys.secrets.list(selectedCompanyId) : ["secrets", "none"],
     queryFn: () => secretsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
+  });
+  const { data: userSecretDefinitions = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.secrets.userDefinitions(selectedCompanyId)
+      : ["user-secret-definitions", "none"],
+    queryFn: () => secretsApi.listUserSecretDefinitions(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+    retry: false,
   });
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
@@ -623,9 +631,10 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           valueClassName="space-y-2"
         >
           <div className="space-y-2">
-            <EnvVarEditor
+            <EnvironmentVariablesEditor
               value={project.env ?? {}}
               secrets={availableSecrets}
+              userSecretDefinitions={userSecretDefinitions}
               onCreateSecret={async (name, value) => {
                 const created = await createSecret.mutateAsync({ name, value });
                 return created;

@@ -1,9 +1,27 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+@font-face {
+  font-family: "InterVariable";
+  src: url("../fonts/InterVariable.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 100 900;
+}
+
+@font-face {
+  font-family: "InterVariable";
+  src: url("../fonts/InterVariable-Italic.woff2") format("woff2");
+  font-display: swap;
+  font-style: italic;
+  font-weight: 100 900;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  --font-sans: "InterVariable", "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -247,6 +265,7 @@
   }
   body {
     @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
     height: 100%;
     overflow: hidden;
   }
@@ -851,7 +870,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 }
 
 .paperclip-mdxeditor-content code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: var(--font-mono);
   font-size: 1em;
 }
 
@@ -956,7 +975,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 }
 
 .paperclip-markdown code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: var(--font-mono);
   font-size: 1em;
 }
 
@@ -1042,10 +1061,47 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   background-color: #ffffff0f;
 }
 
+.paperclip-markdown.paperclip-markdown-on-accent :not(pre) > code {
+  background-color: color-mix(in oklab, currentColor 24%, transparent);
+  color: currentColor;
+}
+
 .paperclip-markdown {
   color: var(--foreground);
   font-size: 0.9375rem;
   line-height: 1.6;
+}
+
+.paperclip-markdown.paperclip-markdown-on-accent {
+  color: inherit;
+  --tw-prose-body: currentColor;
+  --tw-prose-headings: currentColor;
+  --tw-prose-lead: currentColor;
+  --tw-prose-links: currentColor;
+  --tw-prose-bold: currentColor;
+  --tw-prose-counters: currentColor;
+  --tw-prose-bullets: currentColor;
+  --tw-prose-hr: color-mix(in oklab, currentColor 24%, transparent);
+  --tw-prose-quotes: currentColor;
+  --tw-prose-quote-borders: color-mix(in oklab, currentColor 56%, transparent);
+  --tw-prose-captions: color-mix(in oklab, currentColor 84%, transparent);
+  --tw-prose-code: currentColor;
+  --tw-prose-th-borders: color-mix(in oklab, currentColor 34%, transparent);
+  --tw-prose-td-borders: color-mix(in oklab, currentColor 22%, transparent);
+  --tw-prose-invert-body: currentColor;
+  --tw-prose-invert-headings: currentColor;
+  --tw-prose-invert-lead: currentColor;
+  --tw-prose-invert-links: currentColor;
+  --tw-prose-invert-bold: currentColor;
+  --tw-prose-invert-counters: currentColor;
+  --tw-prose-invert-bullets: currentColor;
+  --tw-prose-invert-hr: color-mix(in oklab, currentColor 24%, transparent);
+  --tw-prose-invert-quotes: currentColor;
+  --tw-prose-invert-quote-borders: color-mix(in oklab, currentColor 56%, transparent);
+  --tw-prose-invert-captions: color-mix(in oklab, currentColor 84%, transparent);
+  --tw-prose-invert-code: currentColor;
+  --tw-prose-invert-th-borders: color-mix(in oklab, currentColor 34%, transparent);
+  --tw-prose-invert-td-borders: color-mix(in oklab, currentColor 22%, transparent);
 }
 
 .paperclip-markdown > :first-child {
@@ -1087,6 +1143,10 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   color: var(--muted-foreground);
 }
 
+.paperclip-markdown.paperclip-markdown-on-accent li::marker {
+  color: currentColor;
+}
+
 .paperclip-markdown h1,
 .paperclip-markdown h2,
 .paperclip-markdown h3,
@@ -1115,6 +1175,10 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   font-size: 0.95rem;
 }
 
+.paperclip-markdown.paperclip-markdown-on-accent :where(h1, h2, h3, h4, strong, b) {
+  color: currentColor;
+}
+
 .paperclip-markdown :where(strong, b) {
   color: var(--foreground);
   font-weight: 600;
@@ -1125,6 +1189,16 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   text-decoration: underline;
   text-underline-offset: 0.15em;
   cursor: pointer;
+}
+
+.paperclip-markdown.paperclip-markdown-on-accent :where(a, a:visited) {
+  color: currentColor;
+  text-decoration-color: color-mix(in oklab, currentColor 72%, transparent);
+}
+
+.paperclip-markdown.paperclip-markdown-on-accent :where(a:hover, a:focus-visible) {
+  color: currentColor;
+  text-decoration-color: currentColor;
 }
 
 .paperclip-markdown a.paperclip-mention-chip {
@@ -1154,11 +1228,36 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   color: color-mix(in oklab, var(--foreground) 80%, #58a6ff 20%);
 }
 
+.dark .paperclip-markdown.paperclip-markdown-on-accent :where(a, a:visited) {
+  color: currentColor;
+}
+
 .paperclip-markdown blockquote {
   margin-left: 0;
   padding-left: 0.95rem;
   border-left: 0.24rem solid color-mix(in oklab, var(--border) 84%, var(--muted-foreground) 16%);
   color: var(--muted-foreground);
+}
+
+.paperclip-markdown.paperclip-markdown-on-accent blockquote {
+  border-left-color: color-mix(in oklab, currentColor 56%, transparent);
+  color: color-mix(in oklab, currentColor 88%, transparent);
+}
+
+.paperclip-markdown.paperclip-markdown-on-accent .paperclip-workspace-file-link {
+  border-color: color-mix(in oklab, currentColor 34%, transparent);
+  background-color: color-mix(in oklab, currentColor 16%, transparent);
+  color: currentColor;
+}
+
+.paperclip-markdown.paperclip-markdown-on-accent .paperclip-workspace-file-link:hover {
+  background-color: color-mix(in oklab, currentColor 24%, transparent);
+}
+
+.paperclip-markdown.paperclip-markdown-on-accent :where(a.paperclip-mention-chip, a.paperclip-project-mention-chip) {
+  border-color: color-mix(in oklab, currentColor 34%, transparent) !important;
+  background: color-mix(in oklab, currentColor 16%, transparent) !important;
+  color: currentColor !important;
 }
 
 .paperclip-markdown hr {

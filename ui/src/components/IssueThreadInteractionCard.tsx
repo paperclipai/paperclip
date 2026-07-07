@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Agent } from "@paperclipai/shared";
-import { AlertTriangle, CheckCircle2, ChevronRight, CircleDashed, FileText, GitBranch, ImagePlus, ListChecks, Loader2, MessageSquareQuote, X, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronRight, CircleDashed, FileText, GitBranch, ImagePlus, Loader2, MessageSquareQuote, X, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import {
@@ -347,7 +347,7 @@ function TaskTreeNode({
         {hasMetadata ? (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {hasExplicitAssignee ? (
-              <TaskField label="Assignee" value={assigneeLabel} />
+              <TaskField label="Responsible" value={assigneeLabel} />
             ) : null}
             {node.task.billingCode ? (
               <TaskField label="Billing" value={node.task.billingCode} />
@@ -982,6 +982,24 @@ function AskUserQuestionsCard({
           ) : (
             <p className="mt-1">No answer was recorded.</p>
           )}
+        </div>
+      ) : interaction.status === "expired" ? (
+        <div className="rounded-2xl border border-amber-300/70 bg-amber-50/85 p-4 text-sm leading-6 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+          <div className="flex items-center gap-2 font-semibold">
+            <AlertTriangle className="h-4 w-4" />
+            {questions.length === 1 ? "Question expired by comment" : "Questions expired by comment"}
+          </div>
+          <p className="mt-1">
+            A later board/user comment superseded this question request. Create a fresh request if answers are still needed.
+          </p>
+          {interaction.result?.commentId ? (
+            <a
+              href={`#comment-${interaction.result.commentId}`}
+              className="mt-3 inline-flex text-sm font-medium underline underline-offset-4"
+            >
+              Jump to comment
+            </a>
+          ) : null}
         </div>
       ) : (
         <div className="space-y-3">
@@ -1923,15 +1941,6 @@ export function IssueThreadInteractionCard({
               <span className="text-current/60">/</span>
               {planStyles ? planStyles.label : statusLabel(interaction.status)}
             </span>
-            {interaction.continuationPolicy === "wake_assignee"
-              || interaction.continuationPolicy === "wake_assignee_on_accept" ? (
-              <span className="inline-flex items-center gap-1 rounded-sm border border-border/70 bg-transparent px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-foreground/70">
-                <ListChecks className="h-3.5 w-3.5" />
-                {interaction.continuationPolicy === "wake_assignee_on_accept"
-                  ? "Wakes on confirm"
-                  : "Wakes assignee"}
-              </span>
-            ) : null}
           </div>
 
           <div className="mt-3 text-lg font-bold text-foreground">

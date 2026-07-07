@@ -100,6 +100,10 @@ vi.mock("./SidebarProjects", () => ({
   SidebarProjects: () => <div data-testid="sidebar-projects">Projects collapsible</div>,
 }));
 
+vi.mock("./SidebarStarredProjects", () => ({
+  SidebarStarredProjects: () => <div data-testid="sidebar-starred-projects" />,
+}));
+
 async function flushReact() {
   for (let index = 0; index < 5; index += 1) {
     await Promise.resolve();
@@ -223,27 +227,24 @@ describe("Sidebar", () => {
     });
   });
 
-  it("classic (flag OFF): New Task button, Tasks label, per-project collapsible, no top-level Projects link", async () => {
+  it("streamlined is now standard: a stale enableStreamlinedLeftNavigation=false opt-out is ignored", async () => {
+    // PAP-12472 retired the experimental opt-out; the streamlined sidebar is the
+    // only path, so an old `false` setting no longer restores classic mode.
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       enableStreamlinedLeftNavigation: false,
     });
     const root = await renderSidebar();
 
-    expect(container.textContent).toContain("New Task");
-    expect(container.textContent).not.toContain("New Issue");
-
     const navLabels = [...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim());
     expect(navLabels).toContain("Tasks");
-    expect(navLabels).not.toContain("Issues");
-    // No top-level Projects nav link in classic mode (D5 option A).
-    expect(navLabels).not.toContain("Projects");
-
-    // Per-project collapsible restored below Work.
-    expect(container.querySelector('[data-testid="sidebar-projects"]')).not.toBeNull();
+    // Top-level Projects link + starred children stay, per-project collapsible gone.
+    expect(navLabels).toContain("Projects");
+    expect(container.querySelector('[data-testid="sidebar-projects"]')).toBeNull();
+    expect(container.querySelector('[data-testid="sidebar-starred-projects"]')).not.toBeNull();
     expect(
       container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
-    ).toBe("false");
+    ).toBe("true");
 
     flushSync(() => {
       root.unmount();
@@ -304,6 +305,24 @@ describe("Sidebar", () => {
     const companySection = sections.find((section) => section.textContent?.startsWith("Company"));
     expect(workSection?.textContent).toContain("Skills");
     expect(companySection?.textContent).not.toContain("Skills");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("places Timeline in the Company section", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    const sections = [...container.querySelectorAll("nav > div")];
+    const workSection = sections.find((section) => section.textContent?.startsWith("Work"));
+    const companySection = sections.find((section) => section.textContent?.startsWith("Company"));
+    expect(workSection?.textContent).not.toContain("Timeline");
+    expect(companySection?.textContent).toContain("Timeline");
+
+    const timelineLink = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Timeline");
+    expect(timelineLink?.getAttribute("href")).toBe("/timeline");
 
     flushSync(() => {
       root.unmount();

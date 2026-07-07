@@ -127,6 +127,34 @@ describe("issue thread interaction helpers", () => {
         answers: [{ questionId: "question-1", optionIds: ["option-1"] }],
       },
     })).toBe("Answered 1 question");
+
+    expect(buildIssueThreadInteractionSummary({
+      id: "interaction-expired",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "ask_user_questions",
+      status: "expired",
+      continuationPolicy: "wake_assignee",
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:05:00.000Z",
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: "question-1",
+            prompt: "Pick one",
+            selectionMode: "single",
+            options: [{ id: "option-1", label: "Option 1" }],
+          },
+        ],
+      },
+      result: {
+        version: 1,
+        answers: [],
+        expirationReason: "superseded_by_comment",
+        commentId: "11111111-1111-4111-8111-111111111111",
+      },
+    })).toBe("Question expired after comment");
   });
 
   it("summarizes checkbox confirmation interactions by count", () => {

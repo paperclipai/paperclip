@@ -169,7 +169,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp, Trash2 } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
-import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
+import {
+  IssueRecoveryActionCard,
+  type RecoveryReissueRequest,
+  type RecoveryResolveOutcome,
+} from "./IssueRecoveryActionCard";
 import { SourceTrustBadge } from "./SourceTrustBadge";
 
 interface IssueChatMessageContext {
@@ -301,6 +305,59 @@ function useLiveElapsed(startMs: number | null | undefined, active: boolean): st
   return formatDurationWords(Date.now() - startMs);
 }
 
+function readCustomString(custom: Record<string, unknown>, key: string): string {
+  return typeof custom[key] === "string" ? custom[key].trim() : "";
+}
+
+function toTimestampOrNull(value: string): number | null {
+  if (!value) return null;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function IssueChatLiveRunStatusLine({
+  custom,
+  active,
+  className,
+}: {
+  custom: Record<string, unknown>;
+  active: boolean;
+  className?: string;
+}) {
+  const currentStatusMessage = readCustomString(custom, "currentStatusMessage");
+  const currentToolName = readCustomString(custom, "currentToolName");
+  const lastAssistantSnippet = readCustomString(custom, "lastAssistantSnippet");
+  const lastEventAt = readCustomString(custom, "lastEventAt");
+  const lastEventAtMs = toTimestampOrNull(lastEventAt);
+  const lastActivityElapsed = useLiveElapsed(lastEventAtMs, active);
+  const lastActivityAgeMs = lastEventAtMs ? Date.now() - lastEventAtMs : null;
+
+  if (!active) return null;
+
+  const primary =
+    currentToolName
+      ? `Using ${currentToolName}`
+      : lastAssistantSnippet
+        ? lastAssistantSnippet
+        : currentStatusMessage;
+  const activityText = lastActivityElapsed
+    ? lastActivityAgeMs !== null && lastActivityAgeMs >= 15_000
+      ? `no output for ${lastActivityElapsed} - still running`
+      : `${lastActivityElapsed} ago`
+    : "";
+  const text = [primary, activityText].filter(Boolean).join(" · ");
+  if (!text) return null;
+
+  return (
+    <span
+      className={cn("mt-0.5 block truncate text-xs leading-4 text-muted-foreground/70", className)}
+      title={text}
+    >
+      {text}
+    </span>
+  );
+}
+
 function useStableEvent<T extends (...args: never[]) => unknown>(callback: T | undefined): T | undefined {
   const callbackRef = useRef(callback);
   useLayoutEffect(() => {
@@ -368,6 +425,8 @@ interface IssueChatThreadProps {
   scheduledRetry?: IssueScheduledRetry | null;
   recoveryAction?: IssueRecoveryAction | null;
   onResolveRecoveryAction?: (outcome: RecoveryResolveOutcome) => void;
+  onReissueIsolatedRecoveryAction?: (request: RecoveryReissueRequest) => void;
+  reissueIsolatedRecoveryActionPending?: boolean;
   canFalsePositiveRecoveryAction?: boolean;
   legacyRecoverySourceIssue?: {
     identifier: string | null;
@@ -721,9 +780,7 @@ const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed, onAc
   }
   return (
     <WorkspaceFileMarkdownBody
-      // `prose-invert` flips typography colours (body, links, code) to light so
-      // markdown stays legible on the saturated liveness-blue human bubble.
-      className={cn("text-sm leading-6", onAccent && "prose-invert")}
+      className={cn("text-sm leading-6", onAccent && "paperclip-markdown-on-accent")}
       style={recessed ? { opacity: 0.55 } : undefined}
       softBreaks
       onImageClick={onImageClick}
@@ -875,8 +932,6 @@ function IssueChatChainOfThought({
   const rawSegments = Array.isArray(custom.chainOfThoughtSegments)
     ? (custom.chainOfThoughtSegments as SegmentTiming[])
     : [];
-  const currentStatusMessage =
-    typeof custom.currentStatusMessage === "string" ? custom.currentStatusMessage.trim() : "";
   const segmentTiming = myIndex >= 0 ? rawSegments[myIndex] ?? null : null;
   const isActive = isCoTSegmentActive({
     isMessageRunning,
@@ -939,14 +994,7 @@ function IssueChatChainOfThought({
               <span className="text-xs text-muted-foreground/40">· {toolSummary}</span>
             ) : null}
           </div>
-          {isActive && currentStatusMessage ? (
-            <span
-              className="mt-0.5 block truncate pl-6 text-xs leading-4 text-muted-foreground/70"
-              title={currentStatusMessage}
-            >
-              {currentStatusMessage}
-            </span>
-          ) : null}
+          <IssueChatLiveRunStatusLine custom={custom} active={isActive} className="pl-6" />
         </div>
         {hasContent ? (
           <ChevronDown className={cn("mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/50 transition-transform", expanded && "rotate-180")} />
@@ -1594,8 +1642,6 @@ function IssueChatAssistantMessage({
     ? custom.notices.filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
     : [];
   const waitingText = typeof custom.waitingText === "string" ? custom.waitingText : "";
-  const currentStatusMessage =
-    typeof custom.currentStatusMessage === "string" ? custom.currentStatusMessage.trim() : "";
   const isRunning = message.role === "assistant" && message.status?.type === "running";
   const runHref = runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
   const canStopRun = Boolean(runId) && (isRunActive || runStatus === "queued" || runStatus === "running");
@@ -1883,14 +1929,7 @@ function IssueChatAssistantMessage({
                         <span className="shimmer-text">{waitingText}</span>
                       </span>
                     </div>
-                    {isRunning && currentStatusMessage ? (
-                      <div
-                        className="mt-0.5 truncate pl-6 text-xs leading-4 text-muted-foreground/70"
-                        title={currentStatusMessage}
-                      >
-                        {currentStatusMessage}
-                      </div>
-                    ) : null}
+                    <IssueChatLiveRunStatusLine custom={custom} active={isRunning} className="pl-6" />
                   </div>
                 ) : null}
                 {notices.length > 0 ? (
@@ -4017,14 +4056,14 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             ref={reassignTriggerRef}
             value={reassignTarget}
             options={reassignOptions}
-            placeholder="Assignee"
-            noneLabel="No assignee"
-            searchPlaceholder="Search assignees..."
-            emptyMessage="No assignees found."
+            placeholder="Responsible"
+            noneLabel="No responsible"
+            searchPlaceholder="Search responsible..."
+            emptyMessage="No responsible found."
             onChange={setReassignTarget}
             className="h-8 text-xs"
             renderTriggerValue={(option) => {
-              if (!option) return <span className="text-muted-foreground">Assignee</span>;
+              if (!option) return <span className="text-muted-foreground">Responsible</span>;
               const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
               const agent = agentId ? agentMap?.get(agentId) : null;
               return (
@@ -4069,10 +4108,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           }}
         >
           <AlertDialogHeader>
-            <AlertDialogTitle>No assignee selected</AlertDialogTitle>
+            <AlertDialogTitle>No responsible selected</AlertDialogTitle>
             <AlertDialogDescription>
               This comment will be posted without an assignee, so no agent will be woken
-              to act on it. Go back to pick an assignee, or send anyway.
+              to act on it. Go back to pick a responsible, or send anyway.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -4116,6 +4155,8 @@ export function IssueChatThread({
   scheduledRetry = null,
   recoveryAction = null,
   onResolveRecoveryAction,
+  onReissueIsolatedRecoveryAction,
+  reissueIsolatedRecoveryActionPending = false,
   canFalsePositiveRecoveryAction = false,
   legacyRecoverySourceIssue = null,
   companyId,
@@ -4217,6 +4258,9 @@ export function IssueChatThread({
         outputSilence: activeRun.outputSilence,
         currentStatusMessage: activeRun.currentStatusMessage ?? null,
         currentStatusUpdatedAt: toIsoString(activeRun.currentStatusUpdatedAt),
+        currentToolName: activeRun.currentToolName ?? null,
+        lastAssistantSnippet: activeRun.lastAssistantSnippet ?? null,
+        lastEventAt: toIsoString(activeRun.lastEventAt),
       });
     }
     return [...deduped.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
@@ -4826,6 +4870,8 @@ export function IssueChatThread({
                       action={recoveryAction}
                       agentMap={agentMap}
                       onResolve={onResolveRecoveryAction}
+                      onReissueIsolated={onReissueIsolatedRecoveryAction}
+                      reissuePending={reissueIsolatedRecoveryActionPending}
                       canFalsePositive={canFalsePositiveRecoveryAction}
                     />
                   ) : null}

@@ -143,6 +143,133 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
+  it("applies heartbeat progress payloads directly to cached visible issue runs", () => {
+    const cache = new Map<string, unknown>([
+      [JSON.stringify(queryKeys.liveRuns("company-1")), [{ id: "run-1", currentStatusMessage: null }]],
+      [JSON.stringify(queryKeys.issues.detail("DEMO-759")), {
+        id: "issue-1",
+        identifier: "DEMO-759",
+        assigneeAgentId: "agent-1",
+      }],
+      [JSON.stringify(queryKeys.issues.detail("issue-1")), {
+        id: "issue-1",
+        identifier: "DEMO-759",
+        assigneeAgentId: "agent-1",
+      }],
+      [JSON.stringify(queryKeys.issues.activeRun("DEMO-759")), {
+        id: "run-1",
+        currentStatusMessage: null,
+      }],
+      [JSON.stringify(queryKeys.issues.activeRun("issue-1")), {
+        id: "run-1",
+        currentStatusMessage: null,
+      }],
+      [JSON.stringify(queryKeys.issues.liveRuns("DEMO-759")), [{ id: "run-1", currentStatusMessage: null }]],
+      [JSON.stringify(queryKeys.issues.liveRuns("issue-1")), [{ id: "run-1", currentStatusMessage: null }]],
+      [JSON.stringify(queryKeys.issues.runs("DEMO-759")), [{ runId: "run-1" }]],
+    ]);
+    const queryClient = {
+      getQueryData: (key: unknown) => cache.get(JSON.stringify(key)),
+      setQueryData: (key: unknown, updater: unknown) => {
+        const cacheKey = JSON.stringify(key);
+        const current = cache.get(cacheKey);
+        cache.set(cacheKey, typeof updater === "function" ? updater(current) : updater);
+      },
+    };
+
+    const changed = __liveUpdatesTestUtils.applyRunLiveStatusPatchToCaches(
+      queryClient as never,
+      "company-1",
+      "/DEMO/issues/DEMO-759",
+      {
+        runId: "run-1",
+        agentId: "agent-1",
+        issueId: "issue-1",
+        message: "Syncing workspace",
+        updatedAt: "2026-04-06T12:00:05.000Z",
+        currentToolName: "bash",
+        lastAssistantSnippet: "Reading package.json",
+        lastEventAt: "2026-04-06T12:00:08.000Z",
+      },
+      { isForegrounded: true },
+    );
+
+    expect(changed).toBe(true);
+    expect(cache.get(JSON.stringify(queryKeys.liveRuns("company-1")))).toEqual([
+      expect.objectContaining({
+        id: "run-1",
+        currentStatusMessage: "Syncing workspace",
+        currentStatusUpdatedAt: "2026-04-06T12:00:05.000Z",
+        currentToolName: "bash",
+        lastAssistantSnippet: "Reading package.json",
+        lastEventAt: "2026-04-06T12:00:08.000Z",
+      }),
+    ]);
+    expect(cache.get(JSON.stringify(queryKeys.issues.activeRun("DEMO-759")))).toMatchObject({
+      currentToolName: "bash",
+      lastAssistantSnippet: "Reading package.json",
+    });
+    expect(cache.get(JSON.stringify(queryKeys.issues.liveRuns("issue-1")))).toEqual([
+      expect.objectContaining({
+        currentStatusMessage: "Syncing workspace",
+        currentToolName: "bash",
+      }),
+    ]);
+  });
+
+  it("uses the heartbeat event timestamp for run event status patches", () => {
+    expect(
+      __liveUpdatesTestUtils.readRunLiveStatusPatchFromPayload(
+        {
+          runId: "run-1",
+          agentId: "agent-1",
+          issueId: "issue-1",
+          message: "Tool started",
+          currentToolName: "bash",
+          lastAssistantSnippet: "Checking workspace",
+        },
+        "2026-04-06T12:00:09.000Z",
+        "heartbeat.run.event",
+      ),
+    ).toEqual({
+      runId: "run-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      message: "Tool started",
+      updatedAt: "2026-04-06T12:00:09.000Z",
+      currentToolName: "bash",
+      lastAssistantSnippet: "Checking workspace",
+      lastEventAt: "2026-04-06T12:00:09.000Z",
+    });
+  });
+
+  it("does not clear run tool context from null heartbeat event fields", () => {
+    const patch = __liveUpdatesTestUtils.readRunLiveStatusPatchFromPayload(
+      {
+        runId: "run-1",
+        agentId: "agent-1",
+        issueId: "issue-1",
+        message: null,
+        currentToolName: null,
+        lastAssistantSnippet: null,
+        lastEventAt: "2026-04-06T12:00:10.000Z",
+      },
+      "2026-04-06T12:00:09.000Z",
+      "heartbeat.run.event",
+    );
+
+    expect(patch).toEqual({
+      runId: "run-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      updatedAt: "2026-04-06T12:00:09.000Z",
+      lastEventAt: "2026-04-06T12:00:10.000Z",
+    });
+    expect(patch).not.toHaveProperty("message");
+    expect(patch).not.toHaveProperty("currentToolName");
+    expect(patch).not.toHaveProperty("lastAssistantSnippet");
+  });
+
   it("refreshes issue document caches when a document activity event arrives", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

@@ -9,6 +9,28 @@ import {
   isClaudeImageProcessingError,
 } from "./parse.js";
 
+describe("detectClaudeLoginRequired", () => {
+  it("classifies Claude's invalid API key login prompt as auth required", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "",
+        stderr: "Invalid API key · Please run /login",
+      }),
+    ).toEqual({ requiresLogin: true, loginUrl: null });
+  });
+
+  it("does not classify a bare invalid API key as the Claude login flow", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "",
+        stderr: "Invalid API key",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+});
+
 describe("isClaudeTransientUpstreamError", () => {
   it("classifies the 'out of extra usage' subscription window failure as transient", () => {
     expect(

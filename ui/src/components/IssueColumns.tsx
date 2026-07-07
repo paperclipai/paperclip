@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Issue } from "@paperclipai/shared";
+import { deriveOriginatingActor, type Issue } from "@paperclipai/shared";
 import { Columns3 } from "lucide-react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Button } from "@/components/ui/button";
@@ -20,12 +20,13 @@ import { timeAgo } from "../lib/timeAgo";
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
 
-export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "project", "workspace", "parent", "labels", "updated"];
+export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "kickedOffBy", "project", "workspace", "parent", "labels", "updated"];
 
 const issueColumnLabels: Record<InboxIssueColumn, string> = {
   status: "Status",
   id: "ID",
-  assignee: "Assignee",
+  assignee: "Responsible",
+  kickedOffBy: "Kicked off by",
   project: "Project",
   workspace: "Workspace",
   parent: "Parent task",
@@ -36,7 +37,8 @@ const issueColumnLabels: Record<InboxIssueColumn, string> = {
 const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
   status: "Task state chip on the left edge.",
   id: "Ticket identifier like PAP-1009.",
-  assignee: "Assigned agent or board user.",
+  assignee: "Responsible agent or board user.",
+  kickedOffBy: "Board user or agent who created the task.",
   project: "Linked project pill with its color.",
   workspace: "Execution or project workspace used for the task.",
   parent: "Parent task identifier and title.",
@@ -52,6 +54,7 @@ function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
   return columns
     .map((column) => {
       if (column === "assignee") return "minmax(6rem, 8rem)";
+      if (column === "kickedOffBy") return "minmax(6rem, 8rem)";
       if (column === "project") return "minmax(4.5rem, 7rem)";
       if (column === "workspace") return "minmax(6rem, 9rem)";
       if (column === "parent") return "minmax(3.5rem, 5.5rem)";
@@ -137,6 +140,7 @@ export function InboxIssueMetaLeading({
   issue,
   isLive,
   subtreeLiveCount = 0,
+  showSubtreeLiveChip = true,
   showStatus = true,
   showIdentifier = true,
   statusSlot,
@@ -145,6 +149,7 @@ export function InboxIssueMetaLeading({
   issue: Issue;
   isLive: boolean;
   subtreeLiveCount?: number;
+  showSubtreeLiveChip?: boolean;
   showStatus?: boolean;
   showIdentifier?: boolean;
   statusSlot?: ReactNode;
@@ -193,7 +198,7 @@ export function InboxIssueMetaLeading({
           </span>
         </span>
       )}
-      {!isLive && subtreeLiveCount > 0 && (
+      {showSubtreeLiveChip && !isLive && subtreeLiveCount > 0 && (
         <span
           className={cn(
             "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 sm:gap-1.5 sm:px-2",
@@ -227,6 +232,10 @@ export function InboxIssueTrailingColumns({
   assigneeName,
   assigneeUserName,
   assigneeUserAvatarUrl,
+  creatorAgentName,
+  creatorUserName,
+  creatorUserAvatarUrl,
+  viaAgentName,
   currentUserId,
   parentIdentifier,
   parentTitle,
@@ -242,6 +251,10 @@ export function InboxIssueTrailingColumns({
   assigneeName: string | null;
   assigneeUserName?: string | null;
   assigneeUserAvatarUrl?: string | null;
+  creatorAgentName?: string | null;
+  creatorUserName?: string | null;
+  creatorUserAvatarUrl?: string | null;
+  viaAgentName?: string | null;
   currentUserId: string | null;
   parentIdentifier: string | null;
   parentTitle: string | null;
@@ -250,6 +263,9 @@ export function InboxIssueTrailingColumns({
 }) {
   const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
   const userLabel = assigneeUserName ?? formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
+  const originatingActor = deriveOriginatingActor(issue);
+  const originatingUserId = originatingActor?.kind === "user" ? originatingActor.id : null;
+  const creatorUserLabel = creatorUserName ?? formatAssigneeUserLabel(originatingUserId, currentUserId) ?? "User";
 
   return (
     <span
@@ -268,6 +284,7 @@ export function InboxIssueTrailingColumns({
                 <Identity
                   name={assigneeName ?? issue.assigneeAgentId.slice(0, 8)}
                   size="sm"
+                  shape="square"
                   className="min-w-0"
                 />
               </span>
@@ -290,6 +307,52 @@ export function InboxIssueTrailingColumns({
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
               Unassigned
+            </span>
+          );
+        }
+
+        if (column === "kickedOffBy") {
+          if (originatingActor?.kind === "agent") {
+            const name = creatorAgentName ?? originatingActor.id.slice(0, 8);
+            return (
+              <Tooltip key={column}>
+                <TooltipTrigger asChild>
+                  <span className="min-w-0 text-xs text-foreground">
+                    <Identity
+                      name={name}
+                      size="sm"
+                      shape="square"
+                      className="min-w-0"
+                    />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>{name}</TooltipContent>
+              </Tooltip>
+            );
+          }
+
+          if (originatingActor?.kind === "user") {
+            const tooltipText = viaAgentName ? `${creatorUserLabel} · via ${viaAgentName}` : creatorUserLabel;
+            return (
+              <Tooltip key={column}>
+                <TooltipTrigger asChild>
+                  <span className="min-w-0 text-xs text-foreground">
+                    <Identity
+                      name={creatorUserLabel}
+                      avatarUrl={creatorUserAvatarUrl}
+                      size="sm"
+                      className="min-w-0"
+                    />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>{tooltipText}</TooltipContent>
+              </Tooltip>
+            );
+          }
+
+          return (
+            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
+              Unknown
             </span>
           );
         }
