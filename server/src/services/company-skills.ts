@@ -2,9 +2,26 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, companySkillComments, companySkillStars, companySkillVersions, companySkills } from "@paperclipai/db";
+import {
+  agents as agentsTable,
+  assets,
+  companies,
+  companySkillComments,
+  companySkillStars,
+  companySkillTestInputs,
+  companySkillTestRuns,
+  companySkillVersions,
+  companySkills,
+  costEvents,
+  documents,
+  issueAttachments,
+  issueDocuments,
+  issues,
+  issueThreadInteractions,
+  issueWorkProducts,
+} from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import type { PaperclipDesiredSkillEntry, PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import type {
@@ -41,6 +58,14 @@ import type {
   CompanySkillSharingScope,
   CompanySkillSourceBadge,
   CompanySkillSourceType,
+  CompanySkillTestInput,
+  CompanySkillTestInputCreateRequest,
+  CompanySkillTestInputUpdateRequest,
+  CompanySkillTestRun,
+  CompanySkillTestRunCreateRequest,
+  CompanySkillTestRunDetail,
+  CompanySkillTestRunListQuery,
+  CompanySkillTestRunStatus,
   CompanySkillTrustLevel,
   CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
@@ -72,6 +97,8 @@ import {
 type CompanySkillRow = typeof companySkills.$inferSelect;
 type CompanySkillVersionRow = typeof companySkillVersions.$inferSelect;
 type CompanySkillCommentRow = typeof companySkillComments.$inferSelect;
+type CompanySkillTestInputRow = typeof companySkillTestInputs.$inferSelect;
+type CompanySkillTestRunRow = typeof companySkillTestRuns.$inferSelect;
 type CompanySkillListDbRow = Pick<
   CompanySkillRow,
   | "id"
@@ -1445,6 +1472,59 @@ function toCompanySkillComment(row: CompanySkillCommentRow): CompanySkillComment
     authorUserId: row.authorUserId ?? null,
     deletedAt: row.deletedAt ?? null,
   };
+}
+
+function toCompanySkillTestInput(row: CompanySkillTestInputRow): CompanySkillTestInput {
+  return {
+    ...row,
+    deletedAt: row.deletedAt ?? null,
+  };
+}
+
+function normalizeTestRunStatus(value: string): CompanySkillTestRunStatus {
+  return value === "running" || value === "succeeded" || value === "failed" || value === "cancelled"
+    ? value
+    : "queued";
+}
+
+function emptyTestRunCost() {
+  return {
+    costCents: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+  };
+}
+
+function toCompanySkillTestRun(
+  row: CompanySkillTestRunRow,
+  cost = emptyTestRunCost(),
+  taskExpired = false,
+): CompanySkillTestRun {
+  return {
+    ...row,
+    inputId: row.inputId ?? null,
+    agentConfigSnapshot: isPlainRecord(row.agentConfigSnapshot) ? row.agentConfigSnapshot : {},
+    status: normalizeTestRunStatus(row.status),
+    outputDocumentKey: row.outputDocumentKey || "output",
+    outputSnapshot: row.outputSnapshot ?? "",
+    error: row.error ?? null,
+    deletedAt: row.deletedAt ?? null,
+    supersededAt: row.supersededAt ?? null,
+    harnessIssueExpiresAt: row.harnessIssueExpiresAt ?? null,
+    harnessIssueDeletedAt: row.harnessIssueDeletedAt ?? null,
+    cost,
+    taskExpired,
+  };
+}
+
+function versionInventorySnapshotEqual(
+  left: CompanySkillVersionFileInventoryEntry[],
+  right: CompanySkillVersionFileInventoryEntry[],
+) {
+  const normalize = (entries: CompanySkillVersionFileInventoryEntry[]) =>
+    JSON.stringify([...entries].sort((a, b) => a.path.localeCompare(b.path)));
+  return normalize(left) === normalize(right);
 }
 
 function getSkillMeta(skill: Pick<CompanySkill, "metadata">): SkillSourceMeta {
@@ -4648,6 +4728,517 @@ export function companySkillService(db: Db) {
     return { imported, warnings };
   }
 
+  async function listTestInputs(companyId: string, skillId: string): Promise<CompanySkillTestInput[]> {
+    const skill = await getById(companyId, skillId);
+    if (!skill) throw notFound("Skill not found");
+    const rows = await db
+      .select()
+      .from(companySkillTestInputs)
+      .where(and(
+        eq(companySkillTestInputs.companyId, companyId),
+        eq(companySkillTestInputs.skillId, skillId),
+        isNull(companySkillTestInputs.deletedAt),
+      ))
+      .orderBy(asc(companySkillTestInputs.name), asc(companySkillTestInputs.createdAt));
+    return rows.map(toCompanySkillTestInput);
+  }
+
+  async function createTestInput(
+    companyId: string,
+    skillId: string,
+    input: CompanySkillTestInputCreateRequest,
+    actor: SkillActor | null = null,
+  ): Promise<CompanySkillTestInput> {
+    const skill = await getById(companyId, skillId);
+    if (!skill) throw notFound("Skill not found");
+    const row = await db
+      .insert(companySkillTestInputs)
+      .values({
+        companyId,
+        skillId,
+        name: input.name.trim(),
+        content: input.content,
+        createdBy: actor?.type === "agent"
+          ? actor.agentId ?? null
+          : actor?.type === "user"
+            ? actor.userId ?? null
+            : null,
+      })
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!row) throw notFound("Failed to persist test input");
+    return toCompanySkillTestInput(row);
+  }
+
+  async function updateTestInput(
+    companyId: string,
+    skillId: string,
+    inputId: string,
+    input: CompanySkillTestInputUpdateRequest,
+  ): Promise<CompanySkillTestInput | null> {
+    const patch: Partial<typeof companySkillTestInputs.$inferInsert> = { updatedAt: new Date() };
+    if (input.name !== undefined) patch.name = input.name.trim();
+    if (input.content !== undefined) patch.content = input.content;
+    const row = await db
+      .update(companySkillTestInputs)
+      .set(patch)
+      .where(and(
+        eq(companySkillTestInputs.companyId, companyId),
+        eq(companySkillTestInputs.skillId, skillId),
+        eq(companySkillTestInputs.id, inputId),
+        isNull(companySkillTestInputs.deletedAt),
+      ))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    return row ? toCompanySkillTestInput(row) : null;
+  }
+
+  async function deleteTestInput(companyId: string, skillId: string, inputId: string): Promise<CompanySkillTestInput | null> {
+    const row = await db
+      .update(companySkillTestInputs)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(and(
+        eq(companySkillTestInputs.companyId, companyId),
+        eq(companySkillTestInputs.skillId, skillId),
+        eq(companySkillTestInputs.id, inputId),
+        isNull(companySkillTestInputs.deletedAt),
+      ))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    return row ? toCompanySkillTestInput(row) : null;
+  }
+
+  async function ensureRunSkillVersion(
+    companyId: string,
+    skill: CompanySkill,
+    actor: SkillActor | null,
+  ): Promise<CompanySkillVersion> {
+    const currentSnapshot = serializeVersionFileInventory(await collectVersionFileInventory(companyId, skill));
+    if (currentSnapshot.length === 0) {
+      throw unprocessable("Cannot run a skill test for a skill with zero files.");
+    }
+
+    const currentVersion = await getCurrentVersion(skill);
+    if (!currentVersion || !versionInventorySnapshotEqual(currentVersion.fileInventory, currentSnapshot)) {
+      return createVersion(companyId, skill.id, { label: "Auto version for test run" }, actor);
+    }
+    return currentVersion;
+  }
+
+  function snapshotAgentConfig(agent: Awaited<ReturnType<typeof agents.getById>>) {
+    if (!agent) return {};
+    const adapterConfig = isPlainRecord(agent.adapterConfig) ? agent.adapterConfig : {};
+    const runtimeConfig = isPlainRecord(agent.runtimeConfig) ? agent.runtimeConfig : {};
+    return {
+      agentId: agent.id,
+      name: agent.name,
+      role: agent.role,
+      adapterType: agent.adapterType,
+      model: asString(adapterConfig.model) ?? asString(runtimeConfig.model) ?? null,
+      adapterConfig,
+      runtimeConfig,
+      assignedSkills: isPlainRecord(adapterConfig.paperclipSkillSync)
+        ? adapterConfig.paperclipSkillSync
+        : null,
+      instructionsRef:
+        asString(adapterConfig.instructionsFilePath) ??
+        asString(adapterConfig.instructionsPath) ??
+        asString(adapterConfig.instructionsRef) ??
+        null,
+    };
+  }
+
+  async function testRunCostByIssueIds(companyId: string, issueIds: string[]) {
+    if (issueIds.length === 0) return new Map<string, ReturnType<typeof emptyTestRunCost>>();
+    const rows = await db
+      .select({
+        issueId: costEvents.issueId,
+        costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+        inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+        cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
+        outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+      })
+      .from(costEvents)
+      .where(and(eq(costEvents.companyId, companyId), inArray(costEvents.issueId, issueIds)))
+      .groupBy(costEvents.issueId);
+    return new Map(rows.flatMap((row) => row.issueId
+      ? [[row.issueId, {
+        costCents: Number(row.costCents ?? 0),
+        inputTokens: Number(row.inputTokens ?? 0),
+        cachedInputTokens: Number(row.cachedInputTokens ?? 0),
+        outputTokens: Number(row.outputTokens ?? 0),
+      }]]
+      : []));
+  }
+
+  async function hydrateTestRuns(companyId: string, rows: CompanySkillTestRunRow[]): Promise<CompanySkillTestRun[]> {
+    const costByIssueId = await testRunCostByIssueIds(companyId, rows.map((row) => row.issueId));
+    return rows.map((row) => toCompanySkillTestRun(
+      row,
+      costByIssueId.get(row.issueId) ?? emptyTestRunCost(),
+      Boolean(row.harnessIssueDeletedAt),
+    ));
+  }
+
+  async function createTestRun(
+    companyId: string,
+    skillId: string,
+    input: CompanySkillTestRunCreateRequest,
+    actor: SkillActor | null,
+    deps: {
+      createHarnessIssue: (issue: {
+        id: string;
+        title: string;
+        description: string;
+        assigneeAgentId: string;
+        harnessKind: "skill_test";
+        workMode: "skill_test";
+        status: "todo";
+        originKind: "skill_test";
+        originId: string;
+        originFingerprint: string;
+      }) => Promise<{ id: string }>;
+      wakeHarnessIssue: (issueId: string, agentId: string) => Promise<unknown>;
+      retentionDays?: number;
+    },
+  ): Promise<CompanySkillTestRun> {
+    const skill = await getById(companyId, skillId);
+    if (!skill) throw notFound("Skill not found");
+    const agent = await agents.getById(input.agentId);
+    if (!agent || agent.companyId !== companyId) throw notFound("Agent not found");
+    if (agent.status === "paused") throw unprocessable("Paused agents cannot run skill tests.");
+
+    const sourceInput = input.inputId
+      ? await db
+        .select()
+        .from(companySkillTestInputs)
+        .where(and(
+          eq(companySkillTestInputs.companyId, companyId),
+          eq(companySkillTestInputs.skillId, skillId),
+          eq(companySkillTestInputs.id, input.inputId),
+          isNull(companySkillTestInputs.deletedAt),
+        ))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    if (input.inputId && !sourceInput) throw notFound("Test input not found");
+    const inputSnapshot = (sourceInput?.content ?? input.content ?? "").trim();
+    if (!inputSnapshot) throw unprocessable("Test input content cannot be empty.");
+
+    const version = await ensureRunSkillVersion(companyId, skill, actor);
+    const runId = randomUUID();
+    const issueId = randomUUID();
+    await deps.createHarnessIssue({
+      id: issueId,
+      title: `Skill test: ${skill.name}`,
+      description: inputSnapshot,
+      assigneeAgentId: agent.id,
+      harnessKind: "skill_test",
+      workMode: "skill_test",
+      status: "todo",
+      originKind: "skill_test",
+      originId: runId,
+      originFingerprint: `skill_test:${runId}`,
+    });
+
+    const now = new Date();
+    const retentionDays = Math.max(0, deps.retentionDays ?? 7);
+    const previousExpiresAt = new Date(now.getTime() + retentionDays * 24 * 60 * 60 * 1000);
+    const row = await db.transaction(async (tx) => {
+      await tx
+        .update(companySkillTestRuns)
+        .set({
+          supersededAt: now,
+          harnessIssueExpiresAt: previousExpiresAt,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(companySkillTestRuns.companyId, companyId),
+          eq(companySkillTestRuns.skillId, skillId),
+          sourceInput?.id
+            ? eq(companySkillTestRuns.inputId, sourceInput.id)
+            : isNull(companySkillTestRuns.inputId),
+          isNull(companySkillTestRuns.supersededAt),
+        ));
+      return await tx
+        .insert(companySkillTestRuns)
+        .values({
+          id: runId,
+          companyId,
+          skillId,
+          inputId: sourceInput?.id ?? null,
+          inputSnapshot,
+          skillVersionId: version.id,
+          agentId: agent.id,
+          agentConfigSnapshot: snapshotAgentConfig(agent),
+          issueId,
+          status: "queued",
+          outputDocumentKey: "output",
+        })
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    });
+    if (!row) throw notFound("Failed to persist skill test run");
+    await deps.wakeHarnessIssue(issueId, agent.id);
+    return (await hydrateTestRuns(companyId, [row]))[0]!;
+  }
+
+  async function listTestRuns(
+    companyId: string,
+    skillId: string,
+    query: CompanySkillTestRunListQuery = {},
+  ): Promise<CompanySkillTestRun[]> {
+    const skill = await getById(companyId, skillId);
+    if (!skill) throw notFound("Skill not found");
+    const conditions = [
+      eq(companySkillTestRuns.companyId, companyId),
+      eq(companySkillTestRuns.skillId, skillId),
+      isNull(companySkillTestRuns.deletedAt),
+    ];
+    if (query.inputId) conditions.push(eq(companySkillTestRuns.inputId, query.inputId));
+    const rows = await db
+      .select()
+      .from(companySkillTestRuns)
+      .where(and(...conditions))
+      .orderBy(desc(companySkillTestRuns.createdAt), desc(companySkillTestRuns.id));
+    return hydrateTestRuns(companyId, rows);
+  }
+
+  async function getTestRunDetail(companyId: string, skillId: string, runId: string): Promise<CompanySkillTestRunDetail | null> {
+    const row = await db
+      .select()
+      .from(companySkillTestRuns)
+      .where(and(
+        eq(companySkillTestRuns.companyId, companyId),
+        eq(companySkillTestRuns.skillId, skillId),
+        eq(companySkillTestRuns.id, runId),
+        isNull(companySkillTestRuns.deletedAt),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    const [run] = await hydrateTestRuns(companyId, [row]);
+    if (!run) return null;
+    const [version, issue, docRows, interactionRows, attachmentRows, workProductRows] = await Promise.all([
+      getVersion(companyId, skillId, row.skillVersionId),
+      row.harnessIssueDeletedAt
+        ? Promise.resolve(null)
+        : db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            title: issues.title,
+            status: issues.status,
+            hiddenAt: issues.hiddenAt,
+          })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.id, row.issueId)))
+          .then((rows) => rows[0] ?? null),
+      row.harnessIssueDeletedAt
+        ? Promise.resolve([])
+        : db
+          .select({
+            key: issueDocuments.key,
+            title: documents.title,
+            updatedAt: documents.updatedAt,
+            body: documents.latestBody,
+          })
+          .from(issueDocuments)
+          .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+          .where(and(eq(issueDocuments.companyId, companyId), eq(issueDocuments.issueId, row.issueId)))
+          .orderBy(asc(issueDocuments.key)),
+      row.harnessIssueDeletedAt
+        ? Promise.resolve([])
+        : db
+          .select({
+            id: issueThreadInteractions.id,
+            kind: issueThreadInteractions.kind,
+            status: issueThreadInteractions.status,
+            title: issueThreadInteractions.title,
+            createdAt: issueThreadInteractions.createdAt,
+            updatedAt: issueThreadInteractions.updatedAt,
+          })
+          .from(issueThreadInteractions)
+          .where(and(eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, row.issueId)))
+          .orderBy(desc(issueThreadInteractions.createdAt)),
+      row.harnessIssueDeletedAt
+        ? Promise.resolve([])
+        : db
+          .select({
+            id: issueAttachments.id,
+            originalFilename: assets.originalFilename,
+            createdAt: issueAttachments.createdAt,
+          })
+          .from(issueAttachments)
+          .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
+          .where(and(eq(issueAttachments.companyId, companyId), eq(issueAttachments.issueId, row.issueId)))
+          .orderBy(desc(issueAttachments.createdAt)),
+      row.harnessIssueDeletedAt
+        ? Promise.resolve([])
+        : db
+          .select({
+            id: issueWorkProducts.id,
+            title: issueWorkProducts.title,
+            summary: issueWorkProducts.summary,
+            createdAt: issueWorkProducts.createdAt,
+          })
+          .from(issueWorkProducts)
+          .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.issueId, row.issueId)))
+          .orderBy(desc(issueWorkProducts.createdAt)),
+    ]);
+    if (!version) throw notFound("Skill version not found");
+    return {
+      ...run,
+      skillVersion: version,
+      outputBody: run.outputSnapshot,
+      harnessIssue: issue ? {
+        id: issue.id,
+        identifier: issue.identifier ?? null,
+        title: issue.title,
+        status: issue.status,
+        hiddenAt: issue.hiddenAt ?? null,
+      } : null,
+      documents: docRows.map((doc) => ({
+        key: doc.key,
+        title: doc.title ?? null,
+        updatedAt: doc.updatedAt,
+        body: doc.body,
+      })),
+      interactions: interactionRows.map((interaction) => ({
+        id: interaction.id,
+        kind: interaction.kind,
+        status: interaction.status,
+        title: interaction.title ?? interaction.kind,
+        createdAt: interaction.createdAt,
+        updatedAt: interaction.updatedAt,
+      })),
+      artifacts: [
+        ...attachmentRows.map((attachment) => ({
+          id: attachment.id,
+          kind: "attachment" as const,
+          title: attachment.originalFilename ?? "Attachment",
+          summary: null,
+          createdAt: attachment.createdAt,
+        })),
+        ...workProductRows.map((product) => ({
+          id: product.id,
+          kind: "work_product" as const,
+          title: product.title,
+          summary: product.summary ?? null,
+          createdAt: product.createdAt,
+        })),
+      ].sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime()),
+    };
+  }
+
+  async function completeTestRunForIssue(input: {
+    companyId: string;
+    issueId: string;
+    outcome: "succeeded" | "failed" | "cancelled";
+    error?: string | null;
+  }): Promise<CompanySkillTestRun | null> {
+    const row = await db
+      .select()
+      .from(companySkillTestRuns)
+      .where(and(eq(companySkillTestRuns.companyId, input.companyId), eq(companySkillTestRuns.issueId, input.issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (!row || ["succeeded", "failed", "cancelled"].includes(row.status)) return row
+      ? (await hydrateTestRuns(input.companyId, [row]))[0] ?? null
+      : null;
+
+    const outputDocumentKey = row.outputDocumentKey || "output";
+    const outputDocument = await db
+      .select({ body: documents.latestBody })
+      .from(issueDocuments)
+      .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+      .where(and(
+        eq(issueDocuments.companyId, input.companyId),
+        eq(issueDocuments.issueId, input.issueId),
+        eq(issueDocuments.key, outputDocumentKey),
+      ))
+      .then((rows) => rows[0] ?? null);
+    const updated = await db
+      .update(companySkillTestRuns)
+      .set({
+        status: input.outcome,
+        outputSnapshot: outputDocument?.body ?? row.outputSnapshot ?? "",
+        error: input.error ?? null,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(companySkillTestRuns.companyId, input.companyId), eq(companySkillTestRuns.id, row.id)))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    return updated ? (await hydrateTestRuns(input.companyId, [updated]))[0] ?? null : null;
+  }
+
+  async function markTestRunRunning(companyId: string, issueId: string): Promise<CompanySkillTestRun | null> {
+    const row = await db
+      .update(companySkillTestRuns)
+      .set({ status: "running", updatedAt: new Date() })
+      .where(and(
+        eq(companySkillTestRuns.companyId, companyId),
+        eq(companySkillTestRuns.issueId, issueId),
+        eq(companySkillTestRuns.status, "queued"),
+      ))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    return row ? (await hydrateTestRuns(companyId, [row]))[0] ?? null : null;
+  }
+
+  async function cancelTestRun(
+    companyId: string,
+    skillId: string,
+    runId: string,
+    deps: { cancelHarnessIssue: (issueId: string) => Promise<unknown> },
+  ): Promise<CompanySkillTestRun | null> {
+    const existing = await db
+      .select()
+      .from(companySkillTestRuns)
+      .where(and(
+        eq(companySkillTestRuns.companyId, companyId),
+        eq(companySkillTestRuns.skillId, skillId),
+        eq(companySkillTestRuns.id, runId),
+        isNull(companySkillTestRuns.deletedAt),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!existing) return null;
+    if (["succeeded", "failed", "cancelled"].includes(existing.status)) {
+      return (await hydrateTestRuns(companyId, [existing]))[0] ?? null;
+    }
+    await deps.cancelHarnessIssue(existing.issueId);
+    return completeTestRunForIssue({
+      companyId,
+      issueId: existing.issueId,
+      outcome: "cancelled",
+      error: "Cancelled by operator",
+    });
+  }
+
+  async function pruneExpiredTestHarnessIssues(companyId: string, now = new Date()): Promise<{ pruned: number }> {
+    const rows = await db
+      .select({
+        id: companySkillTestRuns.id,
+        issueId: companySkillTestRuns.issueId,
+      })
+      .from(companySkillTestRuns)
+      .where(and(
+        eq(companySkillTestRuns.companyId, companyId),
+        lt(companySkillTestRuns.harnessIssueExpiresAt, now),
+        isNull(companySkillTestRuns.harnessIssueDeletedAt),
+      ));
+    for (const row of rows) {
+      await db.transaction(async (tx) => {
+        await tx
+          .update(issues)
+          .set({ hiddenAt: now, updatedAt: now })
+          .where(and(eq(issues.companyId, companyId), eq(issues.id, row.issueId), eq(issues.harnessKind, "skill_test")));
+        await tx
+          .update(companySkillTestRuns)
+          .set({ harnessIssueDeletedAt: now, updatedAt: now })
+          .where(and(eq(companySkillTestRuns.companyId, companyId), eq(companySkillTestRuns.id, row.id)));
+      });
+    }
+    return { pruned: rows.length };
+  }
+
   async function deleteSkill(companyId: string, skillId: string): Promise<CompanySkill | null> {
     const row = await db
       .select()
@@ -4719,6 +5310,17 @@ export function companySkillService(db: Db) {
     updateFile,
     createLocalSkill,
     deleteSkill,
+    listTestInputs,
+    createTestInput,
+    updateTestInput,
+    deleteTestInput,
+    createTestRun,
+    listTestRuns,
+    getTestRunDetail,
+    completeTestRunForIssue,
+    markTestRunRunning,
+    cancelTestRun,
+    pruneExpiredTestHarnessIssues,
     importFromSource,
     installFromCatalog,
     scanProjectWorkspaces,

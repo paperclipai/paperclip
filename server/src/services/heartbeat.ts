@@ -4729,6 +4729,40 @@ export function normalizeSessionParams(params: Record<string, unknown> | null | 
 
 type RunSessionOutcome = "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out";
 
+type SkillTestHeartbeatCompletion = {
+  outcome: "failed" | "cancelled";
+  error: string | null;
+  heartbeatOutcome: RunSessionOutcome;
+};
+
+export function resolveSkillTestRunCompletionForHeartbeatOutcome(
+  outcome: RunSessionOutcome,
+  error: string | null | undefined,
+): SkillTestHeartbeatCompletion | null {
+  if (outcome === "cancelled") {
+    return {
+      outcome: "cancelled",
+      error: error ?? "Harness run was cancelled",
+      heartbeatOutcome: outcome,
+    };
+  }
+  if (outcome === "timed_out") {
+    return {
+      outcome: "failed",
+      error: error ?? "Timed out",
+      heartbeatOutcome: outcome,
+    };
+  }
+  if (outcome === "failed") {
+    return {
+      outcome: "failed",
+      error: error ?? "Adapter failed",
+      heartbeatOutcome: outcome,
+    };
+  }
+  return null;
+}
+
 const HERMES_ADAPTER_TYPE = "hermes_local";
 const HERMES_SESSION_ID_REGEX = /^(?:\d{8}_\d{6}_[A-Za-z0-9_-]{4,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
 
@@ -4949,6 +4983,72 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
+
+  async function completeSkillTestRunForHeartbeatOutcome(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    issueId: string | null;
+    issueWorkMode?: string | null;
+    outcome: RunSessionOutcome;
+    error: string | null;
+  }) {
+    const completion = resolveSkillTestRunCompletionForHeartbeatOutcome(input.outcome, input.error);
+    if (!completion || !input.issueId) return null;
+
+    let isSkillTestIssue = input.issueWorkMode === "skill_test";
+    if (!isSkillTestIssue && input.issueWorkMode === undefined) {
+      const issueRow = await db
+        .select({
+          workMode: issues.workMode,
+          harnessKind: issues.harnessKind,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, input.run.companyId), eq(issues.id, input.issueId)))
+        .then((rows) => rows[0] ?? null);
+      isSkillTestIssue = issueRow?.workMode === "skill_test" || issueRow?.harnessKind === "skill_test";
+    }
+    if (!isSkillTestIssue) return null;
+
+    const existingRun = await db
+      .select({
+        id: companySkillTestRuns.id,
+        status: companySkillTestRuns.status,
+      })
+      .from(companySkillTestRuns)
+      .where(and(
+        eq(companySkillTestRuns.companyId, input.run.companyId),
+        eq(companySkillTestRuns.issueId, input.issueId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!existingRun || ["succeeded", "failed", "cancelled"].includes(existingRun.status)) return null;
+
+    const completedRun = await companySkills.completeTestRunForIssue({
+      companyId: input.run.companyId,
+      issueId: input.issueId,
+      outcome: completion.outcome,
+      error: completion.error,
+    });
+    if (!completedRun) return null;
+
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "heartbeat_finalize",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "company.skill_test_run_completed",
+      entityType: "company_skill_test_run",
+      entityId: completedRun.id,
+      details: {
+        issueId: input.issueId,
+        status: completedRun.status,
+        outputDocumentKey: completedRun.outputDocumentKey,
+        heartbeatOutcome: completion.heartbeatOutcome,
+        source: "heartbeat.run_finalized",
+      },
+    });
+
+    return completedRun;
+  }
 
   async function releaseEnvironmentLeasesForRun(input: {
     runId: string;
@@ -12268,6 +12368,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             exitCode: adapterResult.exitCode,
           },
         });
+        try {
+          await completeSkillTestRunForHeartbeatOutcome({
+            run: finalizedRun,
+            issueId,
+            issueWorkMode: issueRef?.workMode ?? null,
+            outcome,
+            error: runErrorMessage,
+          });
+        } catch (err) {
+          logger.warn(
+            { err, runId: finalizedRun.id, issueId },
+            "failed to complete skill test run after heartbeat finalization",
+          );
+          await onLog(
+            "stderr",
+            `[paperclip] Failed to complete skill test run: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        }
         const livenessRun = finalizedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
         const skipRunIssueComment = parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
@@ -12464,6 +12582,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           message,
         });
         const livenessRun = await classifyAndPersistRunLiveness(failedRun) ?? failedRun;
+        try {
+          await completeSkillTestRunForHeartbeatOutcome({
+            run: livenessRun,
+            issueId,
+            issueWorkMode: issueRef?.workMode ?? null,
+            outcome: "failed",
+            error: message,
+          });
+        } catch (err) {
+          logger.warn(
+            { err, runId: livenessRun.id, issueId },
+            "failed to complete skill test run after heartbeat adapter failure",
+          );
+        }
         await refreshContinuationSummaryForRun(livenessRun, agent);
         if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {
           await finalizeIssueCommentPolicy(livenessRun, agent);
@@ -12559,6 +12691,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               message,
             }).catch(() => undefined);
             const livenessRun = await classifyAndPersistRunLiveness(failedRun).catch(() => failedRun);
+            const setupFailureIssueId = readNonEmptyString(parseObject(livenessRun.contextSnapshot).issueId);
+            if (setupFailureIssueId) {
+              await completeSkillTestRunForHeartbeatOutcome({
+                run: livenessRun,
+                issueId: setupFailureIssueId,
+                outcome: "failed",
+                error: message,
+              }).catch((completionErr) => {
+                logger.warn(
+                  { err: completionErr, runId: livenessRun.id, issueId: setupFailureIssueId },
+                  "failed to complete skill test run after heartbeat setup failure",
+                );
+              });
+            }
             const failedAgent = setupFailureAgent ?? await getAgent(run.agentId).catch(() => null);
             if (failedAgent) {
               await refreshContinuationSummaryForRun(livenessRun, failedAgent).catch(() => undefined);

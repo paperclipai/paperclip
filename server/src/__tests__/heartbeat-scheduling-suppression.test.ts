@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { resolveHeartbeatSchedulingSuppression } from "../services/heartbeat.ts";
+import {
+  resolveHeartbeatSchedulingSuppression,
+  resolveSkillTestRunCompletionForHeartbeatOutcome,
+} from "../services/heartbeat.ts";
 
 describe("heartbeat scheduling suppression", () => {
   it("suppresses heartbeat scheduling for worktree runtimes", () => {
@@ -24,6 +27,25 @@ describe("heartbeat scheduling suppression", () => {
     expect(resolveHeartbeatSchedulingSuppression({})).toEqual({
       suppressed: false,
       reason: null,
+    });
+  });
+
+  it("maps unsuccessful heartbeat outcomes to terminal skill test run outcomes", () => {
+    expect(resolveSkillTestRunCompletionForHeartbeatOutcome("succeeded", null)).toBeNull();
+    expect(resolveSkillTestRunCompletionForHeartbeatOutcome("cancelled", null)).toEqual({
+      outcome: "cancelled",
+      error: "Harness run was cancelled",
+      heartbeatOutcome: "cancelled",
+    });
+    expect(resolveSkillTestRunCompletionForHeartbeatOutcome("timed_out", null)).toEqual({
+      outcome: "failed",
+      error: "Timed out",
+      heartbeatOutcome: "timed_out",
+    });
+    expect(resolveSkillTestRunCompletionForHeartbeatOutcome("failed", "Adapter crashed")).toEqual({
+      outcome: "failed",
+      error: "Adapter crashed",
+      heartbeatOutcome: "failed",
     });
   });
 });

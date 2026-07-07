@@ -176,6 +176,10 @@ export const companySkillTestRuns = pgTable(
     outputDocumentKey: text("output_document_key").notNull().default("output"),
     outputSnapshot: text("output_snapshot").notNull().default(""),
     error: text("error"),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    harnessIssueExpiresAt: timestamp("harness_issue_expires_at", { withTimezone: true }),
+    harnessIssueDeletedAt: timestamp("harness_issue_deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -192,5 +196,9 @@ export const companySkillTestRuns = pgTable(
       table.createdAt,
     ),
     companyStatusIdx: index("company_skill_test_runs_company_status_idx").on(table.companyId, table.status),
+    companyHarnessIssueExpiresIdx: index("company_skill_test_runs_company_harness_expires_idx").on(
+      table.companyId,
+      table.harnessIssueExpiresAt,
+    ),
   }),
 );

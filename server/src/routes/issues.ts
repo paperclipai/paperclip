@@ -92,6 +92,7 @@ import * as serviceIndex from "../services/index.js";
 import {
   accessService,
   agentService,
+  companySkillService,
   companyService,
   companySearchService,
   executionWorkspaceService,
@@ -2051,6 +2052,7 @@ export function issueRoutes(
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
+  const companySkillsSvc = companySkillService(db);
   const documentAnnotationsSvc = documentAnnotationService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
@@ -7643,6 +7645,36 @@ export function issueRoutes(
       }
     }
 
+    if (
+      issue.harnessKind === "skill_test" &&
+      existing.status !== issue.status &&
+      (issue.status === "done" || issue.status === "cancelled")
+    ) {
+      const completedRun = await companySkillsSvc.completeTestRunForIssue({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        outcome: issue.status === "done" ? "succeeded" : "cancelled",
+        error: issue.status === "cancelled" ? "Harness issue was cancelled" : null,
+      });
+      if (completedRun) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "company.skill_test_run_completed",
+          entityType: "company_skill_test_run",
+          entityId: completedRun.id,
+          details: {
+            issueId: issue.id,
+            status: completedRun.status,
+            outputDocumentKey: completedRun.outputDocumentKey,
+          },
+        });
+      }
+    }
+
     let comment = null;
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
@@ -8132,6 +8164,9 @@ export function issueRoutes(
     if (req.actor.type === "agent" && !checkoutRunId) return;
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
+    if (updated?.harnessKind === "skill_test") {
+      await companySkillsSvc.markTestRunRunning(updated.companyId, updated.id);
+    }
 
     await logActivity(db, {
       companyId: issue.companyId,

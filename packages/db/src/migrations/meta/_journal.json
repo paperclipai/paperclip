@@ -946,6 +946,13 @@
       "when": 1783440000000,
       "tag": "0136_skill_studio_server_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 137,
+      "version": "7",
+      "when": 1783440300000,
+      "tag": "0137_skill_studio_run_retention",
+      "breakpoints": true
     }
   ]
 }

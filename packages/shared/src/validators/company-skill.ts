@@ -319,6 +319,75 @@ export const companySkillFileUpdateSchema = z.object({
   content: z.string(),
 });
 
+export const companySkillTestRunStatusSchema = z.enum(["queued", "running", "succeeded", "failed", "cancelled"]);
+
+export const companySkillTestInputSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  skillId: z.string().uuid(),
+  name: z.string().min(1),
+  content: z.string(),
+  createdBy: z.string().nullable(),
+  deletedAt: z.coerce.date().nullable(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+});
+
+export const companySkillTestInputCreateSchema = z.object({
+  name: z.string().trim().min(1),
+  content: z.string().min(1),
+});
+
+export const companySkillTestInputUpdateSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  content: z.string().min(1).optional(),
+}).refine((value) => value.name !== undefined || value.content !== undefined, {
+  message: "At least one field is required",
+});
+
+export const companySkillTestRunCostSummarySchema = z.object({
+  costCents: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  cachedInputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+});
+
+export const companySkillTestRunSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  skillId: z.string().uuid(),
+  inputId: z.string().uuid().nullable(),
+  inputSnapshot: z.string(),
+  skillVersionId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  agentConfigSnapshot: z.record(z.string(), z.unknown()),
+  issueId: z.string().uuid(),
+  status: companySkillTestRunStatusSchema,
+  outputDocumentKey: z.string().min(1),
+  outputSnapshot: z.string(),
+  error: z.string().nullable(),
+  deletedAt: z.coerce.date().nullable(),
+  supersededAt: z.coerce.date().nullable(),
+  harnessIssueExpiresAt: z.coerce.date().nullable(),
+  harnessIssueDeletedAt: z.coerce.date().nullable(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+  cost: companySkillTestRunCostSummarySchema,
+  taskExpired: z.boolean(),
+});
+
+export const companySkillTestRunCreateSchema = z.object({
+  inputId: z.string().uuid().nullable().optional(),
+  content: z.string().min(1).nullable().optional(),
+  agentId: z.string().uuid(),
+}).refine((value) => Boolean(value.inputId) || Boolean(value.content?.trim()), {
+  message: "inputId or content is required",
+});
+
+export const companySkillTestRunListQuerySchema = z.object({
+  inputId: z.string().uuid().optional(),
+});
+
 export const catalogSkillKindSchema = z.enum(["bundled", "optional"]);
 
 export const catalogSkillFileSchema = z.object({
@@ -397,6 +466,10 @@ export type CompanySkillListQuery = z.infer<typeof companySkillListQuerySchema>;
 export type CompanySkillProjectScan = z.infer<typeof companySkillProjectScanRequestSchema>;
 export type CompanySkillCreate = z.infer<typeof companySkillCreateSchema>;
 export type CompanySkillFileUpdate = z.infer<typeof companySkillFileUpdateSchema>;
+export type CompanySkillTestInputCreate = z.infer<typeof companySkillTestInputCreateSchema>;
+export type CompanySkillTestInputUpdate = z.infer<typeof companySkillTestInputUpdateSchema>;
+export type CompanySkillTestRunCreate = z.infer<typeof companySkillTestRunCreateSchema>;
+export type CompanySkillTestRunListQuery = z.infer<typeof companySkillTestRunListQuerySchema>;
 export type CompanySkillVersionCreate = z.infer<typeof companySkillVersionCreateSchema>;
 export type CompanySkillCommentCreate = z.infer<typeof companySkillCommentCreateSchema>;
 export type CompanySkillCommentUpdate = z.infer<typeof companySkillCommentUpdateSchema>;

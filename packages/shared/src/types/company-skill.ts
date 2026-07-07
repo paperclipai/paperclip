@@ -365,6 +365,104 @@ export interface CompanySkillFileUpdateRequest {
   content: string;
 }
 
+export type CompanySkillTestRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+export interface CompanySkillTestInput {
+  id: string;
+  companyId: string;
+  skillId: string;
+  name: string;
+  content: string;
+  createdBy: string | null;
+  deletedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CompanySkillTestInputCreateRequest {
+  name: string;
+  content: string;
+}
+
+export interface CompanySkillTestInputUpdateRequest {
+  name?: string;
+  content?: string;
+}
+
+export interface CompanySkillTestRunCostSummary {
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+}
+
+export interface CompanySkillTestRun {
+  id: string;
+  companyId: string;
+  skillId: string;
+  inputId: string | null;
+  inputSnapshot: string;
+  skillVersionId: string;
+  agentId: string;
+  agentConfigSnapshot: Record<string, unknown>;
+  issueId: string;
+  status: CompanySkillTestRunStatus;
+  outputDocumentKey: string;
+  outputSnapshot: string;
+  error: string | null;
+  deletedAt: Date | null;
+  supersededAt: Date | null;
+  harnessIssueExpiresAt: Date | null;
+  harnessIssueDeletedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  cost: CompanySkillTestRunCostSummary;
+  taskExpired: boolean;
+}
+
+export interface CompanySkillTestRunCreateRequest {
+  inputId?: string | null;
+  content?: string | null;
+  agentId: string;
+}
+
+export interface CompanySkillTestRunListQuery {
+  inputId?: string;
+}
+
+export interface CompanySkillTestRunDetail extends CompanySkillTestRun {
+  skillVersion: CompanySkillVersion;
+  outputBody: string;
+  harnessIssue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    status: string;
+    hiddenAt: Date | null;
+  } | null;
+  documents: Array<{
+    key: string;
+    title: string | null;
+    updatedAt: Date;
+    body: string;
+  }>;
+  interactions: Array<{
+    id: string;
+    kind: string;
+    status: string;
+    title: string;
+    createdAt: Date;
+    updatedAt: Date;
+  }>;
+  artifacts: Array<{
+    id: string;
+    kind: "attachment" | "work_product";
+    title: string;
+    summary: string | null;
+    createdAt: Date;
+  }>;
+}
+
 export type CatalogSkillKind = "bundled" | "optional";
 
 export type CatalogSkillFileKind = CompanySkillFileInventoryEntry["kind"];
