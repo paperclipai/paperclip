@@ -18,7 +18,7 @@ If your ask names a *feeling* ("too loud", "cramped", "inconsistent"), that's fi
 **Small (minutes) — a value change.** Colors, sizes, spacing, radius, one component's look.
 > "In the Paperclip repo: make X look like Y. Show me before/after screenshots from the visual suite before you re-baseline anything."
 
-The agent should: edit token(s) → run `pnpm test:storybook-visual` → show you the diff images → only after your yes, run `test:storybook-visual:update` and commit change + snapshots together.
+The agent should: edit token(s) → run `pnpm test:storybook-visual` → show you the diff images → only after your yes, run `test:storybook-visual:update`, publish the packed baseline archive from a trusted maintainer environment, and commit the code change + manifest update together.
 
 **Medium (an afternoon) — a retheme or a component-family restyle.** Ask for a **git worktree** so main stays untouched:
 > "Create a worktree off master, apply shadcn preset `<CODE>` as token values only (values-only — review the CLI's diff, revert scaffolding), reconcile the Paperclip status/agent color tiers, then build me a before/after gallery of the key surfaces."
@@ -26,7 +26,7 @@ The agent should: edit token(s) → run `pnpm test:storybook-visual` → show yo
 Review the gallery, iterate ("the dark red is too soft", "two different greens on toggles — one green"), then tell it to re-baseline and merge when you're satisfied.
 
 **Large (a day, unattended) — a bounded autonomous run.** Use `/goal` with a *measurable* finish line — the evaluator needs conditions a command can verify, not aspirations:
-> Good conditions: "rg finds zero palette classes in ui/src/components", "the snapshot suite passes against the committed baseline", "pnpm check:token-gates reports 3/3 CLEAN".
+> Good conditions: "rg finds zero palette classes in ui/src/components", "the snapshot suite passes against the pinned external baseline", "pnpm check:token-gates reports 3/3 CLEAN".
 > Bad conditions: "the UI feels cleaner", "design is more consistent".
 
 See `doc/design/GOAL-PROMPT.md` for a complete worked example (the run that built this system), including the phase structure and guardrails worth copying: work in a worktree, commit per phase, never re-baseline without human review, stop-and-report over partial application.
@@ -37,7 +37,7 @@ Hold every session to these five, regardless of size:
 
 1. **Pictures before permanence.** Never approve on description. The suite produces before/actual/diff images for every changed story — ask for them ("show me these visually before I decide"). For subtle changes, ask for full-resolution images, not compressed thumbnails.
 2. **Proof commands, not claims.** "Done" means: `pnpm check:token-gates` 3/3 CLEAN, `pnpm typecheck` green, suite result stated as a number ("510/510" or "N intentional diffs pending your review"). If the agent says done without these, ask for the outputs.
-3. **Snapshots ride with the change.** Intentional visual change → updated baselines in the same commit. An agent that updates baselines to silence a failure it can't explain is the one thing you never accept.
+3. **Baselines ride with the change.** Intentional visual change → updated manifest metadata in the same commit, after the packed archive is reviewed and published. An agent that updates baselines to silence a failure it can't explain is the one thing you never accept.
 4. **Mechanical changes via scripts.** If it's touching 20+ files with the same rewrite, it should write an idempotent codemod in `scripts/` (existing `codemod-*.mjs` files are the pattern), not hand-edit.
 5. **Decisions get written down.** Anything judgment-shaped (a mapping, an exception, a deferral) goes in `doc/design/DECISION-SHEET.md` with one line of rationale.
 

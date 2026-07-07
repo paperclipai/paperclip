@@ -8,7 +8,7 @@ Paperclip's look lives in **three layers**, and you almost always work in the fi
 
 1. **Tokens** — every color, text size, spacing, radius, and shadow is a named value in `ui/src/index.css`. Change a token, and every surface using it follows.
 2. **Components** — consume tokens, never raw values. One component per job (one Button, one Card, one ToggleSwitch).
-3. **Screenshots** — 510 baseline images (255 stories × light/dark) in `tests/storybook-visual/__snapshots__/`. They are the proof of what the UI looks like. Any visual change shows up as a screenshot diff; no visual change proves itself the same way.
+3. **Screenshots** — 510 baseline images (255 stories × light/dark) downloaded into `tests/storybook-visual/.snapshots/` from the pinned external archive in `tests/storybook-visual/baseline-manifest.json`. They are the proof of what the UI looks like. Any visual change shows up as a screenshot diff; no visual change proves itself the same way.
 
 The rules live in [`DESIGN.md`](../../DESIGN.md) (repo root). The reasoning behind past decisions lives in [`DECISION-SHEET.md`](DECISION-SHEET.md). If you disagree with a rule, change `DESIGN.md` first (with review) — don't quietly diverge in code.
 
@@ -27,7 +27,7 @@ pnpm test:storybook-visual:update   # accept my intentional changes as the new b
 1. Find the token in `ui/src/index.css` (they're named and commented: `--radius`, `--status-task-todo`, `--text-micro`, …).
 2. Change the value.
 3. `pnpm test:storybook-visual` — it will "fail" on every affected story. That's the point: each failure writes a before/actual/diff image triplet into `tests/storybook-visual/test-results/`. Review them (or `npx playwright show-report` from `tests/storybook-visual/` for a browsable version).
-4. Happy? `pnpm test:storybook-visual:update`, commit the token edit **and** the updated snapshots together.
+4. Happy? `pnpm test:storybook-visual:update`, review the generated bundle under `tests/storybook-visual/baseline-review/`, publish it from a trusted maintainer environment, then commit the token edit **and** the updated manifest metadata together.
 
 Notable single-knob tokens: `--radius` drives the entire corner ladder (sm→4xl are derived); the `--status-task-*` / `--status-agent-*` family is the app-wide status vocabulary (chips, charts, bars, live dots all follow it).
 
@@ -54,7 +54,7 @@ Then **review the git diff and keep only the CSS-variable value changes** — th
 
 That's the system working. Two cases:
 
-- **You meant it** → review the diffs (they're your design review), then `pnpm test:storybook-visual:update` and commit snapshots with the change. A PR with visual changes but no snapshot updates is incomplete; snapshot changes with no explanation is a red flag.
+- **You meant it** → review the diffs (they're your design review), then `pnpm test:storybook-visual:update`, publish the packed baseline archive, and commit the manifest update with the change. A PR with visual changes but no baseline-manifest update is incomplete; baseline changes with no explanation are a red flag.
 - **You didn't mean it** → you broke something. The diff images show you exactly where. Do not update the baseline to make it green.
 
 Three stories are known to flake under full parallel load (they pass in isolation — see DECISION-SHEET). Re-run a single story with `npx playwright test --config tests/storybook-visual/playwright.config.ts -g "<story name>"` before assuming a real failure.

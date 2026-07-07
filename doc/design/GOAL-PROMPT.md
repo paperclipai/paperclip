@@ -11,15 +11,16 @@ this git worktree on branch design/token-extraction. Never touch master
 or other working trees. DESIGN.md at the repo root is the source of
 truth; follow it exactly. Read PRIOR-ART.md before auditing. Execute
 Phases 0-2 exactly as specified in the "Phase spec" section of
-GOAL-PROMPT.md at the repo root (Phase 0 baseline snapshots, Phase 1
-audit, Phase 2 codemod extraction), delegating Phase 1 to the
+GOAL-PROMPT.md at the repo root (Phase 0 external baseline archive,
+Phase 1 audit, Phase 2 codemod extraction), delegating Phase 1 to the
 token-auditor subagent and Phase 2 to the codemod-runner subagent.
 Commit after each phase and in small reviewable steps.
 
 DONE WHEN (all verified in this worktree):
 1. The Storybook visual snapshot suite passes against a Phase 0
-   baseline that was committed BEFORE any component change — zero
-   visual change. Baseline scope: primitives in ui/src/components/ui/
+   baseline that was captured BEFORE any component change and pinned in
+   tests/storybook-visual/baseline-manifest.json — zero visual change.
+   Baseline scope: primitives in ui/src/components/ui/
    (add minimal stories only for those) plus the existing stories in
    ui/storybook/stories/. No stories for the ~277 feature components.
 2. ui/src/index.css (plus any tokens.css it imports) is the only token
@@ -57,7 +58,9 @@ GUARDRAILS
 **Phase 0 — Baseline (before changing ANY component):**
 - Set up Storybook visual snapshot testing (Storybook test-runner with image snapshots, or equivalent already-compatible tooling; Storybook lives at `ui/storybook/`, launched via `pnpm storybook`).
 - Coverage scope: the shared primitives in `ui/src/components/ui/` (add a minimal story for any of the ~24 that lack one) plus all existing stories under `ui/storybook/stories/`. Do NOT write stories for the ~277 feature components in this run.
-- Commit passing baseline snapshots. Every later phase must keep snapshots matching this baseline.
+- Pack and publish the passing baseline snapshots through the external
+  Storybook visual baseline flow, then commit the manifest metadata. Every
+  later phase must keep snapshots matching this baseline.
 
 **Phase 1 — Audit (no code changes; delegate to token-auditor):**
 - Produce `TOKEN-AUDIT.md` at the repo root: every hardcoded color/spacing/radius/type/shadow value in `ui/src/`, its frequency, file locations, and near-duplicate clusters (e.g. 13/14/15px used interchangeably). Flag clusters for human review — do NOT merge them. Cross-reference the ~80 existing tokens in `ui/src/index.css`: for each hardcoded value, note whether it exactly matches an existing token.
