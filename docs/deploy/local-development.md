@@ -95,8 +95,8 @@ pnpm paperclipai doctor
 If the experiment gets noisy, repair or reseed the worktree without touching the main branch:
 
 ```sh
-pnpm paperclipai worktree repair --branch local-lab
-pnpm paperclipai worktree reseed --from . --to local-lab
+pnpm paperclipai worktree repair --branch paperclip-local-lab
+pnpm paperclipai worktree reseed --from . --to paperclip-local-lab
 ```
 
 When done, shut it down and remove the isolated state explicitly:
