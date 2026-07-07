@@ -31,10 +31,16 @@ describe("migration file invariants", () => {
     }
   });
 
-  it("numbers migration files contiguously from 0000 with no duplicates", async () => {
+  it("numbers migration files in strictly increasing order with no duplicates", async () => {
+    // Gaps are allowed: removed migrations leave their number retired
+    // (e.g. 0126 was relocated to 0132 and 0130 was reverted).
     const files = await listMigrationSqlFiles();
     const numbers = files.map((file) => Number(file.slice(0, 4)));
-    expect(numbers).toEqual(files.map((_, index) => index));
+    expect(numbers[0]).toBe(0);
+    for (let i = 1; i < numbers.length; i += 1) {
+      expect(numbers[i], `migration ${files[i]} must be numbered after ${files[i - 1]}`)
+        .toBeGreaterThan(numbers[i - 1]!);
+    }
   });
 
   it("contains at least one non-empty statement per migration file", async () => {
@@ -58,13 +64,16 @@ describe("migration journal invariants", () => {
     expect(journal.entries.length).toBeGreaterThan(0);
   });
 
-  it("keeps journal idx values contiguous and matching each tag prefix", async () => {
+  it("keeps journal idx values strictly increasing and matching each tag prefix", async () => {
     const journal = await readJournal();
     journal.entries.forEach((entry, position) => {
-      expect(entry.idx, `journal entry ${position}`).toBe(position);
       expect(typeof entry.tag, `journal entry ${position}`).toBe("string");
-      expect(Number(entry.tag!.slice(0, 4)), `journal tag ${entry.tag}`).toBe(position);
+      expect(entry.idx, `journal tag ${entry.tag}`).toBe(Number(entry.tag!.slice(0, 4)));
       expect(typeof entry.when, `journal entry ${position} is missing "when"`).toBe("number");
+      if (position > 0) {
+        expect(entry.idx, `journal entry ${entry.tag} must come after its predecessor`)
+          .toBeGreaterThan(journal.entries[position - 1]!.idx!);
+      }
     });
   });
 

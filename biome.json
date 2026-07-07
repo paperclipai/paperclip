@@ -62,6 +62,7 @@
         "useAriaPropsSupportedByRole": "warn",
         "useAriaPropsForRole": "warn",
         "useKeyWithClickEvents": "warn",
+        "useKeyWithMouseEvents": "warn",
         "noAutofocus": "warn",
         "noNoninteractiveTabindex": "warn",
         "useFocusableInteractive": "warn",
