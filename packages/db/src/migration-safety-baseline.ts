@@ -147,4 +147,11 @@ export const MIGRATION_SAFETY_BASELINE = [
     table: "issue_comments",
     reason: "Existing issue-attribution backfill branch uses a temporary support index before this guard landed.",
   },
+  {
+    id: "38d8055cc228913d",
+    rule: "full-table-mutation-large-table",
+    migration: "0132_issue_comment_derived_attribution_fast.sql",
+    table: "issue_comments",
+    reason: "Batched DO-loop backfill with keyset pagination (LIMIT 5000 per batch); reviewed and approved as part of PAP-1505 fix. Already merged to master before this guard landed.",
+  },
 ] as const satisfies readonly MigrationSafetyBaselineEntry[];
