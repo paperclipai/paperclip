@@ -75,9 +75,9 @@ The CLI has two categories:
 
 1. **[Setup commands](/cli/setup-commands)** — instance bootstrap, diagnostics, worktree helpers, and benchmarking
 2. **[Control-plane commands](/cli/control-plane-commands)** — issues, agents, approvals, activity
-## Quick command index
+### Quick command index
 
 - `pnpm paperclipai worktree:make` / `pnpm paperclipai worktree:cleanup`
 - `pnpm paperclipai worktree repair` / `pnpm paperclipai worktree reseed`
 - `pnpm paperclipai worktree env` / `pnpm paperclipai worktree:list`
-- `pnpm perf:issue-chat-long-thread`
+- Root benchmark script: `pnpm perf:issue-chat-long-thread`
