@@ -227,6 +227,9 @@ function buildStatusOptions(
   conferenceRoomChat: boolean,
 ): ReadonlyArray<{ value: string; label: string; color: string; description?: string }> {
   const palette = conferenceRoomChat ? issueStatusText : issueStatusTextClassic;
+  const wakeDescription = conferenceRoomChat
+    ? "Executable - assignee will be woken"
+    : "Executable — assignee will be woken";
   return [
     {
       value: "backlog",
@@ -238,7 +241,7 @@ function buildStatusOptions(
       value: "todo",
       label: "Todo",
       color: palette.todo ?? issueStatusTextDefault,
-      description: "Executable - assignee will be woken",
+      description: wakeDescription,
     },
     { value: "in_progress", label: "In Progress", color: palette.in_progress ?? issueStatusTextDefault },
     { value: "in_review", label: "In Review", color: palette.in_review ?? issueStatusTextDefault },
