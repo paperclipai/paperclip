@@ -33,6 +33,8 @@ import {
   activityLog,
   approvals,
   companyMemberships,
+  companySkillTestRuns,
+  companySkillVersions,
   companySkills as companySkillsTable,
   companies,
   costEvents,
@@ -112,6 +114,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
 } from "./issue-dependency-wakeups.js";
@@ -4245,6 +4248,7 @@ export async function buildPaperclipWakePayload(input: {
       : [],
     executionStage: Object.keys(executionStage).length > 0 ? executionStage : null,
     taskWatchdog: (input.contextSnapshot.taskWatchdog ?? null) as unknown,
+    skillTest: (input.contextSnapshot.paperclipSkillTest ?? null) as unknown,
     continuationSummary: safeContinuationSummary
       ? {
           key: safeContinuationSummary.key,
@@ -4589,6 +4593,13 @@ export function buildPaperclipTaskMarkdown(input: {
         "",
         "Planning mode directive:",
         directive,
+      );
+    } else if (issue.workMode === "skill_test") {
+      lines.push(
+        `- Work mode: ${quoteTaskScalar("skill_test")}`,
+        "",
+        "Skill test mode directive:",
+        "You are testing a pinned skill revision. Make no durable changes outside this issue. Do not push, publish, send external messages, or mutate other issues. Write your final output as issue document `output`, then finish by marking this issue done.",
       );
     } else if (acceptedPlanContinuation) {
       lines.push(
@@ -5104,6 +5115,54 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getPinnedSkillTestContext(companyId: string, issueId: string) {
+    const row = await db
+      .select({
+        testRunId: companySkillTestRuns.id,
+        skillId: companySkillTestRuns.skillId,
+        inputId: companySkillTestRuns.inputId,
+        skillVersionId: companySkillTestRuns.skillVersionId,
+        outputDocumentKey: companySkillTestRuns.outputDocumentKey,
+        fileInventory: companySkillVersions.fileInventory,
+        revisionNumber: companySkillVersions.revisionNumber,
+        label: companySkillVersions.label,
+      })
+      .from(companySkillTestRuns)
+      .innerJoin(
+        companySkillVersions,
+        and(
+          eq(companySkillVersions.id, companySkillTestRuns.skillVersionId),
+          eq(companySkillVersions.companyId, companySkillTestRuns.companyId),
+        ),
+      )
+      .where(and(eq(companySkillTestRuns.companyId, companyId), eq(companySkillTestRuns.issueId, issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    const fileInventory = Array.isArray(row.fileInventory)
+      ? row.fileInventory.flatMap((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+        const record = entry as unknown as Record<string, unknown>;
+        const path = typeof record.path === "string" ? record.path : "";
+        if (!path) return [];
+        return [{
+          path,
+          kind: typeof record.kind === "string" ? record.kind : "other",
+          content: typeof record.content === "string" ? record.content : "",
+        }];
+      })
+      : [];
+    return {
+      testRunId: row.testRunId,
+      skillId: row.skillId,
+      inputId: row.inputId ?? null,
+      skillVersionId: row.skillVersionId,
+      revisionNumber: row.revisionNumber,
+      label: row.label ?? null,
+      outputDocumentKey: row.outputDocumentKey,
+      fileInventory,
+    };
+  }
+
   async function getRoutineEnvForExecutionIssue(
     companyId: string,
     issueContext: Awaited<ReturnType<typeof getIssueExecutionContext>> | null,
@@ -5501,7 +5560,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eq(issues.companyId, claimed.companyId),
           eq(issues.originKind, RECOVERY_ORIGIN_KINDS.strandedIssueRecovery),
           eq(issues.originId, claimed.id),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           notInArray(issues.status, ["done", "cancelled"]),
         ),
       )
@@ -7121,7 +7180,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
               ]),
               eq(issues.originId, issue.id),
-              isNull(issues.hiddenAt),
+              visibleIssueCondition(),
               notInArray(issues.status, ["done", "cancelled"]),
             ),
           )
@@ -10456,6 +10515,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipContinuationSummary;
     }
+    const pinnedSkillTestContext =
+      issueRef?.workMode === "skill_test"
+        ? await getPinnedSkillTestContext(agent.companyId, issueRef.id)
+        : null;
+    if (pinnedSkillTestContext) {
+      context.paperclipSkillTest = {
+        ...pinnedSkillTestContext,
+        directive: "Use this pinned file inventory as the exact skill revision under test, regardless of synced runtime skills.",
+      };
+    } else {
+      delete context.paperclipSkillTest;
+    }
     const paperclipWakePayload = await buildPaperclipWakePayload({
       db,
       companyId: agent.companyId,
@@ -11730,8 +11801,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       const adapter = getServerAdapter(agent.adapterType);
+      const localAgentJwtScope =
+        issueRef?.workMode === "skill_test"
+          ? { kind: "skill_test" as const, issueId: issueRef.id }
+          : { kind: "standard" as const };
       const authToken = adapter.supportsLocalAgentJwt
-        ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id, run.responsibleUserId)
+        ? createLocalAgentJwt(
+          agent.id,
+          agent.companyId,
+          agent.adapterType,
+          run.id,
+          run.responsibleUserId,
+          localAgentJwtScope,
+        )
         : null;
       if (adapter.supportsLocalAgentJwt && !authToken) {
         logger.warn(

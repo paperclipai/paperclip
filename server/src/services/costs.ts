@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 
 export interface CostDateRange {
   from?: Date;
@@ -245,7 +246,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           .where(
             and(
               eq(issues.companyId, companyId),
-              isNull(issues.hiddenAt),
+              visibleIssueCondition(),
               issueTreeCondition,
             ),
           ),

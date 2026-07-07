@@ -2805,6 +2805,10 @@ export function issueRoutes(
     return req.actor.type === "agent" && req.actor.source === "agent_key" && req.actor.keyScope?.kind === "task_bridge";
   }
 
+  function isSkillTestScopedActor(req: Request) {
+    return req.actor.type === "agent" && req.actor.keyScope?.kind === "skill_test";
+  }
+
   function taskBridgeOriginForActor(req: Request) {
     return isTaskBridgeKeyActor(req) && req.actor.keyId
       ? { originKind: "task_bridge", originId: req.actor.keyId }
@@ -6259,6 +6263,16 @@ export function issueRoutes(
   router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (isSkillTestScopedActor(req)) {
+      res.status(403).json({
+        error: "Skill-test run tokens cannot create issues.",
+        details: {
+          scopedIssueId: req.actor.keyScope?.kind === "skill_test" ? req.actor.keyScope.issueId : null,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return;
+    }
     if (await assertLowTrustControlPlaneDenied(req, res, companyId, null)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     const sanitizedBody = await sanitizeIssueCreateAttribution(db, req, res, companyId, req.body, {

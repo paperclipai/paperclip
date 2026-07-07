@@ -11,7 +11,13 @@ import {
   principalPermissionGrants,
   projects,
 } from "@paperclipai/db";
-import type { AgentApiKeyScope, PermissionKey, PrincipalType, TaskBridgeAgentKeyScope } from "@paperclipai/shared";
+import type {
+  AgentApiKeyScope,
+  PermissionKey,
+  PrincipalType,
+  SkillTestAgentKeyScope,
+  TaskBridgeAgentKeyScope,
+} from "@paperclipai/shared";
 import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
@@ -1070,6 +1076,48 @@ export function authorizationService(db: Db) {
     return denyBridge("Task bridge key cannot use this API action.");
   }
 
+  function decideSkillTestAccess(input: {
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+    scope: SkillTestAgentKeyScope;
+  }): AuthorizationDecision | null {
+    const denySkillTest = (explanation: string) =>
+      deny({
+        action: input.action,
+        reason: "deny_scope",
+        explanation,
+      });
+    const allowSkillTest = (explanation: string) =>
+      allow({
+        action: input.action,
+        reason: "allow_explicit_grant",
+        explanation,
+      });
+
+    if (
+      input.action === "company_scope:read" ||
+      input.action === "agent:read" ||
+      input.action === "agent:wake" ||
+      input.action === "project:read" ||
+      input.action === "runtime:manage" ||
+      input.action === "secrets:read" ||
+      input.action === "tasks:assign"
+    ) {
+      return denySkillTest("Skill-test run tokens cannot use company-wide, peer-agent, project, runtime, secret, or task-create APIs.");
+    }
+
+    if (input.action === "issue:read" || input.action === "issue:comment" || input.action === "issue:mutate") {
+      if (input.resource.type !== "issue") {
+        return denySkillTest("Skill-test issue access requires an issue resource.");
+      }
+      return input.resource.issueId === input.scope.issueId
+        ? allowSkillTest("Allowed for the scoped skill-test issue.")
+        : denySkillTest("Skill-test run token can only access its own harness issue.");
+    }
+
+    return denySkillTest("Skill-test run token cannot use this API action.");
+  }
+
   async function assignmentTargetIsInCompany(resource: AuthorizationResource) {
     if (resource.type !== "issue") return true;
     if (resource.assigneeAgentId) {
@@ -1450,6 +1498,15 @@ export function authorizationService(db: Db) {
         reason: "deny_company_boundary",
         explanation: "Actor agent was not found in the target company.",
       });
+    }
+
+    if (input.actor.keyScope?.kind === "skill_test") {
+      const skillTestDecision = decideSkillTestAccess({
+        action: input.action,
+        resource: input.resource,
+        scope: input.actor.keyScope,
+      });
+      if (skillTestDecision) return skillTestDecision;
     }
 
     if (input.actor.source === "agent_key" && input.actor.keyScope?.kind === "task_bridge") {

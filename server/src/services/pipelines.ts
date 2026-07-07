@@ -49,6 +49,7 @@ import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService } from "./authorization.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 import {
   formatPipelineCaseOutputContextMarkdown,
   pipelineCaseOutputsService,
@@ -359,7 +360,7 @@ async function getUsableConversationIssue(db: PipelineDb, companyId: string, iss
     .where(and(
       eq(issues.companyId, companyId),
       eq(issues.id, issueId),
-      isNull(issues.hiddenAt),
+      visibleIssueCondition(),
       isNull(issues.cancelledAt),
       ne(issues.status, "cancelled"),
     ))
@@ -408,7 +409,7 @@ async function resolveLatestCaseIssueLink(
       eq(pipelineCaseIssueLinks.caseId, input.caseId),
       inArray(pipelineCaseIssueLinks.role, input.roles),
       eq(issues.companyId, input.companyId),
-      isNull(issues.hiddenAt),
+      visibleIssueCondition(),
       isNull(issues.cancelledAt),
       ne(issues.status, "cancelled"),
     ))
@@ -1924,7 +1925,7 @@ async function postSystemCommentOnLinkedIssues(
       inArray(pipelineCaseIssueLinks.role, input.roles),
       ne(issues.status, "done"),
       ne(issues.status, "cancelled"),
-      isNull(issues.hiddenAt),
+      visibleIssueCondition(),
     ));
 
   for (const row of rows) {
@@ -2022,7 +2023,7 @@ async function notifyDependentWorkIssuesOfUpstreamContentChange(
       eq(issues.companyId, input.companyId),
       ne(issues.status, "done"),
       ne(issues.status, "cancelled"),
-      isNull(issues.hiddenAt),
+      visibleIssueCondition(),
     ));
   const issueIdsByCase = new Map<string, string[]>();
   for (const row of linkRows) {

@@ -19,6 +19,7 @@ import {
   type CompanySearchSnippet,
 } from "@paperclipai/shared";
 import { companyArtifactsService } from "./company-artifacts.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 
 const MIN_TOKEN_LENGTH = 2;
 const MIN_FUZZY_QUERY_LENGTH = 4;
@@ -649,7 +650,7 @@ export function companySearchService(db: Db) {
           .from(issues)
           .where(and(
             eq(issues.companyId, companyId),
-            isNull(issues.hiddenAt),
+            visibleIssueCondition(),
             issueSearchCondition(scope, { issueTextMatch, commentMatch, documentMatch, fuzzyMatch }),
           ))
           .orderBy(desc(score), desc(issues.updatedAt), desc(issues.id))

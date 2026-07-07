@@ -314,6 +314,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         agentId: claims.sub,
         companyId: claims.company_id,
         keyId: undefined,
+        keyScope: normalizeAgentApiKeyScope(claims.key_scope),
         runId: claims.run_id,
         onBehalfOfUserId,
         onBehalfOfMemberships,
