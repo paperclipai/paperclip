@@ -107,6 +107,38 @@ Allow a private hostname for authenticated/private mode:
 pnpm paperclipai allowed-hostname my-tailscale-host
 ```
 
+## `pnpm perf:issue-chat-long-thread` Benchmark
+
+Measure issue-thread rendering performance against the long-thread fixture:
+
+```sh
+pnpm perf:issue-chat-long-thread
+```
+
+Useful environment overrides:
+
+- `PAPERCLIP_PERF_BASE_URL` sets the target Paperclip URL (default `http://localhost:3100`)
+- `PAPERCLIP_PERF_COMPANY_PREFIX` switches the route under `/tests/perf/long-thread` for dev routing
+- `PAPERCLIP_PERF_BEARER_TOKEN` provides an explicit bearer token
+
+Example:
+
+```sh
+PAPERCLIP_PERF_BASE_URL=http://localhost:3100 \
+PAPERCLIP_PERF_COMPANY_PREFIX=acme \
+PAPERCLIP_PERF_BEARER_TOKEN=$TOKEN \
+pnpm perf:issue-chat-long-thread
+```
+
+The command exits with a JSON payload containing:
+
+- `fixtureRowTarget`
+- `virtualized`
+- `renderReadyMs`
+- `elapsedMs`
+- `reactProfilerAvailable`
+- `scrollResponsiveMs`
+
 ## Local Storage Paths
 
 | Data | Default Path |
