@@ -1007,16 +1007,16 @@ function projectIssueWakeRequest(row: {
   claimedAt: Date | string | null;
   finishedAt: Date | string | null;
   error: string | null;
-}): IssueWakeDiagnosticWakeRequest {
+}, options: { includeInternalIds: boolean }): IssueWakeDiagnosticWakeRequest {
   const status = projectWakeDiagnosticStatus(row.status);
   return {
     kind: "wake_request",
-    agentId: row.agentId,
+    agentId: options.includeInternalIds ? row.agentId : null,
     source: projectWakeDiagnosticSource(row.source) ?? "other",
     reason: projectWakeDiagnosticReason(row.reason),
     status,
     coalescedCount: row.coalescedCount,
-    runId: row.runId,
+    runId: options.includeInternalIds ? row.runId : null,
     requestedAt: dateToIso(row.requestedAt)!,
     claimedAt: dateToIso(row.claimedAt),
     finishedAt: dateToIso(row.finishedAt),
@@ -1043,6 +1043,7 @@ function projectIssueWakeActivityRecord(
     createdAt: Date | string;
   },
   issueId: string,
+  options: { includeInternalIds: boolean },
 ): IssueWakeDiagnosticActivityRecord {
   const details = row.details && typeof row.details === "object" ? row.details : {};
   const action = wakeDiagnosticActivityAction(row.action);
@@ -1057,14 +1058,14 @@ function projectIssueWakeActivityRecord(
     kind: "activity",
     action,
     entityType: wakeDiagnosticActivityEntityType(row.entityType),
-    agentId: row.agentId ?? readNonEmptyString(details["agentId"]),
-    runId: row.runId,
+    agentId: options.includeInternalIds ? row.agentId ?? readNonEmptyString(details["agentId"]) : null,
+    runId: options.includeInternalIds ? row.runId : null,
     createdAt: dateToIso(row.createdAt)!,
     source: projectWakeDiagnosticSource(readNonEmptyString(details["source"])),
     requestedReason: projectWakeDiagnosticReason(readNonEmptyString(details["requestedReason"])),
     previousReason: projectWakeDiagnosticReason(readNonEmptyString(details["previousReason"])),
     rootIssueId: projectedRootIssueId,
-    holdId: readNonEmptyString(details["holdId"]),
+    holdId: options.includeInternalIds ? readNonEmptyString(details["holdId"]) : null,
     summary: action === "issue.tree_hold_wakeup_deferred"
       ? "Wake was deferred because an active issue-tree hold was present."
       : "Wake-related activity was recorded.",
@@ -1201,11 +1202,16 @@ function buildIssueWakeDiagnosticsResponse(input: {
   blockerDiagnostics: IssueBlockerDiagnosticsResponse;
   truncatedWakeRequests: boolean;
   truncatedActivityRecords: boolean;
+  includeInternalIds: boolean;
 }): IssueWakeDiagnosticsResponse {
   const issue = toIssueBlockerDiagnosticSummary(input.issue);
   const events: IssueWakeDiagnosticEvent[] = [
-    ...input.wakeRequests.map(projectIssueWakeRequest),
-    ...input.activityRecords.map((record) => projectIssueWakeActivityRecord(record, issue.id)),
+    ...input.wakeRequests.map((record) =>
+      projectIssueWakeRequest(record, { includeInternalIds: input.includeInternalIds }),
+    ),
+    ...input.activityRecords.map((record) =>
+      projectIssueWakeActivityRecord(record, issue.id, { includeInternalIds: input.includeInternalIds }),
+    ),
   ].sort((left, right) => issueWakeDiagnosticEventTimestamp(right) - issueWakeDiagnosticEventTimestamp(left));
   const truncated = input.truncatedWakeRequests || input.truncatedActivityRecords;
   const diagnosis = buildIssueWakeDiagnosis({
@@ -4143,9 +4149,10 @@ export function issueRoutes(
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
-    const [wakeDiagnostic, blockerDiagnostic] = await Promise.all([
+    const [wakeDiagnostic, blockerDiagnostic, includeInternalIds] = await Promise.all([
       svc.getWakeDiagnostics(issue.id),
       svc.getBlockerDiagnostics(issue.id),
+      actorCanReadCompanyScope(req, issue.companyId),
     ]);
     const visibleBlockers = await filterIssuesForActor(req, blockerDiagnostic.blockers);
     const blockerResponse = buildIssueBlockerDiagnosticsResponse({
@@ -4162,6 +4169,7 @@ export function issueRoutes(
       blockerDiagnostics: blockerResponse,
       truncatedWakeRequests: wakeDiagnostic.truncatedWakeRequests,
       truncatedActivityRecords: wakeDiagnostic.truncatedActivityRecords,
+      includeInternalIds,
     });
 
     logger.info(
@@ -4171,6 +4179,7 @@ export function issueRoutes(
         actorType: req.actor.type,
         wakeRequestCount: response.wakeRequestCount,
         activityRecordCount: response.activityRecordCount,
+        internalIdsIncluded: includeInternalIds,
         truncated: response.truncated,
       },
       "issue wake diagnostics read",

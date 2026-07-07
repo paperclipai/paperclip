@@ -268,6 +268,7 @@ Security and bounds:
 
 - The root issue must pass normal issue-read authorization, and Case-B blocker inference uses the same per-blocker authorization rules as blocker diagnostics.
 - Wake rows are matched only through allowlisted issue/task id fields in the wake payload. Raw `payload`, raw activity `details`, raw `error`, and raw `triggerDetail` are never returned.
+- Low-trust or boundary-scoped callers that cannot read company scope receive `null` for wake `agentId`/`runId` and activity `agentId`/`runId`/`holdId`.
 - Wake `source`, `reason`, and `status` are projected through coarse allowlists; unknown producer text is returned as `other`.
 - Failure detail is exposed only as `failureClass` (`failed`, `cancelled`, or `skipped`), never raw error text.
 - Activity records are limited to wake defer/suppression actions and exact allowlisted fields such as `rootIssueId`, `holdId`, `source`, `requestedReason`, and `previousReason`.

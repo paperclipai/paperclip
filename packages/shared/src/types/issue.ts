@@ -257,7 +257,7 @@ export type IssueWakeDiagnosticWakeFailureClass = "failed" | "cancelled" | "skip
 
 export interface IssueWakeDiagnosticWakeRequest {
   kind: "wake_request";
-  agentId: string;
+  agentId: string | null;
   source: string;
   reason: string | null;
   status: string;

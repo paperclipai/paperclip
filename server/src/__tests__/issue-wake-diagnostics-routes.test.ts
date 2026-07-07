@@ -220,6 +220,7 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
       status: "todo",
       assigneeAgentId: agent.id,
     });
+    const wakeRunId = randomUUID();
 
     await db.insert(agentWakeupRequests).values({
       companyId: company.id,
@@ -229,7 +230,7 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
       status: "completed",
       coalescedCount: 2,
       payload: { issueId: issue.id, rawMarker: "SHOULD_NOT_LEAK" },
-      runId: randomUUID(),
+      runId: wakeRunId,
       requestedAt: new Date(Date.now() - 10_000),
       claimedAt: new Date(Date.now() - 9_000),
       finishedAt: new Date(Date.now() - 1_000),
@@ -251,6 +252,7 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
     expect(res.body.events[0]).toMatchObject({
       kind: "wake_request",
       agentId: agent.id,
+      runId: wakeRunId,
       source: "automation",
       reason: "issue_blockers_resolved",
       status: "completed",
@@ -353,6 +355,73 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
     expect(serialized).not.toContain(hiddenBlocker.id);
     expect(serialized).not.toContain(hiddenMarker);
     expect(serialized).not.toContain("cancelled");
+
+    const hiddenAgent = await seedAgent(db, company.id);
+    const wakeRunId = randomUUID();
+    const [activityRun] = await db.insert(heartbeatRuns).values({
+      companyId: company.id,
+      agentId: hiddenAgent.id,
+      status: "succeeded",
+    }).returning();
+    const activityRunId = activityRun!.id;
+    const holdId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      companyId: company.id,
+      agentId: hiddenAgent.id,
+      source: "automation",
+      reason: "issue_blockers_resolved",
+      status: "completed",
+      coalescedCount: 0,
+      payload: { issueId: root.id },
+      runId: wakeRunId,
+      requestedAt: new Date(Date.now() - 5_000),
+      claimedAt: new Date(Date.now() - 4_000),
+      finishedAt: new Date(Date.now() - 3_000),
+    });
+    await db.insert(activityLog).values({
+      companyId: company.id,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.tree_hold_wakeup_deferred",
+      entityType: "issue",
+      entityId: root.id,
+      agentId: hiddenAgent.id,
+      runId: activityRunId,
+      details: {
+        rootIssueId: root.id,
+        agentId: hiddenAgent.id,
+        holdId,
+        source: "automation",
+        requestedReason: "issue_blockers_resolved",
+      },
+      createdAt: new Date(Date.now() - 1_000),
+    });
+
+    const resWithEvents = await request(createApp(db, agentActor(company, agent, run.id)))
+      .get(`/api/issues/${root.id}/diagnostics/wakes`);
+
+    expect(resWithEvents.status, JSON.stringify(resWithEvents.body)).toBe(200);
+    expect(resWithEvents.body.events).toHaveLength(2);
+    const activityEvent = resWithEvents.body.events.find((event: { kind: string }) => event.kind === "activity");
+    const wakeEvent = resWithEvents.body.events.find((event: { kind: string }) => event.kind === "wake_request");
+    expect(activityEvent).toMatchObject({
+      kind: "activity",
+      agentId: null,
+      runId: null,
+      holdId: null,
+    });
+    expect(wakeEvent).toMatchObject({
+      kind: "wake_request",
+      agentId: null,
+      runId: null,
+    });
+    const serializedWithEvents = JSON.stringify(resWithEvents.body);
+    expect(serializedWithEvents).not.toContain(hiddenBlocker.id);
+    expect(serializedWithEvents).not.toContain(hiddenMarker);
+    expect(serializedWithEvents).not.toContain(hiddenAgent.id);
+    expect(serializedWithEvents).not.toContain(wakeRunId);
+    expect(serializedWithEvents).not.toContain(activityRunId);
+    expect(serializedWithEvents).not.toContain(holdId);
   });
 
   it("denies cross-company issue reads", async () => {
@@ -391,6 +460,12 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
       assigneeAgentId: agent.id,
     });
     const rawMarker = `RAW-DETAIL-${randomUUID()}`;
+    const [activityRun] = await db.insert(heartbeatRuns).values({
+      companyId: company.id,
+      agentId: agent.id,
+      status: "succeeded",
+    }).returning();
+    const activityRunId = activityRun!.id;
 
     await db.insert(agentWakeupRequests).values({
       companyId: company.id,
@@ -410,6 +485,7 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
       entityType: "issue",
       entityId: issue.id,
       agentId: agent.id,
+      runId: activityRunId,
       details: {
         rootIssueId: issue.id,
         holdId: "hold-safe",
@@ -432,6 +508,8 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
       action: "issue.tree_hold_wakeup_deferred",
       source: "automation",
       requestedReason: "issue_commented",
+      agentId: agent.id,
+      runId: activityRunId,
       holdId: "hold-safe",
       summary: "Wake was deferred because an active issue-tree hold was present.",
     });
