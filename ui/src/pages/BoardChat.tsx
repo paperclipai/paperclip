@@ -51,7 +51,7 @@ const BOARD_CHAT_MARKDOWN_CLASS =
   "max-w-full overflow-visible [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto";
 
 const boardChatBubbleShell =
-  "min-w-0 max-w-[85%] break-words px-3 py-2 text-sm overflow-x-auto overflow-y-visible";
+  "min-w-0 max-w-(--pct-85) break-words px-3 py-2 text-sm overflow-x-auto overflow-y-visible";
 
 /** First-letter(s) fallback for an agent with no icon. */
 function agentInitials(name: string): string {
@@ -668,7 +668,7 @@ export function BoardChat() {
   }
 
   return (
-    <div className="flex h-[calc(100%+3rem)] flex-col -m-6">
+    <div className="flex h-(--sz-calc-29) flex-col -m-6">
       <div
         ref={splitContainerRef}
         className="flex min-h-0 min-w-0 flex-1 flex-row"
@@ -1010,7 +1010,7 @@ export function BoardChat() {
               <Activity className="h-4 w-4" />
             </Button>
           </SheetTrigger>
-          <SheetContent side="bottom" className="h-[70vh] p-0 rounded-t-xl">
+          <SheetContent side="bottom" className="h-(--sz-70vh) p-0 rounded-t-xl">
             <ActivityFeed />
           </SheetContent>
         </Sheet>

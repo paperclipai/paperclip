@@ -421,7 +421,7 @@ function WorkspaceRoutineRow({
           <span>Last run {formatOptionalDateTime(routine.lastRun?.triggeredAt ?? routine.lastTriggeredAt)}</span>
           <span className="flex flex-wrap gap-1">
             {variableNames.map((name) => (
-              <span key={name} className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+              <span key={name} className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-(length:--text-micro) text-muted-foreground">
                 {name}
               </span>
             ))}
@@ -807,7 +807,7 @@ export function ExecutionWorkspaceDetail() {
       <div className="space-y-4 overflow-hidden sm:space-y-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 space-y-2">
-            <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+            <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
               Execution workspace
             </div>
             <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>

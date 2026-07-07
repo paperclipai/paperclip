@@ -68,7 +68,7 @@ export function ExternalObjectStatusSummary({
       aria-label={title}
       title={title}
       className={cn(
-        "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium tabular-nums leading-none",
+        "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-(length:--text-nano) font-medium tabular-nums leading-none",
         badgeClass,
         compact && "px-1 py-0.5",
         className,

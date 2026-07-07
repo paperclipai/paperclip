@@ -101,7 +101,7 @@ export function IssueRow({
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
     <span
       data-testid="issue-row-parked-blocker"
-      className="ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+      className="ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300"
       title="Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee."
     >
       <Flag className="h-2.5 w-2.5" aria-hidden />
@@ -122,7 +122,7 @@ export function IssueRow({
       className={cn(
         "group flex items-start gap-2 border-b border-border py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
         selected ? "hover:bg-transparent" : "hover:bg-accent/50",
-        checklistCurrentStep ? "border-l-2 border-l-primary bg-primary/5 pl-[calc(theme(spacing.2)-2px)] sm:pl-[calc(theme(spacing.1)-2px)]" : null,
+        checklistCurrentStep ? "border-l-2 border-l-primary bg-primary/5 pl-(--sz-calc-11) sm:pl-(--sz-calc-12)" : null,
         className,
       )}
     >
@@ -137,7 +137,7 @@ export function IssueRow({
           {issue.title}{titleSuffix}
         </span>
         {checklistDependencyChips ? (
-          <span className="flex flex-wrap gap-1 sm:order-3 sm:ml-[calc(theme(spacing.3)+theme(spacing.2))]">
+          <span className="flex flex-wrap gap-1 sm:order-3 sm:ml-(--sz-calc-13)">
             {checklistDependencyChips}
           </span>
         ) : null}
@@ -256,7 +256,7 @@ function renderRecoveryChip(action: IssueRecoveryAction, selected: boolean): Rea
       role="status"
       aria-label={label}
       className={cn(
-        "ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+        "ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border px-2 py-0.5 text-(length:--text-nano) font-medium",
         tone.className,
         selected ? "!border-muted-foreground !text-muted-foreground" : null,
       )}

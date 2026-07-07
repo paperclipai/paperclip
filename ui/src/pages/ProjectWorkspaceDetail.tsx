@@ -226,8 +226,8 @@ function Field({
   return (
     <label className="space-y-1.5">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-        <span className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">{label}</span>
-        {hint ? <span className="text-[11px] leading-relaxed text-muted-foreground sm:text-right">{hint}</span> : null}
+        <span className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{label}</span>
+        {hint ? <span className="text-(length:--text-micro) leading-relaxed text-muted-foreground sm:text-right">{hint}</span> : null}
       </div>
       {children}
     </label>
@@ -445,7 +445,7 @@ export function ProjectWorkspaceDetail() {
 
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 space-y-2">
-          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+          <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
             Project workspace
           </div>
           <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
@@ -480,7 +480,7 @@ export function ProjectWorkspaceDetail() {
       </Tabs>
 
       {activeTab === "configuration" ? (
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.9fr)]">
+      <div className="grid gap-6 lg:grid-cols-(--gtc-53)">
         <div className="space-y-6">
           <div className="rounded-2xl border border-border bg-card p-5">
             <p className="max-w-2xl text-sm text-muted-foreground">
@@ -531,7 +531,7 @@ export function ProjectWorkspaceDetail() {
                 </select>
               </Field>
 
-              <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
+              <div className="grid gap-4 md:grid-cols-(--gtc-13)">
                 <Field label="Local path">
                   <input
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
@@ -665,7 +665,7 @@ export function ProjectWorkspaceDetail() {
         <div className="space-y-6">
           <div className="rounded-2xl border border-border bg-card p-5">
             <div className="space-y-1">
-              <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace facts</div>
+              <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Workspace facts</div>
               <h2 className="text-lg font-semibold">Current state</h2>
             </div>
             <Separator className="my-4" />
@@ -695,7 +695,7 @@ export function ProjectWorkspaceDetail() {
           <div className="rounded-2xl border border-border bg-card p-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="space-y-1">
-                <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace commands</div>
+                <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Workspace commands</div>
                 <h2 className="text-lg font-semibold">Services and jobs</h2>
                 <p className="text-sm text-muted-foreground">
                   Long-running services stay supervised here, while one-shot jobs run on demand against this workspace. Execution workspaces inherit this config unless they override it.

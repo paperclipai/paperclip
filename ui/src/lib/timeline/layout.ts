@@ -125,7 +125,7 @@ export function isCancelledStatus(status: string): boolean {
  * (kicked off by another actor) read blue; automation/self-started runs read
  * amber. The blue/amber pair is colour-blind-safe and holds contrast on both
  * light and dark backgrounds so the chart screenshots cleanly. Cancelled runs
- * drop their fill entirely (rendered as a hollow dashed bar) and a teal "now"
+ * drop their fill entirely (rendered as a hollow dashed bar) and a status-blue "now"
  * line marks the present.
  */
 export const TIMELINE_COLORS = {
@@ -133,7 +133,7 @@ export const TIMELINE_COLORS = {
   automation: "#f4b740",
   /** stroke/ink for a hollow, cancelled bar. */
   cancelled: "#9aa3ad",
-  now: "#2dd4bf",
+  now: "#2563eb", // Gallery feedback r2: "now" liveness marker = status blue (was teal #2dd4bf); shape (1.5px vertical line) still distinguishes it from #5b9bf6 delegated bars.
 } as const;
 
 export type RunSourceKind = "delegated" | "automation";

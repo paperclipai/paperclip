@@ -684,7 +684,7 @@ describe("Agents", () => {
     await flushReact();
 
     // The title cell carries a constant width (`w-56`), not a content-sized
-    // `min-w-[7rem]`, so the `meta` group starts at the same x on every row and
+    // `min-w-(--sz-7rem)`, so the `meta` group starts at the same x on every row and
     // the model + timestamp columns line up vertically.
     const titleCell = container.querySelector(".w-56");
     expect(titleCell).not.toBeNull();

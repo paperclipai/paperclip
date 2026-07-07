@@ -56,6 +56,26 @@ pnpm build-storybook
 
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
 
+The Storybook visual regression suite uses external PNG baselines instead of
+committed screenshots:
+
+```sh
+pnpm test:storybook-visual
+pnpm test:storybook-visual:update
+```
+
+`pnpm test:storybook-visual` downloads and verifies the baseline archive from
+`tests/storybook-visual/baseline-manifest.json` before running Playwright.
+Accepted visual changes should update the manifest metadata and publish a new
+immutable archive with `pnpm storybook-visual:baseline pack` and
+`pnpm storybook-visual:baseline upload`; do not commit generated PNG snapshots.
+
+PR visual checks are opt-in while the suite stabilizes. Add the
+`storybook-visual` label to a PR, or run the `Storybook Visual` GitHub Actions
+workflow manually, to produce downloadable Playwright report/test-result
+artifacts. Normal PR visual runs use read-only repository permissions and do not
+upload or mutate baseline objects.
+
 ## UI Fonts And Screenshots
 
 The board UI ships its own sans-serif webfont assets in `ui/public/fonts/`.

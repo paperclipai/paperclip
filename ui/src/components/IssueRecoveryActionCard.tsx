@@ -316,18 +316,18 @@ function BranchFacet({
   const shortSha = formatShortSha(sha);
   return (
     <div className="min-w-0 rounded-md border border-border/70 bg-background/60 px-2.5 py-2">
-      <div className="text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
+      <div className="text-(length:--text-nano) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
         {label}
       </div>
       <div className="mt-1 flex items-center gap-1.5">
         <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
         {branch ? (
-          <code className="truncate font-mono text-[12px] text-foreground/90">{branch}</code>
+          <code className="truncate font-mono text-xs text-foreground/90">{branch}</code>
         ) : (
-          <span className="text-[12px] italic text-muted-foreground">detached / unknown</span>
+          <span className="text-xs italic text-muted-foreground">detached / unknown</span>
         )}
       </div>
-      <div className="mt-0.5 pl-5 font-mono text-[11px] text-muted-foreground">
+      <div className="mt-0.5 pl-5 font-mono text-(length:--text-micro) text-muted-foreground">
         {shortSha ? `@ ${shortSha}` : "@ —"}
       </div>
     </div>
@@ -351,13 +351,13 @@ function DivergenceDiagnosis({
       )}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+        <span className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
           Divergence diagnosis
         </span>
         <span
           data-testid="recovery-ancestry-verdict"
           className={cn(
-            "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em]",
+            "inline-flex items-center rounded-full border px-2 py-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-label)",
             badge.className,
           )}
         >
@@ -377,7 +377,7 @@ function DivergenceDiagnosis({
         />
       </div>
       {divergence.plainLanguageReason ? (
-        <p className="text-[12px] leading-5 text-foreground/80">{divergence.plainLanguageReason}</p>
+        <p className="text-xs leading-5 text-foreground/80">{divergence.plainLanguageReason}</p>
       ) : null}
     </div>
   );
@@ -549,8 +549,8 @@ function MetadataRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[7.5rem_1fr] gap-x-3 gap-y-0 px-3 py-1.5 text-xs sm:px-4">
-      <dt className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+    <div className="grid grid-cols-(--gtc-8) gap-x-3 gap-y-0 px-3 py-1.5 text-xs sm:px-4">
+      <dt className="truncate text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
         {label}
       </dt>
       <dd className="min-w-0 break-words text-foreground/90">{children}</dd>
@@ -602,11 +602,11 @@ function RunChip({
   const short = shortenRunId(runId);
   const inner = (
     <>
-      <code className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
+      <code className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-(length:--text-micro) text-foreground/80">
         run {short}
       </code>
       {status ? (
-        <span className="font-sans text-[11px] text-muted-foreground">{status}</span>
+        <span className="font-sans text-(length:--text-micro) text-muted-foreground">{status}</span>
       ) : null}
     </>
   );
@@ -750,7 +750,7 @@ export function IssueRecoveryActionCard({
       data-recovery-state={cardState}
       data-recovery-kind={action.kind}
       className={cn(
-        "relative w-full overflow-hidden rounded-lg border text-sm shadow-[0_1px_0_rgba(15,23,42,0.02)]",
+        "relative w-full overflow-hidden rounded-lg border text-sm shadow-(--shadow-extract-8)",
         tone.containerClass,
         className,
       )}
@@ -766,10 +766,10 @@ export function IssueRecoveryActionCard({
           <ToneIcon className={cn("h-4 w-4", tone.iconClass)} />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-semibold uppercase tracking-[0.14em]">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow)">
             <span className={tone.labelClass}>{tone.label}</span>
             <span className="text-muted-foreground/60" aria-hidden>·</span>
-            <code className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[11px] tracking-normal text-muted-foreground">
+            <code className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-(length:--text-micro) tracking-normal text-muted-foreground">
               {KIND_LABEL[action.kind] ?? action.kind}
             </code>
             {updatedAtLabel ? (
@@ -781,7 +781,7 @@ export function IssueRecoveryActionCard({
               </>
             ) : null}
           </div>
-          <p className="mt-1 text-[14px] leading-6">{headline}</p>
+          <p className="mt-1 text-sm leading-6">{headline}</p>
         </div>
       </header>
       <dl className={cn("border-t bg-background/40 dark:bg-background/20", tone.divider)}>
@@ -819,7 +819,7 @@ export function IssueRecoveryActionCard({
         ) : null}
         <MetadataRow label="Evidence">
           {evidenceSummary ? (
-            <span className="break-words font-mono text-[11px] text-foreground/80">{evidenceSummary}</span>
+            <span className="break-words font-mono text-(length:--text-micro) text-foreground/80">{evidenceSummary}</span>
           ) : (
             <MissingValue />
           )}
@@ -831,12 +831,12 @@ export function IssueRecoveryActionCard({
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {wakeSummary ? <span>{wakeSummary}</span> : <MissingValue />}
             {showAttempt ? (
-              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
                 attempt {action.attemptCount} of {action.maxAttempts}
               </span>
             ) : null}
             {showTimeoutInline ? (
-              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
                 Times out {formatTimeShort(action.timeoutAt) ?? "soon"}
               </span>
             ) : null}
@@ -872,7 +872,7 @@ export function IssueRecoveryActionCard({
                 sideOffset={6}
                 className="w-72 p-1.5"
               >
-                <div className="px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                <div className="px-2 py-1 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                   Resolve recovery
                 </div>
                 <div className="flex flex-col">
@@ -888,7 +888,7 @@ export function IssueRecoveryActionCard({
                       )}
                     >
                       <span className="font-medium leading-5">{option.label}</span>
-                      <span className="text-[11px] leading-4 text-muted-foreground">{option.description}</span>
+                      <span className="text-(length:--text-micro) leading-4 text-muted-foreground">{option.description}</span>
                     </button>
                   ))}
                 </div>
@@ -932,15 +932,15 @@ export function IssueRecoveryActionCard({
               </PopoverTrigger>
               <PopoverContent align="start" sideOffset={6} className="w-80 space-y-3 p-3">
                 <div className="space-y-1">
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                  <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                     Re-issue on isolated workspace
                   </div>
-                  <p className="text-[12px] leading-5 text-muted-foreground">
+                  <p className="text-xs leading-5 text-muted-foreground">
                     Creates a fresh copy of this task on an isolated git worktree based on the live
                     branch. Your current workspace and its commits are left untouched.
                   </p>
                 </div>
-                <dl className="space-y-1 rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 text-[11px]">
+                <dl className="space-y-1 rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 text-(length:--text-micro)">
                   <div className="flex items-center justify-between gap-2">
                     <dt className="text-muted-foreground">Base ref</dt>
                     <dd className="min-w-0 truncate font-mono text-foreground/90">{reissueBaseRef}</dd>
@@ -987,11 +987,11 @@ export function IssueRecoveryActionCard({
           ) : null}
           {showResolveActions ? (
             cardState === "observe_only" ? (
-              <span className="text-[11px] text-muted-foreground">
+              <span className="text-(length:--text-micro) text-muted-foreground">
                 Recovery is observing without interrupting the live run.
               </span>
             ) : (
-              <span className="text-[11px] text-muted-foreground">
+              <span className="text-(length:--text-micro) text-muted-foreground">
                 The card stays open until an explicit decision is recorded.
               </span>
             )

@@ -145,7 +145,7 @@ export function Sidebar() {
                 onClick={() => openNewIssue()}
                 data-slot="icon-button"
                 aria-label={rail ? "New Task" : undefined}
-                className="flex items-center gap-2.5 px-3 py-2 pointer-coarse:py-1.5 text-[13px] font-medium text-foreground/80 hover:bg-accent/50 hover:text-foreground transition-colors"
+                className="flex items-center gap-2.5 px-3 py-2 pointer-coarse:py-1.5 text-(length:--text-compact) font-medium text-foreground/80 hover:bg-accent/50 hover:text-foreground transition-colors"
               >
                 <SquarePen className="h-4 w-4 shrink-0" />
                 <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "truncate"}>New Task</span>
@@ -197,14 +197,14 @@ export function Sidebar() {
             slotTypes={["sidebar"]}
             context={pluginContext}
             className="flex flex-col gap-0.5"
-            itemClassName="text-[13px] font-medium"
+            itemClassName="text-(length:--text-compact) font-medium"
             missingBehavior="placeholder"
           />
           <PluginLauncherOutlet
             placementZones={["sidebar"]}
             context={pluginContext}
             className="flex flex-col gap-0.5"
-            itemClassName="text-[13px] font-medium"
+            itemClassName="text-(length:--text-compact) font-medium"
           />
         </SidebarSection>
 

@@ -94,7 +94,7 @@ function AttachmentActions({
 
 function AttachmentMeta({ attachment }: { attachment: IssueAttachment }) {
   return (
-    <p className="mt-0.5 text-[11px] text-muted-foreground">
+    <p className="mt-0.5 text-(length:--text-micro) text-muted-foreground">
       Attachment · {attachment.contentType} · {formatBytes(attachment.byteSize)}
     </p>
   );
@@ -134,7 +134,7 @@ function MarkdownAttachmentCard({
           <p className="px-1 py-2 text-xs text-destructive">Could not load markdown preview.</p>
         ) : (
           <FoldCurtain>
-            <MarkdownBody className="paperclip-edit-in-place-content min-h-[220px] text-[15px] leading-7" softBreaks={false}>
+            <MarkdownBody className="paperclip-edit-in-place-content min-h-(--sz-220px) text-sm leading-7" softBreaks={false}>
               {data ?? ""}
             </MarkdownBody>
           </FoldCurtain>
@@ -198,7 +198,7 @@ function GenericAttachmentRow({
         >
           {filename}
         </a>
-        <p className="truncate text-[11px] text-muted-foreground">
+        <p className="truncate text-(length:--text-micro) text-muted-foreground">
           Attachment · {attachment.contentType} · {formatBytes(attachment.byteSize)}
         </p>
       </div>

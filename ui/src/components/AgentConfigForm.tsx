@@ -983,7 +983,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 value={eff("identity", "capabilities", props.agent.capabilities ?? "") ?? ""}
                 onChange={(v) => mark("identity", "capabilities", v || null)}
                 placeholder="Describe what this agent can do..."
-                contentClassName="min-h-[44px] text-sm font-mono"
+                contentClassName="min-h-(--sz-44px) text-sm font-mono"
                 imageUploadHandler={async (file) => {
                   const asset = await uploadMarkdownImage.mutateAsync({
                     file,
@@ -1004,7 +1004,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     )}
                     onChange={(v) => mark("adapterConfig", "promptTemplate", v ?? "")}
                     placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
-                    contentClassName="min-h-[88px] text-sm font-mono"
+                    contentClassName="min-h-(--sz-88px) text-sm font-mono"
                     imageUploadHandler={async (file) => {
                       const namespace = `agents/${props.agent.id}/prompt-template`;
                       const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
@@ -1012,7 +1012,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     }}
                   />
                 </Field>
-                <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-100">
                   Prompt template is replayed on every heartbeat. Keep it compact and dynamic to avoid recurring token cost and cache churn.
                 </div>
               </>
@@ -1041,7 +1041,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   {kubernetesEnvironment.name} · Kubernetes sandbox
                 </div>
               ) : (
-                <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
                   This instance requires the Kubernetes sandbox, but no managed Kubernetes
                   environment is available for this company yet. Configure one before creating
                   agents; execution will not fall back to local.
@@ -1247,7 +1247,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               </Field>
 
               {supportsModelProfiles && (
-                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Primary model</div>
+                <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Primary model</div>
               )}
               <ModelDropdown
                 models={models}
@@ -1345,7 +1345,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         mark("adapterConfig", "bootstrapPromptTemplate", v || undefined)
                       }
                       placeholder="Optional initial setup prompt for the first run"
-                      contentClassName="min-h-[44px] text-sm font-mono"
+                      contentClassName="min-h-(--sz-44px) text-sm font-mono"
                       imageUploadHandler={async (file) => {
                         const namespace = `agents/${props.agent.id}/bootstrap-prompt`;
                         const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
@@ -1353,7 +1353,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       }}
                     />
                   </Field>
-                  <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                  <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
                     Bootstrap prompt is legacy and will be removed in a future release. Consider moving this content into the agent&apos;s prompt template or instructions file instead.
                   </div>
                 </>
@@ -1578,13 +1578,13 @@ export function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmen
     <div className={`rounded-md border px-3 py-2 text-xs ${statusClass}`}>
       <div className="flex items-center justify-between gap-2">
         <span className="font-medium">{statusLabel}</span>
-        <span className="text-[11px] opacity-80">
+        <span className="text-(length:--text-micro) opacity-80">
           {new Date(result.testedAt).toLocaleTimeString()}
         </span>
       </div>
       <div className="mt-2 space-y-1.5">
         {result.checks.map((check, idx) => (
-          <div key={`${check.code}-${idx}`} className="text-[11px] leading-relaxed break-words">
+          <div key={`${check.code}-${idx}`} className="text-(length:--text-micro) leading-relaxed break-words">
             <span className="font-medium uppercase tracking-wide opacity-80">
               {check.level}
             </span>
@@ -1632,7 +1632,7 @@ function AdapterTypeDropdown({
           <ChevronDown className="h-3 w-3 text-muted-foreground" />
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
+      <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
         {adapterList.map((item) => (
           <button
             key={item.value}
@@ -1657,7 +1657,7 @@ function AdapterTypeDropdown({
               {item.experimental && <ExperimentalBadge />}
             </span>
             {item.comingSoon && (
-              <span className="text-[10px] text-muted-foreground">Coming soon</span>
+              <span className="text-(length:--text-nano) text-muted-foreground">Coming soon</span>
             )}
           </button>
         ))}
@@ -1668,7 +1668,7 @@ function AdapterTypeDropdown({
 
 function ExperimentalBadge() {
   return (
-    <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-700 dark:text-amber-200">
+    <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-medium leading-none text-amber-700 dark:text-amber-200">
       Experimental
     </span>
   );
@@ -1802,7 +1802,7 @@ function ModelDropdown({
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
         </PopoverTrigger>
-        <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
+        <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
           <div className="relative mb-1">
             <input
               className="w-full px-2 py-1.5 pr-6 text-xs bg-transparent outline-none border-b border-border placeholder:text-muted-foreground/50"
@@ -1871,7 +1871,7 @@ function ModelDropdown({
               <span className="block w-full text-left truncate font-mono text-xs" title={value}>
                 {models.find((m) => m.id === value)?.label ?? value}
               </span>
-              <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20">
+              <span className="shrink-0 ml-auto text-(length:--text-nano) font-medium px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20">
                 current
               </span>
             </button>
@@ -1890,7 +1890,7 @@ function ModelDropdown({
               <span className="block w-full text-left truncate font-mono text-xs" title={detectedModel}>
                 {models.find((m) => m.id === detectedModel)?.label ?? detectedModel}
               </span>
-              <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/20">
+              <span className="shrink-0 ml-auto text-(length:--text-nano) font-medium px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/20">
                 detected
               </span>
             </button>
@@ -1914,13 +1914,13 @@ function ModelDropdown({
                   <span className="block w-full text-left truncate font-mono text-xs" title={candidate}>
                     {entry?.label ?? candidate}
                   </span>
-                  <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-400 border border-sky-500/20">
+                  <span className="shrink-0 ml-auto text-(length:--text-nano) font-medium px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-400 border border-sky-500/20">
                     config
                   </span>
                 </button>
               );
             })}
-          <div className="max-h-[240px] overflow-y-auto">
+          <div className="max-h-(--sz-240px) overflow-y-auto">
             {allowDefault && (
               <button
                 type="button"
@@ -1953,7 +1953,7 @@ function ModelDropdown({
             {groupedModels.map((group) => (
               <div key={group.provider} className="mb-1 last:mb-0">
                 {groupByProvider && (
-                  <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <div className="px-2 py-1 text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     {group.provider} ({group.entries.length})
                   </div>
                 )}
@@ -2021,7 +2021,7 @@ function CheapModelSection({
     <div className="rounded-md border border-border/70 bg-muted/20 p-3 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Cheap model</div>
+          <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Cheap model</div>
           <p className="text-xs text-muted-foreground">
             Used when a run requests the cheap profile (e.g. routine summaries). The primary model stays unchanged.
           </p>
@@ -2046,12 +2046,12 @@ function CheapModelSection({
         />
       ) : null}
       {enabled && !model && adapterDefaultModel ? (
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-(length:--text-micro) text-muted-foreground">
           No explicit cheap model selected — runtime falls back to <code>{adapterDefaultModel}</code>.
         </p>
       ) : null}
       {enabled && !model && !adapterDefaultModel ? (
-        <p className="text-[11px] text-amber-500">
+        <p className="text-(length:--text-micro) text-amber-500">
           No cheap model selected and the adapter has no default. Cheap-lane runs will continue on the primary model with a fallback note.
         </p>
       ) : null}
@@ -2083,7 +2083,7 @@ function ThinkingEffortDropdown({
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
         </PopoverTrigger>
-        <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
+        <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
           {options.map((option) => (
             <button
               key={option.id || "auto"}

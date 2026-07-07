@@ -124,7 +124,10 @@ function SeedFixtures({ children }: { children: ReactNode }) {
   }, [selectedCompanyId, setSelectedCompanyId]);
   if (selectedCompanyId !== COMPANY_ID) return null;
 
-  return <MemoryRouter>{children}</MemoryRouter>;
+  // The preview decorator already provides a MemoryRouter; nesting a second
+  // react-router Router here raced it and intermittently threw
+  // "You cannot render a <Router> inside another <Router>".
+  return <>{children}</>;
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {

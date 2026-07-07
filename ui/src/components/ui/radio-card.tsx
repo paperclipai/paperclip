@@ -33,7 +33,7 @@ export function RadioCard({
       data-state={selected ? "checked" : "unchecked"}
       className={cn(
         "group relative flex w-full flex-col items-start gap-1 rounded-md border px-4 py-3 text-left transition-colors",
-        "motion-safe:transition-[border-color,background-color] motion-safe:duration-150",
+        "motion-safe:transition-(--tp-border-color-background-color) motion-safe:duration-150",
         selected
           ? "border-primary bg-primary/5 ring-1 ring-primary"
           : "border-border hover:border-border hover:bg-accent/40",

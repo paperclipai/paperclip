@@ -116,23 +116,14 @@ export function ToggleField({
         <span className="text-xs text-muted-foreground">{label}</span>
         {hint && <HintIcon text={hint} />}
       </div>
-      <button
-        data-slot="toggle"
+      {/* Gallery feedback r3: was a hand-rolled h-5 w-9 pill with a bg-green-600
+          track — the app's second switch implementation. Converged on the one
+          canonical ToggleSwitch (status-green on-state), DESIGN.md principle 1. */}
+      <ToggleSwitch
         data-testid={toggleTestId}
-        type="button"
-        className={cn(
-          "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-          checked ? "bg-green-600" : "bg-muted"
-        )}
-        onClick={() => onChange(!checked)}
-      >
-        <span
-          className={cn(
-            "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-            checked ? "translate-x-4.5" : "translate-x-0.5"
-          )}
-        />
-      </button>
+        checked={checked}
+        onCheckedChange={onChange}
+      />
     </div>
   );
 }
