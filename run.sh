@@ -164,6 +164,74 @@ CLAUDE_EOF
   log "Claude Code CLI berhasil dikonfigurasi di $claude_settings_file"
 }
 
+install_9router() {
+  log "Memastikan 9Router terpasang..."
+  if ! command_exists 9router; then
+    log "Menginstall 9Router secara global via npm..."
+    if command_exists sudo; then
+      run_root npm install -g 9router || die "Gagal menginstall 9Router."
+    else
+      npm install -g 9router || die "Gagal menginstall 9Router."
+    fi
+    log "9Router berhasil diinstall."
+  else
+    log "9Router sudah terpasang."
+  fi
+}
+
+start_9router() {
+  local router_port="${NINE_ROUTER_PORT:-20128}"
+  local log_file="$PROJECT_DIR/9router.log"
+  local pid_file="$PROJECT_DIR/9router.pid"
+
+  log "Memastikan 9Router berjalan di background..."
+
+  # Hentikan instance lama jika ada
+  if [[ -f "$pid_file" ]]; then
+    local old_pid
+    old_pid=$(cat "$pid_file")
+    if kill -0 "$old_pid" 2>/dev/null; then
+      log "9Router instance lama ditemukan (PID: $old_pid), menghentikan..."
+      kill "$old_pid" 2>/dev/null || true
+      sleep 1
+    fi
+  fi
+
+  # Kill any orphan 9router on the port
+  local existing_pid
+  existing_pid=$(ss -tlnp "( sport = :${router_port} )" 2>/dev/null | grep -oP 'pid=\K[0-9]+' || true)
+  if [[ -n "$existing_pid" ]]; then
+    log "Proses lain di port ${router_port} (PID: $existing_pid), menghentikan..."
+    kill "$existing_pid" 2>/dev/null || true
+    sleep 1
+  fi
+
+  # Start 9Router di background
+  # Pipe "1" untuk auto-select "Web UI (Open in Browser)" secara non-interaktif
+  echo "1" | nohup 9router > "$log_file" 2>&1 &
+  local pid=$!
+  echo "$pid" > "$pid_file"
+  log "9Router berjalan di background (PID: $pid) — log: $log_file"
+
+  # Tunggu startup
+  sleep 4
+
+  # Verifikasi port
+  if ss -ltn "( sport = :${router_port} )" 2>/dev/null | awk 'NR>1 {found=1} END {exit found ? 0 : 1}'; then
+    log "9Router aktif di port ${router_port}"
+  else
+    warn "9Router mungkin belum siap di port ${router_port}. Cek log: $log_file"
+  fi
+
+  # Tampilkan URL (browser jika ada display, log URL jika headless)
+  if [[ -n "${DISPLAY:-}" ]] || [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    command_exists xdg-open && xdg-open "http://localhost:${router_port}/login" 2>/dev/null || true
+  fi
+  log "9Router WebUI : http://localhost:${router_port}/login"
+  log "9Router Dashboard : http://localhost:${router_port}/dashboard"
+  log "9Router API      : http://localhost:${router_port}/v1"
+}
+
 install_codex_cli() {
   log "Memastikan OpenAI Codex CLI terpasang dan terkonfigurasi..."
   local codex_config_dir="${HOME}/.codex"
@@ -685,6 +753,32 @@ verify_codex_probe() {
   fi
 }
 
+verify_9router_probe() {
+  local router_port="${NINE_ROUTER_PORT:-20128}"
+  log "Verifikasi 9Router endpoint di http://localhost:${router_port}/v1..."
+
+  # Cek endpoint /v1 (OpenAI-compatible)
+  local http_code
+  http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://localhost:${router_port}/v1" 2>&1 || true)
+  if [[ -n "$http_code" ]] && [[ "$http_code" =~ ^(200|401|404)$ ]]; then
+    log "9Router /v1 endpoint: PASS (HTTP $http_code)"
+  else
+    warn "9Router /v1 endpoint: FAIL (HTTP $http_code)"
+    return 1
+  fi
+
+  # Cek dashboard
+  http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://localhost:${router_port}/dashboard" 2>&1 || true)
+  if [[ -n "$http_code" ]] && [[ "$http_code" =~ ^(200|3[0-9][0-9])$ ]]; then
+    log "9Router Dashboard: PASS (HTTP $http_code)"
+  else
+    warn "9Router Dashboard: FAIL (HTTP $http_code)"
+    return 1
+  fi
+
+  return 0
+}
+
 verify_all() {
   log "Memulai verifikasi deployment..."
   local overall_status=0
@@ -727,6 +821,10 @@ verify_all() {
     overall_status=1
   fi
 
+  # 4. 9Router probe
+  log "Verifikasi 9Router..."
+  verify_9router_probe || overall_status=1
+
   log "--- Verifikasi Selesai ---"
   if [[ "$overall_status" -eq 0 ]]; then
     log "Semua verifikasi berhasil. Paperclip siap digunakan!"
@@ -736,12 +834,19 @@ verify_all() {
 }
 
 show_access_info() {
+  local router_port="${NINE_ROUTER_PORT:-20128}"
   log "Aplikasi berjalan."
   printf '  URL       : %s\n' "$PAPERCLIP_PUBLIC_URL"
   printf '  Health    : http://127.0.0.1:%s/api/health\n' "$APP_PORT"
   printf '  Logs      : ./run.sh logs\n'
   printf '  Bootstrap : docker exec %s pnpm paperclipai auth bootstrap-ceo --base-url %%s\n' \
       "$APP_SERVICE" "$PAPERCLIP_PUBLIC_URL"
+  printf '\n'
+  printf '  9Router WebUI    : http://localhost:%s/login\n' "$router_port"
+  printf '  9Router Dashboard: http://localhost:%s/dashboard\n' "$router_port"
+  printf '  9Router API      : http://localhost:%s/v1\n' "$router_port"
+  printf '  9Router PID file : %s\n' "$PROJECT_DIR/9router.pid"
+  printf '  9Router Log      : %s\n' "$PROJECT_DIR/9router.log"
 }
 
 # ------------------------------------------------------------------
@@ -766,15 +871,19 @@ cmd_up() {
   install_claude_cli
   install_codex_cli
 
-  # 3. Onboard & configure Paperclip inside container
+  # 3. Install & start 9Router
+  install_9router
+  start_9router
+
+  # 4. Onboard & configure Paperclip inside container
   onboard_paperclip || true
   configure_paperclip
   restart_paperclip
 
-  # 4. Bootstrap admin
+  # 5. Bootstrap admin
   bootstrap_admin
 
-  # 5. Final verification
+  # 6. Final verification
   verify_all
   show_access_info
 }
@@ -787,13 +896,24 @@ cmd_down() {
 
   if [[ ! -f "$COMPOSE_FILE" ]]; then
     warn "Compose runtime file belum ada. Tidak ada stack yang perlu dimatikan."
-    return
+  else
+    ensure_env_file 2>/dev/null || true
+    load_env_file 2>/dev/null || true
+    log "Menghentikan stack..."
+    compose down --remove-orphans
   fi
 
-  ensure_env_file 2>/dev/null || true
-  load_env_file 2>/dev/null || true
-  log "Menghentikan stack..."
-  compose down --remove-orphans
+  # Stop 9Router
+  if [[ -f "$PROJECT_DIR/9router.pid" ]]; then
+    local pid
+    pid=$(cat "$PROJECT_DIR/9router.pid")
+    if kill -0 "$pid" 2>/dev/null; then
+      log "Menghentikan 9Router (PID: $pid)..."
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+    fi
+    rm -f "$PROJECT_DIR/9router.pid"
+  fi
 }
 
 cmd_restart() {
