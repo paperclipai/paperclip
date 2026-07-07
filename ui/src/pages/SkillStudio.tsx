@@ -363,7 +363,7 @@ function StudioHeader({
   const synced = skill.sharingScope === "company" || skill.sharingScope === "public_link";
   return (
     <header className="flex items-center gap-3 border-b border-border px-4 py-2.5">
-      <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+      <div className="hidden min-w-0 items-center gap-2 text-xs text-muted-foreground md:flex">
         <Link to="/skills" className="hover:text-foreground">
           Skills
         </Link>
@@ -372,7 +372,7 @@ function StudioHeader({
         <ChevronRight className="h-3 w-3 shrink-0" />
         <span>Studio</span>
       </div>
-      <h1 className="truncate text-lg font-semibold">{skill.name}</h1>
+      <h1 className="min-w-0 truncate text-lg font-semibold">{skill.name}</h1>
       {version !== null && (
         <span className="font-mono text-xs text-muted-foreground">v{version}</span>
       )}
