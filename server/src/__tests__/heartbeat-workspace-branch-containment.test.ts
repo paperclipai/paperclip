@@ -83,6 +83,10 @@ async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
 }
 
+async function readGit(cwd: string, args: string[]) {
+  return (await execFileAsync("git", args, { cwd })).stdout.trim();
+}
+
 async function createGitRepo() {
   const repoRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-branch-containment-repo-"));
   await runGit(repoRoot, ["init"]);
@@ -229,6 +233,21 @@ function readAdapterWorkspace(input: unknown) {
     throw new Error("Adapter input is missing execution workspace context");
   }
   return { cwd, branchName, executionWorkspaceId };
+}
+
+async function wakeIssue(heartbeat: Heartbeat, agentId: string, issueId: string) {
+  return heartbeat.wakeup(agentId, {
+    source: "automation",
+    triggerDetail: "system",
+    reason: "issue_commented",
+    payload: { issueId },
+    contextSnapshot: {
+      issueId,
+      taskId: issueId,
+      wakeReason: "issue_commented",
+      skipIssueComment: true,
+    },
+  });
 }
 
 async function seedBranchContainmentRun(db: Db, repoRoot: string, callSite: BranchContainmentCallSite) {
@@ -490,6 +509,179 @@ async function seedBranchContainmentRun(db: Db, repoRoot: string, callSite: Bran
   };
 }
 
+async function seedLineagePropagationRun(db: Db, repoRoot: string) {
+  const companyId = randomUUID();
+  const projectId = randomUUID();
+  const projectWorkspaceId = randomUUID();
+  const agentId = randomUUID();
+  const parentIssueId = randomUUID();
+  const childIssueId = randomUUID();
+  const isolatedSiblingIssueId = randomUUID();
+  const isolatedSiblingExecutionWorkspaceId = randomUUID();
+  const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+  const parentIdentifier = `${issuePrefix}-1`;
+  const childIdentifier = `${issuePrefix}-2`;
+  const isolatedSiblingIdentifier = `${issuePrefix}-3`;
+  const isolatedSiblingBranch = `${isolatedSiblingIdentifier}-recorded`;
+  const now = new Date("2026-07-07T00:00:00.000Z");
+
+  await instanceSettingsService(db).updateExperimental({
+    enableIsolatedWorkspaces: true,
+    enableWorkspaceBranchReconcileForward: true,
+  });
+  await db.insert(companies).values({
+    id: companyId,
+    name: "Acme",
+    issuePrefix,
+    status: "active",
+    defaultResponsibleUserId: "responsible-user",
+    createdAt: now,
+    updatedAt: now,
+  });
+  await db.insert(projects).values({
+    id: projectId,
+    companyId,
+    name: "Lineage propagation",
+    status: "active",
+    executionWorkspacePolicy: {
+      enabled: true,
+      defaultMode: "isolated_workspace",
+      workspaceStrategy: {
+        type: "git_worktree",
+        baseRef: "HEAD",
+        branchTemplate: "{{issue.identifier}}-recorded",
+      },
+    },
+    createdAt: now,
+    updatedAt: now,
+  });
+  await db.insert(projectWorkspaces).values({
+    id: projectWorkspaceId,
+    companyId,
+    projectId,
+    name: "Primary",
+    cwd: repoRoot,
+    isPrimary: true,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await db.insert(agents).values({
+    id: agentId,
+    companyId,
+    name: "CodexCoder",
+    role: "engineer",
+    status: "idle",
+    adapterType: "codex_local",
+    adapterConfig: {},
+    runtimeConfig: {
+      heartbeat: {
+        wakeOnDemand: true,
+        maxConcurrentRuns: 1,
+      },
+    },
+    permissions: {},
+    createdAt: now,
+    updatedAt: now,
+  });
+  await db.insert(executionWorkspaces).values({
+    id: isolatedSiblingExecutionWorkspaceId,
+    companyId,
+    projectId,
+    projectWorkspaceId,
+    sourceIssueId: null,
+    mode: "isolated_workspace",
+    strategyType: "git_worktree",
+    name: isolatedSiblingBranch,
+    status: "active",
+    cwd: path.join(repoRoot, ".paperclip", "worktrees", isolatedSiblingBranch),
+    repoUrl: null,
+    baseRef: "HEAD",
+    branchName: isolatedSiblingBranch,
+    providerType: "git_worktree",
+    providerRef: path.join(repoRoot, ".paperclip", "worktrees", isolatedSiblingBranch),
+    lastUsedAt: now,
+    openedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await db.insert(issues).values([
+    {
+      id: parentIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Parent branch reconciliation source",
+      status: "in_progress",
+      workMode: "standard",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 1,
+      identifier: parentIdentifier,
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+      },
+      startedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: childIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      parentId: parentIssueId,
+      title: "Git handoff child",
+      status: "todo",
+      workMode: "standard",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 2,
+      identifier: childIdentifier,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+      },
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: isolatedSiblingIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Isolated sibling",
+      status: "todo",
+      workMode: "standard",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 3,
+      identifier: isolatedSiblingIdentifier,
+      executionWorkspaceId: isolatedSiblingExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+      },
+      createdAt: now,
+      updatedAt: now,
+    },
+  ]);
+
+  return {
+    companyId,
+    agentId,
+    parentIssueId,
+    childIssueId,
+    isolatedSiblingIssueId,
+    isolatedSiblingExecutionWorkspaceId,
+    parentIdentifier,
+    childIdentifier,
+    isolatedSiblingBranch,
+  };
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -721,5 +913,178 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       actualBranch: seeded.actualBranch,
     });
     expect(adapterExecute).toHaveBeenCalledTimes(callSite === "finalize" ? 1 : 0);
+  }, 30_000);
+
+  it("propagates a reconciled parent execution workspace branch to a git-handoff child without reuse clobbering the record", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const seeded = await seedLineagePropagationRun(db, repoRoot);
+    const heartbeat = heartbeatService(db);
+    let sharedExecutionWorkspaceId: string | null = null;
+    let worktreePath: string | null = null;
+    let recordedBranch: string | null = null;
+    let reconciledBranch: string | null = null;
+    let reconciledHead: string | null = null;
+    const childTemplateBranch = `${seeded.childIdentifier}-recorded`;
+
+    adapterExecute.mockImplementationOnce(async (adapterInput) => {
+      const workspace = readAdapterWorkspace(adapterInput);
+      sharedExecutionWorkspaceId = workspace.executionWorkspaceId;
+      worktreePath = workspace.cwd;
+      recordedBranch = workspace.branchName;
+      reconciledBranch = `${workspace.branchName.replace(/-recorded$/, "")}-actual`;
+
+      await db
+        .update(issues)
+        .set({
+          executionWorkspaceId: workspace.executionWorkspaceId,
+          executionWorkspacePreference: "reuse_existing",
+          executionWorkspaceSettings: { mode: "isolated_workspace" },
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, seeded.childIssueId));
+
+      await runGit(workspace.cwd, ["checkout", "-b", reconciledBranch]);
+      await writeFile(path.join(workspace.cwd, "parent-forward.txt"), "parent moved branch forward\n", "utf8");
+      await runGit(workspace.cwd, ["add", "parent-forward.txt"]);
+      await runGit(workspace.cwd, ["commit", "-m", "Move parent workspace branch forward"]);
+      reconciledHead = await readGit(workspace.cwd, ["rev-parse", "HEAD"]);
+
+      await db
+        .update(issues)
+        .set({
+          status: "done",
+          completedAt: new Date(),
+          checkoutRunId: null,
+          executionRunId: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, seeded.parentIssueId));
+
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: "Parent completed after moving the workspace branch forward.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const parentRun = await wakeIssue(heartbeat, seeded.agentId, seeded.parentIssueId);
+    expect(parentRun).not.toBeNull();
+    const finishedParentRun = await waitForRunToFinish(heartbeat, parentRun!.id);
+    expect(finishedParentRun).toMatchObject({
+      status: "succeeded",
+      errorCode: null,
+    });
+    expect(sharedExecutionWorkspaceId).toEqual(expect.any(String));
+    expect(worktreePath).toEqual(expect.any(String));
+    expect(recordedBranch).toBe(`${seeded.parentIdentifier}-recorded`);
+    expect(reconciledBranch).toBe(`${seeded.parentIdentifier}-actual`);
+    expect(reconciledHead).toEqual(expect.stringMatching(/^[a-f0-9]{40}$/));
+
+    const [workspaceAfterParent] = await db
+      .select({
+        name: executionWorkspaces.name,
+        branchName: executionWorkspaces.branchName,
+        providerRef: executionWorkspaces.providerRef,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, sharedExecutionWorkspaceId!));
+    expect(workspaceAfterParent).toMatchObject({
+      name: reconciledBranch,
+      branchName: reconciledBranch,
+      providerRef: worktreePath,
+    });
+
+    const [isolatedSiblingWorkspaceAfterParent] = await db
+      .select({ branchName: executionWorkspaces.branchName })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.isolatedSiblingExecutionWorkspaceId));
+    expect(isolatedSiblingWorkspaceAfterParent?.branchName).toBe(seeded.isolatedSiblingBranch);
+
+    const parentOperations = await db
+      .select()
+      .from(workspaceOperations)
+      .where(eq(workspaceOperations.heartbeatRunId, parentRun!.id));
+    expect(parentOperations.filter((operation) =>
+      asRecord(operation.metadata).branchIncoherenceReconcileForward === true
+    )).toHaveLength(1);
+
+    const branchReconcileComments = await readContainmentComments(db, [seeded.parentIssueId]);
+    expect(branchReconcileComments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          authorType: "system",
+          body: expect.stringContaining("Execution workspace branch reconciled."),
+        }),
+      ]),
+    );
+
+    adapterExecute.mockImplementationOnce(async (adapterInput) => {
+      const workspace = readAdapterWorkspace(adapterInput);
+      expect(workspace.executionWorkspaceId).toBe(sharedExecutionWorkspaceId);
+      expect(workspace.cwd).toBe(worktreePath);
+      expect(workspace.branchName).toBe(reconciledBranch);
+      await expect(readGit(workspace.cwd, ["branch", "--show-current"])).resolves.toBe(reconciledBranch);
+      await expect(readGit(workspace.cwd, ["rev-parse", "HEAD"])).resolves.toBe(reconciledHead);
+
+      await db
+        .update(issues)
+        .set({
+          status: "done",
+          completedAt: new Date(),
+          checkoutRunId: null,
+          executionRunId: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, seeded.childIssueId));
+
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: "Git handoff child reused the reconciled workspace.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const childRun = await wakeIssue(heartbeat, seeded.agentId, seeded.childIssueId);
+    expect(childRun).not.toBeNull();
+    const finishedChildRun = await waitForRunToFinish(heartbeat, childRun!.id);
+    expect(finishedChildRun).toMatchObject({
+      status: "succeeded",
+      errorCode: null,
+    });
+
+    const [workspaceAfterChild] = await db
+      .select({
+        name: executionWorkspaces.name,
+        branchName: executionWorkspaces.branchName,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, sharedExecutionWorkspaceId!));
+    expect(workspaceAfterChild).toMatchObject({
+      name: reconciledBranch,
+      branchName: reconciledBranch,
+    });
+    expect(workspaceAfterChild?.branchName).not.toBe(childTemplateBranch);
+
+    const childOperations = await db
+      .select()
+      .from(workspaceOperations)
+      .where(eq(workspaceOperations.heartbeatRunId, childRun!.id));
+    expect(childOperations.filter((operation) =>
+      asRecord(operation.metadata).branchIncoherenceReconcileForward === true
+    )).toHaveLength(0);
+
+    const [isolatedSiblingWorkspaceAfterChild] = await db
+      .select({ branchName: executionWorkspaces.branchName })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.isolatedSiblingExecutionWorkspaceId));
+    expect(isolatedSiblingWorkspaceAfterChild?.branchName).toBe(seeded.isolatedSiblingBranch);
+    expect(adapterExecute).toHaveBeenCalledTimes(2);
   }, 30_000);
 });

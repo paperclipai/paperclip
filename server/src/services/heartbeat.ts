@@ -10779,6 +10779,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         workspaceConfigFreshness,
         restoreExistingWorkspace: reusableExistingExecutionWorkspace
           ? () => ensurePersistedExecutionWorkspaceAvailable({
+              db,
               base: executionWorkspaceBase,
               workspace: {
                 id: reusableExistingExecutionWorkspace.id,
@@ -10806,10 +10807,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 name: agent.name,
                 companyId: agent.companyId,
               },
+              heartbeatRunId: run.id,
+              enableWorkspaceBranchReconcileForward:
+                resolvedInstanceSettings.experimental.enableWorkspaceBranchReconcileForward,
               recorder: workspaceOperationRecorder,
             })
           : null,
         realizeWorkspace: () => realizeExecutionWorkspace({
+          db,
           base: executionWorkspaceBase,
           config: hostExecutionWorkspaceConfig,
           issue: issueRef,
@@ -10818,6 +10823,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             name: agent.name,
             companyId: agent.companyId,
           },
+          heartbeatRunId: run.id,
+          enableWorkspaceBranchReconcileForward:
+            resolvedInstanceSettings.experimental.enableWorkspaceBranchReconcileForward,
           recorder: workspaceOperationRecorder,
         }),
       });
@@ -11568,8 +11576,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             let inspection = branchInspection.inspection;
             const initialManagedGitWorktreeBranch = formatManagedGitWorktreeBranchInspection(inspection);
             if (!inspection.valid && inspection.reasonCode === "branch_mismatch" && inspection.repoRoot) {
+              let reconciledBranchName: string | null = null;
               try {
-                await ensureGitWorktreeBranchCoherent({
+                const coherence = await ensureGitWorktreeBranchCoherent({
+                  db,
                   repoRoot: inspection.repoRoot,
                   worktreePath: inspection.worktreePath,
                   expectedBranchName: inspection.expectedBranchName,
@@ -11583,8 +11593,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                       }
                     : null,
                   executionWorkspaceId: branchInspection.workspaceRecord.id,
+                  heartbeatRunId: run.id,
+                  enableWorkspaceBranchReconcileForward:
+                    resolvedInstanceSettings.experimental.enableWorkspaceBranchReconcileForward,
+                  reconcileOperationPhase: "workspace_finalize",
                   recorder: workspaceOperationRecorder,
                 });
+                if (coherence.reconciledForward && coherence.branchName) {
+                  reconciledBranchName = coherence.branchName;
+                }
               } catch (repairErr) {
                 const workspaceValidationFailure = isWorkspaceValidationFailure(repairErr) ? repairErr : null;
                 finalizeBranchMetadata = {
@@ -11621,7 +11638,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
               const repairedInspection = await inspectManagedGitWorktreeBranch({
                 worktreePath: inspection.worktreePath,
-                expectedBranchName: inspection.expectedBranchName,
+                expectedBranchName: reconciledBranchName ?? inspection.expectedBranchName,
                 repoRoot: inspection.repoRoot,
               });
               finalizeBranchRepairMetadata = {
