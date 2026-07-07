@@ -801,8 +801,11 @@ export async function startServer(): Promise<StartedServer> {
     throw err;
   }
 
+  let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<unknown>) | null = null;
+
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
     const heartbeatSchedulingSuppression = resolveHeartbeatSchedulingSuppression();
@@ -1100,6 +1103,15 @@ export async function startServer(): Promise<StartedServer> {
       if (telemetryClient) {
         telemetryClient.stop();
         await telemetryClient.flush();
+      }
+
+      if (drainHeartbeatRunsForShutdown) {
+        try {
+          const drain = await drainHeartbeatRunsForShutdown(signal);
+          logger.info({ signal, drain }, "graceful heartbeat run drain complete");
+        } catch (err) {
+          logger.error({ err, signal }, "graceful heartbeat run drain failed");
+        }
       }
 
       const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;
