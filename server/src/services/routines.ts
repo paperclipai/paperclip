@@ -378,6 +378,21 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getRunById(routineId: string, runId: string) {
+    return db
+      .select({
+        id: routineRuns.id,
+        routineId: routineRuns.routineId,
+        companyId: routineRuns.companyId,
+      })
+      .from(routineRuns)
+      .where(and(
+        eq(routineRuns.id, runId),
+        eq(routineRuns.routineId, routineId),
+      ))
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function assertRoutineAccess(companyId: string, routineId: string) {
     const routine = await getRoutineById(routineId);
     if (!routine) throw notFound("Routine not found");
@@ -1002,6 +1017,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
 
   return {
     get: getRoutineById,
+    getRun: getRunById,
     getTrigger: getTriggerById,
 
     list: async (companyId: string): Promise<RoutineListItem[]> => {

@@ -53,6 +53,33 @@ export function routineRoutes(db: Db) {
     return routine;
   }
 
+  async function assertCanDispatchWorkflowInvocation(
+    req: Request,
+    routineId: string,
+    sourceRoutineRunId: string,
+  ) {
+    const routine = await svc.get(routineId);
+    if (!routine) return null;
+    assertCompanyAccess(req, routine.companyId);
+
+    if (req.actor.type === "board") {
+      return routine;
+    }
+
+    if (req.actor.type !== "agent" || !req.actor.agentId) throw unauthorized();
+    const sourceRun = await svc.getRun(routine.id, sourceRoutineRunId);
+    if (!sourceRun) {
+      throw forbidden("Agents can only dispatch workflow invocations for known source routine runs");
+    }
+    if (req.actor.runId) {
+      return routine;
+    }
+    if (routine.assigneeAgentId !== req.actor.agentId) {
+      throw forbidden("Agents can only dispatch workflow invocations for routines assigned to themselves");
+    }
+    return routine;
+  }
+
   router.get("/companies/:companyId/routines", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -296,7 +323,11 @@ export function routineRoutes(db: Db) {
   });
 
   router.post("/routines/:id/workflow-invocations", validate(routineWorkflowInvocationRequestSchema), async (req, res) => {
-    const routine = await assertCanManageExistingRoutine(req, req.params.id as string);
+    const routine = await assertCanDispatchWorkflowInvocation(
+      req,
+      req.params.id as string,
+      req.body.sourceRoutineRunId,
+    );
     if (!routine) {
       res.status(404).json({ error: "Routine not found" });
       return;

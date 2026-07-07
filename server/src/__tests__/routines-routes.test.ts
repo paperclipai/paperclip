@@ -30,6 +30,10 @@ const routine = {
   createdAt: new Date("2026-03-20T00:00:00.000Z"),
   updatedAt: new Date("2026-03-20T00:00:00.000Z"),
 };
+const otherRoutine = {
+  ...routine,
+  assigneeAgentId: otherAgentId,
+};
 const pausedRoutine = {
   ...routine,
   status: "paused",
@@ -62,6 +66,7 @@ const trigger = {
 const mockRoutineService = vi.hoisted(() => ({
   list: vi.fn(),
   get: vi.fn(),
+  getRun: vi.fn(),
   getDetail: vi.fn(),
   update: vi.fn(),
   create: vi.fn(),
@@ -152,6 +157,11 @@ describe("routine routes", () => {
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockRoutineService.create.mockResolvedValue(routine);
     mockRoutineService.get.mockResolvedValue(routine);
+    mockRoutineService.getRun.mockResolvedValue({
+      id: "77777777-7777-4777-8777-777777777777",
+      routineId,
+      companyId,
+    });
     mockRoutineService.getTrigger.mockResolvedValue(trigger);
     mockRoutineService.update.mockResolvedValue({ ...routine, assigneeAgentId: otherAgentId });
     mockRoutineService.runRoutine.mockResolvedValue({
@@ -313,6 +323,183 @@ describe("routine routes", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("tasks:assign");
+    expect(mockInvokeFromRoutine).not.toHaveBeenCalled();
+  });
+
+  it("allows an agent router to dispatch the approved source run even when it does not own the routine", async () => {
+    mockRoutineService.get.mockResolvedValue(otherRoutine);
+    mockInvokeFromRoutine.mockResolvedValue({
+      id: "workflow-invocation-1",
+      companyId,
+      sourceRoutineId: routineId,
+      sourceRoutineRunId: "77777777-7777-4777-8777-777777777777",
+      targetWorkflowId: "88888888-8888-4888-8888-888888888888",
+      targetWorkflowKey: "content_strategist",
+      targetCapability: null,
+      contractVersion: "workflow-invocation/v1",
+      inputKind: "markdown",
+      inputMarkdown: "Please do the thing.",
+      inputJson: null,
+      workflowRunId: "99999999-9999-4999-8999-999999999999",
+      status: "linked",
+      failureReason: null,
+      createdAt: new Date("2026-03-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-20T00:00:00.000Z"),
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "77777777-7777-4777-8777-777777777777",
+      source: "agent_jwt",
+    });
+
+    const res = await request(app)
+      .post(`/api/routines/${routineId}/workflow-invocations`)
+      .send({
+        sourceRoutineRunId: "77777777-7777-4777-8777-777777777777",
+        invocation: {
+          contractVersion: "workflow-invocation/v1",
+          target: {
+            workflowId: "88888888-8888-4888-8888-888888888888",
+          },
+          payload: {
+            kind: "markdown",
+            inputMarkdown: "Please do the thing.",
+          },
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockInvokeFromRoutine).toHaveBeenCalledWith({
+      routineId,
+      sourceRoutineRunId: "77777777-7777-4777-8777-777777777777",
+      envelope: expect.objectContaining({
+        contractVersion: "workflow-invocation/v1",
+        target: {
+          workflowId: "88888888-8888-4888-8888-888888888888",
+        },
+      }),
+    });
+  });
+
+  it("rejects an agent router when the source run is not from the target routine", async () => {
+    mockRoutineService.get.mockResolvedValue(otherRoutine);
+    mockRoutineService.getRun.mockResolvedValue(null);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "77777777-7777-4777-8777-777777777777",
+      source: "agent_jwt",
+    });
+
+    const res = await request(app)
+      .post(`/api/routines/${routineId}/workflow-invocations`)
+      .send({
+        sourceRoutineRunId: "77777777-7777-4777-8777-777777777777",
+        invocation: {
+          contractVersion: "workflow-invocation/v1",
+          target: {
+            workflowId: "88888888-8888-4888-8888-888888888888",
+          },
+          payload: {
+            kind: "markdown",
+            inputMarkdown: "Please do the thing.",
+          },
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("known source routine runs");
+    expect(mockInvokeFromRoutine).not.toHaveBeenCalled();
+  });
+
+  it("allows a run-bound agent router to dispatch a different approved source run", async () => {
+    mockRoutineService.get.mockResolvedValue(otherRoutine);
+    mockInvokeFromRoutine.mockResolvedValue({
+      id: "workflow-invocation-1",
+      companyId,
+      sourceRoutineId: routineId,
+      sourceRoutineRunId: "77777777-7777-4777-8777-777777777777",
+      targetWorkflowId: "88888888-8888-4888-8888-888888888888",
+      targetWorkflowKey: "content_strategist",
+      targetCapability: null,
+      contractVersion: "workflow-invocation/v1",
+      inputKind: "markdown",
+      inputMarkdown: "Please do the thing.",
+      inputJson: null,
+      workflowRunId: "99999999-9999-4999-8999-999999999999",
+      status: "linked",
+      failureReason: null,
+      createdAt: new Date("2026-03-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-20T00:00:00.000Z"),
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      source: "agent_jwt",
+    });
+
+    const res = await request(app)
+      .post(`/api/routines/${routineId}/workflow-invocations`)
+      .send({
+        sourceRoutineRunId: "77777777-7777-4777-8777-777777777777",
+        invocation: {
+          contractVersion: "workflow-invocation/v1",
+          target: {
+            workflowId: "88888888-8888-4888-8888-888888888888",
+          },
+          payload: {
+            kind: "markdown",
+            inputMarkdown: "Please do the thing.",
+          },
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockInvokeFromRoutine).toHaveBeenCalledWith({
+      routineId,
+      sourceRoutineRunId: "77777777-7777-4777-8777-777777777777",
+      envelope: expect.objectContaining({
+        contractVersion: "workflow-invocation/v1",
+      }),
+    });
+  });
+
+  it("rejects a non-run agent router when it does not own the routine", async () => {
+    mockRoutineService.get.mockResolvedValue(otherRoutine);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "session",
+    });
+
+    const res = await request(app)
+      .post(`/api/routines/${routineId}/workflow-invocations`)
+      .send({
+        sourceRoutineRunId: "77777777-7777-4777-8777-777777777777",
+        invocation: {
+          contractVersion: "workflow-invocation/v1",
+          target: {
+            workflowId: "88888888-8888-4888-8888-888888888888",
+          },
+          payload: {
+            kind: "markdown",
+            inputMarkdown: "Please do the thing.",
+          },
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("assigned to themselves");
     expect(mockInvokeFromRoutine).not.toHaveBeenCalled();
   });
 
