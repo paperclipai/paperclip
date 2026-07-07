@@ -1588,6 +1588,153 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.status).toBe("issue_created");
   });
 
+  it("accepts a valid bearer token and rejects an invalid one", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "bearer",
+      },
+      {},
+    );
+
+    await expect(
+      svc.firePublicTrigger(trigger.publicId!, {
+        authorizationHeader: "Bearer wrong-secret",
+        payload: { ok: true },
+      }),
+    ).rejects.toThrow();
+
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      authorizationHeader: `Bearer ${secretMaterial!.webhookSecret}`,
+      payload: { ok: true },
+    });
+
+    expect(run.source).toBe("webhook");
+    expect(run.status).toBe("issue_created");
+  });
+
+  it("rejects hmac_sha256 requests signed outside the configured replay window", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "hmac_sha256",
+        replayWindowSec: 30,
+      },
+      {},
+    );
+
+    const payload = { ok: true };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    // 5 minutes stale — well outside the 30s replay window.
+    const staleTimestampSeconds = String(Math.floor(Date.now() / 1000) - 300);
+    const signature = `sha256=${createHmac("sha256", secretMaterial!.webhookSecret)
+      .update(`${staleTimestampSeconds}.`)
+      .update(rawBody)
+      .digest("hex")}`;
+
+    await expect(
+      svc.firePublicTrigger(trigger.publicId!, {
+        signatureHeader: signature,
+        timestampHeader: staleTimestampSeconds,
+        rawBody,
+        payload,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("returns the same run for a duplicate webhook idempotency key instead of creating a second issue", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "none",
+      },
+      {},
+    );
+
+    const fireOnce = () =>
+      svc.firePublicTrigger(trigger.publicId!, {
+        payload: { event: "retry" },
+        idempotencyKey: "delivery-123",
+      });
+
+    const first = await fireOnce();
+    const second = await fireOnce();
+
+    expect(first.id).toBe(second.id);
+
+    const routineIssues = await db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, companyId));
+    expect(routineIssues).toHaveLength(1);
+  });
+
+  it("rejects firing a disabled webhook trigger", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "none",
+      },
+      {},
+    );
+    await db.update(routineTriggers).set({ enabled: false }).where(eq(routineTriggers.id, trigger.id));
+
+    await expect(
+      svc.firePublicTrigger(trigger.publicId!, { payload: {} }),
+    ).rejects.toThrow(/not active/i);
+  });
+
+  it("rejects firing while the routine itself is paused", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "none",
+      },
+      {},
+    );
+    await db.update(routines).set({ status: "paused" }).where(eq(routines.id, routine.id));
+
+    await expect(
+      svc.firePublicTrigger(trigger.publicId!, { payload: {} }),
+    ).rejects.toThrow(/not active/i);
+  });
+
+  it("rejects firing a webhook while the routine's project is paused, then accepts again once unpaused", async () => {
+    const { companyId, projectId, routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "none",
+      },
+      {},
+    );
+
+    await db
+      .update(projects)
+      .set({ pausedAt: new Date(), pauseReason: "manual pause" })
+      .where(eq(projects.id, projectId));
+
+    await expect(
+      svc.firePublicTrigger(trigger.publicId!, { payload: {} }),
+    ).rejects.toThrow(/paused/i);
+
+    const issuesWhilePaused = await db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, companyId));
+    expect(issuesWhilePaused).toHaveLength(0);
+
+    await db.update(projects).set({ pausedAt: null, pauseReason: null }).where(eq(projects.id, projectId));
+
+    const run = await svc.firePublicTrigger(trigger.publicId!, { payload: {} });
+    expect(run.status).toBe("issue_created");
+  });
+
   it("suppresses scheduled ticks while the routine project is paused, then resumes when unpaused", async () => {
     const { companyId, projectId, routine, svc } = await seedFixture();
     const { trigger } = await svc.createTrigger(

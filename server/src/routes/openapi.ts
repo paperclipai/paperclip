@@ -1968,8 +1968,19 @@ registry.registerPath({
   path: "/api/routine-triggers/public/{publicId}/fire",
   tags: ["routines"],
   summary: "Fire a public routine trigger",
+  description:
+    "Unauthenticated by design — the request is verified per-trigger using its configured signing mode " +
+    "(`bearer` via the Authorization header, `hmac_sha256` via X-Paperclip-Signature/X-Paperclip-Timestamp, " +
+    "`github_hmac` via X-Hub-Signature-256, or `none`). Send an Idempotency-Key header to safely retry " +
+    "deliveries without creating a duplicate run.",
   request: { params: z.object({ publicId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+  responses: {
+    202: r.ok(),
+    401: r.unauthorized,
+    404: r.notFound,
+    409: r.conflict,
+    429: r.tooManyRequests,
+  },
 });
 
 // ─── Goals ───────────────────────────────────────────────────────────────────

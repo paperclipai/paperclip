@@ -2,6 +2,14 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+/** Loaded via `vi.importActual` (not a static import) so it resolves against
+ * the same post-`vi.resetModules()` module registry that `createApp` uses —
+ * otherwise `errorHandler`'s `instanceof HttpError` check fails against a
+ * `HttpError` built from a different module instance. */
+async function loadErrors() {
+  return vi.importActual<typeof import("../errors.js")>("../errors.js");
+}
+
 const companyId = "22222222-2222-4222-8222-222222222222";
 const agentId = "11111111-1111-4111-8111-111111111111";
 const routineId = "33333333-3333-4333-8333-333333333333";
@@ -154,7 +162,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(actor: Record<string, unknown>) {
+async function createApp(actor: Record<string, unknown>, routeOptions: Record<string, unknown> = {}) {
   const [{ errorHandler }, { routineRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/routines.js")>("../routes/routines.js"),
@@ -165,7 +173,7 @@ async function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", routineRoutes({} as any));
+  app.use("/api", routineRoutes({} as any, routeOptions as any));
   app.use(errorHandler);
   return app;
 }
@@ -466,5 +474,91 @@ describe("routine routes", () => {
       runId: null,
     });
     expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
+  });
+
+  describe("public webhook fire endpoint", () => {
+    const publicId = "abcdef0123456789abcdef01";
+    const noActor = { type: "none" };
+
+    it("maps headers, idempotency key, and raw payload through to the service", async () => {
+      mockRoutineService.firePublicTrigger.mockResolvedValue({
+        id: "run-1",
+        source: "webhook",
+        status: "issue_created",
+      });
+      const app = await createApp(noActor);
+
+      const res = await request(app)
+        .post(`/api/routine-triggers/public/${publicId}/fire`)
+        .set("Authorization", "Bearer super-secret")
+        .set("Idempotency-Key", "client-key-1")
+        .send({ hello: "world" });
+
+      expect(res.status).toBe(202);
+      expect(res.body).toMatchObject({ id: "run-1", status: "issue_created" });
+      expect(mockRoutineService.firePublicTrigger).toHaveBeenCalledWith(
+        publicId,
+        expect.objectContaining({
+          authorizationHeader: "Bearer super-secret",
+          idempotencyKey: "client-key-1",
+          payload: { hello: "world" },
+        }),
+      );
+    });
+
+    it("propagates the service's conflict error (paused routine/project or disabled trigger) as 409", async () => {
+      const { conflict } = await loadErrors();
+      mockRoutineService.firePublicTrigger.mockRejectedValue(conflict("Routine's project is paused"));
+      const app = await createApp(noActor);
+
+      const res = await request(app).post(`/api/routine-triggers/public/${publicId}/fire`).send({});
+
+      expect(res.status).toBe(409);
+    });
+
+    it("propagates the service's unauthorized error as 401 without leaking why", async () => {
+      const { unauthorized } = await loadErrors();
+      mockRoutineService.firePublicTrigger.mockRejectedValue(unauthorized());
+      const app = await createApp(noActor);
+
+      const res = await request(app).post(`/api/routine-triggers/public/${publicId}/fire`).send({});
+
+      expect(res.status).toBe(401);
+    });
+
+    it("rate-limits repeated fires against the same publicId and sets Retry-After", async () => {
+      mockRoutineService.firePublicTrigger.mockResolvedValue({
+        id: "run-1",
+        source: "webhook",
+        status: "issue_created",
+      });
+      const app = await createApp(noActor, {
+        webhookTriggerRateLimiter: {
+          consume: () => ({ allowed: false, limit: 30, remaining: 0, retryAfterSeconds: 42 }),
+        },
+      });
+
+      const res = await request(app).post(`/api/routine-triggers/public/${publicId}/fire`).send({});
+
+      expect(res.status).toBe(429);
+      expect(res.headers["retry-after"]).toBe("42");
+      expect(mockRoutineService.firePublicTrigger).not.toHaveBeenCalled();
+    });
+
+    it("allows requests through when the rate limiter has capacity", async () => {
+      mockRoutineService.firePublicTrigger.mockResolvedValue({
+        id: "run-1",
+        source: "webhook",
+        status: "issue_created",
+      });
+      const consume = vi.fn().mockReturnValue({ allowed: true, limit: 30, remaining: 29, retryAfterSeconds: 0 });
+      const app = await createApp(noActor, { webhookTriggerRateLimiter: { consume } });
+
+      const res = await request(app).post(`/api/routine-triggers/public/${publicId}/fire`).send({});
+
+      expect(res.status).toBe(202);
+      expect(consume).toHaveBeenCalledWith(publicId, expect.any(String));
+      expect(mockRoutineService.firePublicTrigger).toHaveBeenCalled();
+    });
   });
 });
