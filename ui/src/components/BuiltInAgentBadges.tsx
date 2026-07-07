@@ -20,7 +20,7 @@ export function BuiltInAgentBadge({
       variant="outline"
       className={cn(
         brandChipBadge.blue,
-        compact && "px-1.5 py-0 text-[10px]",
+        compact && "px-1.5 py-0 text-(length:--text-nano)",
         className,
       )}
       title="Ships with Paperclip"
@@ -51,7 +51,7 @@ export function BuiltInLifecycleChip({
       variant="outline"
       className={cn(
         brandChipBadge.amber,
-        compact && "px-1.5 py-0 text-[10px]",
+        compact && "px-1.5 py-0 text-(length:--text-nano)",
         className,
       )}
       title={
