@@ -122,6 +122,29 @@ describe("isCodexTransientUpstreamError", () => {
     );
   });
 
+  it("classifies generic usage-limit variants without a reset clock and applies the default backoff", () => {
+    const errorMessage = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/upgrade) or try again later.";
+    const now = new Date("2026-07-04T17:33:00.000Z");
+
+    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(true);
+    expect(extractCodexRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-07-04T18:03:00.000Z",
+    );
+  });
+
+  it("falls back to the default backoff when the model-specific variant carries an unparseable clock", () => {
+    const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at half past nine.";
+    const now = new Date("2026-07-04T17:33:00.000Z");
+
+    expect(extractCodexRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-07-04T18:03:00.000Z",
+    );
+  });
+
+  it("does not apply the usage-limit backoff to unrelated deterministic errors", () => {
+    expect(extractCodexRetryNotBefore({ stderr: "Error: ENOENT no such file or directory" })).toBe(null);
+  });
+
   it("does not classify deterministic compaction errors as transient", () => {
     expect(
       isCodexTransientUpstreamError({
