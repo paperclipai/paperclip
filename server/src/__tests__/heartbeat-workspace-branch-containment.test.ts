@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -39,6 +39,42 @@ import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 
 const execFileAsync = promisify(execFile);
+
+function stableStringifyForTest(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((entry) => stableStringifyForTest(entry)).join(",")}]`;
+  if (value && typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    return `{${Object.keys(rec).sort().map((key) => `${JSON.stringify(key)}:${stableStringifyForTest(rec[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function fingerprintWorkspaceBranchIncoherenceForTest(input: {
+  sourceIssueId: string | null;
+  executionWorkspaceId: string | null;
+  worktreePath: string;
+  expectedBranch: string;
+  actualBranch: string | null;
+  cleanliness: "clean" | "dirty" | "unknown";
+  expectedHeadSha: string | null;
+  actualHeadSha: string | null;
+}) {
+  const digest = createHash("sha256")
+    .update(stableStringifyForTest({
+      version: 1,
+      reason: "git_worktree_branch_incoherence",
+      sourceIssueId: input.sourceIssueId,
+      executionWorkspaceId: input.executionWorkspaceId,
+      worktreePath: path.resolve(input.worktreePath),
+      expectedBranch: input.expectedBranch,
+      actualBranch: input.actualBranch,
+      cleanliness: input.cleanliness,
+      expectedHeadSha: input.expectedHeadSha,
+      actualHeadSha: input.actualHeadSha,
+    }))
+    .digest("hex");
+  return `workspace_incoherence:v1:sha256:${digest}`;
+}
 
 const adapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -642,6 +678,7 @@ async function expectForwardBranchReconciled(input: {
   };
   worktreePath: string;
   expectsExistingRecordUpdate: boolean;
+  expectedResolvedRecoveryActionFingerprint?: string | null;
 }) {
   const finishedRun = await waitForRunToFinish(input.heartbeat, input.runId, 10_000);
   expect(finishedRun).toMatchObject({
@@ -683,7 +720,19 @@ async function expectForwardBranchReconciled(input: {
     .select()
     .from(issueRecoveryActions)
     .where(eq(issueRecoveryActions.sourceIssueId, input.sourceIssueId));
-  expect(recoveryRows).toHaveLength(0);
+  if (input.expectedResolvedRecoveryActionFingerprint) {
+    expect(recoveryRows).toEqual([
+      expect.objectContaining({
+        status: "resolved",
+        outcome: "restored",
+        fingerprint: input.expectedResolvedRecoveryActionFingerprint,
+        resolutionNote: expect.stringContaining("Execution workspace branch record reconciled"),
+        resolvedAt: expect.any(Date),
+      }),
+    ]);
+  } else {
+    expect(recoveryRows).toHaveLength(0);
+  }
 
   const operations = await input.db
     .select()
@@ -724,6 +773,7 @@ async function expectForwardBranchReconciled(input: {
     }
 
     const comments = await readContainmentComments(input.db, [input.sourceIssueId]);
+    const resolvedRecoveryActionId = recoveryRows.length === 1 ? recoveryRows[0]?.id : null;
     expect(comments).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -732,6 +782,16 @@ async function expectForwardBranchReconciled(input: {
         }),
       ]),
     );
+    if (resolvedRecoveryActionId) {
+      expect(comments).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            authorType: "system",
+            body: expect.stringContaining(`Recovery action: \`${resolvedRecoveryActionId}\``),
+          }),
+        ]),
+      );
+    }
 
     const activities = await input.db
       .select()
@@ -879,7 +939,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   }, 30_000);
 
   it.each([
-    ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, false],
+    ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, true],
     ["workspace-runtime persisted restore", "persisted_restore" as const, true],
     ["heartbeat finalization", "finalize" as const, true],
   ])("auto-reconciles forward branch divergence at %s when the flag is enabled", async (_name, callSite, expectsExistingRecordUpdate) => {
@@ -893,6 +953,38 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       head: callSite === "finalize" ? "" : await readGit(seeded.worktreePath, ["rev-parse", "HEAD"]),
       status: callSite === "finalize" ? "" : await readGit(seeded.worktreePath, ["status", "--porcelain", "--untracked-files=all"]),
     };
+    let expectedResolvedRecoveryActionFingerprint: string | null = null;
+    if (callSite === "fresh_realize") {
+      const expectedHeadSha = await readGit(seeded.worktreePath, ["rev-parse", seeded.expectedBranch]);
+      const actualHeadSha = await readGit(seeded.worktreePath, ["rev-parse", seeded.actualBranch]);
+      expectedResolvedRecoveryActionFingerprint = fingerprintWorkspaceBranchIncoherenceForTest({
+        sourceIssueId: seeded.sourceIssueId,
+        executionWorkspaceId: null,
+        worktreePath: seeded.worktreePath,
+        expectedBranch: seeded.expectedBranch,
+        actualBranch: seeded.actualBranch,
+        cleanliness: "clean",
+        expectedHeadSha,
+        actualHeadSha,
+      });
+      const now = new Date("2026-07-07T00:00:01.000Z");
+      await db.insert(issueRecoveryActions).values({
+        id: randomUUID(),
+        companyId: seeded.companyId,
+        sourceIssueId: seeded.sourceIssueId,
+        kind: "workspace_validation",
+        status: "active",
+        ownerType: "agent",
+        ownerAgentId: seeded.agentId,
+        cause: "workspace_validation_failed",
+        fingerprint: expectedResolvedRecoveryActionFingerprint,
+        evidence: {},
+        nextAction: "Retry after fresh worktree branch adoption can be audited.",
+        attemptCount: 1,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
 
     adapterExecute.mockImplementationOnce(async (adapterInput) => {
       if (callSite === "finalize") {
@@ -950,6 +1042,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       expectedWorktreeStateAfterReconcile,
       worktreePath: seeded.worktreePath,
       expectsExistingRecordUpdate,
+      expectedResolvedRecoveryActionFingerprint,
     });
     expect(adapterExecute).toHaveBeenCalledTimes(1);
   }, 30_000);

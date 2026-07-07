@@ -71,6 +71,7 @@ export interface RealizedExecutionWorkspace extends ExecutionWorkspaceInput {
   warnings: string[];
   created: boolean;
   baseRefSha?: string | null;
+  pendingForwardBranchReconcile?: PendingForwardBranchReconcile | null;
 }
 
 export class WorkspaceRuntimeValidationFailure extends Error {
@@ -663,6 +664,14 @@ type GitWorktreeBranchIncoherenceEvidence = SharedGitWorktreeBranchIncoherenceEv
 type GitWorktreeBranchCoherenceResult = {
   branchName: string | null;
   reconciledForward: boolean;
+  pendingForwardBranchReconcile?: PendingForwardBranchReconcile | null;
+};
+
+export type PendingForwardBranchReconcile = {
+  recordedBranchName: string;
+  adoptedBranchName: string;
+  prePersistenceFingerprint: string;
+  reason: string;
 };
 
 function formatBranchForMessage(branch: string | null | undefined) {
@@ -946,6 +955,66 @@ async function logForwardBranchReconcileActivity(input: {
   });
 }
 
+export async function reconcilePendingForwardBranchAfterPersistence(input: {
+  db: Db;
+  executionWorkspaceId: string;
+  pending: PendingForwardBranchReconcile;
+  heartbeatRunId?: string | null;
+  reconcileOperationPhase?: "worktree_prepare" | "workspace_finalize";
+  recorder?: WorkspaceOperationRecorder | null;
+}) {
+  const result = await executionWorkspaceService(input.db).reconcileExecutionWorkspaceBranch(
+    input.executionWorkspaceId,
+    {
+      mode: "forward",
+      reason: input.pending.reason,
+      alternateRecoveryFingerprints: [input.pending.prePersistenceFingerprint],
+      actor: {
+        actorType: "system",
+        actorId: "workspace_runtime",
+        agentId: null,
+        runId: input.heartbeatRunId ?? null,
+      },
+    },
+  );
+  await logForwardBranchReconcileActivity({
+    db: input.db,
+    companyId: result.workspace.companyId,
+    executionWorkspaceId: result.workspace.id,
+    sourceIssueId: result.workspace.sourceIssueId,
+    runId: input.heartbeatRunId ?? null,
+    mode: "forward",
+    reason: input.pending.reason,
+    fromBranch: result.inspection.fromBranch,
+    toBranch: result.inspection.toBranch,
+    fromSha: result.inspection.fromSha,
+    toSha: result.inspection.toSha,
+    ancestryVerdict: result.inspection.ancestryVerdict,
+    fingerprint: result.inspection.fingerprint,
+    auditCommentId: result.auditCommentId,
+    recoveryActionId: result.recoveryAction?.id ?? null,
+  });
+  await recordForwardBranchReconcileOperation({
+    recorder: input.recorder,
+    phase: input.reconcileOperationPhase,
+    cwd: result.inspection.worktreePath,
+    repoRoot: result.inspection.repoRoot,
+    worktreePath: result.inspection.worktreePath,
+    expectedBranchName: result.inspection.fromBranch,
+    actualBranchName: result.inspection.toBranch,
+    executionWorkspaceId: result.workspace.id,
+    sourceIssueId: result.workspace.sourceIssueId,
+    fingerprint: result.inspection.fingerprint,
+    expectedHeadSha: result.inspection.fromSha,
+    actualHeadSha: result.inspection.toSha,
+    ancestryVerdict: result.inspection.ancestryVerdict,
+    mode: "adopt_for_realize",
+    auditCommentId: result.auditCommentId,
+    recoveryActionId: result.recoveryAction?.id ?? null,
+  });
+  return result;
+}
+
 export async function ensureGitWorktreeBranchCoherent(input: {
   db?: Db | null;
   repoRoot: string;
@@ -1046,23 +1115,20 @@ export async function ensureGitWorktreeBranchCoherent(input: {
       }
     }
 
-    await recordForwardBranchReconcileOperation({
-      recorder: input.recorder,
-      phase: input.reconcileOperationPhase,
-      cwd: input.worktreePath,
-      repoRoot: input.repoRoot,
-      worktreePath: evidence.worktreePath,
-      expectedBranchName,
-      actualBranchName: currentBranch,
-      executionWorkspaceId: null,
-      sourceIssueId: evidence.sourceIssueId,
-      fingerprint: evidence.fingerprint,
-      expectedHeadSha: evidence.provenance.expectedHeadSha,
-      actualHeadSha: evidence.provenance.actualHeadSha,
-      ancestryVerdict: evidence.provenance.ancestryVerdict,
-      mode: "adopt_for_realize",
-    });
-    return { branchName: currentBranch, reconciledForward: true };
+    if (!input.db) {
+      evidence.safeRepair.reason = "forward reconciliation adoption requires database access to audit after workspace realization";
+      throw branchIncoherenceValidationFailure(evidence);
+    }
+    return {
+      branchName: currentBranch,
+      reconciledForward: true,
+      pendingForwardBranchReconcile: {
+        recordedBranchName: expectedBranchName,
+        adoptedBranchName: currentBranch,
+        prePersistenceFingerprint: evidence.fingerprint,
+        reason,
+      },
+    };
   }
 
   if (!evidence.safeRepair.eligible) {
@@ -1836,6 +1902,7 @@ export async function realizeExecutionWorkspace(input: {
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
     : path.join(repoRoot, ".paperclip", "worktrees");
   const worktreePath = path.join(worktreeParentDir, branchName);
+  let pendingForwardBranchReconcile: PendingForwardBranchReconcile | null = null;
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
     : input.base.repoRef ?? null;
@@ -1913,6 +1980,7 @@ export async function realizeExecutionWorkspace(input: {
       warnings: [...baseRefreshWarnings, ...baseDrift.warnings],
       created: false,
       baseRefSha: refresh.baseRefSha ?? baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha,
+      pendingForwardBranchReconcile,
     };
   }
 
@@ -1938,6 +2006,7 @@ export async function realizeExecutionWorkspace(input: {
       });
       if (coherence.reconciledForward && coherence.branchName) {
         branchName = coherence.branchName;
+        pendingForwardBranchReconcile = coherence.pendingForwardBranchReconcile ?? null;
       }
       return await validateLinkedGitWorktree({
         repoRoot,

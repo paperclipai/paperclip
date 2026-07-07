@@ -1336,6 +1336,7 @@ export function executionWorkspaceService(db: Db) {
         mode: ExecutionWorkspaceBranchReconcileMode;
         reason?: string | null;
         actor: ExecutionWorkspaceBranchReconcileActor;
+        alternateRecoveryFingerprints?: string[] | null;
       },
     ): Promise<ExecutionWorkspaceBranchReconcileResult> => {
       const existingRow = await db
@@ -1467,7 +1468,7 @@ export function executionWorkspaceService(db: Db) {
           });
         }
 
-        const recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
+        let recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
           {
             companyId: lockedWorkspace.companyId,
             sourceIssueId: lockedWorkspace.sourceIssueId,
@@ -1480,6 +1481,25 @@ export function executionWorkspaceService(db: Db) {
           },
           tx,
         );
+        if (!recoveryAction) {
+          for (const alternateFingerprint of input.alternateRecoveryFingerprints ?? []) {
+            if (!alternateFingerprint || alternateFingerprint === inspection.fingerprint) continue;
+            recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
+              {
+                companyId: existing.companyId,
+                sourceIssueId: existing.sourceIssueId!,
+                kind: "workspace_validation",
+                cause: WORKSPACE_VALIDATION_RECOVERY_CAUSE,
+                fingerprint: alternateFingerprint,
+                status: "resolved",
+                outcome: "restored",
+                resolutionNote: `Execution workspace branch record reconciled from "${inspection.fromBranch}" to "${inspection.toBranch}".`,
+              },
+              tx,
+            );
+            if (recoveryAction) break;
+          }
+        }
 
         const [auditComment] = await tx
           .insert(issueComments)
