@@ -173,10 +173,11 @@ Before starting local adapter runs, run a short preflight in this order:
    - `codex` for `codex_local`
    - `opencode` for `opencode_local`
    - `hermes` for `hermes_local`
-2. `pnpm paperclipai doctor` in the target instance.
+2. `pnpm paperclipai doctor --data-dir <path>` in the target instance.
 3. `pnpm paperclipai run --data-dir <path>` once to ensure the local instance starts with the intended paths.
-4. For repository-bound tasks, run one manual `pnpm paperclipai agent local-cli <agent-ref> --company-id <company-id>` setup and verify the emitted `PAPERCLIP_API_URL`, `PAPERCLIP_COMPANY_ID`, and `PAPERCLIP_AGENT_ID` values reference the intended target instance.
-5. Confirm the workspace exists and is writable before wakeup:
+4. Check the local API is reachable, for example `curl "$PAPERCLIP_API_URL/api/health"` after loading the target instance env.
+5. For repository-bound tasks, run one manual `pnpm paperclipai agent local-cli <agent-ref> --company-id <company-id>` setup and verify the emitted `PAPERCLIP_API_URL`, `PAPERCLIP_COMPANY_ID`, and `PAPERCLIP_AGENT_ID` values reference the intended target instance.
+6. Confirm the workspace exists and is writable before wakeup:
    - `PAPERCLIP_IN_WORKTREE` is set automatically in managed worktree environments.
    - `pnpm paperclipai workspace list --company-id <company-id>` shows the expected project/execution workspace references.
 
