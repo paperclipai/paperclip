@@ -180,6 +180,54 @@ describe("migration safety check", () => {
     );
   });
 
+  it("does not treat WHERE inside a block comment as a selective predicate", () => {
+    const result = analyze(`
+      UPDATE "issue_comments"
+      SET "derived_author_agent_id" = NULL /* ignored
+        /* nested WHERE "id" > '0' */
+        still ignored
+      */;
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "full-table-mutation-large-table",
+    );
+  });
+
+  it("does not treat WHERE inside an inline line comment as a selective predicate", () => {
+    const result = analyze(`
+      UPDATE "issue_comments"
+      SET "derived_author_agent_id" = NULL -- WHERE "id" > '0'
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "full-table-mutation-large-table",
+    );
+  });
+
+  it("does not treat WHERE inside a string literal as a selective predicate", () => {
+    const result = analyze(`
+      UPDATE "issue_comments"
+      SET "body" = 'WHERE "id" > ''0''';
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "full-table-mutation-large-table",
+    );
+  });
+
+  it("still accepts a real selective WHERE clause", () => {
+    const result = analyze(`
+      UPDATE "issue_comments"
+      SET "derived_author_agent_id" = NULL
+      WHERE "id" > '0';
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).not.toContain(
+      "full-table-mutation-large-table",
+    );
+  });
+
   it("flags a batch backfill when the support index does not cover the ORDER BY key", () => {
     const result = analyze(`
       CREATE INDEX CONCURRENTLY IF NOT EXISTS "issue_comments_author_idx"

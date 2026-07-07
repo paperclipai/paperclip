@@ -198,11 +198,109 @@ function isIgnored(statement: string, rule: MigrationSafetyRule): boolean {
   return ignored.has(rule) || ignored.has("all");
 }
 
-function stripLineComments(statement: string): string {
-  return statement
-    .split("\n")
-    .filter((line) => !line.trimStart().startsWith("--"))
-    .join("\n");
+function skipSingleQuotedLiteral(statement: string, startIndex: number): number {
+  let index = startIndex + 1;
+  while (index < statement.length) {
+    if (statement[index] === "'" && statement[index + 1] === "'") {
+      index += 2;
+      continue;
+    }
+    if (statement[index] === "'") return index + 1;
+    index += 1;
+  }
+  return index;
+}
+
+function skipDoubleQuotedIdentifier(statement: string, startIndex: number): number {
+  let index = startIndex + 1;
+  while (index < statement.length) {
+    if (statement[index] === '"' && statement[index + 1] === '"') {
+      index += 2;
+      continue;
+    }
+    if (statement[index] === '"') return index + 1;
+    index += 1;
+  }
+  return index;
+}
+
+function skipLineComment(statement: string, startIndex: number): number {
+  const newlineIndex = statement.indexOf("\n", startIndex + 2);
+  return newlineIndex === -1 ? statement.length : newlineIndex;
+}
+
+function skipBlockComment(statement: string, startIndex: number): number {
+  let depth = 1;
+  let index = startIndex + 2;
+  while (index < statement.length && depth > 0) {
+    if (statement.startsWith("/*", index)) {
+      depth += 1;
+      index += 2;
+      continue;
+    }
+    if (statement.startsWith("*/", index)) {
+      depth -= 1;
+      index += 2;
+      continue;
+    }
+    index += 1;
+  }
+  return index;
+}
+
+function stripSqlComments(statement: string): string {
+  let stripped = "";
+  let index = 0;
+
+  while (index < statement.length) {
+    const char = statement[index];
+    const next = statement[index + 1];
+
+    if (char === "'") {
+      const literalEnd = skipSingleQuotedLiteral(statement, index);
+      stripped += statement.slice(index, literalEnd);
+      index = literalEnd;
+      continue;
+    }
+
+    if (char === '"') {
+      const identifierEnd = skipDoubleQuotedIdentifier(statement, index);
+      stripped += statement.slice(index, identifierEnd);
+      index = identifierEnd;
+      continue;
+    }
+
+    if (char === "-" && next === "-") {
+      stripped += " ";
+      index = skipLineComment(statement, index);
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      stripped += " ";
+      const commentEnd = skipBlockComment(statement, index);
+      for (let commentIndex = index; commentIndex < commentEnd; commentIndex += 1) {
+        if (statement[commentIndex] === "\n") stripped += "\n";
+      }
+      index = commentEnd;
+      continue;
+    }
+
+    stripped += char;
+    index += 1;
+  }
+
+  return stripped;
+}
+
+function skipSqlTrivia(statement: string, index: number): number {
+  const char = statement[index];
+  const next = statement[index + 1];
+  if (char === "'") return skipSingleQuotedLiteral(statement, index);
+  if (char === '"') return skipDoubleQuotedIdentifier(statement, index);
+  if (char === "-" && next === "-") return skipLineComment(statement, index);
+  if (char === "/" && next === "*") return skipBlockComment(statement, index);
+  return index;
 }
 
 function identifierList(value: string): string[] {
@@ -288,8 +386,9 @@ function orderByExpressionColumn(value: string): string | null {
 
 function predicateColumns(statement: string): string[] {
   const columns = new Set<string>();
+  const sql = stripSqlComments(statement);
   const predicatePattern = /\b(?:WHERE|ORDER\s+BY|ON)\b([\s\S]*?)(?=\b(?:LIMIT|RETURNING|GROUP\s+BY|ORDER\s+BY|SET|FROM)\b|$)/gi;
-  for (const match of statement.matchAll(predicatePattern)) {
+  for (const match of sql.matchAll(predicatePattern)) {
     for (const identifier of identifierList(match[1] ?? "")) {
       columns.add(identifier);
     }
@@ -299,8 +398,9 @@ function predicateColumns(statement: string): string[] {
 
 function orderByColumns(statement: string): string[] {
   const columns: string[] = [];
+  const sql = stripSqlComments(statement);
   const pattern = /\bORDER\s+BY\b([\s\S]*?)(?=\b(?:LIMIT|RETURNING|GROUP\s+BY|WHERE|SET|FROM|END|LOOP)\b|$)/gi;
-  for (const match of statement.matchAll(pattern)) {
+  for (const match of sql.matchAll(pattern)) {
     for (const expression of splitSqlList(match[1] ?? "")) {
       const column = orderByExpressionColumn(expression);
       if (column && !columns.includes(column)) {
@@ -313,7 +413,7 @@ function orderByColumns(statement: string): string[] {
 
 function parseCreateIndexes(statement: string): CreateIndexInfo[] {
   const indexes: CreateIndexInfo[] = [];
-  const sql = stripLineComments(statement);
+  const sql = stripSqlComments(statement);
   const pattern =
     /\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s+ON\s+(?:(?:"public"|public)\s*\.\s*)?(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\s*(?:USING\s+[A-Za-z_][A-Za-z0-9_]*\s*)?\(([\s\S]*?)\)(?:\s+WHERE\s+([\s\S]*))?/gi;
 
@@ -334,7 +434,7 @@ function parseCreateIndexes(statement: string): CreateIndexInfo[] {
 
 function parseMutations(statement: string): MutationInfo[] {
   const mutations: MutationInfo[] = [];
-  const sql = stripLineComments(statement);
+  const sql = stripSqlComments(statement);
   const updatePattern =
     /\bUPDATE\s+(?:ONLY\s+)?(?:(?:"public"|public)\s*\.\s*)?(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))(?:\s+(?:AS\s+)?(?:"?([A-Za-z_][A-Za-z0-9_]*)"?))?/gi;
   const deletePattern =
@@ -373,6 +473,12 @@ function topLevelWhereClause(statement: string, startIndex: number): string | nu
   let depth = 0;
   let i = startIndex;
   while (i < statement.length) {
+    const nextIndex = skipSqlTrivia(statement, i);
+    if (nextIndex !== i) {
+      i = nextIndex;
+      continue;
+    }
+
     const ch = statement[i];
     if (ch === "(") {
       depth++;
