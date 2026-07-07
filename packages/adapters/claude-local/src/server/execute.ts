@@ -51,6 +51,7 @@ import {
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
   isClaudeRefusalResult,
+  isClaudeSuccessResult,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
   isClaudePoisonedPreviousMessageIdError,
@@ -805,14 +806,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return { proc, parsedStream, parsed };
   };
 
-  const toAdapterResult = (
+  const toAdapterResult = async (
     attempt: {
       proc: RunProcessResult;
       parsedStream: ReturnType<typeof parseClaudeStreamJson>;
       parsed: Record<string, unknown> | null;
     },
     opts: { fallbackSessionId: string | null; clearSessionOnMissingSession?: boolean },
-  ): AdapterExecutionResult => {
+  ): Promise<AdapterExecutionResult> => {
     const { proc, parsedStream, parsed } = attempt;
     const loginMeta = detectClaudeLoginRequired({
       parsed,
@@ -907,7 +908,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // successful run to Paperclip and the heartbeat stalls silently. See RY-604.
     const claudeRefusal = isClaudeRefusalResult(parsed);
     const parsedIsError = asBoolean(parsed.is_error, false);
-    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    // The final result event is authoritative: subtype=success with
+    // is_error=false means the run succeeded even if the CLI process exited
+    // non-zero afterwards. Trusting the exit code here classified successful
+    // runs as failed and recorded the agent's own success summary as the
+    // run error.
+    const succeededDespiteExitCode =
+      (proc.exitCode ?? 0) !== 0 && isClaudeSuccessResult(parsed);
+    const failed =
+      parsedIsError || ((proc.exitCode ?? 0) !== 0 && !succeededDespiteExitCode);
+    if (succeededDespiteExitCode) {
+      await onLog(
+        "stdout",
+        `[paperclip] Claude exited with code ${proc.exitCode} but the final result was subtype=success with is_error=false; treating the run as succeeded.\n`,
+      );
+    }
     // Validate-before-persist guard: never persist a sessionId whose transcript
     // is known-poisoned. The Claude CLI keeps an on-disk JSONL keyed by the
     // session id; if the last entry contains a non-`msg_`-prefixed
@@ -1057,10 +1072,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
       const retry = await runAttempt(null);
-      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+      return await toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
 
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    return await toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
     if (paperclipBridge) {
       await paperclipBridge.stop();

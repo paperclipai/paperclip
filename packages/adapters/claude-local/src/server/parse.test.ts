@@ -1,13 +1,46 @@
 import { describe, expect, it } from "vitest";
 import {
+  describeClaudeFailure,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeRefusalResult,
+  isClaudeSuccessResult,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
 } from "./parse.js";
+
+describe("isClaudeSuccessResult", () => {
+  it("classifies subtype=success with is_error=false as success", () => {
+    expect(
+      isClaudeSuccessResult({ type: "result", subtype: "success", is_error: false, result: "done" }),
+    ).toBe(true);
+  });
+
+  it("does not classify is_error=true as success even with subtype=success", () => {
+    expect(isClaudeSuccessResult({ subtype: "success", is_error: true })).toBe(false);
+  });
+
+  it("does not classify non-success subtypes or missing results as success", () => {
+    expect(isClaudeSuccessResult({ subtype: "error_max_turns", is_error: false })).toBe(false);
+    expect(isClaudeSuccessResult(null)).toBe(false);
+  });
+});
+
+describe("describeClaudeFailure", () => {
+  it("returns null for a subtype=success result instead of echoing the success summary", () => {
+    expect(
+      describeClaudeFailure({ subtype: "success", is_error: false, result: "Shipped the fix." }),
+    ).toBeNull();
+  });
+
+  it("still describes error results", () => {
+    expect(
+      describeClaudeFailure({ subtype: "error_during_execution", is_error: true, result: "boom" }),
+    ).toBe("Claude run failed: subtype=error_during_execution: boom");
+  });
+});
 
 describe("detectClaudeLoginRequired", () => {
   it("classifies Claude's invalid API key login prompt as auth required", () => {
