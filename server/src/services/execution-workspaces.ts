@@ -44,7 +44,7 @@ const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export type ExecutionWorkspaceBranchReconcileMode = "forward" | "override";
 
 export type ExecutionWorkspaceBranchReconcileActor = {
-  actorType: "agent" | "user";
+  actorType: "agent" | "user" | "system";
   actorId: string;
   agentId: string | null;
   runId: string | null;
