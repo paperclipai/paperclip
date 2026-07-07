@@ -450,11 +450,12 @@ test.describe("Pipelines tutorial UI flow", () => {
       "enable pipelines experimental flag",
     );
 
-    await page.goto("/");
-    await page.evaluate((companyId) => {
-      window.localStorage.setItem("paperclip.selectedCompanyId", companyId);
-    }, company.id);
-    const companyPath = `/${company.issuePrefix}`;
+    try {
+      await page.goto("/");
+      await page.evaluate((companyId) => {
+        window.localStorage.setItem("paperclip.selectedCompanyId", companyId);
+      }, company.id);
+      const companyPath = `/${company.issuePrefix}`;
 
     await page.goto(`${companyPath}/pipelines/${pipeline.id}/settings`);
     await expect(page.getByLabel("Pipeline name")).toHaveValue("Content production");
@@ -648,8 +649,13 @@ test.describe("Pipelines tutorial UI flow", () => {
     await expect(page.getByRole("heading", { name: "Learnings" }).first()).toBeVisible();
     await expect(page.getByText("Tighten the framing before publishing.")).toBeVisible();
     await expect(page.getByText(overrideReason)).toBeVisible();
-    await expectProsumerVocabulary(page);
-
-    await board.dispose();
+      await expectProsumerVocabulary(page);
+    } finally {
+      await expectOk(
+        await board.patch("/api/instance/settings/experimental", { data: { enablePipelines: false } }),
+        "disable pipelines experimental flag",
+      );
+      await board.dispose();
+    }
   });
 });
