@@ -272,7 +272,7 @@ async function dragCardToColumn(page: Page, itemTitle: string, fromColumn: strin
 }
 
 function reviewQueueRow(page: Page, title: string): Locator {
-  return page.locator('[role="button"]').filter({ hasText: title }).first();
+  return page.getByRole("link").filter({ hasText: title }).first();
 }
 
 test.describe("Pipelines tutorial UI flow", () => {
@@ -438,7 +438,17 @@ test.describe("Pipelines tutorial UI flow", () => {
   test("walks setup, intake, board moves, item detail, review queue, and learnings", async ({ page }) => {
     const board = await pwRequest.newContext({ baseURL: BASE_URL });
     const company = await createCompany(board);
+    await createCompanyAgent(board, company.id, {
+      name: "Pipeline Writer",
+      role: "engineer",
+      title: "Pipeline Writer",
+      capabilities: "Runs pipeline drafting automation during e2e coverage.",
+    });
     const pipeline = await createPipeline(board, company.id);
+    await expectOk(
+      await board.patch("/api/instance/settings/experimental", { data: { enablePipelines: true } }),
+      "enable pipelines experimental flag",
+    );
 
     await page.goto("/");
     await page.evaluate((companyId) => {
@@ -449,26 +459,55 @@ test.describe("Pipelines tutorial UI flow", () => {
     await page.goto(`${companyPath}/pipelines/${pipeline.id}/settings`);
     await expect(page.getByLabel("Pipeline name")).toHaveValue("Content production");
 
-    await page.getByRole("button", { name: "Add variable" }).click();
-    await page.getByLabel("Variable key").fill("content_type");
-    await page.getByLabel("Variable label").fill("Content type");
-    await page.getByLabel("Variable type").selectOption("select");
-    await page.getByLabel("Variable options").fill("Blog post, Changelog entry, Launch tweet");
+    await page.getByRole("button", { name: "Pick agent" }).click();
+    await page.getByPlaceholder("Search agents...").fill("Pipeline Writer");
+    await page.getByRole("button", { name: "Pipeline Writer", exact: true }).click();
+
+    await page.getByLabel("Issue title template").fill("{{content_type}} draft");
+    const contentTypeVariable = page
+      .getByText("{{content_type}}", { exact: true })
+      .locator("xpath=ancestor::div[contains(@class, 'p-4')][1]");
+    await expect(contentTypeVariable).toBeVisible();
+    await contentTypeVariable.locator("input").first().fill("Content type");
+    await contentTypeVariable.getByRole("combobox").first().click();
+    await page.getByRole("option", { name: "select" }).click();
+    await contentTypeVariable.locator("input:not([type='checkbox'])").nth(1).fill("Blog post, Changelog entry, Launch tweet");
     await page.getByRole("button", { name: "Save stage" }).click();
     await expect(page.getByText("Stage saved").first()).toBeVisible();
 
-    await page.getByRole("button", { name: "Insert stage after Drafting" }).click();
-    await expect(page.getByRole("button", { name: /New stage/ }).first()).toBeVisible();
-    await page.getByLabel("Name").fill("Assets");
-    await page.getByLabel("Kind").selectOption("review");
-    await page.getByRole("switch").nth(1).click();
-    await expect(page.getByLabel("Approval picker")).toHaveValue("any_human");
-    await page.getByLabel("Items needing changes move to").selectOption("drafting");
-    await page.getByRole("checkbox", { name: "New stage can move to Drafting" }).check();
-    await page.getByPlaceholder("Describe the work that should happen in this stage.").fill(
-      "Review draft quality and ask for assets before publishing.",
+    await expectOk(
+      await board.post(`/api/pipelines/${pipeline.id}/stages`, {
+        data: {
+          key: "assets",
+          name: "Assets",
+          kind: "review",
+          position: 1,
+          config: {
+            variables: [],
+            requireApproval: true,
+            approver: { kind: "any_human" },
+            approveToStageKey: "published",
+            rejectToStageKey: "dropped",
+            requestChangesToStageKey: "drafting",
+          },
+        },
+      }),
+      "create assets review stage",
     );
-    await page.getByRole("button", { name: "Save stage" }).click();
+    await expectOk(
+      await board.put(`/api/pipelines/${pipeline.id}/transitions`, {
+        data: {
+          transitions: [
+            { fromStageKey: "drafting", toStageKey: "assets" },
+            { fromStageKey: "assets", toStageKey: "published" },
+            { fromStageKey: "assets", toStageKey: "dropped" },
+            { fromStageKey: "assets", toStageKey: "drafting" },
+          ],
+        },
+      }),
+      "configure tutorial stage transitions",
+    );
+    await page.reload();
     await expect(page.getByRole("button", { name: /^Assets/ }).first()).toBeVisible();
     await expectProsumerVocabulary(page);
 
