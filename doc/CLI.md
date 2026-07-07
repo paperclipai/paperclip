@@ -54,6 +54,30 @@ pnpm paperclipai env-lab status --json
 pnpm paperclipai env-lab down
 ```
 
+## Worktree Helpers (Safe Local Initialization)
+
+Use worktree commands to keep local experiments isolated from your main instance:
+
+```sh
+pnpm paperclipai worktree:make local-lab
+pnpm paperclipai worktree:list
+pnpm paperclipai worktree:cleanup local-lab --force
+```
+
+## Benchmark Command
+
+Run the issue-thread render benchmark from the repo root:
+
+```sh
+pnpm perf:issue-chat-long-thread
+```
+
+Useful overrides:
+
+- `PAPERCLIP_PERF_BASE_URL`
+- `PAPERCLIP_PERF_COMPANY_PREFIX`
+- `PAPERCLIP_PERF_BEARER_TOKEN`
+
 All client commands support:
 
 - `--data-dir <path>`
