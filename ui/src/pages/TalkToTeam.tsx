@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Loader2, FolderGit2, Bot } from "lucide-react";
+import { ArrowRight, Loader2, FolderGit2, Bot, Paperclip, X } from "lucide-react";
 import type { AgentStatus } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -20,6 +20,12 @@ import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentIcon } from "../components/AgentIconPicker";
+import {
+  MAX_TASK_ATTACHMENTS,
+  STAGED_FILE_ACCEPT,
+  formatAttachmentSize,
+  stagedFileKey,
+} from "../lib/attachments";
 
 const UNASSIGNED = "__unassigned__";
 const NO_PROJECT = "__no_project__";
@@ -59,8 +65,11 @@ export function TalkToTeam() {
   const [message, setMessage] = useState("");
   const [agentId, setAgentId] = useState<string>(UNASSIGNED);
   const [projectId, setProjectId] = useState<string>(NO_PROJECT);
+  const [files, setFiles] = useState<File[]>([]);
+  const [dragActive, setDragActive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Talk to the team" }]);
@@ -104,15 +113,97 @@ export function TalkToTeam() {
   );
 
   const canSubmit = !!selectedCompanyId && message.trim().length > 0 && !submitting;
+  const attachmentMaxBytes = selectedCompany?.attachmentMaxBytes ?? 0;
+
+  // Stage picked files: skip duplicates, enforce the max-count cap and the
+  // company's per-file size limit, and surface any rejects as a single toast.
+  function addFiles(picked: File[]) {
+    if (picked.length === 0) return;
+    setFiles((current) => {
+      const seen = new Set(current.map(stagedFileKey));
+      const next = [...current];
+      const rejected: string[] = [];
+      for (const file of picked) {
+        const key = stagedFileKey(file);
+        if (seen.has(key)) continue;
+        if (next.length >= MAX_TASK_ATTACHMENTS) {
+          rejected.push(`${file.name} (max ${MAX_TASK_ATTACHMENTS} files)`);
+          continue;
+        }
+        if (attachmentMaxBytes > 0 && file.size > attachmentMaxBytes) {
+          rejected.push(`${file.name} (over ${formatAttachmentSize(attachmentMaxBytes)})`);
+          continue;
+        }
+        seen.add(key);
+        next.push(file);
+      }
+      if (rejected.length > 0) {
+        pushToast({
+          tone: "warn",
+          title: rejected.length === 1 ? "1 file not added" : `${rejected.length} files not added`,
+          body: rejected.join(", "),
+        });
+      }
+      return next;
+    });
+  }
+
+  function handleFilesPicked(event: React.ChangeEvent<HTMLInputElement>) {
+    addFiles(Array.from(event.target.files ?? []));
+    // Reset so re-picking the same file fires onChange again.
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function removeFile(key: string) {
+    setFiles((current) => current.filter((file) => stagedFileKey(file) !== key));
+  }
+
+  function handleDragEnter(event: React.DragEvent<HTMLDivElement>) {
+    if (submitting || !event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    setDragActive(true);
+  }
+
+  function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
+    if (submitting || !event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDragActive(true);
+  }
+
+  function handleDragLeave(event: React.DragEvent<HTMLDivElement>) {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setDragActive(false);
+  }
+
+  function handleDrop(event: React.DragEvent<HTMLDivElement>) {
+    if (submitting || !event.dataTransfer.files.length) return;
+    event.preventDefault();
+    setDragActive(false);
+    addFiles(Array.from(event.dataTransfer.files));
+  }
 
   async function handleSubmit() {
     if (!canSubmit || !selectedCompanyId) return;
     setSubmitting(true);
     try {
       const description = message.trim();
+      // List attached filenames in the description so the assigned agent is
+      // AWARE the files exist: the task prompt forwards the description verbatim
+      // but not the attachment list, so an unmentioned file is invisible to the
+      // agent. Once aware, the agent fetches them via
+      // `GET /api/issues/:id/attachments` + `/api/attachments/:id/content`
+      // (see skills/paperclip/SKILL.md). Title still derives from the raw first
+      // line, so the note never leaks into the title.
+      const descriptionForIssue =
+        files.length > 0
+          ? `${description}\n\n---\nAttached files (${files.length}): ${files
+              .map((file) => file.name)
+              .join(", ")}`
+          : description;
       const payload: Record<string, unknown> = {
         title: deriveTitle(description),
-        description,
+        description: descriptionForIssue,
       };
       // Assigning an agent flips the new issue to "todo" and wakes it; leaving it
       // unassigned files a backlog task the team can triage.
@@ -120,6 +211,26 @@ export function TalkToTeam() {
       if (projectId !== NO_PROJECT) payload.projectId = projectId;
 
       const issue = await issuesApi.create(selectedCompanyId, payload);
+
+      // Upload staged files after create (the endpoint needs the issue id). The
+      // description above already names them, so the agent knows to fetch them
+      // even if it reads the issue before a large upload finishes.
+      const failed: string[] = [];
+      for (const file of files) {
+        try {
+          await issuesApi.uploadAttachment(selectedCompanyId, issue.id, file);
+        } catch {
+          failed.push(file.name);
+        }
+      }
+      if (failed.length > 0) {
+        pushToast({
+          tone: "warn",
+          title: `Task started, ${failed.length} ${failed.length === 1 ? "file" : "files"} failed to attach`,
+          body: failed.join(", "),
+        });
+      }
+
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
       navigate(`/issues/${issue.identifier ?? issue.id}`);
     } catch (error) {
@@ -178,7 +289,15 @@ export function TalkToTeam() {
       </div>
 
       {/* Console — matte, flat, exposed dot-grid (Nothing OS, not frosted glass) */}
-      <div className="w-full border border-border bg-card/90 transition-colors focus-within:border-foreground/40">
+      <div
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={`w-full border bg-card/90 transition-colors focus-within:border-foreground/40 ${
+          dragActive ? "border-foreground/60" : "border-border"
+        }`}
+      >
         {/* Status bar */}
         <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-1.5">
           <span className="truncate font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
@@ -208,6 +327,37 @@ export function TalkToTeam() {
             className="min-h-[168px] resize-none rounded-none border-0 bg-transparent px-4 pb-4 pt-9 font-mono text-[13.5px] leading-relaxed shadow-none placeholder:text-muted-foreground focus-visible:ring-0"
           />
         </div>
+
+        {/* Staged attachments — chips strip, only when files are queued */}
+        {files.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 border-t border-border px-3 py-2">
+            <span className="mr-1 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+              // files {files.length}/{MAX_TASK_ATTACHMENTS}
+            </span>
+            {files.map((file) => {
+              const key = stagedFileKey(file);
+              return (
+                <span
+                  key={key}
+                  className="flex min-w-0 items-center gap-1.5 border border-border bg-background/40 px-2 py-1 font-mono text-[10px] text-muted-foreground"
+                >
+                  <Paperclip className="h-3 w-3 shrink-0" aria-hidden />
+                  <span className="max-w-[12rem] truncate text-foreground/80">{file.name}</span>
+                  <span className="text-muted-foreground/50">{formatAttachmentSize(file.size)}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeFile(key)}
+                    disabled={submitting}
+                    aria-label={`Remove ${file.name}`}
+                    className="ml-0.5 text-muted-foreground/60 transition-colors hover:text-foreground disabled:opacity-40"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+        )}
 
         {/* Controls */}
         <div className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2.5">
@@ -279,6 +429,35 @@ export function TalkToTeam() {
               ))}
             </SelectContent>
           </Select>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={STAGED_FILE_ACCEPT}
+            onChange={handleFilesPicked}
+            className="hidden"
+            aria-hidden
+            tabIndex={-1}
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={submitting || files.length >= MAX_TASK_ATTACHMENTS}
+            aria-label="Attach files"
+            title={
+              files.length >= MAX_TASK_ATTACHMENTS
+                ? `Up to ${MAX_TASK_ATTACHMENTS} files`
+                : "Attach files"
+            }
+            className="h-8 gap-2 rounded-none border-border bg-transparent font-mono text-[11px] tracking-wide hover:border-foreground/40"
+          >
+            <Paperclip className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Attach</span>
+            {files.length > 0 && <span className="text-muted-foreground">{files.length}</span>}
+          </Button>
 
           <div className="ml-auto flex items-center gap-3">
             <span className="hidden font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground sm:inline">
