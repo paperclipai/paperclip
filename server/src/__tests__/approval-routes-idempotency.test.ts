@@ -92,7 +92,12 @@ function createRouteDb(contextSnapshot: Record<string, unknown> = {}, runId = "r
   } as any;
 }
 
+// A real UUID: the approvals run-context guard now short-circuits on non-uuid
+// run ids (isUuidLike) to avoid Postgres uuid-cast 500s from synthetic ids like
+// "ceo-heartbeat" (TWX-1253). Agent-actor tests must use a uuid so the guard's
+// heartbeat_runs lookup actually runs.
 async function createAgentApp(options: { runId?: string; contextSnapshot?: Record<string, unknown> } = {}) {
+  const runId = options.runId ?? "11111111-1111-4111-8111-111111111111";
   const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
     import("../middleware/index.js"),
     import("../routes/approvals.js"),
@@ -104,13 +109,13 @@ async function createAgentApp(options: { runId?: string; contextSnapshot?: Recor
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
-      runId: options.runId ?? "run-1",
+      runId,
       source: "api_key",
       isInstanceAdmin: false,
     };
     next();
   });
-  app.use("/api", approvalRoutes(createRouteDb(options.contextSnapshot, options.runId ?? "run-1")));
+  app.use("/api", approvalRoutes(createRouteDb(options.contextSnapshot, runId)));
   app.use(errorHandler);
   return app;
 }

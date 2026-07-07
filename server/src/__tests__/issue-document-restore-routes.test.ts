@@ -360,7 +360,10 @@ describe("issue document revision routes", () => {
         type: "agent",
         agentId: "agent-1",
         companyId,
-        runId: "run-1",
+        // Must be a real uuid: the issues run-context guard now short-circuits on
+        // non-uuid run ids (isUuidLike) to avoid Postgres uuid-cast 500s (TWX-1253),
+        // so a synthetic id would bypass the status-only check under test.
+        runId: "11111111-1111-4111-8111-111111111111",
         source: "agent_jwt",
       },
       createRunContextDb({

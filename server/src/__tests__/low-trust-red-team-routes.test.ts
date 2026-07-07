@@ -78,6 +78,26 @@ async function deleteHeartbeatRunsAndWakeupsAfterActivityLogDrains(db: Db) {
   throw lastError;
 }
 
+// Same drain-and-retry as above, for the agents delete: a late fire-and-forget
+// logActivity write (activity_log.agent_id -> agents.id FK) can land after the
+// initial activity_log drain, so re-drain immediately before each agents-delete
+// attempt. Once agents are gone, any further logActivity insert fails its own
+// agent_id FK and is swallowed by logActivity's catch, so the race closes.
+async function deleteAgentsAfterActivityLogDrains(db: Db) {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await db.delete(activityLog);
+    try {
+      await db.delete(agents);
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  throw lastError;
+}
+
 function expectNoCanary(value: unknown, ...markers: string[]) {
   const serialized = JSON.stringify(value);
   for (const marker of markers) expect(serialized).not.toContain(marker);
@@ -532,7 +552,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     await deleteHeartbeatRunsAndWakeupsAfterActivityLogDrains(db);
     await db.delete(issues);
     await db.delete(agentRuntimeState);
-    await db.delete(agents);
+    await deleteAgentsAfterActivityLogDrains(db);
     await db.delete(projects);
     await db.delete(companySkills);
     await db.delete(companies);
