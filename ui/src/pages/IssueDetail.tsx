@@ -35,6 +35,14 @@ import {
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
+  cancelInboxIssueQueries,
+  invalidateInboxIssueQueries,
+  removeIssueFromInboxCaches,
+  restoreInboxIssueCaches,
+  snapshotInboxIssueCaches,
+  type InboxIssueCacheSnapshot,
+} from "../lib/inboxArchiveCache";
+import {
   hasBlockingShortcutDialog,
   resolveIssueDetailGoKeyAction,
   resolveInboxQuickArchiveKeyAction,
@@ -2952,17 +2960,33 @@ export function IssueDetail() {
 
   const archiveFromInbox = useMutation({
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
-    onSuccess: () => {
+    onMutate: async (id) => {
+      if (!selectedCompanyId) return { previousData: [] as InboxIssueCacheSnapshot };
+      await cancelInboxIssueQueries(queryClient, selectedCompanyId);
+      const previousData = snapshotInboxIssueCaches(queryClient, selectedCompanyId);
+      removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
+      return { previousData };
+    },
+    onSuccess: (_data, id) => {
+      if (selectedCompanyId) {
+        removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
+      }
       invalidateIssueCollections();
       navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
       pushToast({ title: "Task archived from inbox", tone: "success" });
     },
-    onError: (err) => {
+    onError: (err, _id, context) => {
+      if (context?.previousData) {
+        restoreInboxIssueCaches(queryClient, context.previousData);
+      }
       pushToast({
         title: "Archive failed",
         body: err instanceof Error ? err.message : "Unable to archive this task from the inbox",
         tone: "error",
       });
+    },
+    onSettled: () => {
+      if (selectedCompanyId) invalidateInboxIssueQueries(queryClient, selectedCompanyId);
     },
   });
 

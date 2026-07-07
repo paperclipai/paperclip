@@ -53,6 +53,14 @@ import {
   resolveInboxIssueBlockerAttention,
   resolveIssueLiveDescendantCount,
 } from "../lib/inbox-live-descendants";
+import {
+  cancelInboxIssueQueries,
+  invalidateInboxIssueQueries,
+  removeIssueFromInboxCaches,
+  restoreInboxIssueCaches,
+  snapshotInboxIssueCaches,
+  type InboxIssueCacheSnapshot,
+} from "../lib/inboxArchiveCache";
 import { EmptyState } from "../components/EmptyState";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -1529,12 +1537,9 @@ export function Inbox() {
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const invalidateInboxIssueQueries = () => {
+  const invalidateInboxIssueQueryCaches = () => {
     if (!selectedCompanyId) return;
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(selectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+    invalidateInboxIssueQueries(queryClient, selectedCompanyId);
   };
 
   const archiveIssueMutation = useMutation({
@@ -1543,24 +1548,11 @@ export function Inbox() {
       setActionError(null);
       setArchivingIssueIds((prev) => new Set(prev).add(id));
 
-      // Cancel in-flight refetches so they don't overwrite our optimistic update
-      const queryKeys_ = [
-        [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions"],
-        [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions"],
-        queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId!),
-      ];
-      await Promise.all(queryKeys_.map((qk) => queryClient.cancelQueries({ queryKey: qk })));
+      if (!selectedCompanyId) return { previousData: [] as InboxIssueCacheSnapshot };
 
-      // Snapshot previous data for rollback
-      const previousData = queryKeys_.map((qk) => [qk, queryClient.getQueryData(qk)] as const);
-
-      // Optimistically remove the issue from all inbox query caches
-      for (const qk of queryKeys_) {
-        queryClient.setQueryData(qk, (old: unknown) => {
-          if (!Array.isArray(old)) return old;
-          return old.filter((issue: { id: string }) => issue.id !== id);
-        });
-      }
+      await cancelInboxIssueQueries(queryClient, selectedCompanyId);
+      const previousData = snapshotInboxIssueCaches(queryClient, selectedCompanyId);
+      removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
 
       return { previousData };
     },
@@ -1573,9 +1565,7 @@ export function Inbox() {
       });
       // Restore previous query data on failure
       if (context?.previousData) {
-        for (const [qk, data] of context.previousData) {
-          queryClient.setQueryData(qk, data);
-        }
+        restoreInboxIssueCaches(queryClient, context.previousData);
       }
     },
     onSettled: (_data, _error, id) => {
@@ -1585,7 +1575,7 @@ export function Inbox() {
         next.delete(id);
         return next;
       });
-      invalidateInboxIssueQueries();
+      invalidateInboxIssueQueryCaches();
     },
     onSuccess: (_data, id) => {
       setUndoableArchiveIssueIds((prev) => [...prev.filter((issueId) => issueId !== id), id]);
@@ -1613,7 +1603,7 @@ export function Inbox() {
         next.delete(id);
         return next;
       });
-      invalidateInboxIssueQueries();
+      invalidateInboxIssueQueryCaches();
     },
   });
 
@@ -1623,7 +1613,7 @@ export function Inbox() {
       setFadingOutIssues((prev) => new Set(prev).add(id));
     },
     onSuccess: () => {
-      invalidateInboxIssueQueries();
+      invalidateInboxIssueQueryCaches();
     },
     onSettled: (_data, _error, id) => {
       setTimeout(() => {
@@ -1648,7 +1638,7 @@ export function Inbox() {
       });
     },
     onSuccess: () => {
-      invalidateInboxIssueQueries();
+      invalidateInboxIssueQueryCaches();
     },
     onSettled: (_data, _error, issueIds) => {
       setTimeout(() => {
@@ -1664,7 +1654,7 @@ export function Inbox() {
   const markUnreadMutation = useMutation({
     mutationFn: (id: string) => issuesApi.markUnread(id),
     onSuccess: () => {
-      invalidateInboxIssueQueries();
+      invalidateInboxIssueQueryCaches();
     },
   });
 
@@ -2472,7 +2462,7 @@ export function Inbox() {
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
                       onMarkRead={() => markReadMutation.mutate(issue.id)}
                       onArchive={allowArchive ? () => archiveIssueMutation.mutate(issue.id) : undefined}
-                      archiveDisabled={isArchiving || archiveIssueMutation.isPending}
+                      archiveDisabled={isArchiving}
                       desktopTrailing={
                         visibleTrailingIssueColumns.length > 0 ? (
                           <InboxIssueTrailingColumns
@@ -2761,7 +2751,7 @@ export function Inbox() {
                               <SwipeToArchive
                                 key={`issue:${child.id}`}
                                 selected={isChildSelected}
-                                disabled={isChildArchiving || archiveIssueMutation.isPending}
+                                disabled={isChildArchiving}
                                 onArchive={() => archiveIssueMutation.mutate(child.id)}
                               >
                                 {childRow}
@@ -2789,7 +2779,7 @@ export function Inbox() {
                       <SwipeToArchive
                         key={`issue:${issue.id}`}
                         selected={isSelected}
-                        disabled={archivingIssueIds.has(issue.id) || archiveIssueMutation.isPending}
+                        disabled={archivingIssueIds.has(issue.id)}
                         onArchive={() => archiveIssueMutation.mutate(issue.id)}
                       >
                         {parentRow}
