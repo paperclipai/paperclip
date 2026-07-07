@@ -186,6 +186,14 @@ start_9router() {
 
   log "Memastikan 9Router berjalan di background..."
 
+  # Allow Traefik container (Docker bridge) to reach 9Router port via UFW
+  if command_exists ufw; then
+    if ! sudo ufw status verbose | grep -q "20128"; then
+      log "Mengizinkan traffic dari Docker bridge ke port ${router_port} via UFW..."
+      sudo ufw allow from 172.19.0.0/16 to any port "${router_port}" proto tcp
+    fi
+  fi
+
   # Hentikan tmux session lama jika ada
   if tmux has-session -t "$tmux_session" 2>/dev/null; then
     log "9Router tmux session '$tmux_session' ditemukan, menghentikan..."
@@ -202,12 +210,9 @@ start_9router() {
     sleep 1
   fi
 
-  # Start 9Router di dalam tmux session (required: menu interaktif butuh TTY)
-  tmux new-session -d -s "$tmux_session" '9router'
-  sleep 3
-  # Auto-select "Web UI (Open in Browser)" — kirim "1" ke menu
-  tmux send-keys -t "$tmux_session" '1' Enter
-  log "9Router started in tmux session '$tmux_session'"
+  # Start 9Router dalam tray mode (background, non-interactive)
+  tmux new-session -d -s "$tmux_session" "9router --tray --skip-update -p ${router_port}"
+  log "9Router started in tmux session '$tmux_session' (tray mode)"
 
   # Tunggu startup
   sleep 6
@@ -834,6 +839,7 @@ verify_all() {
 
 show_access_info() {
   local router_port="${NINE_ROUTER_PORT:-20128}"
+  local router_domain="${NINE_ROUTER_DOMAIN:-https://9router.carisinternational.com}"
   log "Aplikasi berjalan."
   printf '  URL       : %s\n' "$PAPERCLIP_PUBLIC_URL"
   printf '  Health    : http://127.0.0.1:%s/api/health\n' "$APP_PORT"
@@ -841,9 +847,10 @@ show_access_info() {
   printf '  Bootstrap : docker exec %s pnpm paperclipai auth bootstrap-ceo --base-url %%s\n' \
       "$APP_SERVICE" "$PAPERCLIP_PUBLIC_URL"
   printf '\n'
-  printf '  9Router WebUI    : http://localhost:%s/login\n' "$router_port"
-  printf '  9Router Dashboard: http://localhost:%s/dashboard\n' "$router_port"
-  printf '  9Router API      : http://localhost:%s/v1\n' "$router_port"
+  printf '  9Router WebUI    : %s/login\n' "$router_domain"
+  printf '  9Router Dashboard: %s/dashboard\n' "$router_domain"
+  printf '  9Router API      : %s/v1\n' "$router_domain"
+  printf '  9Router Local    : http://localhost:%s/login\n' "$router_port"
   printf '  9Router Session  : tmux attach -t router9\n'
   printf '  9Router Log      : %s\n' "$PROJECT_DIR/9router.log"
 }
