@@ -240,18 +240,30 @@ describeEmbeddedPostgres("cases routes", () => {
     expect(linkedEvents[0]!.payload).toMatchObject({ issueId: issue!.id, role: "work", autoLinked: true });
   });
 
-  it("rejects cross-company agent access", async () => {
+  it("rejects cross-company agent access across the cases route surface", async () => {
     await enableCases();
     const ownCompany = await seedCompany("OWN");
     const otherCompany = await seedCompany("OTH");
     const agent = await seedAgent(ownCompany.id);
+    const [otherIssue] = await db.insert(issues).values({
+      companyId: otherCompany.id,
+      title: "Other company task",
+      status: "todo",
+    }).returning();
     const [caseRow] = await db.insert(cases).values({
       companyId: otherCompany.id,
       caseNumber: 1,
-      identifier: `${otherCompany.issuePrefix}-C1`,
+      identifier: `${otherCompany.issuePrefix.toUpperCase()}-C1`,
       caseType: "bug",
       title: "Other company case",
     }).returning();
+    await db.insert(caseEvents).values({
+      companyId: otherCompany.id,
+      caseId: caseRow!.id,
+      kind: "created",
+      actorType: "system",
+      payload: {},
+    });
 
     const agentActor: Express.Request["actor"] = {
       type: "agent",
@@ -262,7 +274,34 @@ describeEmbeddedPostgres("cases routes", () => {
       onBehalfOfUserId: "user-1",
       onBehalfOfMemberships: [],
     };
-    await request(app(agentActor)).get(`/api/cases/${caseRow!.id}`).expect(403);
+    const http = request(app(agentActor));
+
+    await http.get(`/api/companies/${otherCompany.id}/cases`).expect(403);
+    await http
+      .post(`/api/companies/${otherCompany.id}/cases`)
+      .send({ caseType: "bug", title: "Wrong company create" })
+      .expect(403);
+    await http.get(`/api/cases/${caseRow!.id}`).expect(403);
+    await http.get(`/api/cases/${caseRow!.identifier}`).expect(403);
+    await http.patch(`/api/cases/${caseRow!.id}`).send({ status: "in_progress" }).expect(403);
+    await http.put(`/api/cases/${caseRow!.id}/documents/body`).send({ body: "Body" }).expect(403);
+    await http
+      .post(`/api/cases/${caseRow!.id}/links`)
+      .send({ issueId: otherIssue!.id, role: "reference" })
+      .expect(403);
+    await http
+      .post(`/api/cases/${caseRow!.id}/attachments`)
+      .attach("file", Buffer.from("artifact"), "artifact.txt")
+      .expect(403);
+    await http.get(`/api/cases/${caseRow!.id}/events`).expect(403);
+
+    expect(await db.select().from(cases)).toHaveLength(1);
+    expect(await db.select().from(caseDocuments)).toHaveLength(0);
+    expect(await db.select().from(documents)).toHaveLength(0);
+    expect(await db.select().from(caseIssueLinks)).toHaveLength(0);
+    expect(await db.select().from(caseAttachments)).toHaveLength(0);
+    expect(await db.select().from(assets)).toHaveLength(0);
+    expect(await db.select().from(caseEvents)).toHaveLength(1);
   });
 
   it("supports documents, manual issue links, attachment links, events, and list filters", async () => {
