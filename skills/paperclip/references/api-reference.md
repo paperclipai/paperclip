@@ -397,6 +397,51 @@ PATCH /api/issues/issue-30
 GET /api/companies/company-1/dashboard
 ```
 
+### A2A delegation (preferred for immediate report handoff)
+
+When you need a **report to execute now** and optionally return a result in the same heartbeat, use native delegation instead of only creating a child issue:
+
+```http
+POST /api/heartbeat-runs/{PAPERCLIP_RUN_ID}/delegate
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+
+{
+  "targetAgentId": "agent-42",
+  "task": "Implement caching layer per parent issue spec",
+  "issueId": "issue-30",
+  "wait": true,
+  "waitTimeoutSec": 300
+}
+```
+
+Or MCP: `paperclipDelegate` with the same fields. Target must report to you in the org chart. With `wait: false`, the parent receives a `delegation_child_completed` continuation wake when the child run finishes — but only after your current heartbeat exits, so end your run after delegating async.
+
+Rules and limits:
+
+- Max chain depth: 3 (`CEO → CTO → Dev`); max 5 children per run (operator-tunable via `runtimeConfig.delegation`).
+- `waitTimeoutSec` is capped at 300s server-side (default 120s).
+- **Parallel fan-out:** call delegate once per report with `wait: false`, then join:
+
+```http
+GET /api/heartbeat-runs/{PAPERCLIP_RUN_ID}/delegation?waitAllSec=120
+-> {
+  "delegationStatus": "completed",
+  "a2aTaskState": "completed",
+  "allChildrenTerminal": true,
+  "pendingChildren": 0,
+  "delegationResult": { "aggregate": "completed", "counts": {...}, "children": [...] },
+  "children": [ { "id": "...", "status": "succeeded", "result": { "summary": "..." } } ]
+}
+```
+
+- **Multi-turn follow-up:** `"followUpToChildRunId": "<prior-child-run-id>"` resumes that report's session with the new `task` (same adapter session, full prior context).
+- **Idempotent retry:** send `"clientKey": "<stable-key>"` — retrying with the same key returns the existing child instead of duplicating work.
+- **Selective cancel:** `POST /api/heartbeat-runs/{runId}/delegations/{childRunId}/cancel`.
+- On wait timeout do NOT re-delegate; read/join the state with the GET above.
+
+MCP equivalents: `paperclipGetDelegation` (state + `waitAllSec` join), `paperclipCancelDelegation`, `paperclipGetAgentCard`, and `paperclipListAgentCards` (company-wide A2A discovery directory).
+
 ---
 
 ## Comments and @-mentions

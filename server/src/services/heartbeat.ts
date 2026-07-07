@@ -22,6 +22,7 @@ import {
   type RoutineRevisionSnapshotV1,
   type RunLivenessState,
   type SourceTrustMetadata,
+  type DelegateRunInput,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -66,6 +67,7 @@ import type {
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { runDelegationService } from "./run-delegation.js";
 import { costService } from "./costs.js";
 import { buildCursorCostMetadata, mergeCursorCostIntoResultJson } from "./cost-metadata.js";
 import {
@@ -1145,6 +1147,8 @@ const heartbeatRunListColumns = {
   logBytes: heartbeatRuns.logBytes,
   logSha256: heartbeatRuns.logSha256,
   logCompressed: heartbeatRuns.logCompressed,
+  parentRunId: heartbeatRuns.parentRunId,
+  delegationStatus: heartbeatRuns.delegationStatus,
   stdoutExcerpt: sql<string | null>`NULL`.as("stdoutExcerpt"),
   stderrExcerpt: sql<string | null>`NULL`.as("stderrExcerpt"),
   errorCode: heartbeatRuns.errorCode,
@@ -2141,7 +2145,8 @@ export function shouldResetTaskSessionForWake(
     // (system prompt + wake payload + fetched issue thread).
     wakeReason === "issue_monitor_due" ||
     wakeReason === "issue_assignment_recovery" ||
-    wakeReason === "issue_continuation_needed"
+    wakeReason === "issue_continuation_needed" ||
+    wakeReason === "delegation_child_completed"
   ) {
     return true;
   }
@@ -3287,6 +3292,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
+  const delegationRef: { svc: ReturnType<typeof runDelegationService> | null } = { svc: null };
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function releaseEnvironmentLeasesForRun(input: {
@@ -5065,6 +5071,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function handleSuccessfulRunHandoff(run: typeof heartbeatRuns.$inferSelect, agent: typeof agents.$inferSelect) {
     if (run.status !== "succeeded") return;
+    if (run.delegationStatus === "pending" || run.livenessState === "awaiting_delegation") return;
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     if (!issueId) return;
@@ -7669,6 +7676,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       } else {
         await releaseIssueExecutionAndPromote(finalizedRun);
+        await delegationRef.svc?.handleChildRunCompleted(finalizedRun);
       }
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
@@ -8911,6 +8919,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           `Starting a fresh session because ${sessionCompaction.reason}.`,
         );
       }
+    } else if (
+      readNonEmptyString(context.wakeReason) === "a2a_delegate" ||
+      readNonEmptyString(context.wakeReason) === "delegation_child_completed"
+    ) {
+      // Delegation handoffs are authored by the delegation service, not by
+      // session compaction — keep them so every adapter renders the delegated
+      // task (or the joined results) into the prompt.
+      delete context.paperclipSessionRotationReason;
+      delete context.paperclipPreviousSessionId;
     } else {
       delete context.paperclipSessionHandoffMarkdown;
       delete context.paperclipSessionRotationReason;
@@ -9546,6 +9563,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
+        await delegationRef.svc?.handleChildRunCompleted(livenessRun);
         await handleRunLivenessContinuation(livenessRun);
         await handleSuccessfulRunHandoff(
           issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
@@ -9692,6 +9710,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await finalizeIssueCommentPolicy(livenessRun, agent);
         }
         await releaseIssueExecutionAndPromote(livenessRun);
+        await delegationRef.svc?.handleChildRunCompleted(livenessRun);
 
         await updateRuntimeState(agent, livenessRun, {
           exitCode: null,
@@ -11349,7 +11368,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         message: options.eventMessage ?? "run cancelled",
         ...(options.eventPayload ? { payload: options.eventPayload } : {}),
       });
+      await delegationRef.svc?.cancelChildDelegations(run.id, reason);
       await releaseIssueExecutionAndPromote(cancelled);
+      // If this run was itself a delegated child, settle the parent's
+      // delegation state (and release any wait:true waiter) immediately.
+      await delegationRef.svc?.handleChildRunCompleted(cancelled);
     }
 
     await finalizeAgentStatus(run.agentId, "cancelled");
@@ -11365,6 +11388,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
     for (const run of runs) {
+      await delegationRef.svc?.cancelChildDelegations(run.id, reason);
       await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
         error: reason,
@@ -11476,6 +11500,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     await cancelPendingWakeupsForBudgetScope(scope);
   }
+
+  delegationRef.svc = runDelegationService(db, {
+    enqueueWakeup,
+    getRun,
+    cancelRun: cancelRunInternal,
+  });
 
   return {
     list: async (companyId: string, agentId?: string, limit?: number) => {
@@ -11788,6 +11818,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const issueMonitors = await tickDueIssueMonitors(now);
 
+      await delegationRef.svc?.sweepStalePendingDelegations().catch((err) => {
+        logger.warn({ err }, "delegation sweep failed");
+      });
+
       return {
         checked: checked + issueMonitors.checked,
         enqueued: enqueued + issueMonitors.triggered,
@@ -11796,6 +11830,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
+
+    delegateFromRun: (
+      parentRunId: string,
+      sourceAgentId: string,
+      input: DelegateRunInput,
+    ) => delegationRef.svc!.delegateFromRun(parentRunId, sourceAgentId, input),
+
+    getDelegationState: (parentRunId: string, options?: { waitAllSec?: number }) =>
+      delegationRef.svc!.getDelegationState(parentRunId, options),
+
+    cancelDelegatedChild: (parentRunId: string, childRunId: string, reason: string) =>
+      delegationRef.svc!.cancelDelegatedChild(parentRunId, childRunId, reason),
 
     cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason),
 

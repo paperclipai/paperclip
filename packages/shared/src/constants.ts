@@ -660,7 +660,55 @@ export const RUN_LIVENESS_STATES = [
   "blocked",
   "failed",
   "needs_followup",
+  "awaiting_delegation",
 ] as const;
+
+export const DELEGATION_STATUSES = [
+  "pending",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+export type DelegationStatus = (typeof DELEGATION_STATUSES)[number];
+
+export const DELEGATION_CHILD_COMPLETED_WAKE_REASON = "delegation_child_completed";
+
+/** Max depth of a delegation chain (parent -> child -> grandchild...), OpenCode-style level limit. */
+export const DELEGATION_MAX_DEPTH = 3;
+/** Max child delegations a single parent run may spawn, OpenCode-style task budget. */
+export const DELEGATION_MAX_CHILDREN_PER_RUN = 5;
+/** Server-side ceiling for synchronous delegation waits (seconds). */
+export const DELEGATION_WAIT_TIMEOUT_MAX_SEC = 300;
+
+/**
+ * Task states from the Google/Linux Foundation A2A protocol task lifecycle.
+ * Paperclip delegation statuses map onto these for A2A-aligned clients.
+ */
+export const A2A_TASK_STATES = [
+  "submitted",
+  "working",
+  "completed",
+  "failed",
+  "canceled",
+] as const;
+export type A2ATaskState = (typeof A2A_TASK_STATES)[number];
+
+export function delegationStatusToA2ATaskState(status: DelegationStatus): A2ATaskState {
+  switch (status) {
+    case "pending":
+      return "working";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "canceled";
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
+  }
+}
 export type RunLivenessState = (typeof RUN_LIVENESS_STATES)[number];
 
 export const LIVE_EVENT_TYPES = [

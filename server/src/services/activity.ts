@@ -392,6 +392,8 @@ export function activityService(db: Db) {
           resultJson: summarizedResultJson,
           logBytes: heartbeatRuns.logBytes,
           retryOfRunId: heartbeatRuns.retryOfRunId,
+          parentRunId: heartbeatRuns.parentRunId,
+          delegationStatus: heartbeatRuns.delegationStatus,
           scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
           scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
           scheduledRetryReason: heartbeatRuns.scheduledRetryReason,

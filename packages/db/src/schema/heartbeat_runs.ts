@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -41,6 +42,11 @@ export const heartbeatRuns = pgTable(
     retryOfRunId: uuid("retry_of_run_id").references((): AnyPgColumn => heartbeatRuns.id, {
       onDelete: "set null",
     }),
+    parentRunId: uuid("parent_run_id").references((): AnyPgColumn => heartbeatRuns.id, {
+      onDelete: "set null",
+    }),
+    delegationStatus: text("delegation_status"),
+    delegationResultJson: jsonb("delegation_result_json").$type<Record<string, unknown>>(),
     processLossRetryCount: integer("process_loss_retry_count").notNull().default(0),
     scheduledRetryAt: timestamp("scheduled_retry_at", { withTimezone: true }),
     scheduledRetryAttempt: integer("scheduled_retry_attempt").notNull().default(0),
@@ -78,5 +84,9 @@ export const heartbeatRuns = pgTable(
       table.status,
       table.processStartedAt,
     ),
+    parentRunIdx: index("heartbeat_runs_parent_run_idx").on(table.parentRunId),
+    pendingDelegationIdx: index("heartbeat_runs_pending_delegation_idx")
+      .on(table.delegationStatus)
+      .where(sql`${table.delegationStatus} = 'pending'`),
   }),
 );

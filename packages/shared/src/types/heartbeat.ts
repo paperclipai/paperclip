@@ -1,6 +1,7 @@
 import type {
   AgentRole,
   AgentStatus,
+  DelegationStatus,
   HeartbeatInvocationSource,
   HeartbeatRunStatus,
   RunLivenessState,
@@ -42,6 +43,9 @@ export interface HeartbeatRun {
   lastOutputStream: "stdout" | "stderr" | null;
   lastOutputBytes: number | null;
   retryOfRunId: string | null;
+  parentRunId?: string | null;
+  delegationStatus?: DelegationStatus | null;
+  delegationResultJson?: Record<string, unknown> | null;
   processLossRetryCount: number;
   scheduledRetryAt?: Date | null;
   scheduledRetryAttempt?: number;

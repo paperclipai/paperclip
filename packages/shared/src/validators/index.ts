@@ -569,3 +569,9 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export {
+  delegateRunSchema,
+  delegationWaitQuerySchema,
+  type DelegateRunInput,
+} from "./delegation.js";

@@ -1018,6 +1018,24 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/agent-card",
+  tags: ["agents"],
+  summary: "Get the A2A-style agent card for delegation discovery",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/agent-cards",
+  tags: ["agents"],
+  summary: "List compact A2A agent cards for delegation discovery",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "patch",
   path: "/api/agents/{id}",
   tags: ["agents"],
@@ -2826,6 +2844,50 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/heartbeat-runs/{runId}/delegate",
+  tags: ["runs"],
+  summary: "Delegate work to a report agent from an active heartbeat run (A2A)",
+  request: {
+    params: z.object({ runId: z.string() }),
+    body: jsonBody(z.object({
+      targetAgentId: z.string().uuid(),
+      task: z.string(),
+      issueId: z.string().optional().nullable(),
+      createChildIssue: z.boolean().optional(),
+      childIssueTitle: z.string().optional().nullable(),
+      wait: z.boolean().optional(),
+      waitTimeoutSec: z.number().int().optional(),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/heartbeat-runs/{runId}/delegation",
+  tags: ["runs"],
+  summary: "Get the delegation state and child runs for a heartbeat run (waitAllSec long-polls the join)",
+  request: {
+    params: z.object({ runId: z.string() }),
+    query: z.object({ waitAllSec: z.number().int().optional() }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/heartbeat-runs/{runId}/delegations/{childRunId}/cancel",
+  tags: ["runs"],
+  summary: "Cancel one delegated child run from the delegating run",
+  request: {
+    params: z.object({ runId: z.string(), childRunId: z.string() }),
+    body: jsonBody(z.object({ reason: z.string().optional() })),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/heartbeat-runs/{runId}/watchdog-decisions",
   tags: ["runs"],
   summary: "Submit watchdog decisions for a run",
@@ -2875,6 +2937,14 @@ registry.registerPath({
   summary: "Get log for a workspace operation",
   request: { params: z.object({ operationId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/internal/cursor/webhook",
+  tags: ["internal"],
+  summary: "Ingest Cursor Cloud webhook events (signature-verified)",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 // ─── Agent runs & heartbeat ───────────────────────────────────────────────────

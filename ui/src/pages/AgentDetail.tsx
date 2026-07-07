@@ -3008,6 +3008,22 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
           {sourceLabels[run.invocationSource] ?? run.invocationSource}
         </span>
         {sourceResolvedFold ? <SourceResolvedFoldBadge showIcon={false} className="shrink-0 text-[10px] py-0" /> : null}
+        {run.parentRunId ? (
+          <span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium shrink-0 bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300">
+            Delegated task
+          </span>
+        ) : run.delegationStatus ? (
+          <span className={cn(
+            "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium shrink-0",
+            run.delegationStatus === "pending"
+              ? "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
+              : run.delegationStatus === "completed"
+                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300"
+                : "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+          )}>
+            {run.delegationStatus === "pending" ? "Delegating" : `Delegation ${run.delegationStatus}`}
+          </span>
+        ) : null}
         <span className="ml-auto text-[11px] text-muted-foreground shrink-0">
           {relativeTime(run.createdAt)}
         </span>
@@ -3205,6 +3221,19 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   const { data: touchedIssues } = useQuery({
     queryKey: queryKeys.runIssues(run.id),
     queryFn: () => activityApi.issuesForRun(run.id),
+  });
+
+  const { data: delegation } = useQuery({
+    queryKey: queryKeys.runDelegation(run.id),
+    queryFn: () => heartbeatsApi.delegation(run.id),
+    enabled: Boolean(run.delegationStatus || run.parentRunId),
+    refetchInterval: run.delegationStatus === "pending" ? 4000 : false,
+  });
+
+  const { data: parentRun } = useQuery({
+    queryKey: queryKeys.runDetail(run.parentRunId ?? ""),
+    queryFn: () => heartbeatsApi.get(run.parentRunId!),
+    enabled: Boolean(run.parentRunId),
   });
   const touchedIssueIds = useMemo(
     () => Array.from(new Set((touchedIssues ?? []).map((issue) => issue.issueId))),
@@ -3521,6 +3550,77 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
           </div>
         )}
       </div>
+
+      {/* Delegated from another agent's run */}
+      {run.parentRunId && (
+        <div className="rounded-md border border-violet-500/30 bg-violet-500/5 px-3 py-2 text-xs leading-5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-md border border-violet-500/30 bg-violet-500/10 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 dark:text-violet-300">
+              Delegated task
+            </span>
+            <span className="text-muted-foreground">
+              This run was started by another agent. Origin run:
+            </span>
+            {parentRun ? (
+              <Link
+                to={`/agents/${parentRun.agentId}/runs/${parentRun.id}`}
+                className="font-mono text-foreground hover:underline"
+              >
+                {run.parentRunId.slice(0, 8)}
+              </Link>
+            ) : (
+              <span className="font-mono text-foreground">{run.parentRunId.slice(0, 8)}</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Work this run delegated to other agents */}
+      {delegation && delegation.children.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">
+              Delegated Work ({delegation.children.length})
+            </span>
+            {delegation.delegationStatus === "pending" ? (
+              <span className="rounded-md border border-violet-500/30 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:text-violet-300">
+                {delegation.pendingChildren > 0
+                  ? `Waiting for ${delegation.pendingChildren} agent${delegation.pendingChildren === 1 ? "" : "s"}`
+                  : "Finishing up"}
+              </span>
+            ) : delegation.delegationStatus === "completed" ? (
+              <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                All work finished
+              </span>
+            ) : delegation.delegationStatus ? (
+              <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+                Finished with problems
+              </span>
+            ) : null}
+          </div>
+          <div className="border border-border rounded-lg divide-y divide-border">
+            {delegation.children.map((child) => {
+              const childStatusInfo = runStatusIcons[child.status] ?? { icon: Clock, color: "text-neutral-400" };
+              const ChildStatusIcon = childStatusInfo.icon;
+              return (
+                <Link
+                  key={child.id}
+                  to={`/agents/${child.agentId}/runs/${child.id}`}
+                  className="flex items-center justify-between w-full px-3 py-2 text-xs hover:bg-accent/20 transition-colors text-left no-underline text-inherit"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <ChildStatusIcon className={cn("h-3.5 w-3.5 shrink-0", childStatusInfo.color, child.status === "running" && "animate-spin")} />
+                    <span className="truncate">
+                      {child.result?.task ?? child.result?.summary ?? "Delegated task"}
+                    </span>
+                  </div>
+                  <span className="font-mono text-muted-foreground shrink-0 ml-2">{child.id.slice(0, 8)}</span>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Issues touched by this run */}
       {touchedIssues && touchedIssues.length > 0 && (
