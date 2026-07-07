@@ -1521,4 +1521,57 @@ describeEmbeddedPostgres("authorization service", () => {
       reason: "deny_scope",
     });
   });
+
+  it("requires every requested project membership to fit task bridge project scope", async () => {
+    const company = await createCompany(db, "TaskBridgeProjects");
+    const bridgeAgent = await createAgent(db, company.id);
+    const targetAgent = await createAgent(db, company.id);
+    const allowedProject = await createProject(db, company.id, "Bridge allowed");
+    const deniedProject = await createProject(db, company.id, "Bridge denied");
+    const parentIssue = await createIssue(db, company.id, { projectId: allowedProject.id });
+    const actor = {
+      type: "agent" as const,
+      agentId: bridgeAgent.id,
+      companyId: company.id,
+      source: "agent_key" as const,
+      keyId: randomUUID(),
+      keyScope: {
+        kind: "task_bridge" as const,
+        projectIds: [allowedProject.id],
+        allowedAssigneeAgentIds: [targetAgent.id],
+      },
+    };
+    const authz = authorizationService(db);
+
+    await expect(authz.decide({
+      actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        parentIssueId: parentIssue.id,
+        projectId: allowedProject.id,
+        projectIds: [allowedProject.id],
+        assigneeAgentId: targetAgent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        parentIssueId: parentIssue.id,
+        projectId: allowedProject.id,
+        projectIds: [allowedProject.id, deniedProject.id],
+        assigneeAgentId: targetAgent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
+  });
 });

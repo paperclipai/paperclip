@@ -1,4 +1,5 @@
 import type { IssuePriority, IssueStatus } from "../constants.js";
+import type { IssueProjectSummary } from "./issue.js";
 
 export const COMPANY_SEARCH_SCOPES = ["all", "issues", "comments", "documents", "artifacts", "agents", "projects"] as const;
 export type CompanySearchScope = (typeof COMPANY_SEARCH_SCOPES)[number];
@@ -26,6 +27,8 @@ export interface CompanySearchIssueSummary {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   projectId: string | null;
+  projectIds?: string[];
+  projects?: IssueProjectSummary[];
   updatedAt: string;
 }
 

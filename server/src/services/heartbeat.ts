@@ -45,6 +45,7 @@ import {
   issueApprovals,
   issueComments,
   issuePlanDecompositions,
+  issueProjects,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -3996,6 +3997,101 @@ export function mergeCoalescedContextSnapshot(
   return merged;
 }
 
+function serializeTaskProject(project: PaperclipTaskProjectContext) {
+  return {
+    id: project.id,
+    name: project.name,
+    color: project.color ?? null,
+    icon: project.icon ?? null,
+    isPrimary: project.isPrimary,
+  };
+}
+
+async function getIssueTaskProjectContexts(input: {
+  db: Db;
+  companyId: string;
+  issueId: string;
+}): Promise<PaperclipTaskProjectContext[]> {
+  const rows = await input.db
+    .select({
+      projectId: projects.id,
+      name: projects.name,
+      color: projects.color,
+      icon: projects.icon,
+      isPrimary: issueProjects.isPrimary,
+      workspaceId: projectWorkspaces.id,
+      workspaceCwd: projectWorkspaces.cwd,
+      workspaceRepoUrl: projectWorkspaces.repoUrl,
+      workspaceRepoRef: projectWorkspaces.repoRef,
+    })
+    .from(issueProjects)
+    .innerJoin(projects, and(
+      eq(issueProjects.projectId, projects.id),
+      eq(issueProjects.companyId, projects.companyId),
+    ))
+    .leftJoin(projectWorkspaces, and(
+      eq(projectWorkspaces.companyId, input.companyId),
+      eq(projectWorkspaces.projectId, projects.id),
+      eq(projectWorkspaces.isPrimary, true),
+    ))
+    .where(and(
+      eq(issueProjects.companyId, input.companyId),
+      eq(issueProjects.issueId, input.issueId),
+    ))
+    .orderBy(desc(issueProjects.isPrimary), asc(issueProjects.createdAt), asc(issueProjects.projectId));
+
+  return rows.map((row) => ({
+    id: row.projectId,
+    name: row.name,
+    color: row.color,
+    icon: row.icon,
+    isPrimary: row.isPrimary,
+    workspace: row.workspaceId
+      ? {
+          id: row.workspaceId,
+          cwd: readNonEmptyString(row.workspaceCwd),
+          repoUrl: readNonEmptyString(row.workspaceRepoUrl),
+          repoRef: readNonEmptyString(row.workspaceRepoRef),
+        }
+      : null,
+  }));
+}
+
+function formatTaskProjectWorkspace(workspace: PaperclipTaskProjectContext["workspace"]) {
+  if (!workspace) return "no workspace configured";
+  const cwd = workspace.cwd ?? "no cwd configured";
+  const repoParts: string[] = [];
+  if (workspace.repoUrl && workspace.repoRef) repoParts.push(`repo: ${workspace.repoUrl} @ ${workspace.repoRef}`);
+  else if (workspace.repoUrl) repoParts.push(`repo: ${workspace.repoUrl}`);
+  else if (workspace.repoRef) repoParts.push(`repo: ${workspace.repoRef}`);
+  return repoParts.length > 0 ? `${cwd} (${repoParts.join(", ")})` : cwd;
+}
+
+function buildTaskProjectsMarkdown(projectsInput: PaperclipTaskProjectContext[] | null | undefined) {
+  const projects = (projectsInput ?? []).filter((project) => project.id && project.name);
+  if (projects.length === 0) return [];
+
+  const lines = [
+    projects.length === 1
+      ? "Projects:"
+      : `Projects (this task spans ${projects.length} projects):`,
+  ];
+  for (const project of projects) {
+    lines.push(`- ${project.name}${project.isPrimary ? " (PRIMARY - do the work here)" : ""}`);
+    lines.push(`  workspace: ${formatTaskProjectWorkspace(project.workspace)}`);
+    if (!project.isPrimary && projects.length > 1) {
+      lines.push("  note: this task is tracked in this project too; touch it only if the task requires changes there.");
+    }
+  }
+  if (projects.length > 1) {
+    lines.push(
+      "",
+      `This task belongs to ${projects.length} projects. Your execution workspace is provisioned from the PRIMARY project. The other memberships tell you where this work is tracked and which other codebases/areas may be affected; read their workspace paths above if the task requires touching them.`,
+    );
+  }
+  return lines;
+}
+
 export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
@@ -4010,16 +4106,7 @@ export async function buildPaperclipWakePayload(input: {
       }
     | null;
   issueSummary?:
-    | {
-        id: string;
-        identifier: string | null;
-        title: string;
-        status: string;
-        priority: string;
-        workMode: string;
-        projectId?: string | null;
-        executionPolicy?: unknown;
-      }
+    | PaperclipWakeIssueSummary
     | null;
   exposeLowTrustRaw?: boolean;
 }) {
@@ -4028,7 +4115,7 @@ export async function buildPaperclipWakePayload(input: {
   const annotationCommentId = readNonEmptyString(input.contextSnapshot.annotationCommentId);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const continuationSummary = input.continuationSummary ?? null;
-  const issueSummary =
+  const issueSummary: PaperclipWakeIssueSummary | null =
     input.issueSummary ??
     (issueId
       ? await input.db
@@ -4045,6 +4132,15 @@ export async function buildPaperclipWakePayload(input: {
           .then((rows) => rows[0] ?? null)
       : null);
   if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  const issueProjectsForPayload =
+    issueSummary?.projects ??
+    (issueSummary
+      ? await getIssueTaskProjectContexts({
+          db: input.db,
+          companyId: input.companyId,
+          issueId: issueSummary.id,
+        })
+      : []);
 
   const commentRows =
     commentIds.length === 0
@@ -4214,6 +4310,8 @@ export async function buildPaperclipWakePayload(input: {
           status: issueSummary.status,
           priority: issueSummary.priority,
           workMode: issueSummary.workMode,
+          projectIds: issueProjectsForPayload.map((project) => project.id),
+          projects: issueProjectsForPayload.map(serializeTaskProject),
         }
       : null,
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
@@ -4525,6 +4623,7 @@ export function buildPaperclipTaskMarkdown(input: {
     workMode?: string | null;
     description?: string | null;
   } | null;
+  projects?: PaperclipTaskProjectContext[] | null;
   ancestors?: Array<{
     id: string;
     identifier?: string | null;
@@ -4599,6 +4698,10 @@ export function buildPaperclipTaskMarkdown(input: {
         "Accepted plan directive:",
         "Create child issues from the approved plan only. Do not write code or perform implementation work on the source issue.",
       );
+    }
+    const projectLines = buildTaskProjectsMarkdown(input.projects);
+    if (projectLines.length > 0) {
+      lines.push("", ...projectLines);
     }
     const description = issue.description?.trim();
     if (description) {
@@ -4720,6 +4823,32 @@ export function normalizeSessionParams(params: Record<string, unknown> | null | 
 }
 
 type RunSessionOutcome = "succeeded" | "failed" | "cancelled" | "timed_out";
+
+export type PaperclipTaskProjectContext = {
+  id: string;
+  name: string;
+  color?: string | null;
+  icon?: string | null;
+  isPrimary: boolean;
+  workspace: {
+    id: string;
+    cwd: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+  } | null;
+};
+
+type PaperclipWakeIssueSummary = {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  workMode: string;
+  projectId?: string | null;
+  projects?: PaperclipTaskProjectContext[] | null;
+  executionPolicy?: unknown;
+};
 
 const HERMES_ADAPTER_TYPE = "hermes_local";
 const HERMES_SESSION_ID_REGEX = /^(?:\d{8}_\d{6}_[A-Za-z0-9_-]{4,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
@@ -10257,6 +10386,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueAncestors = issueRef
       ? await issuesSvc.getAncestors(issueRef.id)
       : [];
+    const issueProjectsForTask = issueRef
+      ? await getIssueTaskProjectContexts({
+          db,
+          companyId: agent.companyId,
+          issueId: issueRef.id,
+        })
+      : [];
     if (continuationSummary) {
       context.paperclipContinuationSummary = {
         key: safeContinuationSummary!.key,
@@ -10282,6 +10418,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             priority: issueRef.priority,
             workMode: issueRef.workMode,
             projectId: issueRef.projectId,
+            projects: issueProjectsForTask,
             executionPolicy: issueContext?.executionPolicy ?? null,
           }
         : null,
@@ -10302,6 +10439,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             description: issueRef.description,
           }
         : null,
+      projects: issueProjectsForTask,
       ancestors: issueAncestors,
       wakeComment: safeWakeCommentContext,
       interaction: {

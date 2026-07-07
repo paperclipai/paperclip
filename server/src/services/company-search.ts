@@ -1,7 +1,7 @@
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, companies, issues, projects } from "@paperclipai/db";
+import { agents, companies, issueProjects, issues, projects } from "@paperclipai/db";
 import {
   COMPANY_SEARCH_MAX_LIMIT,
   COMPANY_SEARCH_MAX_OFFSET,
@@ -44,6 +44,14 @@ type IssueSearchRow = {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   projectId: string | null;
+  projectIds: string[] | null;
+  projects: Array<{
+    id: string;
+    name: string;
+    color: string | null;
+    icon: string | null;
+    isPrimary: boolean;
+  }> | null;
   updatedAt: Date;
   score: number | string;
   matchedFields: string[] | null;
@@ -263,6 +271,8 @@ function issueResult(row: IssueSearchRow, prefix: string, normalizedQuery: strin
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
     projectId: row.projectId,
+    projectIds: row.projectIds ?? [],
+    projects: row.projects ?? [],
     updatedAt: iso(row.updatedAt)!,
   };
   const previewImageUrl =
@@ -283,6 +293,43 @@ function issueResult(row: IssueSearchRow, prefix: string, normalizedQuery: strin
     updatedAt: issue.updatedAt,
     previewImageUrl,
   };
+}
+
+async function hydrateIssueSearchProjects(db: Db, rows: IssueSearchRow[]) {
+  if (rows.length === 0) return rows;
+  const issueIds = rows.map((row) => row.id);
+  const projectRows = await db
+    .select({
+      issueId: issueProjects.issueId,
+      projectId: projects.id,
+      name: projects.name,
+      color: projects.color,
+      icon: projects.icon,
+      isPrimary: issueProjects.isPrimary,
+    })
+    .from(issueProjects)
+    .innerJoin(projects, and(
+      eq(issueProjects.projectId, projects.id),
+      eq(issueProjects.companyId, projects.companyId),
+    ))
+    .where(inArray(issueProjects.issueId, issueIds))
+    .orderBy(desc(issueProjects.isPrimary), asc(issueProjects.createdAt), asc(issueProjects.projectId));
+  const byIssueId = new Map<string, NonNullable<IssueSearchRow["projects"]>>();
+  for (const row of projectRows) {
+    const summaries = byIssueId.get(row.issueId) ?? [];
+    summaries.push({
+      id: row.projectId,
+      name: row.name,
+      color: row.color,
+      icon: row.icon,
+      isPrimary: row.isPrimary,
+    });
+    byIssueId.set(row.issueId, summaries);
+  }
+  return rows.map((row) => ({
+    ...row,
+    projects: byIssueId.get(row.id) ?? [],
+  }));
 }
 
 function scoreSimpleRow(row: SimpleSearchRow, normalizedQuery: string, tokens: string[]) {
@@ -542,6 +589,37 @@ export function companySearchService(db: Db) {
             assigneeAgentId: issues.assigneeAgentId,
             assigneeUserId: issues.assigneeUserId,
             projectId: issues.projectId,
+            projectIds: sql<string[] | null>`
+              (
+                SELECT coalesce(array_agg(search_issue_projects.project_id::text ORDER BY search_issue_projects.is_primary DESC, search_issue_projects.created_at ASC, search_issue_projects.project_id ASC), ARRAY[]::text[])
+                FROM ${issueProjects} search_issue_projects
+                WHERE search_issue_projects.company_id = ${companyId}
+                  AND search_issue_projects.issue_id = ${issues.id}
+              )
+            `,
+            projects: sql<Array<{
+              id: string;
+              name: string;
+              color: string | null;
+              icon: string | null;
+              isPrimary: boolean;
+            }> | null>`
+              (
+                SELECT coalesce(jsonb_agg(jsonb_build_object(
+                  'id', search_projects.id::text,
+                  'name', search_projects.name,
+                  'color', search_projects.color,
+                  'icon', search_projects.icon,
+                  'isPrimary', search_issue_projects.is_primary
+                ) ORDER BY search_issue_projects.is_primary DESC, search_issue_projects.created_at ASC, search_issue_projects.project_id ASC), '[]'::jsonb)
+                FROM ${issueProjects} search_issue_projects
+                INNER JOIN ${projects} search_projects
+                  ON search_projects.id = search_issue_projects.project_id
+                 AND search_projects.company_id = search_issue_projects.company_id
+                WHERE search_issue_projects.company_id = ${companyId}
+                  AND search_issue_projects.issue_id = ${issues.id}
+              )
+            `,
             updatedAt: issues.updatedAt,
             score,
             matchedFields,
@@ -702,8 +780,9 @@ export function companySearchService(db: Db) {
         }).then((result) => result.artifacts)
         : [];
 
+      const hydratedIssueRows = await hydrateIssueSearchProjects(db, issueRows as IssueSearchRow[]);
       const results: CompanySearchResult[] = [
-        ...(issueRows as IssueSearchRow[]).map((row) => issueResult(row, prefix, normalizedQuery, tokens)),
+        ...hydratedIssueRows.map((row) => issueResult(row, prefix, normalizedQuery, tokens)),
         ...artifactRows.map((artifact) => artifactResult(artifact, normalizedQuery, tokens)),
         ...(agentRows as SimpleSearchRow[]).map((row) => {
           const terms = matchTerms(normalizedQuery, tokens);

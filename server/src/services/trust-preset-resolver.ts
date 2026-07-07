@@ -339,11 +339,12 @@ export function resolveCoreTrustPreset(input: ResolveCoreTrustPresetInput): Trus
 
 export function isIssueWithinLowTrustBoundary(
   boundary: LowTrustBoundary & { companyId: string },
-  issue: { companyId: string; id?: string | null; projectId?: string | null },
+  issue: { companyId: string; id?: string | null; projectId?: string | null; projectIds?: string[] | null },
 ): boolean {
   if (issue.companyId !== boundary.companyId) return false;
   if (issue.id && issue.id === boundary.rootIssueId) return true;
   if (issue.id && boundary.issueIds?.includes(issue.id)) return true;
   if (issue.projectId && boundary.projectIds?.includes(issue.projectId)) return true;
+  if (issue.projectIds?.some((projectId) => boundary.projectIds?.includes(projectId))) return true;
   return false;
 }

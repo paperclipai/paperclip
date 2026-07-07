@@ -21,6 +21,7 @@ import {
   issueApprovals,
   issueComments,
   issueDocuments,
+  issueProjects,
   issueRelations,
   issues,
   issueThreadInteractions,
@@ -592,6 +593,67 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     });
   });
 
+  it("denies task-bridge checkout when a secondary issue project is outside the key scope", async () => {
+    const fixture = await seedLowTrustFixture(db);
+    const [targetIssue] = await db.insert(issues).values({
+      companyId: fixture.company.id,
+      projectId: fixture.projects.allowed.id,
+      title: "Multi-project bridge checkout target",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: fixture.agents.standard.id,
+    }).returning();
+    await db.insert(issueProjects).values([
+      {
+        companyId: fixture.company.id,
+        issueId: targetIssue!.id,
+        projectId: fixture.projects.allowed.id,
+        isPrimary: true,
+      },
+      {
+        companyId: fixture.company.id,
+        issueId: targetIssue!.id,
+        projectId: fixture.projects.outOfScope.id,
+        isPrimary: false,
+      },
+    ]);
+
+    const taskBridgeActor: Express.Request["actor"] = {
+      type: "agent",
+      agentId: fixture.agents.lowTrust.id,
+      companyId: fixture.company.id,
+      runId: fixture.runs.lowTrust.id,
+      source: "agent_key",
+      keyId: "task-bridge-key",
+      keyScope: { kind: "task_bridge", projectIds: [fixture.projects.allowed.id] },
+    };
+
+    const checkout = await request(createApp(db, taskBridgeActor))
+      .post(`/api/issues/${targetIssue!.id}/checkout`)
+      .send({
+        agentId: fixture.agents.lowTrust.id,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
+      });
+
+    expect(checkout.status, JSON.stringify(checkout.body)).toBe(403);
+    expect(checkout.body.error).toBe("Task bridge key is outside its approved parent or project boundary.");
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, targetIssue!.id))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "todo",
+      assigneeAgentId: fixture.agents.standard.id,
+      checkoutRunId: null,
+    });
+  });
+
   it("allows mentioned low-trust agents to comment on out-of-bound assigned issues", async () => {
     const fixture = await seedLowTrustFixture(db);
     const [targetIssue] = await db.insert(issues).values({
@@ -856,6 +918,55 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       .query({ attention: "blocked", q: "blocked vendor wait" });
     expect(lowTrustCount.status, JSON.stringify(lowTrustCount.body)).toBe(200);
     expect(lowTrustCount.body.count).toBe(1);
+  });
+
+  it("keeps low-trust list, detail, and count aligned for secondary project memberships", async () => {
+    const fixture = await seedLowTrustFixture(db);
+    const [secondaryMembershipIssue] = await db.insert(issues).values({
+      companyId: fixture.company.id,
+      projectId: fixture.projects.outOfScope.id,
+      title: "Secondary membership blocked vendor wait",
+      status: "blocked",
+      priority: "medium",
+      description: "external owner: Secondary vendor\nexternal action: Finish secondary review",
+    }).returning();
+    await db.insert(issueProjects).values([
+      {
+        companyId: fixture.company.id,
+        issueId: secondaryMembershipIssue!.id,
+        projectId: fixture.projects.outOfScope.id,
+        isPrimary: true,
+      },
+      {
+        companyId: fixture.company.id,
+        issueId: secondaryMembershipIssue!.id,
+        projectId: fixture.projects.allowed.id,
+        isPrimary: false,
+      },
+    ]);
+
+    const lowTrustApp = createApp(db, agentActor(fixture));
+    const query = { attention: "blocked", q: "Secondary membership blocked vendor wait" };
+    const count = await request(lowTrustApp)
+      .get(`/api/companies/${fixture.company.id}/issues/count`)
+      .query(query);
+    expect(count.status, JSON.stringify(count.body)).toBe(200);
+    expect(count.body.count).toBe(1);
+
+    const list = await request(lowTrustApp)
+      .get(`/api/companies/${fixture.company.id}/issues`)
+      .query(query);
+    expect(list.status, JSON.stringify(list.body)).toBe(200);
+    expect(list.body.map((issue: { id: string }) => issue.id)).toContain(secondaryMembershipIssue!.id);
+
+    const detail = await request(lowTrustApp)
+      .get(`/api/issues/${secondaryMembershipIssue!.id}`);
+    expect(detail.status, JSON.stringify(detail.body)).toBe(200);
+    expect(detail.body.id).toBe(secondaryMembershipIssue!.id);
+    expect(detail.body.projects.map((project: { id: string }) => project.id)).toEqual([
+      fixture.projects.outOfScope.id,
+      fixture.projects.allowed.id,
+    ]);
   });
 
   it("redacts quarantined low-trust output from higher-trust wake and continuation contexts", async () => {

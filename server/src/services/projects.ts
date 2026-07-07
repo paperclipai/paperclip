@@ -5,6 +5,7 @@ import {
   projectGoals,
   goals,
   issues,
+  issueProjects,
   budgetPolicies,
   pluginManagedResources,
   plugins,
@@ -32,6 +33,7 @@ import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runt
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { promoteIssueProjectsAfterProjectRemoval } from "./issues.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -321,6 +323,7 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
 }
 
 type TaskCountRow = { projectId: string | null; count: number };
+type TaskProjectIssueRow = { projectId: string | null; issueId: string };
 type ProjectBudgetRow = { scopeId: string; amount: number; windowKind: string };
 
 /**
@@ -347,6 +350,20 @@ export function buildProjectListMetricMaps(taskCountRows: TaskCountRow[], budget
   return { taskCountByProjectId, budgetByProjectId };
 }
 
+export function buildTaskCountRows(rows: TaskProjectIssueRow[]): TaskCountRow[] {
+  const issueIdsByProjectId = new Map<string, Set<string>>();
+  for (const row of rows) {
+    if (!row.projectId) continue;
+    const issueIds = issueIdsByProjectId.get(row.projectId) ?? new Set<string>();
+    issueIds.add(row.issueId);
+    issueIdsByProjectId.set(row.projectId, issueIds);
+  }
+  return [...issueIdsByProjectId.entries()].map(([projectId, issueIds]) => ({
+    projectId,
+    count: issueIds.size,
+  }));
+}
+
 /**
  * Attach lightweight list-only metrics (task count + budget) to a set of
  * projects using two aggregate queries (no N+1). Used by the projects list
@@ -361,15 +378,28 @@ async function attachListMetrics(
 
   const projectIds = rows.map((r) => r.id);
 
-  const [taskCountRows, budgetRows] = await Promise.all([
+  const [membershipTaskRows, legacyTaskRows, budgetRows] = await Promise.all([
+    db
+      .select({
+        projectId: issueProjects.projectId,
+        issueId: issueProjects.issueId,
+      })
+      .from(issueProjects)
+      .innerJoin(
+        issues,
+        and(
+          eq(issueProjects.issueId, issues.id),
+          eq(issueProjects.companyId, issues.companyId),
+        ),
+      )
+      .where(and(eq(issueProjects.companyId, companyId), inArray(issueProjects.projectId, projectIds))),
     db
       .select({
         projectId: issues.projectId,
-        count: sql<number>`count(*)::int`,
+        issueId: issues.id,
       })
       .from(issues)
-      .where(and(eq(issues.companyId, companyId), inArray(issues.projectId, projectIds)))
-      .groupBy(issues.projectId),
+      .where(and(eq(issues.companyId, companyId), inArray(issues.projectId, projectIds))),
     db
       .select({
         scopeId: budgetPolicies.scopeId,
@@ -387,6 +417,7 @@ async function attachListMetrics(
         ),
       ),
   ]);
+  const taskCountRows = buildTaskCountRows([...membershipTaskRows, ...legacyTaskRows]);
 
   const { taskCountByProjectId, budgetByProjectId } = buildProjectListMetricMaps(
     taskCountRows,
@@ -857,15 +888,16 @@ export function projectService(db: Db) {
     },
 
     remove: (id: string) =>
-      db
-        .delete(projects)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => {
+      db.transaction(async (tx) => {
+        await promoteIssueProjectsAfterProjectRemoval(tx, id);
+        const rows = await tx
+          .delete(projects)
+          .where(eq(projects.id, id))
+          .returning();
           const row = rows[0] ?? null;
           if (!row) return null;
           return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
-        }),
+      }),
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db

@@ -8,6 +8,7 @@ import {
   documents,
   issueComments,
   issueDocuments,
+  issueProjects,
   issues,
   projects,
 } from "@paperclipai/db";
@@ -149,6 +150,31 @@ describeEmbeddedPostgres("companySearchService", () => {
 
     expect(result.results[0]?.id).toBe(exactId);
     expect(result.results[0]?.matchedFields).toContain("identifier");
+  });
+
+  it("returns issue projectIds and ordered project summaries for multi-project memberships", async () => {
+    const companyId = await createCompany();
+    const primaryProjectId = await createProject(companyId, { name: "Primary search project", color: "#111111" });
+    const secondaryProjectId = await createProject(companyId, { name: "Secondary search project", color: "#222222" });
+    const issueId = await createIssue(companyId, {
+      identifier: "TST-77",
+      title: "Multi-project searchable issue",
+      projectId: primaryProjectId,
+    });
+    await db.insert(issueProjects).values([
+      { companyId, issueId, projectId: primaryProjectId, isPrimary: true, createdAt: new Date("2026-01-01T00:00:00.000Z") },
+      { companyId, issueId, projectId: secondaryProjectId, isPrimary: false, createdAt: new Date("2026-01-01T00:00:01.000Z") },
+    ]);
+
+    const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "Multi-project" }));
+    const match = result.results.find((item) => item.id === issueId);
+
+    expect(match?.issue?.projectId).toBe(primaryProjectId);
+    expect(match?.issue?.projectIds).toEqual([primaryProjectId, secondaryProjectId]);
+    expect(match?.issue?.projects).toEqual([
+      expect.objectContaining({ id: primaryProjectId, name: "Primary search project", isPrimary: true }),
+      expect.objectContaining({ id: secondaryProjectId, name: "Secondary search project", isPrimary: false }),
+    ]);
   });
 
   it("matches multiple tokens across the same issue thread and returns comment snippets", async () => {

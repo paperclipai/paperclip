@@ -55,6 +55,7 @@ export { pipelineCaseEvents } from "./pipeline_case_events.js";
 export { issueWorkProducts } from "./issue_work_products.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
+export { issueProjects } from "./issue_projects.js";
 export { issueApprovals } from "./issue_approvals.js";
 export { issueComments } from "./issue_comments.js";
 export { issueThreadInteractions } from "./issue_thread_interactions.js";

@@ -69,6 +69,7 @@ export type AuthorizationResource =
       companyId: string;
       issueId?: string | null;
       projectId?: string | null;
+      projectIds?: string[] | null;
       parentIssueId?: string | null;
       assigneeAgentId?: string | null;
       assigneeUserId?: string | null;
@@ -795,10 +796,14 @@ export function authorizationService(db: Db) {
     resource: Extract<AuthorizationResource, { type: "issue" }>,
   ) {
     const issue = resource.issueId ? await loadIssue(resource.issueId) : null;
+    const projectIds = Array.isArray(resource.projectIds) && resource.projectIds.length > 0
+      ? [...new Set(resource.projectIds)]
+      : [];
     const candidate = {
       companyId: resource.companyId,
       id: issue?.id ?? resource.issueId ?? null,
       projectId: issue?.projectId ?? resource.projectId ?? null,
+      projectIds,
     };
     if (isIssueWithinLowTrustBoundary(boundary, candidate)) return true;
     if (candidate.id && boundary.rootIssueId) {
@@ -976,11 +981,26 @@ export function authorizationService(db: Db) {
   ) {
     const allowedProjectIds = taskBridgeScopeIds(scope, "projectId", "projectIds");
     const allowedParentIssueIds = taskBridgeScopeIds(scope, "parentIssueId", "parentIssueIds");
-    if (resource.projectId && allowedProjectIds.includes(resource.projectId)) return true;
+    const requestedProjectIds = [
+      ...new Set(
+        (Array.isArray(resource.projectIds) && resource.projectIds.length > 0
+          ? resource.projectIds
+          : resource.projectId
+            ? [resource.projectId]
+            : [])
+          .filter((projectId): projectId is string => typeof projectId === "string" && projectId.length > 0),
+      ),
+    ];
+    if (requestedProjectIds.length > 0 && allowedProjectIds.length > 0) {
+      if (requestedProjectIds.every((projectId) => allowedProjectIds.includes(projectId))) return true;
+    } else if (resource.projectId && allowedProjectIds.includes(resource.projectId)) {
+      return true;
+    }
     if (await parentIssueMatchesTaskBridgeBoundary(resource.parentIssueId, resource.companyId, allowedParentIssueIds)) {
       return true;
     }
     if (resource.parentIssueId && allowedProjectIds.length > 0) {
+      if (requestedProjectIds.some((projectId) => !allowedProjectIds.includes(projectId))) return false;
       const parent = await loadIssue(resource.parentIssueId);
       if (parent?.companyId === resource.companyId && parent.projectId && allowedProjectIds.includes(parent.projectId)) {
         return true;

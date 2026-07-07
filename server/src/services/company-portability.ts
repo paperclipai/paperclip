@@ -3651,6 +3651,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     for (const issue of selectedIssueRows) {
       const taskSlug = taskSlugByIssueId.get(issue.id)!;
       const projectSlug = issue.projectId ? (projectSlugById.get(issue.projectId) ?? null) : null;
+      const projectSlugs = (issue.projects ?? [])
+        .map((project) => projectSlugById.get(project.id) ?? null)
+        .filter((slug): slug is string => Boolean(slug));
       // All tasks go in top-level tasks/ folder, never nested under projects/
       const taskPath = `tasks/${taskSlug}/TASK.md`;
       const assigneeSlug = issue.assigneeAgentId ? (idToSlug.get(issue.assigneeAgentId) ?? null) : null;
@@ -3684,6 +3687,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         priority: issue.priority,
         labelIds: issue.labelIds ?? undefined,
         billingCode: issue.billingCode ?? null,
+        projectIds: projectSlugs.length > 0 ? projectSlugs : undefined,
         projectWorkspaceKey: projectWorkspaceKey ?? undefined,
         executionWorkspaceSettings: issue.executionWorkspaceSettings ?? undefined,
         assigneeAdapterOverrides: issue.assigneeAdapterOverrides ?? undefined,
@@ -4825,13 +4829,25 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             warnings,
             `Task ${manifestIssue.slug}`,
           );
-          const projectId = manifestIssue.projectSlug
+          const projectIds = (manifestIssue.projectIds?.length ? manifestIssue.projectIds : (
+            manifestIssue.projectSlug ? [manifestIssue.projectSlug] : []
+          ))
+            .map((projectSlug) =>
+              importedSlugToProjectId.get(projectSlug)
+              ?? existingProjectSlugToId.get(projectSlug)
+              ?? null
+            )
+            .filter((id): id is string => Boolean(id));
+          const projectSlugForWorkspace = manifestIssue.projectSlug ?? manifestIssue.projectIds?.[0] ?? null;
+          const projectId = projectIds[0] ?? (
+            manifestIssue.projectSlug
             ? importedSlugToProjectId.get(manifestIssue.projectSlug)
               ?? existingProjectSlugToId.get(manifestIssue.projectSlug)
               ?? null
-            : null;
-          const projectWorkspaceId = manifestIssue.projectSlug && manifestIssue.projectWorkspaceKey
-            ? importedProjectWorkspaceIdByProjectSlug.get(manifestIssue.projectSlug)?.get(manifestIssue.projectWorkspaceKey) ?? null
+            : null
+          );
+          const projectWorkspaceId = projectSlugForWorkspace && manifestIssue.projectWorkspaceKey
+            ? importedProjectWorkspaceIdByProjectSlug.get(projectSlugForWorkspace)?.get(manifestIssue.projectWorkspaceKey) ?? null
             : null;
           if (manifestIssue.projectWorkspaceKey && !projectWorkspaceId) {
             warnings.push(`Task ${manifestIssue.slug} references workspace key ${manifestIssue.projectWorkspaceKey}, but that workspace was not imported.`);
@@ -4927,6 +4943,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           }
           const createdIssue = await issues.create(targetCompany.id, {
             projectId,
+            projectIds: projectIds.length > 0 ? projectIds : undefined,
             projectWorkspaceId,
             title: manifestIssue.title,
             description,

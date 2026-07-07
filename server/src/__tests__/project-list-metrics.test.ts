@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildProjectListMetricMaps } from "../services/projects.ts";
+import { buildProjectListMetricMaps, buildTaskCountRows } from "../services/projects.ts";
 
 describe("buildProjectListMetricMaps", () => {
   it("maps task counts by project, coercing string counts to numbers", () => {
@@ -22,6 +22,22 @@ describe("buildProjectListMetricMaps", () => {
     );
 
     expect(taskCountByProjectId.size).toBe(0);
+  });
+
+  it("builds task counts from issue project memberships without double-counting legacy primary rows", () => {
+    const rows = buildTaskCountRows([
+      { projectId: "p1", issueId: "i1" },
+      { projectId: "p2", issueId: "i1" },
+      { projectId: "p1", issueId: "i1" },
+      { projectId: "p2", issueId: "i2" },
+      { projectId: null, issueId: "i3" },
+    ]);
+
+    const { taskCountByProjectId } = buildProjectListMetricMaps(rows, []);
+
+    expect(taskCountByProjectId.get("p1")).toBe(1);
+    expect(taskCountByProjectId.get("p2")).toBe(2);
+    expect(taskCountByProjectId.size).toBe(2);
   });
 
   it("maps positive budgets with their window kind", () => {

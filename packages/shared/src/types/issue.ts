@@ -80,6 +80,14 @@ export interface IssueLabel {
   updatedAt: Date;
 }
 
+export interface IssueProjectSummary {
+  id: string;
+  name: string;
+  color: string | null;
+  icon: string | null;
+  isPrimary: boolean;
+}
+
 export interface IssueAssigneeAdapterOverrides {
   modelProfile?: ModelProfileKey;
   adapterConfig?: Record<string, unknown>;
@@ -139,6 +147,7 @@ export type AcceptedPlanDecompositionStatus = "in_flight" | "completed";
 
 export interface AcceptedPlanDecompositionChild {
   projectId?: string | null;
+  projectIds?: string[];
   projectWorkspaceId?: string | null;
   goalId?: string | null;
   blockedByIssueIds?: string[];
@@ -762,6 +771,7 @@ export interface Issue {
   documentSummaries?: IssueDocumentSummary[];
   legacyPlanDocument?: LegacyPlanDocument | null;
   project?: Project | null;
+  projects?: IssueProjectSummary[];
   goal?: Goal | null;
   currentExecutionWorkspace?: ExecutionWorkspace | null;
   workProducts?: IssueWorkProduct[];

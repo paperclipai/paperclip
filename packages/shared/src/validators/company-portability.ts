@@ -152,6 +152,7 @@ export const portabilityIssueManifestEntrySchema = z.object({
   title: z.string().min(1),
   path: z.string().min(1),
   projectSlug: z.string().min(1).nullable(),
+  projectIds: z.array(z.string().min(1)).optional(),
   projectWorkspaceKey: z.string().min(1).nullable(),
   assigneeAgentSlug: z.string().min(1).nullable(),
   description: z.string().nullable(),

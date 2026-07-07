@@ -113,6 +113,7 @@ export interface CompanyPortabilityIssueManifestEntry {
   title: string;
   path: string;
   projectSlug: string | null;
+  projectIds?: string[];
   projectWorkspaceKey: string | null;
   assigneeAgentSlug: string | null;
   description: string | null;
