@@ -421,4 +421,154 @@ describe("agent routes adapter validation", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
   });
+
+  describe("paperclipSafetyPosture tripwire (SAG-6363)", () => {
+    async function createAppWithActor(actor: Record<string, unknown>) {
+      const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+        vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+        vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      ]);
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        (req as any).actor = actor;
+        next();
+      });
+      const db = {
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn(async () => [
+              {
+                id: "company-1",
+                requireBoardApprovalForNewAgents: false,
+              },
+            ]),
+          })),
+        })),
+      };
+      app.use("/api", agentRoutes(db as any));
+      app.use(errorHandler);
+      return app;
+    }
+
+    it("rejects agent-authenticated creation missing paperclipSafetyPosture.safetyClass", async () => {
+      const app = await createAppWithActor({
+        type: "agent",
+        agentId: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "run-1",
+      });
+
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Hired By Agent",
+            adapterType: "process",
+            adapterConfig: {},
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error)).toContain("paperclipSafetyPosture.safetyClass is required");
+      expect(mockAgentService.create).not.toHaveBeenCalled();
+    });
+
+    it("allows agent-authenticated creation with a valid safetyClass", async () => {
+      const app = await createAppWithActor({
+        type: "agent",
+        agentId: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "run-1",
+      });
+
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Hired By Agent",
+            adapterType: "process",
+            adapterConfig: {
+              paperclipSafetyPosture: { safetyClass: "conditional_write" },
+            },
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+    });
+
+    it("does not require paperclipSafetyPosture for board-authenticated creation", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Board Created",
+            adapterType: "process",
+            adapterConfig: {},
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+    });
+
+    it("rejects an unknown safetyClass value even for board-authenticated creation", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Board Created",
+            adapterType: "process",
+            adapterConfig: {
+              paperclipSafetyPosture: { safetyClass: "made_up_value" },
+            },
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error)).toContain("safetyClass must be one of");
+      expect(mockAgentService.create).not.toHaveBeenCalled();
+    });
+
+    it("rejects diagnostic_canary paired with a true dangerous bypass flag", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Canary",
+            adapterType: "codex_local",
+            adapterConfig: {
+              dangerouslyBypassApprovalsAndSandbox: true,
+              paperclipSafetyPosture: { safetyClass: "diagnostic_canary" },
+            },
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error)).toContain('requires dangerouslySkipPermissions/dangerouslyBypassApprovalsAndSandbox/dangerouslyBypassSandbox to all be false');
+      expect(mockAgentService.create).not.toHaveBeenCalled();
+    });
+
+    it("allows read_only_auditor with the bypass flag explicitly false", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Auditor",
+            adapterType: "codex_local",
+            adapterConfig: {
+              dangerouslyBypassApprovalsAndSandbox: false,
+              paperclipSafetyPosture: { safetyClass: "read_only_auditor" },
+            },
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+    });
+  });
 });

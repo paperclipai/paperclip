@@ -78,6 +78,34 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
+// AGENT_OPERATIONS_GUIDE §1.6.7 ratified enum — the six declared safety
+// classes an agent's adapterConfig.paperclipSafetyPosture.safetyClass MUST
+// be one of.
+export const PAPERCLIP_SAFETY_CLASSES = [
+  "frontier_unattended",
+  "engineering_ic_unattended",
+  "read_write_episodic",
+  "conditional_write",
+  "read_only_auditor",
+  "diagnostic_canary",
+] as const;
+export type PaperclipSafetyClass = (typeof PAPERCLIP_SAFETY_CLASSES)[number];
+
+// §1.6.7 auditable invariant: these classes MUST NOT carry a true dangerous
+// bypass flag.
+export const PAPERCLIP_SAFETY_CLASSES_REQUIRING_BYPASS_FALSE: readonly PaperclipSafetyClass[] = [
+  "read_only_auditor",
+  "diagnostic_canary",
+];
+
+// The adapterConfig keys §1.6/§1.6.2b treat as "the dangerous bypass flag",
+// across adapter types.
+export const AGENT_DANGEROUS_BYPASS_FLAG_KEYS = [
+  "dangerouslySkipPermissions",
+  "dangerouslyBypassApprovalsAndSandbox",
+  "dangerouslyBypassSandbox",
+] as const;
+
 // Config keys owned by Paperclip/company state rather than one concrete adapter.
 // `paperclipSkillSync` is persisted in adapterConfig but must survive adapter swaps.
 export const ADAPTER_AGNOSTIC_KEYS = [

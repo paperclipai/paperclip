@@ -59,6 +59,7 @@ Use it for every path: exact template, adjacent template, or generic fallback.
 - [ ] Adapter config matches this Paperclip instance (cwd, model, credentials) per `/llms/agent-configuration/<adapter>.txt`
 - [ ] Local managed-bundle adapters send custom instructions through top-level `instructionsBundle.files["AGENTS.md"]` and do not set `adapterConfig.promptTemplate` or `bootstrapPromptTemplate`
 - [ ] Placeholders like `{{companyName}}`, `{{managerTitle}}`, `{{issuePrefix}}`, and any URL stubs are replaced with real values
+- [ ] `adapterConfig.paperclipSafetyPosture.safetyClass` is set to exactly one of: `frontier_unattended`, `engineering_ic_unattended`, `read_write_episodic`, `conditional_write`, `read_only_auditor`, `diagnostic_canary` (§1.6.5/§1.6.7 tripwire — omitting this is rejected at submit time for agent-driven hires)
 
 ## H. Safety and permissions (least privilege)
 
@@ -92,4 +93,5 @@ Use it for every path: exact template, adjacent template, or generic fallback.
 - **Timer-heartbeat-by-default.** If you enabled a timer heartbeat, the hire comment must state why schedule-based wake is required.
 - **No confidential path for sensitive work.** Roles that may receive private advisories or incident details need a private workflow, not normal issue comments.
 - **Missing governance fields.** A hire without `sourceIssueId`, `icon`, or a resolvable reporting line is hard to audit later.
+- **Missing or inconsistent `safetyClass`.** A `read_only_auditor`/`diagnostic_canary` hire with any dangerous-bypass flag set to `true`, or any agent-driven hire missing `paperclipSafetyPosture.safetyClass` entirely, is rejected by the server at submit time (§1.6.5/§1.6.7).
 - **Unreplaced placeholders.** `{{companyName}}`, `{{managerTitle}}`, and URL stubs in a submitted draft are the most common rejected-hire defect — grep the draft for `{{` before submitting.
