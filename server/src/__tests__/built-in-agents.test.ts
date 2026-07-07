@@ -180,6 +180,26 @@ describeEmbeddedPostgres("built-in agents", () => {
       details: { code: "built_in_agent_not_configured", status: "pending_approval" },
     });
 
+    await expect(agentService(db).update(result.state.agentId!, {
+      adapterType: "process",
+      adapterConfig: { command: "echo tampered" },
+    })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "pending_approval_agent_config_frozen",
+        agentId: result.state.agentId,
+        fields: ["adapterConfig"],
+      },
+    });
+
+    await db
+      .update(agents)
+      .set({
+        adapterType: "process",
+        adapterConfig: { command: "echo tampered" },
+      })
+      .where(eq(agents.id, result.state.agentId!));
+
     await approvalService(db).approve(result.approval!.id, "board-user", "Approved built-in agent");
 
     await expect(builtIns.get(companyId, "briefs")).resolves.toMatchObject({
