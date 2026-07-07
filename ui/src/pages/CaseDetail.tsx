@@ -21,12 +21,16 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/StatusBadge";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { CaseFieldsPanel } from "@/components/CaseFieldsPanel";
+import { CaseActivityFeed, CaseEventRow } from "@/components/CaseActivityFeed";
+import { CaseRevisionRail } from "@/components/CaseRevisionRail";
+import { CaseChildrenTree } from "@/components/CaseChildrenTree";
+import { CaseAttachmentsGallery } from "@/components/CaseAttachmentsGallery";
 import { EntityRow } from "@/components/EntityRow";
-import { relativeTime } from "@/lib/utils";
 
 const STATUS_LABEL: Record<CaseStatus, string> = {
   draft: "Draft",
@@ -35,20 +39,6 @@ const STATUS_LABEL: Record<CaseStatus, string> = {
   approved: "Approved",
   done: "Done",
   cancelled: "Cancelled",
-};
-
-const EVENT_LABEL: Record<string, string> = {
-  created: "created",
-  updated: "updated",
-  fields_changed: "fields changed",
-  status_changed: "status changed",
-  issue_linked: "issue linked",
-  issue_unlinked: "issue unlinked",
-  document_revised: "document revised",
-  child_linked: "child linked",
-  attachment_added: "attachment added",
-  label_added: "label added",
-  label_removed: "label removed",
 };
 
 const ROLE_LABEL: Record<string, string> = { origin: "origin", work: "work", reference: "reference" };
@@ -196,31 +186,6 @@ function CaseLabelsPicker({
   );
 }
 
-function CaseEventRow({ event }: { event: CaseEvent }) {
-  const detail =
-    event.kind === "status_changed" && event.payload
-      ? `${(event.payload.previousStatus as string) ?? "?"} → ${(event.payload.status as string) ?? "?"}`
-      : "";
-  const actor =
-    event.actorType === "system"
-      ? "system"
-      : event.actorType === "agent"
-        ? "agent"
-        : "user";
-  return (
-    <div className="flex items-start gap-2 py-1.5 text-xs">
-      <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
-      <div className="min-w-0 flex-1">
-        <span className="font-medium">{EVENT_LABEL[event.kind] ?? event.kind}</span>
-        {detail && <span className="text-muted-foreground"> · {detail}</span>}
-        <div className="text-muted-foreground">
-          {actor} · {relativeTime(event.createdAt)}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /** Right-rail content pushed into the shared PropertiesPanel (§3). */
 function CaseSidePanel({
   caseData,
@@ -258,22 +223,10 @@ function CaseSidePanel({
       </section>
 
       <section className="space-y-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Children</h3>
-        {childCases.length === 0 ? (
-          <p className="text-xs text-muted-foreground">None yet</p>
-        ) : (
-          <div className="space-y-1">
-            {childCases.map((child) => (
-              <EntityRow
-                key={child.id}
-                to={`/cases/${child.identifier}`}
-                identifier={child.identifier}
-                title={child.title}
-                trailing={<StatusBadge status={child.status} />}
-              />
-            ))}
-          </div>
-        )}
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Children {childCases.length > 0 && <span className="text-muted-foreground/70">({childCases.length})</span>}
+        </h3>
+        <CaseChildrenTree children={childCases} />
       </section>
 
       <section className="space-y-1">
@@ -282,8 +235,8 @@ function CaseSidePanel({
           <p className="text-xs text-muted-foreground">No activity yet</p>
         ) : (
           <div className="divide-y divide-border">
-            {events.slice(0, 3).map((event) => (
-              <CaseEventRow key={event.id} event={event} />
+            {events.slice(0, 4).map((event) => (
+              <CaseEventRow key={event.id} event={event} compact />
             ))}
           </div>
         )}
@@ -308,22 +261,19 @@ export function CaseDetail() {
 
   const eventsQuery = useQuery({
     queryKey: queryKeys.cases.events(caseIdentifier ?? ""),
-    queryFn: () => casesApi.listEvents(caseIdentifier!, 20),
+    queryFn: () => casesApi.listEvents(caseIdentifier!, 100),
     enabled: !!caseIdentifier,
   });
 
-  // Children are derived client-side: the list endpoint returns every case row
-  // (no status filter → all statuses), filtered by parentCaseId. P4 owns the
-  // richer children tree.
+  // Children come from the server-side parent filter (P4). All statuses, so the
+  // tree shows completed/cancelled children too — it's a structural view, not a
+  // work queue.
   const childrenQuery = useQuery({
     queryKey: queryKeys.cases.children(caseData?.id ?? ""),
-    queryFn: () => casesApi.list(selectedCompanyId!, { limit: 200 }),
+    queryFn: () => casesApi.listChildren(selectedCompanyId!, caseData!.id),
     enabled: !!selectedCompanyId && !!caseData?.id,
   });
-  const children = useMemo(
-    () => (childrenQuery.data ?? []).filter((c) => c.parentCaseId === caseData?.id),
-    [childrenQuery.data, caseData?.id],
-  );
+  const children = useMemo(() => childrenQuery.data ?? [], [childrenQuery.data]);
 
   const patchMutation = useMutation({
     mutationFn: (input: { status?: CaseStatus; labelIds?: string[] }) =>
@@ -401,12 +351,9 @@ export function CaseDetail() {
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-          {caseData.parentCaseId ? (
-            <Link
-              to={`/cases/${caseData.parentCaseId}`}
-              className="hover:underline"
-            >
-              ↑ parent case
+          {caseData.parent ? (
+            <Link to={`/cases/${caseData.parent.identifier}`} className="hover:underline">
+              ↑ {caseData.parent.identifier} — {caseData.parent.title}
             </Link>
           ) : (
             <span />
@@ -415,25 +362,67 @@ export function CaseDetail() {
         </div>
       </header>
 
-      <CaseFieldsPanel fields={caseData.fields} />
+      <Tabs defaultValue="overview" className="space-y-4">
+        <TabsList variant="line" className="w-full justify-start gap-1">
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="activity">
+            Activity{events.length > 0 && <span className="ml-1 text-muted-foreground">{events.length}</span>}
+          </TabsTrigger>
+          <TabsTrigger value="revisions">Revisions</TabsTrigger>
+        </TabsList>
 
-      <section className="space-y-2">
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-sm font-semibold">Body</h2>
-          {bodyDoc && (
-            <span className="text-xs text-muted-foreground">
-              document · rev {bodyDoc.document.latestRevisionNumber ?? 1}
-            </span>
+        <TabsContent value="overview" className="space-y-6">
+          <CaseFieldsPanel fields={caseData.fields} />
+
+          <section className="space-y-2">
+            <div className="flex items-baseline justify-between">
+              <h2 className="text-sm font-semibold">Body</h2>
+              {bodyDoc && (
+                <span className="text-xs text-muted-foreground">
+                  document · rev {bodyDoc.document.latestRevisionNumber ?? 1}
+                </span>
+              )}
+            </div>
+            <Card className="px-4 py-3">
+              {bodyDoc?.document.latestBody ? (
+                <MarkdownBody linkIssueReferences linkCaseReferences>
+                  {bodyDoc.document.latestBody}
+                </MarkdownBody>
+              ) : (
+                <p className="text-sm text-muted-foreground">No body document yet</p>
+              )}
+            </Card>
+          </section>
+
+          {children.length > 0 && (
+            <section className="space-y-2">
+              <h2 className="text-sm font-semibold">Children ({children.length})</h2>
+              <CaseChildrenTree children={children} />
+            </section>
           )}
-        </div>
-        <Card className="px-4 py-3">
-          {bodyDoc?.document.latestBody ? (
-            <MarkdownBody linkIssueReferences>{bodyDoc.document.latestBody}</MarkdownBody>
+
+          {caseData.attachments.length > 0 && (
+            <section className="space-y-2">
+              <h2 className="text-sm font-semibold">Attachments ({caseData.attachments.length})</h2>
+              <CaseAttachmentsGallery attachments={caseData.attachments} />
+            </section>
+          )}
+        </TabsContent>
+
+        <TabsContent value="activity">
+          <CaseActivityFeed events={events} />
+        </TabsContent>
+
+        <TabsContent value="revisions">
+          {bodyDoc ? (
+            <CaseRevisionRail caseIdentifier={caseData.identifier} documentKey="body" />
           ) : (
-            <p className="text-sm text-muted-foreground">No body document yet</p>
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              No documents to show revisions for.
+            </p>
           )}
-        </Card>
-      </section>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

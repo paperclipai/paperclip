@@ -81,8 +81,27 @@ export interface CaseAttachmentRef {
   updatedAt: string;
 }
 
+/** A lightweight parent reference embedded in the detail payload. */
+export interface CaseParentRef {
+  id: string;
+  identifier: string;
+  title: string;
+  caseType: string;
+  status: CaseStatus;
+}
+
+/** Content URL for an attachment's asset (served by the assets route). */
+export function caseAttachmentUrl(attachment: CaseAttachmentRef): string {
+  return `/api/assets/${attachment.asset.id}/content`;
+}
+
+export function isImageAttachment(attachment: CaseAttachmentRef): boolean {
+  return attachment.asset.contentType.startsWith("image/");
+}
+
 /** The full detail payload (loadCaseDetail on the server). */
 export interface CaseDetail extends CaseSummary {
+  parent: CaseParentRef | null;
   labels: IssueLabel[];
   issueLinks: CaseIssueLink[];
   documents: CaseDocumentRef[];
@@ -102,6 +121,14 @@ export type CaseEventKind =
   | "label_added"
   | "label_removed";
 
+/** Run→issue attribution shared by feed rows and revisions. */
+export interface CaseAttributionIssue {
+  id: string;
+  identifier: string;
+  title: string;
+  status: string;
+}
+
 export interface CaseEvent {
   id: string;
   caseId: string;
@@ -112,6 +139,52 @@ export interface CaseEvent {
   runId: string | null;
   payload: Record<string, unknown>;
   createdAt: string;
+  /** Display name of the acting agent (P4 enrichment), null for user/system. */
+  actorAgentName: string | null;
+  /** Issue whose run produced this event, if any (P4 attribution). */
+  issue: CaseAttributionIssue | null;
+}
+
+/** One revision of a case document, with author + via-issue attribution. */
+export interface CaseDocumentRevision {
+  id: string;
+  revisionNumber: number;
+  title: string;
+  format: string;
+  body: string | null;
+  changeSummary: string | null;
+  createdAt: string;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdByRunId: string | null;
+  actorAgentName: string | null;
+  issue: CaseAttributionIssue | null;
+}
+
+export interface CaseDocumentRevisions {
+  key: string;
+  document: {
+    id: string;
+    title: string;
+    format: string;
+    latestRevisionId: string | null;
+    latestRevisionNumber: number | null;
+  };
+  revisions: CaseDocumentRevision[];
+}
+
+/** A case linked to an issue, as returned by the issue-page rail endpoint. */
+export interface IssueCaseLink {
+  id: string;
+  role: CaseLinkRole;
+  createdAt: string;
+  case: {
+    id: string;
+    identifier: string;
+    title: string;
+    caseType: string;
+    status: CaseStatus;
+  };
 }
 
 export interface ListCasesParams {
@@ -119,6 +192,8 @@ export interface ListCasesParams {
   status?: string;
   projectId?: string;
   labelId?: string;
+  /** Filter to direct children of a parent case id (P4 children tree). */
+  parent?: string;
   q?: string;
   limit?: number;
 }
@@ -129,6 +204,7 @@ function toQuery(params: ListCasesParams): string {
   if (params.status) search.set("status", params.status);
   if (params.projectId) search.set("projectId", params.projectId);
   if (params.labelId) search.set("labelId", params.labelId);
+  if (params.parent) search.set("parent", params.parent);
   if (params.q) search.set("q", params.q);
   if (params.limit != null) search.set("limit", String(params.limit));
   const qs = search.toString();
@@ -148,4 +224,10 @@ export const casesApi = {
     api.patch<CaseDetail>(`/cases/${idOrIdentifier}`, input),
   listEvents: (idOrIdentifier: string, limit = 100) =>
     api.get<CaseEvent[]>(`/cases/${idOrIdentifier}/events?limit=${limit}`),
+  listChildren: (companyId: string, parentId: string) =>
+    api.get<CaseSummary[]>(`/companies/${companyId}/cases${toQuery({ parent: parentId, limit: 200 })}`),
+  listRevisions: (idOrIdentifier: string, key: string) =>
+    api.get<CaseDocumentRevisions>(`/cases/${idOrIdentifier}/documents/${key}/revisions`),
+  listForIssue: (issueIdOrIdentifier: string) =>
+    api.get<IssueCaseLink[]>(`/issues/${issueIdOrIdentifier}/cases`),
 };

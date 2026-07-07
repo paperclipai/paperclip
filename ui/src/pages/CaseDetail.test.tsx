@@ -70,6 +70,7 @@ function detail(): CaseDetailData {
     summary: null,
     status: "in_review",
     fields: { slug: "hermes-agent-post", word_count: 1850, published: true },
+    parent: null,
     parentCaseId: null,
     createdByAgentId: null,
     createdByUserId: null,
