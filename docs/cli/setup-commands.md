@@ -54,6 +54,58 @@ pnpm paperclipai onboard --yes
 
 On an existing install, `--yes` now preserves the current config and just starts Paperclip with that setup.
 
+## Worktree Helpers (Safe Workspace Initialization)
+
+Paperclip can run local agent workflows from an isolated git worktree instance. Use these when you want to test agent runs without impacting your primary instance.
+
+```sh
+# Create a new worktree and initialize its own Paperclip instance
+pnpm paperclipai worktree:make team-a
+
+# Create a worktree inside an existing checkout (repo-local)
+pnpm paperclipai worktree init --name team-a
+
+# List candidate worktrees
+pnpm paperclipai worktree:list
+
+# Print shell exports for the active worktree config
+pnpm paperclipai worktree env
+
+# Re-seed a live worktree from another Paperclip checkout
+pnpm paperclipai worktree reseed --from . --to team-a
+
+# Repair an existing worktree instance if metadata was partially removed
+pnpm paperclipai worktree repair --branch team-a
+```
+
+### Recommended Initialization Flow
+
+1. `worktree:make` (or `worktree init` if the worktree already exists)
+2. `worktree env` to load the generated `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID`
+3. `paperclipai run` to start that instance
+4. Run `paperclipai doctor` after first boot to confirm migration and secrets state
+
+### Safety and Cleanup
+
+Use full seeding only when you need shared runtime state (agents, projects, and credentials), otherwise keep `seed-mode minimal` for faster startup:
+
+```sh
+pnpm paperclipai worktree:make team-a --seed-mode minimal
+pnpm paperclipai worktree:make team-a --seed-mode full
+```
+
+When an isolated workspace is no longer needed, clean it up explicitly:
+
+```sh
+pnpm paperclipai worktree:cleanup team-a --force
+```
+
+Keep a safety copy of active tasks first if needed before cleanup:
+
+```sh
+pnpm paperclipai issue list --company-id <company-id> --status in_progress
+```
+
 ## `paperclipai doctor`
 
 Health checks with optional auto-repair:
