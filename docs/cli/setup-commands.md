@@ -62,7 +62,7 @@ Paperclip can run local agent workflows from an isolated git worktree instance. 
 # Create a new worktree and initialize its own Paperclip instance
 pnpm paperclipai worktree:make team-a
 
-# Create a worktree inside an existing checkout (repo-local)
+# Initialize repo-local Paperclip config inside an existing worktree
 pnpm paperclipai worktree init --name team-a
 
 # List candidate worktrees
@@ -80,18 +80,18 @@ pnpm paperclipai worktree repair --branch team-a
 
 ### Recommended Initialization Flow
 
-1. `worktree:make` (or `worktree init` if the worktree already exists)
-2. `worktree env` to load the generated `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID`
-3. `paperclipai run` to start that instance
-4. Run `paperclipai doctor` after first boot to confirm migration and secrets state
+1. `pnpm paperclipai worktree:make` (or `pnpm paperclipai worktree init` if the worktree already exists)
+2. `eval "$(pnpm paperclipai worktree env)"` to apply the generated `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` exports in bash/zsh
+3. `pnpm paperclipai run` to start that instance
+4. Run `pnpm paperclipai doctor` after first boot to confirm migration and secrets state
 
 ### Safety and Cleanup
 
-Use full seeding only when you need shared runtime state (agents, projects, and credentials), otherwise keep `seed-mode minimal` for faster startup:
+Use full seeding only when you need shared runtime state (agents, projects, and credentials), otherwise keep `--seed-mode minimal` for faster startup:
 
 ```sh
 pnpm paperclipai worktree:make team-a --seed-mode minimal
-pnpm paperclipai worktree:make team-a --seed-mode full
+pnpm paperclipai worktree:make team-a-full --seed-mode full
 ```
 
 When an isolated workspace is no longer needed, clean it up explicitly:
