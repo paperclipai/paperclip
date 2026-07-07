@@ -37,6 +37,7 @@ Every open question from TOKEN-AUDIT.md §8 + batch logs and COMPONENT-INVENTORY
 | C8 | StatusBadge not wrapping Badge primitive | Document as intentional exception (WCAG-tuned .status-chip mechanic) | APPROVED — documented as intentional exception (WCAG-tuned .status-chip mechanic) |
 | C9 | Toast system (no shadcn primitive installed) | Keep custom toast; document as permanent choice (working tone/variant system; sonner migration = churn without user-visible gain) | DEFERRED to Run 4 — decide when toast palette colors get retokenized; sonner-behind-a-pushToast-facade is the alternative to evaluate |
 | C10 | FeatureGate wrapper pattern (3 near-identical gates) | Nice-to-have shared primitive; backlog, not a run | APPROVED — backlog nice-to-have, not a run |
+| C11 | Sidebar agents section: hand-rolled rows (own spacing/icon colors, palette-blue liveness dot) instead of `SidebarNavItem`; only section that is collapsible | Run 3 item: unify rows onto `SidebarNavItem`, settle collapsibility policy across sections, liveness dot → canonical status blue. Wholesale shadcn Sidebar adoption REJECTED for now (app already has equivalent machinery incl. icon-rail height trick; highest-regression chrome) — re-evaluate as a dedicated item after Run 3 only if its behaviors (kbd shortcut, persisted state, mobile sheet) are wanted | APPROVED — user-spotted during :3300 test drive (Jul 6), queued for Run 3 |
 
 ## Gallery feedback round 1 (preset-tune session, Jul 6) — executed
 
