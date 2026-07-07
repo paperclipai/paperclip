@@ -24,7 +24,7 @@ import type {
   IssueRecoveryAction,
 } from "@paperclipai/shared";
 import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@paperclipai/shared";
-import { notFound, unprocessable } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -322,6 +322,42 @@ function assertBranchReconcileWorkspaceIsSafe(input: {
         serviceName: service.serviceName,
         status: service.status,
       })),
+    });
+  }
+}
+
+function assertLockedBranchReconcileWorkspaceStillMatchesInspection(input: {
+  lockedRow: ExecutionWorkspaceRow;
+  inspectedRow: ExecutionWorkspaceRow;
+  inspection: ExecutionWorkspaceBranchReconcileInspection;
+}) {
+  const lockedPath = readNullableString(input.lockedRow.providerRef) ?? readNullableString(input.lockedRow.cwd);
+  const lockedBranch = readNullableString(input.lockedRow.branchName);
+  const currentPath = lockedPath ? path.resolve(lockedPath) : null;
+
+  if (
+    input.lockedRow.status !== input.inspectedRow.status ||
+    input.lockedRow.sourceIssueId !== input.inspectedRow.sourceIssueId ||
+    input.lockedRow.projectWorkspaceId !== input.inspectedRow.projectWorkspaceId ||
+    lockedBranch !== input.inspection.fromBranch ||
+    currentPath !== input.inspection.worktreePath
+  ) {
+    throw conflict("Execution workspace changed during branch reconciliation; retry with the latest workspace state", {
+      workspaceId: input.lockedRow.id,
+      expected: {
+        status: input.inspectedRow.status,
+        sourceIssueId: input.inspectedRow.sourceIssueId,
+        projectWorkspaceId: input.inspectedRow.projectWorkspaceId,
+        branchName: input.inspection.fromBranch,
+        worktreePath: input.inspection.worktreePath,
+      },
+      current: {
+        status: input.lockedRow.status,
+        sourceIssueId: input.lockedRow.sourceIssueId,
+        projectWorkspaceId: input.lockedRow.projectWorkspaceId,
+        branchName: lockedBranch,
+        worktreePath: currentPath,
+      },
     });
   }
 }
@@ -1326,6 +1362,7 @@ export function executionWorkspaceService(db: Db) {
       const reason = readNullableString(input.reason);
       const now = new Date();
       return db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
         const lockedRow = await tx
           .select()
           .from(executionWorkspaces)
@@ -1334,8 +1371,44 @@ export function executionWorkspaceService(db: Db) {
           .then((rows) => rows[0] ?? null);
         if (!lockedRow) throw notFound("Execution workspace not found");
 
+        assertLockedBranchReconcileWorkspaceStillMatchesInspection({
+          lockedRow,
+          inspectedRow: existingRow,
+          inspection,
+        });
+
+        if (usesInheritedProjectRuntimeServices(lockedRow)) {
+          await tx
+            .select({ id: projectWorkspaces.id })
+            .from(projectWorkspaces)
+            .where(
+              and(
+                eq(projectWorkspaces.companyId, lockedRow.companyId),
+                eq(projectWorkspaces.id, lockedRow.projectWorkspaceId!),
+              ),
+            )
+            .for("update");
+        }
+
+        await tx
+          .select({ id: workspaceRuntimeServices.id })
+          .from(workspaceRuntimeServices)
+          .where(
+            usesInheritedProjectRuntimeServices(lockedRow)
+              ? and(
+                  eq(workspaceRuntimeServices.companyId, lockedRow.companyId),
+                  eq(workspaceRuntimeServices.projectWorkspaceId, lockedRow.projectWorkspaceId!),
+                  eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+                )
+              : and(
+                  eq(workspaceRuntimeServices.companyId, lockedRow.companyId),
+                  eq(workspaceRuntimeServices.executionWorkspaceId, lockedRow.id),
+                ),
+          )
+          .for("update");
+
         const lockedRuntimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(
-          tx,
+          txDb,
           lockedRow.companyId,
           [lockedRow],
         );
