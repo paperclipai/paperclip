@@ -54,3 +54,5 @@ No visual redesign, no new colors or typefaces, no layout restructuring, no new 
 ## Prior art (read before auditing)
 
 See `doc/design/PRIOR-ART.md` — a previous audit pass (PAP-280/283/284, on the `PAP-282-playground` branch, NOT on master) found that of ~220 hardcoded drift sites, only 6 were exact-value-mappable to existing tokens; expect the verbatim extraction to mint many new tokens that the human scale-collapse step later merges. It also drafted usage rules (radius tiers, CTA tiers, named type styles) that are good candidates for the post-audit scale decision.
+
+How-to guide for day-to-day UI changes: see `doc/design/CHANGING-THE-UI.md`.
