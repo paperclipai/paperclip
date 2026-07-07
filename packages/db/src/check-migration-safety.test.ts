@@ -218,6 +218,25 @@ describe("migration safety check", () => {
     );
   });
 
+  it("flags UPDATE ... FROM (SELECT ... FETCH FIRST N ROWS WITH TIES) subquery batch on a large table", () => {
+    const result = analyze(`
+      UPDATE "issue_comments" c
+      SET "derived_author_agent_id" = NULL
+      FROM (
+        SELECT "id"
+        FROM "issue_comments"
+        WHERE "author_agent_id" IS NULL
+        ORDER BY "id"
+        FETCH FIRST 5000 ROWS WITH TIES
+      ) batch
+      WHERE c."id" = batch."id";
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "batched-mutation-large-table-missing-index",
+    );
+  });
+
   it("flags UPDATE ... WHERE IN (SELECT ... LIMIT N) subquery batch on a large table", () => {
     const result = analyze(`
       UPDATE "issue_comments"
