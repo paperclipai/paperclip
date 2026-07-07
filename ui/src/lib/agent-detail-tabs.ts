@@ -15,3 +15,13 @@ export function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "runs") return value;
   return "dashboard";
 }
+
+export function resolveCanonicalAgentTab(
+  activeView: AgentDetailView,
+  pluginSlotsLoading: boolean,
+  availablePluginTabs: ReadonlySet<string>
+): AgentDetailView | null {
+  if (!isAgentPluginDetailView(activeView)) return activeView;
+  if (pluginSlotsLoading) return null;
+  return availablePluginTabs.has(activeView) ? activeView : "dashboard";
+}

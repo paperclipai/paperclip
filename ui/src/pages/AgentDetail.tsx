@@ -56,6 +56,7 @@ import { describeRunRetryState } from "../lib/runRetryState";
 import {
   isAgentPluginDetailView,
   parseAgentDetailView,
+  resolveCanonicalAgentTab,
   type AgentDetailView,
   type AgentPluginDetailView,
 } from "../lib/agent-detail-tabs";
@@ -705,7 +706,7 @@ export function AgentDetail() {
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
   const agentLookupRef = agent?.id ?? routeAgentRef;
   const resolvedAgentId = agent?.id ?? null;
-  const { slots: pluginDetailSlots } = usePluginSlots({
+  const { slots: pluginDetailSlots, isLoading: pluginDetailSlotsLoading } = usePluginSlots({
     slotTypes: ["detailTab"],
     entityType: "agent",
     companyId: resolvedCompanyId,
@@ -806,25 +807,27 @@ export function AgentDetail() {
       }
       return;
     }
-    const canonicalTab =
-      activeView === "instructions"
-        ? "instructions"
-        : activeView === "configuration"
-          ? "configuration"
-          : activeView === "skills"
-            ? "skills"
-            : activeView === "runs"
-              ? "runs"
-              : activeView === "budget"
-                ? "budget"
-                : isAgentPluginDetailView(activeView)
-                  ? activeView
-                  : "dashboard";
+    const canonicalTab = resolveCanonicalAgentTab(
+      activeView,
+      pluginDetailSlotsLoading,
+      new Set(pluginTabItems.map((item) => item.value)),
+    );
+    if (canonicalTab === null) return;
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, navigate]);
+  }, [
+    agent,
+    routeAgentRef,
+    canonicalAgentRef,
+    urlRunId,
+    urlTab,
+    activeView,
+    pluginDetailSlotsLoading,
+    pluginTabItems,
+    navigate,
+  ]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
