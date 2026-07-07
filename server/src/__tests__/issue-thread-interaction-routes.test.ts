@@ -996,4 +996,18 @@ describe.sequential("issue thread interaction routes", () => {
       },
     );
   });
+
+  it("rejects question responses with no answers before service resolution", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({
+        answers: [],
+        summaryMarkdown: "Board approved all issue gates in current sweep; selected the positive/recommended approval path where available.",
+      });
+
+    expect(res.status).toBe(400);
+    expect(mockInteractionService.answerQuestions).not.toHaveBeenCalled();
+  });
 });
