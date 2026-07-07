@@ -1047,6 +1047,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
   actualBranchName?: string | null;
   heartbeatRunId?: string | null;
   enableWorkspaceBranchReconcileForward?: boolean;
+  persistForwardReconcile?: boolean;
   reconcileOperationPhase?: "worktree_prepare" | "workspace_finalize";
   recorder?: WorkspaceOperationRecorder | null;
 }): Promise<GitWorktreeBranchCoherenceResult> {
@@ -1075,7 +1076,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
     currentBranch
   ) {
     const reason = "Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch.";
-    if (input.executionWorkspaceId) {
+    if (input.executionWorkspaceId && input.persistForwardReconcile !== false) {
       if (!input.db) {
         evidence.safeRepair.reason = "forward reconciliation requires database access to update the execution workspace record";
         throw branchIncoherenceValidationFailure(evidence);
@@ -2284,11 +2285,15 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
         executionWorkspaceId: input.workspace.id ?? null,
         heartbeatRunId: input.heartbeatRunId ?? null,
         enableWorkspaceBranchReconcileForward: input.enableWorkspaceBranchReconcileForward === true,
+        persistForwardReconcile: false,
         reconcileOperationPhase: "worktree_prepare",
         recorder: input.recorder ?? null,
       });
       if (coherence.branchName) {
         realized.branchName = coherence.branchName;
+      }
+      if (coherence.reconciledForward) {
+        realized.pendingForwardBranchReconcile = coherence.pendingForwardBranchReconcile ?? null;
       }
       repairWarnings.push(...coherence.warnings);
     }

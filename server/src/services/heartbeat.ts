@@ -105,7 +105,6 @@ import {
   inspectManagedGitWorktreeBranch,
   persistAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
-  reconcilePendingForwardBranchAfterPersistence,
   releaseRuntimeServicesForRun,
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
@@ -1636,8 +1635,8 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   }
 
   const expectedManagedBranchName =
-    readNonEmptyString(input.persistedExecutionWorkspace?.branchName) ??
-    readNonEmptyString(input.executionWorkspace.branchName);
+    readNonEmptyString(input.executionWorkspace.branchName) ??
+    readNonEmptyString(input.persistedExecutionWorkspace?.branchName);
   if (
     input.persistedExecutionWorkspace?.strategyType === "git_worktree" &&
     effectiveCwd &&
@@ -2904,7 +2903,7 @@ export function resolveExecutionWorkspaceReuseProvisioningPolicy(input: {
   };
 }
 
-function formatInheritedExecutionWorkspaceFallbackWarning(input: {
+function formatInheritedExecutionWorkspaceReuseFailure(input: {
   reason: "inherited_workspace_reuse_failed" | "inherited_workspace_reuse_unavailable";
   issueRef: WorkspaceReuseIssueRef;
   runId: string;
@@ -2926,14 +2925,7 @@ function formatInheritedExecutionWorkspaceFallbackWarning(input: {
     ? `Issue ${issueLabel} requested inherited execution workspace reuse for ${workspaceLabel}, but the workspace could not be restored because ${causeMessage}.`
     : `Issue ${issueLabel} requested inherited execution workspace reuse for ${workspaceLabel}, but the workspace could not be restored.`;
 
-  return `${message} Paperclip provisioned a fresh execution workspace instead. ${remediation}`;
-}
-
-function appendWorkspaceWarning<T extends { warnings?: string[] }>(workspace: T, warning: string): T {
-  return {
-    ...workspace,
-    warnings: [...(Array.isArray(workspace.warnings) ? workspace.warnings : []), warning],
-  };
+  return `${message} ${remediation}`;
 }
 
 export async function provisionExecutionWorkspaceForFreshnessDecision<T extends { warnings?: string[] }>(input: {
@@ -2964,14 +2956,14 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T extends 
   }
 
   let restored: T | null = null;
-  let fallbackWarning: string | null = null;
+  let reuseFailure: string | null = null;
   try {
     restored = (await input.restoreExistingWorkspace?.()) ?? null;
   } catch (error) {
     if (isWorkspaceValidationFailure(error)) {
       throw error;
     }
-    fallbackWarning = formatInheritedExecutionWorkspaceFallbackWarning({
+    reuseFailure = formatInheritedExecutionWorkspaceReuseFailure({
       reason: "inherited_workspace_reuse_failed",
       issueRef: input.issueRef,
       runId: input.runId,
@@ -2982,7 +2974,7 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T extends 
   }
 
   if (!restored) {
-    fallbackWarning = fallbackWarning ?? formatInheritedExecutionWorkspaceFallbackWarning({
+    reuseFailure = reuseFailure ?? formatInheritedExecutionWorkspaceReuseFailure({
       reason: "inherited_workspace_reuse_unavailable",
       issueRef: input.issueRef,
       runId: input.runId,
@@ -2991,19 +2983,7 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T extends 
     });
   }
 
-  if (fallbackWarning) {
-    const executionWorkspace = appendWorkspaceWarning(await input.realizeWorkspace(), fallbackWarning);
-    return {
-      executionWorkspace,
-      reusedExecutionWorkspace: null,
-      policy: {
-        ...policy,
-        shouldRestoreExistingWorkspace: false,
-        shouldRefreshWorkspaceConfigSnapshot: false,
-        shouldPersistLatestWorkspaceConfigMetadata: true,
-      },
-    };
-  }
+  if (reuseFailure) throw new Error(reuseFailure);
   if (!restored) {
     throw new Error("Expected restored execution workspace after reuse fallback handling");
   }
@@ -7822,7 +7802,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const message = `Interrupted by graceful server shutdown (${signal}); retry queued for restart recovery`;
-      let interrupted = await setRunStatus(run.id, "interrupted", {
+      const interruptedStatus = await setRunStatusIfRunning(run.id, "interrupted", {
         finishedAt: now,
         error: message,
         errorCode: "server_shutdown_interrupted",
@@ -7833,12 +7813,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           errorMessage: message,
         }),
       });
+      if (!interruptedStatus.updated || !interruptedStatus.run) continue;
+      let interrupted = interruptedStatus.run;
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
         finishedAt: now,
         error: null,
       });
-      if (!interrupted) interrupted = await getRun(run.id);
-      if (!interrupted) continue;
       interrupted = await classifyAndPersistRunLiveness(interrupted, parseObject(interrupted.resultJson)) ?? interrupted;
 
       await releaseEnvironmentLeasesForRun({
@@ -11084,18 +11064,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       throw error;
     }
-    if (persistedExecutionWorkspace && pendingForwardBranchReconcile) {
-      await workspaceOperationRecorder.attachExecutionWorkspaceId(persistedExecutionWorkspace.id);
-      const reconcileResult = await reconcilePendingForwardBranchAfterPersistence({
-        db,
-        executionWorkspaceId: persistedExecutionWorkspace.id,
-        pending: pendingForwardBranchReconcile,
-        heartbeatRunId: run.id,
-        reconcileOperationPhase: "worktree_prepare",
-        recorder: workspaceOperationRecorder,
-      });
-      persistedExecutionWorkspace = reconcileResult.workspace;
-    }
     await workspaceOperationRecorder.attachExecutionWorkspaceId(persistedExecutionWorkspace?.id ?? null);
     await recordWorkspaceConfigFreshnessOperation({
       recorder: workspaceOperationRecorder,
@@ -11759,15 +11727,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   heartbeatRunId: run.id,
                   enableWorkspaceBranchReconcileForward:
                     resolvedInstanceSettings.experimental.enableWorkspaceBranchReconcileForward,
+                  persistForwardReconcile: false,
                   reconcileOperationPhase: "workspace_finalize",
                   recorder: workspaceOperationRecorder,
                 });
                 if (coherence.branchName && coherence.branchName !== branchInspection.workspaceRecord.branchName) {
                   repairedExpectedBranchName = coherence.branchName;
-                  persistedExecutionWorkspace = await executionWorkspacesSvc.update(branchInspection.workspaceRecord.id, {
-                    branchName: coherence.branchName,
-                    lastUsedAt: new Date(),
-                  }) ?? persistedExecutionWorkspace;
                   executionWorkspace.branchName = coherence.branchName;
                   executionWorkspace.warnings.push(...coherence.warnings);
                 }

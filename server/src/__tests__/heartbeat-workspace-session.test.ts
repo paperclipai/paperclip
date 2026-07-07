@@ -1334,7 +1334,7 @@ describe("effective run execution workspace config freshness", () => {
     });
   });
 
-  it("falls back to a fresh workspace when explicit reuse restore errors", async () => {
+  it("fails loudly when explicit reuse restore errors", async () => {
     const base = buildWorkspaceConfigMetadata();
     const next = buildWorkspaceConfigMetadata({
       repoRef: "origin/release",
@@ -1352,7 +1352,7 @@ describe("effective run execution workspace config freshness", () => {
     });
     const realizeWorkspace = vi.fn(async () => ({ id: "fallback-workspace", warnings: [] }));
 
-    const result = await provisionExecutionWorkspaceForFreshnessDecision({
+    await expect(provisionExecutionWorkspaceForFreshnessDecision({
       requestedShouldReuseExisting: true,
       existingExecutionWorkspaceId: "workspace-old",
       issueRef: { id: "issue-1", identifier: "PAP-42" },
@@ -1362,27 +1362,14 @@ describe("effective run execution workspace config freshness", () => {
         throw new Error("restore command failed");
       },
       realizeWorkspace,
-    });
-
-    expect(result).toMatchObject({
-      executionWorkspace: {
-        id: "fallback-workspace",
-        warnings: [expect.stringContaining("restore command failed")],
-      },
-      reusedExecutionWorkspace: null,
-      policy: expect.objectContaining({
-        shouldRestoreExistingWorkspace: false,
-        shouldRefreshWorkspaceConfigSnapshot: false,
-        shouldPersistLatestWorkspaceConfigMetadata: true,
-      }),
-    });
-    expect(realizeWorkspace).toHaveBeenCalledTimes(1);
+    })).rejects.toThrow(/restore command failed/);
+    expect(realizeWorkspace).not.toHaveBeenCalled();
   });
 
   it.each([
     { name: "missing", status: null },
     { name: "archived", status: "archived" },
-  ])("falls back to a fresh workspace when the inherited workspace row is $name", async ({ status }) => {
+  ])("fails loudly when the inherited workspace row is $name", async ({ status }) => {
     const reuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
       issueExecutionWorkspaceId: "workspace-old",
       issueExecutionWorkspacePreference: "reuse_existing",
@@ -1404,7 +1391,7 @@ describe("effective run execution workspace config freshness", () => {
     });
     const realizeWorkspace = vi.fn(async () => ({ id: "fallback-workspace", warnings: [] }));
 
-    const result = await provisionExecutionWorkspaceForFreshnessDecision({
+    await expect(provisionExecutionWorkspaceForFreshnessDecision({
       requestedShouldReuseExisting: reuseRequest.requestedShouldReuseExisting,
       existingExecutionWorkspaceId: reuseRequest.requestedExecutionWorkspaceId,
       issueRef: { id: "issue-1", identifier: "PAP-42" },
@@ -1414,17 +1401,11 @@ describe("effective run execution workspace config freshness", () => {
         ? async () => ({ id: "workspace-old", warnings: [] })
         : null,
       realizeWorkspace,
-    });
-
-    expect(result.executionWorkspace).toMatchObject({
-      id: "fallback-workspace",
-      warnings: [expect.stringContaining("provisioned a fresh execution workspace")],
-    });
-    expect(result.policy.shouldRestoreExistingWorkspace).toBe(false);
-    expect(realizeWorkspace).toHaveBeenCalledTimes(1);
+    })).rejects.toThrow(/could not be restored/);
+    expect(realizeWorkspace).not.toHaveBeenCalled();
   });
 
-  it("falls back to a fresh workspace when explicit reuse restore returns no workspace", async () => {
+  it("fails loudly when explicit reuse restore returns no workspace", async () => {
     const metadata = buildWorkspaceConfigMetadata();
     const decision = resolveExecutionWorkspaceConfigFreshness({
       hasExistingWorkspace: true,
@@ -1433,7 +1414,7 @@ describe("effective run execution workspace config freshness", () => {
     });
     const realizeWorkspace = vi.fn(async () => ({ id: "fallback-workspace", warnings: [] }));
 
-    const result = await provisionExecutionWorkspaceForFreshnessDecision({
+    await expect(provisionExecutionWorkspaceForFreshnessDecision({
       requestedShouldReuseExisting: true,
       existingExecutionWorkspaceId: "workspace-old",
       issueRef: { id: "issue-1", identifier: "PAP-42" },
@@ -1441,15 +1422,8 @@ describe("effective run execution workspace config freshness", () => {
       workspaceConfigFreshness: decision,
       restoreExistingWorkspace: async () => null,
       realizeWorkspace,
-    });
-
-    expect(result.executionWorkspace).toMatchObject({
-      id: "fallback-workspace",
-      warnings: [expect.stringContaining("provisioned a fresh execution workspace")],
-    });
-    expect(result.reusedExecutionWorkspace).toBeNull();
-    expect(result.policy.shouldRestoreExistingWorkspace).toBe(false);
-    expect(realizeWorkspace).toHaveBeenCalledTimes(1);
+    })).rejects.toThrow(/could not be restored/);
+    expect(realizeWorkspace).not.toHaveBeenCalled();
   });
 
   it("formats a safe workspace operation payload for config drift decisions", () => {

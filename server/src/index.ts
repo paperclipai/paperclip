@@ -802,6 +802,23 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<unknown>) | null = null;
+  let heartbeatSchedulerStopped = false;
+  let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+  const heartbeatSchedulerInFlight = new Set<Promise<void>>();
+  const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
+    let tracked: Promise<void>;
+    tracked = Promise.resolve(work)
+      .then(() => undefined, () => undefined)
+      .finally(() => {
+        heartbeatSchedulerInFlight.delete(tracked);
+      });
+    heartbeatSchedulerInFlight.add(tracked);
+  };
+  const waitForHeartbeatSchedulerIdle = async () => {
+    while (heartbeatSchedulerInFlight.size > 0) {
+      await Promise.allSettled([...heartbeatSchedulerInFlight]);
+    }
+  };
 
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
@@ -818,7 +835,7 @@ export async function startServer(): Promise<StartedServer> {
         "heartbeat scheduling suppressed for this runtime instance",
       );
     } else {
-      await (async () => {
+      const startupHeartbeatRecovery = (async () => {
         for (let attempt = 1; attempt <= 2; attempt++) {
           try {
             const result = await heartbeat.reapOrphanedRuns();
@@ -889,6 +906,8 @@ export async function startServer(): Promise<StartedServer> {
       })().catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
+      trackHeartbeatSchedulerWork(startupHeartbeatRecovery);
+      await startupHeartbeatRecovery;
     }
 
     const setupCleanup = await environmentCustomImages.cleanupExpiredSetupSessions();
@@ -896,7 +915,8 @@ export async function startServer(): Promise<StartedServer> {
       logger.warn({ ...setupCleanup }, "startup environment customImage setup cleanup changed sessions");
     }
 
-    setInterval(() => {
+    heartbeatSchedulerInterval = setInterval(() => {
+      if (heartbeatSchedulerStopped) return;
       const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
       if (sweptRuntimeStatuses > 0) {
         logger.info(
@@ -906,7 +926,7 @@ export async function startServer(): Promise<StartedServer> {
       }
 
       if (!resolveHeartbeatSchedulingSuppression().suppressed) {
-        void heartbeat
+        trackHeartbeatSchedulerWork(heartbeat
           .tickTimers(new Date())
           .then((result) => {
             if (result.enqueued > 0) {
@@ -915,10 +935,11 @@ export async function startServer(): Promise<StartedServer> {
           })
           .catch((err) => {
             logger.error({ err }, "heartbeat timer tick failed");
-          });
+          }));
       }
 
-      void routines
+      if (heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork(routines
         .tickScheduledTriggers(new Date())
         .then((result) => {
           if (result.triggered > 0) {
@@ -927,9 +948,9 @@ export async function startServer(): Promise<StartedServer> {
         })
         .catch((err) => {
           logger.error({ err }, "routine scheduler tick failed");
-        });
+        }));
 
-      void environmentCustomImages
+      trackHeartbeatSchedulerWork(environmentCustomImages
         .cleanupExpiredSetupSessions()
         .then((result) => {
           if (result.timedOut > 0 || result.failed > 0) {
@@ -938,12 +959,13 @@ export async function startServer(): Promise<StartedServer> {
         })
         .catch((err) => {
           logger.error({ err }, "environment customImage setup cleanup failed");
-        });
-  
+        }));
+
+      if (heartbeatSchedulerStopped) return;
       if (!resolveHeartbeatSchedulingSuppression().suppressed) {
         // Periodically reap orphaned runs (5-min staleness threshold) and make sure
         // persisted queued work is still being driven forward.
-        void heartbeat
+        trackHeartbeatSchedulerWork(heartbeat
           .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
           .then(() => heartbeat.promoteDueScheduledRetries())
           .then(async (promotion) => {
@@ -995,7 +1017,7 @@ export async function startServer(): Promise<StartedServer> {
           })
           .catch((err) => {
             logger.error({ err }, "periodic heartbeat recovery failed");
-          });
+          }));
       }
     }, config.heartbeatSchedulerIntervalMs);
   }
@@ -1099,6 +1121,13 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      heartbeatSchedulerStopped = true;
+      if (heartbeatSchedulerInterval) {
+        clearInterval(heartbeatSchedulerInterval);
+        heartbeatSchedulerInterval = null;
+      }
+      await waitForHeartbeatSchedulerIdle();
+
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();

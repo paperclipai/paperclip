@@ -387,7 +387,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     });
   }, 20_000);
 
-  it("self-heals unrecorded forward branch drift during finalization", async () => {
+  it("adopts unrecorded forward branch drift for finalization without persisting it", async () => {
     const repoRoot = await createGitRepo();
     tempRoots.push(repoRoot);
     const { agentId, issueId } = await seedRunTarget(db, repoRoot);
@@ -432,7 +432,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
       .from(executionWorkspaces)
       .where(eq(executionWorkspaces.id, executionWorkspaceId!))
       .then((rows) => rows[0] ?? null);
-    expect(finalizedWorkspace?.branchName).toBe(publishBranch);
+    expect(finalizedWorkspace?.branchName).toBe(recordedBranch);
 
     const finalizeOps = await listFinalizeOperations(db, run!.id);
     expect(finalizeOps).toHaveLength(1);
