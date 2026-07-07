@@ -183,6 +183,7 @@ import {
   type Agent,
   type FeedbackVote,
   type Issue,
+  type IssueRecoveryAction,
   type IssueAttachment,
   type IssueComment,
   type IssueWorkProduct,
@@ -316,6 +317,33 @@ export function canBoardManageRuntime(
   );
   if (!membership) return false;
   return membership.membershipRole !== "viewer" && membership.membershipRole !== null;
+}
+
+/**
+ * The execution workspace a reconcile action should target. The recovery card is rendered from a
+ * specific `workspace_validation` recovery action whose evidence pins the workspace that diverged;
+ * that workspace — not the page-level `issue.executionWorkspaceId` — is the authoritative target.
+ * The page-level id can drift (e.g. a re-issue rebinds the issue to a new workspace) while the card
+ * still shows the older action, so we prefer the action's evidence and only fall back to the
+ * page-level id when the evidence carries no workspace reference.
+ *
+ * The branch-incoherence failure (the one that renders the reconcile-forward / break-glass actions)
+ * records the workspace under `persistedExecutionWorkspaceId`; the not-reusable failure records it
+ * under `executionWorkspaceId`. We accept either key so both divergence shapes pin correctly.
+ */
+export function readRecoveryReconcileWorkspaceId(
+  action: IssueRecoveryAction | null | undefined,
+): string | null {
+  if (!action || action.kind !== "workspace_validation") return null;
+  const workspaceValidation = asRecord(action.evidence?.workspaceValidation);
+  if (!workspaceValidation) return null;
+  const persisted = workspaceValidation.persistedExecutionWorkspaceId;
+  if (typeof persisted === "string" && persisted.length > 0) return persisted;
+  const executionWorkspaceId = workspaceValidation.executionWorkspaceId;
+  if (typeof executionWorkspaceId === "string" && executionWorkspaceId.length > 0) {
+    return executionWorkspaceId;
+  }
+  return null;
 }
 
 export function shouldScrollIssueDetailToTopOnNavigation(input: {
@@ -3708,10 +3736,14 @@ export function IssueDetail() {
       });
     },
   });
-  // Bind the workspace id at the moment the operator clicks, from the same render that produced
-  // the visible recovery card, rather than re-reading `issue?.executionWorkspaceId` inside the
-  // async mutation body.
-  const reconcileExecutionWorkspaceId = issue?.executionWorkspaceId ?? null;
+  // Bind the workspace id at the moment the operator clicks, from the same render that produced the
+  // visible recovery card, rather than re-reading it inside the async mutation body. The target is
+  // the workspace pinned by the recovery action's evidence — the workspace that actually diverged —
+  // not the page-level `issue.executionWorkspaceId`, which can drift (e.g. a re-issue rebinds the
+  // issue to a new workspace) while the card still shows the older action. Fall back to the
+  // page-level id only when the action carries no workspace reference.
+  const reconcileExecutionWorkspaceId =
+    readRecoveryReconcileWorkspaceId(issue?.activeRecoveryAction) ?? issue?.executionWorkspaceId ?? null;
   const handleReconcileForwardRecoveryAction = useCallback(() => {
     if (!reconcileExecutionWorkspaceId) {
       pushToast({

@@ -11,6 +11,7 @@ import {
   canBoardManageRuntime,
   canBoardResolveRecoveryAction,
   IssueDetail,
+  readRecoveryReconcileWorkspaceId,
   shouldScrollIssueDetailToTopOnNavigation,
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
@@ -2564,6 +2565,76 @@ describe("canBoardManageRuntime", () => {
         userId: "user-1",
       }),
     ).toBe(true);
+  });
+});
+
+describe("readRecoveryReconcileWorkspaceId", () => {
+  const makeAction = (evidence: Record<string, unknown>, kind = "workspace_validation") =>
+    ({ kind, evidence } as unknown as Parameters<typeof readRecoveryReconcileWorkspaceId>[0]);
+
+  it("returns null when the action is missing", () => {
+    expect(readRecoveryReconcileWorkspaceId(null)).toBeNull();
+    expect(readRecoveryReconcileWorkspaceId(undefined)).toBeNull();
+  });
+
+  it("returns null for non-workspace_validation actions even with a workspace id in evidence", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction(
+          { workspaceValidation: { persistedExecutionWorkspaceId: "ws-1" } },
+          "stranded_assigned_issue",
+        ),
+      ),
+    ).toBeNull();
+  });
+
+  it("prefers persistedExecutionWorkspaceId (git_worktree_branch_incoherence shape)", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({
+          workspaceValidation: {
+            reason: "git_worktree_branch_incoherence",
+            persistedExecutionWorkspaceId: "ws-diverged",
+            executionWorkspaceId: "ws-other",
+          },
+        }),
+      ),
+    ).toBe("ws-diverged");
+  });
+
+  it("falls back to executionWorkspaceId (git_worktree_not_reusable shape)", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({
+          workspaceValidation: {
+            reason: "git_worktree_not_reusable",
+            executionWorkspaceId: "ws-not-reusable",
+          },
+        }),
+      ),
+    ).toBe("ws-not-reusable");
+  });
+
+  it("returns null when the evidence carries no workspace reference (so the caller falls back to the page-level id)", () => {
+    expect(readRecoveryReconcileWorkspaceId(makeAction({}))).toBeNull();
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({ workspaceValidation: { reason: "git_worktree_branch_incoherence" } }),
+      ),
+    ).toBeNull();
+  });
+
+  it("ignores non-string / empty workspace ids", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({ workspaceValidation: { persistedExecutionWorkspaceId: "" } }),
+      ),
+    ).toBeNull();
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({ workspaceValidation: { persistedExecutionWorkspaceId: 42 } }),
+      ),
+    ).toBeNull();
   });
 });
 
