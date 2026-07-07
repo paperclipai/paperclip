@@ -1080,9 +1080,16 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     if (!watchdogIssue) return false;
     if (watchdogIssue.originFingerprint !== stopFingerprint) return false;
     if (isTerminalIssueStatus(watchdogIssue.status) || watchdogIssue.status === "backlog") return false;
-    const hasPendingReviewPath = watchdogIssue.status === "in_review"
-      ? await watchdogIssueHasPendingReviewPath(watchdogIssue.companyId, watchdogIssue.id)
-      : false;
+    if (watchdogIssue.status === "in_review") {
+      const hasPendingReviewPath = await watchdogIssueHasPendingReviewPath(watchdogIssue.companyId, watchdogIssue.id);
+      return isWatchdogReviewDisposition(watchdogIssue, hasPendingReviewPath);
+    }
+    return true;
+  }
+
+  async function watchdogIssueNeedsFreshWake(watchdogIssue: IssueRow) {
+    if (watchdogIssue.status !== "in_review") return false;
+    const hasPendingReviewPath = await watchdogIssueHasPendingReviewPath(watchdogIssue.companyId, watchdogIssue.id);
     return !isWatchdogReviewDisposition(watchdogIssue, hasPendingReviewPath);
   }
 
@@ -1177,7 +1184,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     const fallback = existing ?? await findTaskWatchdogIssue(input.watchdog.companyId, input.sourceIssue.id);
 
     if (fallback) {
-      const shouldReopen = isTerminalIssueStatus(fallback.status) || fallback.status === "backlog";
+      const shouldReopen = isTerminalIssueStatus(fallback.status) ||
+        fallback.status === "backlog" ||
+        await watchdogIssueNeedsFreshWake(fallback);
       const watchdogIssue = shouldReopen
         ? await issuesSvc.update(fallback.id, {
           status: "todo",
