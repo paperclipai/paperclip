@@ -1229,8 +1229,8 @@ export function buildHostServices(
     },
 
     secrets: {
-      async resolve(params) {
-        return secretsHandler.resolve(params);
+      async resolve(params, context) {
+        return secretsHandler.resolve(params, context);
       },
     },
 
