@@ -544,18 +544,32 @@ function hasSelectiveWhere(mutation: MutationInfo): boolean {
     return false;
 
   // A WHERE that only constrains joined tables is not a filter on the target table.
-  // If every "table"."column" reference names a table other than the mutated table,
-  // and no bare (unqualified) identifiers remain after stripping those refs and
-  // string literals, the predicate does not narrow the mutated table's rows.
-  const qualifiedRefs = [...whereClause.matchAll(/"([^"]+)"\s*\.\s*"[^"]+"/g)];
-  if (qualifiedRefs.length > 0) {
-    const refTables = qualifiedRefs.map((m) => normalizeIdentifier(m[1] ?? ""));
+  // Collect every table-qualified column reference (both "tbl"."col" and alias."col").
+  const qualRefs = [
+    ...whereClause.matchAll(/"([^"]+)"\s*\.\s*(?:"[^"]+"|\w+)/g),
+    ...whereClause.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\."[^"]+"/g),
+  ].map((m) => normalizeIdentifier(m[1] ?? "")).filter(Boolean);
+
+  if (qualRefs.length > 0) {
+    // Resolve unquoted aliases from UPDATE/FROM/JOIN clauses to their real table names.
+    const aliasMap = new Map<string, string>();
+    const aliasPattern =
+      /\b(?:UPDATE|FROM|JOIN)\s+(?:"public"\s*\.\s*)?(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\s+(?:AS\s+)?(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\b/gi;
+    for (const m of stripSqlComments(mutation.statementSql).matchAll(aliasPattern)) {
+      const tbl = normalizeIdentifier(m[1] ?? m[2] ?? "");
+      const alias = normalizeIdentifier(m[3] ?? m[4] ?? "");
+      if (tbl && alias && !RESERVED_ALIAS_WORDS.has(alias.toLowerCase())) aliasMap.set(alias, tbl);
+    }
+    const refTables = qualRefs.map((r) => aliasMap.get(r) ?? r);
     if (!refTables.some((t) => t === mutation.table)) {
-      const noQualified = whereClause.replace(/"[^"]+"\s*\.\s*"[^"]+"/g, " ");
-      const noStrings = noQualified.replace(/'(?:[^']|'')*'/g, " ");
+      // All refs resolve to other tables. Confirm no bare unqualified identifiers remain.
+      const noQual = whereClause
+        .replace(/"[^"]+"\s*\.\s*(?:"[^"]+"|\w+)/g, " ")
+        .replace(/\b[A-Za-z_][A-Za-z0-9_]*\s*\."[^"]+"/g, " ")
+        .replace(/'(?:[^']|'')*'/g, " ");
       const SQL_KW =
         /\b(?:AND|OR|NOT|IN|EXISTS|LIKE|IS|NULL|TRUE|FALSE|BETWEEN|CASE|WHEN|THEN|END|CAST|AS|ANY|ALL|SOME)\b/gi;
-      if (!/\b[A-Za-z_][A-Za-z0-9_]*\b/.test(noStrings.replace(SQL_KW, " "))) return false;
+      if (!/\b[A-Za-z_][A-Za-z0-9_]*\b/.test(noQual.replace(SQL_KW, " "))) return false;
     }
   }
 

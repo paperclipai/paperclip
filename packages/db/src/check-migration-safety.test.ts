@@ -270,6 +270,19 @@ describe("migration safety check", () => {
     );
   });
 
+  it("does not suppress full-table finding when WHERE only constrains a joined table via an unquoted alias", () => {
+    const result = analyze(`
+      UPDATE "issue_comments"
+        SET "derived_author_agent_id" = NULL
+        FROM "companies" c
+        WHERE c."id" = '00000000-0000-0000-0000-000000000000';
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "full-table-mutation-large-table",
+    );
+  });
+
   it("does not suppress missing-index finding when support index uses an expression", () => {
     const result = analyze(`
       CREATE INDEX CONCURRENTLY IF NOT EXISTS "issue_comments_expr_idx"
