@@ -294,6 +294,29 @@ function formatBranchReconcileAuditComment(input: {
   ].join("\n");
 }
 
+function assertBranchReconcileWorkspaceIsSafe(input: {
+  inspection: ExecutionWorkspaceBranchReconcileInspection;
+  runtimeServices: WorkspaceRuntimeService[];
+}) {
+  if (input.inspection.cleanliness !== "clean") {
+    throw unprocessable("Execution workspace branch reconciliation requires a clean worktree", {
+      inspection: input.inspection,
+    });
+  }
+
+  const activeRuntimeServices = input.runtimeServices.filter((service) => service.status !== "stopped");
+  if (activeRuntimeServices.length > 0) {
+    throw unprocessable("Execution workspace branch reconciliation requires all runtime services to be stopped", {
+      inspection: input.inspection,
+      runtimeServices: activeRuntimeServices.map((service) => ({
+        id: service.id,
+        serviceName: service.serviceName,
+        status: service.status,
+      })),
+    });
+  }
+}
+
 async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
   git: ExecutionWorkspaceCloseGitReadiness | null;
   warnings: string[];
@@ -1261,12 +1284,15 @@ export function executionWorkspaceService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!existingRow) throw notFound("Execution workspace not found");
 
-      const existing = toExecutionWorkspace(existingRow);
+      const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, existingRow.companyId, [existingRow]);
+      const runtimeServices = (runtimeServicesByWorkspaceId.get(existingRow.id) ?? []).map(toRuntimeService);
+      const existing = toExecutionWorkspace(existingRow, runtimeServices);
       if (!existing.sourceIssueId) {
         throw unprocessable("Execution workspace needs a source issue before Paperclip can audit branch reconciliation");
       }
 
       const inspection = await inspectExecutionWorkspaceBranchForReconcile(existing);
+      assertBranchReconcileWorkspaceIsSafe({ inspection, runtimeServices });
       if (input.mode === "forward" && inspection.ancestryVerdict !== "ancestor") {
         throw unprocessable(
           "Forward branch reconciliation requires the recorded branch to be an ancestor of the checked-out branch",
@@ -1331,7 +1357,7 @@ export function executionWorkspaceService(db: Db) {
           .where(eq(issues.id, existing.sourceIssueId!));
 
         return {
-          workspace: toExecutionWorkspace(updatedRow),
+          workspace: toExecutionWorkspace(updatedRow, runtimeServices),
           inspection,
           recoveryAction,
           auditCommentId: auditComment?.id ?? null,
