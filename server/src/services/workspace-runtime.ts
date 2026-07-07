@@ -7,7 +7,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
 import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import { executionWorkspaces, issueComments, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   listWorkspaceServiceCommandDefinitions,
   type GitWorktreeBranchAncestryVerdict,
@@ -28,6 +28,7 @@ import {
   touchLocalServiceRegistryRecord,
   writeLocalServiceRegistryRecord,
 } from "./local-service-supervisor.js";
+import { logActivity } from "./activity-log.js";
 import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -659,6 +660,11 @@ type GitWorktreeCleanliness = SharedGitWorktreeBranchIncoherenceEvidence["cleanl
 
 type GitWorktreeBranchIncoherenceEvidence = SharedGitWorktreeBranchIncoherenceEvidence;
 
+type GitWorktreeBranchCoherenceResult = {
+  branchName: string | null;
+  reconciledForward: boolean;
+};
+
 function formatBranchForMessage(branch: string | null | undefined) {
   return branch && branch.length > 0 ? branch : "<detached>";
 }
@@ -845,22 +851,181 @@ function branchIncoherenceValidationFailure(evidence: GitWorktreeBranchIncoheren
   );
 }
 
+async function recordForwardBranchReconcileOperation(input: {
+  recorder?: WorkspaceOperationRecorder | null;
+  phase?: "worktree_prepare" | "workspace_finalize";
+  cwd: string;
+  repoRoot: string;
+  worktreePath: string;
+  expectedBranchName: string;
+  actualBranchName: string;
+  executionWorkspaceId: string | null;
+  sourceIssueId: string | null;
+  fingerprint: string;
+  expectedHeadSha: string | null;
+  actualHeadSha: string | null;
+  ancestryVerdict: GitWorktreeBranchAncestryVerdict;
+  mode: "record_updated" | "adopt_for_realize";
+  auditCommentId?: string | null;
+}) {
+  if (!input.recorder) return;
+
+  await input.recorder.recordOperation({
+    phase: input.phase ?? "worktree_prepare",
+    cwd: input.cwd,
+    metadata: {
+      repoRoot: input.repoRoot,
+      worktreePath: input.worktreePath,
+      expectedBranchName: input.expectedBranchName,
+      actualBranchName: input.actualBranchName,
+      branchIncoherenceReconcileForward: true,
+      reconcileMode: input.mode,
+      fingerprint: input.fingerprint,
+      sourceIssueId: input.sourceIssueId,
+      executionWorkspaceId: input.executionWorkspaceId,
+      expectedHeadSha: input.expectedHeadSha,
+      actualHeadSha: input.actualHeadSha,
+      ancestryVerdict: input.ancestryVerdict,
+      auditCommentId: input.auditCommentId ?? null,
+    },
+    run: async () => ({
+      status: "succeeded",
+      system:
+        input.mode === "record_updated"
+          ? `Reconciled execution workspace branch record from ${input.expectedBranchName} to ${input.actualBranchName}; worktree left unchanged.\n`
+          : `Adopted live git worktree branch ${input.actualBranchName} for this execution workspace realization; worktree left unchanged.\n`,
+    }),
+  });
+}
+
+function formatForwardBranchReconcileComment(input: {
+  workspaceId: string;
+  evidence: GitWorktreeBranchIncoherenceEvidence;
+  actualBranchName: string;
+}) {
+  return [
+    "Execution workspace branch reconciled.",
+    "",
+    `- Workspace: \`${input.workspaceId}\``,
+    "- Mode: `forward`",
+    `- From branch: \`${input.evidence.expectedBranch}\``,
+    `- To branch: \`${input.actualBranchName}\``,
+    `- From SHA: \`${input.evidence.provenance.expectedHeadSha ?? "unknown"}\``,
+    `- To SHA: \`${input.evidence.provenance.actualHeadSha ?? "unknown"}\``,
+    `- Verdict: \`${input.evidence.provenance.ancestryVerdict}\``,
+    `- Fingerprint: \`${input.evidence.fingerprint}\``,
+    "- Operator reason: Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch.",
+  ].join("\n");
+}
+
+async function reconcileForwardPersistedExecutionWorkspaceBranch(input: {
+  db: Db;
+  executionWorkspaceId: string;
+  evidence: GitWorktreeBranchIncoherenceEvidence;
+  actualBranchName: string;
+  heartbeatRunId?: string | null;
+}) {
+  const existing = await input.db
+    .select()
+    .from(executionWorkspaces)
+    .where(eq(executionWorkspaces.id, input.executionWorkspaceId))
+    .then((rows) => rows[0] ?? null);
+  if (!existing) {
+    throw new Error(`Execution workspace ${input.executionWorkspaceId} not found for branch reconciliation`);
+  }
+
+  const recordedBranch = existing.branchName?.trim() || null;
+  if (recordedBranch && recordedBranch !== input.evidence.expectedBranch) {
+    if (recordedBranch === input.actualBranchName) {
+      return { branchName: input.actualBranchName, auditCommentId: null };
+    }
+    throw new Error(
+      `Execution workspace ${input.executionWorkspaceId} branch changed from "${input.evidence.expectedBranch}" to "${recordedBranch}" before reconciliation`,
+    );
+  }
+
+  const now = new Date();
+  await input.db
+    .update(executionWorkspaces)
+    .set({
+      branchName: input.actualBranchName,
+      ...(existing.name === input.evidence.expectedBranch ? { name: input.actualBranchName } : {}),
+      updatedAt: now,
+    })
+    .where(eq(executionWorkspaces.id, existing.id));
+
+  const auditComment = existing.sourceIssueId
+    ? await input.db
+      .insert(issueComments)
+      .values({
+        companyId: existing.companyId,
+        issueId: existing.sourceIssueId,
+        authorAgentId: null,
+        authorUserId: null,
+        authorType: "system",
+        createdByRunId: input.heartbeatRunId ?? null,
+        body: formatForwardBranchReconcileComment({
+          workspaceId: existing.id,
+          evidence: input.evidence,
+          actualBranchName: input.actualBranchName,
+        }),
+      })
+      .returning({ id: issueComments.id })
+      .then((rows) => rows[0] ?? null)
+    : null;
+
+  await logActivity(input.db, {
+    companyId: existing.companyId,
+    actorType: "system",
+    actorId: "workspace_runtime",
+    runId: input.heartbeatRunId ?? null,
+    action: "execution_workspace.branch_reconciled",
+    entityType: "execution_workspace",
+    entityId: existing.id,
+    details: {
+      mode: "forward",
+      reason: "Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch.",
+      fromBranch: input.evidence.expectedBranch,
+      toBranch: input.actualBranchName,
+      fromSha: input.evidence.provenance.expectedHeadSha,
+      toSha: input.evidence.provenance.actualHeadSha,
+      ancestryVerdict: input.evidence.provenance.ancestryVerdict,
+      fingerprint: input.evidence.fingerprint,
+      sourceIssueId: existing.sourceIssueId ?? input.evidence.sourceIssueId,
+      auditCommentId: auditComment?.id ?? null,
+      actor: {
+        type: "system",
+        id: "workspace_runtime",
+        source: "workspace_runtime",
+      },
+    },
+  });
+
+  return { branchName: input.actualBranchName, auditCommentId: auditComment?.id ?? null };
+}
+
 export async function ensureGitWorktreeBranchCoherent(input: {
+  db?: Db | null;
   repoRoot: string;
   worktreePath: string;
   expectedBranchName: string | null;
   sourceIssue: ExecutionWorkspaceIssueRef | null;
   executionWorkspaceId?: string | null;
   actualBranchName?: string | null;
+  heartbeatRunId?: string | null;
+  enableWorkspaceBranchReconcileForward?: boolean;
+  reconcileOperationPhase?: "worktree_prepare" | "workspace_finalize";
   recorder?: WorkspaceOperationRecorder | null;
-}) {
+}): Promise<GitWorktreeBranchCoherenceResult> {
   const expectedBranchName = input.expectedBranchName?.trim();
-  if (!expectedBranchName) return;
+  if (!expectedBranchName) return { branchName: null, reconciledForward: false };
 
   const currentBranch = input.actualBranchName !== undefined
     ? input.actualBranchName
     : await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], input.worktreePath).catch(() => null);
-  if (currentBranch === expectedBranchName) return;
+  if (currentBranch === expectedBranchName) {
+    return { branchName: expectedBranchName, reconciledForward: false };
+  }
 
   const evidence = await inspectGitWorktreeBranchIncoherence({
     repoRoot: input.repoRoot,
@@ -870,6 +1035,68 @@ export async function ensureGitWorktreeBranchCoherent(input: {
     sourceIssue: input.sourceIssue,
     executionWorkspaceId: input.executionWorkspaceId ?? null,
   });
+
+  if (
+    input.enableWorkspaceBranchReconcileForward === true &&
+    evidence.provenance.ancestryVerdict === "ancestor" &&
+    currentBranch
+  ) {
+    if (input.executionWorkspaceId) {
+      if (!input.db) {
+        evidence.safeRepair.reason = "forward reconciliation requires database access to update the execution workspace record";
+        throw branchIncoherenceValidationFailure(evidence);
+      }
+      try {
+        const result = await reconcileForwardPersistedExecutionWorkspaceBranch({
+          db: input.db,
+          executionWorkspaceId: input.executionWorkspaceId,
+          evidence,
+          actualBranchName: currentBranch,
+          heartbeatRunId: input.heartbeatRunId ?? null,
+        });
+        await recordForwardBranchReconcileOperation({
+          recorder: input.recorder,
+          phase: input.reconcileOperationPhase,
+          cwd: input.worktreePath,
+          repoRoot: input.repoRoot,
+          worktreePath: evidence.worktreePath,
+          expectedBranchName,
+          actualBranchName: currentBranch,
+          executionWorkspaceId: input.executionWorkspaceId,
+          sourceIssueId: evidence.sourceIssueId,
+          fingerprint: evidence.fingerprint,
+          expectedHeadSha: evidence.provenance.expectedHeadSha,
+          actualHeadSha: evidence.provenance.actualHeadSha,
+          ancestryVerdict: evidence.provenance.ancestryVerdict,
+          mode: "record_updated",
+          auditCommentId: result.auditCommentId,
+        });
+        return { branchName: result.branchName, reconciledForward: true };
+      } catch (error) {
+        evidence.safeRepair.reason =
+          `forward reconciliation failed: ${error instanceof Error ? error.message : String(error)}`;
+        throw branchIncoherenceValidationFailure(evidence);
+      }
+    }
+
+    await recordForwardBranchReconcileOperation({
+      recorder: input.recorder,
+      phase: input.reconcileOperationPhase,
+      cwd: input.worktreePath,
+      repoRoot: input.repoRoot,
+      worktreePath: evidence.worktreePath,
+      expectedBranchName,
+      actualBranchName: currentBranch,
+      executionWorkspaceId: null,
+      sourceIssueId: evidence.sourceIssueId,
+      fingerprint: evidence.fingerprint,
+      expectedHeadSha: evidence.provenance.expectedHeadSha,
+      actualHeadSha: evidence.provenance.actualHeadSha,
+      ancestryVerdict: evidence.provenance.ancestryVerdict,
+      mode: "adopt_for_realize",
+    });
+    return { branchName: currentBranch, reconciledForward: true };
+  }
 
   if (!evidence.safeRepair.eligible) {
     throw branchIncoherenceValidationFailure(evidence);
@@ -910,6 +1137,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
 
   evidence.safeRepair.succeeded = true;
   evidence.safeRepair.reason = "clean worktree checked out the recorded branch";
+  return { branchName: expectedBranchName, reconciledForward: false };
 }
 
 // Resolve the authoritative base ref for a fresh worktree. A configured local
@@ -1603,10 +1831,13 @@ async function resolveGitRepoRootForWorkspaceCleanup(
 }
 
 export async function realizeExecutionWorkspace(input: {
+  db?: Db | null;
   base: ExecutionWorkspaceInput;
   config: Record<string, unknown>;
   issue: ExecutionWorkspaceIssueRef | null;
   agent: ExecutionWorkspaceAgentRef;
+  heartbeatRunId?: string | null;
+  enableWorkspaceBranchReconcileForward?: boolean;
   recorder?: WorkspaceOperationRecorder | null;
 }): Promise<RealizedExecutionWorkspace> {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
@@ -1632,7 +1863,7 @@ export async function realizeExecutionWorkspace(input: {
     projectId: input.base.projectId,
     repoRef: input.base.repoRef,
   });
-  const branchName = sanitizeBranchName(renderedBranch);
+  let branchName = sanitizeBranchName(renderedBranch);
   const configuredParentDir = asString(rawStrategy.worktreeParentDir, "");
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
@@ -1725,15 +1956,22 @@ export async function realizeExecutionWorkspace(input: {
       expectedBranchName: branchName,
     }).catch(() => null);
     if (validation && !validation.valid && validation.reasonCode === "branch_mismatch") {
-      await ensureGitWorktreeBranchCoherent({
+      const coherence = await ensureGitWorktreeBranchCoherent({
+        db: input.db ?? null,
         repoRoot,
         worktreePath: reusablePath,
         expectedBranchName: branchName,
         actualBranchName: validation.actualBranchName ?? null,
         sourceIssue: input.issue,
         executionWorkspaceId: null,
+        heartbeatRunId: input.heartbeatRunId ?? null,
+        enableWorkspaceBranchReconcileForward: input.enableWorkspaceBranchReconcileForward === true,
+        reconcileOperationPhase: "worktree_prepare",
         recorder: input.recorder ?? null,
       });
+      if (coherence.reconciledForward && coherence.branchName) {
+        branchName = coherence.branchName;
+      }
       return await validateLinkedGitWorktree({
         repoRoot,
         worktreePath: reusablePath,
@@ -1837,6 +2075,7 @@ export async function realizeExecutionWorkspace(input: {
 }
 
 export async function ensurePersistedExecutionWorkspaceAvailable(input: {
+  db?: Db | null;
   base: ExecutionWorkspaceInput;
   workspace: {
     id?: string | null;
@@ -1856,6 +2095,8 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   };
   issue: ExecutionWorkspaceIssueRef | null;
   agent: ExecutionWorkspaceAgentRef;
+  heartbeatRunId?: string | null;
+  enableWorkspaceBranchReconcileForward?: boolean;
   recorder?: WorkspaceOperationRecorder | null;
 }): Promise<RealizedExecutionWorkspace | null> {
   const cwd = asString(input.workspace.cwd ?? input.workspace.providerRef, "").trim();
@@ -1891,14 +2132,21 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     const reuseBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
     const reuseWorktreePath = realized.worktreePath ?? cwd;
     if (await isGitCheckout(reuseWorktreePath)) {
-      await ensureGitWorktreeBranchCoherent({
+      const coherence = await ensureGitWorktreeBranchCoherent({
+        db: input.db ?? null,
         repoRoot,
         worktreePath: reuseWorktreePath,
         expectedBranchName: realized.branchName,
         sourceIssue: input.issue,
         executionWorkspaceId: input.workspace.id ?? null,
+        heartbeatRunId: input.heartbeatRunId ?? null,
+        enableWorkspaceBranchReconcileForward: input.enableWorkspaceBranchReconcileForward === true,
+        reconcileOperationPhase: "worktree_prepare",
         recorder: input.recorder ?? null,
       });
+      if (coherence.reconciledForward && coherence.branchName) {
+        realized.branchName = coherence.branchName;
+      }
     }
     const validation = await validateLinkedGitWorktree({
       repoRoot,
