@@ -336,7 +336,6 @@ function assertLockedBranchReconcileWorkspaceStillMatchesInspection(input: {
   const currentPath = lockedPath ? path.resolve(lockedPath) : null;
 
   if (
-    input.lockedRow.status !== input.inspectedRow.status ||
     input.lockedRow.sourceIssueId !== input.inspectedRow.sourceIssueId ||
     input.lockedRow.projectWorkspaceId !== input.inspectedRow.projectWorkspaceId ||
     lockedBranch !== input.inspection.fromBranch ||
@@ -1363,6 +1362,8 @@ export function executionWorkspaceService(db: Db) {
       const now = new Date();
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        // Runtime-service activation takes this same row lock before spawning
+        // local services and holds it until the running service row is persisted.
         const lockedRow = await tx
           .select()
           .from(executionWorkspaces)
@@ -1450,6 +1451,17 @@ export function executionWorkspaceService(db: Db) {
           )
           .returning();
         if (!updatedRow) {
+          const latestRuntimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(
+            txDb,
+            lockedRow.companyId,
+            [lockedRow],
+          );
+          const latestRuntimeServices = (latestRuntimeServicesByWorkspaceId.get(lockedRow.id) ?? []).map(toRuntimeService);
+          assertBranchReconcileWorkspaceIsSafe({
+            workspaceStatus: lockedWorkspace.status,
+            inspection,
+            runtimeServices: latestRuntimeServices,
+          });
           throw unprocessable("Execution workspace branch reconciliation requires the workspace to stay idle with stopped runtime services during the update", {
             inspection,
           });

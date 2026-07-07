@@ -27,6 +27,10 @@ import {
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
 } from "../services/execution-workspaces.ts";
+import {
+  startRuntimeServicesForWorkspaceControl,
+  stopRuntimeServicesForExecutionWorkspace,
+} from "../services/workspace-runtime.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -150,6 +154,19 @@ async function createTempRepo() {
   await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
   await runGit(repoRoot, ["branch", "-M", "main"]);
   return repoRoot;
+}
+
+async function waitForPath(filePath: string, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await fs.access(filePath);
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  throw new Error(`Timed out waiting for ${filePath}`);
 }
 
 function stableStringifyForTest(value: unknown): string {
@@ -1036,7 +1053,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       mode: "isolated_workspace",
       strategyType: "git_worktree",
       name: "Runtime race workspace",
-      status: "active",
+      status: "idle",
       providerType: "git_worktree",
       cwd: worktreePath,
       providerRef: worktreePath,
@@ -1108,6 +1125,180 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     releaseBlockingTransaction?.();
     await reconcileExpectation;
     await blockingTransaction;
+
+    const [workspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    expect(workspace?.branchName).toBe("feature/recorded");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  }, 20_000);
+
+  it("rejects branch reconciliation when runtime service activation is already spawning", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-spawning-service-reconcile-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+
+    await runGit(repoRoot, ["branch", "feature/recorded"]);
+    await runGit(repoRoot, ["branch", "feature/current", "feature/recorded"]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, "feature/current"]);
+    await fs.writeFile(path.join(worktreePath, "feature.txt"), "current branch\n", "utf8");
+    await runGit(worktreePath, ["add", "feature.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Current branch work"]);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const runtimeStartedMarker = path.join(os.tmpdir(), `paperclip-runtime-started-${randomUUID()}.marker`);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Branch reconcile",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      status: "blocked",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Runtime activation race workspace",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/recorded",
+      baseRef: "main",
+    });
+
+    const serverScript = [
+      `require("node:fs").writeFileSync(${JSON.stringify(runtimeStartedMarker)}, "started");`,
+      "setTimeout(() => {",
+      "  require(\"node:http\")",
+      "    .createServer((_req, res) => { res.end(\"ok\"); })",
+      "    .listen(Number(process.env.PORT), \"127.0.0.1\");",
+      "}, 600);",
+      "setInterval(() => {}, 1000);",
+    ].join(" ");
+    const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(serverScript)}`;
+
+    let startedServices: Awaited<ReturnType<typeof startRuntimeServicesForWorkspaceControl>> = [];
+    try {
+      const startPromise = startRuntimeServicesForWorkspaceControl({
+        db,
+        invocationId: randomUUID(),
+        actor: {
+          id: null,
+          name: "Board",
+          companyId,
+        },
+        issue: {
+          id: issueId,
+          identifier: null,
+          title: "Source task",
+        },
+        workspace: {
+          baseCwd: worktreePath,
+          source: "task_session",
+          projectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: "main",
+          strategy: "git_worktree",
+          cwd: worktreePath,
+          branchName: "feature/current",
+          worktreePath,
+          warnings: [],
+          created: false,
+        },
+        executionWorkspaceId,
+        config: {
+          workspaceRuntime: {
+            services: [
+              {
+                name: "web",
+                command,
+                lifecycle: "shared",
+                reuseScope: "execution_workspace",
+                port: { type: "auto", envKey: "PORT" },
+                expose: { urlTemplate: "http://127.0.0.1:{{port}}" },
+                readiness: { type: "http", intervalMs: 50, timeoutSec: 10 },
+              },
+            ],
+          },
+        },
+        adapterEnv: {},
+      });
+
+      await Promise.race([
+        waitForPath(runtimeStartedMarker),
+        startPromise.then(
+          () => {
+            throw new Error("Runtime service activation finished before the process-start marker was observed");
+          },
+          (error) => {
+            throw error;
+          },
+        ),
+      ]);
+
+      const reconcilePromise = svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+        mode: "override",
+        reason: "operator override still requires stopped services",
+        actor: {
+          actorType: "user",
+          actorId: "local-board",
+          agentId: null,
+          runId: null,
+        },
+      });
+
+      startedServices = await startPromise;
+      await expect(reconcilePromise).rejects.toMatchObject({
+        status: 422,
+        message: "Execution workspace branch reconciliation requires all runtime services to be stopped",
+        details: {
+          inspection: expect.objectContaining({
+            cleanliness: "clean",
+            fromBranch: "feature/recorded",
+            toBranch: "feature/current",
+          }),
+          runtimeServices: [
+            expect.objectContaining({
+              id: startedServices[0]?.id,
+              serviceName: "web",
+              status: "running",
+            }),
+          ],
+        },
+      });
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId,
+        workspaceCwd: worktreePath,
+      });
+      await fs.rm(runtimeStartedMarker, { force: true });
+    }
 
     const [workspace] = await db
       .select()

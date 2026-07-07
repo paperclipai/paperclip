@@ -3239,7 +3239,7 @@ export async function ensureRuntimeServicesForRun(input: {
   return refs;
 }
 
-export async function startRuntimeServicesForWorkspaceControl(input: {
+type StartRuntimeServicesForWorkspaceControlInput = {
   db?: Db;
   invocationId?: string;
   actor: ExecutionWorkspaceAgentRef;
@@ -3251,16 +3251,16 @@ export async function startRuntimeServicesForWorkspaceControl(input: {
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   serviceIndex?: number | null;
   respectDesiredStates?: boolean;
-}): Promise<RuntimeServiceRef[]> {
-  const rawServices = selectRuntimeServiceEntries({
-    config: input.config,
-    serviceIndex: input.serviceIndex,
-    respectDesiredStates: input.respectDesiredStates,
-    defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "stopped",
-    serviceStates: readConfiguredServiceStates(input.config),
-  });
+};
+
+async function startRuntimeServicesForWorkspaceControlUnlocked(
+  input: StartRuntimeServicesForWorkspaceControlInput,
+  rawServices: Record<string, unknown>[],
+  invocationId: string,
+  persistenceDb = input.db,
+  registryDb = input.db,
+): Promise<RuntimeServiceRef[]> {
   const refs: RuntimeServiceRef[] = [];
-  const invocationId = input.invocationId ?? randomUUID();
 
   for (const service of rawServices) {
     const { scopeType, scopeId } = resolveServiceScopeId({
@@ -3292,7 +3292,7 @@ export async function startRuntimeServicesForWorkspaceControl(input: {
           runtimeServiceId: existing.id,
           lastSeenAt: existing.lastUsedAt,
         });
-        await persistRuntimeServiceRecord(input.db, existing);
+        await persistRuntimeServiceRecord(persistenceDb, existing);
         refs.push(toRuntimeServiceRef(existing, { reused: true }));
         continue;
       }
@@ -3301,7 +3301,7 @@ export async function startRuntimeServicesForWorkspaceControl(input: {
     // Manually controlled services are not tied to a heartbeat run lifecycle, so they do not
     // retain a run lease and never persist a startedByRunId foreign key.
     const record = await startLocalRuntimeService({
-      db: input.db,
+      db: persistenceDb,
       runId: invocationId,
       leaseRunId: null,
       startedByRunId: null,
@@ -3316,12 +3316,81 @@ export async function startRuntimeServicesForWorkspaceControl(input: {
       scopeType,
       scopeId,
     });
-    registerRuntimeService(input.db, record);
-    await persistRuntimeServiceRecord(input.db, record);
+    registerRuntimeService(registryDb, record);
+    await persistRuntimeServiceRecord(persistenceDb, record);
     refs.push(toRuntimeServiceRef(record));
   }
 
   return refs;
+}
+
+export async function startRuntimeServicesForWorkspaceControl(
+  input: StartRuntimeServicesForWorkspaceControlInput,
+): Promise<RuntimeServiceRef[]> {
+  const rawServices = selectRuntimeServiceEntries({
+    config: input.config,
+    serviceIndex: input.serviceIndex,
+    respectDesiredStates: input.respectDesiredStates,
+    defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "stopped",
+    serviceStates: readConfiguredServiceStates(input.config),
+  });
+  const invocationId = input.invocationId ?? randomUUID();
+
+  if (rawServices.length === 0 || !input.db || (!input.executionWorkspaceId && !input.workspace.workspaceId)) {
+    return startRuntimeServicesForWorkspaceControlUnlocked(input, rawServices, invocationId);
+  }
+
+  let startedRefs: RuntimeServiceRef[] = [];
+  try {
+    return await input.db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+
+      if (input.executionWorkspaceId) {
+        const [lockedExecutionWorkspace] = await tx
+          .select({ id: executionWorkspaces.id })
+          .from(executionWorkspaces)
+          .where(
+            and(
+              eq(executionWorkspaces.id, input.executionWorkspaceId),
+              eq(executionWorkspaces.companyId, input.actor.companyId),
+            ),
+          )
+          .for("update");
+        if (!lockedExecutionWorkspace) throw new Error("Execution workspace not found before starting runtime services");
+      }
+
+      if (input.workspace.workspaceId) {
+        const [lockedProjectWorkspace] = await tx
+          .select({ id: projectWorkspaces.id })
+          .from(projectWorkspaces)
+          .where(
+            and(
+              eq(projectWorkspaces.id, input.workspace.workspaceId),
+              eq(projectWorkspaces.companyId, input.actor.companyId),
+            ),
+          )
+          .for("update");
+        if (!lockedProjectWorkspace) throw new Error("Project workspace not found before starting runtime services");
+      }
+
+      // Branch reconciliation takes these same parent row locks before mutating
+      // a recorded branch. Holding them until the running service row is
+      // persisted closes the process-start window before the FK insert.
+      startedRefs = await startRuntimeServicesForWorkspaceControlUnlocked(
+        { ...input, db: txDb },
+        rawServices,
+        invocationId,
+        txDb,
+        input.db,
+      );
+      return startedRefs;
+    });
+  } catch (error) {
+    for (const ref of startedRefs) {
+      await stopRuntimeService(ref.id).catch(() => undefined);
+    }
+    throw error;
+  }
 }
 
 export async function releaseRuntimeServicesForRun(runId: string) {
