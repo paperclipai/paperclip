@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import {
   companies,
@@ -775,6 +775,109 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       .from(executionWorkspaces)
       .where(eq(executionWorkspaces.id, executionWorkspaceId));
     expect(workspace?.branchName).toBe("feature/recorded");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  }, 20_000);
+
+  it("rejects branch reconciliation if the workspace becomes active before the branch record update", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-race-reconcile-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+
+    await runGit(repoRoot, ["branch", "feature/recorded"]);
+    await runGit(repoRoot, ["branch", "feature/current", "feature/recorded"]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, "feature/current"]);
+    await fs.writeFile(path.join(worktreePath, "feature.txt"), "current branch\n", "utf8");
+    await runGit(worktreePath, ["add", "feature.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Current branch work"]);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Branch reconcile",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      status: "blocked",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Race workspace",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/recorded",
+      baseRef: "main",
+    });
+
+    const originalTransaction = db.transaction.bind(db);
+    const transactionSpy = vi.spyOn(db, "transaction").mockImplementation(
+      (async (...args: Parameters<typeof db.transaction>) => {
+        await db
+          .update(executionWorkspaces)
+          .set({ status: "active", updatedAt: new Date() })
+          .where(eq(executionWorkspaces.id, executionWorkspaceId));
+        return originalTransaction(...args);
+      }) as typeof db.transaction,
+    );
+
+    try {
+      await expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+        mode: "override",
+        reason: "operator override still requires idle workspace at write time",
+        actor: {
+          actorType: "user",
+          actorId: "local-board",
+          agentId: null,
+          runId: null,
+        },
+      })).rejects.toMatchObject({
+        status: 422,
+        message: "Execution workspace branch reconciliation requires the workspace to be idle",
+        details: {
+          workspaceStatus: "active",
+          inspection: expect.objectContaining({
+            cleanliness: "clean",
+            fromBranch: "feature/recorded",
+            toBranch: "feature/current",
+          }),
+        },
+      });
+    } finally {
+      transactionSpy.mockRestore();
+    }
+
+    const [workspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    expect(workspace).toMatchObject({
+      status: "active",
+      branchName: "feature/recorded",
+    });
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
   }, 20_000);

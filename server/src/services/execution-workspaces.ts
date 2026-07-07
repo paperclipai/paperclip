@@ -35,6 +35,7 @@ import {
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
+type RuntimeServiceReadDb = Pick<Db, "select">;
 const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
@@ -653,8 +654,25 @@ function usesInheritedProjectRuntimeServices(row: ExecutionWorkspaceRow) {
   return !readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null)?.workspaceRuntime;
 }
 
+function noActiveRuntimeServicesForWorkspaceCondition(row: ExecutionWorkspaceRow) {
+  const inheritedProjectWorkspaceId = usesInheritedProjectRuntimeServices(row) ? row.projectWorkspaceId : null;
+  const activeServiceConditions = inheritedProjectWorkspaceId
+    ? and(
+        eq(workspaceRuntimeServices.companyId, row.companyId),
+        eq(workspaceRuntimeServices.projectWorkspaceId, inheritedProjectWorkspaceId),
+        eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+        ne(workspaceRuntimeServices.status, "stopped"),
+      )
+    : and(
+        eq(workspaceRuntimeServices.companyId, row.companyId),
+        eq(workspaceRuntimeServices.executionWorkspaceId, row.id),
+        ne(workspaceRuntimeServices.status, "stopped"),
+      );
+  return sql`not exists (select 1 from ${workspaceRuntimeServices} where ${activeServiceConditions})`;
+}
+
 async function loadEffectiveRuntimeServicesByExecutionWorkspace(
-  db: Db,
+  db: RuntimeServiceReadDb,
   companyId: string,
   rows: ExecutionWorkspaceRow[],
 ) {
@@ -1292,15 +1310,12 @@ export function executionWorkspaceService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!existingRow) throw notFound("Execution workspace not found");
 
-      const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, existingRow.companyId, [existingRow]);
-      const runtimeServices = (runtimeServicesByWorkspaceId.get(existingRow.id) ?? []).map(toRuntimeService);
-      const existing = toExecutionWorkspace(existingRow, runtimeServices);
+      const existing = toExecutionWorkspace(existingRow);
       if (!existing.sourceIssueId) {
         throw unprocessable("Execution workspace needs a source issue before Paperclip can audit branch reconciliation");
       }
 
       const inspection = await inspectExecutionWorkspaceBranchForReconcile(existing);
-      assertBranchReconcileWorkspaceIsSafe({ workspaceStatus: existing.status, inspection, runtimeServices });
       if (input.mode === "forward" && inspection.ancestryVerdict !== "ancestor") {
         throw unprocessable(
           "Forward branch reconciliation requires the recorded branch to be an ancestor of the checked-out branch",
@@ -1311,25 +1326,66 @@ export function executionWorkspaceService(db: Db) {
       const reason = readNullableString(input.reason);
       const now = new Date();
       return db.transaction(async (tx) => {
+        const lockedRow = await tx
+          .select()
+          .from(executionWorkspaces)
+          .where(eq(executionWorkspaces.id, existing.id))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedRow) throw notFound("Execution workspace not found");
+
+        const lockedRuntimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(
+          tx,
+          lockedRow.companyId,
+          [lockedRow],
+        );
+        const lockedRuntimeServices = (lockedRuntimeServicesByWorkspaceId.get(lockedRow.id) ?? []).map(toRuntimeService);
+        const lockedWorkspace = toExecutionWorkspace(lockedRow, lockedRuntimeServices);
+        if (!lockedWorkspace.sourceIssueId) {
+          throw unprocessable("Execution workspace needs a source issue before Paperclip can audit branch reconciliation");
+        }
+        assertBranchReconcileWorkspaceIsSafe({
+          workspaceStatus: lockedWorkspace.status,
+          inspection,
+          runtimeServices: lockedRuntimeServices,
+        });
+        if (lockedWorkspace.branchName !== inspection.fromBranch) {
+          throw unprocessable("Execution workspace branch changed during reconciliation; retry with a fresh inspection", {
+            workspaceBranch: lockedWorkspace.branchName,
+            inspection,
+          });
+        }
+
         const updatePatch: Partial<typeof executionWorkspaces.$inferInsert> = {
           branchName: inspection.toBranch,
           updatedAt: now,
         };
-        if (existing.name === inspection.fromBranch) {
+        if (lockedWorkspace.name === inspection.fromBranch) {
           updatePatch.name = inspection.toBranch;
         }
 
         const [updatedRow] = await tx
           .update(executionWorkspaces)
           .set(updatePatch)
-          .where(eq(executionWorkspaces.id, existing.id))
+          .where(
+            and(
+              eq(executionWorkspaces.id, lockedWorkspace.id),
+              eq(executionWorkspaces.status, "idle"),
+              eq(executionWorkspaces.branchName, inspection.fromBranch),
+              noActiveRuntimeServicesForWorkspaceCondition(lockedRow),
+            ),
+          )
           .returning();
-        if (!updatedRow) throw notFound("Execution workspace not found");
+        if (!updatedRow) {
+          throw unprocessable("Execution workspace branch reconciliation requires the workspace to stay idle with stopped runtime services during the update", {
+            inspection,
+          });
+        }
 
         const recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
           {
-            companyId: existing.companyId,
-            sourceIssueId: existing.sourceIssueId!,
+            companyId: lockedWorkspace.companyId,
+            sourceIssueId: lockedWorkspace.sourceIssueId,
             kind: "workspace_validation",
             cause: WORKSPACE_VALIDATION_RECOVERY_CAUSE,
             fingerprint: inspection.fingerprint,
@@ -1343,8 +1399,8 @@ export function executionWorkspaceService(db: Db) {
         const [auditComment] = await tx
           .insert(issueComments)
           .values({
-            companyId: existing.companyId,
-            issueId: existing.sourceIssueId!,
+            companyId: lockedWorkspace.companyId,
+            issueId: lockedWorkspace.sourceIssueId,
             authorAgentId: input.actor.actorType === "agent" ? input.actor.agentId : null,
             authorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
             authorType: input.actor.actorType,
@@ -1362,10 +1418,10 @@ export function executionWorkspaceService(db: Db) {
         await tx
           .update(issues)
           .set({ updatedAt: now })
-          .where(eq(issues.id, existing.sourceIssueId!));
+          .where(eq(issues.id, lockedWorkspace.sourceIssueId));
 
         return {
-          workspace: toExecutionWorkspace(updatedRow, runtimeServices),
+          workspace: toExecutionWorkspace(updatedRow, lockedRuntimeServices),
           inspection,
           recoveryAction,
           auditCommentId: auditComment?.id ?? null,
