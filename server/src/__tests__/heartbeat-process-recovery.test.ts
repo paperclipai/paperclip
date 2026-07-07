@@ -917,6 +917,40 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, issueId };
   }
 
+  async function seedIdleTimerAgentFixture() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 60,
+          wakeOnDemand: true,
+          skipTimerWhenNoActionableWork: true,
+        },
+      },
+      permissions: {},
+    });
+
+    return { companyId, agentId };
+  }
+
   async function expectSourceScopedStrandedRecoveryAction(input: {
     companyId: string;
     agentId: string;
@@ -1154,6 +1188,46 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.status).toBe("claimed");
+  });
+
+  it("skips generic timer wakes without invoking an adapter when no assigned work is actionable", async () => {
+    const { companyId, agentId } = await seedIdleTimerAgentFixture();
+    const heartbeat = heartbeatService(db);
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat_scheduler",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+        now: "2026-03-19T00:00:00.000Z",
+      },
+    });
+
+    expect(run).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const requests = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      companyId,
+      source: "timer",
+      reason: "heartbeat.timer.no_actionable_work",
+      status: "skipped",
+      error: null,
+    });
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
   });
 
   it("queues exactly one retry when the recorded local pid is dead", async () => {

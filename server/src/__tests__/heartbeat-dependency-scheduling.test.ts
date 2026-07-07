@@ -147,8 +147,18 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.delete(workspaceOperations);
     await db.delete(executionWorkspaces);
     await db.delete(environmentLeases);
-    await db.delete(companySkills);
-    await db.delete(companies);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await db.transaction(async (tx) => {
+          await tx.delete(companySkills);
+          await tx.delete(companies);
+        });
+        break;
+      } catch (error) {
+        if (attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
   });
 
   afterAll(async () => {

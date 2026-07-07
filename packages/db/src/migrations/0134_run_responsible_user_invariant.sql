@@ -11,8 +11,7 @@ WITH owner_defaults AS (
   ORDER BY "company_id", "created_at" ASC, "id" ASC
 )
 UPDATE "companies" AS c
-SET "default_responsible_user_id" = owner_defaults."user_id",
-    "updated_at" = now()
+SET "default_responsible_user_id" = owner_defaults."user_id"
 FROM owner_defaults
 WHERE c."id" = owner_defaults."company_id"
   AND c."default_responsible_user_id" IS NULL;
@@ -50,15 +49,13 @@ resolved_issue_users AS (
   ORDER BY "issue_id", "depth" ASC
 )
 UPDATE "issues" AS i
-SET "responsible_user_id" = resolved_issue_users."user_id",
-    "updated_at" = now()
+SET "responsible_user_id" = resolved_issue_users."user_id"
 FROM resolved_issue_users
 WHERE i."id" = resolved_issue_users."issue_id"
   AND i."responsible_user_id" IS NULL;
 --> statement-breakpoint
 UPDATE "issues" AS i
-SET "responsible_user_id" = c."default_responsible_user_id",
-    "updated_at" = now()
+SET "responsible_user_id" = c."default_responsible_user_id"
 FROM "companies" AS c
 WHERE i."company_id" = c."id"
   AND i."responsible_user_id" IS NULL
@@ -76,8 +73,7 @@ WITH routine_responsible_users AS (
   WHERE r."responsible_user_id" IS NULL
 )
 UPDATE "routines" AS r
-SET "responsible_user_id" = routine_responsible_users."user_id",
-    "updated_at" = now()
+SET "responsible_user_id" = routine_responsible_users."user_id"
 FROM routine_responsible_users
 WHERE r."id" = routine_responsible_users."id"
   AND routine_responsible_users."user_id" IS NOT NULL;
@@ -114,15 +110,13 @@ WITH routine_run_responsible_users AS (
   WHERE rr."responsible_user_id" IS NULL
 )
 UPDATE "routine_runs" AS rr
-SET "responsible_user_id" = routine_run_responsible_users."user_id",
-    "updated_at" = now()
+SET "responsible_user_id" = routine_run_responsible_users."user_id"
 FROM routine_run_responsible_users
 WHERE rr."id" = routine_run_responsible_users."id"
   AND routine_run_responsible_users."user_id" IS NOT NULL;
 --> statement-breakpoint
 UPDATE "heartbeat_runs" AS h
-SET "responsible_user_id" = original."responsible_user_id",
-    "updated_at" = now()
+SET "responsible_user_id" = original."responsible_user_id"
 FROM "heartbeat_runs" AS original
 WHERE h."retry_of_run_id" = original."id"
   AND h."company_id" = original."company_id"
@@ -192,15 +186,13 @@ resolved_run_users AS (
   ORDER BY "run_id", "ref_priority" ASC, "match_priority" ASC
 )
 UPDATE "heartbeat_runs" AS h
-SET "responsible_user_id" = resolved_run_users."responsible_user_id",
-    "updated_at" = now()
+SET "responsible_user_id" = resolved_run_users."responsible_user_id"
 FROM resolved_run_users
 WHERE h."id" = resolved_run_users."run_id"
   AND h."responsible_user_id" IS NULL;
 --> statement-breakpoint
 UPDATE "heartbeat_runs" AS h
-SET "responsible_user_id" = awr."requested_by_actor_id",
-    "updated_at" = now()
+SET "responsible_user_id" = awr."requested_by_actor_id"
 FROM "agent_wakeup_requests" AS awr
 WHERE h."wakeup_request_id" = awr."id"
   AND h."company_id" = awr."company_id"
@@ -209,8 +201,7 @@ WHERE h."wakeup_request_id" = awr."id"
   AND awr."requested_by_actor_id" IS NOT NULL;
 --> statement-breakpoint
 UPDATE "heartbeat_runs" AS h
-SET "responsible_user_id" = c."default_responsible_user_id",
-    "updated_at" = now()
+SET "responsible_user_id" = c."default_responsible_user_id"
 FROM "companies" AS c
 WHERE h."company_id" = c."id"
   AND h."responsible_user_id" IS NULL

@@ -115,7 +115,7 @@ const ACTION_COLORS: Record<string, string> = {
 function FrontmatterCard({ data }: { data: FrontmatterData }) {
   return (
     <div className="rounded-md border border-border bg-accent/20 px-4 py-3 mb-4">
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
+      <dl className="grid grid-cols-(--gtc-5) gap-x-4 gap-y-1.5 text-sm">
         {Object.entries(data).map(([key, value]) => (
           <div key={key} className="contents">
             <dt className="text-muted-foreground whitespace-nowrap py-0.5">
@@ -151,7 +151,7 @@ function renderImportFileExtra(node: FileTreeNode, checked: boolean, renameMap: 
   const renamedTo = node.kind === "dir" ? renameMap.get(node.path) : undefined;
   const actionBadge = node.action ? (
     <span className={cn(
-      "shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
+      "shrink-0 rounded-full border px-2 py-0.5 text-(length:--text-nano) uppercase tracking-wide",
       ACTION_COLORS[node.action] ?? ACTION_COLORS.skip,
     )}>
       {checked ? node.action : "skip"}
@@ -163,7 +163,7 @@ function renderImportFileExtra(node: FileTreeNode, checked: boolean, renameMap: 
   return (
     <span className="inline-flex items-center gap-1.5 shrink-0">
       {renamedTo && checked && (
-        <span className="text-[10px] text-cyan-500 font-mono truncate max-w-[7rem]" title={renamedTo}>
+        <span className="text-(length:--text-nano) text-cyan-500 font-mono truncate max-w-(--sz-7rem)" title={renamedTo}>
           &rarr; {renamedTo}
         </span>
       )}
@@ -237,7 +237,7 @@ function ImportPreviewPane({
           )}
         </div>
       </div>
-      <div className="min-h-[560px] px-5 py-5">
+      <div className="min-h-(--sz-560px) px-5 py-5">
         {parsed ? (
           <>
             <FrontmatterCard data={parsed.data} />
@@ -246,8 +246,8 @@ function ImportPreviewPane({
         ) : isMarkdown ? (
           <MarkdownBody resolveImageSrc={resolveImageSrc} softBreaks={false} linkIssueReferences={false}>{textContent ?? ""}</MarkdownBody>
         ) : imageSrc ? (
-          <div className="flex min-h-[520px] items-center justify-center rounded-lg border border-border bg-accent/10 p-6">
-            <img src={imageSrc} alt={selectedFile} className="max-h-[480px] max-w-full object-contain" />
+          <div className="flex min-h-(--sz-520px) items-center justify-center rounded-lg border border-border bg-accent/10 p-6">
+            <img src={imageSrc} alt={selectedFile} className="max-h-(--sz-480px) max-w-full object-contain" />
           </div>
         ) : textContent !== null ? (
           <pre className="overflow-x-auto whitespace-pre-wrap break-words border-0 bg-transparent p-0 font-mono text-sm text-foreground">
@@ -446,7 +446,7 @@ function ConflictResolutionList({
                 </button>
 
                 <span className={cn(
-                  "shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                  "shrink-0 rounded-full border px-2 py-0.5 text-(length:--text-nano) uppercase tracking-wide",
                   isSkipped
                     ? "text-muted-foreground border-border"
                     : isConfirmed
@@ -564,7 +564,7 @@ function AdapterPickerList({
               <div key={agent.slug}>
                 <div className="flex items-center gap-3 px-4 py-2.5 text-sm">
                   <span className={cn(
-                    "shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                    "shrink-0 rounded-full border px-2 py-0.5 text-(length:--text-nano) uppercase tracking-wide",
                     "text-blue-500 border-blue-500/30",
                   )}>
                     agent
@@ -1319,8 +1319,8 @@ export function CompanyImport() {
           )}
 
           {/* Two-column layout */}
-          <div className="grid gap-4 xl:h-[calc(100vh-16rem)] xl:grid-cols-[19rem_minmax(0,1fr)] xl:gap-0">
-            <aside className="flex max-h-[24rem] flex-col overflow-hidden border-b border-border xl:max-h-none xl:border-b-0 xl:border-r">
+          <div className="grid gap-4 xl:h-(--sz-calc-31) xl:grid-cols-(--gtc-25) xl:gap-0">
+            <aside className="flex max-h-(--sz-24rem) flex-col overflow-hidden border-b border-border xl:max-h-none xl:border-b-0 xl:border-r">
               <div className="border-b border-border px-4 py-3 shrink-0">
                 <h2 className="text-base font-semibold">Package files</h2>
               </div>

@@ -194,7 +194,7 @@ const codeBlockActionStyle: React.CSSProperties = {
   border: "1px solid color-mix(in oklab, var(--foreground) 14%, transparent)",
   backgroundColor: "color-mix(in oklab, var(--muted) 92%, var(--background) 8%)",
   color: "var(--muted-foreground)",
-  fontSize: "0.7rem",
+  fontSize: "var(--text-micro)",
   lineHeight: 1,
   cursor: "pointer",
 };
@@ -827,10 +827,10 @@ function MarkdownBodyImpl({
       const isGitHubLink = isGitHubUrl(href);
       const isExternal = isExternalHttpUrl(href);
       const leadingIcon = isGitHubLink ? (
-        <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-[-0.125em]" />
+        <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)" />
       ) : null;
       const trailingIcon = isExternal && !isGitHubLink ? (
-        <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-[-0.125em]" />
+        <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-(--va-0_125em)" />
       ) : null;
       return (
         <a

@@ -16,14 +16,14 @@ interface IssuePlanDecompositionsSectionProps {
 function StatusBadge({ status }: { status: AcceptedPlanDecompositionSummary["status"] }) {
   if (status === "completed") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-sm border border-emerald-500/50 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-900 dark:text-emerald-100">
+      <span className="inline-flex items-center gap-1 rounded-sm border border-emerald-500/50 bg-emerald-500/10 px-2 py-0.5 text-(length:--text-micro) font-medium text-emerald-900 dark:text-emerald-100">
         <CheckCircle2 className="h-3 w-3" />
         Completed
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 rounded-sm border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-900 dark:text-amber-100">
+    <span className="inline-flex items-center gap-1 rounded-sm border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-(length:--text-micro) font-medium text-amber-900 dark:text-amber-100">
       <Loader2 className="h-3 w-3 animate-spin" />
       In flight
     </span>
@@ -47,7 +47,7 @@ export function IssuePlanDecompositionsSection({
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-sm font-medium text-muted-foreground">Plan decomposition</h3>
-        <span className="text-[11px] text-muted-foreground/80">
+        <span className="text-(length:--text-micro) text-muted-foreground/80">
           {items.length === 1 ? "1 accepted plan revision" : `${items.length} accepted plan revisions`}
         </span>
       </div>
@@ -99,7 +99,7 @@ export function IssuePlanDecompositionsSection({
                 </span>
                 {record.status === "completed" && requested > 0 ? (
                   <span
-                    className="inline-flex items-center gap-1 rounded-sm border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-900 dark:text-sky-100"
+                    className="inline-flex items-center gap-1 rounded-sm border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-medium text-sky-900 dark:text-sky-100"
                     title="Repeat attempts with this fingerprint reuse this record instead of creating new children"
                   >
                     <Repeat className="h-3 w-3" />
@@ -108,7 +108,7 @@ export function IssuePlanDecompositionsSection({
                 ) : null}
               </div>
 
-              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-(length:--text-micro) text-muted-foreground">
                 {ownerName ? <span>Owner: {ownerName}</span> : null}
                 {startedAt ? (
                   <span title={formatDateTime(startedAt)}>Started {relativeTime(startedAt)}</span>
@@ -135,14 +135,14 @@ export function IssuePlanDecompositionsSection({
                       <Link
                         to={`/issues/${child.identifier ?? child.id}`}
                         className={cn(
-                          "inline-flex max-w-full items-center gap-1 rounded-sm border border-border bg-background px-2 py-0.5 text-[11px] text-foreground transition-colors hover:bg-accent/40",
+                          "inline-flex max-w-full items-center gap-1 rounded-sm border border-border bg-background px-2 py-0.5 text-(length:--text-micro) text-foreground transition-colors hover:bg-accent/40",
                         )}
                         title={child.title}
                       >
                         <span className="font-medium">
                           {child.identifier ?? child.id.slice(0, 8)}
                         </span>
-                        <span className="truncate max-w-[24ch] text-muted-foreground">
+                        <span className="truncate max-w-(--sz-24ch) text-muted-foreground">
                           {child.title}
                         </span>
                         <ChevronRight className="h-3 w-3 text-muted-foreground" />

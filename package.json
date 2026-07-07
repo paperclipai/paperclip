@@ -36,6 +36,7 @@
     "release:rollback": "./scripts/rollback-latest.sh",
     "release:bootstrap-package": "node scripts/bootstrap-npm-package.mjs",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
+    "check:token-gates": "node scripts/check-token-gates.mjs",
     "check:no-git-push": "node scripts/check-no-git-push.mjs",
     "test:check-no-git-push": "node --test scripts/check-no-git-push.test.mjs",
     "test:hermes-gateway-smoke": "node --test scripts/smoke/hermes-gateway-smoke.test.mjs",
@@ -48,6 +49,9 @@
     "smoke:pipelines-tutorial": "./scripts/smoke/pipelines-tutorial-smoke.sh",
     "smoke:terminal-bench-loop-skill": "node scripts/smoke/terminal-bench-loop-skill-smoke.mjs",
     "test:release-registry": "node --test scripts/verify-release-registry-state.test.mjs scripts/release-package-map.test.mjs scripts/check-release-package-bootstrap.test.mjs scripts/check-no-git-push.test.mjs scripts/release-lib.test.mjs scripts/link-plugin-dev-sdk.test.js",
+    "storybook-visual:baseline": "node scripts/storybook-visual-baseline.mjs",
+    "test:storybook-visual": "node scripts/storybook-visual-baseline.mjs download && node scripts/storybook-visual-baseline.mjs verify && pnpm build-storybook && npx playwright test --config tests/storybook-visual/playwright.config.ts",
+    "test:storybook-visual:update": "node scripts/storybook-visual-baseline.mjs download && pnpm build-storybook && npx playwright test --config tests/storybook-visual/playwright.config.ts --update-snapshots && node scripts/storybook-visual-baseline.mjs pack",
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
     "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed",
     "test:e2e:multiuser-authenticated": "npx playwright test --config tests/e2e/playwright-multiuser-authenticated.config.ts",
@@ -75,7 +79,17 @@
     "overrides": {
       "rollup": ">=4.59.0",
       "react": "^19.2.7",
-      "react-dom": "^19.2.7"
+      "react-dom": "^19.2.7",
+      "lexical": "0.46.0",
+      "@lexical/clipboard": "0.46.0",
+      "@lexical/link": "0.46.0",
+      "@lexical/list": "0.46.0",
+      "@lexical/markdown": "0.46.0",
+      "@lexical/plain-text": "0.46.0",
+      "@lexical/react": "0.46.0",
+      "@lexical/rich-text": "0.46.0",
+      "@lexical/selection": "0.46.0",
+      "@lexical/utils": "0.46.0"
     }
   }
 }

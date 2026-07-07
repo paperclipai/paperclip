@@ -31,7 +31,7 @@ function LabSection({
 function BeforeAfter({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="space-y-2">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+      <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
         {label}
       </div>
       <div className="rounded-xl border border-border/60 bg-card p-3">{children}</div>
@@ -58,7 +58,7 @@ function RunLedgerRow({
             on behalf of <span className="text-foreground">{onBehalfOf}</span>
           </span>
         ) : null}
-        <span className="rounded-md border border-border px-1.5 py-0.5 text-[11px] capitalize text-muted-foreground">
+        <span className="rounded-md border border-border px-1.5 py-0.5 text-(length:--text-micro) capitalize text-muted-foreground">
           {denial ? "Failed" : "Succeeded"}
         </span>
         <span className="ml-auto shrink-0">2m ago</span>
@@ -85,12 +85,12 @@ function RunDetailHeader({ onBehalfOf, denial }: { onBehalfOf?: string | null; d
     <div className="space-y-2">
       <div className="flex items-center gap-2">
         <span className="text-lg font-semibold text-foreground">Run a1b2c3d4</span>
-        <span className="rounded-md border border-border px-1.5 py-0.5 text-[11px] capitalize text-muted-foreground">
+        <span className="rounded-md border border-border px-1.5 py-0.5 text-(length:--text-micro) capitalize text-muted-foreground">
           {denial ? "failed" : "succeeded"}
         </span>
       </div>
-      <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide">
+      <div className="flex flex-wrap items-center gap-1.5 font-mono text-(length:--text-micro) text-muted-foreground">
+        <span className="rounded bg-muted px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide">
           codex local
         </span>
         <span>anthropic/claude-opus-4-8</span>
@@ -110,7 +110,7 @@ export function ResponsibleUserDenialUxLab() {
     <div className="min-h-screen bg-muted/20 p-6">
       <div className="mx-auto max-w-5xl space-y-6">
         <header>
-          <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
             PAP-12462 · P7
           </div>
           <h1 className="mt-1 text-xl font-semibold text-foreground">
@@ -226,7 +226,7 @@ export function ResponsibleUserDenialUxLab() {
           </BeforeAfter>
         </LabSection>
 
-        <p className={cn("text-center text-[11px] text-muted-foreground")}>
+        <p className={cn("text-center text-(length:--text-micro) text-muted-foreground")}>
           Copy is sourced from the shared <code>describeResponsibleUserDenial</code> contract.
         </p>
       </div>

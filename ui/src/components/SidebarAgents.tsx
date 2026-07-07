@@ -155,7 +155,7 @@ function SidebarAgentItem({
         if (isMobile) setSidebarOpen(false);
       }}
       className={cn(
-        "flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1.5 pointer-coarse:py-1 text-[13px] font-medium transition-colors",
+        "flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium transition-colors",
         // Reserve room for the ⋯ menu, plus the inline unstar star on starred rows.
         starred && !isMobile ? "pr-14" : "pr-8",
         isActive
@@ -180,7 +180,7 @@ function SidebarAgentItem({
             </span>
           ) : null}
           {runCount > 0 ? (
-            <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+            <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">
               {runCount} live
             </span>
           ) : null}
@@ -580,7 +580,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
             onClick={() => {
               if (isMobile) setSidebarOpen(false);
             }}
-            className="flex items-center gap-2.5 px-3 py-1.5 pointer-coarse:py-1 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+            className="flex items-center gap-2.5 px-3 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
           >
             <Users className="shrink-0 h-3.5 w-3.5" />
             <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>See all agents</span>

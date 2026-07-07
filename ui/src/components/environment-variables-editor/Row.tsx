@@ -199,8 +199,8 @@ export function EnvironmentVariableRow({
   return (
     <div
       className={cn(
-        "group/row grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-1.5 gap-y-1 rounded-md px-1 py-1",
-        "@[40rem]/env:grid-cols-[minmax(160px,2fr)_minmax(240px,3fr)_32px] @[40rem]/env:items-center",
+        "group/row grid grid-cols-(--gtc-13) items-start gap-x-1.5 gap-y-1 rounded-md px-1 py-1",
+        "@[40rem]/env:grid-cols-(--gtc-14) @[40rem]/env:items-center",
         isDirty && "bg-amber-500/[0.06] ring-1 ring-amber-500/20",
       )}
     >
@@ -281,15 +281,15 @@ export function EnvironmentVariableRow({
                 <DropdownMenuContent align="start" className="w-56">
                   <DropdownMenuItem className="flex-col items-start gap-0.5" onSelect={() => switchSource("text")}>
                     <span className="text-sm">Text value</span>
-                    <span className="text-[11px] text-muted-foreground">Store the value inline as plain text.</span>
+                    <span className="text-(length:--text-micro) text-muted-foreground">Store the value inline as plain text.</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem className="flex-col items-start gap-0.5" onSelect={() => switchSource("secret")}>
                     <span className="text-sm">Company secret</span>
-                    <span className="text-[11px] text-muted-foreground">Resolve a stored company secret at run start.</span>
+                    <span className="text-(length:--text-micro) text-muted-foreground">Resolve a stored company secret at run start.</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem className="flex-col items-start gap-0.5" onSelect={() => switchSource("user_secret")}>
                     <span className="text-sm">User secret</span>
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className="text-(length:--text-micro) text-muted-foreground">
                       Resolve the responsible user&apos;s own value at run start.
                     </span>
                   </DropdownMenuItem>
@@ -321,7 +321,7 @@ export function EnvironmentVariableRow({
                         type="button"
                         onClick={openStoreAsSecret}
                         disabled={disabled}
-                        className="flex items-center gap-1 px-2 text-[11px] text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
+                        className="flex items-center gap-1 px-2 text-(length:--text-micro) text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
                         title="This value looks sensitive — store it as a secret"
                       >
                         <ShieldAlert className="size-3.5" />
@@ -369,7 +369,7 @@ export function EnvironmentVariableRow({
                           }}
                           aria-label="Version"
                           className={cn(
-                            "absolute right-8 top-1/2 z-10 -translate-y-1/2 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                            "absolute right-8 top-1/2 z-10 -translate-y-1/2 rounded px-1.5 py-0.5 text-(length:--text-nano) font-medium",
                             versionPinned
                               ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
                               : "text-muted-foreground hover:bg-accent",
@@ -392,7 +392,7 @@ export function EnvironmentVariableRow({
                             row.version === "latest" && "font-medium",
                           )}
                         >
-                          latest <span className="text-[11px] text-muted-foreground">(recommended)</span>
+                          latest <span className="text-(length:--text-micro) text-muted-foreground">(recommended)</span>
                         </button>
                         {Array.from({ length: versions }, (_, idx) => versions - idx)
                           .filter((v) => v > 0)
@@ -419,7 +419,7 @@ export function EnvironmentVariableRow({
                   ) : null}
                 </div>
               ) : (
-                <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto]">
+                <div className="grid min-w-0 flex-1 grid-cols-(--gtc-13)">
                   {userSecretsEnabled ? (
                     <select
                       aria-label="User secret"
@@ -522,7 +522,7 @@ export function EnvironmentVariableRow({
             id={healthId}
             role="status"
             className={cn(
-              "mt-0.5 text-[11px]",
+              "mt-0.5 text-(length:--text-micro)",
               health.level === "error" ? "text-destructive" : "text-amber-600 dark:text-amber-400",
             )}
           >
@@ -532,7 +532,7 @@ export function EnvironmentVariableRow({
 
         {/* 5s undo after Secret→Text */}
         {undoPrev ? (
-          <p className="mt-0.5 inline-flex items-center gap-2 text-[11px] text-muted-foreground">
+          <p className="mt-0.5 inline-flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
             Reverted to text —{" "}
             <button
               type="button"
@@ -552,7 +552,7 @@ export function EnvironmentVariableRow({
         <p
           id={nameErrorId}
           className={cn(
-            "col-span-2 col-start-1 row-start-3 min-w-0 text-[11px] @[40rem]/env:col-span-2 @[40rem]/env:row-start-2",
+            "col-span-2 col-start-1 row-start-3 min-w-0 text-(length:--text-micro) @[40rem]/env:col-span-2 @[40rem]/env:row-start-2",
             nameIssue.level === "error" ? "text-destructive" : "text-amber-600 dark:text-amber-400",
           )}
         >

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { catalogManifest, catalogSkills, resolveCatalogSkillRef } from "./index.js";
 
@@ -14,6 +15,7 @@ const EXPECTED_BUNDLED_KEYS = [
 const EXPECTED_OPTIONAL_KEYS = [
   "paperclipai/optional/browser/agent-browser",
   "paperclipai/optional/content/release-announcement",
+  "paperclipai/optional/finance/ramp",
   "paperclipai/optional/product/design-critique",
   "paperclipai/optional/research/last30days",
 ];
@@ -87,5 +89,20 @@ describe("shipped skills catalog", () => {
     expect(resolveCatalogSkillRef(sample.id)).toMatchObject({ key: sample.key });
     expect(resolveCatalogSkillRef(sample.key)).toMatchObject({ key: sample.key });
     expect(resolveCatalogSkillRef(sample.slug)).toMatchObject({ key: sample.key });
+  });
+
+  it("keeps the Ramp wrapper fail-closed on mixed-provenance playbooks", () => {
+    const rampSkill = readFileSync(new URL("../catalog/optional/finance/ramp/SKILL.md", import.meta.url), "utf8");
+
+    expect(rampSkill).toContain("mixes Official and Community playbooks");
+    expect(rampSkill).toContain("do not execute them inside Paperclip unless a Paperclip approval explicitly names the playbook");
+    expect(rampSkill).toContain("third-party browser automation, MCP server, CLI, or connector");
+  });
+
+  it("keeps the Ramp wrapper clear of remote-fetch execution hard-stop patterns", () => {
+    const rampSkill = readFileSync(new URL("../catalog/optional/finance/ramp/SKILL.md", import.meta.url), "utf8");
+    const remoteExecPattern = /\b(?:curl|wget)\b[\s\S]{0,160}\|\s*(?:sh|bash)|\b(?:bash|sh)\s+-c\b|\beval\b|\bpython\s+-c\b|\bnode\s+-e\b/i;
+
+    expect(remoteExecPattern.test(rampSkill)).toBe(false);
   });
 });

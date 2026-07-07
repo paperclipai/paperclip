@@ -53,6 +53,15 @@ export const FILE_VIEWER_NAVIGATE_OPTIONS = {
   preventScrollReset: true,
 } satisfies NavigateOptions;
 
+export function getCurrentFileViewerSearch(fallbackSearch: string): string {
+  if (typeof window === "undefined") return fallbackSearch;
+  return window.location.search;
+}
+
+export function shouldNavigateFileViewerSearch(nextSearch: string, fallbackSearch: string): boolean {
+  return nextSearch !== getCurrentFileViewerSearch(fallbackSearch);
+}
+
 export function readFileViewerStateFromSearch(search: string): FileViewerUrlState | null {
   const params = new URLSearchParams(search);
   const path = params.get("file");
@@ -198,7 +207,7 @@ function EnabledFileViewerProvider({ issueId, children }: Omit<FileViewerProvide
 
   const navigateSearch = useCallback(
     (nextSearch: string, opts?: Partial<NavigateOptions>) => {
-      if (nextSearch === location.search) return;
+      if (!shouldNavigateFileViewerSearch(nextSearch, location.search)) return;
       navigate(
         { pathname: location.pathname, hash: location.hash, search: nextSearch },
         { ...FILE_VIEWER_NAVIGATE_OPTIONS, ...opts, state: location.state },
@@ -285,9 +294,7 @@ function EnabledFileViewerProvider({ issueId, children }: Omit<FileViewerProvide
   }, [location.search, navigateSearch]);
 
   const close = useCallback(() => {
-    const currentSearch = typeof window === "undefined"
-      ? location.search
-      : (window.location.search || location.search);
+    const currentSearch = getCurrentFileViewerSearch(location.search);
     const params = new URLSearchParams(writeFileViewerStateToSearch(currentSearch, null).replace(/^\?/, ""));
     params.delete("browse");
     params.delete("q");

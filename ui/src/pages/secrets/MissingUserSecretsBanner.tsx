@@ -73,7 +73,7 @@ export function MissingUserSecretsBanner({
               >
                 <span className="min-w-0 truncate">
                   <span className="font-medium text-foreground">{entry.definition.name}</span>{" "}
-                  <code className="text-[11px] text-muted-foreground">{entry.definition.key}</code>
+                  <code className="text-(length:--text-micro) text-muted-foreground">{entry.definition.key}</code>
                 </span>
                 <Button size="sm" onClick={() => setDialogFor(entry)}>
                   Set value
@@ -84,7 +84,7 @@ export function MissingUserSecretsBanner({
           {secretsPath ? (
             <Link
               to={secretsPath}
-              className="mt-2 inline-block text-[11px] font-medium underline underline-offset-2"
+              className="mt-2 inline-block text-(length:--text-micro) font-medium underline underline-offset-2"
             >
               Manage all my secrets
             </Link>
