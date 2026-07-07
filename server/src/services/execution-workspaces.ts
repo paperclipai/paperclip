@@ -295,9 +295,17 @@ function formatBranchReconcileAuditComment(input: {
 }
 
 function assertBranchReconcileWorkspaceIsSafe(input: {
+  workspaceStatus: ExecutionWorkspace["status"];
   inspection: ExecutionWorkspaceBranchReconcileInspection;
   runtimeServices: WorkspaceRuntimeService[];
 }) {
+  if (input.workspaceStatus !== "idle") {
+    throw unprocessable("Execution workspace branch reconciliation requires the workspace to be idle", {
+      workspaceStatus: input.workspaceStatus,
+      inspection: input.inspection,
+    });
+  }
+
   if (input.inspection.cleanliness !== "clean") {
     throw unprocessable("Execution workspace branch reconciliation requires a clean worktree", {
       inspection: input.inspection,
@@ -1292,7 +1300,7 @@ export function executionWorkspaceService(db: Db) {
       }
 
       const inspection = await inspectExecutionWorkspaceBranchForReconcile(existing);
-      assertBranchReconcileWorkspaceIsSafe({ inspection, runtimeServices });
+      assertBranchReconcileWorkspaceIsSafe({ workspaceStatus: existing.status, inspection, runtimeServices });
       if (input.mode === "forward" && inspection.ancestryVerdict !== "ancestor") {
         throw unprocessable(
           "Forward branch reconciliation requires the recorded branch to be an ancestor of the checked-out branch",
