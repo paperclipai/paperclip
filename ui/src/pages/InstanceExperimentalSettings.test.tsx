@@ -44,6 +44,8 @@ const STREAMLINED_TOGGLE_SELECTOR =
   'button[aria-label="Toggle streamlined left navigation experimental setting"]';
 const TASK_WATCHDOGS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task watchdogs experimental setting"]';
+const GOALS_SIDEBAR_LINK_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle goals sidebar link experimental setting"]';
 const SERVER_INFO_TOGGLE_SELECTOR =
   'button[aria-label="Toggle server info debug view experimental setting"]';
 
@@ -57,6 +59,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
+    enableGoalsSidebarLink: false,
     enableTaskWatchdogs: false,
     enableCloudSync: false,
     enableServerInfoDebugView: false,
@@ -195,6 +198,28 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
       enableTaskWatchdogs: false,
     });
+  });
+
+  it("renders and patches the Goals Sidebar Link experimental toggle", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Goals Sidebar Link");
+    expect(container.textContent).toContain(
+      "Restore the Goals item in the main sidebar while the goals surface is being evaluated.",
+    );
+
+    const toggle = container.querySelector<HTMLButtonElement>(GOALS_SIDEBAR_LINK_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableGoalsSidebarLink: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });
 
   it("renders and patches the Server Info Debug View experimental toggle", async () => {

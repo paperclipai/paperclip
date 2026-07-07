@@ -242,6 +242,7 @@ export function InstanceExperimentalSettings() {
   const enableTaskWatchdogs = experimentalQuery.data?.enableTaskWatchdogs === true;
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
+  const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
@@ -369,6 +370,23 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ enableExternalObjects: !enableExternalObjects })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle external objects experimental setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Goals Sidebar Link</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Restore the Goals item in the main sidebar while the goals surface is being evaluated.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableGoalsSidebarLink}
+            onCheckedChange={() => toggleMutation.mutate({ enableGoalsSidebarLink: !enableGoalsSidebarLink })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle goals sidebar link experimental setting"
           />
         </div>
       </section>
