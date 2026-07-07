@@ -565,6 +565,65 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("allows an initiative to depend on another initiative from the properties pane", async () => {
+    const onUpdate = vi.fn();
+    mockIssuesApi.list.mockResolvedValue([
+      createIssue({
+        id: "issue-2",
+        identifier: "PAP-2",
+        title: "Close 100 client signups",
+        status: "in_progress",
+        workItemType: "initiative",
+      }),
+      createIssue({
+        id: "issue-3",
+        identifier: "PAP-3",
+        title: "Run activation checklist",
+        status: "todo",
+        workItemType: "human_task",
+      }),
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        title: "Achieve 100 active users",
+        workItemType: "initiative",
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Depends on");
+    expect(container.textContent).toContain("Add dependency");
+    expect(container.textContent).not.toContain("Add blocker");
+
+    const addButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Add dependency"));
+    expect(addButton).not.toBeUndefined();
+
+    await act(async () => {
+      addButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.querySelector('input[placeholder="Search initiatives or issues..."]')).not.toBeNull();
+    const dependencyButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("PAP-2 Close 100 client signups"));
+    expect(dependencyButton).not.toBeUndefined();
+    expect(dependencyButton?.textContent).toContain("Initiative");
+    expect(container.textContent).toContain("PAP-3 Run activation checklist");
+
+    await act(async () => {
+      dependencyButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ blockedByIssueIds: ["issue-2"] });
+
+    act(() => root.unmount());
+  });
+
   it("removes a blocked-by issue from the chip remove action after confirmation", async () => {
     const onUpdate = vi.fn();
     const root = renderProperties(container, {

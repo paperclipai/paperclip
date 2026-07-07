@@ -2893,6 +2893,53 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(blockedRelations.blockedBy.map((relation) => relation.id)).toEqual([blockerId]);
   });
 
+  it("allows one initiative to be blocked by another initiative", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const signupsInitiativeId = randomUUID();
+    const activeUsersInitiativeId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: signupsInitiativeId,
+        companyId,
+        identifier: "GTM-1",
+        title: "Close 100 client signups",
+        status: "in_progress",
+        priority: "high",
+        workItemType: "initiative",
+      },
+      {
+        id: activeUsersInitiativeId,
+        companyId,
+        identifier: "GTM-2",
+        title: "Achieve 100 active users",
+        status: "blocked",
+        priority: "high",
+        workItemType: "initiative",
+      },
+    ]);
+
+    await svc.update(activeUsersInitiativeId, {
+      blockedByIssueIds: [signupsInitiativeId],
+    });
+
+    const relations = await svc.getRelationSummaries(activeUsersInitiativeId);
+
+    expect(relations.blockedBy).toEqual([
+      expect.objectContaining({
+        id: signupsInitiativeId,
+        identifier: "GTM-1",
+        title: "Close 100 client signups",
+      }),
+    ]);
+  });
+
   it("adds terminal blockers to immediate blocked-by summaries", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

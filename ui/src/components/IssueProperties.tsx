@@ -149,6 +149,8 @@ interface IssuePropertiesProps {
   inline?: boolean;
 }
 
+const ISSUE_PROPERTIES_BLOCKER_CANDIDATE_LIMIT = 1000;
+
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3 py-1.5">
@@ -730,8 +732,10 @@ export function IssueProperties({
   });
 
   const { data: allIssues } = useQuery({
-    queryKey: queryKeys.issues.list(companyId!),
-    queryFn: () => issuesApi.list(companyId!),
+    queryKey: [...queryKeys.issues.list(companyId!), "properties-issue-options"],
+    queryFn: () => issuesApi.list(companyId!, {
+      limit: ISSUE_PROPERTIES_BLOCKER_CANDIDATE_LIMIT,
+    }),
     enabled: !!companyId && (blockedByOpen || parentOpen),
   });
   const isInitiativeItem = issue.workItemType === "initiative";
@@ -2203,6 +2207,10 @@ export function IssueProperties({
     </>
   );
   const blockingIssues = issue.blocks ?? [];
+  const blockedByLabel = isInitiativeItem ? "Depends on" : "Blocked by";
+  const addBlockedByLabel = isInitiativeItem ? "Add dependency" : "Add blocker";
+  const noBlockedByLabel = isInitiativeItem ? "No dependencies" : "No blockers";
+  const blockedBySearchPlaceholder = isInitiativeItem ? "Search initiatives or issues..." : "Search issues...";
   const blockerOptions = (allIssues ?? [])
     .filter((candidate) => candidate.id !== issue.id)
     .filter((candidate) => {
@@ -2214,6 +2222,11 @@ export function IssueProperties({
       );
     })
     .sort((a, b) => {
+      if (isInitiativeItem) {
+        const aRank = a.workItemType === "initiative" ? 0 : 1;
+        const bRank = b.workItemType === "initiative" ? 0 : 1;
+        if (aRank !== bRank) return aRank - bRank;
+      }
       const aLabel = `${a.identifier ?? ""} ${a.title}`.trim();
       const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();
       return aLabel.localeCompare(bLabel);
@@ -2233,7 +2246,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder={blockedBySearchPlaceholder}
         value={blockedBySearch}
         onChange={(e) => setBlockedBySearch(e.target.value)}
         autoFocus={!inline}
@@ -2246,10 +2259,11 @@ export function IssueProperties({
           )}
           onClick={() => onUpdate({ blockedByIssueIds: [] })}
         >
-          No blockers
+          {noBlockedByLabel}
         </button>
         {blockerOptions.map((candidate) => {
           const selected = blockedByIds.includes(candidate.id);
+          const isInitiativeCandidate = candidate.workItemType === "initiative";
           return (
             <button
               key={candidate.id}
@@ -2264,6 +2278,11 @@ export function IssueProperties({
                 {candidate.identifier ? `${candidate.identifier} ` : ""}
                 {candidate.title}
               </span>
+              {isInitiativeCandidate ? (
+                <span className="ml-auto shrink-0 rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">
+                  Initiative
+                </span>
+              ) : null}
             </button>
           );
         })}
@@ -2277,7 +2296,7 @@ export function IssueProperties({
       onClick={onClick}
     >
       <Plus className="h-3 w-3" />
-      Add blocker
+      {addBlockedByLabel}
     </button>
   );
 
@@ -2587,7 +2606,7 @@ export function IssueProperties({
 
         {inline ? (
           <div>
-            <PropertyRow label="Blocked by">
+            <PropertyRow label={blockedByLabel}>
               {(issue.blockedBy ?? []).map((relation) => (
                 <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
               ))}
@@ -2600,7 +2619,7 @@ export function IssueProperties({
             )}
           </div>
         ) : (
-          <PropertyRow label="Blocked by">
+          <PropertyRow label={blockedByLabel}>
             {(issue.blockedBy ?? []).map((relation) => (
               <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
             ))}

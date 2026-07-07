@@ -220,6 +220,11 @@ function installStorybookApiFixtures() {
       return Response.json(storybookSecretAccessEvents.filter((event) => event.secretId === secretId));
     }
 
+    const issueCollaboratorsMatch = url.pathname.match(/^\/api\/issues\/([^/]+)\/collaborators$/);
+    if (issueCollaboratorsMatch) {
+      return Response.json([]);
+    }
+
     const companyResourceMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/([^/]+)$/);
     if (companyResourceMatch) {
       const [, companyId, resource] = companyResourceMatch;
@@ -231,6 +236,9 @@ function installStorybookApiFixtures() {
       }
       if (resource === "projects") {
         return Response.json(companyId === "company-storybook" ? storybookProjects : []);
+      }
+      if (resource === "work-cycles") {
+        return Response.json([]);
       }
       if (resource === "approvals") {
         return Response.json(companyId === "company-storybook" ? storybookApprovals : []);

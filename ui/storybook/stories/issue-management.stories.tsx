@@ -62,6 +62,53 @@ const primaryIssue: Issue = {
   currentExecutionWorkspace: storybookExecutionWorkspaces[0]!,
 };
 const childIssues = storybookIssues.filter((issue) => issue.parentId === primaryIssue.id);
+const marketingSignupInitiative: Issue = {
+  ...storybookIssues[6]!,
+  id: "issue-storybook-marketing-signups",
+  title: "Close 100 client signups",
+  description: "Marketing-owned growth target that unlocks the activation initiative.",
+  status: "in_progress",
+  priority: "high",
+  workItemType: "initiative",
+  assigneeAgentId: null,
+  assigneeUserId: "user-board",
+  identifier: "PAP-2100",
+  issueNumber: 2100,
+  blockedBy: [],
+  blocks: [],
+};
+const activeUsersInitiative: Issue = {
+  ...storybookIssues[5]!,
+  id: "issue-storybook-active-users",
+  title: "Achieve 100 active users",
+  description: "Activation target that depends on enough signed clients entering onboarding.",
+  status: "blocked",
+  priority: "high",
+  workItemType: "initiative",
+  assigneeAgentId: null,
+  assigneeUserId: "user-board",
+  identifier: "PAP-2101",
+  issueNumber: 2101,
+  blockedBy: [],
+  blocks: [],
+};
+const issuePropertyOptionIssues = [
+  marketingSignupInitiative,
+  activeUsersInitiative,
+  ...storybookIssues,
+];
+
+function toIssueRelationSummary(issue: Issue): NonNullable<Issue["blockedBy"]>[number] {
+  return {
+    id: issue.id,
+    identifier: issue.identifier,
+    title: issue.title,
+    status: issue.status,
+    priority: issue.priority,
+    assigneeAgentId: issue.assigneeAgentId,
+    assigneeUserId: issue.assigneeUserId,
+  };
+}
 
 function Section({
   eyebrow,
@@ -89,6 +136,10 @@ function hydrateStorybookQueries(queryClient: ReturnType<typeof useQueryClient>)
   queryClient.setQueryData(queryKeys.agents.list(companyId), storybookAgents);
   queryClient.setQueryData(queryKeys.projects.list(companyId), storybookProjects);
   queryClient.setQueryData(queryKeys.issues.list(companyId), storybookIssues);
+  queryClient.setQueryData(
+    [...queryKeys.issues.list(companyId), "properties-issue-options"],
+    issuePropertyOptionIssues,
+  );
   queryClient.setQueryData(queryKeys.issues.labels(companyId), storybookIssueLabels);
   queryClient.setQueryData(queryKeys.issues.documents(primaryIssue.id), storybookIssueDocuments);
   queryClient.setQueryData(queryKeys.issues.runs(primaryIssue.id), storybookIssueRuns);
@@ -162,6 +213,34 @@ function StorybookData({ children }: { children: React.ReactNode }) {
   });
 
   return ready ? children : null;
+}
+
+function InitiativeDependencyProperties() {
+  const [issue, setIssue] = useState<Issue>(activeUsersInitiative);
+  const issueById = useMemo(
+    () => new Map(issuePropertyOptionIssues.map((candidate) => [candidate.id, candidate])),
+    [],
+  );
+
+  return (
+    <IssueProperties
+      issue={issue}
+      childIssues={[]}
+      onUpdate={(data) => {
+        const blockedByIssueIds = data.blockedByIssueIds;
+        if (!Array.isArray(blockedByIssueIds)) return;
+        const nextBlockedByIssueIds = blockedByIssueIds.filter((id): id is string => typeof id === "string");
+        setIssue((current) => ({
+          ...current,
+          blockedBy: nextBlockedByIssueIds
+            .map((id) => issueById.get(id) ?? null)
+            .filter((candidate): candidate is Issue => Boolean(candidate))
+            .map(toIssueRelationSummary),
+        }));
+      }}
+      inline
+    />
+  );
 }
 
 function ColumnConfigurationMatrix() {
@@ -636,6 +715,24 @@ function IssueManagementStories() {
                   onUpdate={() => undefined}
                   inline
                 />
+              </div>
+            </div>
+          </Section>
+
+          <Section eyebrow="IssueProperties" title="Initiative dependency picker">
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
+              <div className="space-y-4 rounded-lg border border-border bg-background/70 p-5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusBadge status={activeUsersInitiative.status} />
+                  <PriorityIcon priority={activeUsersInitiative.priority} showLabel />
+                  <Badge variant="secondary">{activeUsersInitiative.identifier}</Badge>
+                  <Badge variant="outline">Initiative</Badge>
+                </div>
+                <h3 className="text-2xl font-semibold tracking-tight">{activeUsersInitiative.title}</h3>
+                <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{activeUsersInitiative.description}</p>
+              </div>
+              <div className="rounded-lg border border-border bg-background/70 p-4">
+                <InitiativeDependencyProperties />
               </div>
             </div>
           </Section>
