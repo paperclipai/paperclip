@@ -70,6 +70,41 @@ describe("agent lifecycle commands", () => {
     ]);
   });
 
+  it("refuses to delete an agent without explicit confirmation", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit called");
+    }) as never);
+
+    await expect(run(["agent", "delete", AGENT_ID])).rejects.toThrow("process.exit called");
+
+    expect(error.mock.calls[0]?.[0]).toContain("Refusing to delete without --yes");
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("validates agent create payloads before posting", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit called");
+    }) as never);
+
+    await expect(run([
+      "agent", "create",
+      "--company-id", COMPANY_ID,
+      "--payload-json", JSON.stringify({ name: "" }),
+    ])).rejects.toThrow("process.exit called");
+
+    expect(error.mock.calls[0]?.[0]).toContain("too_small");
+    expect(error.mock.calls[0]?.[0]).toContain("name");
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("wraps configuration, runtime, skills, and instructions endpoints", async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
     vi.stubGlobal("fetch", fetchMock);
