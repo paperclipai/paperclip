@@ -98,4 +98,11 @@ describe("shipped skills catalog", () => {
     expect(rampSkill).toContain("do not execute them inside Paperclip unless a Paperclip approval explicitly names the playbook");
     expect(rampSkill).toContain("third-party browser automation, MCP server, CLI, or connector");
   });
+
+  it("keeps the Ramp wrapper clear of remote-fetch execution hard-stop patterns", () => {
+    const rampSkill = readFileSync(new URL("../catalog/optional/finance/ramp/SKILL.md", import.meta.url), "utf8");
+    const remoteExecPattern = /\b(?:curl|wget)\b[\s\S]{0,160}\|\s*(?:sh|bash)|\b(?:bash|sh)\s+-c\b|\beval\b|\bpython\s+-c\b|\bnode\s+-e\b/i;
+
+    expect(remoteExecPattern.test(rampSkill)).toBe(false);
+  });
 });
