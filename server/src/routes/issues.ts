@@ -16,6 +16,7 @@ import {
   issueRelations,
   issues as issueRows,
   issueWorkProducts,
+  labels,
   pipelineCaseIssueLinks,
   pipelineCases,
   pipelineStages,
@@ -159,6 +160,7 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
+import { evaluateSeoClosureGate, isSeoTaggedIssue } from "../services/issue-seo-closure-gate.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -6224,11 +6226,41 @@ export function issueRoutes(
       }
     }
 
+    const seoGateLabels = Array.isArray(updateFields.labelIds)
+      ? await db
+          .select()
+          .from(labels)
+          .where(and(eq(labels.companyId, existing.companyId), inArray(labels.id, updateFields.labelIds)))
+      : existing.labels;
+    const seoGateIssue = {
+      ...existing,
+      priority: typeof updateFields.priority === "string" ? updateFields.priority : existing.priority,
+      labels: seoGateLabels,
+      labelIds: Array.isArray(updateFields.labelIds) ? updateFields.labelIds : existing.labelIds,
+    };
+    const seoGate = await evaluateSeoClosureGate({
+      issue: seoGateIssue,
+      requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
+      commentBody,
+      issuesSvc: svc,
+      agentsSvc,
+    });
+    if (!seoGate.ok) {
+      res.status(422).json({ error: seoGate.error, details: seoGate.details });
+      return;
+    }
+    const shouldPersistSeoCloseComment =
+      Boolean(commentBody) &&
+      typeof updateFields.status === "string" &&
+      updateFields.status === "done" &&
+      isSeoTaggedIssue(seoGateIssue);
     let issue;
+    let comment = null;
     try {
       if (transition.decision && decisionId) {
         const decision = transition.decision;
         issue = await db.transaction(async (tx) => {
+          const txDb = tx as unknown as Db;
           const updated = await svc.update(
             id,
             {
@@ -6252,6 +6284,64 @@ export function issueRoutes(
             body: decision.body,
             createdByRunId: actor.runId ?? null,
           });
+
+          if (seoGate.auditBypass) {
+            await logActivity(txDb, {
+              companyId: updated.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "issue.seo_closure_exception_used",
+              entityType: "issue",
+              entityId: updated.id,
+              details: seoGate.auditBypass,
+            });
+          }
+          if (shouldPersistSeoCloseComment) {
+            comment = await svc.addComment(id, commentBody!, {
+              agentId: actor.agentId ?? undefined,
+              userId: actor.actorType === "user" ? actor.actorId : undefined,
+              runId: actor.runId,
+            }, {
+              sourceTrust: await sourceTrustForActorWrite(updated, actor),
+            }, tx);
+          }
+
+          return updated;
+        });
+      } else if (seoGate.auditBypass || shouldPersistSeoCloseComment) {
+        issue = await db.transaction(async (tx) => {
+          const txDb = tx as unknown as Db;
+          const updated = await svc.update(id, {
+            ...updateFields,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          }, tx);
+          if (!updated) return null;
+
+          if (seoGate.auditBypass) {
+            await logActivity(txDb, {
+              companyId: updated.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "issue.seo_closure_exception_used",
+              entityType: "issue",
+              entityId: updated.id,
+              details: seoGate.auditBypass,
+            });
+          }
+          if (shouldPersistSeoCloseComment) {
+            comment = await svc.addComment(id, commentBody!, {
+              agentId: actor.agentId ?? undefined,
+              userId: actor.actorType === "user" ? actor.actorId : undefined,
+              runId: actor.runId,
+            }, {
+              sourceTrust: await sourceTrustForActorWrite(updated, actor),
+            }, tx);
+          }
 
           return updated;
         });
@@ -6620,17 +6710,18 @@ export function issueRoutes(
       }
     }
 
-    let comment = null;
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-      comment = await svc.addComment(id, commentBody, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
-      }, {
-        sourceTrust: await sourceTrustForActorWrite(issue, actor),
-      });
+      if (!comment) {
+        comment = await svc.addComment(id, commentBody, {
+          agentId: actor.agentId ?? undefined,
+          userId: actor.actorType === "user" ? actor.actorId : undefined,
+          runId: actor.runId,
+        }, {
+          sourceTrust: await sourceTrustForActorWrite(issue, actor),
+        });
+      }
       await issueReferencesSvc.syncComment(comment.id);
       await externalObjectsSvc.syncCommentSafely(comment.id);
       const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
