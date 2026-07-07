@@ -47,6 +47,7 @@ const CONFIG_REVISION_FIELDS = [
   "name",
   "role",
   "title",
+  "icon",
   "reportsTo",
   "capabilities",
   "adapterType",
@@ -70,6 +71,7 @@ interface RevisionMetadata {
 interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
   allowBuiltInAgentMetadata?: boolean;
+  allowPendingApprovalConfigUpdate?: boolean;
 }
 
 interface CreateAgentOptions {
@@ -113,6 +115,7 @@ function buildConfigSnapshot(
     name: row.name,
     role: row.role,
     title: row.title,
+    icon: row.icon,
     reportsTo: row.reportsTo,
     capabilities: row.capabilities,
     adapterType: row.adapterType,
@@ -133,6 +136,47 @@ function containsRedactedMarker(value: unknown): boolean {
 
 function hasConfigPatchFields(data: Partial<typeof agents.$inferInsert>) {
   return CONFIG_REVISION_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(data, field));
+}
+
+function changedPendingApprovalConfigFields(
+  existing: typeof agents.$inferSelect,
+  data: Partial<typeof agents.$inferInsert>,
+) {
+  return CONFIG_REVISION_FIELDS.filter((field) =>
+    Object.prototype.hasOwnProperty.call(data, field) && !jsonEqual(data[field], existing[field]),
+  );
+}
+
+function configPatchFromApprovalPayload(payload: Record<string, unknown>) {
+  const patch: Partial<typeof agents.$inferInsert> = {};
+  if (typeof payload.name === "string") patch.name = payload.name;
+  if (typeof payload.role === "string") patch.role = payload.role;
+  if (Object.prototype.hasOwnProperty.call(payload, "title")) {
+    patch.title = typeof payload.title === "string" ? payload.title : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, "icon")) {
+    patch.icon = typeof payload.icon === "string" ? payload.icon : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, "reportsTo")) {
+    patch.reportsTo = typeof payload.reportsTo === "string" ? payload.reportsTo : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, "capabilities")) {
+    patch.capabilities = typeof payload.capabilities === "string" ? payload.capabilities : null;
+  }
+  if (typeof payload.adapterType === "string") patch.adapterType = payload.adapterType;
+  if (isPlainRecord(payload.adapterConfig)) patch.adapterConfig = payload.adapterConfig;
+  if (isPlainRecord(payload.runtimeConfig)) patch.runtimeConfig = payload.runtimeConfig;
+  if (Object.prototype.hasOwnProperty.call(payload, "defaultEnvironmentId")) {
+    patch.defaultEnvironmentId =
+      typeof payload.defaultEnvironmentId === "string" ? payload.defaultEnvironmentId : null;
+  }
+  if (typeof payload.budgetMonthlyCents === "number") {
+    patch.budgetMonthlyCents = payload.budgetMonthlyCents;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, "metadata")) {
+    patch.metadata = isPlainRecord(payload.metadata) ? payload.metadata : null;
+  }
+  return patch;
 }
 
 function parseFiniteNumberLike(value: unknown): number | null {
@@ -433,6 +477,16 @@ export function agentService(db: Db) {
     ) {
       throw conflict("Pending approval agents cannot be activated directly");
     }
+    if (existing.status === "pending_approval" && !options?.allowPendingApprovalConfigUpdate) {
+      const changedFields = changedPendingApprovalConfigFields(existing as typeof agents.$inferSelect, data);
+      if (changedFields.length > 0) {
+        throw conflict("Pending approval agent configuration cannot be changed before board approval", {
+          code: "pending_approval_agent_config_frozen",
+          agentId: id,
+          fields: changedFields,
+        });
+      }
+    }
 
     if (data.reportsTo !== undefined) {
       if (data.reportsTo) {
@@ -712,12 +766,26 @@ export function agentService(db: Db) {
       });
     },
 
-    activatePendingApproval: async (id: string) => {
+    activatePendingApproval: async (id: string, approvedPayload?: Record<string, unknown> | null) => {
       const activatedAgent = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        const existing = await agentService(txDb).getById(id);
+        if (!existing || existing.status !== "pending_approval") return null;
+        const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
+        let patch = { ...approvedPatch } as Partial<typeof agents.$inferInsert>;
+        if (
+          Object.prototype.hasOwnProperty.call(patch, "adapterConfig") &&
+          isPlainRecord(patch.adapterConfig)
+        ) {
+          patch.adapterConfig = await secretService(txDb).normalizeAdapterConfigForPersistence(
+            existing.companyId,
+            patch.adapterConfig,
+            { adapterType: (patch.adapterType ?? existing.adapterType) as string },
+          );
+        }
         const updated = await tx
           .update(agents)
-          .set({ status: "idle", updatedAt: new Date() })
+          .set({ ...patch, status: "idle", updatedAt: new Date() })
           .where(and(eq(agents.id, id), eq(agents.status, "pending_approval")))
           .returning()
           .then((rows) => rows[0] ?? null);
@@ -741,6 +809,13 @@ export function agentService(db: Db) {
     updatePermissions: async (id: string, permissions: Record<string, unknown> & { canCreateAgents: boolean }) => {
       const existing = await getById(id);
       if (!existing) return null;
+      if (existing.status === "pending_approval") {
+        throw conflict("Pending approval agent permissions cannot be changed before board approval", {
+          code: "pending_approval_agent_config_frozen",
+          agentId: id,
+          fields: ["permissions"],
+        });
+      }
 
       const updated = await db
         .update(agents)
