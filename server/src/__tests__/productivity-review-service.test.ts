@@ -220,7 +220,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
     // Twice the threshold of runs that all failed BEFORE booting: 0 tokens +
-    // infra errorCode. This is the ZOL-6918 retry-loop shape (ZOL-6960).
+    // infra errorCode. This is the provider rate-limit retry-loop shape.
     const infraErrorCodes = ["claude_transient_upstream", "rate_limit_five_hour", "adapter_failed"];
     for (let i = 0; i < DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS * 2; i += 1) {
       await insertRuns({
@@ -314,6 +314,60 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews).toHaveLength(1);
     expect(reviews[0]?.description).toContain("Primary trigger: `no_comment_streak`");
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
+  });
+
+  it("stops the streak at an infra-classified run that did produce a comment", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    // Newest: a few completed runs without comments (below threshold).
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 3,
+      now,
+      startOffset: 0,
+      // Spread runs across hours so the high-churn trigger (10/1h, 30/6h)
+      // never fires — this test isolates the no_comment_streak heuristic.
+      spacingMs: 25 * 60_000,
+    });
+    // Then a run matching the infra-skip shape (failed, 0 tokens, infra
+    // errorCode) that nevertheless created a comment. The comment boundary
+    // must win over the infra skip: the streak ends here.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 1,
+      now,
+      startOffset: 3,
+      spacingMs: 25 * 60_000,
+      withRunComments: true,
+      overrides: {
+        status: "failed",
+        errorCode: "adapter_failed",
+        usageJson: null,
+        livenessState: null,
+        nextAction: null,
+      },
+    });
+    // Oldest: a full threshold of commentless completed runs that must NOT be
+    // reachable past the commented run above.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      startOffset: 4,
+      spacingMs: 25 * 60_000,
+    });
+
+    const service = productivityReviewService(db);
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
   });
 
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {

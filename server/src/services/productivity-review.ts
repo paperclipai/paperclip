@@ -41,7 +41,7 @@ export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review e
 // Error codes that mark an infra / transient failure the agent hit BEFORE it
 // booted and produced any output (rate-limit rejection, adapter crash,
 // transient upstream). A run that never got to work is not evidence of agent
-// unproductivity, so it must not count toward the no-comment streak (ZOL-6966).
+// unproductivity, so it must not count toward the no-comment streak.
 const INFRA_STARTUP_FAILURE_ERROR_CODES = new Set([
   "adapter_failed",
   "claude_transient_upstream",
@@ -72,7 +72,7 @@ function isInfraErrorCode(errorCode: string | null | undefined): boolean {
 
 // Total tokens (raw preferred, else normalized) the run reported. A run that
 // produced 0 input+output+cached tokens never generated anything — the agent
-// crashed before boost, per the ZOL-6960 / ZOL-6918 retry-loop incident.
+// crashed before boot, as seen in provider rate-limit retry-loop incidents.
 function readRunTokenTotal(usageJson: unknown): number {
   const parsed = parseObject(usageJson);
   if (Object.keys(parsed).length === 0) return 0;
@@ -85,7 +85,7 @@ function readRunTokenTotal(usageJson: unknown): number {
 // A terminal run that failed at startup on infra: not `succeeded`, produced no
 // tokens, and carries an infra/transient error signal. Such runs are skipped
 // when computing the no-comment streak so a burst of rate-limit / adapter
-// failures cannot be misread as the agent going silent (ZOL-6966).
+// failures cannot be misread as the agent going silent.
 function isInfraStartupFailureRun(
   run: Pick<HeartbeatRunRow, "status" | "errorCode" | "resultJson" | "usageJson">,
 ): boolean {
@@ -487,12 +487,12 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     );
     let noCommentStreak = 0;
     for (const run of terminalRuns) {
+      if (commentRunIds.has(run.id)) break;
       // Infra failures at startup (0-token rate-limit / adapter / transient
       // upstream) never gave the agent a chance to comment. Treat them as
       // transparent: neither count them nor let them break a real streak
-      // sitting behind them (ZOL-6966).
+      // sitting behind them.
       if (isInfraStartupFailureRun(run)) continue;
-      if (commentRunIds.has(run.id)) break;
       noCommentStreak += 1;
     }
 
