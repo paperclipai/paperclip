@@ -12,6 +12,7 @@ const mockAccessService = vi.hoisted(() => ({
 const mockBuiltInAgentService = vi.hoisted(() => ({
   list: vi.fn(),
   ensure: vi.fn(),
+  provision: vi.fn(),
   reset: vi.fn(),
 }));
 
@@ -96,6 +97,7 @@ describe("built-in agent routes", () => {
     mockAccessService.decide.mockResolvedValue(allowDecision());
     mockBuiltInAgentService.list.mockResolvedValue([builtInState()]);
     mockBuiltInAgentService.ensure.mockResolvedValue(builtInState());
+    mockBuiltInAgentService.provision.mockResolvedValue({ state: builtInState(), approval: null });
     mockBuiltInAgentService.reset.mockResolvedValue(builtInState());
   });
 
@@ -149,10 +151,15 @@ describe("built-in agent routes", () => {
       action: "agents:create",
       resource: { type: "company", companyId },
     });
-    expect(mockBuiltInAgentService.ensure).toHaveBeenCalledWith(companyId, "briefs", {
-      adapterType: "codex_local",
-      adapterConfig: { model: "gpt-5.4" },
-    });
+    expect(mockBuiltInAgentService.provision).toHaveBeenCalledWith(
+      companyId,
+      "briefs",
+      {
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.4" },
+      },
+      { requestedByAgentId: null, requestedByUserId: "board-user" },
+    );
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       companyId,
       actorType: "user",
@@ -179,6 +186,7 @@ describe("built-in agent routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.details).toMatchObject({ reason: "deny_missing_grant" });
     expect(mockBuiltInAgentService.ensure).not.toHaveBeenCalled();
+    expect(mockBuiltInAgentService.provision).not.toHaveBeenCalled();
   });
 
   it("rejects provision bodies with unknown fields", async () => {
@@ -196,6 +204,50 @@ describe("built-in agent routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(400);
     expect(mockBuiltInAgentService.ensure).not.toHaveBeenCalled();
+    expect(mockBuiltInAgentService.provision).not.toHaveBeenCalled();
+  });
+
+  it("returns pending hire approvals instead of provisioning immediately when company policy requires it", async () => {
+    const approval = {
+      id: "approval-1",
+      status: "pending",
+      type: "hire_agent",
+    };
+    mockBuiltInAgentService.provision.mockResolvedValue({
+      state: builtInState({
+        status: "pending_approval",
+        agent: { ...builtInState().agent, status: "pending_approval" },
+      }),
+      approval,
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "manager-agent",
+      companyId,
+      source: "agent_key",
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/built-in-agents/briefs/provision`)
+      .send({ adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" } });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(res.body.status).toBe("pending_approval");
+    expect(res.body.approval).toMatchObject({ id: "approval-1", status: "pending", type: "hire_agent" });
+    expect(mockBuiltInAgentService.ensure).not.toHaveBeenCalled();
+    expect(mockBuiltInAgentService.provision).toHaveBeenCalledWith(
+      companyId,
+      "briefs",
+      { adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" } },
+      { requestedByAgentId: "manager-agent", requestedByUserId: null },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId,
+      actorType: "agent",
+      actorId: "manager-agent",
+      action: "approval.created",
+      entityId: "approval-1",
+    }));
   });
 
   it("resets registry defaults through the same agents:create gate", async () => {

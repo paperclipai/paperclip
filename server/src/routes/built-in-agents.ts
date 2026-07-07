@@ -28,10 +28,11 @@ export function builtInAgentRoutes(db: Db) {
     req: Request,
     input: {
       companyId: string;
-      action: "built_in_agent.provision_requested" | "built_in_agent.reset";
+      action: "built_in_agent.provision_requested" | "built_in_agent.reset" | "approval.created";
       key: string;
       agentId: string | null;
       status: string;
+      approvalId?: string | null;
     },
   ) {
     const actor = getActorInfo(req);
@@ -40,13 +41,14 @@ export function builtInAgentRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       action: input.action,
-      entityType: "agent",
-      entityId: input.agentId ?? input.key,
+      entityType: input.action === "approval.created" ? "approval" : "agent",
+      entityId: input.action === "approval.created" ? input.approvalId ?? input.key : input.agentId ?? input.key,
       ...(actor.agentId ? { agentId: actor.agentId } : {}),
       ...(actor.runId ? { runId: actor.runId } : {}),
       details: {
         key: input.key,
         status: input.status,
+        approvalId: input.approvalId ?? null,
       },
     });
   }
@@ -64,7 +66,12 @@ export function builtInAgentRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const key = req.params.key as string;
       await assertCanProvisionBuiltInAgents(req, companyId);
-      const state = await svc.ensure(companyId, key, req.body);
+      const actor = getActorInfo(req);
+      const result = await svc.provision(companyId, key, req.body, {
+        requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
+        requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+      const { state, approval } = result;
       await logBuiltInAgentMutation(req, {
         companyId,
         action: "built_in_agent.provision_requested",
@@ -72,7 +79,17 @@ export function builtInAgentRoutes(db: Db) {
         agentId: state.agentId,
         status: state.status,
       });
-      res.json(state);
+      if (approval) {
+        await logBuiltInAgentMutation(req, {
+          companyId,
+          action: "approval.created",
+          key,
+          agentId: state.agentId,
+          status: approval.status,
+          approvalId: approval.id,
+        });
+      }
+      res.status(approval ? 202 : 200).json({ ...state, approval });
     },
   );
 

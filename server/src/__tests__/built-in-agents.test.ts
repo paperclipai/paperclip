@@ -5,6 +5,7 @@ import {
   activityLog,
   agentConfigRevisions,
   agents,
+  approvals,
   companies,
   createDb,
 } from "@paperclipai/db";
@@ -14,6 +15,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { HttpError } from "../errors.ts";
 import { agentService } from "../services/agents.ts";
+import { approvalService } from "../services/approvals.ts";
 import {
   builtInAgentService,
   deriveBuiltInAgentStatus,
@@ -48,6 +50,7 @@ describeEmbeddedPostgres("built-in agents", () => {
   afterEach(async () => {
     await db.delete(agentConfigRevisions);
     await db.delete(activityLog);
+    await db.delete(approvals);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -130,6 +133,87 @@ describeEmbeddedPostgres("built-in agents", () => {
 
     const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
     expect(rows).toHaveLength(1);
+  });
+
+  it("routes policy-gated built-in provisioning through a pending hire approval", async () => {
+    const companyId = await seedCompany();
+    const builtIns = builtInAgentService(db);
+
+    const result = await builtIns.provision(companyId, "briefs", {
+      adapterType: "process",
+      adapterConfig: { command: "echo safe" },
+    }, { requestedByUserId: "board-user" });
+
+    expect(result.state).toMatchObject({
+      status: "pending_approval",
+      agent: {
+        companyId,
+        name: "Briefs Agent",
+        status: "pending_approval",
+        adapterType: "process",
+        adapterConfig: { command: "echo safe" },
+      },
+    });
+    expect(result.approval).toMatchObject({
+      companyId,
+      type: "hire_agent",
+      status: "pending",
+      requestedByUserId: "board-user",
+      requestedByAgentId: null,
+      payload: {
+        name: "Briefs Agent",
+        role: "general",
+        adapterType: "process",
+        adapterConfig: { command: "echo safe" },
+        agentId: result.state.agentId,
+        sourceBuiltInAgentKey: "briefs",
+        featureKeys: ["briefs"],
+      },
+    });
+
+    const rowsBeforeApproval = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(rowsBeforeApproval).toHaveLength(1);
+    expect(rowsBeforeApproval[0]).toMatchObject({ status: "pending_approval" });
+
+    await expect(builtIns.requireBuiltInAgent(companyId, "briefs")).rejects.toMatchObject({
+      status: 412,
+      details: { code: "built_in_agent_not_configured", status: "pending_approval" },
+    });
+
+    await approvalService(db).approve(result.approval!.id, "board-user", "Approved built-in agent");
+
+    await expect(builtIns.get(companyId, "briefs")).resolves.toMatchObject({
+      status: "ready",
+      agentId: result.state.agentId,
+      agent: { status: "idle", adapterType: "process", adapterConfig: { command: "echo safe" } },
+    });
+  });
+
+  it("blocks policy-gated built-in reconfiguration instead of applying adapter overrides immediately", async () => {
+    const companyId = await seedCompany();
+    const builtIns = builtInAgentService(db);
+    const ready = await builtIns.ensure(companyId, "briefs", {
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+    });
+
+    await expect(builtIns.provision(companyId, "briefs", {
+      adapterType: "process",
+      adapterConfig: { command: "echo bypass" },
+    })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "built_in_agent_reconfiguration_requires_approval",
+        key: "briefs",
+        agentId: ready.agentId,
+      },
+    });
+
+    await expect(builtIns.get(companyId, "briefs")).resolves.toMatchObject({
+      status: "ready",
+      agentId: ready.agentId,
+      agent: { adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" } },
+    });
   });
 
   it("rejects adapter types outside the built-in definition allowlist", async () => {

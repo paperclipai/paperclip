@@ -1,16 +1,17 @@
 import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companies } from "@paperclipai/db";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, Approval } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { agentService } from "./agents.js";
+import { approvalService } from "./approvals.js";
 import {
   readBuiltInAgentMarker,
   withBuiltInAgentMarker,
 } from "./built-in-agent-metadata.js";
 
-export type BuiltInAgentStatus = "not_provisioned" | "needs_setup" | "ready" | "paused";
+export type BuiltInAgentStatus = "not_provisioned" | "pending_approval" | "needs_setup" | "ready" | "paused";
 
 export interface BuiltInAgentDefinition {
   key: string;
@@ -34,6 +35,16 @@ export interface BuiltInAgentState {
 export interface BuiltInAgentProvisionInput {
   adapterType?: string;
   adapterConfig?: Record<string, unknown>;
+}
+
+export interface BuiltInAgentProvisionActor {
+  requestedByAgentId?: string | null;
+  requestedByUserId?: string | null;
+}
+
+export interface BuiltInAgentProvisionResult {
+  state: BuiltInAgentState;
+  approval: Approval | null;
 }
 
 export interface RequiredBuiltInAgentWarning {
@@ -191,6 +202,7 @@ function hasCompleteAdapterConfig(adapterType: string, adapterConfig: unknown) {
 
 export function deriveBuiltInAgentStatus(agent: Pick<Agent, "adapterType" | "adapterConfig" | "status" | "pausedAt"> | null): BuiltInAgentStatus {
   if (!agent) return "not_provisioned";
+  if (agent.status === "pending_approval") return "pending_approval";
   if (agent.status === "paused" || agent.pausedAt) return "paused";
   return hasCompleteAdapterConfig(agent.adapterType, agent.adapterConfig) ? "ready" : "needs_setup";
 }
@@ -233,14 +245,19 @@ function rowIsBuiltInAgent(row: typeof agents.$inferSelect, key: string) {
 
 export function builtInAgentService(db: Db) {
   const agentSvc = agentService(db);
+  const approvalSvc = approvalService(db);
 
   async function ensureCompany(companyId: string) {
     const company = await db
-      .select({ id: companies.id })
+      .select({
+        id: companies.id,
+        requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
+      })
       .from(companies)
       .where(eq(companies.id, companyId))
       .then((rows) => rows[0] ?? null);
     if (!company) throw notFound("Company not found");
+    return company;
   }
 
   async function findMarkedRows(companyId: string, key: string) {
@@ -332,6 +349,79 @@ export function builtInAgentService(db: Db) {
     return state(definition, created);
   }
 
+  async function provision(
+    companyId: string,
+    key: string,
+    input: BuiltInAgentProvisionInput = {},
+    actor: BuiltInAgentProvisionActor = {},
+  ): Promise<BuiltInAgentProvisionResult> {
+    const definition = requireBuiltInAgentDefinition(key);
+    const company = await ensureCompany(companyId);
+    if (!company.requireBoardApprovalForNewAgents) {
+      return { state: await ensure(companyId, key, input), approval: null };
+    }
+
+    const existing = await findSingleAgent(companyId, definition);
+    if (existing) {
+      if (existing.status === "pending_approval") {
+        const approval = await approvalSvc.findOpenHireApprovalForAgent(companyId, existing.id);
+        return {
+          state: state(definition, existing),
+          approval: approval as Approval | null,
+        };
+      }
+
+      if (input.adapterType !== undefined || input.adapterConfig !== undefined) {
+        throw conflict("Built-in agent adapter changes require board approval before they can be applied.", {
+          code: "built_in_agent_reconfiguration_requires_approval",
+          key: definition.key,
+          agentId: existing.id,
+        });
+      }
+
+      return { state: state(definition, existing), approval: null };
+    }
+
+    const pending = await agentSvc.create(companyId, {
+      ...definitionPatch(definition, input),
+      status: "pending_approval",
+      metadata: builtInMetadata(definition),
+      runtimeConfig: {},
+      permissions: {},
+      spentMonthlyCents: 0,
+      lastHeartbeatAt: null,
+    }, { allowBuiltInAgentMetadata: true }) as Agent;
+
+    const approval = await approvalSvc.create(companyId, {
+      type: "hire_agent",
+      requestedByAgentId: actor.requestedByAgentId ?? null,
+      requestedByUserId: actor.requestedByUserId ?? null,
+      status: "pending",
+      payload: {
+        name: pending.name,
+        role: pending.role,
+        title: pending.title,
+        icon: pending.icon,
+        reportsTo: pending.reportsTo,
+        capabilities: pending.capabilities,
+        adapterType: pending.adapterType,
+        adapterConfig: pending.adapterConfig,
+        runtimeConfig: pending.runtimeConfig,
+        budgetMonthlyCents: pending.budgetMonthlyCents,
+        metadata: pending.metadata,
+        agentId: pending.id,
+        sourceBuiltInAgentKey: definition.key,
+        featureKeys: definition.featureKeys,
+      },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      updatedAt: new Date(),
+    }) as Approval;
+
+    return { state: state(definition, pending), approval };
+  }
+
   async function list(companyId: string) {
     await ensureCompany(companyId);
     return Promise.all(DEFINITIONS.map(async (definition) => state(definition, await findSingleAgent(companyId, definition))));
@@ -387,6 +477,7 @@ export function builtInAgentService(db: Db) {
     definitions: listBuiltInAgentDefinitions,
     get,
     ensure,
+    provision,
     list,
     reset,
     requireBuiltInAgent,
