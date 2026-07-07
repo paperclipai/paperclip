@@ -147,6 +147,44 @@ describe("migration safety check", () => {
     );
   });
 
+  it("flags UPDATE ... FROM (SELECT ... FETCH FIRST N ROWS ONLY) subquery batch on a large table", () => {
+    const result = analyze(`
+      UPDATE "issue_comments" c
+      SET "derived_author_agent_id" = NULL
+      FROM (
+        SELECT "id"
+        FROM "issue_comments"
+        WHERE "author_agent_id" IS NULL
+        ORDER BY "id"
+        FETCH FIRST 5000 ROWS ONLY
+      ) batch
+      WHERE c."id" = batch."id";
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "batched-mutation-large-table-missing-index",
+    );
+  });
+
+  it("flags UPDATE ... FROM (SELECT ... FETCH NEXT N ROWS ONLY) subquery batch on a large table", () => {
+    const result = analyze(`
+      UPDATE "issue_comments" c
+      SET "derived_author_agent_id" = NULL
+      FROM (
+        SELECT "id"
+        FROM "issue_comments"
+        WHERE "author_agent_id" IS NULL
+        ORDER BY "id"
+        FETCH NEXT 5000 ROWS ONLY
+      ) batch
+      WHERE c."id" = batch."id";
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "batched-mutation-large-table-missing-index",
+    );
+  });
+
   it("flags UPDATE ... WHERE IN (SELECT ... LIMIT N) subquery batch on a large table", () => {
     const result = analyze(`
       UPDATE "issue_comments"
@@ -216,7 +254,7 @@ describe("migration safety check", () => {
     );
   });
 
-  it("does not treat WHERE inside a dollar-quoted string as a selective predicate", () => {
+  it("does not treat WHERE inside a tagged dollar-quoted string as a selective predicate", () => {
     const result = analyze(`
       UPDATE "issue_comments"
       SET "body" = $msg$WHERE "id" > '0'$msg$;
@@ -227,21 +265,14 @@ describe("migration safety check", () => {
     );
   });
 
-  it("flags a FETCH FIRST inline batch mutation over a known-large table", () => {
+  it("does not treat WHERE inside an untagged dollar-quoted string as a selective predicate", () => {
     const result = analyze(`
-      UPDATE "issue_comments" c
-        SET "derived_author_agent_id" = NULL
-        FROM (
-          SELECT "id"
-          FROM "issue_comments"
-          ORDER BY "id"
-          FETCH FIRST 5000 ROWS ONLY
-        ) b
-        WHERE c."id" = b."id";
+      UPDATE "issue_comments"
+      SET "body" = $$WHERE "id" > '0'$$;
     `);
 
     expect(result.newFindings.map((f) => f.rule)).toContain(
-      "batched-mutation-large-table-missing-index",
+      "full-table-mutation-large-table",
     );
   });
 

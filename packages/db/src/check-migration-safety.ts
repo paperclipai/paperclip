@@ -162,9 +162,9 @@ function splitSqlStatements(sql: string): string[] {
     }
 
     if (char === "$") {
-      const match = sql.slice(index).match(/^\$[A-Za-z_]*\$/);
-      if (match) {
-        dollarQuoteTag = match[0];
+      const tag = dollarQuoteTagAt(sql, index);
+      if (tag) {
+        dollarQuoteTag = tag;
         index += dollarQuoteTag.length - 1;
       }
       continue;
@@ -249,9 +249,8 @@ function skipBlockComment(statement: string, startIndex: number): number {
 }
 
 function skipDollarQuotedString(statement: string, startIndex: number): number {
-  const match = statement.slice(startIndex).match(/^\$[A-Za-z_]*\$/);
-  if (!match) return startIndex;
-  const tag = match[0];
+  const tag = dollarQuoteTagAt(statement, startIndex);
+  if (!tag) return startIndex;
   const closeIndex = statement.indexOf(tag, startIndex + tag.length);
   return closeIndex === -1 ? statement.length : closeIndex + tag.length;
 }
@@ -494,11 +493,17 @@ function hasDoLoop(statement: string): boolean {
 }
 
 function hasBatchedLimitMutation(statement: string): boolean {
-  const hasLimit =
-    /\bLIMIT\s+(?:\d+|[A-Za-z_][A-Za-z0-9_]*|\$[0-9]+)\b/i.test(statement) ||
-    /\bFETCH\s+(?:FIRST|NEXT)\b/i.test(statement);
+  const hasLimit = /\bLIMIT\s+(?:\d+|[A-Za-z_][A-Za-z0-9_]*|\$[0-9]+)\b/i.test(statement);
+  const hasFetchLimit =
+    /\bFETCH\s+(?:FIRST|NEXT)\s+(?:\d+|[A-Za-z_][A-Za-z0-9_]*|\$[0-9]+)\s+ROWS?\s+ONLY\b/i.test(statement);
   const hasDml = /\b(?:UPDATE|DELETE)\b/i.test(statement);
-  return hasLimit && hasDml;
+  return (hasLimit || hasFetchLimit) && hasDml;
+}
+
+function dollarQuoteTagAt(statement: string, startIndex: number): string | null {
+  if (statement[startIndex] !== "$") return null;
+  const match = statement.slice(startIndex).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/);
+  return match?.[0] ?? null;
 }
 
 function topLevelWhereClause(statement: string, startIndex: number): string | null {
