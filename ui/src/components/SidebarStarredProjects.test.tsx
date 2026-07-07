@@ -112,6 +112,10 @@ function projectLinkLabels(container: HTMLElement) {
     .filter(Boolean);
 }
 
+function projectLink(container: HTMLElement, projectRef: string) {
+  return container.querySelector(`a[href="/projects/${projectRef}/issues"]`) as HTMLAnchorElement | null;
+}
+
 describe("SidebarStarredProjects", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot> | null;
@@ -174,6 +178,30 @@ describe("SidebarStarredProjects", () => {
     // Only the starred, non-archived project renders (archived "Ghost" is filtered out).
     expect(projectLinkLabels(container)).toEqual(["Bravo"]);
     expect(document.body.querySelector('button[aria-label="Unstar Bravo"]')).not.toBeNull();
+  });
+
+  it("keeps starred projects indented only outside the collapsed rail", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      makeProject({ id: "project-a", name: "Alpha", urlKey: "alpha" }),
+    ]);
+    memberships = { ...memberships, starredProjectIds: ["project-a"] };
+
+    await render();
+
+    expect(projectLink(container, "alpha")?.className).toContain("pl-8");
+
+    await act(async () => root?.unmount());
+    root = null;
+    container.innerHTML = "";
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    mockSidebarState.collapsed = true;
+
+    await render();
+
+    const railProjectLink = projectLink(container, "alpha");
+    expect(railProjectLink?.className).not.toContain("pl-8");
+    const nameSpan = Array.from(container.querySelectorAll("span")).find((el) => el.textContent === "Alpha");
+    expect(nameSpan?.className).toContain("w-0");
   });
 
   it("renders nothing when no projects are starred", async () => {
