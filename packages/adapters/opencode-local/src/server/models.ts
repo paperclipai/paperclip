@@ -10,6 +10,15 @@ import { isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
+// `opencode models` is a lightweight metadata call, but on a shared ollama
+// daemon it can queue behind an in-flight `opencode run` generation on the
+// same host and either time out or fail with an opaque error. Retry a few
+// times with backoff before surfacing a hard failure (SAG-6326/SAG-6336).
+const MODELS_DISCOVERY_RETRY_DELAYS_MS = [2_000, 4_000];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
@@ -132,28 +141,38 @@ export async function discoverOpenCodeModels(input: {
   // Prevent OpenCode from writing an opencode.json into the working directory.
   const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env, ...(resolvedHome ? { HOME: resolvedHome } : {}), OPENCODE_DISABLE_PROJECT_CONFIG: "true" }));
 
-  const result = await runChildProcess(
-    `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    command,
-    ["models"],
-    {
-      cwd,
-      env: runtimeEnv,
-      timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
-      graceSec: 3,
-      onLog: async () => {},
-    },
-  );
+  const maxAttempts = MODELS_DISCOVERY_RETRY_DELAYS_MS.length + 1;
+  let lastError: Error | undefined;
 
-  if (result.timedOut) {
-    throw new Error(`\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`);
-  }
-  if ((result.exitCode ?? 1) !== 0) {
-    const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
-    throw new Error(detail ? `\`opencode models\` failed: ${detail}` : "`opencode models` failed.");
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const result = await runChildProcess(
+      `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command,
+      ["models"],
+      {
+        cwd,
+        env: runtimeEnv,
+        timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
+        graceSec: 3,
+        onLog: async () => {},
+      },
+    );
+
+    if (result.timedOut) {
+      lastError = new Error(`\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`);
+    } else if ((result.exitCode ?? 1) !== 0) {
+      const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
+      lastError = new Error(detail ? `\`opencode models\` failed: ${detail}` : "`opencode models` failed.");
+    } else {
+      return sortModels(parseOpenCodeModelsOutput(result.stdout));
+    }
+
+    const delayMs = MODELS_DISCOVERY_RETRY_DELAYS_MS[attempt - 1];
+    if (delayMs === undefined) break;
+    await sleep(delayMs);
   }
 
-  return sortModels(parseOpenCodeModelsOutput(result.stdout));
+  throw lastError ?? new Error("`opencode models` failed.");
 }
 
 export async function discoverOpenCodeModelsCached(input: {

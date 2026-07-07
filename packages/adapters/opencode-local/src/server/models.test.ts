@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 import {
+  discoverOpenCodeModels,
   ensureOpenCodeModelConfiguredAndAvailable,
   listOpenCodeModels,
   requireOpenCodeModelId,
@@ -11,6 +13,8 @@ describe("openCode models", () => {
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
     delete process.env.OPENCODE_ALLOW_ALL_MODELS;
     resetOpenCodeModelsCacheForTests();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("returns an empty list when discovery command is unavailable", async () => {
@@ -73,5 +77,69 @@ describe("openCode models", () => {
         env: { OPENCODE_ALLOW_ALL_MODELS: "true" },
       }),
     ).rejects.toThrow("OpenCode requires `adapterConfig.model`");
+  });
+
+  it("retries a transient `opencode models` failure with backoff before succeeding", async () => {
+    vi.useFakeTimers();
+    const spy = vi
+      .spyOn(serverUtils, "runChildProcess")
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "queued behind another opencode run",
+        pid: 1,
+        startedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        exitCode: null,
+        signal: null,
+        timedOut: true,
+        stdout: "",
+        stderr: "",
+        pid: 1,
+        startedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "ollama/qwen2.5-coder:7b\n",
+        stderr: "",
+        pid: 1,
+        startedAt: new Date().toISOString(),
+      });
+
+    const promise = discoverOpenCodeModels();
+    await vi.runAllTimersAsync();
+
+    await expect(promise).resolves.toEqual([
+      { id: "ollama/qwen2.5-coder:7b", label: "ollama/qwen2.5-coder:7b" },
+    ]);
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
+
+  it("surfaces the last error once retries are exhausted", async () => {
+    vi.useFakeTimers();
+    const spy = vi
+      .spyOn(serverUtils, "runChildProcess")
+      .mockResolvedValue({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "queued behind another opencode run",
+        pid: 1,
+        startedAt: new Date().toISOString(),
+      });
+
+    const promise = discoverOpenCodeModels();
+    const assertion = expect(promise).rejects.toThrow(
+      "`opencode models` failed: queued behind another opencode run",
+    );
+    await vi.runAllTimersAsync();
+    await assertion;
+    expect(spy).toHaveBeenCalledTimes(3);
   });
 });
