@@ -36,7 +36,7 @@ export default defineConfig({
     baseURL: "http://localhost:6106",
   },
   webServer: {
-    command: "node ../../scripts/serve-storybook-static.mjs",
+    command: "node ../../scripts/serve-storybook-static.mjs --port 6106",
     url: "http://localhost:6106/index.json",
     reuseExistingServer: true,
     timeout: 30_000,

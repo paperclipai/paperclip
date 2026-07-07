@@ -13,7 +13,10 @@ const root = resolve(
   "ui",
   "storybook-static",
 );
-const port = Number(process.env.PORT ?? 6106);
+const portArgIndex = process.argv.indexOf("--port");
+const explicitPort =
+  portArgIndex >= 0 && process.argv[portArgIndex + 1] ? process.argv[portArgIndex + 1] : null;
+const port = Number(explicitPort ?? process.env.PORT ?? 6106);
 
 if (!existsSync(join(root, "index.html"))) {
   console.error(`No built Storybook at ${root}. Run \`pnpm build-storybook\` first.`);

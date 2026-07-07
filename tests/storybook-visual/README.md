@@ -18,6 +18,19 @@ pnpm test:storybook-visual:update
 `tests/storybook-visual/.snapshots/`, and checks the PNG count. The same snapshot
 directory can be overridden with `STORYBOOK_VISUAL_SNAPSHOT_DIR`.
 
+## Known Limitation: Linux Baselines
+
+Storybook visual baselines are platform-locked. The checked-in manifest records
+the capture environment as `ubuntu-24.04`, and Playwright compares screenshots
+with `maxDiffPixels: 0`. Pixel-exact results are only meaningful when local runs
+use the same Linux/Ubuntu capture platform as the baseline.
+
+macOS, Windows, and other non-matching local environments can produce
+false-positive diffs from font rasterization and subpixel rendering differences.
+Use the `Storybook Visual` GitHub Actions workflow on `ubuntu-latest` as the
+source of truth for cross-platform review, or run the suite locally in a matching
+Linux environment before accepting or updating baselines.
+
 ## CI and Review Artifacts
 
 Storybook visual tests are opt-in while the suite stabilizes. Add the
