@@ -139,14 +139,17 @@ async function createForwardBranchMismatch(input: {
   worktreePath: string;
   expectedBranch: string;
   actualBranch: string;
+  divergeRecordedBranch?: boolean;
 }) {
   await mkdir(path.dirname(input.worktreePath), { recursive: true });
   await runGit(input.repoRoot, ["branch", input.expectedBranch]);
   await runGit(input.repoRoot, ["worktree", "add", "-b", input.actualBranch, input.worktreePath, input.expectedBranch]);
-  await runGit(input.repoRoot, ["checkout", input.expectedBranch]);
-  await writeFile(path.join(input.repoRoot, "recorded-branch.txt"), "recorded branch work\n", "utf8");
-  await runGit(input.repoRoot, ["add", "recorded-branch.txt"]);
-  await runGit(input.repoRoot, ["commit", "-m", "Add recorded branch work"]);
+  if (input.divergeRecordedBranch) {
+    await runGit(input.repoRoot, ["checkout", input.expectedBranch]);
+    await writeFile(path.join(input.repoRoot, "recorded-branch.txt"), "recorded branch work\n", "utf8");
+    await runGit(input.repoRoot, ["add", "recorded-branch.txt"]);
+    await runGit(input.repoRoot, ["commit", "-m", "Add recorded branch work"]);
+  }
   await writeFile(path.join(input.worktreePath, "actual-branch.txt"), "actual branch work\n", "utf8");
   await runGit(input.worktreePath, ["add", "actual-branch.txt"]);
   await runGit(input.worktreePath, ["commit", "-m", "Add actual branch work"]);
@@ -366,6 +369,7 @@ async function seedBranchContainmentRun(
       worktreePath,
       expectedBranch,
       actualBranch,
+      divergeRecordedBranch: opts.enableWorkspaceBranchReconcileForward !== true,
     });
   }
 
