@@ -216,6 +216,35 @@ describe("migration safety check", () => {
     );
   });
 
+  it("does not treat WHERE inside a dollar-quoted string as a selective predicate", () => {
+    const result = analyze(`
+      UPDATE "issue_comments"
+      SET "body" = $msg$WHERE "id" > '0'$msg$;
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "full-table-mutation-large-table",
+    );
+  });
+
+  it("flags a FETCH FIRST inline batch mutation over a known-large table", () => {
+    const result = analyze(`
+      UPDATE "issue_comments" c
+        SET "derived_author_agent_id" = NULL
+        FROM (
+          SELECT "id"
+          FROM "issue_comments"
+          ORDER BY "id"
+          FETCH FIRST 5000 ROWS ONLY
+        ) b
+        WHERE c."id" = b."id";
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "batched-mutation-large-table-missing-index",
+    );
+  });
+
   it("still accepts a real selective WHERE clause", () => {
     const result = analyze(`
       UPDATE "issue_comments"

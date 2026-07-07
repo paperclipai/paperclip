@@ -248,6 +248,14 @@ function skipBlockComment(statement: string, startIndex: number): number {
   return index;
 }
 
+function skipDollarQuotedString(statement: string, startIndex: number): number {
+  const match = statement.slice(startIndex).match(/^\$[A-Za-z_]*\$/);
+  if (!match) return startIndex;
+  const tag = match[0];
+  const closeIndex = statement.indexOf(tag, startIndex + tag.length);
+  return closeIndex === -1 ? statement.length : closeIndex + tag.length;
+}
+
 function stripSqlComments(statement: string): string {
   let stripped = "";
   let index = 0;
@@ -268,6 +276,15 @@ function stripSqlComments(statement: string): string {
       stripped += statement.slice(index, identifierEnd);
       index = identifierEnd;
       continue;
+    }
+
+    if (char === "$") {
+      const dollarEnd = skipDollarQuotedString(statement, index);
+      if (dollarEnd !== index) {
+        stripped += statement.slice(index, dollarEnd);
+        index = dollarEnd;
+        continue;
+      }
     }
 
     if (char === "-" && next === "-") {
@@ -298,6 +315,10 @@ function skipSqlTrivia(statement: string, index: number): number {
   const next = statement[index + 1];
   if (char === "'") return skipSingleQuotedLiteral(statement, index);
   if (char === '"') return skipDoubleQuotedIdentifier(statement, index);
+  if (char === "$") {
+    const end = skipDollarQuotedString(statement, index);
+    if (end !== index) return end;
+  }
   if (char === "-" && next === "-") return skipLineComment(statement, index);
   if (char === "/" && next === "*") return skipBlockComment(statement, index);
   return index;
@@ -462,7 +483,9 @@ function hasDoLoop(statement: string): boolean {
 }
 
 function hasBatchedLimitMutation(statement: string): boolean {
-  const hasLimit = /\bLIMIT\s+(?:\d+|[A-Za-z_][A-Za-z0-9_]*|\$[0-9]+)\b/i.test(statement);
+  const hasLimit =
+    /\bLIMIT\s+(?:\d+|[A-Za-z_][A-Za-z0-9_]*|\$[0-9]+)\b/i.test(statement) ||
+    /\bFETCH\s+(?:FIRST|NEXT)\b/i.test(statement);
   const hasDml = /\b(?:UPDATE|DELETE)\b/i.test(statement);
   return hasLimit && hasDml;
 }
