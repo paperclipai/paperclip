@@ -81,6 +81,11 @@ describe("stripThinkBlocks", () => {
     expect(stripThinkBlocks(text)).toBe(text);
   });
 
+  it("preserves whitespace when no think block is present", () => {
+    const text = "  visible answer with no think tags  ";
+    expect(stripThinkBlocks(text)).toBe(text);
+  });
+
   it("does not corrupt JSON payloads with no think tags", () => {
     const json = '{"key":"value","array":[1,2,3],"nested":{"ok":true}}';
     expect(stripThinkBlocks(json)).toBe(json);
