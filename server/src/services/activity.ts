@@ -401,7 +401,6 @@ export function activityService(db: Db) {
           continuationAttempt: heartbeatRuns.continuationAttempt,
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
-          contextSnapshot: heartbeatRuns.contextSnapshot,
         })
         .from(heartbeatRuns)
         .innerJoin(

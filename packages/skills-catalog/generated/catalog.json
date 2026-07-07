@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-06-26T18:26:43.763Z",
+  "generatedAt": "2026-07-07T12:23:29.613Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -379,6 +379,43 @@
         }
       ],
       "contentHash": "sha256:f22a9ed696e6614c6db2757a149f48b3295e81f78c27d065d9cb164cf4f8a9bd"
+    },
+    {
+      "id": "paperclipai:optional:finance:ramp",
+      "key": "paperclipai/optional/finance/ramp",
+      "kind": "optional",
+      "category": "finance",
+      "slug": "ramp",
+      "name": "ramp",
+      "description": "Fetch and follow Ramp's published agent playbooks inside Paperclip, with mandatory approval gates for spend, incorporation, cards, account setup, and other financial actions.",
+      "path": "catalog/optional/finance/ramp",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "finance",
+        "operations",
+        "founder",
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "ramp",
+        "finance",
+        "spend",
+        "approvals",
+        "agent-cards"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 7016,
+          "sha256": "698cd69ebf2f2481ed83c8e9477b56ae78288cc4c751d7d35f649ff2483802a3"
+        }
+      ],
+      "contentHash": "sha256:276d85e98a4732f278204e26438aa95fde158dd2d15c1e427c4c7c7d492e769d"
     },
     {
       "id": "paperclipai:optional:product:design-critique",

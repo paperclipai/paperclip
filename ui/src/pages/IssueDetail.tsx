@@ -35,6 +35,14 @@ import {
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
+  cancelInboxIssueQueries,
+  invalidateInboxIssueQueries,
+  removeIssueFromInboxCaches,
+  restoreIssueToInboxCaches,
+  snapshotInboxIssueCaches,
+  type InboxIssueCacheSnapshot,
+} from "../lib/inboxArchiveCache";
+import {
   hasBlockingShortcutDialog,
   resolveIssueDetailGoKeyAction,
   resolveInboxQuickArchiveKeyAction,
@@ -827,6 +835,8 @@ type IssueDetailChatTabProps = {
   scheduledRetry: Issue["scheduledRetry"] | null;
   recoveryAction: Issue["activeRecoveryAction"];
   onResolveRecoveryAction?: (outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome) => void;
+  onReissueIsolatedRecoveryAction?: (request: import("../components/IssueRecoveryActionCard").RecoveryReissueRequest) => void;
+  reissueIsolatedRecoveryActionPending?: boolean;
   canFalsePositiveRecoveryAction?: boolean;
   legacyRecoverySourceIssue?: {
     identifier: string | null;
@@ -904,6 +914,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   scheduledRetry,
   recoveryAction,
   onResolveRecoveryAction,
+  onReissueIsolatedRecoveryAction,
+  reissueIsolatedRecoveryActionPending,
   canFalsePositiveRecoveryAction,
   legacyRecoverySourceIssue,
   comments,
@@ -1121,6 +1133,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         scheduledRetry={scheduledRetry}
         recoveryAction={recoveryAction ?? null}
         onResolveRecoveryAction={onResolveRecoveryAction}
+        onReissueIsolatedRecoveryAction={onReissueIsolatedRecoveryAction}
+        reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryActionPending}
         canFalsePositiveRecoveryAction={canFalsePositiveRecoveryAction}
         legacyRecoverySourceIssue={legacyRecoverySourceIssue ?? null}
         companyId={companyId}
@@ -2946,17 +2960,33 @@ export function IssueDetail() {
 
   const archiveFromInbox = useMutation({
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
-    onSuccess: () => {
+    onMutate: async (id) => {
+      if (!selectedCompanyId) return { previousData: [] as InboxIssueCacheSnapshot };
+      await cancelInboxIssueQueries(queryClient, selectedCompanyId);
+      const previousData = snapshotInboxIssueCaches(queryClient, selectedCompanyId);
+      removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
+      return { previousData };
+    },
+    onSuccess: (_data, id) => {
+      if (selectedCompanyId) {
+        removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
+      }
       invalidateIssueCollections();
       navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
       pushToast({ title: "Task archived from inbox", tone: "success" });
     },
-    onError: (err) => {
+    onError: (err, id, context) => {
+      if (context?.previousData) {
+        restoreIssueToInboxCaches(queryClient, context.previousData, id);
+      }
       pushToast({
         title: "Archive failed",
         body: err instanceof Error ? err.message : "Unable to archive this task from the inbox",
         tone: "error",
       });
+    },
+    onSettled: () => {
+      if (selectedCompanyId) invalidateInboxIssueQueries(queryClient, selectedCompanyId);
     },
   });
 
@@ -3532,6 +3562,71 @@ export function IssueDetail() {
       }
     },
     [activeRecoveryActionId, resolveRecoveryAction.mutateAsync],
+  );
+
+  // Action 3 (workspace_validation): one-click re-issue of the stalled task on a fresh isolated
+  // git worktree based on the live (diverged) branch. Composes the existing safe issue-creation
+  // endpoint — it never mutates the current workspace, so the operator's commits are preserved.
+  const reissueIsolatedRecoveryAction = useMutation({
+    mutationFn: async (
+      request: import("../components/IssueRecoveryActionCard").RecoveryReissueRequest,
+    ) => {
+      if (!issue) throw new Error("Task is not loaded yet.");
+      const sourceLabel = issue.identifier ?? "the stalled task";
+      const descriptionLines = [
+        `Re-issued from ${sourceLabel} on an isolated git worktree after a workspace branch divergence.`,
+        "",
+        `- Base ref (live branch): \`${request.baseRef}\``,
+        ...(request.expectedBranch ? [`- Recorded branch: \`${request.expectedBranch}\``] : []),
+        "",
+        "---",
+        "",
+        issue.description ?? "",
+      ];
+      return issuesApi.create(issue.companyId, {
+        title: `Re-issue (isolated): ${issue.title ?? sourceLabel}`,
+        description: descriptionLines.join("\n"),
+        priority: issue.priority,
+        projectId: issue.projectId ?? null,
+        parentId: issue.parentId ?? null,
+        assigneeAgentId:
+          issue.activeRecoveryAction?.returnOwnerAgentId ??
+          issue.activeRecoveryAction?.previousOwnerAgentId ??
+          issue.assigneeAgentId ??
+          null,
+        executionWorkspacePreference: "isolated_workspace",
+        executionWorkspaceSettings: {
+          mode: "isolated_workspace",
+          workspaceStrategy: { type: "git_worktree", baseRef: request.baseRef },
+        },
+      });
+    },
+    onSuccess: (created) => {
+      invalidateIssueCollections();
+      pushToast({
+        title: "Isolated re-issue created",
+        body: created.identifier
+          ? `${created.identifier} will run on a fresh isolated workspace.`
+          : "A fresh isolated re-issue was created.",
+        tone: "success",
+      });
+      if (created.identifier) {
+        navigate(createIssueDetailPath(created.identifier));
+      }
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Re-issue failed",
+        body: err instanceof Error ? err.message : "Unable to create an isolated re-issue.",
+        tone: "error",
+      });
+    },
+  });
+  const handleReissueIsolatedRecoveryAction = useCallback(
+    (request: import("../components/IssueRecoveryActionCard").RecoveryReissueRequest) => {
+      void reissueIsolatedRecoveryAction.mutateAsync(request);
+    },
+    [reissueIsolatedRecoveryAction.mutateAsync],
   );
 
   const treePreviewAffectedIssues = useMemo(
@@ -4425,6 +4520,8 @@ export function IssueDetail() {
               scheduledRetry={issue.scheduledRetry ?? null}
               recoveryAction={issue.activeRecoveryAction ?? null}
               onResolveRecoveryAction={handleResolveRecoveryAction}
+              onReissueIsolatedRecoveryAction={handleReissueIsolatedRecoveryAction}
+              reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryAction.isPending}
               canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}
               legacyRecoverySourceIssue={legacyRecoverySourceIssue}
               comments={threadComments}

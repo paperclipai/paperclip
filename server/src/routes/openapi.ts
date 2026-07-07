@@ -72,6 +72,7 @@ import {
   // Sidebar
   upsertSidebarOrderPreferenceSchema,
   // Execution workspaces
+  reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
@@ -661,6 +662,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
   "GET /api/companies/{companyId}/user-directory",
+  "POST /api/execution-workspaces/{id}/reconcile-branch",
   "GET /api/board-api-keys",
   "POST /api/board-api-keys",
   "DELETE /api/board-api-keys/{keyId}",
@@ -880,6 +882,37 @@ registry.registerPath({
       deploymentMode: z.string().optional(),
       bootstrapStatus: z.enum(["ready", "bootstrap_pending"]).optional(),
       bootstrapInviteActive: z.boolean().optional(),
+      databaseBackup: z.object({
+        enabled: z.boolean(),
+        status: z.enum(["ok", "warning"]),
+        backupDir: z.string().optional(),
+        maxAgeHours: z.number().optional(),
+        latestBackup: z.object({
+          name: z.string(),
+          path: z.string(),
+          mtime: z.string().datetime(),
+          ageHours: z.number(),
+          sizeBytes: z.number(),
+        }).nullable().optional(),
+        lastFailure: z.object({
+          path: z.string(),
+          mtime: z.string().datetime(),
+          message: z.string(),
+        }).nullable().optional(),
+        warnings: z.array(z.object({
+          code: z.enum([
+            "database_backup_check_failed",
+            "database_backup_last_failure",
+            "database_backup_missing",
+            "database_backup_stale",
+          ]),
+          message: z.string(),
+        })),
+      }).optional(),
+      warnings: z.array(z.object({
+        code: z.string(),
+        message: z.string(),
+      })).optional(),
       serverInfo: z.object({
         processStartedAt: z.string().datetime(),
         git: z.union([
@@ -3595,6 +3628,18 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/execution-workspaces/{id}/reconcile-branch",
+  tags: ["execution-workspaces"],
+  summary: "Reconcile an execution workspace branch record",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(reconcileExecutionWorkspaceBranchSchema),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/execution-workspaces/{id}/runtime-services/{action}",
   tags: ["execution-workspaces"],
   summary: "Control a runtime service in a workspace",
@@ -4961,6 +5006,20 @@ registerCurrentRoute({
   path: "/api/issues/{id}/diagnostics/blockers",
   tags: ["issues"],
   summary: "Get blocker diagnostics for an issue",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/issues/{id}/diagnostics/wakes",
+  tags: ["issues"],
+  summary: "Get wake diagnostics for an issue",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/issues/{id}/diagnostics/subtree",
+  tags: ["issues"],
+  summary: "Get bounded subtree wake and blocker diagnostics for an issue",
 });
 
 registerCurrentRoute({

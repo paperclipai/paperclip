@@ -1073,6 +1073,26 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     return Boolean(run || issueRun || wake);
   }
 
+  async function sameFingerprintWatchdogReviewIsStillOpen(
+    watchdogIssue: IssueRow | null,
+    stopFingerprint: string,
+  ) {
+    if (!watchdogIssue) return false;
+    if (watchdogIssue.originFingerprint !== stopFingerprint) return false;
+    if (isTerminalIssueStatus(watchdogIssue.status) || watchdogIssue.status === "backlog") return false;
+    if (watchdogIssue.status === "in_review") {
+      const hasPendingReviewPath = await watchdogIssueHasPendingReviewPath(watchdogIssue.companyId, watchdogIssue.id);
+      return isWatchdogReviewDisposition(watchdogIssue, hasPendingReviewPath);
+    }
+    return true;
+  }
+
+  async function watchdogIssueNeedsFreshWake(watchdogIssue: IssueRow) {
+    if (watchdogIssue.status !== "in_review") return false;
+    const hasPendingReviewPath = await watchdogIssueHasPendingReviewPath(watchdogIssue.companyId, watchdogIssue.id);
+    return !isWatchdogReviewDisposition(watchdogIssue, hasPendingReviewPath);
+  }
+
   async function watchdogIssueHasPendingReviewPath(companyId: string, issueId: string) {
     const [interaction, approval] = await Promise.all([
       db
@@ -1164,7 +1184,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     const fallback = existing ?? await findTaskWatchdogIssue(input.watchdog.companyId, input.sourceIssue.id);
 
     if (fallback) {
-      const shouldReopen = isTerminalIssueStatus(fallback.status) || fallback.status === "backlog";
+      const shouldReopen = isTerminalIssueStatus(fallback.status) ||
+        fallback.status === "backlog" ||
+        await watchdogIssueNeedsFreshWake(fallback);
       const watchdogIssue = shouldReopen
         ? await issuesSvc.update(fallback.id, {
           status: "todo",
@@ -1284,6 +1306,37 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         })
         .where(eq(issueWatchdogs.id, watchdog.id));
       return { state: "watchdog_live" as const, classification, watchdogIssueId: existingWatchdogIssueId };
+    }
+    const existingWatchdogIssue = existingWatchdogIssueId
+      ? await db
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, watchdog.companyId),
+          eq(issues.id, existingWatchdogIssueId),
+          isNull(issues.hiddenAt),
+        ))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    if (await sameFingerprintWatchdogReviewIsStillOpen(existingWatchdogIssue, classification.stopFingerprint)) {
+      if (
+        watchdog.watchdogIssueId !== existingWatchdogIssue!.id ||
+        watchdog.lastObservedFingerprint !== classification.stopFingerprint
+      ) {
+        await db
+          .update(issueWatchdogs)
+          .set({
+            watchdogIssueId: existingWatchdogIssue!.id,
+            lastObservedFingerprint: classification.stopFingerprint,
+            updatedAt: new Date(),
+          })
+          .where(eq(issueWatchdogs.id, watchdog.id));
+      }
+      return {
+        state: "watchdog_review_open" as const,
+        classification,
+        watchdogIssueId: existingWatchdogIssue!.id,
+      };
     }
 
     const watchdogIssue = await ensureReusableWatchdogIssue({
@@ -1519,7 +1572,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         if (evaluated.state === "triggered") {
           result.triggered += 1;
           result.watchdogIssueIds.push(evaluated.watchdogIssueId);
-        } else if (evaluated.state === "live" || evaluated.state === "watchdog_live") {
+        } else if (
+          evaluated.state === "live" ||
+          evaluated.state === "watchdog_live" ||
+          evaluated.state === "watchdog_review_open"
+        ) {
           result.live += 1;
         } else if (evaluated.state === "pending_first_run") {
           result.pendingFirstRun += 1;
@@ -1553,6 +1610,12 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           result.watchdogIssueIds.push(evaluated.watchdogIssueId);
         } else if (evaluated.state === "pending_first_run") {
           result.pendingFirstRun += 1;
+        } else if (
+          evaluated.state === "watchdog_review_open" ||
+          evaluated.state === "watchdog_live" ||
+          evaluated.state === "live"
+        ) {
+          // Existing review work is already open for this stopped state.
         } else {
           result.skipped += 1;
         }

@@ -416,6 +416,7 @@ export {
 
 export {
   executionWorkspaceConfigSchema,
+  reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   executionWorkspaceStatusSchema,
@@ -425,6 +426,7 @@ export {
   executionWorkspaceCloseLinkedIssueSchema,
   executionWorkspaceCloseReadinessSchema,
   executionWorkspaceCloseReadinessStateSchema,
+  type ReconcileExecutionWorkspaceBranch,
   type UpdateExecutionWorkspace,
   type WorkspaceOverviewQuery,
 } from "./execution-workspace.js";

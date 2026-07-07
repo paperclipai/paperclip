@@ -13,6 +13,7 @@ import {
   shouldScrollIssueDetailToTopOnNavigation,
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
+import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -72,6 +73,12 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 }));
 
 const mockNavigate = vi.hoisted(() => vi.fn());
+const mockLocation = vi.hoisted(() => ({
+  pathname: "/issues/PAP-1",
+  search: "",
+  hash: "",
+  state: null as unknown,
+}));
 const mockOpenPanel = vi.hoisted(() => vi.fn());
 const mockClosePanel = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
@@ -148,7 +155,7 @@ vi.mock("@/lib/router", () => ({
   } & AnchorHTMLAttributes<HTMLAnchorElement>) => (
     <a href={to} {...props}>{children}</a>
   ),
-  useLocation: () => ({ pathname: "/issues/PAP-1", search: "", hash: "", state: null }),
+  useLocation: () => mockLocation,
   useNavigate: () => mockNavigate,
   useNavigationType: () => "PUSH",
   useParams: () => ({ issueId: "PAP-1" }),
@@ -944,6 +951,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.listWorkProducts.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
+    mockIssuesApi.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
     mockIssuesApi.getTreeControlState.mockResolvedValue({ activePauseHold: null });
     mockIssuesApi.listTreeHolds.mockResolvedValue([]);
     mockActivityApi.forIssue.mockResolvedValue([]);
@@ -976,6 +984,11 @@ describe("IssueDetail", () => {
     mockIssueChatThreadRender.mockClear();
     mockImageGalleryRender.mockClear();
     mockIssueWorkspaceCardRender.mockClear();
+    mockNavigate.mockClear();
+    mockLocation.pathname = "/issues/PAP-1";
+    mockLocation.search = "";
+    mockLocation.hash = "";
+    mockLocation.state = null;
   });
 
   afterEach(async () => {
@@ -1011,6 +1024,64 @@ describe("IssueDetail", () => {
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("removes an inbox-origin archived issue from cached inbox variants before navigating back", async () => {
+    const issue = createIssue({ id: "issue-1", identifier: "PAP-1", title: "Archive me from detail" });
+    const otherIssue = createIssue({ id: "issue-2", identifier: "PAP-2", title: "Keep me in inbox" });
+    const archiveRequest = createDeferred<{ id: string; archivedAt: Date }>();
+    mockLocation.state = createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox");
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.archiveFromInbox.mockReturnValue(archiveRequest.promise);
+
+    const mineKey = [
+      ...queryKeys.issues.listMineByMe("company-1"),
+      "with-routine-executions",
+      "live-descendant-summary",
+    ] as const;
+    const touchedKey = [
+      ...queryKeys.issues.listTouchedByMe("company-1"),
+      "with-routine-executions",
+      "live-descendant-summary",
+    ] as const;
+    const unreadKey = queryKeys.issues.listUnreadTouchedByMe("company-1");
+    queryClient.setQueryData<Issue[]>(mineKey, [issue, otherIssue]);
+    queryClient.setQueryData<Issue[]>(touchedKey, [issue, otherIssue]);
+    queryClient.setQueryData<Issue[]>(unreadKey, [issue, otherIssue]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const archiveButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Archive from inbox"]',
+    );
+    expect(archiveButton).not.toBeNull();
+
+    await act(async () => {
+      archiveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(queryClient.getQueryData<Issue[]>(mineKey)?.map((item) => item.id)).toEqual(["issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(touchedKey)?.map((item) => item.id)).toEqual(["issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(unreadKey)?.map((item) => item.id)).toEqual(["issue-2"]);
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
+    await act(async () => {
+      archiveRequest.resolve({ id: "issue-1", archivedAt: new Date() });
+    });
+    await flushReact();
+
+    expect(mockNavigate).toHaveBeenCalledWith("/inbox/mine", { replace: true });
+    expect(mockPushToast).toHaveBeenCalledWith({ title: "Task archived from inbox", tone: "success" });
   });
 
   it("shows assignee and originating avatars in the issue header metadata", async () => {

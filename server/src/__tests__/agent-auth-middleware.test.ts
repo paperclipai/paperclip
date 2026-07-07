@@ -106,6 +106,14 @@ function createApp(db: any) {
     assertCompanyAccess(req, req.params.companyId);
     res.json({ ok: true });
   });
+  app.get("/companies/:companyId/issues/:issueId", (req, res) => {
+    assertCompanyAccess(req, req.params.companyId);
+    res.json({ id: req.params.issueId, readable: true });
+  });
+  app.patch("/companies/:companyId/issues/:issueId", (req, res) => {
+    assertCompanyAccess(req, req.params.companyId);
+    res.json({ id: req.params.issueId, writable: true });
+  });
   app.use(errorHandler);
   return app;
 }
@@ -132,7 +140,11 @@ function craftAgentJwtWithoutResponsibleClaim(input: {
   const headerB64 = Buffer.from(JSON.stringify(header), "utf8").toString("base64url");
   const claimsB64 = Buffer.from(JSON.stringify(claims), "utf8").toString("base64url");
   const signingInput = `${headerB64}.${claimsB64}`;
-  const signingKey = createHmac("sha256", input.secret).update(`jwt:${input.companyId}`).digest("hex");
+  // Sign with the same per-instance, per-company key the server derives. The
+  // instance defaults to "default" (beforeEach clears PAPERCLIP_INSTANCE_ID),
+  // matching the live control plane this middleware test exercises. This helper
+  // only omits the responsible_user_id claim — it is not a cross-instance token.
+  const signingKey = createHmac("sha256", input.secret).update(`jwt:default:${input.companyId}`).digest("hex");
   const signature = createHmac("sha256", signingKey).update(signingInput).digest("base64url");
   return `${signingInput}.${signature}`;
 }
@@ -140,10 +152,14 @@ function craftAgentJwtWithoutResponsibleClaim(input: {
 describe("agent auth middleware", () => {
   const originalSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
   const originalTtl = process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS;
+  const originalInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
 
   beforeEach(() => {
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "auth-middleware-secret";
     process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS = "3600";
+    // Pin the control-plane instance so mint/verify (and the hand-crafted
+    // legacy token helper) all derive keys under the "default" live instance.
+    delete process.env.PAPERCLIP_INSTANCE_ID;
   });
 
   afterEach(() => {
@@ -151,6 +167,8 @@ describe("agent auth middleware", () => {
     else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalSecret;
     if (originalTtl === undefined) delete process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS;
     else process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS = originalTtl;
+    if (originalInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+    else process.env.PAPERCLIP_INSTANCE_ID = originalInstanceId;
   });
 
   it("uses the signed responsible_user_id claim and keeps the signed run id authoritative", async () => {
@@ -237,6 +255,36 @@ describe("agent auth middleware", () => {
       onBehalfOfUserId: "user-legacy",
       source: "agent_jwt",
     });
+  });
+
+  it("rejects fork-minted run JWTs before issue reads or writes reach live issue data", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: { id: runId, companyId, agentId, responsibleUserId: "user-claim" },
+    });
+
+    process.env.PAPERCLIP_INSTANCE_ID = "pap-12899-worktree";
+    const forkToken = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+    expect(forkToken).not.toBeNull();
+
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    const app = createApp(db);
+    const readRes = await request(app)
+      .get(`/companies/${companyId}/issues/${issueId}`)
+      .set("Authorization", `Bearer ${forkToken}`)
+      .set("X-Paperclip-Run-Id", runId);
+    const writeRes = await request(app)
+      .patch(`/companies/${companyId}/issues/${issueId}`)
+      .set("Authorization", `Bearer ${forkToken}`)
+      .set("X-Paperclip-Run-Id", runId)
+      .send({ title: "should not write" });
+
+    expect(readRes.status).toBe(401);
+    expect(writeRes.status).toBe(401);
   });
 
   it("populates agent-key actors from the key responsible user binding", async () => {
