@@ -11,6 +11,7 @@ import { isWorktreeRuntime } from "../lib/worktree-branding";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -249,6 +250,7 @@ export function InstanceExperimentalSettings() {
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
+  const enableCases = experimentalQuery.data?.enableCases === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
@@ -345,6 +347,30 @@ export function InstanceExperimentalSettings() {
           </div>
         </Card>
       ) : null}
+
+      <Card className="block p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold">Cases</h2>
+              <Badge variant="secondary">Experimental</Badge>
+            </div>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Durable work products (blog posts, tweet storms…) that tasks create and iterate on. Adds the
+              Cases tab and the agent case API.
+            </p>
+            <p className="max-w-2xl text-xs text-muted-foreground">
+              Turning Cases off hides the tab and blocks the case API; existing case data is kept.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableCases}
+            onCheckedChange={() => toggleMutation.mutate({ enableCases: !enableCases })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle cases experimental setting"
+          />
+        </div>
+      </Card>
 
       <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
