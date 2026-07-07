@@ -44,7 +44,7 @@ Provision and reset require `agents:create`. Provision intentionally skips `requ
 5. Decide whether the built-in needs a nonzero `defaultBudgetMonthlyCents`.
 6. Add or update tests in `server/src/__tests__/built-in-agents.test.ts`.
 7. If the built-in is surfaced in UI or docs, add those changes in the same PR.
-8. Run the focused tests listed in the checklist below.
+8. Run the focused tests from the repo root with `pnpm --filter @paperclipai/server exec vitest run src/__tests__/built-in-agents.test.ts src/__tests__/built-in-agent-routes.test.ts`.
 
 Do not write built-in markers directly through generic agent create/update routes. The agent service rejects marker add, remove, and mutation unless the built-in service explicitly opts in.
 
@@ -132,7 +132,7 @@ If the agent is missing or not configured, the helper throws:
 - Focused tests pass:
 
 ```sh
-pnpm --filter @paperclipai/server test -- built-in-agents built-in-agent-routes
+pnpm --filter @paperclipai/server exec vitest run src/__tests__/built-in-agents.test.ts src/__tests__/built-in-agent-routes.test.ts
 ```
 
 ## Operational Notes
