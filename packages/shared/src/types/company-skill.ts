@@ -424,6 +424,11 @@ export interface CompanySkillTestRunCreateRequest {
   inputId?: string | null;
   content?: string | null;
   agentId: string;
+  /**
+   * Pin a specific skill version for this run instead of the live head. Used by
+   * Re-run to reproduce the viewed run's `skillVersionId` snapshot.
+   */
+  skillVersionId?: string | null;
 }
 
 export interface CompanySkillTestRunListQuery {

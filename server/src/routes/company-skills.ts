@@ -460,6 +460,41 @@ export function companySkillRoutes(db: Db) {
     res.json(result);
   });
 
+  router.delete("/companies/:companyId/skills/:skillId/test-runs/:runId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    const runId = req.params.runId as string;
+    await assertCanStartSkillTestRuns(req, companyId);
+    const actor = getActorInfo(req);
+    const result = await svc.deleteTestRun(companyId, skillId, runId, {
+      hideHarnessIssue: async (issueId) => {
+        const issue = await issues.getById(issueId);
+        if (!issue || issue.companyId !== companyId) return;
+        await issues.update(issueId, {
+          hiddenAt: new Date(),
+          actorAgentId: actor.agentId ?? null,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        });
+      },
+    });
+    if (!result) {
+      res.status(404).json({ error: "Test run not found" });
+      return;
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.skill_test_run_deleted",
+      entityType: "company_skill_test_run",
+      entityId: result.id,
+      details: { skillId, issueId: result.issueId },
+    });
+    res.json(result);
+  });
+
   router.post(
     "/companies/:companyId/skills/:skillId/versions",
     validate(companySkillVersionCreateSchema),

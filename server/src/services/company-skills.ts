@@ -4924,7 +4924,12 @@ export function companySkillService(db: Db) {
     const inputSnapshot = (sourceInput?.content ?? input.content ?? "").trim();
     if (!inputSnapshot) throw unprocessable("Test input content cannot be empty.");
 
-    const version = await ensureRunSkillVersion(companyId, skill, actor);
+    // Re-run pins the viewed run's version so the new run reproduces the same
+    // snapshots; a plain run auto-snapshots the live head.
+    const version = input.skillVersionId
+      ? await getVersion(companyId, skillId, input.skillVersionId)
+      : await ensureRunSkillVersion(companyId, skill, actor);
+    if (!version) throw notFound("Skill version not found");
     const runId = randomUUID();
     const issueId = randomUUID();
     await deps.createHarnessIssue({
@@ -5212,6 +5217,46 @@ export function companySkillService(db: Db) {
     });
   }
 
+  async function deleteTestRun(
+    companyId: string,
+    skillId: string,
+    runId: string,
+    deps: { hideHarnessIssue: (issueId: string) => Promise<unknown> },
+  ): Promise<CompanySkillTestRun | null> {
+    const existing = await db
+      .select()
+      .from(companySkillTestRuns)
+      .where(and(
+        eq(companySkillTestRuns.companyId, companyId),
+        eq(companySkillTestRuns.skillId, skillId),
+        eq(companySkillTestRuns.id, runId),
+        isNull(companySkillTestRuns.deletedAt),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!existing) return null;
+    // Only terminal runs are deletable — an in-flight run must be cancelled first
+    // so we never orphan a live harness task.
+    if (!["succeeded", "failed", "cancelled"].includes(existing.status)) {
+      throw unprocessable("Cancel the run before deleting it.");
+    }
+    const now = new Date();
+    await db.transaction(async (tx) => {
+      await tx
+        .update(companySkillTestRuns)
+        .set({ deletedAt: now, harnessIssueDeletedAt: existing.harnessIssueDeletedAt ?? now, updatedAt: now })
+        .where(and(
+          eq(companySkillTestRuns.companyId, companyId),
+          eq(companySkillTestRuns.id, runId),
+        ));
+    });
+    // Hide the (already-terminal) harness task so the deleted run leaves nothing
+    // dangling on the board; best-effort, run row is the source of truth.
+    if (!existing.harnessIssueDeletedAt) {
+      await deps.hideHarnessIssue(existing.issueId).catch(() => {});
+    }
+    return (await hydrateTestRuns(companyId, [{ ...existing, deletedAt: now }]))[0] ?? null;
+  }
+
   async function pruneExpiredTestHarnessIssues(companyId: string, now = new Date()): Promise<{ pruned: number }> {
     const rows = await db
       .select({
@@ -5320,6 +5365,7 @@ export function companySkillService(db: Db) {
     completeTestRunForIssue,
     markTestRunRunning,
     cancelTestRun,
+    deleteTestRun,
     pruneExpiredTestHarnessIssues,
     importFromSource,
     installFromCatalog,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CompanySkillTestRunStatus } from "@paperclipai/shared";
 import {
+  buildReRunRequest,
   evaluateRunGate,
   findOutputDocument,
   INLINE_INTERACTION_KINDS,
@@ -203,5 +204,45 @@ describe("agent picker + run labels", () => {
     };
     expect(findOutputDocument(detail)?.body).toBe("o");
     expect(findOutputDocument({ outputDocumentKey: "missing", documents: detail.documents })).toBeNull();
+  });
+
+  describe("buildReRunRequest", () => {
+    it("reproduces a saved-input run from its own snapshots (never live picker state)", () => {
+      const req = buildReRunRequest({
+        agentId: "agent-9",
+        inputId: "input-3",
+        inputSnapshot: "snapshotted text",
+        skillVersionId: "ver-7",
+      });
+      expect(req).toEqual({
+        agentId: "agent-9",
+        inputId: "input-3",
+        content: undefined,
+        skillVersionId: "ver-7",
+      });
+    });
+
+    it("replays an ad-hoc run via its input snapshot as literal content", () => {
+      const req = buildReRunRequest({
+        agentId: "agent-1",
+        inputId: null,
+        inputSnapshot: "ad-hoc paste body",
+        skillVersionId: "ver-2",
+      });
+      expect(req.inputId).toBeUndefined();
+      expect(req.content).toBe("ad-hoc paste body");
+      expect(req.agentId).toBe("agent-1");
+      expect(req.skillVersionId).toBe("ver-2");
+    });
+
+    it("always carries the run's agent id so a re-run never posts a null agent", () => {
+      const req = buildReRunRequest({
+        agentId: "agent-42",
+        inputId: null,
+        inputSnapshot: "x",
+        skillVersionId: "v",
+      });
+      expect(req.agentId).toBe("agent-42");
+    });
   });
 });

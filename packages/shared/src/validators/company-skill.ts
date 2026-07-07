@@ -380,6 +380,9 @@ export const companySkillTestRunCreateSchema = z.object({
   inputId: z.string().uuid().nullable().optional(),
   content: z.string().min(1).nullable().optional(),
   agentId: z.string().uuid(),
+  // Re-run pins the viewed run's skill version instead of the live head, so the
+  // new run reproduces the same snapshots (golden-path step 5).
+  skillVersionId: z.string().uuid().nullable().optional(),
 }).refine((value) => Boolean(value.inputId) || Boolean(value.content?.trim()), {
   message: "inputId or content is required",
 });

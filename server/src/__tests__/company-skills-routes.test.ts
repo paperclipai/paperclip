@@ -45,6 +45,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
   listTestRuns: vi.fn(),
   getTestRunDetail: vi.fn(),
   cancelTestRun: vi.fn(),
+  deleteTestRun: vi.fn(),
   pruneExpiredTestHarnessIssues: vi.fn(),
 }));
 
@@ -1298,6 +1299,77 @@ describe("company skill mutation permissions", () => {
       status: "cancelled",
       actorUserId: "local-board",
     }));
+  });
+
+  it("deletes a terminal test run and hides its harness task", async () => {
+    mockIssueService.getById.mockResolvedValueOnce({
+      id: "44444444-4444-4444-8444-444444444444",
+      companyId: "company-1",
+      status: "done",
+      executionRunId: null,
+    });
+    mockCompanySkillService.deleteTestRun.mockImplementationOnce(async (
+      _companyId: string,
+      _skillId: string,
+      _runId: string,
+      deps: { hideHarnessIssue: (issueId: string) => Promise<unknown> },
+    ) => {
+      await deps.hideHarnessIssue("44444444-4444-4444-8444-444444444444");
+      return {
+        id: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        skillId: "skill-1",
+        inputId: null,
+        inputSnapshot: "Try the skill",
+        skillVersionId: "33333333-3333-4333-8333-333333333333",
+        agentId: "55555555-5555-4555-8555-555555555555",
+        agentConfigSnapshot: { adapterType: "codex_local" },
+        issueId: "44444444-4444-4444-8444-444444444444",
+        status: "succeeded",
+        outputDocumentKey: "output",
+        outputSnapshot: "",
+        error: null,
+        deletedAt: new Date("2026-05-26T00:02:00.000Z"),
+        supersededAt: null,
+        harnessIssueExpiresAt: null,
+        harnessIssueDeletedAt: null,
+        createdAt: new Date("2026-05-26T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-26T00:02:00.000Z"),
+        cost: { costCents: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+        taskExpired: false,
+      };
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    });
+
+    const deleted = await request(app)
+      .delete("/api/companies/company-1/skills/skill-1/test-runs/22222222-2222-4222-8222-222222222222");
+    expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
+    expect(mockCompanySkillService.deleteTestRun).toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "44444444-4444-4444-8444-444444444444",
+      expect.objectContaining({ hiddenAt: expect.any(Date) }),
+    );
+  });
+
+  it("returns 404 when deleting a missing test run", async () => {
+    mockCompanySkillService.deleteTestRun.mockResolvedValueOnce(null);
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    });
+    const res = await request(app)
+      .delete("/api/companies/company-1/skills/skill-1/test-runs/22222222-2222-4222-8222-222222222222");
+    expect(res.status).toBe(404);
   });
 
   it("returns a blocking error when attempting to delete a skill still used by agents", async () => {

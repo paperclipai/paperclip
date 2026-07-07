@@ -115,6 +115,10 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/test-runs/${encodeURIComponent(runId)}/cancel`,
       {},
     ),
+  deleteTestRun: (companyId: string, skillId: string, runId: string) =>
+    api.delete<CompanySkillTestRun>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/test-runs/${encodeURIComponent(runId)}`,
+    ),
   star: (companyId: string, skillId: string) =>
     api.post<CompanySkillStarResult>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/star`,

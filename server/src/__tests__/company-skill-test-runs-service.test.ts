@@ -57,6 +57,123 @@ describeEmbeddedPostgres("companySkillService skill test runs", () => {
     await tempDb?.cleanup();
   });
 
+  async function seedSkillAndAgent() {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const agentId = randomUUID();
+    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-test-run-"));
+    cleanupDirs.add(skillDir);
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "# Review Skill\n", "utf8");
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Tester",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+    });
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: `company/${companyId}/review`,
+      slug: "review",
+      name: "Review Skill",
+      description: null,
+      markdown: "# Review Skill\n",
+      sourceType: "local_path",
+      sourceLocator: skillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "managed_local" },
+    });
+    return { companyId, skillId, agentId };
+  }
+
+  const runDeps = (companyId: string) => ({
+    createHarnessIssue: async (issue: Parameters<Parameters<typeof svc.createTestRun>[4]["createHarnessIssue"]>[0]) => {
+      await db.insert(issues).values({ ...issue, companyId, priority: "medium" });
+      return { id: issue.id };
+    },
+    wakeHarnessIssue: async () => null,
+    retentionDays: 7,
+  });
+
+  it("only deletes terminal runs and soft-deletes them out of history", async () => {
+    const { companyId, skillId, agentId } = await seedSkillAndAgent();
+    const run = await svc.createTestRun(
+      companyId,
+      skillId,
+      { content: "test this skill", agentId },
+      { type: "user", userId: "local-board" },
+      runDeps(companyId),
+    );
+
+    // In-flight run must be cancelled first.
+    await expect(
+      svc.deleteTestRun(companyId, skillId, run.id, { hideHarnessIssue: async () => null }),
+    ).rejects.toThrow(/cancel the run/i);
+
+    await svc.completeTestRunForIssue({ companyId, issueId: run.issueId, outcome: "succeeded" });
+
+    const hidden: string[] = [];
+    const deleted = await svc.deleteTestRun(companyId, skillId, run.id, {
+      hideHarnessIssue: async (issueId) => {
+        hidden.push(issueId);
+      },
+    });
+    expect(deleted?.id).toBe(run.id);
+    expect(hidden).toEqual([run.issueId]);
+
+    // Gone from listings and detail.
+    expect(await svc.listTestRuns(companyId, skillId)).toHaveLength(0);
+    expect(await svc.getTestRunDetail(companyId, skillId, run.id)).toBeNull();
+
+    // Deleting again is a no-op 404 (returns null).
+    expect(
+      await svc.deleteTestRun(companyId, skillId, run.id, { hideHarnessIssue: async () => null }),
+    ).toBeNull();
+  });
+
+  it("re-run pins an explicit skill version instead of the live head", async () => {
+    const { companyId, skillId, agentId } = await seedSkillAndAgent();
+    const first = await svc.createTestRun(
+      companyId,
+      skillId,
+      { content: "first run", agentId },
+      { type: "user", userId: "local-board" },
+      runDeps(companyId),
+    );
+    const pinnedVersionId = first.skillVersionId;
+
+    const reRun = await svc.createTestRun(
+      companyId,
+      skillId,
+      { content: "first run", agentId, skillVersionId: pinnedVersionId },
+      { type: "user", userId: "local-board" },
+      runDeps(companyId),
+    );
+    expect(reRun.skillVersionId).toBe(pinnedVersionId);
+
+    // A bogus version id is rejected rather than silently falling back to head.
+    await expect(
+      svc.createTestRun(
+        companyId,
+        skillId,
+        { content: "first run", agentId, skillVersionId: randomUUID() },
+        { type: "user", userId: "local-board" },
+        runDeps(companyId),
+      ),
+    ).rejects.toThrow(/skill version not found/i);
+  });
+
   it("snapshots output and keeps run history after harness issue retention", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();

@@ -1,5 +1,6 @@
 import type {
   CompanySkillTestRun,
+  CompanySkillTestRunCreateRequest,
   CompanySkillTestRunDetail,
   CompanySkillTestRunStatus,
 } from "@paperclipai/shared";
@@ -182,4 +183,23 @@ export function isRunActive(run: Pick<CompanySkillTestRun, "status">): boolean {
 /** The output document, if the run detail carries one under its output key. */
 export function findOutputDocument(detail: Pick<CompanySkillTestRunDetail, "documents" | "outputDocumentKey">) {
   return detail.documents.find((doc) => doc.key === detail.outputDocumentKey) ?? null;
+}
+
+/**
+ * Build the create-run request for a Re-run of an existing run. Re-run must
+ * reproduce the VIEWED run's snapshots — its agent, its input (saved input by
+ * id, or the ad-hoc snapshot as literal content), and its pinned skill version
+ * — rather than whatever the picker holds this session. Reading these off the
+ * run detail is the fix for the Bug A regression that posted `agentId: null`
+ * from empty picker state (PAP-13001).
+ */
+export function buildReRunRequest(
+  detail: Pick<CompanySkillTestRun, "agentId" | "inputId" | "inputSnapshot" | "skillVersionId">,
+): CompanySkillTestRunCreateRequest {
+  return {
+    agentId: detail.agentId,
+    inputId: detail.inputId ?? undefined,
+    content: detail.inputId ? undefined : detail.inputSnapshot,
+    skillVersionId: detail.skillVersionId,
+  };
 }

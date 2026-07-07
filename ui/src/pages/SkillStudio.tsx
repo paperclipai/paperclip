@@ -28,6 +28,7 @@ import type {
 } from "@paperclipai/shared";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
+import { useOptionalToastActions } from "../context/ToastContext";
 import { agentsApi } from "@/api/agents";
 import { companySkillsApi } from "@/api/companySkills";
 import { issuesApi } from "@/api/issues";
@@ -91,6 +92,7 @@ import { Identity } from "@/components/Identity";
 import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
 import { buildLineDiff } from "@/lib/line-diff";
 import {
+  buildReRunRequest,
   evaluateRunGate,
   isAgentSelectable,
   isInteractionAnswerable,
@@ -107,6 +109,23 @@ import {
 const PANE_STORAGE_KEY = "skillStudio.paneSizes";
 const MOBILE_BREAKPOINT = 900;
 const POLL_MS = 2000;
+
+/**
+ * Surface a mutation rejection as an error toast. Every Studio mutation routes
+ * failures through here so server rejections (409 agent_not_assignable, 422
+ * read-only, …) never get silently swallowed (PAP-13001).
+ */
+function useMutationErrorToast() {
+  const toast = useOptionalToastActions();
+  return useCallback(
+    (title: string) => (error: unknown) => {
+      const body =
+        error instanceof Error && error.message ? error.message : "Please try again.";
+      toast?.pushToast({ tone: "error", title, body });
+    },
+    [toast],
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Pane-size persistence (contract: persist per user `skillStudio.paneSizes`)
@@ -425,6 +444,7 @@ function SkillPane({
 }) {
   const skillId = skill.id;
   const queryClient = useQueryClient();
+  const onError = useMutationErrorToast();
   const paths = useMemo(
     () => skill.fileInventory.map((f) => f.path),
     [skill.fileInventory],
@@ -465,7 +485,13 @@ function SkillPane({
         queryKey: queryKeys.companySkills.detail(companyId, skillId),
       });
     },
+    onError: onError("Couldn't save file"),
   });
+
+  // Read-only skills (bundled Paperclip, remote GitHub, URL, skills.sh) reject
+  // file writes server-side; reflect that up-front instead of letting the user
+  // type into an editor whose Save silently 422s (PAP-13001 Bug B).
+  const readOnly = skill.editable === false || fileQuery.data?.editable === false;
 
   if (paths.length === 0) {
     return (
@@ -504,20 +530,42 @@ function SkillPane({
             ariaLabel="Skill files"
           />
         </div>
+        {readOnly && (
+          <div className="flex items-start gap-2 border-b border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+            <div className="min-w-0">
+              <span>
+                {skill.editableReason ?? "This skill is read-only."}
+              </span>{" "}
+              <Link
+                to={`/skills/${skill.id}`}
+                className="font-medium text-foreground underline underline-offset-2 hover:text-primary"
+              >
+                Fork or import locally ↗
+              </Link>
+            </div>
+          </div>
+        )}
         <div className="flex items-center justify-between gap-2 px-3 py-1.5">
           <span className="truncate font-mono text-xs text-muted-foreground">
             {selectedFile}
             {skill.currentVersion ? ` · v${skill.currentVersion.revisionNumber}` : ""}
           </span>
           <div className="flex items-center gap-2">
-            {dirty && <Badge variant="secondary">Unsaved</Badge>}
-            <Button
-              size="sm"
-              disabled={!dirty || saveMutation.isPending}
-              onClick={() => saveMutation.mutate()}
-            >
-              {saveMutation.isPending ? "Saving…" : "Save"}
-            </Button>
+            {readOnly ? (
+              <Badge variant="secondary">Read-only</Badge>
+            ) : (
+              <>
+                {dirty && <Badge variant="secondary">Unsaved</Badge>}
+                <Button
+                  size="sm"
+                  disabled={!dirty || saveMutation.isPending}
+                  onClick={() => saveMutation.mutate()}
+                >
+                  {saveMutation.isPending ? "Saving…" : "Save"}
+                </Button>
+              </>
+            )}
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
@@ -526,12 +574,14 @@ function SkillPane({
               value={draft}
               onChange={setDraft}
               bordered={false}
+              readOnly={readOnly}
               className="min-h-[320px]"
             />
           ) : (
             <Textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
+              readOnly={readOnly}
               className="min-h-[320px] font-mono text-xs"
               spellCheck={false}
             />
@@ -863,6 +913,7 @@ function RunsPane({
 }) {
   const skillId = skill.id;
   const queryClient = useQueryClient();
+  const onError = useMutationErrorToast();
   const [snapshotDialogOpen, setSnapshotDialogOpen] = useState(false);
 
   const agentsQuery = useQuery({
@@ -906,6 +957,7 @@ function RunsPane({
       });
       onSelectRun(run.id);
     },
+    onError: onError("Couldn't start run"),
   });
 
   const startRun = () => {
@@ -924,7 +976,7 @@ function RunsPane({
         runId={selectedRunId}
         agents={agents}
         onBack={() => onSelectRun(null)}
-        onReRun={() => createRunMutation.mutate()}
+        onSelectRun={onSelectRun}
       />
     );
   }
@@ -988,7 +1040,12 @@ function RunsPane({
         nextVersion={(skill.currentVersion?.revisionNumber ?? 0) + 1}
         pending={createRunMutation.isPending}
         onConfirm={async () => {
-          await companySkillsApi.createVersion(companyId, skillId, {});
+          try {
+            await companySkillsApi.createVersion(companyId, skillId, {});
+          } catch (err) {
+            onError("Couldn't snapshot changes")(err);
+            return;
+          }
           onSnapshotted();
           queryClient.invalidateQueries({
             queryKey: queryKeys.companySkills.detail(companyId, skillId),
@@ -1142,17 +1199,18 @@ function RunDetailView({
   runId,
   agents,
   onBack,
-  onReRun,
+  onSelectRun,
 }: {
   companyId: string;
   skill: CompanySkillDetail;
   runId: string;
   agents: Agent[];
   onBack: () => void;
-  onReRun: () => void;
+  onSelectRun: (id: string | null) => void;
 }) {
   const skillId = skill.id;
   const queryClient = useQueryClient();
+  const onError = useMutationErrorToast();
   const detailQuery = useQuery({
     queryKey: queryKeys.companySkills.testRunDetail(companyId, skillId, runId),
     queryFn: () => companySkillsApi.testRunDetail(companyId, skillId, runId),
@@ -1169,6 +1227,37 @@ function RunDetailView({
       queryClient.invalidateQueries({
         queryKey: queryKeys.companySkills.testRunDetail(companyId, skillId, runId),
       }),
+    onError: onError("Couldn't cancel run"),
+  });
+
+  // Re-run reproduces the VIEWED run's snapshots — pinned skill version, saved
+  // input (or the ad-hoc snapshot), and agent — rather than whatever the picker
+  // happens to hold this session (PAP-13001 Bug A). Reading detailQuery.data at
+  // mutate() time keeps the hook order stable across the loading guards below.
+  const reRunMutation = useMutation({
+    mutationFn: () => {
+      const d = detailQuery.data;
+      if (!d) throw new Error("Run details are still loading.");
+      return companySkillsApi.createTestRun(companyId, skillId, buildReRunRequest(d));
+    },
+    onSuccess: (run) => {
+      queryClient.invalidateQueries({
+        queryKey: ["company-skills", companyId, skillId, "test-runs"],
+      });
+      onSelectRun(run.id);
+    },
+    onError: onError("Couldn't re-run"),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => companySkillsApi.deleteTestRun(companyId, skillId, runId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["company-skills", companyId, skillId, "test-runs"],
+      });
+      onSelectRun(null);
+    },
+    onError: onError("Couldn't delete run"),
   });
 
   if (detailQuery.isLoading) {
@@ -1273,10 +1362,15 @@ function RunDetailView({
 
         {/* Actions */}
         <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
-          <Button variant="outline" size="sm" onClick={onReRun}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={reRunMutation.isPending}
+            onClick={() => reRunMutation.mutate()}
+          >
             <RotateCcw className="mr-1.5 h-3.5 w-3.5" /> Re-run
           </Button>
-          {nonTerminal && (
+          {nonTerminal ? (
             <Button
               variant="ghost"
               size="sm"
@@ -1284,6 +1378,16 @@ function RunDetailView({
               onClick={() => cancelMutation.mutate()}
             >
               Cancel
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-destructive hover:text-destructive"
+              disabled={deleteMutation.isPending}
+              onClick={() => deleteMutation.mutate()}
+            >
+              <Trash2 className="mr-1.5 h-3.5 w-3.5" /> Delete
             </Button>
           )}
           {taskLink.enabled && detail.harnessIssue ? (
