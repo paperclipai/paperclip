@@ -297,6 +297,15 @@ function defaultExecutionWorkspaceModeForIssueDefaults(
     : defaultExecutionWorkspaceModeForProject(project);
 }
 
+function isWorkModePeriodShortcut(e: Pick<React.KeyboardEvent, "code" | "ctrlKey" | "key" | "metaKey">) {
+  const isPeriod = e.code === "Period" || e.key === ".";
+  return (e.metaKey || e.ctrlKey) && isPeriod;
+}
+
+function isWorkModeEscapeShortcut(e: Pick<KeyboardEvent, "key" | "metaKey">) {
+  return e.metaKey && e.key === "Escape";
+}
+
 const IssueTitleTextarea = memo(function IssueTitleTextarea({
   value,
   pending,
@@ -1035,7 +1044,7 @@ export function NewIssueDialog() {
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if ((e.metaKey || e.ctrlKey) && e.code === "Period") {
+    if (isWorkModePeriodShortcut(e)) {
       e.preventDefault();
       setWorkMode((current) => nextWorkMode(current));
       return;
@@ -1275,6 +1284,15 @@ export function NewIssueDialog() {
         )}
         onKeyDown={handleKeyDown}
         onEscapeKeyDown={(event) => {
+          if (event.defaultPrevented) return;
+          // iOS Safari maps command-period to Escape for hardware keyboards.
+          // Treat modifier-Escape as the same mode-cycle shortcut so the
+          // dialog does not dismiss before the shortcut can run.
+          if (isWorkModeEscapeShortcut(event)) {
+            event.preventDefault();
+            setWorkMode((current) => nextWorkMode(current));
+            return;
+          }
           if (createIssue.isPending) {
             event.preventDefault();
           }

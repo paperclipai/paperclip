@@ -1,5 +1,11 @@
 "use strict";
 
+function stripAnsi(text) {
+  return text
+    .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, "")
+    .replace(/\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+}
+
 function safeJsonParse(text) {
   try {
     return JSON.parse(text);
@@ -18,7 +24,8 @@ function asString(value) {
 }
 
 function parseStdoutLine(line, ts) {
-  const trimmed = line.trim();
+  const cleaned = stripAnsi(line);
+  const trimmed = cleaned.trim();
   if (!trimmed) return [];
 
   const eventMatch = trimmed.match(/^\[hermes-gateway:event\]\s+run=([^\s]+)\s+event=([^\s]+)\s+data=(.*)$/s);
@@ -27,7 +34,7 @@ function parseStdoutLine(line, ts) {
     const data = asRecord(safeJsonParse(eventMatch[3]));
     if (eventName === "message.delta") {
       const delta = asString(data && data.delta) || asString(data && data.text_delta);
-      return delta ? [{ kind: "assistant", ts, text: delta, delta: true }] : [];
+      return delta ? [{ kind: "assistant", ts, text: stripAnsi(delta), delta: true }] : [];
     }
     if (eventName === "run.failed" || eventName === "run.error") {
       const message = asString(data && data.error) || asString(data && data.message) || "Hermes run failed";
@@ -43,7 +50,7 @@ function parseStdoutLine(line, ts) {
     return [{ kind: "system", ts, text: trimmed.replace(/^\[hermes-gateway\]\s*/, "") }];
   }
 
-  return [{ kind: "stdout", ts, text: line }];
+  return [{ kind: "stdout", ts, text: cleaned }];
 }
 
 module.exports = { parseStdoutLine };

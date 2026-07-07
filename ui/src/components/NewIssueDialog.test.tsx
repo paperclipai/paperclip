@@ -14,6 +14,7 @@ const dialogState = vi.hoisted(() => ({
 }));
 
 const dialogContentState = vi.hoisted(() => ({
+  onEscapeKeyDown: null as null | ((event: KeyboardEvent) => void),
   onPointerDownOutside: null as null | ((event: {
     detail: { originalEvent: { target: EventTarget | null } };
     preventDefault: () => void;
@@ -208,14 +209,15 @@ vi.mock("@/components/ui/dialog", () => ({
   DialogContent: ({
     children,
     showCloseButton: _showCloseButton,
-    onEscapeKeyDown: _onEscapeKeyDown,
+    onEscapeKeyDown,
     onPointerDownOutside,
     ...props
   }: ComponentProps<"div"> & {
     showCloseButton?: boolean;
-    onEscapeKeyDown?: (event: unknown) => void;
+    onEscapeKeyDown?: (event: KeyboardEvent) => void;
     onPointerDownOutside?: (event: unknown) => void;
   }) => {
+    dialogContentState.onEscapeKeyDown = onEscapeKeyDown ?? null;
     dialogContentState.onPointerDownOutside = onPointerDownOutside as typeof dialogContentState.onPointerDownOutside;
     return <div {...props}>{children}</div>;
   },
@@ -330,6 +332,7 @@ describe("NewIssueDialog", () => {
     dialogState.newIssueOpen = true;
     dialogState.newIssueDefaults = {};
     dialogState.closeNewIssue.mockReset();
+    dialogContentState.onEscapeKeyDown = null;
     dialogContentState.onPointerDownOutside = null;
     toastState.pushToast.mockReset();
     mockIssuesApi.create.mockReset();
@@ -923,7 +926,7 @@ describe("NewIssueDialog", () => {
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
         bubbles: true,
-        code: "Period",
+        code: "",
         key: ".",
         metaKey: true,
       }));
@@ -949,6 +952,76 @@ describe("NewIssueDialog", () => {
       }));
     });
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+
+    act(() => root.unmount());
+  });
+
+  it("cycles work modes when iOS reports cmd-period as Escape", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+    expect(dialogContentState.onEscapeKeyDown).not.toBeNull();
+
+    const commandPeriodAsEscape = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+      metaKey: true,
+    });
+    await act(async () => {
+      dialogContentState.onEscapeKeyDown?.(commandPeriodAsEscape);
+    });
+
+    expect(commandPeriodAsEscape.defaultPrevented).toBe(true);
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+    expect(dialogState.closeNewIssue).not.toHaveBeenCalled();
+
+    const plainEscape = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+    });
+    await act(async () => {
+      dialogContentState.onEscapeKeyDown?.(plainEscape);
+    });
+
+    expect(plainEscape.defaultPrevented).toBe(false);
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+
+    const controlEscape = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      key: "Escape",
+    });
+    await act(async () => {
+      dialogContentState.onEscapeKeyDown?.(controlEscape);
+    });
+
+    expect(controlEscape.defaultPrevented).toBe(false);
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+
+    act(() => root.unmount());
+  });
+
+  it("cycles work modes with ctrl-period", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+
+    await act(async () => {
+      modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "Period",
+        key: ".",
+        ctrlKey: true,
+      }));
+    });
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
 
     act(() => root.unmount());
   });

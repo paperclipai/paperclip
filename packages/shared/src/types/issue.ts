@@ -212,6 +212,47 @@ export interface IssueRelationIssueSummary {
   activeRecoveryAction?: IssueRecoveryAction | null;
 }
 
+export type IssueBlockerDiagnosticFlag =
+  | "done_but_blocking"
+  | "cancelled_blocker_in_set"
+  | "workspace_finalize_pending";
+
+export interface IssueBlockerDiagnosticIssueSummary {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+}
+
+export interface IssueBlockerDiagnosticNode extends IssueBlockerDiagnosticIssueSummary {
+  isUnresolved: boolean;
+  isDependencyReady: boolean;
+  isPendingFinalize: boolean;
+  flags: IssueBlockerDiagnosticFlag[];
+}
+
+export interface IssueBlockerDiagnosticsReadiness {
+  allBlockersDone: boolean;
+  isDependencyReady: boolean;
+  unresolvedBlockerCount: number;
+  pendingFinalizeBlockerCount: number;
+}
+
+export interface IssueBlockerDiagnosticsResponse {
+  issue: IssueBlockerDiagnosticIssueSummary;
+  diagnosis: string | null;
+  readiness: IssueBlockerDiagnosticsReadiness | null;
+  blockers: IssueBlockerDiagnosticNode[];
+  omittedUnauthorizedBlockerCount: number | null;
+  truncated: boolean;
+  caps: {
+    maxBlockers: number;
+  };
+}
+
 export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs_attention";
 
 export type IssueBlockerAttentionReason =

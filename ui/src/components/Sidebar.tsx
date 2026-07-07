@@ -18,6 +18,7 @@ import {
   PanelLeftOpen,
   Pin,
   MessagesSquare,
+  GanttChartSquare,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -25,6 +26,7 @@ import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarAgents } from "./SidebarAgents";
 import { SidebarProjects } from "./SidebarProjects";
+import { SidebarStarredProjects } from "./SidebarStarredProjects";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -58,12 +60,12 @@ export function Sidebar() {
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
   const showPipelines = experimentalSettings?.enablePipelines === true;
-  // IA flag: branch the sidebar nav presentation. Default ON =
-  // streamlined (top-level Projects link). Users can opt out in experiments to
-  // get classic (per-project collapsible, no Projects nav link). Issue/Task
-  // wording is split to PR #7651. Gating is navigation-only; all routes stay
-  // registered in both modes.
-  const streamlined = experimentalSettings?.enableStreamlinedLeftNavigation !== false;
+  // Streamlined left navigation (top-level Projects link + starred children) is
+  // now the standard product sidebar (PAP-12472). The former experimental
+  // opt-out was retired; classic per-project collapsible mode is no longer
+  // user-selectable. Kept as a constant so the classic branch below stays as a
+  // documented reference until it is fully removed. Routes are unaffected.
+  const streamlined = true;
   // Conference Room Chat flag (PAP-136/PAP-137): the Conference Room nav item
   // is a new surface, hidden entirely while the flag is off (same no-flash
   // pattern as showWorkspacesLink above).
@@ -186,7 +188,10 @@ export function Sidebar() {
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}
           {streamlined ? (
-            <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />
+            <>
+              <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />
+              <SidebarStarredProjects />
+            </>
           ) : null}
           <PluginSlotOutlet
             slotTypes={["sidebar"]}
@@ -210,6 +215,7 @@ export function Sidebar() {
 
         <SidebarSection label="Company">
           <SidebarNavItem to="/org" label="Org" icon={Network} />
+          <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />

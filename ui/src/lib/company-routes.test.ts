@@ -72,6 +72,13 @@ describe("company routes", () => {
     expect(toCompanyRelativePath("/PAP/artifacts")).toBe("/artifacts");
   });
 
+  it("treats /timeline as a board route that needs a company prefix", () => {
+    expect(isBoardPathWithoutPrefix("/timeline")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/timeline")).toBeNull();
+    expect(applyCompanyPrefix("/timeline", "PAP")).toBe("/PAP/timeline");
+    expect(toCompanyRelativePath("/PAP/timeline")).toBe("/timeline");
+  });
+
   // Regression for #8931: plugin page routePaths (e.g. `browse-repo`) are not in
   // BOARD_ROUTE_ROOTS, so the board-route heuristic left the company prefix in
   // place. Every company switch then re-prefixed the stored path, producing

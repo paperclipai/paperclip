@@ -59,6 +59,34 @@ function stableStringifyForTest(value: unknown): string {
   }
   return JSON.stringify(value);
 }
+
+function workspaceBranchIncoherenceFingerprintForTest(input: {
+  sourceIssueId: string | null;
+  executionWorkspaceId: string | null;
+  worktreePath: string;
+  expectedBranch: string;
+  actualBranch: string | null;
+  cleanliness: "clean" | "dirty" | "unknown";
+  expectedHeadSha: string | null;
+  actualHeadSha: string | null;
+}) {
+  const digest = createHash("sha256")
+    .update(stableStringifyForTest({
+      version: 1,
+      reason: "git_worktree_branch_incoherence",
+      sourceIssueId: input.sourceIssueId,
+      executionWorkspaceId: input.executionWorkspaceId,
+      worktreePath: path.resolve(input.worktreePath),
+      expectedBranch: input.expectedBranch,
+      actualBranch: input.actualBranch,
+      cleanliness: input.cleanliness,
+      expectedHeadSha: input.expectedHeadSha,
+      actualHeadSha: input.actualHeadSha,
+    }))
+    .digest("hex");
+  return `workspace_incoherence:v1:sha256:${digest}`;
+}
+
 const leasedRunIds = new Set<string>();
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -1500,6 +1528,99 @@ describe("realizeExecutionWorkspace", () => {
     );
   }, 30_000);
 
+  it("reinstalls worktree-local pnpm dependencies when package metadata changes", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-stale-deps-"));
+    const baseRoot = path.join(tempRoot, "base");
+    const worktreeRoot = path.join(tempRoot, "worktree");
+    const fakeBin = path.join(tempRoot, "bin");
+    const fakePnpmPath = path.join(fakeBin, "pnpm");
+    const scriptPath = path.join(worktreeRoot, "provision-worktree.sh");
+    const installLogPath = path.join(tempRoot, "install.log");
+
+    try {
+      await fs.mkdir(path.join(baseRoot, "node_modules"), { recursive: true });
+      await fs.mkdir(path.join(worktreeRoot, "node_modules"), { recursive: true });
+      await fs.mkdir(path.join(worktreeRoot, "ui"), { recursive: true });
+      await fs.mkdir(fakeBin, { recursive: true });
+      await fs.copyFile(provisionWorktreeScriptPath, scriptPath);
+      await fs.chmod(scriptPath, 0o755);
+      await fs.writeFile(
+        path.join(worktreeRoot, "package.json"),
+        JSON.stringify(
+          {
+            name: "workspace-root",
+            private: true,
+            packageManager: "pnpm@9.15.4",
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(worktreeRoot, "pnpm-lock.yaml"),
+        ["lockfileVersion: '9.0'", "", "importers:", "  .: {}", ""].join("\n"),
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(worktreeRoot, "ui", "package.json"),
+        JSON.stringify({ name: "ui", private: true, dependencies: {} }, null, 2),
+        "utf8",
+      );
+      await fs.writeFile(
+        fakePnpmPath,
+        [
+          "#!/bin/sh",
+          "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"--help\" ]; then",
+          "  exit 1",
+          "fi",
+          "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--prod=false\" ] && [ \"$3\" = \"--frozen-lockfile\" ]; then",
+          "  mkdir -p \"$PWD/node_modules\"",
+          `  echo "install:$*" >> ${JSON.stringify(installLogPath)}`,
+          "  exit 0",
+          "fi",
+          "exit 1",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await fs.chmod(fakePnpmPath, 0o755);
+
+      const runScript = () => execFileAsync(scriptPath, [], {
+        cwd: worktreeRoot,
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+          PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
+          PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
+        },
+      });
+
+      await runScript();
+      await runScript();
+      await expect(fs.readFile(installLogPath, "utf8")).resolves.toBe(
+        "install:install --prod=false --frozen-lockfile\n",
+      );
+
+      await fs.writeFile(
+        path.join(worktreeRoot, "ui", "package.json"),
+        JSON.stringify(
+          { name: "ui", private: true, dependencies: { "@xterm/addon-fit": "^0.11.0" } },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+
+      await runScript();
+      await expect(fs.readFile(installLogPath, "utf8")).resolves.toBe(
+        "install:install --prod=false --frozen-lockfile\ninstall:install --prod=false --frozen-lockfile\n",
+      );
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("fails instead of writing an unseeded fallback config when worktree init errors after CLI detection succeeds", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-provision-fail-"));
     const baseRoot = path.join(tempRoot, "base");
@@ -1686,11 +1807,11 @@ describe("realizeExecutionWorkspace", () => {
           "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"--help\" ]; then",
           "  exit 1",
           "fi",
-          "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--frozen-lockfile\" ]; then",
+          "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--prod=false\" ] && [ \"$3\" = \"--frozen-lockfile\" ]; then",
           "  echo \"ERR_PNPM_OUTDATED_LOCKFILE\" >&2",
           "  exit 1",
           "fi",
-          "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--no-frozen-lockfile\" ]; then",
+          "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--prod=false\" ] && [ \"$3\" = \"--no-frozen-lockfile\" ]; then",
           "  mkdir -p \"$PWD/node_modules\"",
           "  : > \"$PWD/node_modules/.retry-success\"",
           "  exit 0",
@@ -2201,6 +2322,8 @@ describe("realizeExecutionWorkspace", () => {
             expectedBranchExists: true,
             actualBranchExists: true,
             sameHead: true,
+            ancestryVerdict: "ancestor",
+            plainLanguageReason: expect.stringContaining("same commit"),
           }),
           safeRepair: expect.objectContaining({
             eligible: false,
@@ -2301,43 +2424,64 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(initial.cwd, ["add", "publish.txt"]);
     await runGit(initial.cwd, ["commit", "-m", "Add publish branch work"]);
 
-    await expect(ensurePersistedExecutionWorkspaceAvailable({
-      base: {
-        baseCwd: repoRoot,
-        source: "project_primary",
-        projectId: "project-1",
-        workspaceId: "workspace-1",
-        repoUrl: null,
-        repoRef: "HEAD",
-      },
-      workspace: {
-        id: "execution-workspace-3",
-        mode: "isolated_workspace",
-        strategyType: "git_worktree",
-        cwd: initial.cwd,
-        providerRef: initial.worktreePath,
-        projectId: "project-1",
-        projectWorkspaceId: "workspace-1",
-        repoUrl: null,
-        baseRef: "HEAD",
-        branchName: initial.branchName,
-      },
-      issue: {
-        id: "issue-3",
-        identifier: "PAP-456",
-        title: "Keep persisted branch coherent",
-      },
-      agent: {
-        id: "agent-1",
-        name: "Codex Coder",
-        companyId: "company-1",
-      },
-    })).rejects.toMatchObject({
+    if (!initial.branchName) throw new Error("expected realized worktree branch name");
+    const expectedHeadSha = await readGit(repoRoot, ["rev-parse", `refs/heads/${initial.branchName}^{commit}`]);
+    const actualHeadSha = await readGit(initial.cwd, ["rev-parse", "HEAD"]);
+    const expectedFingerprint = workspaceBranchIncoherenceFingerprintForTest({
+      sourceIssueId: "issue-3",
+      executionWorkspaceId: "execution-workspace-3",
+      worktreePath: initial.cwd,
+      expectedBranch: initial.branchName,
+      actualBranch,
+      cleanliness: "clean",
+      expectedHeadSha,
+      actualHeadSha,
+    });
+
+    let error: unknown = null;
+    try {
+      await ensurePersistedExecutionWorkspaceAvailable({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        workspace: {
+          id: "execution-workspace-3",
+          mode: "isolated_workspace",
+          strategyType: "git_worktree",
+          cwd: initial.cwd,
+          providerRef: initial.worktreePath,
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+          repoUrl: null,
+          baseRef: "HEAD",
+          branchName: initial.branchName,
+        },
+        issue: {
+          id: "issue-3",
+          identifier: "PAP-456",
+          title: "Keep persisted branch coherent",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toMatchObject({
       code: "workspace_validation_failed",
       resultJson: {
         workspaceValidation: expect.objectContaining({
           reason: "git_worktree_branch_incoherence",
-          fingerprint: expect.stringMatching(/^workspace_incoherence:v1:sha256:/),
+          fingerprint: expectedFingerprint,
           sourceIssueId: "issue-3",
           sourceIdentifier: "PAP-456",
           executionWorkspaceId: "execution-workspace-3",
@@ -2348,12 +2492,173 @@ describe("realizeExecutionWorkspace", () => {
             expectedBranchExists: true,
             actualBranchExists: true,
             sameHead: false,
+            ancestryVerdict: "ancestor",
+            plainLanguageReason: expect.stringContaining("forward of the recorded branch"),
           }),
           safeRepair: expect.objectContaining({
             eligible: false,
             attempted: false,
             succeeded: false,
             reason: "expected branch and current HEAD differ",
+          }),
+        }),
+      },
+    });
+  }, 15_000);
+
+  it("classifies persisted git worktree branch incoherence as diverged when the checked-out branch is not forward", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "PAP-457-recorded-work";
+    const actualBranch = "PAP-457-sibling-work";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch]);
+    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, "HEAD"]);
+
+    await runGit(repoRoot, ["checkout", expectedBranch]);
+    await fs.writeFile(path.join(repoRoot, "recorded.txt"), "recorded branch work\n", "utf8");
+    await runGit(repoRoot, ["add", "recorded.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Add recorded branch work"]);
+
+    await fs.writeFile(path.join(worktreePath, "actual.txt"), "actual branch work\n", "utf8");
+    await runGit(worktreePath, ["add", "actual.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Add actual branch work"]);
+
+    let error: unknown = null;
+    try {
+      await ensurePersistedExecutionWorkspaceAvailable({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        workspace: {
+          id: "execution-workspace-diverged",
+          mode: "isolated_workspace",
+          strategyType: "git_worktree",
+          cwd: worktreePath,
+          providerRef: worktreePath,
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+          repoUrl: null,
+          baseRef: "HEAD",
+          branchName: expectedBranch,
+        },
+        issue: {
+          id: "issue-diverged",
+          identifier: "PAP-457",
+          title: "Classify diverged branch incoherence",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_branch_incoherence",
+          sourceIssueId: "issue-diverged",
+          sourceIdentifier: "PAP-457",
+          executionWorkspaceId: "execution-workspace-diverged",
+          expectedBranch,
+          actualBranch,
+          cleanliness: "clean",
+          provenance: expect.objectContaining({
+            expectedBranchExists: true,
+            actualBranchExists: true,
+            sameHead: false,
+            ancestryVerdict: "diverged",
+            plainLanguageReason: expect.stringContaining("cannot prove a forward-only reconciliation"),
+          }),
+        }),
+      },
+    });
+  }, 15_000);
+
+  it("classifies persisted git worktree branch incoherence as unknown when the recorded branch was deleted", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "PAP-458-deleted-recorded-branch";
+    const actualBranch = "PAP-458-actual-work";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch]);
+    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, "HEAD"]);
+    await runGit(repoRoot, ["branch", "-D", expectedBranch]);
+
+    let error: unknown = null;
+    try {
+      await ensurePersistedExecutionWorkspaceAvailable({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        workspace: {
+          id: "execution-workspace-deleted-branch",
+          mode: "isolated_workspace",
+          strategyType: "git_worktree",
+          cwd: worktreePath,
+          providerRef: worktreePath,
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+          repoUrl: null,
+          baseRef: "HEAD",
+          branchName: expectedBranch,
+        },
+        issue: {
+          id: "issue-deleted-branch",
+          identifier: "PAP-458",
+          title: "Classify deleted branch ancestry",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_branch_incoherence",
+          sourceIssueId: "issue-deleted-branch",
+          sourceIdentifier: "PAP-458",
+          executionWorkspaceId: "execution-workspace-deleted-branch",
+          expectedBranch,
+          actualBranch,
+          cleanliness: "clean",
+          provenance: expect.objectContaining({
+            expectedBranchExists: false,
+            actualBranchExists: true,
+            expectedHeadSha: null,
+            sameHead: false,
+            ancestryVerdict: "unknown",
+            plainLanguageReason: expect.stringContaining("missing a resolvable HEAD commit"),
+          }),
+          safeRepair: expect.objectContaining({
+            eligible: false,
+            attempted: false,
+            succeeded: false,
+            reason: "expected branch does not exist",
           }),
         }),
       },

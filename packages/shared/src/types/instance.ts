@@ -58,6 +58,7 @@ export interface InstanceExperimentalSettings {
   enableServerInfoDebugView: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
+  enableWorkspaceBranchReconcileForward: boolean;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
 }
 

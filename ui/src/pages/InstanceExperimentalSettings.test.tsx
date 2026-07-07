@@ -63,6 +63,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours: 24,
+    enableWorkspaceBranchReconcileForward: false,
   };
 }
 
@@ -122,7 +123,6 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     await renderPage();
 
     const headings = [...container.querySelectorAll("section h2")].map((h) => h.textContent);
-    expect(headings).toContain("Streamlined Left Navigation Bar");
     expect(headings).not.toContain("Conference Room Chat");
     expect(container.querySelector(CONFERENCE_TOGGLE_SELECTOR)).toBeNull();
   });
@@ -147,21 +147,13 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
   });
 
-  it("renders the Streamlined Left Navigation toggle on by default and patches opt-out", async () => {
+  it("no longer renders the Streamlined Left Navigation toggle (opt-out retired, PAP-12472)", async () => {
     await renderPage();
 
-    const toggle = container.querySelector<HTMLButtonElement>(STREAMLINED_TOGGLE_SELECTOR);
-    expect(toggle?.getAttribute("aria-checked")).toBe("true");
-
-    await act(async () => {
-      toggle?.click();
-    });
-    await flushReact();
-
-    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
-      enableStreamlinedLeftNavigation: false,
-    });
-    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    const headings = [...container.querySelectorAll("section h2")].map((h) => h.textContent);
+    expect(headings).not.toContain("Streamlined Left Navigation Bar");
+    expect(container.querySelector(STREAMLINED_TOGGLE_SELECTOR)).toBeNull();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
   });
 
   it("renders and patches the Task Watchdogs experimental toggle on and off", async () => {

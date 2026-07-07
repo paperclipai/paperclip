@@ -56,6 +56,18 @@ pnpm build-storybook
 
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
 
+## UI Fonts And Screenshots
+
+The board UI ships its own sans-serif webfont assets in `ui/public/fonts/`.
+`ui/src/index.css` declares Inter v4.1 variable regular and italic faces and wires
+the Tailwind `font-sans` token to those bundled files before system fallbacks.
+Linux screenshot or Storybook capture jobs should not install host Inter packages
+or inject external font CSS to make Paperclip text render correctly.
+
+Font assets live in Vite's public directory so `pnpm --filter @paperclipai/ui build`
+emits them under `ui/dist/fonts/`. The server package copies the same output into
+`server/ui-dist/fonts/` through `scripts/prepare-server-ui-dist.sh`.
+
 Inspect or stop the current repo's managed dev runner:
 
 ```sh

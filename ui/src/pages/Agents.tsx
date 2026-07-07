@@ -13,6 +13,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { MembershipAction } from "../components/MembershipAction";
+import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -23,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import {
+  isStarred,
   resourceMembershipState,
   useResourceMembershipMutation,
   useResourceMemberships,
@@ -271,6 +273,13 @@ export function Agents() {
 
   const renderAgentRow = (agent: Agent) => {
     const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
+    const agentPending =
+      membershipMutation.isPending &&
+      membershipMutation.variables?.resourceType === "agent" &&
+      membershipMutation.variables.resourceId === agent.id;
+    const agentStarPending = agentPending && membershipMutation.variables?.starred !== undefined;
+    const agentJoinLeavePending = agentPending && membershipMutation.variables?.starred === undefined;
+    const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     return (
       <EntityRow
         key={agent.id}
@@ -343,18 +352,8 @@ export function Agents() {
             </div>
             <MembershipAction
               state={resourceMembershipState(membershipsQuery.data, "agent", agent.id)}
-              pending={
-                membershipMutation.isPending &&
-                membershipMutation.variables?.resourceType === "agent" &&
-                membershipMutation.variables.resourceId === agent.id
-              }
-              pendingState={
-                membershipMutation.isPending &&
-                membershipMutation.variables?.resourceType === "agent" &&
-                membershipMutation.variables.resourceId === agent.id
-                  ? membershipMutation.variables.state
-                  : null
-              }
+              pending={agentJoinLeavePending}
+              pendingState={agentJoinLeavePending ? membershipMutation.variables?.state ?? null : null}
               resourceName={agent.name}
               onJoin={() => membershipMutation.mutate({
                 resourceType: "agent",
@@ -367,6 +366,18 @@ export function Agents() {
                 resourceId: agent.id,
                 resourceName: agent.name,
                 state: "left",
+              })}
+            />
+            <StarToggle
+              size="row"
+              starred={agentStarred}
+              pending={agentStarPending}
+              resourceName={agent.name}
+              onToggle={(next) => membershipMutation.mutate({
+                resourceType: "agent",
+                resourceId: agent.id,
+                resourceName: agent.name,
+                starred: next,
               })}
             />
           </div>
@@ -393,13 +404,16 @@ export function Agents() {
         <div className="flex items-center gap-2">
           {/* View toggle */}
           {!forceListView && (
-            <div className="flex items-center border border-border">
+            <div className="flex items-center border border-border" role="group" aria-label="View mode">
               <button
                 className={cn(
                   "p-1.5 transition-colors",
                   effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
                 onClick={() => setView("list")}
+                title="List view"
+                aria-label="List view"
+                aria-pressed={effectiveView === "list"}
               >
                 <List className="h-3.5 w-3.5" />
               </button>
@@ -409,6 +423,9 @@ export function Agents() {
                   effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
                 onClick={() => setView("org")}
+                title="Org chart view"
+                aria-label="Org chart view"
+                aria-pressed={effectiveView === "org"}
               >
                 <GitBranch className="h-3.5 w-3.5" />
               </button>
@@ -514,6 +531,9 @@ function OrgTreeNode({
   const pending = membershipMutation.isPending &&
     membershipMutation.variables?.resourceType === "agent" &&
     membershipMutation.variables.resourceId === node.id;
+  const starPending = pending && membershipMutation.variables?.starred !== undefined;
+  const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
+  const starred = isStarred(memberships, "agent", node.id);
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
@@ -576,8 +596,8 @@ function OrgTreeNode({
           </div>
           <MembershipAction
             state={membershipState}
-            pending={pending}
-            pendingState={pending ? membershipMutation.variables?.state : null}
+            pending={joinLeavePending}
+            pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
             resourceName={node.name}
             onJoin={() => membershipMutation.mutate({
               resourceType: "agent",
@@ -590,6 +610,18 @@ function OrgTreeNode({
               resourceId: node.id,
               resourceName: node.name,
               state: "left",
+            })}
+          />
+          <StarToggle
+            size="row"
+            starred={starred}
+            pending={starPending}
+            resourceName={node.name}
+            onToggle={(next) => membershipMutation.mutate({
+              resourceType: "agent",
+              resourceId: node.id,
+              resourceName: node.name,
+              starred: next,
             })}
           />
         </div>
