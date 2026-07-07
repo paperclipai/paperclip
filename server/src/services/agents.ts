@@ -9,12 +9,21 @@ import {
   agentTaskSessions,
   agentWakeupRequests,
   activityLog,
+  approvals,
+  approvalComments,
+  assets,
   costEvents,
+  financeEvents,
+  goals,
   heartbeatRunEvents,
   heartbeatRuns,
   issueExecutionDecisions,
   issues,
   issueComments,
+  issueThreadInteractions,
+  joinRequests,
+  projects,
+  routines,
 } from "@paperclipai/db";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
@@ -508,6 +517,27 @@ export function agentService(db: Db) {
           .update(issues)
           .set({ assigneeAgentId: null, createdByAgentId: null })
           .where(or(eq(issues.assigneeAgentId, id), eq(issues.createdByAgentId, id)));
+        // Null agent references on entities that OUTLIVE the agent. These FKs
+        // have no onDelete rule, so the DB won't null them for us and the final
+        // delete(agents) would FK-fail; "set null" is the right semantic (the
+        // project/routine/goal/approval/asset survives, just loses this agent as
+        // its lead/owner/author). Added for tenant decommission robustness — a
+        // used tenant agent can accumulate any of these.
+        await tx.update(projects).set({ leadAgentId: null }).where(eq(projects.leadAgentId, id));
+        await tx.update(routines).set({ assigneeAgentId: null }).where(eq(routines.assigneeAgentId, id));
+        await tx.update(goals).set({ ownerAgentId: null }).where(eq(goals.ownerAgentId, id));
+        await tx.update(joinRequests).set({ createdAgentId: null }).where(eq(joinRequests.createdAgentId, id));
+        await tx.update(approvals).set({ requestedByAgentId: null }).where(eq(approvals.requestedByAgentId, id));
+        await tx.update(approvalComments).set({ authorAgentId: null }).where(eq(approvalComments.authorAgentId, id));
+        await tx.update(assets).set({ createdByAgentId: null }).where(eq(assets.createdByAgentId, id));
+        await tx
+          .update(issueThreadInteractions)
+          .set({ createdByAgentId: null })
+          .where(eq(issueThreadInteractions.createdByAgentId, id));
+        await tx
+          .update(issueThreadInteractions)
+          .set({ resolvedByAgentId: null })
+          .where(eq(issueThreadInteractions.resolvedByAgentId, id));
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
         await tx.delete(activityLog).where(
@@ -518,6 +548,25 @@ export function agentService(db: Db) {
         );
         await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
         await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
+        // Usage telemetry references BOTH the agent (agent_id, RESTRICT) AND its
+        // heartbeat_runs (heartbeat_run_id, RESTRICT), so it must be removed
+        // BEFORE delete(heartbeatRuns) below. This was the live decommission 500:
+        // "cost_events_heartbeat_run_id_heartbeat_runs_id_fk" fired when a used
+        // agent's runs had cost rows. finance_events references cost_events
+        // (cost_event_id, RESTRICT), so it is deleted first.
+        await tx.delete(financeEvents).where(
+          or(
+            eq(financeEvents.agentId, id),
+            sql`${financeEvents.heartbeatRunId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
+            sql`${financeEvents.costEventId} in (select ${costEvents.id} from ${costEvents} where ${costEvents.agentId} = ${id} or ${costEvents.heartbeatRunId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id}))`,
+          ),
+        );
+        await tx.delete(costEvents).where(
+          or(
+            eq(costEvents.agentId, id),
+            sql`${costEvents.heartbeatRunId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
+          ),
+        );
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
