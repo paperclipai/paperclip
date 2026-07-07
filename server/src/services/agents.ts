@@ -77,6 +77,23 @@ interface AgentShortnameCollisionOptions {
   excludeAgentId?: string | null;
 }
 
+type AgentActiveRunStatus = "queued" | "running";
+type AgentActiveWorkStatus = "idle" | "assigned" | "queued" | "running";
+
+interface AgentActiveWorkProjection {
+  activeIssueId: string | null;
+  activeIssueIdentifier: string | null;
+  activeRunId: string | null;
+  activeRunStatus: AgentActiveRunStatus | null;
+  activeWorkStatus: AgentActiveWorkStatus;
+}
+
+interface AgentActiveWorkCandidate extends AgentActiveWorkProjection {
+  sortTime: Date | null;
+}
+
+const ACTIVE_RUN_STATUSES = ["queued", "running"] as const;
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -269,6 +286,76 @@ export function agentService(db: Db) {
         }).orgChainHealth,
       };
     });
+  }
+
+  function emptyActiveWorkProjection(): AgentActiveWorkProjection {
+    return {
+      activeIssueId: null,
+      activeIssueIdentifier: null,
+      activeRunId: null,
+      activeRunStatus: null,
+      activeWorkStatus: "idle",
+    };
+  }
+
+  async function activeWorkByAgentId(companyId: string, agentIds: string[]) {
+    const activeWork = new Map<string, AgentActiveWorkCandidate>();
+    if (agentIds.length === 0) return activeWork;
+
+    const rows = await db
+      .select({
+        agentId: issues.assigneeAgentId,
+        issueId: issues.id,
+        issueIdentifier: issues.identifier,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+        issueUpdatedAt: issues.updatedAt,
+        runId: heartbeatRuns.id,
+        runStatus: heartbeatRuns.status,
+        runStartedAt: heartbeatRuns.startedAt,
+        runCreatedAt: heartbeatRuns.createdAt,
+      })
+      .from(issues)
+      .leftJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.id, issues.executionRunId),
+          inArray(heartbeatRuns.status, [...ACTIVE_RUN_STATUSES]),
+        ),
+      )
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          inArray(issues.assigneeAgentId, agentIds),
+          eq(issues.status, "in_progress"),
+          or(
+            sql`${issues.checkoutRunId} is not null`,
+            sql`${issues.executionRunId} is not null`,
+          ),
+        ),
+      );
+
+    for (const row of rows) {
+      if (!row.agentId) continue;
+      const runStatus = ACTIVE_RUN_STATUSES.includes(row.runStatus as AgentActiveRunStatus)
+        ? (row.runStatus as AgentActiveRunStatus)
+        : null;
+      const candidate: AgentActiveWorkCandidate = {
+        activeIssueId: row.issueId,
+        activeIssueIdentifier: row.issueIdentifier,
+        activeRunId: row.runId ?? row.executionRunId ?? row.checkoutRunId ?? null,
+        activeRunStatus: runStatus,
+        activeWorkStatus: runStatus ?? "assigned",
+        sortTime: row.runStartedAt ?? row.runCreatedAt ?? row.executionLockedAt ?? row.issueUpdatedAt,
+      };
+      const existing = activeWork.get(row.agentId);
+      if (!existing || (candidate.sortTime?.getTime() ?? 0) > (existing.sortTime?.getTime() ?? 0)) {
+        activeWork.set(row.agentId, candidate);
+      }
+    }
+
+    return activeWork;
   }
 
   function normalizeAgentRow(row: typeof agents.$inferSelect, allCompanyRows?: (typeof agents.$inferSelect)[]) {
@@ -496,7 +583,12 @@ export function agentService(db: Db) {
         listCompanyAgentRows(companyId),
       ]);
       const hydrated = await hydrateAgentSpend(rows);
-      return normalizeAgentRows(hydrated, allCompanyRows);
+      const activeWork = await activeWorkByAgentId(companyId, hydrated.map((row) => row.id));
+      return normalizeAgentRows(hydrated, allCompanyRows).map((row) => ({
+        ...row,
+        ...emptyActiveWorkProjection(),
+        ...activeWork.get(row.id),
+      }));
     },
 
     getById,

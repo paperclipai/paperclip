@@ -140,6 +140,8 @@ export type {
 } from "./adapter-skills.js";
 export type {
   Agent,
+  AgentActiveRunStatus,
+  AgentActiveWorkStatus,
   AgentAccessState,
   AgentChainOfCommandEntry,
   AgentDetail,

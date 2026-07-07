@@ -675,6 +675,16 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     };
   }
 
+  function defaultAgentActiveWork() {
+    return {
+      activeIssueId: null,
+      activeIssueIdentifier: null,
+      activeRunId: null,
+      activeRunStatus: null,
+      activeWorkStatus: "idle" as const,
+    };
+  }
+
   function managedResolution(
     agentKey: string,
     companyId: string,
@@ -1992,6 +2002,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
               canCreateSkills: declaration.permissions?.canCreateSkills !== false,
             },
             lastHeartbeatAt: null,
+            ...defaultAgentActiveWork(),
             metadata: managedAgentMetadata(agentKey),
             createdAt: now,
             updatedAt: now,
@@ -2010,7 +2021,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           ) ?? null;
           if (!agent) {
             const now = new Date();
-            agent = {
+            const created: Agent = {
               id: randomUUID(),
               companyId: cid,
               name: declaration.displayName,
@@ -2033,10 +2044,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
                 canCreateSkills: declaration.permissions?.canCreateSkills !== false,
               },
               lastHeartbeatAt: null,
+              ...defaultAgentActiveWork(),
               metadata: managedAgentMetadata(agentKey),
               createdAt: now,
               updatedAt: now,
             };
+            agent = created;
             agents.set(agent.id, agent);
           }
           const resolved = managedResolution(agentKey, cid, agent, "resolved");

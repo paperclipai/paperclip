@@ -39,6 +39,11 @@ function agent(partial: Partial<Agent>): Agent {
     createdAt: new Date("2026-04-26T00:00:00.000Z"),
     updatedAt: new Date("2026-04-26T00:00:00.000Z"),
     ...partial,
+    activeIssueId: partial.activeIssueId ?? null,
+    activeIssueIdentifier: partial.activeIssueIdentifier ?? null,
+    activeRunId: partial.activeRunId ?? null,
+    activeRunStatus: partial.activeRunStatus ?? null,
+    activeWorkStatus: partial.activeWorkStatus ?? "idle",
   };
 }
 

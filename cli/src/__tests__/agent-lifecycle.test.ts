@@ -70,6 +70,33 @@ describe("agent lifecycle commands", () => {
     ]);
   });
 
+  it("prints active work columns for agent list", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([
+      {
+        id: AGENT_ID,
+        companyId: COMPANY_ID,
+        name: "Cortex",
+        role: "cto",
+        status: "idle",
+        reportsTo: null,
+        budgetMonthlyCents: 0,
+        spentMonthlyCents: 0,
+        activeIssueId: "44444444-4444-4444-8444-444444444444",
+        activeIssueIdentifier: "OPE-1435",
+        activeRunId: "55555555-5555-4555-8555-555555555555",
+        activeRunStatus: "running",
+        activeWorkStatus: "running",
+      },
+    ])));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await run(["agent", "list", "--company-id", COMPANY_ID]);
+
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("activeWorkStatus=running"));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("activeIssue=OPE-1435"));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("activeRunStatus=running"));
+  });
+
   it("wraps configuration, runtime, skills, and instructions endpoints", async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
     vi.stubGlobal("fetch", fetchMock);

@@ -79,6 +79,9 @@ export interface AgentChainOfCommandEntry {
   title: string | null;
 }
 
+export type AgentActiveRunStatus = "queued" | "running";
+export type AgentActiveWorkStatus = "idle" | "assigned" | "queued" | "running";
+
 export interface Agent {
   id: string;
   companyId: string;
@@ -101,6 +104,11 @@ export interface Agent {
   errorReason?: string | null;
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
+  activeIssueId: string | null;
+  activeIssueIdentifier: string | null;
+  activeRunId: string | null;
+  activeRunStatus: AgentActiveRunStatus | null;
+  activeWorkStatus: AgentActiveWorkStatus;
   metadata: Record<string, unknown> | null;
   orgChainHealth?: AgentOrgChainHealth;
   createdAt: Date;

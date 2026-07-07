@@ -518,6 +518,8 @@ export type {
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
   BackupRetentionPolicy,
+  AgentActiveRunStatus,
+  AgentActiveWorkStatus,
   Agent,
   AgentAccessState,
   AgentChainOfCommandEntry,
