@@ -122,7 +122,7 @@ export function dashboardService(db: Db) {
           count(*)::double precision AS count
         FROM ${heartbeatRuns} AS run
         WHERE run.company_id = ${companyId}
-          AND run.created_at >= ${runActivityStart}
+          AND run.created_at >= ${runActivityStart.toISOString()}::timestamptz
         GROUP BY date, run.status, run.error_code, recovered
       `)) as unknown as Iterable<{
         date: string;
