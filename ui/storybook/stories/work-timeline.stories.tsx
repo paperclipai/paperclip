@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { WorkTimelineResult } from "@paperclipai/shared";
 import { Minus, Plus, RotateCcw } from "lucide-react";
+import { Timeline } from "@/pages/Timeline";
 import {
   WorkTimelineChart,
   clampZoomScale,
@@ -10,9 +11,11 @@ import {
   zoomScaleForLevel,
 } from "@/components/timeline/WorkTimelineChart";
 import { Button } from "@/components/ui/button";
+import { useCompany } from "@/context/CompanyContext";
 import sampleJson from "../fixtures/workTimeline.sample.json";
 import humanSampleJson from "../fixtures/workTimeline.human.sample.json";
 
+const COMPANY_ID = "company-storybook";
 const sample = sampleJson as unknown as WorkTimelineResult;
 // A second real slice (2026-07-02 14:00–16:00Z) captured straight from the live
 // `/timeline` endpoint that DOES carry human events — Dotta's created / commented /
@@ -21,6 +24,27 @@ const humanSample = humanSampleJson as unknown as WorkTimelineResult;
 // The fixture is a real slice of PAP company activity (2026-07-02 14:00–15:50Z);
 // pin "now" to the window end so in-progress runs fade correctly.
 const NOW = new Date("2026-07-02T15:45:00.000Z").getTime();
+
+function FullPageTimelineHarness() {
+  const { selectedCompanyId, setSelectedCompanyId } = useCompany();
+
+  useEffect(() => {
+    window.localStorage.setItem("paperclip.selectedCompanyId", COMPANY_ID);
+    if (selectedCompanyId !== COMPANY_ID) {
+      setSelectedCompanyId(COMPANY_ID);
+    }
+  }, [selectedCompanyId, setSelectedCompanyId]);
+
+  if (selectedCompanyId !== COMPANY_ID) {
+    return null;
+  }
+
+  return (
+    <div className="min-h-screen bg-background p-6 text-foreground">
+      <Timeline />
+    </div>
+  );
+}
 
 function TimelineHarness({
   initialZoom = "day" as ZoomLevel,
@@ -126,4 +150,8 @@ export const WithHumanActivity: Story = {
     data: humanSample,
     now: new Date("2026-07-02T16:00:00.000Z").getTime(),
   },
+};
+
+export const FullPageWithMockData: Story = {
+  render: () => <FullPageTimelineHarness />,
 };

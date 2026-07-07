@@ -29,6 +29,7 @@ import {
   storybookSecrets,
   storybookSidebarBadges,
 } from "../fixtures/paperclipData";
+import timelineSample from "../fixtures/workTimeline.human.sample.json";
 import "@mdxeditor/editor/style.css";
 import "./tailwind-entry.css";
 import "./styles.css";
@@ -235,6 +236,24 @@ function installStorybookApiFixtures() {
           ...storybookDashboardSummary,
           companyId,
         });
+      }
+      if (resource === "timeline") {
+        return Response.json(
+          companyId === "company-storybook"
+            ? timelineSample
+            : {
+                actors: [],
+                spans: [],
+                events: [],
+                edges: [],
+                pagination: { limit: 100, offset: 0, totalIssues: 0, hasMore: false },
+                window: {
+                  from: url.searchParams.get("from") ?? new Date(0).toISOString(),
+                  to: url.searchParams.get("to") ?? new Date(0).toISOString(),
+                  capped: false,
+                },
+              },
+        );
       }
       if (resource === "heartbeat-runs") {
         return Response.json([]);
