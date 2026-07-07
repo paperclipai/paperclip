@@ -2966,6 +2966,9 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T>(input: 
   try {
     restored = (await input.restoreExistingWorkspace?.()) ?? null;
   } catch (error) {
+    if (isWorkspaceValidationFailure(error)) {
+      throw error;
+    }
     throw createInheritedExecutionWorkspaceReuseFailure({
       reason: "inherited_workspace_reuse_failed",
       issueRef: input.issueRef,
@@ -12277,7 +12280,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
               }
             }
-            await releaseIssueExecutionAndPromote(livenessRun).catch(() => undefined);
+            await releaseIssueExecutionAndPromote(livenessRun).catch((releaseError) => {
+              logger.error(
+                { err: releaseError, runId },
+                "failed to release issue execution after heartbeat setup failure",
+              );
+            });
           }
           // Ensure the agent is not left stuck in "running" if the setup-failure
           // path owned the terminal transition. If another path already finalized
