@@ -420,9 +420,17 @@ function BreakGlassOverride({
           I&apos;ve verified this — reconcile anyway
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" sideOffset={6} className="w-96 max-w-[calc(100vw-2rem)] space-y-3 p-3">
+      <PopoverContent
+        align="start"
+        sideOffset={6}
+        aria-labelledby="recovery-breakglass-title"
+        className="w-96 max-w-[calc(100vw-2rem)] space-y-3 p-3"
+      >
         <div className="space-y-1">
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-red-700 dark:text-red-300">
+          <div
+            id="recovery-breakglass-title"
+            className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-red-700 dark:text-red-300"
+          >
             <OctagonAlert className="h-3.5 w-3.5" aria-hidden />
             Break-glass reconciliation
           </div>
