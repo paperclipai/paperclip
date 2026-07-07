@@ -42,19 +42,66 @@ describe("resolveServerVersion", () => {
 
   it("falls back to package version without throwing when git is unavailable", () => {
     const debugLog = vi.fn();
+    const err = new Error("fatal: not a git repository");
 
     expect(
       resolveServerVersion({
         packageVersion: "2026.706.0",
         gitDescribeCommand: () => {
-          throw new Error("fatal: not a git repository");
+          throw err;
         },
         debugLog,
       }),
     ).toBe("2026.706.0");
     expect(debugLog).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: "git_describe_unavailable" }),
+      expect.objectContaining({
+        err: expect.objectContaining({ message: "fatal: not a git repository" }),
+        reason: "git_describe_unavailable",
+      }),
       "falling back to package version for server version",
     );
+  });
+
+  it("skips git metadata probing for packaged installs under node_modules", () => {
+    const debugLog = vi.fn();
+
+    expect(
+      resolveServerVersion({
+        packageVersion: "2026.707.0-canary.12",
+        debugLog,
+        packageRoot: "/tmp/npm/_npx/example/node_modules/@paperclipai/server",
+      }),
+    ).toBe("2026.707.0-canary.12");
+
+    expect(debugLog).toHaveBeenCalledWith(
+      { reason: "packaged_install" },
+      "falling back to package version for server version",
+    );
+  });
+
+  it("keeps fallback diagnostics quiet by default", () => {
+    const previousDebugFlag = process.env.PAPERCLIP_DEBUG_VERSION_RESOLUTION;
+    delete process.env.PAPERCLIP_DEBUG_VERSION_RESOLUTION;
+    const consoleDebug = vi.spyOn(console, "debug").mockImplementation(() => {});
+
+    try {
+      expect(
+        resolveServerVersion({
+          packageVersion: "2026.706.0",
+          gitDescribeCommand: () => {
+            throw new Error("fatal: not a git repository");
+          },
+        }),
+      ).toBe("2026.706.0");
+
+      expect(consoleDebug).not.toHaveBeenCalled();
+    } finally {
+      consoleDebug.mockRestore();
+      if (previousDebugFlag === undefined) {
+        delete process.env.PAPERCLIP_DEBUG_VERSION_RESOLUTION;
+      } else {
+        process.env.PAPERCLIP_DEBUG_VERSION_RESOLUTION = previousDebugFlag;
+      }
+    }
   });
 });
