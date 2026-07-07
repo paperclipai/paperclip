@@ -234,13 +234,17 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     );
     expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.codexTransientFallbackMode ?? null).toBeNull();
 
-    const agent = await db
-      .select({ status: agents.status, errorReason: agents.errorReason })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .then((rows) => rows[0] ?? null);
-
-    expect(agent).toEqual({ status: "idle", errorReason: null });
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ status: agents.status, errorReason: agents.errorReason })
+            .from(agents)
+            .where(eq(agents.id, agentId))
+            .then((rows) => rows[0] ?? null),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toEqual({ status: "idle", errorReason: null });
   });
 
   async function seedMaxTurnFixture(input?: {
