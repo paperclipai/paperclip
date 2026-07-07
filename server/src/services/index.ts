@@ -121,4 +121,19 @@ export {
   type CodexAuthReconciliationSummary,
 } from "./codex-auth-reconciliation.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
+export {
+  createToolDiscoveryLogger,
+  type ToolDiscoveryLogger,
+  type ToolDiscoveryTrace,
+  type ToolDiscoveryResolution,
+  type ToolDiscoveryOptions,
+} from "./tool-discovery-trace.js";
+export {
+  createBranchIsolationGuard,
+  getBranchIsolationGuard,
+  resetBranchIsolationGuard,
+  type BranchIsolationGuard,
+  type BranchLease,
+  type BranchIsolationCheckResult,
+} from "./branch-isolation-guard.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
