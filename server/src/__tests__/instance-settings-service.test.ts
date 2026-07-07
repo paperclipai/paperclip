@@ -13,6 +13,7 @@ describe("instance settings service", () => {
       enableServerInfoDebugView: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
+      enableWorkspaceBranchReconcileForward: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
       enableNewestFirstIssueThread: true,
     })).toEqual({
@@ -29,6 +30,7 @@ describe("instance settings service", () => {
       enableServerInfoDebugView: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
+      enableWorkspaceBranchReconcileForward: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
     });
   });
@@ -55,6 +57,15 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({}).enableServerInfoDebugView).toBe(false);
     expect(
       normalizeExperimentalSettings({ autoRestartDevServerWhenIdle: true }).enableServerInfoDebugView,
+    ).toBe(false);
+  });
+
+  it("defaults enableWorkspaceBranchReconcileForward to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableWorkspaceBranchReconcileForward).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableWorkspaceBranchReconcileForward).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableIssueGraphLivenessAutoRecovery: true })
+        .enableWorkspaceBranchReconcileForward,
     ).toBe(false);
   });
 

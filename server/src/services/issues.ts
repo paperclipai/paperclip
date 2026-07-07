@@ -100,6 +100,7 @@ const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "bloc
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
+export const ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS = 100;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
@@ -491,6 +492,18 @@ type AcceptedPlanDocumentInteraction = {
 type IssueRelationSummaryMap = {
   blockedBy: IssueRelationIssueSummary[];
   blocks: IssueRelationIssueSummary[];
+};
+type IssueBlockerDiagnosticsIssueRow = {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  parentId: string | null;
+  identifier: string | null;
+  title: string;
+  status: typeof ALL_ISSUE_STATUSES[number];
+  priority: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
 };
 export type IssueDependencyReadiness = {
   issueId: string;
@@ -4850,6 +4863,53 @@ export function issueService(db: Db) {
       if (!issue) throw notFound("Issue not found");
       const relations = await getIssueRelationSummaryMap(issue.companyId, [issueId], db);
       return relations.get(issueId) ?? { blockedBy: [], blocks: [] };
+    },
+
+    getBlockerDiagnostics: async (
+      issueId: string,
+      maxBlockers = ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
+    ) => {
+      const issue = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+
+      const cappedMax = Math.max(0, Math.min(maxBlockers, ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS));
+      const blockerRows = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          projectId: issues.projectId,
+          parentId: issues.parentId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+        .where(
+          and(
+            eq(issueRelations.companyId, issue.companyId),
+            eq(issueRelations.type, "blocks"),
+            eq(issueRelations.relatedIssueId, issue.id),
+            eq(issues.companyId, issue.companyId),
+          ),
+        )
+        .orderBy(asc(issues.title), asc(issues.id))
+        .limit(cappedMax + 1);
+
+      const readiness = await listIssueDependencyReadinessMap(db, issue.companyId, [issue.id]);
+
+      return {
+        blockers: blockerRows.slice(0, cappedMax) as IssueBlockerDiagnosticsIssueRow[],
+        readiness: readiness.get(issue.id) ?? createIssueDependencyReadiness(issue.id),
+        truncated: blockerRows.length > cappedMax,
+      };
     },
 
     getDependencyReadiness: async (issueId: string, dbOrTx: any = db) => {

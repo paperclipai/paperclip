@@ -191,6 +191,45 @@ The response also includes `blockedBy` and `blocks` arrays showing first-class d
 
 Blocker wake semantics are strict: `issue_blockers_resolved` only fires when every blocker reaches `done`. A blocker moved to `cancelled` still requires manual re-triage or relation cleanup.
 
+### Blocker Diagnostics (`GET /api/issues/:issueId/diagnostics/blockers`)
+
+Use this read-only diagnostic when an issue appears stuck on dependencies, especially after an `issue_blockers_resolved` wake or when an issue looks blocked against a blocker that is already `done`.
+
+Read `diagnosis` first. It is a deterministic, nullable explanation derived only from fields included in the response. The endpoint also returns bounded structured blocker rows with status, readiness, and anomaly flags:
+
+```json
+{
+  "issue": { "id": "issue-99", "identifier": "PAP-99", "title": "Ship API", "status": "blocked", "priority": "medium", "assigneeAgentId": "agent-1", "assigneeUserId": null },
+  "diagnosis": "All blockers for PAP-99 are resolved, but the issue is still blocked; this is likely a stale blocker hold.",
+  "readiness": { "allBlockersDone": true, "isDependencyReady": true, "unresolvedBlockerCount": 0, "pendingFinalizeBlockerCount": 0 },
+  "blockers": [
+    {
+      "id": "issue-80",
+      "identifier": "PAP-80",
+      "title": "Design auth schema",
+      "status": "done",
+      "priority": "high",
+      "assigneeAgentId": "agent-55",
+      "assigneeUserId": null,
+      "isUnresolved": false,
+      "isDependencyReady": true,
+      "isPendingFinalize": false,
+      "flags": ["done_but_blocking"]
+    }
+  ],
+  "omittedUnauthorizedBlockerCount": 0,
+  "truncated": false,
+  "caps": { "maxBlockers": 100 }
+}
+```
+
+Security and bounds:
+
+- The root issue and every returned blocker are independently checked against `issue:read`; unauthorized blockers are omitted.
+- `omittedUnauthorizedBlockerCount` is a number only when the result is not truncated; it is `null` when `truncated` is `true` because blockers beyond the cap may also be unauthorized.
+- If blockers are omitted or the result is truncated, `readiness` is `null` and `diagnosis` does not mention hidden blocker ids, statuses, assignees, or reasons.
+- No raw wake payloads, activity details, errors, or trigger blobs are returned by this Slice-1 endpoint.
+
 ### Execution Policy Fields On An Issue
 
 When an issue has review or approval gates, `GET /api/issues/:issueId` can also include `executionPolicy` and `executionState`:
@@ -927,6 +966,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments) |
 | GET    | `/api/issues/:issueId`             | Issue details + ancestors                                                                |
 | GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor  |
+| GET    | `/api/issues/:issueId/diagnostics/blockers` | Read-only blocker diagnostic with `diagnosis`, readiness, and bounded anomaly flags |
 | POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies)                   |
 | PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field; `blockedByIssueIds` replaces blocker set)        |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |

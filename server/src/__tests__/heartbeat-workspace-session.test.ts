@@ -10,6 +10,7 @@ import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
   assertGitSensitiveAdapterWorkspaceValid,
+  assertGitWorktreeBaseWorkspaceReady,
   assertPushCapabilityCheckoutValid,
   buildExplicitResumeSessionOverride,
   buildEffectiveRunSessionConfigMetadata,
@@ -449,6 +450,211 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
         }),
       ),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("assertGitWorktreeBaseWorkspaceReady", () => {
+  it("rejects projectless isolated git worktrees that resolved to agent_home", async () => {
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+
+    await expect(assertGitWorktreeBaseWorkspaceReady({
+      requestedExecutionWorkspaceMode: "isolated_workspace",
+      config: { workspaceStrategy: { type: "git_worktree" } },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        projectId: null,
+        projectWorkspaceId: null,
+        executionWorkspaceId: null,
+        executionWorkspacePreference: "isolated_workspace",
+      },
+      base: {
+        baseCwd: fallbackCwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      message: expect.stringContaining("needs a project / project workspace or a reusable execution workspace"),
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_base_agent_home",
+          issueId: "issue-1",
+          resolvedWorkspaceSource: "agent_home",
+          requestedExecutionWorkspaceMode: "isolated_workspace",
+          workspaceStrategyType: "git_worktree",
+        }),
+      },
+    });
+  });
+
+  it("rejects operator-branch git worktrees that resolved to agent_home", async () => {
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+
+    await expect(assertGitWorktreeBaseWorkspaceReady({
+      requestedExecutionWorkspaceMode: "operator_branch",
+      config: { workspaceStrategy: { type: "git_worktree" } },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        projectId: null,
+        projectWorkspaceId: null,
+      },
+      base: {
+        baseCwd: fallbackCwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_base_agent_home",
+          requestedExecutionWorkspaceMode: "operator_branch",
+        }),
+      },
+    });
+  });
+
+  it("rejects isolated git worktrees when the resolved base is not a git checkout", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-non-git-workspace-"));
+    try {
+      await expect(assertGitWorktreeBaseWorkspaceReady({
+        requestedExecutionWorkspaceMode: "isolated_workspace",
+        config: { workspaceStrategy: { type: "git_worktree" } },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+        },
+        base: {
+          baseCwd: cwd,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: "https://github.com/example/repo.git",
+          repoRef: "origin/master",
+        },
+      })).rejects.toMatchObject({
+        code: "workspace_validation_failed",
+        message: expect.stringContaining("is not a git checkout"),
+        resultJson: {
+          workspaceValidation: expect.objectContaining({
+            reason: "git_worktree_base_not_git_checkout",
+            issueId: "issue-1",
+            resolvedWorkspaceSource: "project_primary",
+            resolvedWorkspaceCwd: cwd,
+          }),
+        },
+      });
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows isolated git worktrees when the resolved base is a git checkout", async () => {
+    const cwd = await createGitCheckout({ withRemote: false });
+    try {
+      await expect(assertGitWorktreeBaseWorkspaceReady({
+        requestedExecutionWorkspaceMode: "isolated_workspace",
+        config: { workspaceStrategy: { type: "git_worktree" } },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+        },
+        base: {
+          baseCwd: cwd,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: "https://github.com/example/repo.git",
+          repoRef: "origin/master",
+        },
+      })).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not require git for shared project-primary workspaces", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-shared-workspace-"));
+    try {
+      await expect(assertGitWorktreeBaseWorkspaceReady({
+        requestedExecutionWorkspaceMode: "shared_workspace",
+        config: { workspaceStrategy: { type: "git_worktree" } },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+        },
+        base: {
+          baseCwd: cwd,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: null,
+        },
+      })).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows isolated workspace with no explicit strategy type even when base is agent_home", async () => {
+    // No workspaceStrategy.type → realizeExecutionWorkspace defaults to project_primary (not git_worktree),
+    // so the guard must not fire. This prevents false workspace_validation_failed for configs that omit type.
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+    await expect(assertGitWorktreeBaseWorkspaceReady({
+      requestedExecutionWorkspaceMode: "isolated_workspace",
+      config: {},
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        projectId: null,
+        projectWorkspaceId: null,
+      },
+      base: {
+        baseCwd: fallbackCwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+    })).resolves.toBeUndefined();
+  });
+
+  it("allows operator-branch workspace with no explicit strategy type even when base is agent_home", async () => {
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+    await expect(assertGitWorktreeBaseWorkspaceReady({
+      requestedExecutionWorkspaceMode: "operator_branch",
+      config: {},
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        projectId: null,
+        projectWorkspaceId: null,
+      },
+      base: {
+        baseCwd: fallbackCwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+    })).resolves.toBeUndefined();
   });
 });
 

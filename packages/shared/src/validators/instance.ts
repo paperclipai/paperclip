@@ -52,6 +52,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableServerInfoDebugView: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),
+  enableWorkspaceBranchReconcileForward: z.boolean().default(false),
   issueGraphLivenessAutoRecoveryLookbackHours: z
     .number()
     .int()

@@ -1,5 +1,7 @@
 import {
+  Component,
   type ClipboardEvent,
+  type ErrorInfo,
   forwardRef,
   useCallback,
   useEffect,
@@ -11,6 +13,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type TouchEvent as ReactTouchEvent,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -91,6 +94,30 @@ interface MarkdownEditorProps {
 export interface MarkdownEditorRef {
   focus: () => void;
   insertMarkdown: (markdown: string) => void;
+}
+
+class MarkdownEditorRichErrorBoundary extends Component<
+  { children: ReactNode; onError: (error: unknown) => void },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown, info: ErrorInfo) {
+    console.error("Markdown rich editor failed; falling back to raw textarea", {
+      error,
+      componentStack: info.componentStack,
+    });
+    this.props.onError(error);
+  }
+
+  render() {
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
 }
 
 function readHtmlAttribute(attrs: string, name: string): string | null {
@@ -174,6 +201,12 @@ function isSafeMarkdownLinkUrl(url: string): boolean {
   const trimmed = url.trim();
   if (!trimmed) return true;
   return !/^(javascript|data|vbscript):/i.test(trimmed);
+}
+
+function richEditorErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return "Rich editor failed to render";
 }
 
 /* ---- Mention detection helpers ---- */
@@ -1092,6 +1125,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     ref.current.insertMarkdown(normalizeMarkdown(rawText));
   }, []);
 
+  const handleRichEditorError = useCallback((error: unknown) => {
+    setRichEditorError(richEditorErrorMessage(error));
+  }, []);
+
   const mentionMenuPosition = mentionState
     ? computeMentionMenuPosition(
         mentionState,
@@ -1258,47 +1295,49 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       }}
       onPasteCapture={handlePasteCapture}
     >
-      <MDXEditor
-        ref={setEditorRef}
-        markdown={editorValue}
-        suppressHtmlProcessing
-        placeholder={placeholder}
-        readOnly={readOnly}
-        onChange={(next) => {
-          if (readOnly) return;
-          const echo = echoIgnoreMarkdownRef.current;
-          if (echo !== null && next === echo) {
-            echoIgnoreMarkdownRef.current = null;
-            latestValueRef.current = next;
-            return;
-          }
-          if (echo !== null) {
-            echoIgnoreMarkdownRef.current = null;
-          }
-
-          if (initialChildOnChangeRef.current) {
-            initialChildOnChangeRef.current = false;
-            if (next === "" && editorValue !== "") {
-              echoIgnoreMarkdownRef.current = editorValue;
-              ref.current?.setMarkdown(editorValue);
+      <MarkdownEditorRichErrorBoundary onError={handleRichEditorError}>
+        <MDXEditor
+          ref={setEditorRef}
+          markdown={editorValue}
+          suppressHtmlProcessing
+          placeholder={placeholder}
+          readOnly={readOnly}
+          onChange={(next) => {
+            if (readOnly) return;
+            const echo = echoIgnoreMarkdownRef.current;
+            if (echo !== null && next === echo) {
+              echoIgnoreMarkdownRef.current = null;
+              latestValueRef.current = next;
               return;
             }
-          }
-          latestValueRef.current = next;
-          onChange(next);
-        }}
-        onBlur={() => onBlur?.()}
-        onError={(payload) => {
-          setRichEditorError(payload.error);
-        }}
-        className={cn("paperclip-mdxeditor", !bordered && "paperclip-mdxeditor--borderless")}
-        contentEditableClassName={cn(
-          "paperclip-mdxeditor-content focus:outline-none [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:list-item",
-          contentClassName,
-        )}
-        additionalLexicalNodes={[MentionAwareLinkNode, mentionAwareLinkNodeReplacement]}
-        plugins={plugins}
-      />
+            if (echo !== null) {
+              echoIgnoreMarkdownRef.current = null;
+            }
+
+            if (initialChildOnChangeRef.current) {
+              initialChildOnChangeRef.current = false;
+              if (next === "" && editorValue !== "") {
+                echoIgnoreMarkdownRef.current = editorValue;
+                ref.current?.setMarkdown(editorValue);
+                return;
+              }
+            }
+            latestValueRef.current = next;
+            onChange(next);
+          }}
+          onBlur={() => onBlur?.()}
+          onError={(payload) => {
+            handleRichEditorError(payload.error);
+          }}
+          className={cn("paperclip-mdxeditor", !bordered && "paperclip-mdxeditor--borderless")}
+          contentEditableClassName={cn(
+            "paperclip-mdxeditor-content focus:outline-none [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:list-item",
+            contentClassName,
+          )}
+          additionalLexicalNodes={[MentionAwareLinkNode, mentionAwareLinkNodeReplacement]}
+          plugins={plugins}
+        />
+      </MarkdownEditorRichErrorBoundary>
 
       {/* Mention dropdown — rendered via portal so it isn't clipped by overflow containers */}
       {mentionActive && filteredMentions.length > 0 && mentionMenuPosition &&

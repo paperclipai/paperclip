@@ -64,6 +64,11 @@ import {
   type CompanySearchQuery,
   type CompanySearchResponse,
   type ExecutionWorkspace,
+  type IssueBlockerDiagnosticFlag,
+  type IssueBlockerDiagnosticIssueSummary,
+  type IssueBlockerDiagnosticNode,
+  type IssueBlockerDiagnosticsReadiness,
+  type IssueBlockerDiagnosticsResponse,
   type IssueRelationIssueSummary,
   type IssueWatchdogDiscoveryKind,
   type SourceTrustMetadata,
@@ -128,7 +133,10 @@ import { assertEnvironmentSelectionForCompany } from "./environment-selection.js
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
+import {
+  ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
+  readAcceptedPlanConfirmationTarget,
+} from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
@@ -755,6 +763,167 @@ function withRecoveryActionsOnRelationSummaries(
     blockedBy: relations.blockedBy.map(augment),
     blocks: relations.blocks.map(augment),
   };
+}
+
+type IssueBlockerDiagnosticReadableIssue = {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+};
+
+type IssueBlockerDiagnosticAuthzIssue = IssueBlockerDiagnosticReadableIssue & {
+  companyId: string;
+  projectId: string | null;
+  parentId: string | null;
+};
+
+function toIssueBlockerDiagnosticSummary(
+  issue: IssueBlockerDiagnosticReadableIssue,
+): IssueBlockerDiagnosticIssueSummary {
+  return {
+    id: issue.id,
+    identifier: issue.identifier,
+    title: issue.title,
+    status: issue.status as IssueBlockerDiagnosticIssueSummary["status"],
+    priority: issue.priority as IssueBlockerDiagnosticIssueSummary["priority"],
+    assigneeAgentId: issue.assigneeAgentId,
+    assigneeUserId: issue.assigneeUserId,
+  };
+}
+
+function blockerDiagnosticLabel(issue: IssueBlockerDiagnosticIssueSummary) {
+  return issue.identifier ?? issue.title;
+}
+
+function buildIssueBlockerDiagnosticsResponse(input: {
+  issue: IssueBlockerDiagnosticReadableIssue;
+  blockers: IssueBlockerDiagnosticAuthzIssue[];
+  visibleBlockers: IssueBlockerDiagnosticAuthzIssue[];
+  readiness: {
+    allBlockersDone: boolean;
+    isDependencyReady: boolean;
+    unresolvedBlockerIssueIds: string[];
+    pendingFinalizeBlockerIssueIds: string[];
+  };
+  truncated: boolean;
+}): IssueBlockerDiagnosticsResponse {
+  const issue = toIssueBlockerDiagnosticSummary(input.issue);
+  const visibleBlockerIds = new Set(input.visibleBlockers.map((blocker) => blocker.id));
+  const omittedUnauthorizedBlockerCount = input.blockers.filter(
+    (blocker) => !visibleBlockerIds.has(blocker.id),
+  ).length;
+  const completeVisibleSet = !input.truncated && omittedUnauthorizedBlockerCount === 0;
+  const unresolvedIds = new Set(input.readiness.unresolvedBlockerIssueIds);
+  const pendingFinalizeIds = new Set(input.readiness.pendingFinalizeBlockerIssueIds);
+
+  const blockers: IssueBlockerDiagnosticNode[] = input.visibleBlockers.map((blockerRow) => {
+    const blocker = toIssueBlockerDiagnosticSummary(blockerRow);
+    const isPendingFinalize = pendingFinalizeIds.has(blocker.id);
+    const isUnresolved = unresolvedIds.has(blocker.id);
+    const flags: IssueBlockerDiagnosticFlag[] = [];
+    if (issue.status === "blocked" && blocker.status === "done") flags.push("done_but_blocking");
+    if (blocker.status === "cancelled") flags.push("cancelled_blocker_in_set");
+    if (isPendingFinalize) flags.push("workspace_finalize_pending");
+
+    return {
+      ...blocker,
+      isUnresolved,
+      isPendingFinalize,
+      isDependencyReady: blocker.status === "done" && !isPendingFinalize,
+      flags,
+    };
+  });
+
+  const readiness: IssueBlockerDiagnosticsReadiness | null = completeVisibleSet
+    ? {
+        allBlockersDone: input.readiness.allBlockersDone,
+        isDependencyReady: input.readiness.isDependencyReady,
+        unresolvedBlockerCount: input.readiness.unresolvedBlockerIssueIds.length,
+        pendingFinalizeBlockerCount: input.readiness.pendingFinalizeBlockerIssueIds.length,
+      }
+    : null;
+  const reportedOmittedUnauthorizedBlockerCount = input.truncated
+    ? null
+    : omittedUnauthorizedBlockerCount;
+
+  return {
+    issue,
+    diagnosis: buildIssueBlockerDiagnosis({
+      issue,
+      blockers,
+      readiness,
+      omittedUnauthorizedBlockerCount: reportedOmittedUnauthorizedBlockerCount,
+      truncated: input.truncated,
+    }),
+    readiness,
+    blockers,
+    omittedUnauthorizedBlockerCount: reportedOmittedUnauthorizedBlockerCount,
+    truncated: input.truncated,
+    caps: {
+      maxBlockers: ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
+    },
+  };
+}
+
+function buildIssueBlockerDiagnosis(input: {
+  issue: IssueBlockerDiagnosticIssueSummary;
+  blockers: IssueBlockerDiagnosticNode[];
+  readiness: IssueBlockerDiagnosticsReadiness | null;
+  omittedUnauthorizedBlockerCount: number | null;
+  truncated: boolean;
+}) {
+  if (input.truncated) {
+    return `Blocker diagnostics for ${blockerDiagnosticLabel(input.issue)} are truncated at ${
+      ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS
+    } blockers, so readiness is not reported.`;
+  }
+  const omittedUnauthorizedBlockerCount = input.omittedUnauthorizedBlockerCount ?? 0;
+  if (omittedUnauthorizedBlockerCount > 0) {
+    return `One or more blockers for ${blockerDiagnosticLabel(
+      input.issue,
+    )} are outside this actor's authorization boundary, so this diagnosis only covers visible blockers.`;
+  }
+  if (input.blockers.length === 0) {
+    return input.issue.status === "blocked"
+      ? `${blockerDiagnosticLabel(input.issue)} is blocked but has no first-class blocker relations.`
+      : null;
+  }
+
+  const pendingFinalize = input.blockers.find((blocker) => blocker.isPendingFinalize);
+  if (pendingFinalize) {
+    return `${blockerDiagnosticLabel(input.issue)} is waiting for ${blockerDiagnosticLabel(
+      pendingFinalize,
+    )} to finish workspace finalization.`;
+  }
+
+  const cancelled = input.blockers.find((blocker) => blocker.status === "cancelled");
+  if (cancelled) {
+    return `${blockerDiagnosticLabel(input.issue)} is blocked by ${blockerDiagnosticLabel(
+      cancelled,
+    )}, which is cancelled; cancelled blockers do not resolve until the blocker relation is removed or replaced.`;
+  }
+
+  const unresolved = input.blockers.find((blocker) => blocker.isUnresolved);
+  if (unresolved) {
+    return `${blockerDiagnosticLabel(input.issue)} is blocked by ${blockerDiagnosticLabel(
+      unresolved,
+    )}, which is ${unresolved.status}.`;
+  }
+
+  if (input.readiness?.isDependencyReady && input.issue.status === "blocked") {
+    return `All blockers for ${blockerDiagnosticLabel(
+      input.issue,
+    )} are resolved, but the issue is still blocked; this is likely a stale blocker hold.`;
+  }
+  if (input.readiness?.isDependencyReady) {
+    return `All blockers for ${blockerDiagnosticLabel(input.issue)} are resolved.`;
+  }
+
+  return null;
 }
 
 const ACTIVE_REVIEW_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
@@ -3618,6 +3787,41 @@ export function issueRoutes(
       planReviewContext,
       currentExecutionWorkspace,
     });
+  });
+
+  router.get("/issues/:id/diagnostics/blockers", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    const diagnostic = await svc.getBlockerDiagnostics(issue.id);
+    const visibleBlockers = await filterIssuesForActor(req, diagnostic.blockers);
+    const response = buildIssueBlockerDiagnosticsResponse({
+      issue,
+      blockers: diagnostic.blockers,
+      visibleBlockers,
+      readiness: diagnostic.readiness,
+      truncated: diagnostic.truncated,
+    });
+
+    logger.info(
+      {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        actorType: req.actor.type,
+        visibleBlockerCount: response.blockers.length,
+        omittedUnauthorizedBlockerCount: response.omittedUnauthorizedBlockerCount,
+        truncated: response.truncated,
+      },
+      "issue blocker diagnostics read",
+    );
+
+    res.json(response);
   });
 
   router.get("/issues/:id", async (req, res) => {

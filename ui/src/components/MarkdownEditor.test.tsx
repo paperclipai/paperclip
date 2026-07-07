@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { buildIssueReferenceHref, buildProjectMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
@@ -20,6 +20,7 @@ const mdxEditorMockState = vi.hoisted(() => ({
   emitMountEmptyReset: false,
   emitMountParseError: false,
   emitMountSilentEmptyState: false,
+  throwOnRender: false,
   markdownValues: [] as string[],
   suppressHtmlProcessingValues: [] as boolean[],
 }));
@@ -59,6 +60,9 @@ vi.mock("@mdxeditor/editor", async () => {
     },
     forwardedRef: React.ForwardedRef<{ setMarkdown: (value: string) => void; focus: () => void } | null>,
   ) {
+    if (mdxEditorMockState.throwOnRender) {
+      throw new Error("Rich editor render crashed");
+    }
     mdxEditorMockState.markdownValues.push(markdown);
     mdxEditorMockState.suppressHtmlProcessingValues.push(Boolean(suppressHtmlProcessing));
     const [content, setContent] = React.useState(markdown);
@@ -148,6 +152,14 @@ vi.mock("../lib/paste-normalization", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
+
 async function flush() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -155,13 +167,20 @@ async function flush() {
 }
 
 function createFileDragEvent(type: string) {
-  const event = new Event(type, { bubbles: true, cancelable: true }) as Event & {
+  const event = (
+    typeof DragEvent === "function"
+      ? new DragEvent(type, { bubbles: true, cancelable: true })
+      : new Event(type, { bubbles: true, cancelable: true })
+  ) as Event & {
     dataTransfer: { types: string[]; files: File[]; dropEffect?: string };
   };
-  event.dataTransfer = {
-    types: ["Files"],
-    files: [],
-  };
+  Object.defineProperty(event, "dataTransfer", {
+    configurable: true,
+    value: {
+      types: ["Files"],
+      files: [],
+    },
+  });
   return event;
 }
 
@@ -223,6 +242,7 @@ describe("MarkdownEditor", () => {
     mdxEditorMockState.emitMountEmptyReset = false;
     mdxEditorMockState.emitMountParseError = false;
     mdxEditorMockState.emitMountSilentEmptyState = false;
+    mdxEditorMockState.throwOnRender = false;
     mdxEditorMockState.markdownValues = [];
     mdxEditorMockState.suppressHtmlProcessingValues = [];
   });
@@ -386,6 +406,44 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("falls back to a raw textarea when the rich editor crashes during render", async () => {
+    mdxEditorMockState.throwOnRender = true;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="5. python3 circleback/sync_insights.py --input <tmp> -- writes insights/<group>/*.md"
+          onChange={handleChange}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector("textarea")).not.toBeNull();
+    });
+    const textarea = container.querySelector("textarea");
+    expect(textarea).not.toBeNull();
+    expect(textarea?.value).toBe("5. python3 circleback/sync_insights.py --input <tmp> -- writes insights/<group>/*.md");
+    expect(container.textContent).toContain("Rich editor unavailable for this markdown");
+    expect(consoleError).toHaveBeenCalledWith(
+      "Markdown rich editor failed; falling back to raw textarea",
+      expect.objectContaining({
+        error: expect.any(Error),
+        componentStack: expect.any(String),
+      }),
+    );
+    consoleError.mockRestore();
+    expect(handleChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("falls back to a raw textarea when the rich editor mounts into the placeholder without callbacks", async () => {
     mdxEditorMockState.emitMountSilentEmptyState = true;
     const handleChange = vi.fn();
@@ -435,16 +493,18 @@ describe("MarkdownEditor", () => {
     const scope = container.querySelector('[data-testid="mdx-editor"]')?.parentElement as HTMLDivElement | null;
     expect(scope).not.toBeNull();
 
-    act(() => {
+    await act(async () => {
       scope?.dispatchEvent(createFileDragEvent("dragenter"));
     });
+    await flush();
 
     expect(scope?.className).toContain("ring-1");
     expect(container.textContent).toContain("Drop image to upload");
 
-    act(() => {
+    await act(async () => {
       scope?.dispatchEvent(createFileDragEvent("dragleave"));
     });
+    await flush();
 
     expect(scope?.className).not.toContain("ring-1");
 

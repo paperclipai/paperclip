@@ -10,6 +10,8 @@ import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   listWorkspaceServiceCommandDefinitions,
+  type GitWorktreeBranchAncestryVerdict,
+  type GitWorktreeBranchIncoherenceEvidence as SharedGitWorktreeBranchIncoherenceEvidence,
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
@@ -653,39 +655,9 @@ async function remoteExists(repoRoot: string, remote: string): Promise<boolean> 
 
 const GIT_WORKTREE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 
-type GitWorktreeCleanliness = "clean" | "dirty" | "unknown";
+type GitWorktreeCleanliness = SharedGitWorktreeBranchIncoherenceEvidence["cleanliness"];
 
-type GitWorktreeBranchIncoherenceEvidence = {
-  reason: typeof GIT_WORKTREE_BRANCH_INCOHERENCE_REASON;
-  fingerprint: string;
-  sourceIssueId: string | null;
-  sourceIdentifier: string | null;
-  executionWorkspaceId: string | null;
-  worktreePath: string;
-  repoRoot: string;
-  expectedBranch: string;
-  actualBranch: string | null;
-  cleanliness: GitWorktreeCleanliness;
-  statusEntryCount: number | null;
-  provenance: {
-    expectedBranchRef: string;
-    actualBranchRef: string | null;
-    registeredBranchRef: string | null;
-    registeredPathFound: boolean;
-    registeredBranchMatchesHead: boolean;
-    expectedBranchExists: boolean;
-    actualBranchExists: boolean | null;
-    expectedHeadSha: string | null;
-    actualHeadSha: string | null;
-    sameHead: boolean;
-  };
-  safeRepair: {
-    eligible: boolean;
-    attempted: boolean;
-    succeeded: boolean;
-    reason: string;
-  };
-};
+type GitWorktreeBranchIncoherenceEvidence = SharedGitWorktreeBranchIncoherenceEvidence;
 
 function formatBranchForMessage(branch: string | null | undefined) {
   return branch && branch.length > 0 ? branch : "<detached>";
@@ -716,6 +688,48 @@ function fingerprintWorkspaceBranchIncoherence(input: {
     }))
     .digest("hex");
   return `workspace_incoherence:v1:sha256:${digest}`;
+}
+
+async function getGitWorktreeBranchAncestryVerdict(input: {
+  repoRoot: string;
+  expectedHeadSha: string | null;
+  actualHeadSha: string | null;
+}): Promise<GitWorktreeBranchAncestryVerdict> {
+  if (!input.expectedHeadSha || !input.actualHeadSha) return "unknown";
+
+  const proc = await executeProcess({
+    command: "git",
+    args: ["merge-base", "--is-ancestor", input.expectedHeadSha, input.actualHeadSha],
+    cwd: input.repoRoot,
+  }).catch(() => null);
+  if (!proc) return "unknown";
+  if (proc.code === 0) return "ancestor";
+  if (proc.code === 1) return "diverged";
+  return "unknown";
+}
+
+function explainGitWorktreeBranchIncoherence(input: {
+  expectedBranchName: string;
+  actualBranchName: string | null;
+  expectedHeadSha: string | null;
+  actualHeadSha: string | null;
+  sameHead: boolean;
+  ancestryVerdict: GitWorktreeBranchAncestryVerdict;
+}) {
+  const actualBranch = formatBranchForMessage(input.actualBranchName);
+  if (!input.expectedHeadSha || !input.actualHeadSha) {
+    return `Paperclip could not determine branch ancestry because the recorded branch "${input.expectedBranchName}" or checked-out branch "${actualBranch}" is missing a resolvable HEAD commit.`;
+  }
+  if (input.sameHead) {
+    return `The recorded branch "${input.expectedBranchName}" and checked-out branch "${actualBranch}" resolve to the same commit, so the mismatch is branch metadata rather than commit divergence.`;
+  }
+  if (input.ancestryVerdict === "ancestor") {
+    return `The recorded branch "${input.expectedBranchName}" is an ancestor of the checked-out branch "${actualBranch}", so the checked-out branch is forward of the recorded branch.`;
+  }
+  if (input.ancestryVerdict === "diverged") {
+    return `The recorded branch "${input.expectedBranchName}" is not an ancestor of the checked-out branch "${actualBranch}", so Paperclip cannot prove a forward-only reconciliation.`;
+  }
+  return `Paperclip could not determine whether the checked-out branch "${actualBranch}" is forward of the recorded branch "${input.expectedBranchName}".`;
 }
 
 async function inspectGitWorktreeBranchIncoherence(input: {
@@ -749,6 +763,19 @@ async function inspectGitWorktreeBranchIncoherence(input: {
   const registeredBranchMatchesHead = Boolean(registered && registeredBranchRef === actualBranchRef);
   const sameHead = Boolean(expectedHeadSha && actualHeadSha && expectedHeadSha === actualHeadSha);
   const expectedBranchExists = Boolean(expectedHeadSha);
+  const ancestryVerdict = await getGitWorktreeBranchAncestryVerdict({
+    repoRoot: input.repoRoot,
+    expectedHeadSha,
+    actualHeadSha,
+  });
+  const plainLanguageReason = explainGitWorktreeBranchIncoherence({
+    expectedBranchName: input.expectedBranchName,
+    actualBranchName: input.actualBranchName,
+    expectedHeadSha,
+    actualHeadSha,
+    sameHead,
+    ancestryVerdict,
+  });
   const eligible = cleanliness === "clean" && expectedBranchExists && sameHead && registeredBranchMatchesHead;
   const safeRepairReason = eligible
     ? "clean worktree and expected branch points at the current HEAD"
@@ -797,6 +824,8 @@ async function inspectGitWorktreeBranchIncoherence(input: {
       expectedHeadSha,
       actualHeadSha,
       sameHead,
+      ancestryVerdict,
+      plainLanguageReason,
     },
     safeRepair: {
       eligible,
