@@ -269,6 +269,11 @@ Load `references/workflows.md` when the task matches one of these:
 - CEO-safe company imports/exports (preview/apply).
 - App-level self-test playbook.
 
+## Cases
+
+Load `references/cases.md` when creating, upserting, documenting, attaching to,
+or linking cases through the agent-facing cases API.
+
 ## Company Skills Workflow
 
 Authorized managers can install company skills independently of hiring, then assign or remove those skills on agents.

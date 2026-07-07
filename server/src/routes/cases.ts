@@ -106,6 +106,12 @@ async function assertCasesEnabled(db: Db) {
   }
 }
 
+async function lockCaseUpsertKey(db: CaseRouteDb, input: { companyId: string; caseType: string; key: string | null | undefined }) {
+  if (!input.key) return;
+  const lockKey = `paperclip:case-upsert:${input.companyId}:${input.caseType}:${input.key}`;
+  await db.execute(sql`select pg_advisory_xact_lock(hashtext(${lockKey}))`);
+}
+
 function parseDocumentKey(raw: string | undefined) {
   const parsed = documentKeySchema.safeParse(raw);
   if (!parsed.success) throw badRequest("Invalid document key", parsed.error.issues);
@@ -339,6 +345,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
     const result = await db.transaction(async (tx) => {
       await assertProjectBelongsToCompany(tx, { companyId, projectId: body.projectId ?? null });
       await assertParentCaseBelongsToCompany(tx, { companyId, parentCaseId: body.parentCaseId ?? null });
+      await lockCaseUpsertKey(tx, { companyId, caseType: body.caseType, key: body.key });
 
       const now = new Date();
       const existing = body.key

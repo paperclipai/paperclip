@@ -27,6 +27,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { actorMiddleware } from "../middleware/auth.js";
+import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { caseRoutes } from "../routes/cases.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import type { StorageService } from "../storage/types.js";
@@ -43,6 +45,7 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("cases routes", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const previousAgentJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
 
   const storage: StorageService = {
     provider: "local_disk",
@@ -66,6 +69,7 @@ describeEmbeddedPostgres("cases routes", () => {
   };
 
   beforeAll(async () => {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "cases-routes-test-secret";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-cases-routes-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
@@ -91,6 +95,11 @@ describeEmbeddedPostgres("cases routes", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (previousAgentJwtSecret === undefined) {
+      delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    } else {
+      process.env.PAPERCLIP_AGENT_JWT_SECRET = previousAgentJwtSecret;
+    }
   });
 
   function app(actor: Express.Request["actor"]) {
@@ -100,6 +109,15 @@ describeEmbeddedPostgres("cases routes", () => {
       req.actor = actor;
       next();
     });
+    instance.use("/api", caseRoutes(db, storage));
+    instance.use(errorHandler);
+    return instance;
+  }
+
+  function authenticatedApp() {
+    const instance = express();
+    instance.use(express.json());
+    instance.use(actorMiddleware(db, { deploymentMode: "authenticated" }));
     instance.use("/api", caseRoutes(db, storage));
     instance.use(errorHandler);
     return instance;
@@ -190,6 +208,53 @@ describeEmbeddedPostgres("cases routes", () => {
     expect(all[0]!.fields).toEqual({ severity: "critical" });
   });
 
+  it("converges concurrent keyed upserts to one case", async () => {
+    await enableCases();
+    const company = await seedCompany("RCE");
+    const http = request(app(boardActor));
+
+    const requests = [
+      http.post(`/api/companies/${company.id}/cases`).send({
+        caseType: "release_note",
+        key: "2026-07-07",
+        title: "Release note A",
+        fields: { channel: "stable" },
+      }),
+      http.post(`/api/companies/${company.id}/cases`).send({
+        caseType: "release_note",
+        key: "2026-07-07",
+        title: "Release note B",
+        fields: { channel: "canary" },
+      }),
+    ];
+
+    const responses = await Promise.all(requests);
+    expect(responses.map((res) => res.status).sort()).toEqual([200, 201]);
+    expect(responses[0]!.body.id).toBe(responses[1]!.body.id);
+
+    const all = await db.select().from(cases);
+    expect(all).toHaveLength(1);
+    expect(all[0]!.caseType).toBe("release_note");
+    expect(all[0]!.key).toBe("2026-07-07");
+    expect(["Release note A", "Release note B"]).toContain(all[0]!.title);
+    expect([{ channel: "stable" }, { channel: "canary" }]).toContainEqual(all[0]!.fields);
+  });
+
+  it("resolves cases by identifier", async () => {
+    await enableCases();
+    const company = await seedCompany("REF");
+    const http = request(app(boardActor));
+
+    const created = await http
+      .post(`/api/companies/${company.id}/cases`)
+      .send({ caseType: "blog_post", key: "launch", title: "Launch post" })
+      .expect(201);
+
+    const byIdentifier = await http.get(`/api/cases/${created.body.identifier}`).expect(200);
+    expect(byIdentifier.body.id).toBe(created.body.id);
+    expect(byIdentifier.body.identifier).toMatch(/^REF[A-Z0-9]{4}-C1$/);
+  });
+
   it("auto-links run writes to their issue with a work link and event", async () => {
     await enableCases();
     const company = await seedCompany("RUN");
@@ -238,6 +303,95 @@ describeEmbeddedPostgres("cases routes", () => {
     expect(linkedEvents[0]!.actorAgentId).toBe(agent.id);
     expect(linkedEvents[0]!.runId).toBe(runId);
     expect(linkedEvents[0]!.payload).toMatchObject({ issueId: issue!.id, role: "work", autoLinked: true });
+  });
+
+  it("lets a run-scoped agent JWT complete the case happy path without manual linking", async () => {
+    await enableCases();
+    const company = await seedCompany("JWT");
+    const agent = await seedAgent(company.id);
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: company.id,
+      agentId: agent.id,
+      status: "running",
+    });
+    const [issue] = await db.insert(issues).values({
+      companyId: company.id,
+      title: "Agent case source",
+      status: "in_progress",
+      executionRunId: runId,
+    }).returning();
+    const token = createLocalAgentJwt(agent.id, company.id, agent.adapterType, runId);
+    expect(token).toBeTruthy();
+
+    const http = request(authenticatedApp());
+    const createResponse = await http
+      .post(`/api/companies/${company.id}/cases`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId)
+      .send({
+        caseType: "blog_post",
+        key: "launch-post",
+        title: "Launch post",
+        fields: { slug: "launch-post", target_audience: "operators" },
+      })
+      .expect(201);
+    const caseId = createResponse.body.id as string;
+
+    await http
+      .put(`/api/cases/${createResponse.body.identifier}/documents/body`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId)
+      .send({ body: "# Launch\n\nDraft body." })
+      .expect(200);
+
+    await http
+      .patch(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId)
+      .send({
+        status: "in_review",
+        fields: { slug: "launch-post", target_audience: "operators", publish_url: "https://example.com/launch" },
+      })
+      .expect(200);
+
+    await http
+      .post(`/api/cases/${caseId}/attachments`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId)
+      .attach("file", Buffer.from("asset"), "asset.txt")
+      .expect(201);
+
+    const links = await db.select().from(caseIssueLinks);
+    expect(links).toHaveLength(1);
+    expect(links[0]).toMatchObject({
+      companyId: company.id,
+      caseId,
+      issueId: issue!.id,
+      role: "origin",
+      createdByRunId: runId,
+    });
+
+    const detail = await http
+      .get(`/api/cases/${createResponse.body.identifier}`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId)
+      .expect(200);
+    expect(detail.body.status).toBe("in_review");
+    expect(detail.body.documents).toHaveLength(1);
+    expect(detail.body.attachments).toHaveLength(1);
+    expect(detail.body.issueLinks).toHaveLength(1);
+
+    const eventRows = await db.select().from(caseEvents);
+    expect(eventRows.map((event) => event.kind)).toEqual(expect.arrayContaining([
+      "created",
+      "issue_linked",
+      "document_revised",
+      "status_changed",
+      "attachment_added",
+    ]));
+    expect(eventRows.filter((event) => event.runId === runId)).toHaveLength(eventRows.length);
   });
 
   it("rejects cross-company agent access across the cases route surface", async () => {
