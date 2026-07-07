@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
@@ -28,17 +28,33 @@ import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
+const BOARD_CONFIRMATION_STALE_MS = 60 * 60 * 1000;
+const BOARD_CONFIRMATION_CRITICAL_MS = 24 * BOARD_CONFIRMATION_STALE_MS;
 
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 }
 
+function boardConfirmationAgeClass(createdAt: Date | string) {
+  const ageMs = Date.now() - new Date(createdAt).getTime();
+  if (ageMs > BOARD_CONFIRMATION_CRITICAL_MS) return "border-red-500/50 bg-red-500/10";
+  if (ageMs > BOARD_CONFIRMATION_STALE_MS) return "border-amber-500/50 bg-amber-500/10";
+  return "border-border bg-card";
+}
+
+function boardConfirmationCommentBody(interactionId: string) {
+  return `Board Inbox comment requested for pending confirmation ${interactionId}.`;
+}
+
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const queryClient = useQueryClient();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
+  const [boardInboxErrorById, setBoardInboxErrorById] = useState<Record<string, string>>({});
+  const [boardInboxBusyById, setBoardInboxBusyById] = useState<Record<string, boolean>>({});
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
   const hydratedActivityRef = useRef(false);
   const activityAnimationTimersRef = useRef<number[]>([]);
@@ -90,6 +106,7 @@ export function Dashboard() {
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
+  const pendingBoardConfirmations = data?.pendingBoardConfirmations ?? [];
 
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
@@ -169,6 +186,30 @@ export function Dashboard() {
   const agentName = (id: string | null) => {
     if (!id || !agents) return null;
     return agents.find((a) => a.id === id)?.name ?? null;
+  };
+
+  const runBoardInboxAction = async (
+    interactionId: string,
+    action: () => Promise<unknown>,
+    failureMessage: string,
+  ) => {
+    setBoardInboxBusyById((prev) => ({ ...prev, [interactionId]: true }));
+    setBoardInboxErrorById((prev) => {
+      const next = { ...prev };
+      delete next[interactionId];
+      return next;
+    });
+
+    try {
+      await action();
+      if (selectedCompanyId) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId) });
+      }
+    } catch {
+      setBoardInboxErrorById((prev) => ({ ...prev, [interactionId]: failureMessage }));
+    } finally {
+      setBoardInboxBusyById((prev) => ({ ...prev, [interactionId]: false }));
+    }
   };
 
   if (!selectedCompanyId) {
@@ -283,13 +324,108 @@ export function Dashboard() {
               to="/approvals"
               description={
                 <span>
-                  {data.budgets.pendingApprovals > 0
+                  {pendingBoardConfirmations.length > 0
+                    ? `${pendingBoardConfirmations.length} board confirmations awaiting response`
+                    : data.budgets.pendingApprovals > 0
                     ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
                     : "Awaiting board review"}
                 </span>
               }
             />
           </div>
+
+          {pendingBoardConfirmations.length > 0 ? (
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4">
+              <h3 className="text-sm font-semibold text-red-100 uppercase tracking-wide mb-3">
+                Board Inbox
+              </h3>
+              <div className="space-y-2">
+                {pendingBoardConfirmations.map((confirmation) => {
+                  const issueRef = confirmation.issueIdentifier ?? confirmation.issueId;
+                  const busy = boardInboxBusyById[confirmation.id] ?? false;
+                  return (
+                    <div
+                      key={confirmation.id}
+                      data-board-confirmation-card
+                      className={cn(
+                        "rounded-md border px-3 py-2",
+                        boardConfirmationAgeClass(confirmation.createdAt),
+                      )}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <Link
+                          to={`/issues/${issueRef}#interaction-${confirmation.id}`}
+                          className="text-sm font-medium text-foreground no-underline hover:underline"
+                        >
+                          {issueRef} · {confirmation.title ?? "Pending confirmation"}
+                        </Link>
+                        <span className="text-xs text-muted-foreground">
+                          {timeAgo(confirmation.createdAt)}
+                        </span>
+                      </div>
+                      {confirmation.summary ? (
+                        <p className="mt-1 text-xs text-muted-foreground">{confirmation.summary}</p>
+                      ) : null}
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          className="rounded-md border border-emerald-500/30 px-2 py-1 text-xs font-medium text-emerald-100 hover:bg-emerald-500/15 disabled:opacity-50"
+                          disabled={busy}
+                          onClick={() => runBoardInboxAction(
+                            confirmation.id,
+                            () => issuesApi.acceptInteraction(issueRef, confirmation.id),
+                            "Approve failed.",
+                          )}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-red-500/35 px-2 py-1 text-xs font-medium text-red-100 hover:bg-red-500/15 disabled:opacity-50"
+                          disabled={busy}
+                          onClick={() => {
+                            const reason = window.prompt("Reject reason (optional)");
+                            return runBoardInboxAction(
+                              confirmation.id,
+                              () => issuesApi.rejectInteraction(issueRef, confirmation.id, reason || undefined),
+                              "Reject failed.",
+                            );
+                          }}
+                        >
+                          Reject
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted/50 disabled:opacity-50"
+                          disabled={busy}
+                          onClick={() => runBoardInboxAction(
+                            confirmation.id,
+                            () => issuesApi.addComment(issueRef, boardConfirmationCommentBody(confirmation.id)),
+                            "Comment failed to post.",
+                          )}
+                        >
+                          Comment
+                        </button>
+                        <span className="text-xs text-red-100/80">
+                          {confirmation.createdByAgentName ?? "Unknown requester"}
+                        </span>
+                      </div>
+                      {boardInboxErrorById[confirmation.id] ? (
+                        <p className="mt-2 text-xs text-red-100">{boardInboxErrorById[confirmation.id]}</p>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-border bg-card p-4">
+              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+                Board Inbox
+              </h3>
+              <p className="text-sm text-muted-foreground">No pending board confirmations.</p>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
