@@ -72,10 +72,8 @@ export function computeNextDueDate(
   let next = advanceDate(previousDueAt ?? now, recurrence);
   // If the task was completed well after its due date, keep stepping until the
   // next occurrence is in the future so cadence resumes from "now", not the past.
-  let guard = 0;
-  while (next.getTime() <= now.getTime() && guard < ISSUE_RECURRENCE_MAX_INTERVAL + 1) {
+  while (next.getTime() <= now.getTime()) {
     next = advanceDate(next, recurrence);
-    guard += 1;
   }
   return next;
 }

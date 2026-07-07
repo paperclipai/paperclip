@@ -63,6 +63,14 @@ describe("computeNextDueDate", () => {
     expect(iso(next)).toBe("2026-06-22T09:00:00.000Z");
   });
 
+  it("rolls very late daily tasks forward past now", () => {
+    const prevDue = new Date("2024-01-01T09:00:00.000Z");
+    const now = new Date("2026-07-07T10:00:00.000Z");
+    const next = computeNextDueDate(prevDue, { frequency: "daily", interval: 1 }, now);
+    expect(next.getTime()).toBeGreaterThan(now.getTime());
+    expect(iso(next)).toBe("2026-07-08T09:00:00.000Z");
+  });
+
   it("falls back to now when there is no previous due date", () => {
     const now = new Date("2026-06-22T09:00:00.000Z");
     expect(iso(computeNextDueDate(null, weekly, now))).toBe("2026-06-29T09:00:00.000Z");

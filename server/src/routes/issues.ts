@@ -4132,6 +4132,15 @@ export function issueRoutes(
       }
     }
     const offset = parsedOffset ?? 0;
+    const dueRaw = req.query.due;
+    let due: "overdue" | "upcoming" | undefined;
+    if (dueRaw !== undefined) {
+      if (Array.isArray(dueRaw) || (dueRaw !== "overdue" && dueRaw !== "upcoming")) {
+        res.status(422).json({ error: "due must be 'overdue' or 'upcoming'" });
+        return;
+      }
+      due = dueRaw;
+    }
 
     const rawResult = await svc.list(companyId, {
       attention: attention === "blocked" ? "blocked" : undefined,
@@ -4162,8 +4171,7 @@ export function issueRoutes(
         req.query.includeBlockedInboxAttention === "true" || req.query.includeBlockedInboxAttention === "1",
       includeLiveDescendantSummary: includeLiveDescendantSummary === true,
       hasPlanDocument,
-      due:
-        req.query.due === "overdue" ? "overdue" : req.query.due === "upcoming" ? "upcoming" : undefined,
+      due,
       q: req.query.q as string | undefined,
       limit,
       offset,
@@ -7644,47 +7652,61 @@ export function issueRoutes(
     if (
       issue.status === "done" &&
       existing.status !== "done" &&
-      existing.recurrence &&
+      issue.recurrence &&
       existing.originKind !== "routine_execution"
     ) {
       try {
-        const nextDueAt = computeNextDueDate(existing.dueAt ?? null, existing.recurrence);
-        const spawned = await svc.create(issue.companyId, {
-          title: existing.title,
-          description: existing.description,
-          projectId: existing.projectId,
-          goalId: existing.goalId,
-          parentId: existing.parentId,
-          assigneeAgentId: existing.assigneeAgentId,
-          assigneeUserId: existing.assigneeUserId,
-          priority: existing.priority,
-          workMode: existing.workMode,
-          billingCode: existing.billingCode,
-          status: "todo",
-          dueAt: nextDueAt,
-          recurrence: existing.recurrence,
-          recurringTaskId: existing.recurringTaskId ?? existing.id,
-          createdByAgentId: actor.agentId,
-          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-        });
-        await issueReferencesSvc.syncIssue(spawned.id);
-        await logActivity(db, {
-          companyId: issue.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          action: "issue.recurrence_spawned",
-          entityType: "issue",
-          entityId: spawned.id,
-          details: {
-            identifier: spawned.identifier,
-            sourceIssueId: issue.id,
-            sourceIdentifier: issue.identifier,
-            dueAt: nextDueAt.toISOString(),
-            recurrence: existing.recurrence,
-          },
-        });
+        const rootRecurringTaskId = issue.recurringTaskId ?? issue.id;
+        const nextDueAt = computeNextDueDate(issue.dueAt ?? null, issue.recurrence);
+        const existingNext = await db
+          .select({ id: issueRows.id })
+          .from(issueRows)
+          .where(and(
+            eq(issueRows.companyId, issue.companyId),
+            eq(issueRows.recurringTaskId, rootRecurringTaskId),
+            eq(issueRows.dueAt, nextDueAt),
+            isNull(issueRows.hiddenAt),
+          ))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!existingNext) {
+          const spawned = await svc.create(issue.companyId, {
+            title: issue.title,
+            description: issue.description,
+            projectId: issue.projectId,
+            goalId: issue.goalId,
+            parentId: issue.parentId,
+            assigneeAgentId: issue.assigneeAgentId,
+            assigneeUserId: issue.assigneeUserId,
+            priority: issue.priority,
+            workMode: issue.workMode,
+            billingCode: issue.billingCode,
+            status: "todo",
+            dueAt: nextDueAt,
+            recurrence: issue.recurrence,
+            recurringTaskId: rootRecurringTaskId,
+            createdByAgentId: actor.agentId,
+            createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+          });
+          await issueReferencesSvc.syncIssue(spawned.id);
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.recurrence_spawned",
+            entityType: "issue",
+            entityId: spawned.id,
+            details: {
+              identifier: spawned.identifier,
+              sourceIssueId: issue.id,
+              sourceIdentifier: issue.identifier,
+              dueAt: nextDueAt.toISOString(),
+              recurrence: issue.recurrence,
+            },
+          });
+        }
       } catch (err) {
         logger.error(
           { err, issueId: issue.id },
