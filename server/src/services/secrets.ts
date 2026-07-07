@@ -131,6 +131,22 @@ function remoteProviderHttpError(error: unknown, context: {
   return new HttpError(502, "Remote secret provider request failed.", safeRemoteProviderErrorDetails(null, context));
 }
 
+function remoteProviderWriteHttpError(error: unknown, context: {
+  companyId: string;
+  provider: SecretProvider;
+  providerConfigId?: string | null;
+  providerConfig: SecretProviderVaultRuntimeConfig | null;
+  operation: string;
+}): HttpError {
+  return remoteProviderHttpError(error, {
+    companyId: context.companyId,
+    provider: context.provider,
+    providerConfigId: context.providerConfig?.id ?? context.providerConfigId ?? "deployment-default",
+    operation: context.operation,
+    providerConfig: context.providerConfig?.config ?? null,
+  });
+}
+
 function safeRemoteProviderErrorDetails(
   error: { code: string } | null,
   context: {
@@ -144,7 +160,32 @@ function safeRemoteProviderErrorDetails(
     context.provider !== "aws_secrets_manager" ||
     context.operation !== "secret_provider_config.discovery.preview"
   ) {
-    return { code: error?.code ?? "provider_error" };
+    if (context.provider !== "aws_secrets_manager") {
+      return { code: error?.code ?? "provider_error" };
+    }
+    const details: Record<string, unknown> = {
+      code: error?.code ?? "provider_error",
+      provider: context.provider,
+      operation: context.operation,
+      providerConfigId: context.providerConfigId,
+    };
+    const region = safeString(context.providerConfig?.region);
+    if (region) details.region = region;
+    details.credentialPath = "Paperclip server runtime/provider credential path";
+    if (error?.code === "access_denied") {
+      if (context.operation === "secret.create") {
+        details.requiredCapability = "secretsmanager:CreateSecret";
+        details.actionableMessage =
+          "AWS managed secret creation needs secretsmanager:CreateSecret in the selected region for this provider vault. If the vault config uses a KMS key, the runtime credentials also need KMS write permissions for that key.";
+        details.safeAlternative =
+          "If the secret already exists in AWS, link it as an external reference instead of creating a Paperclip-managed value.";
+      } else if (context.operation === "secret.rotate") {
+        details.requiredCapability = "secretsmanager:PutSecretValue";
+        details.actionableMessage =
+          "AWS managed secret rotation needs secretsmanager:PutSecretValue for the selected provider vault and managed secret path.";
+      }
+    }
+    return details;
   }
   const details: Record<string, unknown> = {
     code: error?.code ?? "provider_error",
@@ -1592,7 +1633,13 @@ export function secretService(db: Db) {
             });
     } catch (error) {
       await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
-      throw error;
+      throw remoteProviderWriteHttpError(error, {
+        companyId,
+        provider: provider.id,
+        providerConfigId,
+        providerConfig,
+        operation: "secret.create",
+      });
     }
 
     try {
@@ -2856,7 +2903,13 @@ export function secretService(db: Db) {
               });
       } catch (error) {
         await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
-        throw error;
+        throw remoteProviderWriteHttpError(error, {
+          companyId,
+          provider: provider.id,
+          providerConfigId: input.providerConfigId ?? null,
+          providerConfig,
+          operation: "secret.create",
+        });
       }
 
       try {
@@ -2986,20 +3039,31 @@ export function secretService(db: Db) {
         secretName: secret.name,
         version: nextVersion,
       };
-      const prepared =
-        secret.managedMode === "external_reference"
-          ? await provider.linkExternalSecret({
-              externalRef: input.externalRef ?? secret.externalRef ?? "",
-              providerVersionRef: input.providerVersionRef ?? null,
-              providerConfig,
-              context: providerWriteContext,
-            })
-          : await provider.createVersion({
-              value: input.value ?? "",
-              externalRef: secret.externalRef ?? null,
-              providerConfig,
-              context: providerWriteContext,
-            });
+      let prepared: PreparedSecretVersion;
+      try {
+        prepared =
+          secret.managedMode === "external_reference"
+            ? await provider.linkExternalSecret({
+                externalRef: input.externalRef ?? secret.externalRef ?? "",
+                providerVersionRef: input.providerVersionRef ?? null,
+                providerConfig,
+                context: providerWriteContext,
+              })
+            : await provider.createVersion({
+                value: input.value ?? "",
+                externalRef: secret.externalRef ?? null,
+                providerConfig,
+                context: providerWriteContext,
+              });
+      } catch (error) {
+        throw remoteProviderWriteHttpError(error, {
+          companyId: secret.companyId,
+          provider: provider.id,
+          providerConfigId,
+          providerConfig,
+          operation: "secret.rotate",
+        });
+      }
 
       try {
         await db.insert(companySecretVersions).values({

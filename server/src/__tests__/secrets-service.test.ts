@@ -2002,6 +2002,64 @@ describeEmbeddedPostgres("secretService", () => {
     expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("arn:aws");
   });
 
+  it("sanitizes AWS managed secret create failures and removes the reserved row", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const rawProviderMessage =
+      "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized to perform secretsmanager:CreateSecret on arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1";
+
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockRejectedValueOnce(
+      new SecretProviderClientError({
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "createSecret",
+        message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        rawMessage: rawProviderMessage,
+      }),
+    );
+
+    let thrown: unknown;
+    try {
+      await svc.create(companyId, {
+        name: "Vercel token",
+        key: "vercel_token",
+        provider: "aws_secrets_manager",
+        providerConfigId: awsVault.id,
+        managedMode: "paperclip_managed",
+        value: "vcp_test",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({
+      status: 403,
+      message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+      details: {
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "secret.create",
+        providerConfigId: awsVault.id,
+        region: "us-east-1",
+        requiredCapability: "secretsmanager:CreateSecret",
+      },
+    });
+    expect(JSON.stringify(thrown)).not.toContain("arn:aws");
+    expect(JSON.stringify(thrown)).not.toContain("123456789012");
+    expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("arn:aws");
+
+    const persisted = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.companyId, companyId));
+    expect(persisted).toHaveLength(0);
+  });
+
   it("previews AWS provider vault discovery from draft config without persisting a provider vault", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
