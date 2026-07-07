@@ -274,6 +274,54 @@ Security and bounds:
 - Activity records are limited to wake defer/suppression actions and exact allowlisted fields such as `rootIssueId`, `holdId`, `source`, `requestedReason`, and `previousReason`.
 - Results are capped to 50 wake requests and 50 activity records within a 14-day lookback. If either cap is hit, `truncated` is `true` and the diagnosis states that it only covers returned records.
 
+### Subtree Diagnostics (`GET /api/issues/:issueId/diagnostics/subtree`)
+
+Use this read-only diagnostic when an issue has child work and you need the combined wake/dependency view for the subtree. Read top-level `diagnosis` first; `likelyReason` is the same value. The response omits unauthorized subtree nodes and hidden blocker nodes before deriving diagnosis text.
+
+```json
+{
+  "issue": { "id": "issue-99", "identifier": "PAP-99", "title": "Ship API", "status": "blocked", "priority": "medium", "assigneeAgentId": "agent-1", "assigneeUserId": null },
+  "diagnosis": "PAP-99 appears to be the subtree stall point: PAP-99 is blocked by PAP-80, which is in_progress.",
+  "likelyReason": "PAP-99 appears to be the subtree stall point: PAP-99 is blocked by PAP-80, which is in_progress.",
+  "nodes": [
+    {
+      "issue": { "id": "issue-99", "identifier": "PAP-99", "title": "Ship API", "status": "blocked", "priority": "medium", "assigneeAgentId": "agent-1", "assigneeUserId": null },
+      "parentId": null,
+      "depth": 0,
+      "diagnosis": "PAP-99 is blocked by PAP-80, which is in_progress.",
+      "likelyReason": "PAP-99 is blocked by PAP-80, which is in_progress.",
+      "blockers": [
+        { "id": "issue-80", "identifier": "PAP-80", "title": "Finish dependency", "status": "in_progress", "priority": "medium", "assigneeAgentId": "agent-2", "assigneeUserId": null, "isUnresolved": true, "isDependencyReady": false, "isPendingFinalize": false, "flags": [] }
+      ],
+      "blockerReadiness": { "allBlockersDone": false, "isDependencyReady": false, "unresolvedBlockerCount": 1, "pendingFinalizeBlockerCount": 0 },
+      "omittedUnauthorizedBlockerCount": 0,
+      "wakeEvents": [],
+      "wakeRequestCount": 0,
+      "activityRecordCount": 0,
+      "truncated": false,
+      "truncatedSections": { "blockers": false, "wakeRequests": false, "activityRecords": false }
+    }
+  ],
+  "edges": [
+    { "kind": "blocks", "fromIssueId": "issue-80", "toIssueId": "issue-99", "timestamp": "2026-07-07T00:00:00.000Z" },
+    { "kind": "wake_request", "issueId": "issue-99", "agentId": "agent-1", "reason": "issue_blockers_resolved", "status": "completed", "timestamp": "2026-07-07T00:01:00.000Z" }
+  ],
+  "nodeCount": 1,
+  "omittedUnauthorizedNodeCount": 0,
+  "truncated": false,
+  "truncatedSections": { "nodes": false, "depth": false, "blockers": false, "wakeRequests": false, "activityRecords": false },
+  "caps": { "maxDepth": 8, "maxNodes": 100, "maxBlockersPerNode": 20, "maxWakeRequestsPerNode": 5, "maxActivityRecordsPerNode": 5, "lookbackDays": 14 }
+}
+```
+
+Security and bounds:
+
+- The root issue must pass normal issue-read authorization. Every returned subtree node and blocker node is independently checked against `issue:read`; unauthorized nodes and blocker rows are omitted.
+- `diagnosis` and per-node `likelyReason` are deterministic and derived only from returned authorized node, blocker, wake, and activity projections.
+- Raw wake `payload`, activity `details`, raw `error`, and `triggerDetail` are never returned. Wake fields use the same coarse projections as wake diagnostics.
+- Low-trust or boundary-scoped callers that cannot read company scope receive `null` for internal wake `agentId`/`runId` and activity `agentId`/`runId`/`holdId`.
+- The subtree walk is capped to depth 8 and 100 nodes with a cycle guard. Per-node blockers, wake requests, and activity records are also capped. Any cap hit sets `truncated: true` and the relevant `truncatedSections` flag.
+
 ### Execution Policy Fields On An Issue
 
 When an issue has review or approval gates, `GET /api/issues/:issueId` can also include `executionPolicy` and `executionState`:
@@ -1012,6 +1060,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor  |
 | GET    | `/api/issues/:issueId/diagnostics/blockers` | Read-only blocker diagnostic with `diagnosis`, readiness, and bounded anomaly flags |
 | GET    | `/api/issues/:issueId/diagnostics/wakes` | Read-only wake-history diagnostic with `diagnosis`, bounded events, and Case-B inference |
+| GET    | `/api/issues/:issueId/diagnostics/subtree` | Read-only subtree diagnostic combining visible child, blocker, and wake edges with `diagnosis` |
 | POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies)                   |
 | PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field; `blockedByIssueIds` replaces blocker set)        |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
