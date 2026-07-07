@@ -25,7 +25,11 @@ export class PaperclipApiError extends Error {
 export interface JsonRequestOptions {
   body?: unknown;
   includeRunId?: boolean;
+  /** Abort the request after this many milliseconds (default 60s). */
+  timeoutMs?: number;
 }
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 
 function isWriteMethod(method: string): boolean {
   return !["GET", "HEAD"].includes(method.toUpperCase());
@@ -96,6 +100,7 @@ export class PaperclipApiClient {
       method,
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
     });
     const parsedBody = await parseResponseBody(response);
 

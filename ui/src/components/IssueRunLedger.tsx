@@ -107,6 +107,11 @@ const LIVENESS_COPY: Record<RunLivenessState, LivenessCopy> = {
     tone: "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300",
     description: "Run produced useful output but did not prove concrete progress.",
   },
+  awaiting_delegation: {
+    label: "Awaiting delegation",
+    tone: "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300",
+    description: "Run delegated work to another agent and is waiting for the child run to finish.",
+  },
 };
 
 const PENDING_LIVENESS_COPY: LivenessCopy = {

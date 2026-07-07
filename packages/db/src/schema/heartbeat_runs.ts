@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -84,5 +85,8 @@ export const heartbeatRuns = pgTable(
       table.processStartedAt,
     ),
     parentRunIdx: index("heartbeat_runs_parent_run_idx").on(table.parentRunId),
+    pendingDelegationIdx: index("heartbeat_runs_pending_delegation_idx")
+      .on(table.delegationStatus)
+      .where(sql`${table.delegationStatus} = 'pending'`),
   }),
 );

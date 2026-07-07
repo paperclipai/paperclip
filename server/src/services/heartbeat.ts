@@ -7674,6 +7674,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       } else {
         await releaseIssueExecutionAndPromote(finalizedRun);
+        await delegationRef.svc?.handleChildRunCompleted(finalizedRun);
       }
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
@@ -9698,6 +9699,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await finalizeIssueCommentPolicy(livenessRun, agent);
         }
         await releaseIssueExecutionAndPromote(livenessRun);
+        await delegationRef.svc?.handleChildRunCompleted(livenessRun);
 
         await updateRuntimeState(agent, livenessRun, {
           exitCode: null,
@@ -11357,6 +11359,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
       await delegationRef.svc?.cancelChildDelegations(run.id, reason);
       await releaseIssueExecutionAndPromote(cancelled);
+      // If this run was itself a delegated child, settle the parent's
+      // delegation state (and release any wait:true waiter) immediately.
+      await delegationRef.svc?.handleChildRunCompleted(cancelled);
     }
 
     await finalizeAgentStatus(run.agentId, "cancelled");
@@ -11802,6 +11807,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const issueMonitors = await tickDueIssueMonitors(now);
 
+      await delegationRef.svc?.sweepStalePendingDelegations().catch((err) => {
+        logger.warn({ err }, "delegation sweep failed");
+      });
+
       return {
         checked: checked + issueMonitors.checked,
         enqueued: enqueued + issueMonitors.triggered,
@@ -11816,6 +11825,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       sourceAgentId: string,
       input: DelegateRunInput,
     ) => delegationRef.svc!.delegateFromRun(parentRunId, sourceAgentId, input),
+
+    getDelegationState: (parentRunId: string) => delegationRef.svc!.getDelegationState(parentRunId),
 
     cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason),
 

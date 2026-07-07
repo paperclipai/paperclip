@@ -482,15 +482,37 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipDelegate",
-      "Delegate work to a report agent from the current heartbeat run (A2A). Requires PAPERCLIP_RUN_ID. Prefer this over creating child issues manually when the target should execute synchronously or with automatic parent continuation.",
+      "Delegate work to a report agent from the current heartbeat run (A2A). Requires PAPERCLIP_RUN_ID. Prefer this over creating child issues manually when the target should execute synchronously or with automatic parent continuation. On wait timeout, use paperclipGetDelegation to recover the result.",
       delegateRunSchema,
       async (body) => {
         const runId = client.defaults.runId;
         if (!runId) {
           throw new Error("paperclipDelegate requires PAPERCLIP_RUN_ID for the active heartbeat run");
         }
-        return client.requestJson("POST", `/heartbeat-runs/${encodeURIComponent(runId)}/delegate`, { body });
+        const waitMs = body.wait ? (body.waitTimeoutSec ?? 120) * 1000 : 0;
+        return client.requestJson("POST", `/heartbeat-runs/${encodeURIComponent(runId)}/delegate`, {
+          body,
+          timeoutMs: waitMs + 30_000,
+        });
       },
+    ),
+    makeTool(
+      "paperclipGetDelegation",
+      "Read the delegation state (status, child runs, result) for a heartbeat run. Use after a paperclipDelegate wait timeout, or from a delegation_child_completed wake, to fetch the child's result.",
+      z.object({ runId: z.string().uuid().optional().nullable() }),
+      async ({ runId }) => {
+        const resolved = runId?.trim() || client.defaults.runId;
+        if (!resolved) {
+          throw new Error("paperclipGetDelegation requires a runId or PAPERCLIP_RUN_ID");
+        }
+        return client.requestJson("GET", `/heartbeat-runs/${encodeURIComponent(resolved)}/delegation`);
+      },
+    ),
+    makeTool(
+      "paperclipGetAgentCard",
+      "Get the A2A-style agent card for an agent (delegation discovery: identity, skills, delegation endpoint).",
+      z.object({ agentId: z.string().uuid() }),
+      async ({ agentId }) => client.requestJson("GET", `/agents/${encodeURIComponent(agentId)}/agent-card`),
     ),
     makeTool(
       "paperclipReleaseIssue",

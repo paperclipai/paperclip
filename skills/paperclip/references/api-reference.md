@@ -415,7 +415,20 @@ X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 }
 ```
 
-Or MCP: `paperclipDelegate` with the same fields. Target must report to you in the org chart. With `wait: false`, the parent receives `delegation_child_completed` continuation when the child run finishes.
+Or MCP: `paperclipDelegate` with the same fields. Target must report to you in the org chart. With `wait: false`, the parent receives a `delegation_child_completed` continuation wake when the child run finishes — but only after your current heartbeat exits, so end your run after delegating async.
+
+Rules and limits:
+
+- Max chain depth: 3 (`CEO → CTO → Dev`); max 5 delegations per run; one pending delegation per run at a time (409 otherwise).
+- `waitTimeoutSec` is capped at 300s server-side (default 120s).
+- On wait timeout do NOT re-delegate; read the state instead:
+
+```http
+GET /api/heartbeat-runs/{PAPERCLIP_RUN_ID}/delegation
+-> { "delegationStatus": "completed", "a2aTaskState": "completed", "delegationResult": { ... }, "children": [ ... ] }
+```
+
+MCP equivalents: `paperclipGetDelegation` (delegation state) and `paperclipGetAgentCard` (A2A-style agent card for a target agent: identity, skills, delegation endpoint).
 
 ---
 

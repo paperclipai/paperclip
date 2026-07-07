@@ -2075,6 +2075,66 @@ export function agentRoutes(
     res.json(updated);
   });
 
+  /**
+   * A2A-style Agent Card (Google A2A protocol discovery shape). Advertises the
+   * agent's identity and Paperclip's delegation surface so A2A-aligned clients
+   * (BizCursor, external orchestrators) can discover how to hand work to this
+   * agent. Paperclip does not host a JSON-RPC A2A server; the card points at
+   * the native delegate REST endpoint instead.
+   */
+  router.get("/agents/:id/agent-card", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+    if (!(await assertAgentReadAllowed(req, res, agent))) return;
+
+    const [company] = await db
+      .select({ name: companies.name })
+      .from(companies)
+      .where(eq(companies.id, agent.companyId))
+      .limit(1);
+
+    res.json({
+      protocolVersion: "0.3",
+      name: agent.name,
+      description: agent.capabilities ?? agent.title ?? agent.role,
+      provider: {
+        organization: company?.name ?? "Paperclip",
+      },
+      version: "1",
+      url: `/api/heartbeat-runs/{runId}/delegate`,
+      preferredTransport: "paperclip-rest",
+      capabilities: {
+        streaming: false,
+        pushNotifications: true,
+        stateTransitionHistory: false,
+      },
+      defaultInputModes: ["text/plain", "text/markdown"],
+      defaultOutputModes: ["text/plain", "text/markdown", "application/json"],
+      skills: [
+        {
+          id: "paperclip.delegate",
+          name: "Delegated task execution",
+          description:
+            "Executes tasks delegated by manager agents through the Paperclip control plane. Delegate via POST /api/heartbeat-runs/{runId}/delegate from an active heartbeat run; task lifecycle maps to A2A states (submitted, working, completed, failed, canceled).",
+          tags: ["delegation", "paperclip", agent.role],
+        },
+      ],
+      metadata: {
+        agentId: agent.id,
+        companyId: agent.companyId,
+        role: agent.role,
+        adapterType: agent.adapterType,
+        status: agent.status,
+        reportsTo: agent.reportsTo ?? null,
+      },
+    });
+  });
+
   router.get("/agents/:id/runtime-state", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
@@ -3531,6 +3591,28 @@ export function agentRoutes(
       }
       throw err;
     }
+  });
+
+  router.get("/heartbeat-runs/:runId/delegation", async (req, res) => {
+    const runId = req.params.runId as string;
+    const existing = await heartbeat.getRun(runId);
+    if (!existing) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    // Agents may only read delegation state for their own runs; board reads any.
+    if (req.actor.type === "agent" && req.actor.agentId !== existing.agentId) {
+      res.status(403).json({ error: "Agents can only read their own delegation state" });
+      return;
+    }
+    const state = await heartbeat.getDelegationState(runId);
+    if (!state) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    const { companyId: _companyId, ...payload } = state;
+    res.json(payload);
   });
 
   router.post("/heartbeat-runs/:runId/watchdog-decisions", async (req, res) => {

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { delegateRunSchema } from "@paperclipai/shared";
-import { isReportOf } from "../services/run-delegation.js";
+import {
+  DELEGATION_MAX_DEPTH,
+  DELEGATION_WAIT_TIMEOUT_MAX_SEC,
+  delegateRunSchema,
+  delegationStatusToA2ATaskState,
+} from "@paperclipai/shared";
+import { isReportOf, nextDelegationDepth } from "../services/run-delegation.js";
 
 describe("isReportOf", () => {
   const lookup = (id: string) => {
@@ -23,6 +28,43 @@ describe("isReportOf", () => {
     expect(isReportOf("dev", "ceo", lookup)).toBe(false);
     expect(isReportOf("cto", "peer", lookup)).toBe(false);
   });
+
+  it("terminates on reporting cycles", () => {
+    const cyclic = (id: string) => {
+      const chain: Record<string, { reportsTo: string | null }> = {
+        a: { reportsTo: "b" },
+        b: { reportsTo: "a" },
+      };
+      return chain[id] ?? null;
+    };
+    expect(isReportOf("x", "a", cyclic)).toBe(false);
+  });
+});
+
+describe("nextDelegationDepth", () => {
+  it("starts at 1 for a root run", () => {
+    expect(nextDelegationDepth(null)).toBe(1);
+    expect(nextDelegationDepth({})).toBe(1);
+    expect(nextDelegationDepth({ delegationDepth: "junk" })).toBe(1);
+  });
+
+  it("increments the parent depth", () => {
+    expect(nextDelegationDepth({ delegationDepth: 1 })).toBe(2);
+    expect(nextDelegationDepth({ delegationDepth: 2 })).toBe(3);
+  });
+
+  it("exceeds the max after DELEGATION_MAX_DEPTH chained delegations", () => {
+    expect(nextDelegationDepth({ delegationDepth: DELEGATION_MAX_DEPTH })).toBeGreaterThan(DELEGATION_MAX_DEPTH);
+  });
+});
+
+describe("delegationStatusToA2ATaskState", () => {
+  it("maps delegation statuses onto A2A task states", () => {
+    expect(delegationStatusToA2ATaskState("pending")).toBe("working");
+    expect(delegationStatusToA2ATaskState("completed")).toBe("completed");
+    expect(delegationStatusToA2ATaskState("failed")).toBe("failed");
+    expect(delegationStatusToA2ATaskState("cancelled")).toBe("canceled");
+  });
 });
 
 describe("delegateRunSchema", () => {
@@ -33,20 +75,21 @@ describe("delegateRunSchema", () => {
     });
     expect(parsed.wait).toBe(true);
     expect(parsed.createChildIssue).toBe(true);
+    expect(parsed.waitTimeoutSec).toBe(120);
   });
 
-  it("caps waitTimeoutSec at 300", () => {
+  it("caps waitTimeoutSec at the server maximum", () => {
     const parsed = delegateRunSchema.parse({
       targetAgentId: "00000000-0000-4000-8000-000000000001",
       task: "x",
-      waitTimeoutSec: 300,
+      waitTimeoutSec: DELEGATION_WAIT_TIMEOUT_MAX_SEC,
     });
-    expect(parsed.waitTimeoutSec).toBe(300);
+    expect(parsed.waitTimeoutSec).toBe(DELEGATION_WAIT_TIMEOUT_MAX_SEC);
     expect(() =>
       delegateRunSchema.parse({
         targetAgentId: "00000000-0000-4000-8000-000000000001",
         task: "x",
-        waitTimeoutSec: 301,
+        waitTimeoutSec: DELEGATION_WAIT_TIMEOUT_MAX_SEC + 1,
       }),
     ).toThrow();
   });
