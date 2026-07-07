@@ -7,6 +7,8 @@ import {
   type ClaudeLoginResult,
   type AgentPermissionUpdate,
 } from "../api/agents";
+import { builtInAgentsApi } from "../api/builtInAgents";
+import { companySkillsApi } from "../api/companySkills";
 import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -41,6 +43,8 @@ import { StarToggle } from "../components/StarToggle";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentActionButtons } from "../components/AgentActionButtons";
+import { InlineBanner } from "../components/InlineBanner";
+import { BuiltInAgentBadge } from "../components/BuiltInAgentBadges";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { TrustPresetSection } from "../components/TrustPresetSection";
 import { FileTree, buildFileTree } from "../components/FileTree";
@@ -707,6 +711,28 @@ export function AgentDetail() {
     ? resourceMembershipState(membershipsQuery.data, "agent", resolvedAgentId)
     : "joined";
 
+  const { data: builtInStates } = useQuery({
+    queryKey: queryKeys.builtInAgents.list(resolvedCompanyId!),
+    queryFn: () => builtInAgentsApi.list(resolvedCompanyId!),
+    enabled: !!resolvedCompanyId,
+  });
+  const builtInState = builtInStates?.find((entry) => entry.agentId === resolvedAgentId) ?? null;
+  const builtInFeatureLabel = builtInState
+    ? builtInState.definition.featureKeys
+        .map((key) => key.charAt(0).toUpperCase() + key.slice(1))
+        .join(", ")
+    : "";
+  const resetBuiltIn = useMutation({
+    mutationFn: () => builtInAgentsApi.reset(resolvedCompanyId!, builtInState!.definition.key),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.builtInAgents.list(resolvedCompanyId!) });
+      if (resolvedAgentId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(resolvedAgentId) });
+      }
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+    },
+  });
+
   const { data: runtimeState } = useQuery({
     queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? routeAgentRef),
     queryFn: () => agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined),
@@ -1022,7 +1048,10 @@ export function AgentDetail() {
             </button>
           </AgentIconPicker>
           <div className="min-w-0">
-            <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
+              {builtInState && <BuiltInAgentBadge />}
+            </div>
             <p className="text-sm text-muted-foreground truncate">
               {roleLabels[agent.role] ?? agent.role}
               {agent.title ? ` - ${agent.title}` : ""}
@@ -1051,6 +1080,21 @@ export function AgentDetail() {
             workActionsDisabled={hasInvalidOrgChain}
             workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
             onActionError={setActionError}
+            hideTerminate={Boolean(builtInState)}
+            pauseConfirm={
+              builtInState
+                ? {
+                    title: `Pause the ${builtInState.definition.displayName}?`,
+                    description: (
+                      <>
+                        {builtInFeatureLabel} depends on this agent. While paused,{" "}
+                        {builtInFeatureLabel.toLowerCase()} generation is skipped and the{" "}
+                        {builtInFeatureLabel} page shows a warning.
+                      </>
+                    ),
+                  }
+                : undefined
+            }
           >
             {mobileLiveRun && (
               <Link
@@ -1067,6 +1111,27 @@ export function AgentDetail() {
           </AgentActionButtons>
         </div>
       </div>
+
+      {builtInState && (
+        <InlineBanner
+          tone="info"
+          title="Built-in agent"
+          actions={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => resetBuiltIn.mutate()}
+              disabled={resetBuiltIn.isPending}
+            >
+              {resetBuiltIn.isPending ? "Resetting…" : "Reset to defaults"}
+            </Button>
+          }
+        >
+          Ships with Paperclip and powers <strong>{builtInFeatureLabel}</strong>. Configure it like
+          any agent — model, instructions, budget. It can be paused but not deleted; pausing it
+          pauses {builtInFeatureLabel}.
+        </InlineBanner>
+      )}
 
       {!urlRunId && (
         <Tabs

@@ -1,0 +1,260 @@
+import { useState } from "react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import type { Agent } from "@paperclipai/shared";
+
+import { Button } from "@/components/ui/button";
+import { EntityRow } from "@/components/EntityRow";
+import { EmptyState } from "@/components/EmptyState";
+import { InlineBanner } from "@/components/InlineBanner";
+import { AgentStatusBadge } from "@/components/StatusBadge";
+import { BuiltInAgentBadge, BuiltInLifecycleChip } from "@/components/BuiltInAgentBadges";
+import { ConfigureBuiltInAgentModal } from "@/components/ConfigureBuiltInAgentModal";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import type { BuiltInAgentState } from "@/api/builtInAgents";
+import { Bot, Clock3 } from "lucide-react";
+
+const briefsAgent: Agent = {
+  id: "agent-briefs",
+  companyId: "company-storybook",
+  name: "Briefs Agent",
+  urlKey: "briefs-agent",
+  role: "general",
+  title: null,
+  icon: "sparkles",
+  status: "idle",
+  reportsTo: null,
+  capabilities: "Prepares concise operational briefs for the board and agent company.",
+  adapterType: "codex_local",
+  adapterConfig: { model: "gpt-5" },
+  runtimeConfig: {},
+  budgetMonthlyCents: 0,
+  spentMonthlyCents: 0,
+  pauseReason: null,
+  pausedAt: null,
+  permissions: { canCreateAgents: false },
+  lastHeartbeatAt: null,
+  metadata: { paperclipBuiltInAgent: { key: "briefs", featureKeys: ["briefs"] } },
+  createdAt: new Date("2026-06-01T09:00:00.000Z"),
+  updatedAt: new Date("2026-07-01T09:00:00.000Z"),
+};
+
+const definition = {
+  key: "briefs",
+  displayName: "Briefs Agent",
+  featureKeys: ["briefs"],
+  shortPurpose: "Prepares concise operational briefs for the board and agent company.",
+  defaultInstructions: "You are Paperclip's built-in Briefs agent.",
+  defaultRole: "general",
+  allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "process"],
+  defaultBudgetMonthlyCents: 0,
+};
+
+const notProvisionedState: BuiltInAgentState = {
+  definition,
+  status: "not_provisioned",
+  agentId: null,
+  agent: null,
+  pauseReason: null,
+};
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+      {children}
+    </p>
+  );
+}
+
+const meta: Meta = {
+  title: "Product/Built-in Agents",
+  parameters: { layout: "fullscreen" },
+};
+export default meta;
+
+type Story = StoryObj;
+
+/** Boards 1, 2, 4, 5 — all presentational states in one gallery. */
+export const SurfaceGallery: Story = {
+  render: () => (
+    <div className="mx-auto max-w-3xl space-y-8 p-6">
+      <div className="space-y-3">
+        <SectionLabel>Board 1 — Roster rows</SectionLabel>
+        <div className="rounded-lg border border-border divide-y divide-border">
+          <EntityRow
+            title="Briefs Agent"
+            subtitle="General"
+            meta={
+              <div className="flex items-center gap-1.5">
+                <BuiltInAgentBadge />
+                <BuiltInLifecycleChip status="needs_setup" />
+                <Button size="xs" variant="outline">Set up</Button>
+              </div>
+            }
+            trailing={<AgentStatusBadge status="idle" />}
+          />
+          <EntityRow
+            title="Learning Agent"
+            subtitle="General"
+            meta={
+              <div className="flex items-center gap-1.5">
+                <BuiltInAgentBadge />
+              </div>
+            }
+            trailing={<AgentStatusBadge status="active" />}
+          />
+          <EntityRow
+            title="Briefs Agent"
+            subtitle="General"
+            meta={
+              <div className="flex items-center gap-1.5">
+                <BuiltInAgentBadge />
+                <BuiltInLifecycleChip status="pending_approval" />
+              </div>
+            }
+            trailing={<AgentStatusBadge status="idle" />}
+          />
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <SectionLabel>Board 2 — Agent detail provenance banner</SectionLabel>
+        <InlineBanner
+          tone="info"
+          title="Built-in agent"
+          actions={<Button variant="outline" size="sm">Reset to defaults</Button>}
+        >
+          Ships with Paperclip and powers <strong>Briefs</strong>. Configure it like any agent —
+          model, instructions, budget. It can be paused but not deleted; pausing it pauses Briefs.
+        </InlineBanner>
+      </div>
+
+      <div className="space-y-3">
+        <SectionLabel>Board 4A — Feature gate: setup empty-state</SectionLabel>
+        <div className="rounded-lg border border-border">
+          <EmptyState
+            icon={Bot}
+            title="Set up the Briefs Agent"
+            message="Briefs is generated by a built-in agent. Configure its model to enable the feature."
+            action="Set up Briefs Agent"
+            onAction={() => {}}
+            hideActionIcon
+          />
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <SectionLabel>Board 4 — Feature gate: pending approval</SectionLabel>
+        <div className="rounded-lg border border-border">
+          <EmptyState
+            icon={Clock3}
+            title="Briefs Agent is pending approval"
+            message="Briefs will be available after the board approves this built-in agent hire."
+          />
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <SectionLabel>Board 4B — Feature gate: paused banner over stale content</SectionLabel>
+        <div className="space-y-4">
+          <InlineBanner
+            tone="warning"
+            title="Briefs is paused."
+            actions={
+              <>
+                <Button variant="ghost" size="sm">View agent</Button>
+                <Button size="sm">Resume agent</Button>
+              </>
+            }
+          >
+            Its built-in agent was paused 2 days ago, so new briefs aren't being generated.
+          </InlineBanner>
+          <div className="opacity-70 rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+            Previously generated briefs stay readable while the agent is paused.
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <SectionLabel>Board 5 — Sidebar treatment</SectionLabel>
+        <div className="w-64 rounded-lg border border-border p-2 space-y-1">
+          <div className="flex items-center gap-2 px-3 py-1.5 text-[13px]">
+            <span className="min-w-0 truncate">Briefs Agent</span>
+            <span className="ml-1 flex items-center gap-1">
+              <BuiltInAgentBadge compact />
+              <BuiltInLifecycleChip status="needs_setup" compact />
+            </span>
+          </div>
+          <div className="flex items-center gap-2 px-3 py-1.5 text-[13px]">
+            <span className="min-w-0 truncate">Learning Agent</span>
+            <span className="ml-1 flex items-center gap-1">
+              <BuiltInAgentBadge compact />
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <SectionLabel>Board 5 — Use-while-paused toast</SectionLabel>
+        <div className="w-80 rounded-lg border border-[#F59E0B]/50 bg-[#FEF3C7]/60 p-3 text-sm text-[#B45309] dark:bg-[#f59e0b12] dark:text-[#F59E0B]">
+          <p className="font-medium">Briefs Agent is paused</p>
+          <p className="opacity-90">Resume the agent to generate this brief.</p>
+          <a href="#" className="mt-1 inline-block text-xs font-medium underline">View agent</a>
+        </div>
+      </div>
+    </div>
+  ),
+};
+
+/** Board 3 — configure-on-first-use modal (open). */
+export const ConfigureModal: Story = {
+  render: () => {
+    const [open, setOpen] = useState(true);
+    return (
+      <div className="p-6">
+        <Button onClick={() => setOpen(true)}>Open configure modal</Button>
+        <ConfigureBuiltInAgentModal
+          companyId="company-storybook"
+          state={notProvisionedState}
+          open={open}
+          onOpenChange={setOpen}
+        />
+      </div>
+    );
+  },
+};
+
+/** Board 2 — pause confirmation dialog with dependency warning. */
+export const PauseConfirmDialog: Story = {
+  render: () => (
+    <div className="p-6">
+      <AlertDialog open>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Pause the Briefs Agent?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div>
+                Briefs depends on this agent. While paused, briefs generation is skipped and the
+                Briefs page shows a warning.
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction>Pause anyway</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  ),
+};
+
+void briefsAgent;
