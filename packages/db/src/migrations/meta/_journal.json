@@ -988,6 +988,13 @@
       "when": 1783555301100,
       "tag": "0142_company_search_sort_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 143,
+      "version": "7",
+      "when": 1783457051766,
+      "tag": "0143_cases_foundation",
+      "breakpoints": true
     }
   ]
 }

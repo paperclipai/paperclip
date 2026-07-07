@@ -45,6 +45,14 @@ export { issueRelations } from "./issue_relations.js";
 export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";
 export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
 export {
+  cases,
+  caseAttachments,
+  caseDocuments,
+  caseEvents,
+  caseIssueLinks,
+  caseLabels,
+} from "./cases.js";
+export {
   pipelineCases,
   pipelineCaseIssueLinks,
   pipelineCaseBlockers,
