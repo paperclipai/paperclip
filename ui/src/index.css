@@ -1681,7 +1681,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --pct-85: 85%; /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-w-[85%]). */
   --pct-neg-50: -50%; /* Extracted from ui/src/components/ui/alert-dialog.tsx (translate-x-[-50%]). */
   --pct-72: 72%; /* Extracted from ui/src/pages/IssueDetail.tsx (w-[72%]). */
-  --shadow-extract-1: 0 16px 40px rgba(6,182,212,0.08); /* Extracted from ui/src/components/ActiveAgentsPanel.tsx (shadow-[0_16px_40px_rgba(6,182,212,0.08)]). */
+  --shadow-extract-1: 0 16px 40px rgba(37,99,235,0.08); /* ActiveAgentsPanel.tsx live-box glow. Gallery feedback r2: liveness glow recolored cyan->status blue (value edit, site unchanged; originally extracted as rgba(6,182,212,0.08)). */
   --shadow-extract-2: 0 20px 80px -40px rgba(0,0,0,0.55); /* Extracted from ui/src/components/BudgetPolicyCard.tsx (shadow-[0_20px_80px_-40px_rgba(0,0,0,0.55)]). */
   --shadow-extract-3: 0 0 0 1px rgba(255,255,255,0.08); /* Extracted from ui/src/components/BudgetSidebarMarker.tsx (shadow-[0_0_0_1px_rgba(255,255,255,0.08)]). */
   --shadow-extract-4: 0 -12px 28px rgba(15,23,42,0.08); /* Extracted from ui/src/components/ChatComposer.test.tsx (shadow-[0_-12px_28px_rgba(15,23,42,0.08)]). */
@@ -1691,10 +1691,10 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --shadow-extract-8: 0 1px 0 rgba(15,23,42,0.02); /* Extracted from ui/src/components/IssueRecoveryActionCard.tsx (shadow-[0_1px_0_rgba(15,23,42,0.02)]). */
   --shadow-extract-9: 0 18px 42px rgba(15,23,42,0.06); /* Extracted from ui/src/components/IssueThreadInteractionCard.tsx (shadow-[0_18px_42px_rgba(15,23,42,0.06)]). */
   --shadow-extract-10: 0 1px 0 1px hsl(var(--border)); /* Extracted from ui/src/components/KeyboardShortcutsCheatsheet.tsx (shadow-[0_1px_0_1px_hsl(var(--border))]). */
-  --shadow-extract-11: 0 18px 50px rgba(6,182,212,0.08); /* Extracted from ui/src/components/LiveRunWidget.tsx (shadow-[0_18px_50px_rgba(6,182,212,0.08)]). */
+  --shadow-extract-11: 0 18px 50px rgba(37,99,235,0.08); /* LiveRunWidget.tsx glow. Gallery feedback r2: liveness glow recolored cyan->status blue (value edit, site unchanged; originally extracted as rgba(6,182,212,0.08)). */
   --shadow-extract-12: 0 0 0 2px hsl(var(--background)); /* Extracted from ui/src/components/SidebarNavItem.tsx (shadow-[0_0_0_2px_hsl(var(--background))]). */
   --shadow-extract-13: 0 0 0 3px rgba(245,158,11,0.18); /* Extracted from ui/src/components/environment-variables-editor/index.tsx (shadow-[0_0_0_3px_rgba(245,158,11,0.18)]). */
-  --shadow-extract-14: 0 0 12px rgba(6,182,212,0.08); /* Extracted from ui/src/pages/AgentDetail.tsx (shadow-[0_0_12px_rgba(6,182,212,0.08)]). */
+  --shadow-extract-14: 0 0 12px rgba(37,99,235,0.08); /* AgentDetail.tsx live-card glow. Gallery feedback r2: liveness glow recolored cyan->status blue (value edit, site unchanged; originally extracted as rgba(6,182,212,0.08)). */
   --shadow-extract-18: 0 18px 44px -28px rgba(0,0,0,0.45); /* Extracted from ui/src/pages/ProfileSettings.tsx (shadow-[0_18px_44px_-28px_rgba(0,0,0,0.45)]). */
 }
 

@@ -744,7 +744,7 @@ function TranscriptToolCard({
         : "Completed";
   const statusTone =
     block.status === "running"
-      ? "text-cyan-700 dark:text-cyan-300"
+      ? "text-blue-700 dark:text-blue-300"
       : block.status === "error"
         ? "text-red-700 dark:text-red-300"
         : "text-emerald-700 dark:text-emerald-300";
@@ -758,7 +758,7 @@ function TranscriptToolCard({
       ? "text-red-600 dark:text-red-300"
       : block.status === "completed"
         ? "text-emerald-600 dark:text-emerald-300"
-        : "text-cyan-600 dark:text-cyan-300",
+        : "text-blue-600 dark:text-blue-300",
   );
   const summary = block.status === "running"
     ? summarizeToolInput(block.name, block.input, density)
@@ -857,7 +857,7 @@ function TranscriptCommandGroup({
     ? summarizeToolInput("command_execution", runningItem.input, density)
     : null;
   const statusTone = isRunning
-      ? "text-cyan-700 dark:text-cyan-300"
+      ? "text-blue-700 dark:text-blue-300"
       : "text-foreground/70";
 
   return (
@@ -885,7 +885,7 @@ function TranscriptCommandGroup({
                 "inline-flex h-6 w-6 items-center justify-center rounded-full border shadow-sm",
                 index > 0 && "-ml-1.5",
                 isRunning
-                  ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600 dark:text-cyan-300"
+                  ? "border-blue-500/25 bg-blue-500/[0.08] text-blue-600 dark:text-blue-300"
                   : "border-border/70 bg-background text-foreground/55",
                 isRunning && "animate-pulse",
               )}
@@ -934,7 +934,7 @@ function TranscriptCommandGroup({
                   item.status === "error"
                     ? "border-red-500/25 bg-red-500/[0.08] text-red-600 dark:text-red-300"
                     : item.status === "running"
-                      ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600 dark:text-cyan-300"
+                      ? "border-blue-500/25 bg-blue-500/[0.08] text-blue-600 dark:text-blue-300"
                       : "border-border/70 bg-background text-foreground/55",
                 )}>
                   <TerminalSquare className="h-3 w-3" />
@@ -985,7 +985,7 @@ function TranscriptToolGroup({
     ? summarizeToolInput(runningItem.name, runningItem.input, density)
     : null;
   const statusTone = isRunning
-    ? "text-cyan-700 dark:text-cyan-300"
+    ? "text-blue-700 dark:text-blue-300"
     : "text-foreground/70";
 
   return (
@@ -1008,7 +1008,7 @@ function TranscriptToolGroup({
                   "inline-flex h-6 w-6 items-center justify-center rounded-full border shadow-sm",
                   index > 0 && "-ml-1.5",
                   isItemRunning
-                    ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600 dark:text-cyan-300"
+                    ? "border-blue-500/25 bg-blue-500/[0.08] text-blue-600 dark:text-blue-300"
                     : isItemError
                       ? "border-red-500/25 bg-red-500/[0.08] text-red-600 dark:text-red-300"
                       : "border-border/70 bg-background text-foreground/55",
@@ -1049,7 +1049,7 @@ function TranscriptToolGroup({
                   item.status === "error"
                     ? "border-red-500/25 bg-red-500/[0.08] text-red-600 dark:text-red-300"
                     : item.status === "running"
-                      ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600 dark:text-cyan-300"
+                      ? "border-blue-500/25 bg-blue-500/[0.08] text-blue-600 dark:text-blue-300"
                       : "border-border/70 bg-background text-foreground/55",
                 )}>
                   <Wrench className="h-3 w-3" />
@@ -1106,8 +1106,8 @@ function TranscriptActivityRow({
         <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-300" />
       ) : (
         <span className="relative mt-1 flex h-2.5 w-2.5 shrink-0">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-70" />
-          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-cyan-500" />
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-70" />
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-blue-500" />
         </span>
       )}
       <div className={cn(

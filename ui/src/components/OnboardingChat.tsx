@@ -323,8 +323,8 @@ export function OnboardingChat({
               {hasActiveRun ? (
                 <>
                   <span className="relative flex h-2.5 w-2.5 shrink-0">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-cyan-500" />
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
                   </span>
                   {getRunStatusMessage(activeRun.status, agentName, elapsed)}
                 </>
@@ -468,8 +468,8 @@ function WelcomeMessage({
       {!showMessage && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground px-3 py-2">
           <span className="relative flex h-2.5 w-2.5 shrink-0">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-cyan-500" />
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
           </span>
           {phase === "waking"
             ? `${agentName} is waking up...`

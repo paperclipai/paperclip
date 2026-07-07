@@ -23,9 +23,9 @@ function windowLabel(windowKind: BudgetPolicySummary["windowKind"]) {
 }
 
 function statusTone(status: BudgetPolicySummary["status"]) {
-  if (status === "hard_stop") return "text-red-300 border-red-500/30 bg-red-500/10";
-  if (status === "warning") return "text-amber-200 border-amber-500/30 bg-amber-500/10";
-  return "text-emerald-200 border-emerald-500/30 bg-emerald-500/10";
+  if (status === "hard_stop") return "text-red-700 dark:text-red-300 border-red-500/30 bg-red-500/10";
+  if (status === "warning") return "text-amber-700 dark:text-amber-200 border-amber-500/30 bg-amber-500/10";
+  return "text-emerald-700 dark:text-emerald-200 border-emerald-500/30 bg-emerald-500/10";
 }
 
 export function BudgetPolicyCard({
@@ -116,7 +116,7 @@ export function BudgetPolicyCard({
   );
 
   const pausedPane = summary.paused ? (
-    <div className="flex items-start gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+    <div className="flex items-start gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-900 dark:text-red-100">
       <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
       <div>
         {summary.scopeType === "project"

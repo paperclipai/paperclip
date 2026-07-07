@@ -172,7 +172,7 @@ const AgentRunCard = memo(function AgentRunCard({
     <div className={cn(
       "flex h-(--sz-320px) flex-col overflow-hidden rounded-xl border shadow-sm",
       isActive
-        ? "border-cyan-500/25 bg-cyan-500/[0.04] shadow-(--shadow-extract-1)"
+        ? "border-blue-500/25 bg-blue-500/[0.04] shadow-(--shadow-extract-1)"
         : "border-border bg-background/70",
       className,
     )}>
@@ -182,8 +182,8 @@ const AgentRunCard = memo(function AgentRunCard({
             <div className="flex items-center gap-2">
               {isActive ? (
                 <span className="relative flex h-2.5 w-2.5 shrink-0">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-70" />
-                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-cyan-500" />
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-70" />
+                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-blue-500" />
                 </span>
               ) : (
                 <span className="inline-flex h-2.5 w-2.5 rounded-full bg-muted-foreground/35" />
@@ -209,7 +209,7 @@ const AgentRunCard = memo(function AgentRunCard({
               to={`/issues/${issue?.identifier ?? run.issueId}`}
               className={cn(
                 "line-clamp-2 hover:underline",
-                isActive ? "text-cyan-700 dark:text-cyan-300" : "text-muted-foreground hover:text-foreground",
+                isActive ? "text-blue-700 dark:text-blue-300" : "text-muted-foreground hover:text-foreground",
               )}
               title={issue?.title ? `${issue?.identifier ?? run.issueId.slice(0, 8)} - ${issue.title}` : issue?.identifier ?? run.issueId.slice(0, 8)}
             >

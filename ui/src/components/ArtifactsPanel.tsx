@@ -193,8 +193,8 @@ export function ArtifactsPanel({ taskId, isAgentWorking, openDocKey, openDocTitl
                     {showGenerating ? (
                       <div className="mt-0.5 shrink-0">
                         <span className="relative flex h-4 w-4">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-                          <span className="relative inline-flex rounded-full h-4 w-4 bg-cyan-500" />
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                          <span className="relative inline-flex rounded-full h-4 w-4 bg-blue-500" />
                         </span>
                       </div>
                     ) : (
@@ -212,7 +212,7 @@ export function ArtifactsPanel({ taskId, isAgentWorking, openDocKey, openDocTitl
                           {wp.type.replace(/_/g, " ")}
                         </span>
                         {showGenerating ? (
-                          <span className="inline-flex items-center gap-1 text-(length:--text-nano) font-medium px-1.5 py-0.5 rounded-full bg-cyan-500/10 text-cyan-600 dark:text-cyan-400">
+                          <span className="inline-flex items-center gap-1 text-(length:--text-nano) font-medium px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400">
                             <Loader2 className="h-2.5 w-2.5 animate-spin" />
                             Generating...
                           </span>

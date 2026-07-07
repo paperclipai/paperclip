@@ -262,7 +262,7 @@ export const priorityColorDefault = "text-yellow-600 dark:text-yellow-400";
 //   unknown   → backlog hue (muted, dashed circle)
 //   open      → todo / blue
 //   waiting   → amber (distinct from internal in_progress yellow)
-//   running   → cyan, animated when motion is allowed
+//   running   → status blue (gallery r2; was cyan), animated when motion is allowed
 //   succeeded → done / green
 //   failed    → red
 //   blocked   → red
@@ -275,7 +275,7 @@ export const externalObjectStatusIcon: Record<string, string> = {
   unknown: "text-muted-foreground border-muted-foreground",
   open: "text-blue-600 border-blue-600 dark:text-blue-400 dark:border-blue-400",
   waiting: "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400",
-  running: "text-cyan-600 border-cyan-600 dark:text-cyan-400 dark:border-cyan-400",
+  running: "text-blue-600 border-blue-600 dark:text-blue-400 dark:border-blue-400", // Gallery feedback r2: running = status blue (pulse animation still distinguishes it from static blue `open`).
   succeeded: "text-green-600 border-green-600 dark:text-green-400 dark:border-green-400",
   merged: "text-violet-600 border-violet-600 dark:text-violet-400 dark:border-violet-400",
   failed: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
@@ -292,7 +292,7 @@ export const externalObjectStatusBadge: Record<string, string> = {
   unknown: "bg-muted text-muted-foreground",
   open: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
   waiting: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
-  running: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300",
+  running: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300", // Gallery feedback r2: running = status blue (now shares tint with `open`; liveness animation differentiates).
   succeeded: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   failed: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   blocked: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",

@@ -121,7 +121,7 @@ const PENDING_LIVENESS_COPY: LivenessCopy = {
 
 const RETRY_PENDING_LIVENESS_COPY: LivenessCopy = {
   label: "Retry pending",
-  tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
+  tone: "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300",
   description: "Paperclip queued an automatic retry that has not started yet.",
 };
 
@@ -734,8 +734,8 @@ export function IssueRunLedgerContent({
                     {statusLabel(run.status)}
                   </span>
                   {run.isLive ? (
-                    <span className="inline-flex items-center gap-1 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-(length:--text-micro) text-cyan-700 dark:text-cyan-300">
-                      <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
+                    <span className="inline-flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 text-(length:--text-micro) text-blue-700 dark:text-blue-300">
+                      <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
                       live
                     </span>
                   ) : null}

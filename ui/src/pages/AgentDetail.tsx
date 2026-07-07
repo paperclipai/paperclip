@@ -477,7 +477,7 @@ function workspaceOperationStatusTone(status: WorkspaceOperation["status"]) {
     case "failed":
       return "border-red-500/20 bg-red-500/10 text-red-700 dark:text-red-300";
     case "running":
-      return "border-cyan-500/20 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300";
+      return "border-blue-500/20 bg-blue-500/10 text-blue-700 dark:text-blue-300";
     case "skipped":
       return "border-yellow-500/20 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300";
     default:
@@ -1280,8 +1280,8 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
         <h3 className="flex items-center gap-2 text-sm font-medium">
           {isLive && (
             <span className="relative flex h-2 w-2">
-              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
+              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
             </span>
           )}
           {isLive ? "Live Run" : "Latest Run"}
@@ -1298,7 +1298,7 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
         to={`/agents/${agentId}/runs/${run.id}`}
         className={cn(
           "block border rounded-lg p-4 space-y-2 w-full no-underline transition-colors hover:bg-muted/50 cursor-pointer",
-          isLive ? "border-cyan-500/30 shadow-(--shadow-extract-14)" : "border-border"
+          isLive ? "border-blue-500/30 shadow-(--shadow-extract-14)" : "border-border"
         )}
       >
         <div className="flex items-center gap-2">
@@ -4132,10 +4132,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
             </Button>
           )}
           {isLive && (
-            <span className="flex items-center gap-1 text-xs text-cyan-400">
+            <span className="flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400">
               <span className="relative flex h-2 w-2">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
               </span>
               Live
             </span>

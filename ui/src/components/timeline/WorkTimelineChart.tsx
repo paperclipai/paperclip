@@ -439,7 +439,7 @@ export function WorkTimelineChart({
               );
             })}
 
-          {/* now line — teal "Signal" present marker */}
+          {/* now line — status-blue "Signal" present marker (gallery r2; was teal) */}
           {now >= layout.fromMs && now <= layout.toMs && (
             <line
               x1={layout.gutter + ((now - layout.fromMs) / 60000) * layout.pxPerMinute}
