@@ -15,16 +15,35 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { forbidden, unauthorized } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import {
+  createWebhookTriggerRateLimiter,
+  type WebhookTriggerRateLimiter,
+} from "../services/webhook-trigger-rate-limit.js";
+
+/** Honors `X-Forwarded-For` only insofar as Express's `trust proxy` setting
+ * allows (see `middleware/trust-proxy.ts`) — `req.ip` already reflects that. */
+function publicWebhookClientIp(req: Request): string {
+  const forwarded = req.header("x-forwarded-for");
+  if (forwarded) {
+    const first = forwarded.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  return req.ip || "unknown";
+}
 
 export function routineRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    webhookTriggerRateLimiter?: WebhookTriggerRateLimiter;
+  } = {},
 ) {
   const router = Router();
   const svc = routineService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
   const access = accessService(db);
+  const webhookRateLimiter = options.webhookTriggerRateLimiter ?? createWebhookTriggerRateLimiter();
 
   async function assertBoardCanAssignTasks(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
@@ -438,7 +457,19 @@ export function routineRoutes(
   });
 
   router.post("/routine-triggers/public/:publicId/fire", async (req, res) => {
-    const result = await svc.firePublicTrigger(req.params.publicId as string, {
+    const publicId = req.params.publicId as string;
+    const rateLimit = webhookRateLimiter.consume(publicId, publicWebhookClientIp(req));
+    res.setHeader("X-RateLimit-Limit", String(rateLimit.limit));
+    res.setHeader("X-RateLimit-Remaining", String(rateLimit.remaining));
+    if (!rateLimit.allowed) {
+      res.setHeader("Retry-After", String(rateLimit.retryAfterSeconds));
+      res.status(429).json({
+        error: "Webhook rate limit exceeded",
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+      });
+      return;
+    }
+    const result = await svc.firePublicTrigger(publicId, {
       authorizationHeader: req.header("authorization"),
       signatureHeader: req.header("x-paperclip-signature"),
       hubSignatureHeader: req.header("x-hub-signature-256"),

@@ -34,6 +34,11 @@ import { RoutineVariablesEditor, RoutineVariablesHint } from "../RoutineVariable
 import { RoutineTriggerCard } from "../RoutineTriggerCard";
 import { EnvVarEditor } from "../EnvVarEditor";
 import { useRoutineDetail } from "./context";
+import {
+  WEBHOOK_SIGNING_MODES,
+  WEBHOOK_SIGNING_MODE_DESCRIPTIONS,
+  SIGNING_MODES_WITHOUT_REPLAY_WINDOW,
+} from "../../lib/routine-trigger-patch";
 import type { EnvBinding, RoutineDetail as RoutineDetailType } from "@paperclipai/shared";
 
 const concurrencyPolicyOptions = [
@@ -68,14 +73,10 @@ const catchUpPolicyOptions = [
 ];
 
 const triggerKinds = ["schedule", "webhook"];
-const signingModes = ["bearer", "hmac_sha256", "github_hmac", "none"];
-const signingModeDescriptions: Record<string, string> = {
-  bearer: "Expect a shared bearer token in the Authorization header.",
-  hmac_sha256: "Expect an HMAC SHA-256 signature over the request using the shared secret.",
-  github_hmac: "Accept GitHub-style X-Hub-Signature-256 header (HMAC over raw body, no timestamp).",
-  none: "No authentication — the webhook URL itself acts as a shared secret.",
+const triggerKindLabels: Record<string, string> = {
+  schedule: "Schedule",
+  webhook: "Webhook",
 };
-const SIGNING_MODES_WITHOUT_REPLAY_WINDOW = new Set(["github_hmac", "none"]);
 
 export function OverviewSection() {
   const ctx = useRoutineDetail();
@@ -339,7 +340,16 @@ function SummaryCard({
 
 export function TriggersSection() {
   const ctx = useRoutineDetail();
-  const { routine, newTrigger, setNewTrigger, createTrigger, updateTrigger, deleteTrigger, rotateTrigger } = ctx;
+  const {
+    routine,
+    newTrigger,
+    setNewTrigger,
+    createTrigger,
+    updateTrigger,
+    deleteTrigger,
+    rotateTrigger,
+    copySecretValue,
+  } = ctx;
   const [addOpen, setAddOpen] = useState(false);
 
   return (
@@ -388,7 +398,7 @@ export function TriggersSection() {
               <SelectContent>
                 {triggerKinds.map((kind) => (
                   <SelectItem key={kind} value={kind}>
-                    {kind}
+                    {triggerKindLabels[kind] ?? kind}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -419,7 +429,7 @@ export function TriggersSection() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {signingModes.map((mode) => (
+                    {WEBHOOK_SIGNING_MODES.map((mode) => (
                       <SelectItem key={mode} value={mode}>
                         {mode}
                       </SelectItem>
@@ -427,7 +437,7 @@ export function TriggersSection() {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  {signingModeDescriptions[newTrigger.signingMode]}
+                  {WEBHOOK_SIGNING_MODE_DESCRIPTIONS[newTrigger.signingMode]}
                 </p>
               </div>
               {!SIGNING_MODES_WITHOUT_REPLAY_WINDOW.has(newTrigger.signingMode) && (
@@ -439,6 +449,9 @@ export function TriggersSection() {
                       setNewTrigger((current) => ({ ...current, replayWindowSec: event.target.value }))
                     }
                   />
+                  <p className="text-xs text-muted-foreground">
+                    Requests signed more than this many seconds in the past or future are rejected.
+                  </p>
                 </div>
               )}
             </>
@@ -476,6 +489,7 @@ export function TriggersSection() {
               onSave={(id, patch) => updateTrigger.mutate({ id, patch })}
               onRotate={(id) => rotateTrigger.mutate(id)}
               onDelete={(id) => deleteTrigger.mutate(id)}
+              onCopy={copySecretValue}
             />
           ))}
         </div>
@@ -524,7 +538,7 @@ export function VariablesSection() {
 
 export function SecretsSection() {
   const ctx = useRoutineDetail();
-  const { editDraft, setEditDraft, availableSecrets, createSecret, secretMessage, copySecretValue } = ctx;
+  const { editDraft, setEditDraft, availableSecrets, createSecret } = ctx;
 
   // Project/company-scoped secrets that already see real usage, surfaced as
   // quick-bind chips (§3.4). Ranked by reference count then recency.
@@ -547,35 +561,6 @@ export function SecretsSection() {
         Routine secrets apply to every task this routine creates. They override matching keys in
         project and agent env. <span className="font-mono">PAPERCLIP_*</span> names are reserved.
       </div>
-
-      {secretMessage ? (
-        <div className="space-y-3 rounded-lg border border-blue-500/30 bg-blue-500/5 p-4 text-sm">
-          <div>
-            <p className="font-medium">{secretMessage.title}</p>
-            <p className="text-xs text-muted-foreground">
-              Save this now. Paperclip will not show the secret value again.
-            </p>
-          </div>
-          <div className="space-y-3">
-            {secretMessage.entries.map((entry, index) => (
-              <div key={`${entry.webhookUrl}-${index}`} className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <Input value={entry.webhookUrl} readOnly className="flex-1" />
-                  <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook URL", entry.webhookUrl)}>
-                    URL
-                  </Button>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Input value={entry.webhookSecret} readOnly className="flex-1" />
-                  <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook secret", entry.webhookSecret)}>
-                    Secret
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
 
       <EnvVarEditor
         value={(editDraft.env ?? {}) as Record<string, EnvBinding>}

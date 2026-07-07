@@ -13,11 +13,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ScheduleEditor } from "./ScheduleEditor";
-import { buildRoutineTriggerPatch } from "../lib/routine-trigger-patch";
+import {
+  buildRoutineTriggerPatch,
+  WEBHOOK_SIGNING_MODES,
+  WEBHOOK_SIGNING_MODE_DESCRIPTIONS,
+  SIGNING_MODES_WITHOUT_REPLAY_WINDOW,
+} from "../lib/routine-trigger-patch";
 import { describeCron } from "../lib/cron-readable";
-
-const signingModes = ["bearer", "hmac_sha256", "github_hmac", "none"];
-const SIGNING_MODES_WITHOUT_REPLAY_WINDOW = new Set(["github_hmac", "none"]);
 
 function getLocalTimezone(): string {
   try {
@@ -36,12 +38,14 @@ export function RoutineTriggerCard({
   onSave,
   onRotate,
   onDelete,
+  onCopy,
   disabled,
 }: {
   trigger: RoutineTrigger;
   onSave: (id: string, patch: Record<string, unknown>) => void;
   onRotate: (id: string) => void;
   onDelete: (id: string) => void;
+  onCopy?: (label: string, value: string) => void;
   disabled?: boolean;
 }) {
   const [draft, setDraft] = useState({
@@ -121,6 +125,35 @@ export function RoutineTriggerCard({
             />
           </div>
         )}
+        {trigger.kind === "webhook" && trigger.publicId && (
+          <div className="space-y-1.5 md:col-span-2">
+            <Label className="text-xs">Webhook URL</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                readOnly
+                className="flex-1 font-mono text-xs"
+                value={`${window.location.origin}/api/routine-triggers/public/${trigger.publicId}/fire`}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  onCopy?.(
+                    "Webhook URL",
+                    `${window.location.origin}/api/routine-triggers/public/${trigger.publicId}/fire`,
+                  )
+                }
+              >
+                Copy
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              The secret is only shown once, right after creating or rotating it. Use "Rotate secret" below
+              if you need a new one.
+            </p>
+          </div>
+        )}
         {trigger.kind === "webhook" && (
           <>
             <div className="space-y-1.5">
@@ -136,13 +169,16 @@ export function RoutineTriggerCard({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {signingModes.map((mode) => (
+                  {WEBHOOK_SIGNING_MODES.map((mode) => (
                     <SelectItem key={mode} value={mode}>
                       {mode}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              <p className="text-xs text-muted-foreground">
+                {WEBHOOK_SIGNING_MODE_DESCRIPTIONS[draft.signingMode]}
+              </p>
             </div>
             {!SIGNING_MODES_WITHOUT_REPLAY_WINDOW.has(draft.signingMode) && (
               <div className="space-y-1.5">
@@ -154,6 +190,9 @@ export function RoutineTriggerCard({
                     setDraft((current) => ({ ...current, replayWindowSec: event.target.value }))
                   }
                 />
+                <p className="text-xs text-muted-foreground">
+                  Requests signed more than this many seconds in the past or future are rejected.
+                </p>
               </div>
             )}
           </>

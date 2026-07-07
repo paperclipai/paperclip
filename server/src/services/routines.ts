@@ -2234,6 +2234,17 @@ export function routineService(
       const routine = await getRoutineById(trigger.routineId);
       if (!routine) throw notFound("Routine not found");
       if (!trigger.enabled || routine.status !== "active") throw conflict("Routine trigger is not active");
+      if (routine.projectId) {
+        const project = await db
+          .select({ pausedAt: projects.pausedAt })
+          .from(projects)
+          .where(eq(projects.id, routine.projectId))
+          .then((rows) => rows[0] ?? null);
+        // Mirrors the suppression scheduled triggers already get while their
+        // project is paused (see tickScheduledTriggers) — webhooks previously
+        // bypassed this because callers, not the ticker, drive their timing.
+        if (project?.pausedAt) throw conflict("Routine's project is paused");
+      }
 
       if (trigger.signingMode === "none") {
         // No authentication — the publicId in the URL acts as a shared secret.

@@ -60,6 +60,7 @@ import {
   ActivitySection,
   HistorySection,
 } from "../components/routine-sections/operate-sections";
+import { SecretRevealBanner } from "../components/routine-sections/SecretRevealBanner";
 import type {
   RoutineDetail as RoutineDetailType,
   RoutineEnvConfig,
@@ -477,8 +478,17 @@ export function RoutineDetail() {
           title: "Webhook trigger created",
           entries: [{ webhookUrl: result.secretMaterial.webhookUrl, webhookSecret: result.secretMaterial.webhookSecret }],
         });
+        pushToast({
+          title: "Webhook trigger created",
+          body: "Copy the webhook URL and secret now — Paperclip won't show the secret again.",
+          tone: "success",
+        });
       } else {
-        pushToast({ title: "Trigger added", body: "The routine schedule was saved.", tone: "success" });
+        pushToast({
+          title: "Trigger added",
+          body: newTrigger.kind === "schedule" ? "The routine schedule was saved." : "The trigger was saved.",
+          tone: "success",
+        });
       }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
@@ -539,6 +549,11 @@ export function RoutineDetail() {
       setSecretMessage({
         title: "Webhook secret rotated",
         entries: [{ webhookUrl: result.secretMaterial.webhookUrl, webhookSecret: result.secretMaterial.webhookSecret }],
+      });
+      pushToast({
+        title: "Webhook secret rotated",
+        body: "Copy the new secret now — the previous one no longer works.",
+        tone: "success",
       });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
@@ -851,6 +866,14 @@ export function RoutineDetail() {
             role="main"
             className="min-w-0 flex-1 px-4 pb-6 pt-10 md:px-8"
           >
+            {secretMessage ? (
+              <SecretRevealBanner
+                secretMessage={secretMessage}
+                onDismiss={() => setSecretMessage(null)}
+                onCopy={copySecretValue}
+              />
+            ) : null}
+
             <section
               aria-labelledby="routine-section-title"
               className={isEditableSection ? "mx-auto w-full max-w-3xl" : "w-full"}
