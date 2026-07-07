@@ -73,5 +73,11 @@ Context is stored at `~/.paperclip/context.json`.
 
 The CLI has two categories:
 
-1. **[Setup commands](/cli/setup-commands)** — instance bootstrap, diagnostics, configuration
+1. **[Setup commands](/cli/setup-commands)** — instance bootstrap, diagnostics, worktree helpers, and benchmarking
 2. **[Control-plane commands](/cli/control-plane-commands)** — issues, agents, approvals, activity
+## Quick command index
+
+- `pnpm paperclipai worktree:make` / `pnpm paperclipai worktree:cleanup`
+- `pnpm paperclipai worktree repair` / `pnpm paperclipai worktree reseed`
+- `pnpm paperclipai worktree env` / `pnpm paperclipai worktree:list`
+- `pnpm perf:issue-chat-long-thread`
