@@ -690,7 +690,7 @@ function hasDoLoop(statement: string): boolean {
 function hasBatchedLimitMutation(statement: string): boolean {
   const hasLimit = /\bLIMIT\s+(?:\d+|[A-Za-z_][A-Za-z0-9_]*|\$[0-9]+)\b/i.test(statement);
   const hasFetchLimit =
-    /\bFETCH\s+(?:FIRST|NEXT)\s+(?:\d+|[A-Za-z_][A-Za-z0-9_]*|\$[0-9]+)\s+ROWS?\s+(?:ONLY|WITH\s+TIES)\b/i.test(statement);
+    /\bFETCH\s+(?:FIRST|NEXT)(?:\s+(?:\d+|[A-Za-z_][A-Za-z0-9_]*|\$[0-9]+))?\s+ROWS?\s+(?:ONLY|WITH\s+TIES)\b/i.test(statement);
   const hasDml = /\b(?:UPDATE|DELETE)\b/i.test(statement);
   return (hasLimit || hasFetchLimit) && hasDml;
 }
@@ -748,6 +748,7 @@ function hasSelectiveWhere(mutation: MutationInfo): boolean {
   const qualRefs = [
     ...whereClause.matchAll(/"([^"]+)"\s*\.\s*(?:"[^"]+"|\w+)/g),
     ...whereClause.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\."[^"]+"/g),
+    ...whereClause.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g),
   ].map((m) => normalizeIdentifier(m[1] ?? "")).filter(Boolean);
 
   if (qualRefs.length > 0) {
@@ -766,6 +767,7 @@ function hasSelectiveWhere(mutation: MutationInfo): boolean {
       const noQual = whereClause
         .replace(/"[^"]+"\s*\.\s*(?:"[^"]+"|\w+)/g, " ")
         .replace(/\b[A-Za-z_][A-Za-z0-9_]*\s*\."[^"]+"/g, " ")
+        .replace(/\b[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*/g, " ")
         .replace(/'(?:[^']|'')*'/g, " ");
       const SQL_KW =
         /\b(?:AND|OR|NOT|IN|EXISTS|LIKE|IS|NULL|TRUE|FALSE|BETWEEN|CASE|WHEN|THEN|END|CAST|AS|ANY|ALL|SOME)\b/gi;

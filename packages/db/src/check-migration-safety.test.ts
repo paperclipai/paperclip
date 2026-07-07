@@ -237,6 +237,25 @@ describe("migration safety check", () => {
     );
   });
 
+  it("flags UPDATE ... FROM (SELECT ... FETCH FIRST ROW ONLY) subquery batch on a large table", () => {
+    const result = analyze(`
+      UPDATE "issue_comments" c
+      SET "derived_author_agent_id" = NULL
+      FROM (
+        SELECT "id"
+        FROM "issue_comments"
+        WHERE "author_agent_id" IS NULL
+        ORDER BY "id"
+        FETCH FIRST ROW ONLY
+      ) batch
+      WHERE c."id" = batch."id";
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "batched-mutation-large-table-missing-index",
+    );
+  });
+
   it("flags UPDATE ... WHERE IN (SELECT ... LIMIT N) subquery batch on a large table", () => {
     const result = analyze(`
       UPDATE "issue_comments"
@@ -359,6 +378,19 @@ describe("migration safety check", () => {
         SET "derived_author_agent_id" = NULL
         FROM "companies" c
         WHERE c."id" = '00000000-0000-0000-0000-000000000000';
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "full-table-mutation-large-table",
+    );
+  });
+
+  it("does not suppress full-table finding when WHERE only constrains an unquoted joined table", () => {
+    const result = analyze(`
+      UPDATE "issue_comments"
+        SET "derived_author_agent_id" = NULL
+        FROM companies
+        WHERE companies.id = '00000000-0000-0000-0000-000000000000';
     `);
 
     expect(result.newFindings.map((f) => f.rule)).toContain(
