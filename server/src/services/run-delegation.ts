@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, heartbeatRuns, issues } from "@paperclipai/db";
 import {
@@ -19,9 +19,9 @@ import { logActivity } from "./activity-log.js";
 
 /**
  * Parent statuses that still deserve a `delegation_child_completed` wake once
- * the child finishes. `succeeded` covers the documented wait:false contract
- * (delegate, exit, get woken with the result). `timed_out` is included so a
- * parent that died waiting does not waste the child's completed work.
+ * every child finishes. `succeeded` covers the documented wait:false contract
+ * (delegate, exit, get woken with the joined results). `timed_out` is included
+ * so a parent that died waiting does not waste the children's completed work.
  * `cancelled` is deliberately excluded: cancellation is operator intent.
  */
 const CONTINUATION_ELIGIBLE_PARENT_STATUSES = new Set<HeartbeatRunStatus>([
@@ -44,6 +44,9 @@ const CANCELLABLE_CHILD_STATUSES: HeartbeatRunStatus[] = [
 
 /** Fallback DB poll interval while waiting for a child run (event notification is the primary path). */
 const WAIT_FALLBACK_POLL_MS = 10_000;
+
+const DELEGATION_DEPTH_HARD_CAP = 10;
+const DELEGATION_CHILDREN_HARD_CAP = 20;
 
 export type EnqueueWakeupFn = (
   agentId: string,
@@ -95,8 +98,28 @@ export function nextDelegationDepth(parentContext: Record<string, unknown> | nul
   return parentDepth + 1;
 }
 
+/**
+ * Per-agent delegation policy overrides (OpenCode-style per-agent task
+ * budgets), read from `agent.runtimeConfig.delegation`.
+ */
+export function parseDelegationPolicy(runtimeConfig: unknown): { maxDepth: number; maxChildren: number } {
+  const config =
+    runtimeConfig && typeof runtimeConfig === "object"
+      ? ((runtimeConfig as Record<string, unknown>).delegation as Record<string, unknown> | undefined)
+      : undefined;
+  const clamp = (value: unknown, fallback: number, cap: number) => {
+    const parsed = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : fallback;
+    return Math.max(1, Math.min(cap, parsed));
+  };
+  return {
+    maxDepth: clamp(config?.maxDepth, DELEGATION_MAX_DEPTH, DELEGATION_DEPTH_HARD_CAP),
+    maxChildren: clamp(config?.maxChildren, DELEGATION_MAX_CHILDREN_PER_RUN, DELEGATION_CHILDREN_HARD_CAP),
+  };
+}
+
 function buildDelegationResult(child: HeartbeatRunRow) {
   const resultJson = child.resultJson && typeof child.resultJson === "object" ? child.resultJson : {};
+  const context = (child.contextSnapshot ?? {}) as Record<string, unknown>;
   const summary =
     readNonEmptyString(child.nextAction) ??
     readNonEmptyString((resultJson as Record<string, unknown>).summary) ??
@@ -105,7 +128,10 @@ function buildDelegationResult(child: HeartbeatRunRow) {
     null;
   return {
     childRunId: child.id,
+    childAgentId: child.agentId,
     childStatus: child.status,
+    task: readNonEmptyString(context.delegationTask),
+    clientKey: readNonEmptyString(context.delegationClientKey),
     summary,
     resultJson,
     error: child.error,
@@ -113,10 +139,18 @@ function buildDelegationResult(child: HeartbeatRunRow) {
   };
 }
 
-function delegationStatusFromChild(child: HeartbeatRunRow): DelegationStatus {
+function delegationStatusFromChild(child: Pick<HeartbeatRunRow, "status">): DelegationStatus {
   if (child.status === "succeeded") return "completed";
   if (child.status === "cancelled") return "cancelled";
   return "failed";
+}
+
+/** Promise.allSettled-style aggregate over the whole fan-out. */
+function aggregateDelegationStatus(children: Array<Pick<HeartbeatRunRow, "status">>): DelegationStatus {
+  const statuses = children.map((child) => delegationStatusFromChild(child));
+  if (statuses.every((status) => status === "completed")) return "completed";
+  if (statuses.some((status) => status === "failed")) return "failed";
+  return "cancelled";
 }
 
 export function runDelegationService(
@@ -153,6 +187,7 @@ export function runDelegationService(
   async function waitForChildTerminal(childRunId: string, timeoutMs: number): Promise<HeartbeatRunRow | null> {
     const initial = await deps.getRun(childRunId);
     if (!initial || isTerminalRunStatus(initial.status)) return initial;
+    if (timeoutMs <= 0) return initial;
 
     return new Promise<HeartbeatRunRow | null>((resolve) => {
       let settled = false;
@@ -192,6 +227,27 @@ export function runDelegationService(
           .catch(() => settle(null));
       }, timeoutMs);
     });
+  }
+
+  /** Join wait: block until every child of the run is terminal or the deadline passes. */
+  async function waitForAllChildrenTerminal(parentRunId: string, timeoutMs: number) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const children = await listChildren(parentRunId);
+      const nonTerminal = children.filter((child) => !isTerminalRunStatus(child.status));
+      if (nonTerminal.length === 0) return { allTerminal: true as const, children };
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return { allTerminal: false as const, children };
+      await waitForChildTerminal(nonTerminal[0]!.id, remaining);
+    }
+  }
+
+  async function listChildren(parentRunId: string) {
+    return db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.parentRunId, parentRunId))
+      .orderBy(heartbeatRuns.createdAt);
   }
 
   async function getAgentOrgRow(agentId: string): Promise<AgentOrgRow | null> {
@@ -279,12 +335,43 @@ export function runDelegationService(
     return child.id;
   }
 
-  async function countChildDelegations(parentRunId: string): Promise<number> {
-    const [row] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.parentRunId, parentRunId));
-    return row?.count ?? 0;
+  async function findChildByClientKey(parentRunId: string, clientKey: string) {
+    const children = await listChildren(parentRunId);
+    return children.find((child) => {
+      const context = (child.contextSnapshot ?? {}) as Record<string, unknown>;
+      return readNonEmptyString(context.delegationClientKey) === clientKey;
+    }) ?? null;
+  }
+
+  /**
+   * Resolve a follow-up target: a previous delegated child run whose session
+   * the new delegation should resume. The prior child must belong to a run
+   * owned by the delegating agent and target the same agent.
+   */
+  async function resolveFollowUpChild(input: {
+    followUpToChildRunId: string;
+    sourceAgentId: string;
+    targetAgentId: string;
+  }) {
+    const priorChild = await deps.getRun(input.followUpToChildRunId);
+    if (!priorChild || !priorChild.parentRunId) {
+      throw notFound("Follow-up child run not found or not a delegated run");
+    }
+    if (priorChild.agentId !== input.targetAgentId) {
+      throw conflict("Follow-up must target the same agent as the original delegation", {
+        originalAgentId: priorChild.agentId,
+      });
+    }
+    const priorParent = await deps.getRun(priorChild.parentRunId);
+    if (!priorParent || priorParent.agentId !== input.sourceAgentId) {
+      throw forbidden("Follow-up is only allowed on delegations you originated");
+    }
+    if (!isTerminalRunStatus(priorChild.status)) {
+      throw conflict("Follow-up requires the original child run to be finished", {
+        childStatus: priorChild.status,
+      });
+    }
+    return priorChild;
   }
 
   async function delegateFromRun(
@@ -300,27 +387,52 @@ export function runDelegationService(
     if (parent.status !== "running") {
       throw conflict("Delegation requires an active running heartbeat", { status: parent.status });
     }
-    if (parent.delegationStatus === "pending") {
-      throw conflict("A delegation is already pending for this heartbeat run", {
-        delegationResultJson: parent.delegationResultJson ?? null,
-      });
-    }
 
     const parentContext = (parent.contextSnapshot ?? {}) as Record<string, unknown>;
 
+    // Idempotent retry: same clientKey returns the existing child.
+    const clientKey = readNonEmptyString(input.clientKey);
+    if (clientKey) {
+      const existing = await findChildByClientKey(parentRunId, clientKey);
+      if (existing) {
+        const status: DelegationStatus = isTerminalRunStatus(existing.status)
+          ? delegationStatusFromChild(existing)
+          : "pending";
+        return {
+          parentRunId,
+          childRunId: existing.id,
+          childIssueId: null,
+          delegationStatus: status,
+          a2aTaskState: delegationStatusToA2ATaskState(status),
+          wait: false,
+          reused: true,
+          ...(isTerminalRunStatus(existing.status)
+            ? { delegationResult: buildDelegationResult(existing) }
+            : {}),
+        };
+      }
+    }
+
+    const [sourceRuntime] = await db
+      .select({ runtimeConfig: agents.runtimeConfig })
+      .from(agents)
+      .where(eq(agents.id, sourceAgentId))
+      .limit(1);
+    const policy = parseDelegationPolicy(sourceRuntime?.runtimeConfig);
+
     const childDepth = nextDelegationDepth(parentContext);
-    if (childDepth > DELEGATION_MAX_DEPTH) {
+    if (childDepth > policy.maxDepth) {
       throw conflict(
-        `Delegation depth limit reached (max ${DELEGATION_MAX_DEPTH}); complete this work directly or restructure via child issues`,
-        { delegationDepth: childDepth, maxDepth: DELEGATION_MAX_DEPTH },
+        `Delegation depth limit reached (max ${policy.maxDepth}); complete this work directly or restructure via child issues`,
+        { delegationDepth: childDepth, maxDepth: policy.maxDepth },
       );
     }
 
-    const existingChildren = await countChildDelegations(parentRunId);
-    if (existingChildren >= DELEGATION_MAX_CHILDREN_PER_RUN) {
+    const existingChildren = await listChildren(parentRunId);
+    if (existingChildren.length >= policy.maxChildren) {
       throw conflict(
-        `Delegation budget exhausted for this run (max ${DELEGATION_MAX_CHILDREN_PER_RUN} children)`,
-        { childCount: existingChildren, maxChildren: DELEGATION_MAX_CHILDREN_PER_RUN },
+        `Delegation budget exhausted for this run (max ${policy.maxChildren} children)`,
+        { childCount: existingChildren.length, maxChildren: policy.maxChildren },
       );
     }
 
@@ -346,10 +458,24 @@ export function runDelegationService(
       });
     }
 
-    const parentIssueId = await resolveIssueId(sourceAgent.companyId, input.issueId, parentContext);
+    // Multi-turn follow-up resumes the prior child's adapter session.
+    const followUpChild = input.followUpToChildRunId
+      ? await resolveFollowUpChild({
+          followUpToChildRunId: input.followUpToChildRunId,
+          sourceAgentId,
+          targetAgentId: targetAgent.id,
+        })
+      : null;
+    const followUpContext = (followUpChild?.contextSnapshot ?? {}) as Record<string, unknown>;
 
-    let childIssueId: string | null = null;
-    if (input.createChildIssue && parentIssueId) {
+    const parentIssueId = followUpChild
+      ? readNonEmptyString(followUpContext.parentIssueId)
+      : await resolveIssueId(sourceAgent.companyId, input.issueId, parentContext);
+
+    let childIssueId: string | null = followUpChild
+      ? readNonEmptyString(followUpContext.childIssueId) ?? readNonEmptyString(followUpContext.issueId)
+      : null;
+    if (!followUpChild && input.createChildIssue && parentIssueId) {
       childIssueId = await createDelegationChildIssue({
         companyId: sourceAgent.companyId,
         parentIssueId,
@@ -361,6 +487,7 @@ export function runDelegationService(
           `Parent run: ${parentRunId}`,
           "",
           input.task,
+          ...(input.expectedOutput ? ["", "### Expected output", input.expectedOutput] : []),
         ].join("\n"),
         sourceRunId: parentRunId,
         sourceAgentId: sourceAgent.id,
@@ -368,7 +495,18 @@ export function runDelegationService(
     }
 
     const delegationIssueId = childIssueId ?? parentIssueId;
-    const idempotencyKey = `delegate:${parentRunId}:${targetAgent.id}:${delegationIssueId ?? "no-issue"}:${existingChildren}`;
+    const idempotencyKey = `delegate:${parentRunId}:${targetAgent.id}:${delegationIssueId ?? "no-issue"}:${existingChildren.length}`;
+
+    const handoffMarkdown = [
+      followUpChild ? "## A2A delegation follow-up (Paperclip)" : "## A2A delegation (Paperclip)",
+      `From agent: ${sourceAgent.name}`,
+      `Parent run: ${parentRunId}`,
+      delegationIssueId ? `Issue: ${delegationIssueId}` : null,
+      followUpChild ? `Continues session from run: ${followUpChild.id}` : null,
+      "",
+      input.task,
+      ...(input.expectedOutput ? ["", "### Expected output", input.expectedOutput] : []),
+    ].filter((line): line is string => line !== null).join("\n");
 
     const childRun = await deps.enqueueWakeup(targetAgent.id, {
       source: "automation",
@@ -380,14 +518,8 @@ export function runDelegationService(
       payload: {
         issueId: delegationIssueId,
         taskId: delegationIssueId,
-        paperclipSessionHandoffMarkdown: [
-          "## A2A delegation (Paperclip)",
-          `From agent: ${sourceAgent.name}`,
-          `Parent run: ${parentRunId}`,
-          delegationIssueId ? `Issue: ${delegationIssueId}` : null,
-          "",
-          input.task,
-        ].filter(Boolean).join("\n"),
+        ...(followUpChild ? { resumeFromRunId: followUpChild.id } : {}),
+        paperclipSessionHandoffMarkdown: handoffMarkdown,
       },
       contextSnapshot: {
         issueId: delegationIssueId,
@@ -398,6 +530,9 @@ export function runDelegationService(
         delegatedFromAgentId: sourceAgent.id,
         delegationTask: input.task,
         delegationDepth: childDepth,
+        ...(clientKey ? { delegationClientKey: clientKey } : {}),
+        ...(input.expectedOutput ? { delegationExpectedOutput: input.expectedOutput } : {}),
+        ...(followUpChild ? { delegationFollowUpOfRunId: followUpChild.id } : {}),
         parentIssueId,
         childIssueId,
       },
@@ -424,12 +559,8 @@ export function runDelegationService(
           livenessReason: `Delegated to ${targetAgent.name}`,
           delegationStatus: "pending",
           delegationResultJson: {
-            childRunId: childRun.id,
-            childAgentId: targetAgent.id,
-            childAgentName: targetAgent.name,
-            childIssueId,
-            delegationDepth: childDepth,
-            task: input.task,
+            lastDelegatedChildRunId: childRun.id,
+            childCount: existingChildren.length + 1,
           },
           updatedAt: new Date(),
         })
@@ -457,6 +588,7 @@ export function runDelegationService(
         targetAgentId: targetAgent.id,
         childIssueId,
         delegationDepth: childDepth,
+        followUpOfRunId: followUpChild?.id ?? null,
         wait: input.wait,
       },
     });
@@ -494,9 +626,12 @@ export function runDelegationService(
 
     const delegationResult = buildDelegationResult(latestChild);
     const delegationStatus = delegationStatusFromChild(latestChild);
-    await finalizeParentDelegation(parentRunId, latestChild, delegationStatus, delegationResult, {
-      enqueueParentContinuation: false,
-    });
+    await mirrorChildDelegationStatus(latestChild);
+    const siblings = await listChildren(parentRunId);
+    const allTerminal = siblings.every((sibling) => isTerminalRunStatus(sibling.status));
+    if (allTerminal) {
+      await settleParentDelegation(parentRunId, siblings, { enqueueParentContinuation: false });
+    }
 
     return {
       parentRunId,
@@ -506,6 +641,8 @@ export function runDelegationService(
       a2aTaskState: delegationStatusToA2ATaskState(delegationStatus),
       wait: true,
       timedOut: false,
+      allChildrenTerminal: allTerminal,
+      pendingChildren: siblings.filter((sibling) => !isTerminalRunStatus(sibling.status)).length,
       childRun: {
         id: latestChild.id,
         status: latestChild.status,
@@ -515,34 +652,54 @@ export function runDelegationService(
     };
   }
 
+  /** Mirror the terminal delegation status onto the child row (informational). */
+  async function mirrorChildDelegationStatus(childRun: HeartbeatRunRow) {
+    if (!isTerminalRunStatus(childRun.status)) return;
+    await db
+      .update(heartbeatRuns)
+      .set({
+        delegationStatus: delegationStatusFromChild(childRun),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, childRun.id),
+          eq(heartbeatRuns.delegationStatus, "pending"),
+        ),
+      );
+  }
+
   /**
-   * Compare-and-set finalize: only the caller that transitions the parent's
-   * `delegationStatus` away from `pending` performs side effects (continuation
-   * wake). This makes the wait:true HTTP loop and the heartbeat finalize path
-   * race-safe when both observe the child completing.
+   * Join + compare-and-set settle: aggregates all children and flips the
+   * parent's `delegationStatus` away from `pending`. Only the CAS winner
+   * performs side effects (the joined continuation wake), which makes the
+   * wait:true HTTP path, concurrent child finalizers, and the sweep race-safe.
    */
-  async function finalizeParentDelegation(
+  async function settleParentDelegation(
     parentRunId: string,
-    childRun: HeartbeatRunRow,
-    delegationStatus: DelegationStatus,
-    delegationResult: ReturnType<typeof buildDelegationResult>,
+    children: HeartbeatRunRow[],
     options: { enqueueParentContinuation: boolean },
-  ) {
+  ): Promise<boolean> {
+    if (children.length === 0) return false;
+    const results = children.map((child) => buildDelegationResult(child));
+    const aggregate = aggregateDelegationStatus(children);
+    const counts = {
+      total: children.length,
+      completed: children.filter((child) => child.status === "succeeded").length,
+      failed: children.filter((child) => child.status === "failed" || child.status === "timed_out").length,
+      cancelled: children.filter((child) => child.status === "cancelled").length,
+    };
+
     const updatedParent = await db
       .update(heartbeatRuns)
       .set({
-        delegationStatus,
-        delegationResultJson: delegationResult as unknown as Record<string, unknown>,
-        ...(delegationStatus === "completed" ? { livenessState: "advanced" } : {}),
-        ...(delegationStatus === "failed" || delegationStatus === "cancelled"
-          ? { livenessState: "needs_followup" }
-          : {}),
+        delegationStatus: aggregate,
+        delegationResultJson: { aggregate, counts, children: results } as unknown as Record<string, unknown>,
+        ...(aggregate === "completed" ? { livenessState: "advanced" } : { livenessState: "needs_followup" }),
         livenessReason:
-          delegationStatus === "completed"
-            ? `Delegation to child run ${childRun.id} completed`
-            : delegationStatus === "cancelled"
-              ? `Delegation to child run ${childRun.id} was cancelled`
-              : `Delegation child run ${childRun.id} ended with ${childRun.status}`,
+          aggregate === "completed"
+            ? `All ${counts.total} delegated child run(s) completed`
+            : `Delegated children finished with mixed outcomes (${counts.completed} ok, ${counts.failed} failed, ${counts.cancelled} cancelled)`,
         updatedAt: new Date(),
       })
       .where(
@@ -554,20 +711,16 @@ export function runDelegationService(
       .returning()
       .then((rows) => rows[0] ?? null);
 
-    await db
-      .update(heartbeatRuns)
-      .set({
-        delegationStatus,
-        delegationResultJson: delegationResult as unknown as Record<string, unknown>,
-        updatedAt: new Date(),
-      })
-      .where(eq(heartbeatRuns.id, childRun.id));
+    // Lost the CAS (another path already settled) — no side effects.
+    if (!updatedParent) return false;
 
-    // Lost the CAS (another path already finalized) — no side effects.
-    if (!updatedParent) return;
+    // Keep child mirror flags consistent so the sweep never re-processes them.
+    for (const child of children) {
+      await mirrorChildDelegationStatus(child);
+    }
 
-    if (!options.enqueueParentContinuation) return;
-    if (!CONTINUATION_ELIGIBLE_PARENT_STATUSES.has(updatedParent.status as HeartbeatRunStatus)) return;
+    if (!options.enqueueParentContinuation) return true;
+    if (!CONTINUATION_ELIGIBLE_PARENT_STATUSES.has(updatedParent.status as HeartbeatRunStatus)) return true;
 
     const parentContext = updatedParent.contextSnapshot as Record<string, unknown> | null;
     await deps.enqueueWakeup(updatedParent.agentId, {
@@ -576,22 +729,24 @@ export function runDelegationService(
       reason: DELEGATION_CHILD_COMPLETED_WAKE_REASON,
       requestedByActorType: "system",
       requestedByActorId: "run_delegation",
-      idempotencyKey: `delegation-complete:${parentRunId}:${childRun.id}`,
+      idempotencyKey: `delegation-complete:${parentRunId}`,
       contextSnapshot: {
         issueId: readNonEmptyString(parentContext?.issueId),
         taskId: readNonEmptyString(parentContext?.taskId),
         wakeReason: DELEGATION_CHILD_COMPLETED_WAKE_REASON,
-        delegatedChildRunId: childRun.id,
-        delegationResult,
+        delegationAggregate: aggregate,
+        delegationCounts: counts,
+        delegationResults: results,
         delegationDepth: typeof parentContext?.delegationDepth === "number" ? parentContext.delegationDepth : 0,
         delegationParentRunId: parentRunId,
       },
       payload: {
-        delegationResult,
+        delegationAggregate: aggregate,
+        delegationResults: results,
         parentRunId,
-        childRunId: childRun.id,
       },
     });
+    return true;
   }
 
   /** CAS abort: only flips `pending` → `cancelled`; returns whether a row changed. */
@@ -617,11 +772,13 @@ export function runDelegationService(
   /**
    * Called from every child-terminal path in the heartbeat (success, failure,
    * cancellation). Resolves in-process waiters first so `wait: true` callers
-   * return immediately, then settles the parent's delegation state.
+   * return immediately, then joins the fan-out: the parent settles only after
+   * ALL children reach a terminal status (one wake with all results).
    */
   async function handleChildRunCompleted(childRun: HeartbeatRunRow) {
     if (!childRun.parentRunId) return;
     notifyChildRunTerminal(childRun);
+    await mirrorChildDelegationStatus(childRun);
 
     const parent = await deps.getRun(childRun.parentRunId);
     if (!parent || parent.delegationStatus !== "pending") return;
@@ -630,11 +787,13 @@ export function runDelegationService(
       return;
     }
 
-    const delegationResult = buildDelegationResult(childRun);
-    const delegationStatus = delegationStatusFromChild(childRun);
-    await finalizeParentDelegation(childRun.parentRunId, childRun, delegationStatus, delegationResult, {
+    const children = await listChildren(childRun.parentRunId);
+    if (!children.every((child) => isTerminalRunStatus(child.status))) return;
+
+    const settledNow = await settleParentDelegation(childRun.parentRunId, children, {
       enqueueParentContinuation: true,
     });
+    if (!settledNow) return;
 
     await logActivity(db, {
       companyId: childRun.companyId,
@@ -647,7 +806,8 @@ export function runDelegationService(
       entityId: childRun.id,
       details: {
         parentRunId: parent.id,
-        delegationStatus,
+        childCount: children.length,
+        aggregate: aggregateDelegationStatus(children),
       },
     });
   }
@@ -680,6 +840,30 @@ export function runDelegationService(
     await abortParentDelegationState(parentRunId, reason);
   }
 
+  /** Cancel one specific delegated child (Cursor-style interrupt of a single subagent). */
+  async function cancelDelegatedChild(parentRunId: string, childRunId: string, reason: string) {
+    const child = await deps.getRun(childRunId);
+    if (!child || child.parentRunId !== parentRunId) {
+      throw notFound("Delegated child run not found for this parent run");
+    }
+    if (isTerminalRunStatus(child.status)) return child;
+
+    const cancelled = await deps.cancelRun(childRunId, reason);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        delegationStatus: "cancelled",
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, childRunId));
+    if (cancelled) {
+      notifyChildRunTerminal(cancelled);
+      // Cancelling one child may complete the join for the remaining fan-out.
+      await handleChildRunCompleted({ ...cancelled, parentRunId });
+    }
+    return cancelled;
+  }
+
   /**
    * Safety net for terminal paths that bypass the direct hooks (recovery
    * timeouts, server restarts mid-delegation, crashed finalizers). Settles any
@@ -705,31 +889,23 @@ export function runDelegationService(
       const current = await deps.getRun(row.id);
       if (!current || current.delegationStatus !== "pending") continue;
 
-      const children = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.parentRunId, row.id))
-        .orderBy(heartbeatRuns.createdAt);
+      const children = await listChildren(row.id);
 
       if (children.length > 0) {
-        // Row is a delegating parent (possibly mid-chain). Settle it once its
-        // latest child is terminal.
-        const lastChild = children[children.length - 1]!;
-        if (!isTerminalRunStatus(lastChild.status)) continue;
-        await handleChildRunCompleted(lastChild);
-        settled += 1;
+        // Row is a delegating parent (possibly mid-chain). Settle it once all
+        // children are terminal.
+        if (!children.every((child) => isTerminalRunStatus(child.status))) continue;
+        const didSettle = await settleParentDelegation(row.id, children, { enqueueParentContinuation: true });
+        if (didSettle) settled += 1;
         continue;
       }
 
       if (row.parentRunId) {
         // Pure child mirror row: settled by its parent's sweep entry when the
         // child is terminal; a still-running child is healthy, skip.
-        if (!isTerminalRunStatus(row.status)) continue;
-        const childRow = await deps.getRun(row.id);
-        if (childRow) {
-          await handleChildRunCompleted(childRow);
-          settled += 1;
-        }
+        if (!isTerminalRunStatus(current.status)) continue;
+        await handleChildRunCompleted(current);
+        settled += 1;
         continue;
       }
 
@@ -741,31 +917,37 @@ export function runDelegationService(
     return { checked: pendingRows.length, settled };
   }
 
-  async function getDelegationState(parentRunId: string) {
+  async function getDelegationState(parentRunId: string, options?: { waitAllSec?: number }) {
     const parent = await deps.getRun(parentRunId);
     if (!parent) return null;
 
-    const children = await db
-      .select({
-        id: heartbeatRuns.id,
-        agentId: heartbeatRuns.agentId,
-        status: heartbeatRuns.status,
-        delegationStatus: heartbeatRuns.delegationStatus,
-        createdAt: heartbeatRuns.createdAt,
-        finishedAt: heartbeatRuns.finishedAt,
-      })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.parentRunId, parentRunId))
-      .orderBy(heartbeatRuns.createdAt);
+    if (options?.waitAllSec && options.waitAllSec > 0) {
+      const timeoutMs = Math.min(options.waitAllSec, DELEGATION_WAIT_TIMEOUT_MAX_SEC) * 1000;
+      await waitForAllChildrenTerminal(parentRunId, timeoutMs);
+    }
 
-    const delegationStatus = (parent.delegationStatus ?? null) as DelegationStatus | null;
+    const children = await listChildren(parentRunId);
+    const pendingChildren = children.filter((child) => !isTerminalRunStatus(child.status)).length;
+    const latestParent = await deps.getRun(parentRunId);
+    const delegationStatus = (latestParent?.delegationStatus ?? null) as DelegationStatus | null;
+
     return {
       runId: parent.id,
       companyId: parent.companyId,
       delegationStatus,
       a2aTaskState: delegationStatus ? delegationStatusToA2ATaskState(delegationStatus) : null,
-      delegationResult: parent.delegationResultJson ?? null,
-      children,
+      delegationResult: latestParent?.delegationResultJson ?? null,
+      allChildrenTerminal: children.length > 0 && pendingChildren === 0,
+      pendingChildren,
+      children: children.map((child) => ({
+        id: child.id,
+        agentId: child.agentId,
+        status: child.status,
+        delegationStatus: child.delegationStatus,
+        result: isTerminalRunStatus(child.status) ? buildDelegationResult(child) : null,
+        createdAt: child.createdAt,
+        finishedAt: child.finishedAt,
+      })),
     };
   }
 
@@ -773,6 +955,7 @@ export function runDelegationService(
     delegateFromRun,
     handleChildRunCompleted,
     cancelChildDelegations,
+    cancelDelegatedChild,
     abortParentDelegationState,
     sweepStalePendingDelegations,
     getDelegationState,

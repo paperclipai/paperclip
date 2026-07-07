@@ -26,6 +26,7 @@ import {
   wakeAgentSchema,
   updateAgentSchema,
   delegateRunSchema,
+  delegationWaitQuerySchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
 } from "@paperclipai/shared";
@@ -2076,6 +2077,28 @@ export function agentRoutes(
   });
 
   /**
+   * A2A discovery directory: compact agent cards for every agent the actor can
+   * see in the company. Lets orchestrators (and delegating agents) pick a
+   * delegation target without N individual card fetches.
+   */
+  router.get("/companies/:companyId/agent-cards", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const visibleAgents = await filterAgentsForActor(req, await svc.list(companyId));
+    res.json(visibleAgents.map((agent) => ({
+      agentId: agent.id,
+      name: agent.name,
+      role: agent.role,
+      title: agent.title ?? null,
+      status: agent.status,
+      reportsTo: agent.reportsTo ?? null,
+      description: agent.capabilities ?? agent.title ?? agent.role,
+      cardUrl: `/api/agents/${agent.id}/agent-card`,
+      delegable: agent.status !== "terminated" && agent.status !== "pending_approval",
+    })));
+  });
+
+  /**
    * A2A-style Agent Card (Google A2A protocol discovery shape). Advertises the
    * agent's identity and Paperclip's delegation surface so A2A-aligned clients
    * (BizCursor, external orchestrators) can discover how to hand work to this
@@ -3606,13 +3629,57 @@ export function agentRoutes(
       res.status(403).json({ error: "Agents can only read their own delegation state" });
       return;
     }
-    const state = await heartbeat.getDelegationState(runId);
+    const parsedQuery = delegationWaitQuerySchema.safeParse(req.query ?? {});
+    if (!parsedQuery.success) {
+      res.status(400).json({ error: parsedQuery.error.flatten() });
+      return;
+    }
+    const state = await heartbeat.getDelegationState(runId, {
+      waitAllSec: parsedQuery.data.waitAllSec,
+    });
     if (!state) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
     const { companyId: _companyId, ...payload } = state;
     res.json(payload);
+  });
+
+  router.post("/heartbeat-runs/:runId/delegations/:childRunId/cancel", async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return;
+    }
+    const runId = req.params.runId as string;
+    const childRunId = req.params.childRunId as string;
+    if (req.actor.runId !== runId) {
+      res.status(403).json({ error: "X-Paperclip-Run-Id must match the delegating run" });
+      return;
+    }
+    const existing = await heartbeat.getRun(runId);
+    if (!existing) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    if (existing.agentId !== req.actor.agentId) {
+      res.status(403).json({ error: "Only the run owner can cancel its delegations" });
+      return;
+    }
+
+    try {
+      const reason = typeof req.body?.reason === "string" && req.body.reason.trim()
+        ? req.body.reason.trim().slice(0, 2000)
+        : "Cancelled by delegating agent";
+      const cancelled = await heartbeat.cancelDelegatedChild(runId, childRunId, reason);
+      res.json({ childRunId, status: cancelled?.status ?? "cancelled" });
+    } catch (err) {
+      if (err instanceof HttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
   });
 
   router.post("/heartbeat-runs/:runId/watchdog-decisions", async (req, res) => {

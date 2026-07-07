@@ -1027,6 +1027,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/agent-cards",
+  tags: ["agents"],
+  summary: "List compact A2A agent cards for delegation discovery",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "patch",
   path: "/api/agents/{id}",
   tags: ["agents"],
@@ -2857,8 +2866,23 @@ registry.registerPath({
   method: "get",
   path: "/api/heartbeat-runs/{runId}/delegation",
   tags: ["runs"],
-  summary: "Get the delegation state and child runs for a heartbeat run",
-  request: { params: z.object({ runId: z.string() }) },
+  summary: "Get the delegation state and child runs for a heartbeat run (waitAllSec long-polls the join)",
+  request: {
+    params: z.object({ runId: z.string() }),
+    query: z.object({ waitAllSec: z.number().int().optional() }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/heartbeat-runs/{runId}/delegations/{childRunId}/cancel",
+  tags: ["runs"],
+  summary: "Cancel one delegated child run from the delegating run",
+  request: {
+    params: z.object({ runId: z.string(), childRunId: z.string() }),
+    body: jsonBody(z.object({ reason: z.string().optional() })),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 

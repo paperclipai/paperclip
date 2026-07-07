@@ -161,14 +161,106 @@ describeEmbeddedPostgres("runDelegationService (integration)", () => {
     expect(parent?.livenessState).toBe("awaiting_delegation");
   });
 
-  it("rejects duplicate pending delegation with 409", async () => {
+  it("supports parallel fan-out and joins with a single continuation wake", async () => {
+    const { companyId, ceoId, devId } = await seedOrg();
+    const parentRunId = await seedRun({ companyId, agentId: ceoId });
+    const { svc, wakeCalls } = buildService();
+
+    const first = await svc.delegateFromRun(parentRunId, ceoId, {
+      targetAgentId: devId,
+      task: "first parallel task",
+      issueId: null,
+      createChildIssue: false,
+      childIssueTitle: null,
+      wait: false,
+      waitTimeoutSec: 120,
+    });
+    const second = await svc.delegateFromRun(parentRunId, ceoId, {
+      targetAgentId: devId,
+      task: "second parallel task",
+      issueId: null,
+      createChildIssue: false,
+      childIssueTitle: null,
+      wait: false,
+      waitTimeoutSec: 120,
+    });
+    expect(first.childRunId).not.toBe(second.childRunId);
+
+    // Parent exits successfully while children run.
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, parentRunId));
+    wakeCalls.length = 0;
+
+    // First child finishes: no join yet, no wake.
+    const firstChild = await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", resultJson: { summary: "one done" }, finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, first.childRunId))
+      .returning()
+      .then((rows) => rows[0]!);
+    await svc.handleChildRunCompleted(firstChild);
+    expect(wakeCalls).toHaveLength(0);
+    expect((await getRunRow(parentRunId))?.delegationStatus).toBe("pending");
+
+    // Second child finishes: join settles the parent with ONE wake carrying all results.
+    const secondChild = await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", resultJson: { summary: "two done" }, finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, second.childRunId))
+      .returning()
+      .then((rows) => rows[0]!);
+    await svc.handleChildRunCompleted(secondChild);
+
+    expect(wakeCalls).toHaveLength(1);
+    expect(wakeCalls[0]!.opts?.reason).toBe("delegation_child_completed");
+    const results = (wakeCalls[0]!.opts?.contextSnapshot as Record<string, unknown>).delegationResults as unknown[];
+    expect(results).toHaveLength(2);
+
+    const parent = await getRunRow(parentRunId);
+    expect(parent?.delegationStatus).toBe("completed");
+  });
+
+  it("returns the existing child for a repeated clientKey (idempotent retry)", async () => {
     const { companyId, ceoId, devId } = await seedOrg();
     const parentRunId = await seedRun({ companyId, agentId: ceoId });
     const { svc } = buildService();
 
-    await svc.delegateFromRun(parentRunId, ceoId, {
+    const first = await svc.delegateFromRun(parentRunId, ceoId, {
       targetAgentId: devId,
-      task: "first",
+      task: "retry-safe task",
+      issueId: null,
+      createChildIssue: false,
+      childIssueTitle: null,
+      wait: false,
+      waitTimeoutSec: 120,
+      clientKey: "retry-1",
+    });
+
+    const retried = await svc.delegateFromRun(parentRunId, ceoId, {
+      targetAgentId: devId,
+      task: "retry-safe task",
+      issueId: null,
+      createChildIssue: false,
+      childIssueTitle: null,
+      wait: false,
+      waitTimeoutSec: 120,
+      clientKey: "retry-1",
+    });
+
+    expect(retried.childRunId).toBe(first.childRunId);
+    expect((retried as { reused?: boolean }).reused).toBe(true);
+
+    const children = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.parentRunId, parentRunId));
+    expect(children).toHaveLength(1);
+  });
+
+  it("follow-up delegation resumes the prior child session", async () => {
+    const { companyId, ceoId, devId } = await seedOrg();
+    const parentRunId = await seedRun({ companyId, agentId: ceoId });
+    const { svc, wakeCalls } = buildService();
+
+    const first = await svc.delegateFromRun(parentRunId, ceoId, {
+      targetAgentId: devId,
+      task: "initial work",
       issueId: null,
       createChildIssue: false,
       childIssueTitle: null,
@@ -176,17 +268,54 @@ describeEmbeddedPostgres("runDelegationService (integration)", () => {
       waitTimeoutSec: 120,
     });
 
-    await expect(
-      svc.delegateFromRun(parentRunId, ceoId, {
-        targetAgentId: devId,
-        task: "second",
-        issueId: null,
-        createChildIssue: false,
-        childIssueTitle: null,
-        wait: false,
-        waitTimeoutSec: 120,
-      }),
-    ).rejects.toMatchObject({ status: 409 });
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, first.childRunId));
+    const firstChild = await getRunRow(first.childRunId);
+    await svc.handleChildRunCompleted(firstChild!);
+
+    wakeCalls.length = 0;
+    const followUp = await svc.delegateFromRun(parentRunId, ceoId, {
+      targetAgentId: devId,
+      task: "please also add tests",
+      issueId: null,
+      createChildIssue: false,
+      childIssueTitle: null,
+      wait: false,
+      waitTimeoutSec: 120,
+      followUpToChildRunId: first.childRunId,
+    });
+
+    expect(followUp.childRunId).not.toBe(first.childRunId);
+    expect(wakeCalls).toHaveLength(1);
+    expect((wakeCalls[0]!.opts?.payload as Record<string, unknown>).resumeFromRunId).toBe(first.childRunId);
+    const context = (await getRunRow(followUp.childRunId))?.contextSnapshot as Record<string, unknown>;
+    expect(context.delegationFollowUpOfRunId).toBe(first.childRunId);
+  });
+
+  it("cancelDelegatedChild cancels one child and joins the rest", async () => {
+    const { companyId, ceoId, devId } = await seedOrg();
+    const parentRunId = await seedRun({ companyId, agentId: ceoId });
+    const { svc } = buildService();
+
+    const first = await svc.delegateFromRun(parentRunId, ceoId, {
+      targetAgentId: devId,
+      task: "will be cancelled",
+      issueId: null,
+      createChildIssue: false,
+      childIssueTitle: null,
+      wait: false,
+      waitTimeoutSec: 120,
+    });
+
+    const cancelled = await svc.cancelDelegatedChild(parentRunId, first.childRunId, "changed my mind");
+    expect(cancelled?.status).toBe("cancelled");
+    expect((await getRunRow(first.childRunId))?.delegationStatus).toBe("cancelled");
+
+    // Parent still running: join settles delegation as cancelled without a wake.
+    const parent = await getRunRow(parentRunId);
+    expect(parent?.delegationStatus).toBe("cancelled");
   });
 
   it("rejects delegation to a non-report", async () => {

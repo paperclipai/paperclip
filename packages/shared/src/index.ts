@@ -1020,6 +1020,7 @@ export {
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
   delegateRunSchema,
+  delegationWaitQuerySchema,
   issueCommentAuthorTypeSchema,
   issueCommentPresentationSchema,
   issueCommentMetadataRowSchema,

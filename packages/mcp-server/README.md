@@ -63,7 +63,9 @@ Write tools:
 - `paperclipCheckoutIssue`
 - `paperclipDelegate`
 - `paperclipGetDelegation`
+- `paperclipCancelDelegation`
 - `paperclipGetAgentCard`
+- `paperclipListAgentCards`
 - `paperclipReleaseIssue`
 - `paperclipAddComment`
 - `paperclipSuggestTasks`

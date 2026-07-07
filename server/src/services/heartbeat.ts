@@ -1147,6 +1147,8 @@ const heartbeatRunListColumns = {
   logBytes: heartbeatRuns.logBytes,
   logSha256: heartbeatRuns.logSha256,
   logCompressed: heartbeatRuns.logCompressed,
+  parentRunId: heartbeatRuns.parentRunId,
+  delegationStatus: heartbeatRuns.delegationStatus,
   stdoutExcerpt: sql<string | null>`NULL`.as("stdoutExcerpt"),
   stderrExcerpt: sql<string | null>`NULL`.as("stderrExcerpt"),
   errorCode: heartbeatRuns.errorCode,
@@ -11826,7 +11828,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       input: DelegateRunInput,
     ) => delegationRef.svc!.delegateFromRun(parentRunId, sourceAgentId, input),
 
-    getDelegationState: (parentRunId: string) => delegationRef.svc!.getDelegationState(parentRunId),
+    getDelegationState: (parentRunId: string, options?: { waitAllSec?: number }) =>
+      delegationRef.svc!.getDelegationState(parentRunId, options),
+
+    cancelDelegatedChild: (parentRunId: string, childRunId: string, reason: string) =>
+      delegationRef.svc!.cancelDelegatedChild(parentRunId, childRunId, reason),
 
     cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason),
 

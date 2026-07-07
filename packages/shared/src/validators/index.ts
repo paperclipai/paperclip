@@ -572,5 +572,6 @@ export {
 
 export {
   delegateRunSchema,
+  delegationWaitQuerySchema,
   type DelegateRunInput,
 } from "./delegation.js";

@@ -482,7 +482,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipDelegate",
-      "Delegate work to a report agent from the current heartbeat run (A2A). Requires PAPERCLIP_RUN_ID. Prefer this over creating child issues manually when the target should execute synchronously or with automatic parent continuation. On wait timeout, use paperclipGetDelegation to recover the result.",
+      "Delegate work to a report agent from the current heartbeat run (A2A). Requires PAPERCLIP_RUN_ID. Supports parallel fan-out (call multiple times with wait:false, then join with paperclipGetDelegation waitAllSec), multi-turn follow-up on a prior child session (followUpToChildRunId), idempotent retries (clientKey), and a structured expectedOutput contract. On wait timeout, use paperclipGetDelegation to recover the result.",
       delegateRunSchema,
       async (body) => {
         const runId = client.defaults.runId;
@@ -498,14 +498,39 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipGetDelegation",
-      "Read the delegation state (status, child runs, result) for a heartbeat run. Use after a paperclipDelegate wait timeout, or from a delegation_child_completed wake, to fetch the child's result.",
-      z.object({ runId: z.string().uuid().optional().nullable() }),
-      async ({ runId }) => {
+      "Read the delegation state (aggregate status, per-child results) for a heartbeat run. Pass waitAllSec to long-poll until every delegated child finishes (join for parallel fan-out). Use after a paperclipDelegate wait timeout or from a delegation_child_completed wake.",
+      z.object({
+        runId: z.string().uuid().optional().nullable(),
+        waitAllSec: z.number().int().min(1).max(300).optional().nullable(),
+      }),
+      async ({ runId, waitAllSec }) => {
         const resolved = runId?.trim() || client.defaults.runId;
         if (!resolved) {
           throw new Error("paperclipGetDelegation requires a runId or PAPERCLIP_RUN_ID");
         }
-        return client.requestJson("GET", `/heartbeat-runs/${encodeURIComponent(resolved)}/delegation`);
+        const qs = waitAllSec ? `?waitAllSec=${waitAllSec}` : "";
+        return client.requestJson("GET", `/heartbeat-runs/${encodeURIComponent(resolved)}/delegation${qs}`, {
+          timeoutMs: (waitAllSec ? waitAllSec * 1000 : 0) + 30_000,
+        });
+      },
+    ),
+    makeTool(
+      "paperclipCancelDelegation",
+      "Cancel one delegated child run spawned by the current heartbeat run. Requires PAPERCLIP_RUN_ID.",
+      z.object({
+        childRunId: z.string().uuid(),
+        reason: z.string().trim().max(2000).optional().nullable(),
+      }),
+      async ({ childRunId, reason }) => {
+        const runId = client.defaults.runId;
+        if (!runId) {
+          throw new Error("paperclipCancelDelegation requires PAPERCLIP_RUN_ID for the active heartbeat run");
+        }
+        return client.requestJson(
+          "POST",
+          `/heartbeat-runs/${encodeURIComponent(runId)}/delegations/${encodeURIComponent(childRunId)}/cancel`,
+          { body: { reason: reason ?? undefined } },
+        );
       },
     ),
     makeTool(
@@ -513,6 +538,13 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "Get the A2A-style agent card for an agent (delegation discovery: identity, skills, delegation endpoint).",
       z.object({ agentId: z.string().uuid() }),
       async ({ agentId }) => client.requestJson("GET", `/agents/${encodeURIComponent(agentId)}/agent-card`),
+    ),
+    makeTool(
+      "paperclipListAgentCards",
+      "List compact A2A agent cards for a company (delegation discovery directory: who exists, who reports to whom, who is delegable).",
+      z.object({ companyId: companyIdOptional }),
+      async ({ companyId }) =>
+        client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/agent-cards`),
     ),
     makeTool(
       "paperclipReleaseIssue",

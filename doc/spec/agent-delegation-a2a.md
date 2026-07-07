@@ -19,14 +19,19 @@ This is **not** the full Google A2A protocol (Agent Cards, JSON-RPC). It is the 
 2. Child `heartbeat_runs` row linked via `parentRunId`.
 3. `wakeReason: a2a_delegate` on child wakeup (wired; replaces dead `a2a-bridge` stub path).
 4. `wait: true` — event-driven wait until child reaches terminal status (server cap 300s; in-process waiter notified from every child-terminal path, 10s fallback poll).
-5. `wait: false` — return immediately; parent receives automatic `delegation_child_completed` continuation when child completes (parent `succeeded` or `timed_out`; never after `cancelled`).
-6. Optional child issue creation for board audit trail.
-7. Org policy: target must be a **report** of source (walk `reportsTo` upward).
-8. Cancel propagation: cancelling or pausing the parent cancels non-terminal children (recursively through grandchildren) and settles the parent's delegation state.
-9. OpenCode-style guardrails: max chain depth `DELEGATION_MAX_DEPTH` (3), max `DELEGATION_MAX_CHILDREN_PER_RUN` (5) children per run, single pending delegation per run.
-10. `GET /api/heartbeat-runs/:runId/delegation` — recovery/read path after wait timeouts (agents read own runs; board reads any).
-11. A2A protocol alignment (Google/Linux Foundation): responses expose `a2aTaskState` (`submitted|working|completed|failed|canceled`) and `GET /api/agents/:id/agent-card` serves an A2A-style Agent Card for discovery.
-12. Sweeper safety net: heartbeat timer tick settles parents stuck in `delegationStatus: pending` whose children are all terminal (covers crashes/restarts mid-delegation).
+5. **Parallel fan-out with join** (Manus/OpenCode-style): multiple children per run (`wait: false` per call). The parent settles when the **last** child finishes; one `delegation_child_completed` wake fires with the aggregated results of the whole fan-out (Promise.allSettled semantics).
+6. **Multi-turn follow-up** (`followUpToChildRunId`): a new delegation to the same agent resumes the prior child's adapter session via the existing `resumeFromRunId` machinery — revisions and clarifications keep the subagent's context.
+7. **Synchronous join**: `GET /api/heartbeat-runs/:runId/delegation?waitAllSec=N` long-polls until every child is terminal (event-driven, same waiter registry).
+8. **Idempotent retries**: `clientKey` dedupes network-level retries — the same key returns the existing child instead of spawning a duplicate.
+9. **Structured output contract**: `expectedOutput` travels in the handoff and child issue so results come back in the requested shape.
+10. **Selective cancel**: `POST /api/heartbeat-runs/:runId/delegations/:childRunId/cancel` interrupts one child without tearing down the fan-out.
+11. Optional child issue creation for board audit trail.
+12. Org policy: target must be a **report** of source (walk `reportsTo` upward).
+13. Cancel propagation: cancelling or pausing the parent cancels non-terminal children (recursively through grandchildren) and settles the parent's delegation state.
+14. OpenCode-style guardrails with **per-agent overrides** (`runtimeConfig.delegation.{maxDepth,maxChildren}`): defaults `DELEGATION_MAX_DEPTH` (3, hard cap 10) and `DELEGATION_MAX_CHILDREN_PER_RUN` (5, hard cap 20).
+15. A2A protocol alignment (Google/Linux Foundation): responses expose `a2aTaskState` (`submitted|working|completed|failed|canceled`); `GET /api/agents/:id/agent-card` serves an A2A-style Agent Card; `GET /api/companies/:id/agent-cards` is the discovery directory.
+16. Sweeper safety net: heartbeat timer tick settles parents stuck in `delegationStatus: pending` whose children are all terminal (covers crashes/restarts mid-delegation).
+17. `parentRunId`/`delegationStatus` exposed in run list columns so UI/BizCursor can render delegation trees.
 
 ## 3. Non-goals (v1)
 
@@ -108,27 +113,30 @@ A2A-style Agent Card (Google A2A discovery shape): identity, provider, capabilit
 
 `cancelRun(parent)` and agent pause (`cancelActiveForAgent`) cancel queued/running children where `parentRunId = parent.id`, recursively (each child cancel propagates to its own children). Settling the parent's `delegationStatus` is CAS-guarded so no ghost continuation fires after cancellation.
 
-### Guardrails (OpenCode-style)
+### Guardrails (OpenCode-style, per-agent tunable)
 
-| Limit | Value | Behavior |
-|-------|-------|----------|
-| Chain depth | `DELEGATION_MAX_DEPTH` = 3 | 409 when exceeded |
-| Children per run | `DELEGATION_MAX_CHILDREN_PER_RUN` = 5 | 409 when exhausted |
-| Pending per run | 1 | 409 while a delegation is pending |
-| Wait cap | `DELEGATION_WAIT_TIMEOUT_MAX_SEC` = 300 | Clamped server-side |
+| Limit | Default | Hard cap | Override | Behavior |
+|-------|---------|----------|----------|----------|
+| Chain depth | 3 | 10 | `runtimeConfig.delegation.maxDepth` | 409 when exceeded |
+| Children per run | 5 | 20 | `runtimeConfig.delegation.maxChildren` | 409 when exhausted |
+| Wait cap | 300s | — | — | Clamped server-side |
 
-## 6. Continuation (async wait)
+Parallel fan-out replaces the earlier "one pending delegation per run" rule: a run may hold multiple pending children up to its budget; the join fires once when the last child lands.
 
-When child run finalizes and parent has `delegationStatus: pending` + `livenessState: awaiting_delegation`:
+## 6. Fan-out join and continuation
 
-1. Compare-and-set update of parent `delegationStatus` from child outcome (`WHERE delegationStatus = 'pending'`) — only the CAS winner performs side effects, making the wait:true HTTP path and the heartbeat finalize path race-safe.
-2. If the parent run already ended `succeeded` or `timed_out`, `enqueueWakeup` for the parent agent with `reason: delegation_child_completed` and payload containing the structured child result.
-3. If the parent is still `running` (agent kept working after `wait: false` or a wait timeout), no wake fires — the agent reads the result with `paperclipGetDelegation` / `GET /api/heartbeat-runs/:runId/delegation`.
-4. If the parent was `cancelled`, the delegation state is settled to `cancelled` with no wake (operator intent).
+When a child run finalizes and the parent has `delegationStatus: pending`:
+
+1. The child's terminal state is mirrored onto its row and any in-process `wait: true` waiter resolves immediately.
+2. If **any sibling is still non-terminal**, nothing else happens — the join waits for the last child.
+3. When the **last** child lands, a compare-and-set update flips the parent's `delegationStatus` from `pending` to the aggregate (`completed` if all succeeded; `failed` if any failed; else `cancelled`). Only the CAS winner performs side effects, making concurrent child finalizers, the wait:true HTTP path, and the sweep race-safe.
+4. If the parent run already ended `succeeded` or `timed_out`, one `delegation_child_completed` wake fires with `delegationResults` (per-child results array), `delegationAggregate`, and `delegationCounts`.
+5. If the parent is still `running` (agent kept working after `wait: false` or a wait timeout), no wake fires — the agent joins with `GET /api/heartbeat-runs/:runId/delegation?waitAllSec=N` or reads once without waiting.
+6. If the parent was `cancelled`, the delegation state settles to `cancelled` with no wake (operator intent).
 
 ### Terminal-path coverage
 
-`handleChildRunCompleted` fires from: normal adapter finalize (all outcomes), adapter-throw failure path, run cancellation (`cancelRunInternal`), process-loss reap (when no retry queues), and the periodic pending-delegation sweep in `tickTimers`.
+`handleChildRunCompleted` fires from: normal adapter finalize (all outcomes), adapter-throw failure path, run cancellation (`cancelRunInternal`), selective child cancel, process-loss reap (when no retry queues), and the periodic pending-delegation sweep in `tickTimers`.
 
 ## 7. MCP
 
