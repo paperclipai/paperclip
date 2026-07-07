@@ -1,12 +1,22 @@
 import { useMemo } from "react";
 import type {
   Agent,
+  GitWorktreeBranchAncestryVerdict,
   IssueRecoveryAction,
   IssueRecoveryActionKind,
   IssueRecoveryActionOutcome,
   IssueRecoveryActionStatus,
 } from "@paperclipai/shared";
-import { Eye, OctagonAlert, RefreshCw, Sparkles, TriangleAlert } from "lucide-react";
+import {
+  Eye,
+  GitBranch,
+  GitBranchPlus,
+  Loader2,
+  OctagonAlert,
+  RefreshCw,
+  Sparkles,
+  TriangleAlert,
+} from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,6 +41,18 @@ export type RecoveryResolveOutcome =
   | "false_positive_done"
   | "false_positive_in_review";
 
+/**
+ * Payload for the "Re-issue on isolated workspace" action (workspace_validation only).
+ * The caller composes an isolated-workspace re-issue whose git worktree bases off `baseRef`
+ * — the live (checked-out) branch that diverged, or its HEAD sha when the branch is detached.
+ */
+export interface RecoveryReissueRequest {
+  baseRef: string;
+  liveBranch: string | null;
+  liveHeadSha: string | null;
+  expectedBranch: string | null;
+}
+
 export interface IssueRecoveryActionCardProps {
   action: IssueRecoveryAction;
   agentMap?: ReadonlyMap<string, Agent>;
@@ -38,6 +60,14 @@ export interface IssueRecoveryActionCardProps {
   forcedState?: RecoveryCardCardState;
   /** Optional click handler for resolve menu actions. If omitted, the buttons are not rendered. */
   onResolve?: (outcome: RecoveryResolveOutcome) => void;
+  /**
+   * Optional handler for the workspace_validation "Re-issue on isolated workspace" action.
+   * Rendered only for a git-worktree branch-incoherence divergence with a resolvable live ref.
+   * If omitted, the re-issue button is not shown.
+   */
+  onReissueIsolated?: (request: RecoveryReissueRequest) => void;
+  /** Whether an isolated re-issue is currently in flight (disables the action + shows a spinner). */
+  reissuePending?: boolean;
   /** Whether the viewer can run destructive board-only actions (e.g. false-positive dismissal). */
   canFalsePositive?: boolean;
   className?: string;
@@ -165,6 +195,169 @@ function readEvidenceRunId(action: IssueRecoveryAction, key: "sourceRunId" | "co
   const evidence = action.evidence ?? {};
   const next = readEvidenceString(evidence[key]);
   return next;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function asAncestryVerdict(value: unknown): GitWorktreeBranchAncestryVerdict | null {
+  return value === "ancestor" || value === "diverged" || value === "unknown" ? value : null;
+}
+
+function formatShortSha(sha: string | null): string | null {
+  if (!sha) return null;
+  return sha.length > 10 ? sha.slice(0, 10) : sha;
+}
+
+/**
+ * Diagnosis derived from a workspace_validation recovery action whose underlying failure is a
+ * git-worktree branch incoherence. The evidence carries the recorded ("expected") branch, the
+ * live ("actual"/checked-out) branch, both HEAD shas, and a server-computed ancestry verdict +
+ * plain-language explanation of why the run was declined.
+ */
+interface WorkspaceDivergence {
+  expectedBranch: string | null;
+  liveBranch: string | null;
+  expectedHeadSha: string | null;
+  liveHeadSha: string | null;
+  ancestryVerdict: GitWorktreeBranchAncestryVerdict | null;
+  plainLanguageReason: string | null;
+  cleanliness: "clean" | "dirty" | "unknown" | null;
+  /** Ref a re-issue should base off — the live branch when known, else the live HEAD sha. */
+  reissueBaseRef: string | null;
+}
+
+function readWorkspaceDivergence(action: IssueRecoveryAction): WorkspaceDivergence | null {
+  if (action.kind !== "workspace_validation") return null;
+  const workspaceValidation = asRecord(action.evidence?.workspaceValidation);
+  if (!workspaceValidation) return null;
+  if (workspaceValidation.reason !== "git_worktree_branch_incoherence") return null;
+  const provenance = asRecord(workspaceValidation.provenance) ?? {};
+  const expectedBranch = asNonEmptyString(workspaceValidation.expectedBranch);
+  const liveBranch = asNonEmptyString(workspaceValidation.actualBranch);
+  const expectedHeadSha = asNonEmptyString(provenance.expectedHeadSha);
+  const liveHeadSha = asNonEmptyString(provenance.actualHeadSha);
+  const cleanlinessRaw = workspaceValidation.cleanliness;
+  const cleanliness =
+    cleanlinessRaw === "clean" || cleanlinessRaw === "dirty" || cleanlinessRaw === "unknown"
+      ? cleanlinessRaw
+      : null;
+  return {
+    expectedBranch,
+    liveBranch,
+    expectedHeadSha,
+    liveHeadSha,
+    ancestryVerdict: asAncestryVerdict(provenance.ancestryVerdict),
+    plainLanguageReason: asNonEmptyString(provenance.plainLanguageReason),
+    cleanliness,
+    reissueBaseRef: liveBranch ?? liveHeadSha,
+  };
+}
+
+const ANCESTRY_BADGE: Record<
+  GitWorktreeBranchAncestryVerdict,
+  { label: string; className: string }
+> = {
+  ancestor: {
+    label: "Forward-only",
+    className: "border-emerald-400/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+  },
+  diverged: {
+    label: "Diverged",
+    className: "border-red-400/50 bg-red-500/10 text-red-700 dark:text-red-300",
+  },
+  unknown: {
+    label: "Ancestry unknown",
+    className: "border-border bg-muted/60 text-muted-foreground",
+  },
+};
+
+function BranchFacet({
+  label,
+  branch,
+  sha,
+}: {
+  label: string;
+  branch: string | null;
+  sha: string | null;
+}) {
+  const shortSha = formatShortSha(sha);
+  return (
+    <div className="min-w-0 rounded-md border border-border/70 bg-background/60 px-2.5 py-2">
+      <div className="text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
+        {label}
+      </div>
+      <div className="mt-1 flex items-center gap-1.5">
+        <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+        {branch ? (
+          <code className="truncate font-mono text-[12px] text-foreground/90">{branch}</code>
+        ) : (
+          <span className="text-[12px] italic text-muted-foreground">detached / unknown</span>
+        )}
+      </div>
+      <div className="mt-0.5 pl-5 font-mono text-[11px] text-muted-foreground">
+        {shortSha ? `@ ${shortSha}` : "@ —"}
+      </div>
+    </div>
+  );
+}
+
+function DivergenceDiagnosis({
+  divergence,
+  dividerClass,
+}: {
+  divergence: WorkspaceDivergence;
+  dividerClass: string;
+}) {
+  const badge = ANCESTRY_BADGE[divergence.ancestryVerdict ?? "unknown"];
+  return (
+    <div
+      data-testid="recovery-divergence-diagnosis"
+      className={cn(
+        "space-y-2.5 border-t bg-background/40 px-3 py-3 dark:bg-background/20 sm:px-4",
+        dividerClass,
+      )}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+          Divergence diagnosis
+        </span>
+        <span
+          data-testid="recovery-ancestry-verdict"
+          className={cn(
+            "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em]",
+            badge.className,
+          )}
+        >
+          {badge.label}
+        </span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <BranchFacet
+          label="Expected · recorded"
+          branch={divergence.expectedBranch}
+          sha={divergence.expectedHeadSha}
+        />
+        <BranchFacet
+          label="Live · checked out"
+          branch={divergence.liveBranch}
+          sha={divergence.liveHeadSha}
+        />
+      </div>
+      {divergence.plainLanguageReason ? (
+        <p className="text-[12px] leading-5 text-foreground/80">{divergence.plainLanguageReason}</p>
+      ) : null}
+    </div>
+  );
 }
 
 function readWakePolicySummary(action: IssueRecoveryAction): string | null {
@@ -336,12 +529,15 @@ export function IssueRecoveryActionCard({
   agentMap,
   forcedState,
   onResolve,
+  onReissueIsolated,
+  reissuePending = false,
   canFalsePositive = false,
   className,
 }: IssueRecoveryActionCardProps) {
   const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action);
   const tone = STATE_TONE[cardState];
   const ToneIcon = tone.Icon;
+  const divergence = useMemo(() => readWorkspaceDivergence(action), [action]);
 
   const headline = useMemo(() => {
     if (cardState === "resolved" && action.outcome) {
@@ -380,6 +576,16 @@ export function IssueRecoveryActionCard({
     if (option.boardOnly && !canFalsePositive) return false;
     return true;
   });
+  const reissueBaseRef = divergence?.reissueBaseRef ?? null;
+  const showReissueAction =
+    onReissueIsolated !== undefined &&
+    cardState !== "resolved" &&
+    divergence !== null &&
+    reissueBaseRef !== null;
+  const reissueVerdictBadge = divergence
+    ? ANCESTRY_BADGE[divergence.ancestryVerdict ?? "unknown"]
+    : null;
+  const showFooter = showResolveActions || showReissueAction;
 
   return (
     <section
@@ -489,56 +695,127 @@ export function IssueRecoveryActionCard({
           </MetadataRow>
         ) : null}
       </dl>
-      {showResolveActions ? (
+      {divergence ? <DivergenceDiagnosis divergence={divergence} dividerClass={tone.divider} /> : null}
+      {showFooter ? (
         <div className={cn("flex flex-wrap items-center gap-2 border-t px-3 py-2.5 sm:px-4", tone.divider)}>
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                size="sm"
-                variant="default"
-                data-testid="recovery-action-resolve-trigger"
-                aria-label="Resolve recovery"
+          {showResolveActions ? (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  data-testid="recovery-action-resolve-trigger"
+                  aria-label="Resolve recovery"
+                >
+                  Resolve…
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="start"
+                sideOffset={6}
+                className="w-72 p-1.5"
               >
-                Resolve…
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent
-              align="start"
-              sideOffset={6}
-              className="w-72 p-1.5"
-            >
-              <div className="px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                Resolve recovery
-              </div>
-              <div className="flex flex-col">
-                {visibleResolveOptions.map((option) => (
-                  <button
-                    key={option.outcome}
-                    type="button"
-                    onClick={() => onResolve?.(option.outcome)}
-                    className={cn(
-                      "flex flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-                      "hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-                      option.destructive ? "text-destructive" : null,
-                    )}
-                  >
-                    <span className="font-medium leading-5">{option.label}</span>
-                    <span className="text-[11px] leading-4 text-muted-foreground">{option.description}</span>
-                  </button>
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
-          {cardState === "observe_only" ? (
-            <span className="text-[11px] text-muted-foreground">
-              Recovery is observing without interrupting the live run.
-            </span>
-          ) : (
-            <span className="text-[11px] text-muted-foreground">
-              The card stays open until an explicit decision is recorded.
-            </span>
-          )}
+                <div className="px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                  Resolve recovery
+                </div>
+                <div className="flex flex-col">
+                  {visibleResolveOptions.map((option) => (
+                    <button
+                      key={option.outcome}
+                      type="button"
+                      onClick={() => onResolve?.(option.outcome)}
+                      className={cn(
+                        "flex flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+                        "hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                        option.destructive ? "text-destructive" : null,
+                      )}
+                    >
+                      <span className="font-medium leading-5">{option.label}</span>
+                      <span className="text-[11px] leading-4 text-muted-foreground">{option.description}</span>
+                    </button>
+                  ))}
+                </div>
+              </PopoverContent>
+            </Popover>
+          ) : null}
+          {showReissueAction && divergence && reissueBaseRef ? (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={reissuePending}
+                  data-testid="recovery-action-reissue-trigger"
+                >
+                  {reissuePending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                  ) : (
+                    <GitBranchPlus className="h-3.5 w-3.5" aria-hidden />
+                  )}
+                  Re-issue on isolated workspace
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" sideOffset={6} className="w-80 space-y-3 p-3">
+                <div className="space-y-1">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                    Re-issue on isolated workspace
+                  </div>
+                  <p className="text-[12px] leading-5 text-muted-foreground">
+                    Creates a fresh copy of this task on an isolated git worktree based on the live
+                    branch. Your current workspace and its commits are left untouched.
+                  </p>
+                </div>
+                <dl className="space-y-1 rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 text-[11px]">
+                  <div className="flex items-center justify-between gap-2">
+                    <dt className="text-muted-foreground">Base ref</dt>
+                    <dd className="min-w-0 truncate font-mono text-foreground/90">{reissueBaseRef}</dd>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <dt className="text-muted-foreground">Recorded</dt>
+                    <dd className="min-w-0 truncate font-mono text-foreground/80">
+                      {divergence.expectedBranch ?? "—"}
+                    </dd>
+                  </div>
+                  {reissueVerdictBadge ? (
+                    <div className="flex items-center justify-between gap-2">
+                      <dt className="text-muted-foreground">Ancestry</dt>
+                      <dd className="font-medium">{reissueVerdictBadge.label}</dd>
+                    </div>
+                  ) : null}
+                </dl>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="w-full"
+                  disabled={reissuePending}
+                  data-testid="recovery-action-reissue-confirm"
+                  onClick={() =>
+                    onReissueIsolated?.({
+                      baseRef: reissueBaseRef,
+                      liveBranch: divergence.liveBranch,
+                      liveHeadSha: divergence.liveHeadSha,
+                      expectedBranch: divergence.expectedBranch,
+                    })
+                  }
+                >
+                  {reissuePending ? "Creating…" : "Create isolated re-issue"}
+                </Button>
+              </PopoverContent>
+            </Popover>
+          ) : null}
+          {showResolveActions ? (
+            cardState === "observe_only" ? (
+              <span className="text-[11px] text-muted-foreground">
+                Recovery is observing without interrupting the live run.
+              </span>
+            ) : (
+              <span className="text-[11px] text-muted-foreground">
+                The card stays open until an explicit decision is recorded.
+              </span>
+            )
+          ) : null}
         </div>
       ) : null}
     </section>

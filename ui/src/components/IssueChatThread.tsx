@@ -169,7 +169,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp, Trash2 } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
-import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
+import {
+  IssueRecoveryActionCard,
+  type RecoveryReissueRequest,
+  type RecoveryResolveOutcome,
+} from "./IssueRecoveryActionCard";
 import { SourceTrustBadge } from "./SourceTrustBadge";
 
 interface IssueChatMessageContext {
@@ -421,6 +425,8 @@ interface IssueChatThreadProps {
   scheduledRetry?: IssueScheduledRetry | null;
   recoveryAction?: IssueRecoveryAction | null;
   onResolveRecoveryAction?: (outcome: RecoveryResolveOutcome) => void;
+  onReissueIsolatedRecoveryAction?: (request: RecoveryReissueRequest) => void;
+  reissueIsolatedRecoveryActionPending?: boolean;
   canFalsePositiveRecoveryAction?: boolean;
   legacyRecoverySourceIssue?: {
     identifier: string | null;
@@ -4149,6 +4155,8 @@ export function IssueChatThread({
   scheduledRetry = null,
   recoveryAction = null,
   onResolveRecoveryAction,
+  onReissueIsolatedRecoveryAction,
+  reissueIsolatedRecoveryActionPending = false,
   canFalsePositiveRecoveryAction = false,
   legacyRecoverySourceIssue = null,
   companyId,
@@ -4862,6 +4870,8 @@ export function IssueChatThread({
                       action={recoveryAction}
                       agentMap={agentMap}
                       onResolve={onResolveRecoveryAction}
+                      onReissueIsolated={onReissueIsolatedRecoveryAction}
+                      reissuePending={reissueIsolatedRecoveryActionPending}
                       canFalsePositive={canFalsePositiveRecoveryAction}
                     />
                   ) : null}
