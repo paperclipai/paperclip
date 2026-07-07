@@ -187,6 +187,63 @@ async function throwProviderWriteOrReservedRowRollbackError(input: {
   throw providerError;
 }
 
+function providerConfigIdentifier(input: {
+  providerConfigId?: string | null;
+  providerConfig: SecretProviderVaultRuntimeConfig | null;
+}) {
+  return input.providerConfig?.id ?? input.providerConfigId ?? "deployment-default";
+}
+
+async function deleteLocalSecretCreateReservationOrThrow(input: {
+  db: Pick<Db, "delete">;
+  secretId: string;
+  companyId: string;
+  provider: SecretProvider;
+  providerConfigId?: string | null;
+  providerConfig: SecretProviderVaultRuntimeConfig | null;
+  operation: string;
+}) {
+  try {
+    await input.db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, input.secretId));
+    await input.db.delete(companySecrets).where(eq(companySecrets.id, input.secretId));
+  } catch (rollbackError) {
+    const providerConfigId = providerConfigIdentifier(input);
+    logger.warn(
+      {
+        err: rollbackError,
+        companyId: input.companyId,
+        provider: input.provider,
+        providerConfigId,
+        operation: input.operation,
+      },
+      "secret create failed and local reserved secret rollback failed",
+    );
+    throw new HttpError(500, "Secret create failed and Paperclip could not roll back the local secret reservation.", {
+      code: "secret_create_rollback_failed",
+      provider: input.provider,
+      operation: input.operation,
+      providerConfigId,
+    });
+  }
+}
+
+function throwProviderCleanupFailedAfterCreateRollback(input: {
+  companyId: string;
+  provider: SecretProvider;
+  providerConfigId?: string | null;
+  providerConfig: SecretProviderVaultRuntimeConfig | null;
+  operation: string;
+}): never {
+  const providerConfigId = providerConfigIdentifier(input);
+  throw new HttpError(500, "Secret create failed and Paperclip could not clean up the remote provider secret.", {
+    code: "secret_create_provider_cleanup_failed",
+    provider: input.provider,
+    operation: input.operation,
+    providerConfigId,
+    localCleanupHandle: true,
+  });
+}
+
 function safeRemoteProviderErrorDetails(
   error: { code: string } | null,
   context: {
@@ -1713,17 +1770,33 @@ export function secretService(db: Db) {
       });
     } catch (error) {
       if (managedMode === "paperclip_managed") {
-        await cleanupPreparedProviderWrite({
+        const cleaned = await cleanupPreparedProviderWrite({
           provider,
           prepared,
           providerConfig,
           context: providerWriteContext,
           mode: "delete",
           operation: "user_secret_value.create_rollback",
-        }).catch(() => false);
+        });
+        if (!cleaned) {
+          throwProviderCleanupFailedAfterCreateRollback({
+            companyId,
+            provider: provider.id,
+            providerConfigId,
+            providerConfig,
+            operation: "user_secret_value.create_rollback",
+          });
+        }
       }
-      await db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, reservedSecret.id)).catch(() => undefined);
-      await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
+      await deleteLocalSecretCreateReservationOrThrow({
+        db,
+        secretId: reservedSecret.id,
+        companyId,
+        provider: provider.id,
+        providerConfigId,
+        providerConfig,
+        operation: "user_secret_value.create_rollback",
+      });
       throw error;
     }
   }
@@ -2984,14 +3057,25 @@ export function secretService(db: Db) {
             mode: "delete",
             operation: "create.prepare_rollback",
           });
-          if (cleaned) {
-            await db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, reservedSecret.id)).catch(() => undefined);
-            await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
+          if (!cleaned) {
+            throwProviderCleanupFailedAfterCreateRollback({
+              companyId,
+              provider: provider.id,
+              providerConfigId: input.providerConfigId ?? null,
+              providerConfig,
+              operation: "create.prepare_rollback",
+            });
           }
-        } else {
-          await db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, reservedSecret.id)).catch(() => undefined);
-          await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
         }
+        await deleteLocalSecretCreateReservationOrThrow({
+          db,
+          secretId: reservedSecret.id,
+          companyId,
+          provider: provider.id,
+          providerConfigId: input.providerConfigId ?? null,
+          providerConfig,
+          operation: "create.prepare_rollback",
+        });
         throw error;
       }
 
@@ -3031,14 +3115,25 @@ export function secretService(db: Db) {
             mode: "delete",
             operation: "create.rollback",
           });
-          if (cleaned) {
-            await db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, reservedSecret.id)).catch(() => undefined);
-            await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
+          if (!cleaned) {
+            throwProviderCleanupFailedAfterCreateRollback({
+              companyId,
+              provider: provider.id,
+              providerConfigId: input.providerConfigId ?? null,
+              providerConfig,
+              operation: "create.rollback",
+            });
           }
-        } else {
-          await db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, reservedSecret.id)).catch(() => undefined);
-          await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
         }
+        await deleteLocalSecretCreateReservationOrThrow({
+          db,
+          secretId: reservedSecret.id,
+          companyId,
+          provider: provider.id,
+          providerConfigId: input.providerConfigId ?? null,
+          providerConfig,
+          operation: "create.rollback",
+        });
         throw error;
       }
     },

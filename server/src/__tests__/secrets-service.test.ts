@@ -716,6 +716,65 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(persisted)).not.toContain("runtime-secret");
   });
 
+  it("reports current-user secret persistence rollback failures when local cleanup cannot remove the reserved row", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+    });
+    const externalRef =
+      "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/user/github-token";
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: externalRef,
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      externalRef,
+      providerVersionRef: "aws-version-1",
+    });
+    vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+    vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db activate failed"));
+    vi.spyOn(db, "delete").mockImplementationOnce(() => {
+      throw new Error("reserved row delete failed");
+    });
+
+    await expect(
+      svc.createCurrentUserSecretValue(companyId, "user-1", {
+        definitionId: definition.id,
+        value: "runtime-secret",
+      }),
+    ).rejects.toMatchObject({
+      status: 500,
+      message: "Secret create failed and Paperclip could not roll back the local secret reservation.",
+      details: {
+        code: "secret_create_rollback_failed",
+        provider: "aws_secrets_manager",
+        operation: "user_secret_value.create_rollback",
+        providerConfigId: awsVault.id,
+      },
+    });
+
+    const persisted = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.companyId, companyId));
+    expect(persisted).toHaveLength(1);
+    expect(JSON.stringify(persisted)).not.toContain("runtime-secret");
+  });
+
   it("returns conflict when concurrent user secret definition creation races the unique index", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -1727,7 +1786,17 @@ describeEmbeddedPostgres("secretService", () => {
         providerConfigId: awsVault.id,
         value: "runtime-secret",
       }),
-    ).rejects.toThrow("db activate failed");
+    ).rejects.toMatchObject({
+      status: 500,
+      message: "Secret create failed and Paperclip could not clean up the remote provider secret.",
+      details: {
+        code: "secret_create_provider_cleanup_failed",
+        provider: "aws_secrets_manager",
+        operation: "create.rollback",
+        providerConfigId: awsVault.id,
+        localCleanupHandle: true,
+      },
+    });
 
     const persisted = await svc.getByName(companyId, "Create Cleanup Handle");
     expect(persisted).toMatchObject({
@@ -1747,6 +1816,62 @@ describeEmbeddedPostgres("secretService", () => {
       status: "disabled",
       material: prepared.material,
     });
+  });
+
+  it("reports managed secret persistence rollback failures when local cleanup cannot remove the reserved row", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const prepared = {
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId:
+          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/create-local-cleanup",
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      externalRef:
+        "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/create-local-cleanup",
+      providerVersionRef: "aws-version-1",
+    };
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(prepared);
+    vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+    vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db activate failed"));
+    vi.spyOn(db, "delete").mockImplementationOnce(() => {
+      throw new Error("reserved row delete failed");
+    });
+
+    await expect(
+      svc.create(companyId, {
+        name: "Create Local Cleanup",
+        key: "create-local-cleanup",
+        provider: "aws_secrets_manager",
+        providerConfigId: awsVault.id,
+        value: "runtime-secret",
+      }),
+    ).rejects.toMatchObject({
+      status: 500,
+      message: "Secret create failed and Paperclip could not roll back the local secret reservation.",
+      details: {
+        code: "secret_create_rollback_failed",
+        provider: "aws_secrets_manager",
+        operation: "create.rollback",
+        providerConfigId: awsVault.id,
+      },
+    });
+
+    const persisted = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.companyId, companyId));
+    expect(persisted).toHaveLength(1);
+    expect(JSON.stringify(persisted)).not.toContain("runtime-secret");
   });
 
   it("archives managed provider versions when rotate persistence fails", async () => {
