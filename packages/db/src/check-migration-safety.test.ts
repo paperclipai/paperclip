@@ -128,6 +128,71 @@ describe("migration safety check", () => {
     expect(result.newFindings).toEqual([]);
   });
 
+  it("flags UPDATE ... FROM (SELECT ... LIMIT N) subquery batch on a large table", () => {
+    const result = analyze(`
+      UPDATE "issue_comments" c
+      SET "derived_author_agent_id" = NULL
+      FROM (
+        SELECT "id"
+        FROM "issue_comments"
+        WHERE "author_agent_id" IS NULL
+        ORDER BY "id"
+        LIMIT 5000
+      ) batch
+      WHERE c."id" = batch."id";
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "batched-mutation-large-table-missing-index",
+    );
+  });
+
+  it("flags a CTE with a selective WHERE when the outer UPDATE has no WHERE clause", () => {
+    const result = analyze(`
+      WITH selective AS (
+        SELECT "id" FROM "issue_comments" WHERE "author_agent_id" IS NULL
+      )
+      UPDATE "issue_comments"
+      SET "derived_author_agent_id" = NULL
+      FROM selective;
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "full-table-mutation-large-table",
+    );
+  });
+
+  it("flags a batch backfill when the support index does not cover the ORDER BY key", () => {
+    const result = analyze(`
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS "issue_comments_author_idx"
+        ON "issue_comments" ("author_agent_id");--> statement-breakpoint
+      DO $$
+      DECLARE
+        last_id uuid := '00000000-0000-0000-0000-000000000000'::uuid;
+      BEGIN
+        LOOP
+          WITH batch AS MATERIALIZED (
+            SELECT "id"
+            FROM "issue_comments"
+            WHERE "id" > last_id
+            ORDER BY "id"
+            LIMIT 5000
+          )
+          UPDATE "issue_comments" c
+          SET "derived_author_agent_id" = NULL
+          FROM batch b
+          WHERE c."id" = b."id";
+
+          EXIT WHEN NOT FOUND;
+        END LOOP;
+      END $$;
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "batched-mutation-large-table-missing-index",
+    );
+  });
+
   it("honors suppressions only when they name a rule and reason", () => {
     const result = analyze(`
       -- paperclip:migration-safety-ignore full-table-mutation-large-table: one-time metadata reset approved in issue thread

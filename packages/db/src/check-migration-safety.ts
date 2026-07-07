@@ -221,6 +221,17 @@ function predicateColumns(statement: string): string[] {
   return [...columns];
 }
 
+function orderByColumns(statement: string): string[] {
+  const columns = new Set<string>();
+  const pattern = /\bORDER\s+BY\b([\s\S]*?)(?=\b(?:LIMIT|RETURNING|GROUP\s+BY|WHERE|SET|FROM|END|LOOP)\b|$)/gi;
+  for (const match of statement.matchAll(pattern)) {
+    for (const identifier of identifierList(match[1] ?? "")) {
+      columns.add(identifier);
+    }
+  }
+  return [...columns];
+}
+
 function parseCreateIndexes(statement: string): CreateIndexInfo[] {
   const indexes: CreateIndexInfo[] = [];
   const sql = stripLineComments(statement);
@@ -272,14 +283,49 @@ function hasDoLoop(statement: string): boolean {
 }
 
 function hasBatchedLimitMutation(statement: string): boolean {
-  return /\bWITH\b[\s\S]*\bLIMIT\s+(?:\d+|[A-Za-z_][A-Za-z0-9_]*|\$[0-9]+)[\s\S]*\b(?:UPDATE|DELETE)\b/i.test(statement);
+  // CTE-style batch: WITH cte AS (SELECT ... LIMIT N) UPDATE/DELETE ...
+  if (/\bWITH\b[\s\S]*\bLIMIT\s+(?:\d+|[A-Za-z_][A-Za-z0-9_]*|\$[0-9]+)[\s\S]*\b(?:UPDATE|DELETE)\b/i.test(statement)) {
+    return true;
+  }
+  // Subquery-style batch: UPDATE/DELETE ... FROM (SELECT ... LIMIT N ...)
+  if (/\b(?:UPDATE|DELETE)\b[\s\S]*\bFROM\b[\s\S]*\bLIMIT\s+(?:\d+|[A-Za-z_][A-Za-z0-9_]*|\$[0-9]+)/i.test(statement)) {
+    return true;
+  }
+  return false;
+}
+
+function topLevelWhereClause(statement: string): string | null {
+  // Walk character-by-character, tracking paren depth.
+  // Only consider WHERE keywords at depth 0 (not inside CTEs or subqueries).
+  let depth = 0;
+  let i = 0;
+  while (i < statement.length) {
+    const ch = statement[i];
+    if (ch === "(") {
+      depth++;
+      i++;
+      continue;
+    }
+    if (ch === ")") {
+      depth--;
+      i++;
+      continue;
+    }
+    if (depth === 0) {
+      const rem = statement.slice(i);
+      const m = rem.match(/^\bWHERE\b/i);
+      if (m) return rem.slice(m[0].length);
+    }
+    i++;
+  }
+  return null;
 }
 
 function hasSelectiveWhere(statement: string): boolean {
-  const whereMatch = statement.match(/\bWHERE\b([\s\S]*)/i);
-  if (!whereMatch) return false;
+  const afterWhere = topLevelWhereClause(statement);
+  if (!afterWhere) return false;
 
-  const whereClause = normalizeSql(whereMatch[1] ?? "").replace(/;$/, "");
+  const whereClause = normalizeSql(afterWhere).replace(/;$/, "");
   if (/^(?:true|1\s*=\s*1)$/i.test(whereClause)) return false;
   return /(?:=|<>|!=|<|>|\bIN\s*\(|\bEXISTS\s*\(|\bLIKE\b|\bIS\s+(?:NOT\s+)?NULL\b)/i.test(whereClause);
 }
@@ -289,17 +335,22 @@ function hasMatchingSupportIndex(
   mutation: MutationInfo,
   statement: string,
 ): boolean {
-  const statementColumns = new Set(predicateColumns(statement));
   const matchingIndexes = indexes.filter((index) => index.table === mutation.table);
   if (matchingIndexes.length === 0) return false;
-  if (statementColumns.size === 0) return true;
 
+  // ORDER BY columns are the batch-progression key. If the statement orders its
+  // batch, the support index must cover at least one ORDER BY column — an index
+  // on an unrelated predicate column (e.g. author_agent_id) cannot stand in for
+  // an unindexed ordering key (e.g. id). When no ORDER BY is present, fall back
+  // to: any predicate column from the mutation is covered by the index.
+  const orderCols = new Set(orderByColumns(statement));
+  const allPredicateCols = new Set(predicateColumns(statement));
+  if (allPredicateCols.size === 0) return true;
+
+  const keyCols = orderCols.size > 0 ? orderCols : allPredicateCols;
   return matchingIndexes.some((index) => {
     const indexedColumns = new Set([...index.columns, ...index.predicateColumns]);
-    for (const column of statementColumns) {
-      if (indexedColumns.has(column)) return true;
-    }
-    return false;
+    return [...keyCols].some((col) => indexedColumns.has(col));
   });
 }
 
