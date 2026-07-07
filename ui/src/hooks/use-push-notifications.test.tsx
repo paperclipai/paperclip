@@ -36,7 +36,7 @@ function setBrowserPushMocks(registration: unknown, permission = "default") {
 }
 
 function Harness() {
-  latest = usePushNotifications();
+  latest = usePushNotifications("company-1");
   return null;
 }
 
@@ -60,6 +60,7 @@ async function waitForState(status: PushState["status"]) {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   vi.mocked(pushApi.getVapidPublicKey).mockResolvedValue({ vapidPublicKey: "AQID" });
   vi.mocked(pushApi.subscribe).mockResolvedValue({ status: "subscribed" });
   vi.mocked(pushApi.unsubscribe).mockResolvedValue({ status: "unsubscribed" });
@@ -120,7 +121,7 @@ describe("usePushNotifications", () => {
       await latest?.enable();
     });
 
-    expect(pushApi.subscribe).toHaveBeenCalledWith({
+    expect(pushApi.subscribe).toHaveBeenCalledWith("company-1", {
       endpoint: "https://push.example/new-device",
       p256dh: "p256dh",
       auth: "auth",
@@ -128,6 +129,36 @@ describe("usePushNotifications", () => {
     });
     expect(unsubscribe).toHaveBeenCalledTimes(1);
     expect(latest?.state).toMatchObject({ status: "error", message: "server unavailable" });
+  });
+
+  it("does not persist a browser subscription with missing push keys", async () => {
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    const subscription = {
+      endpoint: "https://push.example/no-keys",
+      toJSON: () => ({ keys: {} }),
+      unsubscribe,
+    };
+    setBrowserPushMocks({
+      pushManager: {
+        getSubscription: vi.fn().mockResolvedValue(null),
+        subscribe: vi.fn().mockResolvedValue(subscription),
+      },
+    });
+    vi.mocked(Notification.requestPermission).mockResolvedValue("granted");
+
+    await renderHook();
+    await waitForState("unsubscribed");
+
+    await act(async () => {
+      await latest?.enable();
+    });
+
+    expect(pushApi.subscribe).not.toHaveBeenCalled();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(latest?.state).toMatchObject({
+      status: "error",
+      message: "Browser did not provide valid push credentials",
+    });
   });
 
   it("unsubscribes locally before deleting the server subscription", async () => {
@@ -165,6 +196,7 @@ describe("usePushNotifications", () => {
     });
 
     expect(calls).toEqual(["local", "server"]);
+    expect(pushApi.unsubscribe).toHaveBeenCalledWith("company-1", "https://push.example/current-device");
     expect(latest?.state.status).toBe("unsubscribed");
   });
 });

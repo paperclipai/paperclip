@@ -825,6 +825,11 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/secrets/{id}/usage",
   "GET /api/secrets/{id}/access-events",
   "POST /api/health/dev-server/restart",
+  "GET /api/companies/{companyId}/push/subscriptions",
+  "POST /api/companies/{companyId}/push/subscriptions",
+  "DELETE /api/companies/{companyId}/push/subscriptions",
+  "POST /api/companies/{companyId}/push/test",
+  "POST /api/companies/{companyId}/push/digest/test",
   "GET /api/issues/{issueId}/file-resources/content",
   "GET /api/issues/{issueId}/file-resources/list",
   "GET /api/issues/{issueId}/file-resources/resolve",
@@ -970,7 +975,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/tools/gateways",
   "POST /api/tool-gateway/gateways/{gatewayId}/tokens",
   "POST /api/tool-gateway/sessions",
-  "POST /api/push/subscriptions",
+  "POST /api/companies/{companyId}/push/subscriptions",
 ]);
 
 const ACCEPTED_OPERATIONS = new Set([
@@ -1216,10 +1221,13 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
-  path: "/api/push/subscriptions",
+  path: "/api/companies/{companyId}/push/subscriptions",
   tags: ["push"],
   summary: "Subscribe the current browser for Web Push notifications",
-  request: { body: jsonBody(pushSubscriptionBodySchema) },
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(pushSubscriptionBodySchema),
+  },
   responses: {
     200: r.ok(z.object({ status: z.literal("subscribed") }).strict()),
     400: r.badRequest,
@@ -1229,10 +1237,13 @@ registry.registerPath({
 
 registry.registerPath({
   method: "delete",
-  path: "/api/push/subscriptions",
+  path: "/api/companies/{companyId}/push/subscriptions",
   tags: ["push"],
   summary: "Unsubscribe a browser endpoint from Web Push notifications",
-  request: { body: jsonBody(deletePushSubscriptionBodySchema) },
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(deletePushSubscriptionBodySchema),
+  },
   responses: {
     200: r.ok(z.object({ status: z.literal("unsubscribed") }).strict()),
     400: r.badRequest,
@@ -1242,9 +1253,10 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
-  path: "/api/push/subscriptions",
+  path: "/api/companies/{companyId}/push/subscriptions",
   tags: ["push"],
   summary: "List Web Push subscriptions",
+  request: { params: z.object({ companyId: z.string() }) },
   responses: {
     200: r.ok(z.object({
       subscriptions: z.array(z.object({
@@ -1260,9 +1272,10 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
-  path: "/api/push/test",
+  path: "/api/companies/{companyId}/push/test",
   tags: ["push"],
   summary: "Send a test Web Push notification",
+  request: { params: z.object({ companyId: z.string() }) },
   responses: {
     200: r.ok(),
     401: r.unauthorized,
@@ -1272,9 +1285,10 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
-  path: "/api/push/digest/test",
+  path: "/api/companies/{companyId}/push/digest/test",
   tags: ["push"],
   summary: "Send a test Web Push digest notification",
+  request: { params: z.object({ companyId: z.string() }) },
   responses: {
     200: r.ok(),
     401: r.unauthorized,

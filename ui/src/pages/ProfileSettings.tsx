@@ -277,7 +277,7 @@ export function ProfileSettings() {
         </Card>
       </section>
 
-      <PushNotificationSection />
+      <PushNotificationSection companyId={selectedCompanyId} />
     </div>
   );
 }

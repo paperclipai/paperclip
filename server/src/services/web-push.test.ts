@@ -41,6 +41,7 @@ function makeDb(rows: SRow[] = []) {
 type SRow = { endpoint: string; p256dh: string; auth: string; id: string; deviceLabel: string; createdAt: Date };
 
 const SUB: PushSubscriptionData = {
+  companyId: "company-1",
   endpoint: "https://push.example.com/test",
   p256dh: "BNcRdreALRFXTkOOUHK1EtK2wtwe",
   auth: "tBHItJI5svbpez7KI4CCXg",
@@ -135,5 +136,36 @@ describe("webPushService.sendToSubscription", () => {
 
     expect(result).toEqual({ sent: false, pruned: false });
     expect(deletedEndpoints).toHaveLength(0);
+  });
+
+  it("sends only to subscriptions for the requested company", async () => {
+    const row = {
+      ...SUB,
+      id: "sub-1",
+      deviceLabel: "Chrome",
+      createdAt: new Date("2026-07-07T00:00:00.000Z"),
+    };
+    let whereCalled = false;
+    const db = {
+      insert: () => ({ values: () => ({ onConflictDoUpdate: () => Promise.resolve() }) }),
+      delete: () => ({ where: () => Promise.resolve() }),
+      select: () => ({
+        from: () => ({
+          where: () => {
+            whereCalled = true;
+            return { orderBy: () => Promise.resolve([row]) };
+          },
+        }),
+      }),
+    } as unknown as Parameters<typeof webPushService>[0];
+
+    mockSendNotification.mockResolvedValueOnce({ statusCode: 201, body: "", headers: {} } as unknown as Awaited<ReturnType<typeof webPush.sendNotification>>);
+
+    const svc = webPushService(db);
+    const result = await svc.sendToBoard("company-1", { title: "Test" });
+
+    expect(result).toEqual({ sent: 1, pruned: 0 });
+    expect(whereCalled).toBe(true);
+    expect(mockSendNotification).toHaveBeenCalledOnce();
   });
 });

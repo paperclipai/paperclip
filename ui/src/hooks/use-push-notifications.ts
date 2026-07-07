@@ -19,22 +19,30 @@ export type PushState =
   | { status: "unsubscribed" }
   | { status: "error"; message: string };
 
-export function usePushNotifications() {
+export function usePushNotifications(companyId: string | null | undefined) {
   const [state, setState] = useState<PushState>({ status: "loading" });
   const [isToggling, setIsToggling] = useState(false);
   const [subscriptions, setSubscriptions] = useState<PushSubscriptionRecord[]>([]);
 
   const refreshSubscriptions = useCallback(async () => {
-    const result = await pushApi.listSubscriptions();
+    if (!companyId) {
+      setSubscriptions([]);
+      return [];
+    }
+    const result = await pushApi.listSubscriptions(companyId);
     setSubscriptions(result.subscriptions);
     return result.subscriptions;
-  }, []);
+  }, [companyId]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
       try {
+        if (!companyId) {
+          if (!cancelled) setState({ status: "error", message: "Select a company before enabling push notifications" });
+          return;
+        }
         const serverSubscriptions = await refreshSubscriptions();
 
         if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
@@ -77,12 +85,15 @@ export function usePushNotifications() {
     return () => {
       cancelled = true;
     };
-  }, [refreshSubscriptions]);
+  }, [companyId, refreshSubscriptions]);
 
   const enable = useCallback(async () => {
     if (isToggling) return;
     setIsToggling(true);
     try {
+      if (!companyId) {
+        throw new Error("Select a company before enabling push notifications");
+      }
       const permission = await Notification.requestPermission();
       if (permission === "denied") {
         setState({ status: "denied" });
@@ -102,11 +113,15 @@ export function usePushNotifications() {
 
       const json = sub.toJSON();
       const keys = json.keys ?? {};
+      if (!keys.p256dh || !keys.auth) {
+        await sub.unsubscribe().catch(() => undefined);
+        throw new Error("Browser did not provide valid push credentials");
+      }
       try {
-        await pushApi.subscribe({
+        await pushApi.subscribe(companyId, {
           endpoint: sub.endpoint,
-          p256dh: keys.p256dh ?? "",
-          auth: keys.auth ?? "",
+          p256dh: keys.p256dh,
+          auth: keys.auth,
           deviceLabel: navigator.userAgent.slice(0, 120),
         });
       } catch (err) {
@@ -124,12 +139,15 @@ export function usePushNotifications() {
     } finally {
       setIsToggling(false);
     }
-  }, [isToggling]);
+  }, [companyId, isToggling, refreshSubscriptions]);
 
   const disable = useCallback(async () => {
     if (isToggling) return;
     setIsToggling(true);
     try {
+      if (!companyId) {
+        throw new Error("Select a company before disabling push notifications");
+      }
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       const endpoint = sub?.endpoint ?? (state.status === "subscribed" ? state.endpoint : undefined);
@@ -140,7 +158,7 @@ export function usePushNotifications() {
         }
       }
       if (endpoint) {
-        await pushApi.unsubscribe(endpoint);
+        await pushApi.unsubscribe(companyId, endpoint);
       }
       setState({ status: "unsubscribed" });
       await refreshSubscriptions();
@@ -152,7 +170,7 @@ export function usePushNotifications() {
     } finally {
       setIsToggling(false);
     }
-  }, [isToggling, refreshSubscriptions, state]);
+  }, [companyId, isToggling, refreshSubscriptions, state]);
 
   return { state, isToggling, subscriptions, refreshSubscriptions, enable, disable };
 }

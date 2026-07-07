@@ -3,7 +3,7 @@ import { webPushService } from "./web-push.js";
 import { logger } from "../middleware/logger.js";
 import type { Db } from "@paperclipai/db";
 
-// Dedup store for immediate-lane pushes: key = `issueId:eventType`, value = last-sent ms
+// Dedup store for immediate-lane pushes: key = `companyId:issueId:eventType`, value = last-sent ms
 const immediateDedup = new Map<string, number>();
 
 function getDedupTtlMs(): number {
@@ -11,11 +11,21 @@ function getDedupTtlMs(): number {
   return (isNaN(hours) ? 4 : Math.max(1, hours)) * 60 * 60 * 1000;
 }
 
-function isDuped(issueId: string, eventType: string): boolean {
-  const key = `${issueId}:${eventType}`;
+function pruneExpiredDedupEntries(now: number, ttlMs: number): void {
+  for (const [key, timestamp] of immediateDedup.entries()) {
+    if (now - timestamp >= ttlMs) {
+      immediateDedup.delete(key);
+    }
+  }
+}
+
+function isDuped(companyId: string, issueId: string, eventType: string): boolean {
+  const key = `${companyId}:${issueId}:${eventType}`;
   const now = Date.now();
+  const ttlMs = getDedupTtlMs();
+  pruneExpiredDedupEntries(now, ttlMs);
   const last = immediateDedup.get(key);
-  if (last !== undefined && now - last < getDedupTtlMs()) return true;
+  if (last !== undefined && now - last < ttlMs) return true;
   immediateDedup.set(key, now);
   return false;
 }
@@ -39,6 +49,7 @@ function isInQuietHours(): boolean {
 
 // Digest-lane buffer
 interface DigestItem {
+  companyId: string;
   issueId: string;
   issueTitle: string;
   issueIdentifier: string;
@@ -47,12 +58,12 @@ interface DigestItem {
 }
 
 const digestBuffer: DigestItem[] = [];
-let lastDigestFlushAt = 0;
+const lastDigestFlushAt = new Map<string, number>();
 
 export function __resetPushFanoutForTests(): void {
   immediateDedup.clear();
   digestBuffer.splice(0, digestBuffer.length);
-  lastDigestFlushAt = 0;
+  lastDigestFlushAt.clear();
 }
 
 function getDigestFlushIntervalMs(): number {
@@ -61,38 +72,42 @@ function getDigestFlushIntervalMs(): number {
   return (isNaN(hours) ? 4 : Math.max(1, hours)) * 60 * 60 * 1000;
 }
 
-async function maybeFlushDigest(push: ReturnType<typeof webPushService>): Promise<void> {
-  if (digestBuffer.length === 0) return;
+async function maybeFlushDigest(push: ReturnType<typeof webPushService>, companyId: string): Promise<void> {
+  const companyDigestItems = digestBuffer.filter((item) => item.companyId === companyId);
+  if (companyDigestItems.length === 0) return;
   if (isInQuietHours()) return; // digest always defers to next window
-  if (Date.now() - lastDigestFlushAt < getDigestFlushIntervalMs()) return;
+  if (Date.now() - (lastDigestFlushAt.get(companyId) ?? 0) < getDigestFlushIntervalMs()) return;
 
-  const toFlush = digestBuffer.splice(0, digestBuffer.length);
-  lastDigestFlushAt = Date.now();
-
-  const blockedCount = toFlush.filter((i) => i.kind === "blocked").length;
-  const staleCount = toFlush.filter((i) => i.kind === "stale").length;
+  const blockedCount = companyDigestItems.filter((i) => i.kind === "blocked").length;
+  const staleCount = companyDigestItems.filter((i) => i.kind === "stale").length;
   const parts: string[] = [];
   if (blockedCount > 0) parts.push(`${blockedCount} blocked`);
   if (staleCount > 0) parts.push(`${staleCount} stale`);
 
-  logger.info({ blockedCount, staleCount }, "push-fanout: flushing digest");
+  logger.info({ companyId, blockedCount, staleCount }, "push-fanout: flushing digest");
 
-  await push.sendToBoard({
+  await push.sendToBoard(companyId, {
     title: `${parts.join(", ")} — tap to view`,
     body: "Issues need your attention",
     data: { kind: "digest", blockedCount, staleCount },
   });
+
+  for (let index = digestBuffer.length - 1; index >= 0; index--) {
+    if (digestBuffer[index]?.companyId === companyId) {
+      digestBuffer.splice(index, 1);
+    }
+  }
+  lastDigestFlushAt.set(companyId, Date.now());
 }
 
 export function initPushFanout(db: Db): () => void {
   const push = webPushService(db);
-  // Start the digest interval from now so the first flush is no sooner than one full interval.
-  lastDigestFlushAt = Date.now();
 
   const unsubscribe = subscribeGlobalLiveEvents((event) => {
     void (async () => {
       try {
         const { type, payload } = event;
+        const companyId = event.companyId;
         const issueId = typeof payload.issueId === "string" ? payload.issueId : undefined;
         if (!issueId) return;
 
@@ -100,8 +115,8 @@ export function initPushFanout(db: Db): () => void {
         const issueTitle = typeof payload.issueTitle === "string" ? payload.issueTitle : "";
 
         if (type === "issue.user_assigned" || type === "issue.interaction.pending") {
-          if (isDuped(issueId, type)) {
-            logger.debug({ issueId, type }, "push-fanout: deduped immediate event");
+          if (isDuped(companyId, issueId, type)) {
+            logger.debug({ companyId, issueId, type }, "push-fanout: deduped immediate event");
             return;
           }
 
@@ -111,19 +126,24 @@ export function initPushFanout(db: Db): () => void {
               ? `Action needed: ${issueIdentifier}`
               : `Your input needed: ${issueIdentifier}`;
 
-          await push.sendToBoard({ title, body: issueTitle, data: { issueId, eventType: type } });
-          logger.info({ issueId, type }, "push-fanout: sent immediate push");
+          await push.sendToBoard(companyId, { title, body: issueTitle, data: { issueId, eventType: type } });
+          logger.info({ companyId, issueId, type }, "push-fanout: sent immediate push");
         }
 
         if (type === "issue.blocked" || type === "issue.stale") {
+          if (!lastDigestFlushAt.has(companyId)) {
+            // Start each company digest window at first queued item.
+            lastDigestFlushAt.set(companyId, Date.now());
+          }
           digestBuffer.push({
+            companyId,
             issueId,
             issueTitle,
             issueIdentifier,
             kind: type === "issue.blocked" ? "blocked" : "stale",
             queuedAt: Date.now(),
           });
-          await maybeFlushDigest(push);
+          await maybeFlushDigest(push, companyId);
         }
       } catch (err) {
         logger.warn({ err, eventType: event.type }, "push-fanout: error handling live event");
@@ -134,9 +154,11 @@ export function initPushFanout(db: Db): () => void {
   // Periodic digest-flush check (every minute) so digest isn't gated solely on new events.
   const flushTimer = setInterval(() => {
     if (digestBuffer.length > 0) {
-      void maybeFlushDigest(push).catch((err) => {
-        logger.warn({ err }, "push-fanout: periodic digest flush failed");
-      });
+      for (const companyId of new Set(digestBuffer.map((item) => item.companyId))) {
+        void maybeFlushDigest(push, companyId).catch((err) => {
+          logger.warn({ err, companyId }, "push-fanout: periodic digest flush failed");
+        });
+      }
     }
   }, 60_000);
   flushTimer.unref?.();

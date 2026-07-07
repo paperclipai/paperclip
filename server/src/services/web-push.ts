@@ -1,10 +1,11 @@
 import webPush from "web-push";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { webPushSubscriptions } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 
 export type PushSubscriptionData = {
+  companyId: string;
   endpoint: string;
   p256dh: string;
   auth: string;
@@ -46,13 +47,14 @@ export function webPushService(db: Db) {
     await db
       .insert(webPushSubscriptions)
       .values({
+        companyId: sub.companyId,
         endpoint: sub.endpoint,
         p256dh: sub.p256dh,
         auth: sub.auth,
         deviceLabel: sub.deviceLabel ?? "",
       })
       .onConflictDoUpdate({
-        target: webPushSubscriptions.endpoint,
+        target: [webPushSubscriptions.companyId, webPushSubscriptions.endpoint],
         set: {
           p256dh: sub.p256dh,
           auth: sub.auth,
@@ -61,28 +63,35 @@ export function webPushService(db: Db) {
       });
   }
 
-  async function deleteSubscription(endpoint: string) {
+  async function deleteSubscription(companyId: string, endpoint: string) {
     await db
       .delete(webPushSubscriptions)
-      .where(eq(webPushSubscriptions.endpoint, endpoint));
+      .where(and(
+        eq(webPushSubscriptions.companyId, companyId),
+        eq(webPushSubscriptions.endpoint, endpoint),
+      ));
   }
 
-  async function listSubscriptions() {
+  async function listSubscriptions(companyId: string) {
     return db
       .select()
       .from(webPushSubscriptions)
+      .where(eq(webPushSubscriptions.companyId, companyId))
       .orderBy(webPushSubscriptions.createdAt);
   }
 
-  async function pruneDeadSubscription(endpoint: string) {
+  async function pruneDeadSubscription(companyId: string, endpoint: string) {
     await db
       .delete(webPushSubscriptions)
-      .where(eq(webPushSubscriptions.endpoint, endpoint));
-    logger.info({ endpoint }, "Pruned dead Web Push subscription");
+      .where(and(
+        eq(webPushSubscriptions.companyId, companyId),
+        eq(webPushSubscriptions.endpoint, endpoint),
+      ));
+    logger.info({ companyId, endpoint }, "Pruned dead Web Push subscription");
   }
 
   async function sendToSubscription(
-    sub: { endpoint: string; p256dh: string; auth: string },
+    sub: { companyId: string; endpoint: string; p256dh: string; auth: string },
     payload: PushPayload,
   ): Promise<{ sent: boolean; pruned: boolean }> {
     if (!configureWebPush()) {
@@ -102,7 +111,7 @@ export function webPushService(db: Db) {
     } catch (err: unknown) {
       const status = (err as { statusCode?: number }).statusCode;
       if (status === 404 || status === 410) {
-        await pruneDeadSubscription(sub.endpoint);
+        await pruneDeadSubscription(sub.companyId, sub.endpoint);
         return { sent: false, pruned: true };
       }
       logger.warn({ err, endpoint: sub.endpoint }, "Web Push send failed");
@@ -110,13 +119,13 @@ export function webPushService(db: Db) {
     }
   }
 
-  async function sendToBoard(payload: PushPayload): Promise<{ sent: number; pruned: number }> {
+  async function sendToBoard(companyId: string, payload: PushPayload): Promise<{ sent: number; pruned: number }> {
     if (!configureWebPush()) {
       logger.warn("VAPID keys not configured — skipping sendToBoard");
       return { sent: 0, pruned: 0 };
     }
 
-    const subs = await listSubscriptions();
+    const subs = await listSubscriptions(companyId);
     let sent = 0;
     let pruned = 0;
 
