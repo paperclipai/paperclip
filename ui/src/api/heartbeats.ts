@@ -62,6 +62,34 @@ export interface LiveRunForIssue {
   outputSilence?: HeartbeatRun["outputSilence"];
 }
 
+export interface RunDelegationChild {
+  id: string;
+  agentId: string;
+  status: string;
+  delegationStatus: string | null;
+  result: {
+    childRunId: string;
+    childAgentId: string;
+    childStatus: string;
+    task: string | null;
+    summary: string | null;
+    error: string | null;
+    errorCode: string | null;
+  } | null;
+  createdAt: string | Date;
+  finishedAt: string | Date | null;
+}
+
+export interface RunDelegationState {
+  runId: string;
+  delegationStatus: "pending" | "completed" | "failed" | "cancelled" | null;
+  a2aTaskState: string | null;
+  delegationResult: Record<string, unknown> | null;
+  allChildrenTerminal: boolean;
+  pendingChildren: number;
+  children: RunDelegationChild[];
+}
+
 export interface WatchdogDecisionInput {
   runId: string;
   decision: "snooze" | "continue" | "dismissed_false_positive";
@@ -94,6 +122,8 @@ export const heartbeatsApi = {
       `/workspace-operations/${operationId}/log?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`,
     ),
   cancel: (runId: string) => api.post<void>(`/heartbeat-runs/${runId}/cancel`, {}),
+  delegation: (runId: string) =>
+    api.get<RunDelegationState>(`/heartbeat-runs/${runId}/delegation`),
   recordWatchdogDecision: (input: WatchdogDecisionInput) =>
     api.post(`/heartbeat-runs/${input.runId}/watchdog-decisions`, {
       decision: input.decision,

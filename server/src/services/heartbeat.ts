@@ -8919,6 +8919,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           `Starting a fresh session because ${sessionCompaction.reason}.`,
         );
       }
+    } else if (
+      readNonEmptyString(context.wakeReason) === "a2a_delegate" ||
+      readNonEmptyString(context.wakeReason) === "delegation_child_completed"
+    ) {
+      // Delegation handoffs are authored by the delegation service, not by
+      // session compaction — keep them so every adapter renders the delegated
+      // task (or the joined results) into the prompt.
+      delete context.paperclipSessionRotationReason;
+      delete context.paperclipPreviousSessionId;
     } else {
       delete context.paperclipSessionHandoffMarkdown;
       delete context.paperclipSessionRotationReason;

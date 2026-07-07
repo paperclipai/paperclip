@@ -142,6 +142,26 @@ When a child run finalizes and the parent has `delegationStatus: pending`:
 
 Tool: `paperclipDelegate` — wraps delegate endpoint; requires `PAPERCLIP_RUN_ID`.
 
+## 7.1 Cross-adapter interop
+
+Delegation is **adapter-agnostic by construction**: the control plane mediates every hop, so a CEO on `opencode_local` can delegate to a Dev on `cursor_cloud` and get results back from a QA on `claude_local` without any adapter knowing about the others.
+
+The contract is `contextSnapshot.paperclipSessionHandoffMarkdown`:
+
+- On `a2a_delegate` wakes it carries the task + expected output; every adapter (claude, codex, opencode, cursor, cursor-cloud, gemini, grok, pi, acpx, openclaw) already renders it into the child's prompt.
+- On `delegation_child_completed` wakes it carries the joined per-child results so the parent's continuation prompt starts with the fan-out outcome on any adapter.
+- The heartbeat preserves this field for delegation wake reasons (session compaction owns it for every other wake).
+
+Follow-up (`followUpToChildRunId`) resumes sessions through each adapter's own session codec (`resumeFromRunId` machinery), so multi-turn also works per adapter.
+
+## 7.2 Board UI
+
+Non-technical operators see delegation without touching the API:
+
+- Run rows (agent page) and the issue Run ledger show plain-language chips: "Delegated task" (child), "Delegating" / "Delegation done" / "Delegation issues" (parent).
+- Run detail shows a "Delegated Work" section listing each child with live status and links, plus an origin banner ("This run was started by another agent") linking back to the delegating run.
+- `awaiting_delegation` liveness renders as "Awaiting delegation" in the ledger.
+
 ## 8. BizCursor alignment
 
 BizCursor F2 should call this API instead of parsing `delegation` blocks from CEO text. See `docs/bizcursor/A2A-DELEGATION-ALIGNMENT.md`.

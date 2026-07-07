@@ -154,7 +154,11 @@ describeEmbeddedPostgres("runDelegationService (integration)", () => {
     const child = await getRunRow(result.childRunId);
     expect(child?.parentRunId).toBe(parentRunId);
     expect(child?.delegationStatus).toBe("pending");
-    expect((child?.contextSnapshot as Record<string, unknown>)?.delegationDepth).toBe(1);
+    const childContext = child?.contextSnapshot as Record<string, unknown>;
+    expect(childContext?.delegationDepth).toBe(1);
+    // Adapter interop: the task must reach the child prompt via the handoff
+    // markdown every adapter renders (Cursor, OpenCode, Claude, cloud, ...).
+    expect(String(childContext?.paperclipSessionHandoffMarkdown)).toContain("Build the login form");
 
     const parent = await getRunRow(parentRunId);
     expect(parent?.delegationStatus).toBe("pending");
@@ -212,8 +216,11 @@ describeEmbeddedPostgres("runDelegationService (integration)", () => {
 
     expect(wakeCalls).toHaveLength(1);
     expect(wakeCalls[0]!.opts?.reason).toBe("delegation_child_completed");
-    const results = (wakeCalls[0]!.opts?.contextSnapshot as Record<string, unknown>).delegationResults as unknown[];
+    const wakeContext = wakeCalls[0]!.opts?.contextSnapshot as Record<string, unknown>;
+    const results = wakeContext.delegationResults as unknown[];
     expect(results).toHaveLength(2);
+    // The joined results must reach the parent's continuation prompt on any adapter.
+    expect(String(wakeContext.paperclipSessionHandoffMarkdown)).toContain("Delegation results");
 
     const parent = await getRunRow(parentRunId);
     expect(parent?.delegationStatus).toBe("completed");

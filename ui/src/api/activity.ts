@@ -17,6 +17,8 @@ export interface RunForIssue {
   resultJson: Record<string, unknown> | null;
   logBytes?: number | null;
   retryOfRunId?: string | null;
+  parentRunId?: string | null;
+  delegationStatus?: "pending" | "completed" | "failed" | "cancelled" | null;
   scheduledRetryAt?: string | null;
   scheduledRetryAttempt?: number;
   scheduledRetryReason?: string | null;

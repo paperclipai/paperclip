@@ -751,6 +751,35 @@ export function IssueRunLedgerContent({
                       {retryState.badgeLabel}
                     </span>
                   ) : null}
+                  {run.parentRunId ? (
+                    <span
+                      className="rounded-md border border-violet-500/30 bg-violet-500/10 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 dark:text-violet-300"
+                      title="This run was started by another agent that delegated the work."
+                    >
+                      Delegated task
+                    </span>
+                  ) : run.delegationStatus === "pending" ? (
+                    <span
+                      className="rounded-md border border-violet-500/30 bg-violet-500/10 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 dark:text-violet-300"
+                      title="This run handed work to other agents and is waiting for them to finish."
+                    >
+                      Delegating
+                    </span>
+                  ) : run.delegationStatus === "completed" ? (
+                    <span
+                      className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300"
+                      title="All work this run delegated to other agents finished successfully."
+                    >
+                      Delegation done
+                    </span>
+                  ) : run.delegationStatus ? (
+                    <span
+                      className="rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-300"
+                      title="Some delegated work did not finish successfully. Open the run for details."
+                    >
+                      Delegation issues
+                    </span>
+                  ) : null}
                   {run.outputSilence && RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level] ? (
                     <span
                       className={cn(
@@ -815,6 +844,16 @@ export function IssueRunLedgerContent({
                         </Link>
                       </p>
                     ) : null}
+                  </div>
+                ) : null}
+
+                {run.parentRunId ? (
+                  <div className="rounded-md border border-violet-500/20 bg-violet-500/5 px-2 py-2 text-xs leading-5 text-muted-foreground">
+                    <p>
+                      Started by a delegation from run{" "}
+                      <span className="font-mono text-foreground">{run.parentRunId.slice(0, 8)}</span>
+                      {" "}(another agent asked for this work). Open the run for the full hand-off.
+                    </p>
                   </div>
                 ) : null}
 

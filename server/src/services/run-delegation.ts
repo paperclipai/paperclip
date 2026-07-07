@@ -530,6 +530,9 @@ export function runDelegationService(
         delegatedFromAgentId: sourceAgent.id,
         delegationTask: input.task,
         delegationDepth: childDepth,
+        // Adapters render this into the child's prompt (adapter-agnostic
+        // interop: the task text reaches Cursor/OpenCode/Claude/... natively).
+        paperclipSessionHandoffMarkdown: handoffMarkdown,
         ...(clientKey ? { delegationClientKey: clientKey } : {}),
         ...(input.expectedOutput ? { delegationExpectedOutput: input.expectedOutput } : {}),
         ...(followUpChild ? { delegationFollowUpOfRunId: followUpChild.id } : {}),
@@ -723,6 +726,20 @@ export function runDelegationService(
     if (!CONTINUATION_ELIGIBLE_PARENT_STATUSES.has(updatedParent.status as HeartbeatRunStatus)) return true;
 
     const parentContext = updatedParent.contextSnapshot as Record<string, unknown> | null;
+    const resultsMarkdown = [
+      "## Delegation results (Paperclip)",
+      `Fan-out from your run ${parentRunId}: ${counts.completed}/${counts.total} completed, ${counts.failed} failed, ${counts.cancelled} cancelled.`,
+      "",
+      ...results.map((result) => [
+        `### Child run ${result.childRunId} — ${result.childStatus}`,
+        result.task ? `Task: ${result.task}` : null,
+        result.summary ? `Result: ${result.summary}` : null,
+        result.error ? `Error: ${result.error}` : null,
+      ].filter(Boolean).join("\n")),
+      "",
+      "Integrate these results and complete your original work. Use paperclipGetDelegation for full result JSON if needed.",
+    ].join("\n");
+
     await deps.enqueueWakeup(updatedParent.agentId, {
       source: "automation",
       triggerDetail: "callback",
@@ -739,6 +756,8 @@ export function runDelegationService(
         delegationResults: results,
         delegationDepth: typeof parentContext?.delegationDepth === "number" ? parentContext.delegationDepth : 0,
         delegationParentRunId: parentRunId,
+        // Rendered into the parent's continuation prompt by every adapter.
+        paperclipSessionHandoffMarkdown: resultsMarkdown,
       },
       payload: {
         delegationAggregate: aggregate,
