@@ -69,30 +69,50 @@ describe("getNeedsYouIssues", () => {
     expect(getNeedsYouIssues([mine], undefined)).toEqual([]);
   });
 
-  it("sorts by priority then oldest-review-first within a priority", () => {
+  it("sorts by priority then oldest issue within a priority", () => {
     const lowOld = makeIssue({
       status: "in_review",
       assigneeUserId: me,
       priority: "low",
-      updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
     });
     const highNew = makeIssue({
       status: "in_review",
       assigneeUserId: me,
       priority: "high",
-      updatedAt: new Date("2026-06-25T00:00:00.000Z"),
+      createdAt: new Date("2026-06-25T00:00:00.000Z"),
     });
     const highOld = makeIssue({
       status: "in_review",
       assigneeUserId: me,
       priority: "high",
-      updatedAt: new Date("2026-06-10T00:00:00.000Z"),
+      createdAt: new Date("2026-06-10T00:00:00.000Z"),
     });
 
     const result = getNeedsYouIssues([lowOld, highNew, highOld], me);
 
     // high (oldest first), then low
     expect(result.map((i) => i.id)).toEqual([highOld.id, highNew.id, lowOld.id]);
+  });
+
+  it("does not let a recent edit bury an older review", () => {
+    const editedOld = makeIssue({
+      status: "in_review",
+      assigneeUserId: me,
+      priority: "high",
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-25T00:00:00.000Z"),
+    });
+    const untouchedNew = makeIssue({
+      status: "in_review",
+      assigneeUserId: me,
+      priority: "high",
+      createdAt: new Date("2026-06-10T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-10T00:00:00.000Z"),
+    });
+
+    expect(getNeedsYouIssues([untouchedNew, editedOld], me).map((i) => i.id))
+      .toEqual([editedOld.id, untouchedNew.id]);
   });
 });
 

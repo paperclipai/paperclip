@@ -30,6 +30,7 @@ import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
+const DASHBOARD_ATTENTION_ISSUE_LIMIT = 1000;
 
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
@@ -75,7 +76,9 @@ export function Dashboard() {
 
   const { data: issues } = useQuery({
     queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryFn: () => issuesApi.list(selectedCompanyId!, {
+      limit: DASHBOARD_ATTENTION_ISSUE_LIMIT,
+    }),
     enabled: !!selectedCompanyId,
   });
 

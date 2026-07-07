@@ -223,12 +223,10 @@ export function NeedsAttentionPanel({
                 );
               })}
               {parked.total > PARKED_DISPLAY_LIMIT && (
-                <Link
-                  to="/issues?attention=blocked"
-                  className="block px-4 py-2.5 text-xs text-muted-foreground no-underline hover:bg-accent/50 transition-colors"
-                >
-                  +{parked.total - PARKED_DISPLAY_LIMIT} more parked tasks
-                </Link>
+                <div className="px-4 py-2.5 text-xs text-muted-foreground">
+                  Showing first {PARKED_DISPLAY_LIMIT} of {parked.total} parked
+                  tasks
+                </div>
               )}
             </div>
           )}

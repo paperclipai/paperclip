@@ -32,15 +32,16 @@ export function isOpenStatus(status: string): boolean {
   return !CLOSED_STATUSES.has(status);
 }
 
-function updatedAtMs(issue: Issue): number {
-  const t = new Date(issue.updatedAt).getTime();
+function createdAtMs(issue: Issue): number {
+  const t = new Date(issue.createdAt).getTime();
   return Number.isNaN(t) ? 0 : t;
 }
 
 /**
  * #1 — The daily driver. Tasks where status is `in_review` and the assignee is the
- * current user, sorted by priority then age (oldest review first within a priority,
- * so the longest-waiting decision bubbles up).
+ * current user, sorted by priority then issue age. Paperclip does not currently
+ * expose a review-entered timestamp, so createdAt is the stable age proxy; updatedAt
+ * can move when someone edits the issue and bury an older decision.
  */
 export function getNeedsYouIssues(
   issues: Issue[],
@@ -55,7 +56,7 @@ export function getNeedsYouIssues(
     .sort(
       (a, b) =>
         priorityRank(a.priority) - priorityRank(b.priority) ||
-        updatedAtMs(a) - updatedAtMs(b),
+        createdAtMs(a) - createdAtMs(b),
     );
 }
 
