@@ -166,6 +166,26 @@ function isSafeMarkdownLinkUrl(url: string): boolean {
   return !/^(javascript|data|vbscript):/i.test(trimmed);
 }
 
+function escapeMarkdownImageAlt(value: string): string {
+  const alt = value.trim() || "image";
+  return alt.replace(/[[\]]/g, "\\$&");
+}
+
+export function ensureUploadedImageMarkdown(current: string, src: string, filename?: string): string {
+  const escapedSrc = escapeRegExp(src);
+  const imagePattern = new RegExp(`!\\[[^\\]]*\\]\\(${escapedSrc}\\)`, "g");
+  if (imagePattern.test(current)) {
+    return current.replace(
+      new RegExp(`(!\\[[^\\]]*\\]\\(${escapedSrc}\\))(?!\\n\\n)`, "g"),
+      "$1\n\n",
+    );
+  }
+
+  const imageMarkdown = `![${escapeMarkdownImageAlt(filename ?? "image")}](${src})`;
+  const base = current.trimEnd();
+  return base ? `${base}\n\n${imageMarkdown}\n\n` : `${imageMarkdown}\n\n`;
+}
+
 /* ---- Mention detection helpers ---- */
 
 interface MentionState {
@@ -703,15 +723,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           try {
             const src = await handler(file);
             setUploadError(null);
-            // After MDXEditor inserts the image, ensure two newlines follow it
-            // so the cursor isn't stuck right next to the image.
+            // MDXEditor should insert the uploaded image after this handler resolves.
+            // If that editor change never reaches us, persist a fallback markdown link
+            // so successful uploads do not become orphaned draft assets.
             setTimeout(() => {
               const current = latestValueRef.current;
-              const escapedSrc = escapeRegExp(src);
-              const updated = current.replace(
-                new RegExp(`(!\\[[^\\]]*\\]\\(${escapedSrc}\\))(?!\\n\\n)`, "g"),
-                "$1\n\n",
-              );
+              const updated = ensureUploadedImageMarkdown(current, src, file.name);
               if (updated !== current) {
                 latestValueRef.current = updated;
                 echoIgnoreMarkdownRef.current = updated;

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProjectMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
 import {
   computeMentionMenuPosition,
+  ensureUploadedImageMarkdown,
   findClosestAutocompleteAnchor,
   findMentionMatch,
   isSameAutocompleteSession,
@@ -18,6 +19,7 @@ const mdxEditorMockState = vi.hoisted(() => ({
   emitMountEmptyReset: false,
   emitMountParseError: false,
   emitMountSilentEmptyState: false,
+  imageUploadHandler: null as null | ((file: File) => Promise<string>),
   markdownValues: [] as string[],
   suppressHtmlProcessingValues: [] as boolean[],
 }));
@@ -123,7 +125,10 @@ vi.mock("@mdxeditor/editor", async () => {
     codeMirrorPlugin: () => ({}),
     createRootEditorSubscription$: Symbol("createRootEditorSubscription$"),
     headingsPlugin: () => ({}),
-    imagePlugin: () => ({}),
+    imagePlugin: (options: { imageUploadHandler?: (file: File) => Promise<string> }) => {
+      mdxEditorMockState.imageUploadHandler = options.imageUploadHandler ?? null;
+      return {};
+    },
     linkDialogPlugin: () => ({}),
     linkPlugin: () => ({}),
     listsPlugin: () => ({}),
@@ -191,6 +196,7 @@ describe("MarkdownEditor", () => {
     mdxEditorMockState.emitMountEmptyReset = false;
     mdxEditorMockState.emitMountParseError = false;
     mdxEditorMockState.emitMountSilentEmptyState = false;
+    mdxEditorMockState.imageUploadHandler = null;
     mdxEditorMockState.markdownValues = [];
     mdxEditorMockState.suppressHtmlProcessingValues = [];
   });
@@ -476,6 +482,51 @@ describe("MarkdownEditor", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("adds uploaded image markdown when the rich editor does not emit the insertion", async () => {
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="test"
+          onChange={handleChange}
+          imageUploadHandler={async () => "/api/assets/asset-1/content"}
+        />,
+      );
+    });
+
+    await flush();
+    expect(mdxEditorMockState.imageUploadHandler).toBeTruthy();
+
+    await act(async () => {
+      await mdxEditorMockState.imageUploadHandler?.(
+        new File(["image"], "reference portrait.png", { type: "image/png" }),
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    });
+
+    expect(handleChange).toHaveBeenCalledWith(
+      "test\n\n![reference portrait.png](/api/assets/asset-1/content)\n\n",
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("normalizes uploaded image spacing without duplicating an existing image", () => {
+    expect(
+      ensureUploadedImageMarkdown(
+        "test\n\n![reference portrait.png](/api/assets/asset-1/content)",
+        "/api/assets/asset-1/content",
+        "reference portrait.png",
+      ),
+    ).toBe("test\n\n![reference portrait.png](/api/assets/asset-1/content)\n\n");
   });
 
   it("places the menu top on the caret line and offsets the left a space-width past the caret", () => {
