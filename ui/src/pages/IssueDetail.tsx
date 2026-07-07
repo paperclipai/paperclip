@@ -38,7 +38,7 @@ import {
   cancelInboxIssueQueries,
   invalidateInboxIssueQueries,
   removeIssueFromInboxCaches,
-  restoreInboxIssueCaches,
+  restoreIssueToInboxCaches,
   snapshotInboxIssueCaches,
   type InboxIssueCacheSnapshot,
 } from "../lib/inboxArchiveCache";
@@ -2975,9 +2975,9 @@ export function IssueDetail() {
       navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
       pushToast({ title: "Task archived from inbox", tone: "success" });
     },
-    onError: (err, _id, context) => {
+    onError: (err, id, context) => {
       if (context?.previousData) {
-        restoreInboxIssueCaches(queryClient, context.previousData);
+        restoreIssueToInboxCaches(queryClient, context.previousData, id);
       }
       pushToast({
         title: "Archive failed",

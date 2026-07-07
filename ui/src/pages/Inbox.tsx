@@ -57,7 +57,7 @@ import {
   cancelInboxIssueQueries,
   invalidateInboxIssueQueries,
   removeIssueFromInboxCaches,
-  restoreInboxIssueCaches,
+  restoreIssueToInboxCaches,
   snapshotInboxIssueCaches,
   type InboxIssueCacheSnapshot,
 } from "../lib/inboxArchiveCache";
@@ -1563,9 +1563,9 @@ export function Inbox() {
         next.delete(id);
         return next;
       });
-      // Restore previous query data on failure
+      // Restore only this failed archive so overlapping archive mutations stay removed.
       if (context?.previousData) {
-        restoreInboxIssueCaches(queryClient, context.previousData);
+        restoreIssueToInboxCaches(queryClient, context.previousData, id);
       }
     },
     onSettled: (_data, _error, id) => {

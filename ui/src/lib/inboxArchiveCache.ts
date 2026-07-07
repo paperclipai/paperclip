@@ -12,6 +12,20 @@ function inboxIssueQueryPrefixes(companyId: string) {
   ] as const;
 }
 
+function resolveRestoreIndex(currentData: Issue[], previousData: Issue[], previousIndex: number) {
+  for (let index = previousIndex - 1; index >= 0; index -= 1) {
+    const beforeIndex = currentData.findIndex((issue) => issue.id === previousData[index]?.id);
+    if (beforeIndex >= 0) return beforeIndex + 1;
+  }
+
+  for (let index = previousIndex + 1; index < previousData.length; index += 1) {
+    const afterIndex = currentData.findIndex((issue) => issue.id === previousData[index]?.id);
+    if (afterIndex >= 0) return afterIndex;
+  }
+
+  return Math.min(previousIndex, currentData.length);
+}
+
 export async function cancelInboxIssueQueries(queryClient: QueryClient, companyId: string) {
   await Promise.all(
     inboxIssueQueryPrefixes(companyId).map((queryKey) =>
@@ -42,12 +56,25 @@ export function removeIssueFromInboxCaches(
   }
 }
 
-export function restoreInboxIssueCaches(
+export function restoreIssueToInboxCaches(
   queryClient: QueryClient,
   snapshot: InboxIssueCacheSnapshot,
+  issueId: string,
 ) {
-  for (const [queryKey, data] of snapshot) {
-    queryClient.setQueryData(queryKey, data);
+  for (const [queryKey, previousData] of snapshot) {
+    if (!previousData) continue;
+
+    const previousIndex = previousData.findIndex((issue) => issue.id === issueId);
+    if (previousIndex < 0) continue;
+
+    const issueToRestore = previousData[previousIndex];
+    queryClient.setQueryData<Issue[]>(queryKey, (currentData) => {
+      if (currentData?.some((issue) => issue.id === issueId)) return currentData;
+
+      const nextData = [...(currentData ?? [])];
+      nextData.splice(resolveRestoreIndex(nextData, previousData, previousIndex), 0, issueToRestore);
+      return nextData;
+    });
   }
 }
 
