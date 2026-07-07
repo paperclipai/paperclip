@@ -212,6 +212,18 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(failedRun?.errorCode).toBe("provider_quota");
     expect((failedRun?.resultJson as Record<string, unknown> | null)?.errorFamily).toBe("provider_quota");
 
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.retryOfRunId, run!.id))
+            .then((rows) => rows.length),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toBe(1);
+
     const retryRun = await db
       .select({
         id: heartbeatRuns.id,
@@ -223,8 +235,6 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.retryOfRunId, run!.id))
       .then((rows) => rows[0] ?? null);
-
-    expect(retryRun).not.toBeNull();
     expect(retryRun?.status).toBe("scheduled_retry");
     expect(retryRun?.scheduledRetryReason).toBe("transient_failure");
     expect(retryRun?.scheduledRetryAt?.toISOString()).toBe("2030-04-22T21:00:00.000Z");
