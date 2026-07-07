@@ -36,6 +36,7 @@ import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { issueService } from "../issues.js";
+import { publishLiveEvent } from "../live-events.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
@@ -1483,6 +1484,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         sourceIssueId: sourceIssue?.id ?? null,
         silenceAgeMs: evidence.silenceAgeMs,
         lastOutputAt: input.run.lastOutputAt?.toISOString() ?? null,
+      },
+    });
+    publishLiveEvent({
+      companyId: evaluation.companyId,
+      type: "issue.stale",
+      payload: {
+        issueId: evaluation.id,
+        issueIdentifier: evaluation.identifier ?? "",
+        issueTitle: evaluation.title,
+        sourceIssueId: sourceIssue?.id ?? null,
+        staleRunId: input.run.id,
+        level,
       },
     });
     if (level === "critical") {

@@ -31,6 +31,9 @@ export function publishLiveEvent(input: {
 }) {
   const event = toLiveEvent(input);
   emitter.emit(input.companyId, event);
+  if (input.companyId !== "*") {
+    emitter.emit("*", event);
+  }
   return event;
 }
 
