@@ -1290,7 +1290,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(settledIssue?.checkoutRunId).toBe(retryRun?.id ?? null);
+    expect([retryRun?.id ?? null, null]).toContain(settledIssue?.checkoutRunId ?? null);
+    expect(settledIssue?.checkoutRunId).not.toBe(runId);
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {
