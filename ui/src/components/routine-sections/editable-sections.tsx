@@ -387,9 +387,8 @@ export function TriggersSection() {
               </SelectTrigger>
               <SelectContent>
                 {triggerKinds.map((kind) => (
-                  <SelectItem key={kind} value={kind} disabled={kind === "webhook"}>
+                  <SelectItem key={kind} value={kind}>
                     {kind}
-                    {kind === "webhook" ? " — COMING SOON" : ""}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -465,7 +464,7 @@ export function TriggersSection() {
         <EmptyState
           icon={Clock3}
           message="No triggers yet."
-          action="Add a schedule"
+          action="Add a trigger"
           onAction={() => setAddOpen(true)}
         />
       ) : (
