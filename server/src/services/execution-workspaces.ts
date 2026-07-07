@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import { executionWorkspaces, issueComments, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import type {
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,
@@ -19,9 +20,13 @@ import type {
   WorkspaceRuntimeService,
   WorkspaceOverviewPrimaryService,
   WorkspaceOverviewQuery,
+  GitWorktreeBranchAncestryVerdict,
+  IssueRecoveryAction,
 } from "@paperclipai/shared";
 import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@paperclipai/shared";
+import { notFound, unprocessable } from "../errors.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
@@ -32,6 +37,38 @@ type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
+const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
+
+export type ExecutionWorkspaceBranchReconcileMode = "forward" | "override";
+
+export type ExecutionWorkspaceBranchReconcileActor = {
+  actorType: "agent" | "user";
+  actorId: string;
+  agentId: string | null;
+  runId: string | null;
+};
+
+export type ExecutionWorkspaceBranchReconcileInspection = {
+  fingerprint: string;
+  worktreePath: string;
+  repoRoot: string;
+  fromBranch: string;
+  toBranch: string;
+  fromSha: string | null;
+  toSha: string | null;
+  ancestryVerdict: GitWorktreeBranchAncestryVerdict;
+  cleanliness: "clean" | "dirty" | "unknown";
+  statusEntryCount: number | null;
+  plainLanguageReason: string;
+};
+
+export type ExecutionWorkspaceBranchReconcileResult = {
+  workspace: ExecutionWorkspace;
+  inspection: ExecutionWorkspaceBranchReconcileInspection;
+  recoveryAction: IssueRecoveryAction | null;
+  auditCommentId: string | null;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -74,6 +111,187 @@ async function pathExists(value: string | null | undefined) {
 
 async function runGit(args: string[], cwd: string) {
   return await execFileAsync("git", ["-C", cwd, ...args], { cwd });
+}
+
+async function readGitStdout(args: string[], cwd: string): Promise<string | null> {
+  const output = await runGit(args, cwd);
+  return output.stdout.trim() || null;
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    return `{${Object.keys(rec).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(rec[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function formatBranchForMessage(branch: string | null | undefined) {
+  return branch && branch.length > 0 ? branch : "<detached>";
+}
+
+function fingerprintWorkspaceBranchIncoherence(input: {
+  sourceIssueId: string | null;
+  executionWorkspaceId: string | null;
+  worktreePath: string;
+  expectedBranch: string;
+  actualBranch: string | null;
+  cleanliness: "clean" | "dirty" | "unknown";
+  expectedHeadSha: string | null;
+  actualHeadSha: string | null;
+}) {
+  const digest = createHash("sha256")
+    .update(stableStringify({
+      version: 1,
+      reason: WORKSPACE_BRANCH_INCOHERENCE_REASON,
+      sourceIssueId: input.sourceIssueId,
+      executionWorkspaceId: input.executionWorkspaceId,
+      worktreePath: path.resolve(input.worktreePath),
+      expectedBranch: input.expectedBranch,
+      actualBranch: input.actualBranch,
+      cleanliness: input.cleanliness,
+      expectedHeadSha: input.expectedHeadSha,
+      actualHeadSha: input.actualHeadSha,
+    }))
+    .digest("hex");
+  return `workspace_incoherence:v1:sha256:${digest}`;
+}
+
+async function getGitWorktreeBranchAncestryVerdict(input: {
+  repoRoot: string;
+  expectedHeadSha: string | null;
+  actualHeadSha: string | null;
+}): Promise<GitWorktreeBranchAncestryVerdict> {
+  if (!input.expectedHeadSha || !input.actualHeadSha) return "unknown";
+
+  try {
+    await runGit(["merge-base", "--is-ancestor", input.expectedHeadSha, input.actualHeadSha], input.repoRoot);
+    return "ancestor";
+  } catch (error) {
+    const code = typeof error === "object" && error && "code" in error
+      ? (error as { code?: unknown }).code
+      : null;
+    return code === 1 ? "diverged" : "unknown";
+  }
+}
+
+function explainGitWorktreeBranchReconcileInspection(input: {
+  fromBranch: string;
+  toBranch: string;
+  fromSha: string | null;
+  toSha: string | null;
+  ancestryVerdict: GitWorktreeBranchAncestryVerdict;
+}) {
+  if (!input.fromSha || !input.toSha) {
+    return `Paperclip could not determine branch ancestry because "${input.fromBranch}" or "${input.toBranch}" is missing a resolvable HEAD commit.`;
+  }
+  if (input.fromSha === input.toSha) {
+    return `The recorded branch "${input.fromBranch}" and checked-out branch "${input.toBranch}" resolve to the same commit.`;
+  }
+  if (input.ancestryVerdict === "ancestor") {
+    return `The recorded branch "${input.fromBranch}" is an ancestor of the checked-out branch "${input.toBranch}".`;
+  }
+  if (input.ancestryVerdict === "diverged") {
+    return `The recorded branch "${input.fromBranch}" is not an ancestor of the checked-out branch "${input.toBranch}".`;
+  }
+  return `Paperclip could not determine whether "${input.toBranch}" is forward of "${input.fromBranch}".`;
+}
+
+async function inspectExecutionWorkspaceBranchForReconcile(
+  workspace: Pick<ExecutionWorkspace, "id" | "sourceIssueId" | "cwd" | "providerRef" | "branchName">,
+): Promise<ExecutionWorkspaceBranchReconcileInspection> {
+  const fromBranch = readNullableString(workspace.branchName);
+  if (!fromBranch) {
+    throw unprocessable("Execution workspace has no recorded branch to reconcile");
+  }
+
+  const worktreePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
+  if (!worktreePath) {
+    throw unprocessable("Execution workspace needs a local worktree path before Paperclip can reconcile its branch record");
+  }
+
+  const repoRoot = await readGitStdout(["rev-parse", "--show-toplevel"], worktreePath).catch(() => null);
+  if (!repoRoot) {
+    throw unprocessable("Execution workspace path is not inside a git repository");
+  }
+
+  const toBranch = await readGitStdout(["symbolic-ref", "--quiet", "--short", "HEAD"], worktreePath).catch(() => null);
+  if (!toBranch) {
+    throw unprocessable("Execution workspace is detached; Paperclip cannot reconcile it to a branch name");
+  }
+
+  const status = await runGit(["status", "--porcelain", "--untracked-files=all"], worktreePath)
+    .then((output) => output.stdout)
+    .catch(() => null);
+  const statusLines = status === null
+    ? null
+    : status.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const cleanliness: ExecutionWorkspaceBranchReconcileInspection["cleanliness"] =
+    status === null ? "unknown" : status.trim().length > 0 ? "dirty" : "clean";
+
+  const fromSha = await readGitStdout(["rev-parse", "--verify", `refs/heads/${fromBranch}^{commit}`], repoRoot)
+    .catch(() => null);
+  const toSha = await readGitStdout(["rev-parse", "HEAD"], worktreePath).catch(() => null);
+  const ancestryVerdict = await getGitWorktreeBranchAncestryVerdict({
+    repoRoot,
+    expectedHeadSha: fromSha,
+    actualHeadSha: toSha,
+  });
+
+  return {
+    fingerprint: fingerprintWorkspaceBranchIncoherence({
+      sourceIssueId: workspace.sourceIssueId ?? null,
+      executionWorkspaceId: workspace.id,
+      worktreePath,
+      expectedBranch: fromBranch,
+      actualBranch: toBranch,
+      cleanliness,
+      expectedHeadSha: fromSha,
+      actualHeadSha: toSha,
+    }),
+    worktreePath: path.resolve(worktreePath),
+    repoRoot: path.resolve(repoRoot),
+    fromBranch,
+    toBranch,
+    fromSha,
+    toSha,
+    ancestryVerdict,
+    cleanliness,
+    statusEntryCount: statusLines?.length ?? null,
+    plainLanguageReason: explainGitWorktreeBranchReconcileInspection({
+      fromBranch,
+      toBranch,
+      fromSha,
+      toSha,
+      ancestryVerdict,
+    }),
+  };
+}
+
+function formatBranchReconcileAuditComment(input: {
+  mode: ExecutionWorkspaceBranchReconcileMode;
+  reason: string | null;
+  workspaceId: string;
+  inspection: ExecutionWorkspaceBranchReconcileInspection;
+  recoveryActionId: string | null;
+}) {
+  return [
+    "Execution workspace branch reconciled.",
+    "",
+    `- Workspace: \`${input.workspaceId}\``,
+    `- Mode: \`${input.mode}\``,
+    `- From branch: \`${formatBranchForMessage(input.inspection.fromBranch)}\``,
+    `- To branch: \`${formatBranchForMessage(input.inspection.toBranch)}\``,
+    `- From SHA: \`${input.inspection.fromSha ?? "unknown"}\``,
+    `- To SHA: \`${input.inspection.toSha ?? "unknown"}\``,
+    `- Verdict: \`${input.inspection.ancestryVerdict}\``,
+    `- Fingerprint: \`${input.inspection.fingerprint}\``,
+    `- Recovery action: ${input.recoveryActionId ? `\`${input.recoveryActionId}\`` : "none matched"}`,
+    ...(input.reason ? [`- Operator reason: ${input.reason}`] : []),
+  ].join("\n");
 }
 
 async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
@@ -444,6 +662,8 @@ type WorkspaceOverviewIssueRow = WorkspaceOverviewLinkedIssue & {
 };
 
 export function executionWorkspaceService(db: Db) {
+  const recoveryActionsSvc = issueRecoveryActionService(db);
+
   function buildListConditions(
     companyId: string,
     filters?: {
@@ -1024,6 +1244,99 @@ export function executionWorkspaceService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toExecutionWorkspace(row) : null;
+    },
+
+    reconcileExecutionWorkspaceBranch: async (
+      id: string,
+      input: {
+        mode: ExecutionWorkspaceBranchReconcileMode;
+        reason?: string | null;
+        actor: ExecutionWorkspaceBranchReconcileActor;
+      },
+    ): Promise<ExecutionWorkspaceBranchReconcileResult> => {
+      const existingRow = await db
+        .select()
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!existingRow) throw notFound("Execution workspace not found");
+
+      const existing = toExecutionWorkspace(existingRow);
+      if (!existing.sourceIssueId) {
+        throw unprocessable("Execution workspace needs a source issue before Paperclip can audit branch reconciliation");
+      }
+
+      const inspection = await inspectExecutionWorkspaceBranchForReconcile(existing);
+      if (input.mode === "forward" && inspection.ancestryVerdict !== "ancestor") {
+        throw unprocessable(
+          "Forward branch reconciliation requires the recorded branch to be an ancestor of the checked-out branch",
+          { inspection },
+        );
+      }
+
+      const reason = readNullableString(input.reason);
+      const now = new Date();
+      return db.transaction(async (tx) => {
+        const updatePatch: Partial<typeof executionWorkspaces.$inferInsert> = {
+          branchName: inspection.toBranch,
+          updatedAt: now,
+        };
+        if (existing.name === inspection.fromBranch) {
+          updatePatch.name = inspection.toBranch;
+        }
+
+        const [updatedRow] = await tx
+          .update(executionWorkspaces)
+          .set(updatePatch)
+          .where(eq(executionWorkspaces.id, existing.id))
+          .returning();
+        if (!updatedRow) throw notFound("Execution workspace not found");
+
+        const recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
+          {
+            companyId: existing.companyId,
+            sourceIssueId: existing.sourceIssueId!,
+            kind: "workspace_validation",
+            cause: WORKSPACE_VALIDATION_RECOVERY_CAUSE,
+            fingerprint: inspection.fingerprint,
+            status: "resolved",
+            outcome: "restored",
+            resolutionNote: `Execution workspace branch record reconciled from "${inspection.fromBranch}" to "${inspection.toBranch}".`,
+          },
+          tx,
+        );
+
+        const [auditComment] = await tx
+          .insert(issueComments)
+          .values({
+            companyId: existing.companyId,
+            issueId: existing.sourceIssueId!,
+            authorAgentId: input.actor.actorType === "agent" ? input.actor.agentId : null,
+            authorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+            authorType: input.actor.actorType,
+            createdByRunId: input.actor.runId,
+            body: formatBranchReconcileAuditComment({
+              mode: input.mode,
+              reason,
+              workspaceId: existing.id,
+              inspection,
+              recoveryActionId: recoveryAction?.id ?? null,
+            }),
+          })
+          .returning({ id: issueComments.id });
+
+        await tx
+          .update(issues)
+          .set({ updatedAt: now })
+          .where(eq(issues.id, existing.sourceIssueId!));
+
+        return {
+          workspace: toExecutionWorkspace(updatedRow),
+          inspection,
+          recoveryAction,
+          auditCommentId: auditComment?.id ?? null,
+        };
+      });
     },
 
     clearEnvironmentSelection: async (companyId: string, environmentId: string) => {
