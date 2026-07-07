@@ -8,6 +8,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  canBoardManageRuntime,
   canBoardResolveRecoveryAction,
   IssueDetail,
   shouldScrollIssueDetailToTopOnNavigation,
@@ -2507,6 +2508,62 @@ describe("canBoardResolveRecoveryAction", () => {
         userId: "user-1",
       }),
     ).toBe(false);
+  });
+});
+
+describe("canBoardManageRuntime", () => {
+  it("falls back to companyIds when memberships are not populated", () => {
+    expect(
+      canBoardManageRuntime("company-1", {
+        companyIds: ["company-1"],
+        memberships: [],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("denies viewers the runtime-manage-gated break-glass affordance", () => {
+    expect(
+      canBoardManageRuntime("company-1", {
+        companyIds: ["company-1"],
+        memberships: [
+          {
+            companyId: "company-1",
+            membershipRole: "viewer",
+            status: "active",
+          },
+        ],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("allows non-viewer active members (mirrors the backend runtime:manage member gate)", () => {
+    expect(
+      canBoardManageRuntime("company-1", {
+        companyIds: ["company-1"],
+        memberships: [
+          {
+            companyId: "company-1",
+            membershipRole: "operator",
+            status: "active",
+          },
+        ],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(true);
   });
 });
 
