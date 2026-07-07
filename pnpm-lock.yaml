@@ -925,8 +925,8 @@ importers:
         specifier: ^26.3.1
         version: 26.3.1(typescript@5.9.3)
       lexical:
-        specifier: 0.35.0
-        version: 0.35.0
+        specifier: 0.46.0
+        version: 0.46.0(typescript@5.9.3)
       lucide-react:
         specifier: ^0.577.0
         version: 0.577.0(react@19.2.7)
@@ -2650,6 +2650,14 @@ packages:
 
   '@lexical/html@0.35.0':
     resolution: {integrity: sha512-rXGFE5S5rKsg3tVnr1s4iEgOfCApNXGpIFI3T2jGEShaCZ5HLaBY9NVBXnE9Nb49e9bkDkpZ8FZd1qokCbQXbw==}
+
+  '@lexical/internal@0.46.0':
+    resolution: {integrity: sha512-OV1ePAAnVVd0K+Bq5SX7vOKE/LqJLYcDM4HD4zVCisbgVaznE+pTj/nDB2uWTidwf8o7QhPR65VhEi+KkUtyEw==}
+    peerDependencies:
+      typescript: '>=5.2'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@lexical/link@0.35.0':
     resolution: {integrity: sha512-+0Wx6cBwO8TfdMzpkYFacsmgFh8X1rkiYbq3xoLvk3qV8upYxaMzK1s8Q1cpKmWyI0aZrU6z7fiK4vUqB7+69w==}
@@ -6442,6 +6450,14 @@ packages:
   lexical@0.35.0:
     resolution: {integrity: sha512-3VuV8xXhh5xJA6tzvfDvE0YBCMkIZUmxtRilJQDDdCgJCc+eut6qAv2qbN+pbqvarqcQqPN1UF+8YvsjmyOZpw==}
 
+  lexical@0.46.0:
+    resolution: {integrity: sha512-oaE7OLY/FuqGKC7ihaqLJvgn/NvvRveryKBBgOwrSe+UIpBmc9IvyXf6hVcvew9M3Vc0XavHWe/ZAL7qc5DzMw==}
+    peerDependencies:
+      typescript: '>=5.2'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   lib0@0.2.117:
     resolution: {integrity: sha512-DeXj9X5xDCjgKLU/7RR+/HQEVzuuEUiwldwOGsHK/sfAfELGWEyTcf0x+uOvCvK3O2zPmZePXWL85vtia6GyZw==}
     engines: {node: '>=16'}
@@ -9905,6 +9921,10 @@ snapshots:
       '@lexical/selection': 0.35.0
       '@lexical/utils': 0.35.0
       lexical: 0.35.0
+
+  '@lexical/internal@0.46.0(typescript@5.9.3)':
+    optionalDependencies:
+      typescript: 5.9.3
 
   '@lexical/link@0.35.0':
     dependencies:
@@ -13858,6 +13878,12 @@ snapshots:
   layout-base@2.0.1: {}
 
   lexical@0.35.0: {}
+
+  lexical@0.46.0(typescript@5.9.3):
+    dependencies:
+      '@lexical/internal': 0.46.0(typescript@5.9.3)
+    optionalDependencies:
+      typescript: 5.9.3
 
   lib0@0.2.117:
     dependencies:
