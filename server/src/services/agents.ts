@@ -30,6 +30,10 @@ import { syncAgentAdapterEnvBindings } from "./agent-secret-bindings.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import { secretService } from "./secrets.js";
+import {
+  builtInAgentMarkersEqual,
+  readBuiltInAgentMarker,
+} from "./built-in-agent-metadata.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -65,6 +69,11 @@ interface RevisionMetadata {
 
 interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
+  allowBuiltInAgentMetadata?: boolean;
+}
+
+interface CreateAgentOptions {
+  allowBuiltInAgentMetadata?: boolean;
 }
 
 interface AgentShortnameRow {
@@ -390,6 +399,21 @@ export function agentService(db: Db) {
     });
   }
 
+  function assertBuiltInAgentMetadataMutationAllowed(
+    beforeMetadata: unknown,
+    afterMetadata: unknown,
+    options?: { allowBuiltInAgentMetadata?: boolean },
+  ) {
+    if (options?.allowBuiltInAgentMetadata) return;
+    const beforeMarker = readBuiltInAgentMarker(beforeMetadata);
+    const afterMarker = readBuiltInAgentMarker(afterMetadata);
+    if (builtInAgentMarkersEqual(beforeMarker, afterMarker)) return;
+    throw conflict("Built-in agent marker is managed by Paperclip and cannot be edited directly", {
+      code: "built_in_agent_marker_readonly",
+      key: beforeMarker?.key ?? afterMarker?.key ?? null,
+    });
+  }
+
   async function updateAgent(
     id: string,
     data: Partial<typeof agents.$inferInsert>,
@@ -423,6 +447,10 @@ export function agentService(db: Db) {
       if (previousShortname !== nextShortname) {
         await assertCompanyShortnameAvailable(existing.companyId, data.name, { excludeAgentId: id });
       }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(data, "metadata")) {
+      assertBuiltInAgentMetadataMutationAllowed(existing.metadata, data.metadata, options);
     }
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
@@ -501,7 +529,8 @@ export function agentService(db: Db) {
 
     getById,
 
-    create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">) => {
+    create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">, options?: CreateAgentOptions) => {
+      assertBuiltInAgentMetadataMutationAllowed(null, data.metadata, options);
       if (data.reportsTo) {
         await ensureManager(companyId, data.reportsTo);
       }
@@ -645,6 +674,14 @@ export function agentService(db: Db) {
     remove: async (id: string) => {
       const existing = await getById(id);
       if (!existing) return null;
+      const builtInMarker = readBuiltInAgentMarker(existing.metadata);
+      if (builtInMarker) {
+        throw conflict("Built-in agents cannot be deleted; pause them instead", {
+          code: "built_in_agent_undeletable",
+          key: builtInMarker.key,
+          featureKeys: builtInMarker.featureKeys,
+        });
+      }
 
       return db.transaction(async (tx) => {
         await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
