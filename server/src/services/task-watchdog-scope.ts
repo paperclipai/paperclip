@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issues, issueWatchdogs } from "@paperclipai/db";
+import { isUuidLike } from "@paperclipai/shared";
 
 const MAX_WATCHDOG_SCOPE_ANCESTRY_DEPTH = 100;
 export const TASK_WATCHDOG_ORIGIN_KIND = "task_watchdog";
@@ -56,7 +57,10 @@ export async function resolveTaskWatchdogMutationScope(
   const agentId = readString(actor.agentId);
   const runId = readString(actor.runId);
   const actorCompanyId = readString(actor.companyId);
-  if (!agentId || !runId) return { kind: "none" };
+  // Synthetic / non-persisted heartbeat run ids (e.g. "ceo-heartbeat") can never match
+  // the uuid heartbeat_runs.id PK; skip the lookup rather than let Postgres throw
+  // "invalid input syntax for type uuid" and 500 the issue mutation (TWX-1253).
+  if (!agentId || !runId || !isUuidLike(runId)) return { kind: "none" };
 
   const run = await db
     .select({

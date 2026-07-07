@@ -4104,6 +4104,10 @@ export function issueService(db: Db) {
   }
 
   async function isTerminalOrMissingHeartbeatRun(runId: string, dbOrTx: DbReader = db) {
+    // A non-uuid run id can never match the uuid heartbeat_runs.id PK — treat it as
+    // missing rather than let Postgres throw an "invalid input syntax for type uuid"
+    // 500 on the issue-mutation path (TWX-1253).
+    if (!isUuidLike(runId)) return true;
     const run = await dbOrTx
       .select({ status: heartbeatRuns.status })
       .from(heartbeatRuns)
@@ -4119,6 +4123,9 @@ export function issueService(db: Db) {
     actorRunId: string;
     expectedCheckoutRunId: string;
   }) {
+    // A non-uuid actor run id is never a live persisted run, so it can never adopt a
+    // checkout; short-circuit before any heartbeat_runs uuid query/write (TWX-1253).
+    if (!isUuidLike(input.actorRunId)) return { adopted: null, latest: null };
     return db.transaction(async (tx) => {
       const lockedIssue = await tx
         .select({
@@ -4219,6 +4226,9 @@ export function issueService(db: Db) {
     actorAgentId: string;
     actorRunId: string;
   }) {
+    // A non-uuid actor run id is never a live persisted run, so it can never adopt an
+    // unowned checkout; short-circuit before any heartbeat_runs uuid query/write (TWX-1253).
+    if (!isUuidLike(input.actorRunId)) return null;
     return db.transaction(async (tx) => {
       await tx.execute(
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
@@ -5863,6 +5873,11 @@ export function issueService(db: Db) {
       }),
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+      // A synthetic / non-uuid run id (e.g. "ceo-heartbeat") can never be a persisted
+      // heartbeat_runs row and would 500 every checkoutRunId comparison/write against the
+      // uuid issues.checkoutRunId/executionRunId columns. Degrade it to null so checkout
+      // succeeds with no run linkage instead of crashing the caller (TWX-1253).
+      if (checkoutRunId !== null && !isUuidLike(checkoutRunId)) checkoutRunId = null;
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
