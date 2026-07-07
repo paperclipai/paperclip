@@ -359,7 +359,7 @@ function EnvironmentCustomImageBrowserTerminal({
 
     const dimensions = getTerminalDimensions();
     const previous = lastSentResizeRef.current;
-    if (!force && previous?.cols === dimensions.cols && previous.rows === dimensions.rows) return;
+    if (!force && previous?.cols === dimensions.cols && previous?.rows === dimensions.rows) return;
 
     lastSentResizeRef.current = dimensions;
     socket.send(JSON.stringify({
