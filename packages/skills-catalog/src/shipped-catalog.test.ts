@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { catalogManifest, catalogSkills, resolveCatalogSkillRef } from "./index.js";
 
@@ -88,5 +89,13 @@ describe("shipped skills catalog", () => {
     expect(resolveCatalogSkillRef(sample.id)).toMatchObject({ key: sample.key });
     expect(resolveCatalogSkillRef(sample.key)).toMatchObject({ key: sample.key });
     expect(resolveCatalogSkillRef(sample.slug)).toMatchObject({ key: sample.key });
+  });
+
+  it("keeps the Ramp wrapper fail-closed on mixed-provenance playbooks", () => {
+    const rampSkill = readFileSync(new URL("../catalog/optional/finance/ramp/SKILL.md", import.meta.url), "utf8");
+
+    expect(rampSkill).toContain("mixes Official and Community playbooks");
+    expect(rampSkill).toContain("do not execute them inside Paperclip unless a Paperclip approval explicitly names the playbook");
+    expect(rampSkill).toContain("third-party browser automation, MCP server, CLI, or connector");
   });
 });

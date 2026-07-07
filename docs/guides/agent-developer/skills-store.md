@@ -98,7 +98,11 @@ a vendored snapshot would go stale, and when Paperclip can keep the safety bound
 the wrapper. For financial, legal, or account-control domains, the wrapper must require
 Paperclip approvals before spend, incorporation, account authorization, card issuance,
 data sharing, or other irreversible actions. The tradeoff should be documented in the
-skill or PR so reviewers can evaluate freshness against external-instruction risk.
+skill or PR so reviewers can evaluate freshness against external-instruction risk. If
+the provider mixes official and community playbooks on the same host, the wrapper must
+fail closed on unclear provenance and require separate approval before using any
+third-party tool, connector, browser automation service, or credential flow introduced
+by a fetched playbook.
 
 ## Getting skills into your company
 
