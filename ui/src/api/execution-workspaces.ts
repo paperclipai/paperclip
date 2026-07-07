@@ -115,4 +115,16 @@ export const executionWorkspacesApi = {
       sanitizeWorkspaceRuntimeControlTarget(target),
     ),
   update: (id: string, data: Record<string, unknown>) => api.patch<ExecutionWorkspace>(`/execution-workspaces/${id}`, data),
+  /**
+   * Reconcile a git-worktree branch divergence via the S4 (`PAP-1586`) op.
+   * Hits `POST /execution-workspaces/:id/reconcile-branch` — the reviewed, OpenAPI-documented
+   * backend contract (`server/src/routes/execution-workspaces.ts`). Keep this path in sync with
+   * the backend route; the drift is pinned by a regression test in `execution-workspaces.test.ts`.
+   * - `mode: "forward"` — server re-verifies `ancestryVerdict === "ancestor"` (client hint is
+   *   never trusted); no `reason` needed.
+   * - `mode: "override"` — audited break-glass; the server rejects agent actors, re-checks
+   *   runtime-manage permission, and requires a non-empty operator `reason`.
+   */
+  reconcile: (id: string, body: { mode: "forward" } | { mode: "override"; reason: string }) =>
+    api.post<ExecutionWorkspace>(`/execution-workspaces/${id}/reconcile-branch`, body),
 };

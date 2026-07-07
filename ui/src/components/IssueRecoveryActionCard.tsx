@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type {
   Agent,
   GitWorktreeBranchAncestryVerdict,
@@ -19,11 +19,13 @@ import {
 } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Textarea } from "@/components/ui/textarea";
 import { agentUrl } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import {
@@ -68,6 +70,27 @@ export interface IssueRecoveryActionCardProps {
   onReissueIsolated?: (request: RecoveryReissueRequest) => void;
   /** Whether an isolated re-issue is currently in flight (disables the action + shows a spinner). */
   reissuePending?: boolean;
+  /**
+   * Handler for action 1 — "Reconcile forward & continue" (workspace_validation only). Rendered
+   * only for an ancestry-proven (`ancestor`) git-worktree divergence; the caller invokes the S4
+   * reconcile op in `forward` mode, which re-verifies ancestry server-side (the client hint is
+   * never trusted). If omitted, the button is not shown.
+   */
+  onReconcileForward?: () => void;
+  /**
+   * Handler for action 2 — the audited break-glass override (workspace_validation only). Receives
+   * the operator's required, non-empty reason and invokes the S4 reconcile op in `override` mode.
+   * Rendered only when `canBreakGlass` is true AND this handler is provided; the server independently
+   * rejects agent actors and re-checks runtime-manage permission, so UI hiding is defense-in-depth.
+   */
+  onBreakGlassOverride?: (reason: string) => void;
+  /**
+   * Whether the viewer may run the permission-gated break-glass override. When false, action 2 is
+   * not rendered at all — a non-permitted user never sees the "reconcile anyway" affordance.
+   */
+  canBreakGlass?: boolean;
+  /** Whether a reconcile (forward or override) is currently in flight (disables both actions). */
+  reconcilePending?: boolean;
   /** Whether the viewer can run destructive board-only actions (e.g. false-positive dismissal). */
   canFalsePositive?: boolean;
   className?: string;
@@ -360,6 +383,120 @@ function DivergenceDiagnosis({
   );
 }
 
+/**
+ * Action 2 — the audited break-glass override. Gated by an explicit confirm step that *restates the
+ * divergence* (both branches + short SHAs + ancestry verdict) and a required, non-empty reason: the
+ * confirm button stays disabled until the operator records why. The server re-checks the actor and
+ * permission and appends the reason to the audit log — this UI gate is the operator-facing guardrail,
+ * not the security boundary.
+ */
+function BreakGlassOverride({
+  divergence,
+  onConfirm,
+  pending,
+}: {
+  divergence: WorkspaceDivergence;
+  onConfirm: (reason: string) => void;
+  pending: boolean;
+}) {
+  const [reason, setReason] = useState("");
+  const trimmedReason = reason.trim();
+  const canSubmit = trimmedReason.length > 0 && !pending;
+  const verdictBadge = ANCESTRY_BADGE[divergence.ancestryVerdict ?? "unknown"];
+  const expectedSha = formatShortSha(divergence.expectedHeadSha);
+  const liveSha = formatShortSha(divergence.liveHeadSha);
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={pending}
+          data-testid="recovery-action-breakglass-trigger"
+          className="border-red-400/60 text-red-700 hover:bg-red-500/10 dark:border-red-500/40 dark:text-red-300"
+        >
+          <OctagonAlert className="h-3.5 w-3.5" aria-hidden />
+          I&apos;ve verified this — reconcile anyway
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        sideOffset={6}
+        aria-labelledby="recovery-breakglass-title"
+        className="w-96 max-w-[calc(100vw-2rem)] space-y-3 p-3"
+      >
+        <div className="space-y-1">
+          <div
+            id="recovery-breakglass-title"
+            className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-red-700 dark:text-red-300"
+          >
+            <OctagonAlert className="h-3.5 w-3.5" aria-hidden />
+            Break-glass reconciliation
+          </div>
+          <p className="text-[12px] leading-5 text-muted-foreground">
+            This overrides Paperclip&apos;s safety check and points the recorded workspace at the live
+            branch{" "}
+            <span className="font-medium text-foreground/80">without an ancestry proof</span>. Confirm
+            the divergence below and record why before continuing.
+          </p>
+        </div>
+        <dl
+          data-testid="recovery-breakglass-restated-divergence"
+          className="space-y-1.5 rounded-md border border-red-400/40 bg-red-500/5 px-2.5 py-2 text-[11px]"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Recorded · expected</dt>
+            <dd className="min-w-0 truncate font-mono text-foreground/90">
+              {divergence.expectedBranch ?? "detached"}
+              {expectedSha ? ` @ ${expectedSha}` : ""}
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Live · checked out</dt>
+            <dd className="min-w-0 truncate font-mono text-foreground/90">
+              {divergence.liveBranch ?? "detached"}
+              {liveSha ? ` @ ${liveSha}` : ""}
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Ancestry verdict</dt>
+            <dd className="font-medium">{verdictBadge.label}</dd>
+          </div>
+        </dl>
+        <div className="space-y-1">
+          <Label htmlFor="recovery-breakglass-reason" className="text-[11px] text-muted-foreground">
+            Reason <span className="text-red-600 dark:text-red-400">(required — recorded in the audit log)</span>
+          </Label>
+          <Textarea
+            id="recovery-breakglass-reason"
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="e.g. Verified the live branch carries only the intended follow-up commits; safe to adopt."
+            className="min-h-20 text-[12px]"
+            data-testid="recovery-breakglass-reason"
+            aria-required="true"
+          />
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="destructive"
+          className="w-full"
+          disabled={!canSubmit}
+          data-testid="recovery-action-breakglass-confirm"
+          onClick={() => {
+            if (!canSubmit) return;
+            onConfirm(trimmedReason);
+          }}
+        >
+          {pending ? "Reconciling…" : "Reconcile anyway (break-glass)"}
+        </Button>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function readWakePolicySummary(action: IssueRecoveryAction): string | null {
   const policy = action.wakePolicy;
   if (!policy) return null;
@@ -531,6 +668,10 @@ export function IssueRecoveryActionCard({
   onResolve,
   onReissueIsolated,
   reissuePending = false,
+  onReconcileForward,
+  onBreakGlassOverride,
+  canBreakGlass = false,
+  reconcilePending = false,
   canFalsePositive = false,
   className,
 }: IssueRecoveryActionCardProps) {
@@ -585,7 +726,22 @@ export function IssueRecoveryActionCard({
   const reissueVerdictBadge = divergence
     ? ANCESTRY_BADGE[divergence.ancestryVerdict ?? "unknown"]
     : null;
-  const showFooter = showResolveActions || showReissueAction;
+  // Action 1 — the ancestry-proven safe path. Only offered when the server-computed verdict is
+  // "ancestor"; the server re-verifies before mutating, so this gate mirrors (not replaces) it.
+  const showReconcileForward =
+    onReconcileForward !== undefined &&
+    cardState !== "resolved" &&
+    divergence !== null &&
+    divergence.ancestryVerdict === "ancestor";
+  // Action 2 — the break-glass override. Permission-hidden: absent entirely unless the viewer is a
+  // permitted operator. The confirm step (restated divergence + required reason) lives in the popover.
+  const showBreakGlass =
+    onBreakGlassOverride !== undefined &&
+    cardState !== "resolved" &&
+    divergence !== null &&
+    canBreakGlass;
+  const showFooter =
+    showResolveActions || showReissueAction || showReconcileForward || showBreakGlass;
 
   return (
     <section
@@ -739,6 +895,23 @@ export function IssueRecoveryActionCard({
               </PopoverContent>
             </Popover>
           ) : null}
+          {showReconcileForward ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="default"
+              disabled={reconcilePending}
+              data-testid="recovery-action-reconcile-forward"
+              onClick={() => onReconcileForward?.()}
+            >
+              {reconcilePending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+              )}
+              Reconcile forward &amp; continue
+            </Button>
+          ) : null}
           {showReissueAction && divergence && reissueBaseRef ? (
             <Popover>
               <PopoverTrigger asChild>
@@ -804,6 +977,13 @@ export function IssueRecoveryActionCard({
                 </Button>
               </PopoverContent>
             </Popover>
+          ) : null}
+          {showBreakGlass && divergence ? (
+            <BreakGlassOverride
+              divergence={divergence}
+              pending={reconcilePending}
+              onConfirm={(reason) => onBreakGlassOverride?.(reason)}
+            />
           ) : null}
           {showResolveActions ? (
             cardState === "observe_only" ? (
