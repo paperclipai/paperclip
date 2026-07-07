@@ -282,10 +282,13 @@ async function spawnOrphanedProcessGroup() {
 describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let previousContinuationBaseDelayMs: string | undefined;
   const childProcesses = new Set<ChildProcess>();
   const cleanupPids = new Set<number>();
 
   beforeAll(async () => {
+    previousContinuationBaseDelayMs = process.env.PAPERCLIP_CONTINUATION_BASE_DELAY_MS;
+    process.env.PAPERCLIP_CONTINUATION_BASE_DELAY_MS = "5";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
@@ -427,6 +430,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   afterAll(async () => {
+    if (previousContinuationBaseDelayMs === undefined) {
+      delete process.env.PAPERCLIP_CONTINUATION_BASE_DELAY_MS;
+    } else {
+      process.env.PAPERCLIP_CONTINUATION_BASE_DELAY_MS = previousContinuationBaseDelayMs;
+    }
     for (const child of childProcesses) {
       child.kill("SIGKILL");
     }
@@ -453,6 +461,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    runtimeConfig?: Record<string, unknown>;
     contextSnapshot?: Record<string, unknown>;
   }) {
     const companyId = randomUUID();
@@ -479,7 +488,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: input?.agentStatus ?? "paused",
       adapterType: input?.adapterType ?? "codex_local",
       adapterConfig: {},
-      runtimeConfig: {},
+      runtimeConfig: input?.runtimeConfig ?? {},
       permissions: {},
     });
 
@@ -533,6 +542,37 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
+  }
+
+  async function seedIssueAutomationRuns(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    count: number;
+  }) {
+    const now = new Date("2026-03-19T00:01:00.000Z");
+    if (input.count <= 0) return [];
+    const rows = Array.from({ length: input.count }, () => ({
+      id: randomUUID(),
+      companyId: input.companyId,
+      agentId: input.agentId,
+      invocationSource: "automation" as const,
+      triggerDetail: "system" as const,
+      status: "failed" as const,
+      contextSnapshot: {
+        issueId: input.issueId,
+        taskId: input.issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+      },
+      errorCode: "test_existing_continuation",
+      error: "existing continuation attempt",
+      startedAt: now,
+      finishedAt: now,
+      updatedAt: now,
+    }));
+    await db.insert(heartbeatRuns).values(rows);
+    return rows;
   }
 
   async function seedEnvironmentLeaseFixture(input: {
@@ -927,6 +967,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values({
@@ -1163,6 +1204,274 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
+  async function seedQueuedAgentRunsFixture(count: number) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    const wakeupRows = Array.from({ length: count }, (_, index) => {
+      const wakeupRequestId = randomUUID();
+      const runId = randomUUID();
+      const createdAt = new Date(now.getTime() + index);
+      return {
+        wakeupRequest: {
+          id: wakeupRequestId,
+          companyId,
+          agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "test_parallel_start",
+          payload: {},
+          status: "queued",
+          runId,
+          requestedAt: createdAt,
+          updatedAt: createdAt,
+        },
+        run: {
+          id: runId,
+          companyId,
+          agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "queued",
+          wakeupRequestId,
+          contextSnapshot: { wakeReason: "test_parallel_start" },
+          responsibleUserId: "responsible-user",
+          createdAt,
+          updatedAt: createdAt,
+        },
+      };
+    });
+
+    await db.insert(agentWakeupRequests).values(wakeupRows.map((row) => row.wakeupRequest));
+    await db.insert(heartbeatRuns).values(wakeupRows.map((row) => row.run));
+
+    return {
+      companyId,
+      agentId,
+      runIds: wakeupRows.map((row) => row.run.id),
+    };
+  }
+
+  it("serializes queued-run starts per agent under maxConcurrentRuns", async () => {
+    const releases: Array<() => void> = [];
+    mockAdapterExecute.mockImplementation(async () =>
+      new Promise((resolve) => {
+        releases.push(() => resolve({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Recovered stranded heartbeat work.",
+          provider: "test",
+          model: "test-model",
+        }));
+      }),
+    );
+
+    const { agentId } = await seedQueuedAgentRunsFixture(5);
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await Promise.all(Array.from({ length: 10 }, () => heartbeat.resumeQueuedRuns()));
+      await waitForValue(async () => mockAdapterExecute.mock.calls.length > 0 ? true : null, 2_000);
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      const runningRuns = runs.filter((run) => run.status === "running");
+      const queuedRuns = runs.filter((run) => run.status === "queued");
+
+      expect(runningRuns).toHaveLength(1);
+      expect(queuedRuns).toHaveLength(4);
+      expect(runningRuns[0]?.startedAt).toBeTruthy();
+    } finally {
+      const now = new Date();
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          updatedAt: now,
+          errorCode: "test_cleanup",
+          error: "Cancelled by queued-run serialization test",
+        })
+        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")));
+      for (const release of releases) release();
+      await waitForHeartbeatIdle(db, 5_000);
+    }
+  });
+
+  it("skips system automation wakeups when the per-issue continuation budget is exhausted", async () => {
+    const { companyId, agentId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "failed",
+    });
+    await seedIssueAutomationRuns({ companyId, agentId, issueId, count: 2 });
+    const heartbeat = heartbeatService(db, {
+      issueContinuationCap: 2,
+      continuationBaseDelayMs: 5,
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      payload: { issueId },
+    });
+
+    expect(run).toBeNull();
+
+    const skippedRequests = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.reason, "issue.continuationBudget.exhausted"),
+      ));
+    expect(skippedRequests).toHaveLength(1);
+    expect(skippedRequests[0]).toMatchObject({
+      source: "automation",
+      triggerDetail: "system",
+      status: "skipped",
+    });
+
+    const automationRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, agentId),
+        eq(heartbeatRuns.invocationSource, "automation"),
+        eq(heartbeatRuns.triggerDetail, "system"),
+      ));
+    expect(automationRuns).toHaveLength(2);
+  });
+
+  it("does not apply the per-issue continuation budget to manual automation wakeups", async () => {
+    const releases: Array<() => void> = [];
+    mockAdapterExecute.mockImplementationOnce(async () =>
+      new Promise((resolve) => {
+        releases.push(() => resolve({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Manual wake completed.",
+          provider: "test",
+          model: "test-model",
+        }));
+      }),
+    );
+    const { companyId, agentId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "failed",
+    });
+    await seedIssueAutomationRuns({ companyId, agentId, issueId, count: 2 });
+    const heartbeat = heartbeatService(db, {
+      issueContinuationCap: 2,
+      continuationBaseDelayMs: 5,
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "manual",
+      payload: { issueId },
+    });
+
+    try {
+      expect(run).toBeTruthy();
+      await waitForValue(async () => mockAdapterExecute.mock.calls.length > 0 ? true : null, 2_000);
+
+      const skippedRequests = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.reason, "issue.continuationBudget.exhausted"),
+        ));
+      expect(skippedRequests).toHaveLength(0);
+
+      const manualRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.invocationSource, "automation"),
+          eq(heartbeatRuns.triggerDetail, "manual"),
+        ));
+      expect(manualRuns).toHaveLength(1);
+    } finally {
+      for (const release of releases) release();
+      await waitForHeartbeatIdle(db, 5_000);
+    }
+  });
+
+  it("does not apply the per-issue continuation budget to system automation wakeups without an issue", async () => {
+    const { companyId, agentId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "failed",
+    });
+    await seedIssueAutomationRuns({ companyId, agentId, issueId, count: 2 });
+    const heartbeat = heartbeatService(db, {
+      issueContinuationCap: 2,
+      continuationBaseDelayMs: 5,
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      payload: { note: "no issue context" },
+    });
+
+    expect(run).toBeTruthy();
+
+    const skippedRequests = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.reason, "issue.continuationBudget.exhausted"),
+      ));
+    expect(skippedRequests).toHaveLength(0);
+
+    const systemRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, agentId),
+        eq(heartbeatRuns.invocationSource, "automation"),
+        eq(heartbeatRuns.triggerDetail, "system"),
+      ));
+    expect(systemRuns).toHaveLength(3);
+    await waitForHeartbeatIdle(db, 5_000);
+  });
+
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
@@ -1315,6 +1624,117 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(lease?.status).toBe("failed");
     expect(lease?.releasedAt).toBeTruthy();
+  });
+
+  it("blocks direct continuation requeue when the per-issue automation budget is exhausted", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+    });
+    await seedIssueAutomationRuns({ companyId, agentId, issueId, count: 2 });
+    const heartbeat = heartbeatService(db, {
+      issueContinuationCap: 2,
+      continuationBaseDelayMs: 5,
+    });
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const directContinuations = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.retryOfRunId, runId), eq(heartbeatRuns.invocationSource, "automation")));
+    expect(directContinuations).toHaveLength(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
+    await waitForHeartbeatIdle(db);
+  });
+
+  it("leaves below-cap direct continuation queued until the exponential backoff elapses", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+    });
+    await seedIssueAutomationRuns({ companyId, agentId, issueId, count: 1 });
+    const heartbeat = heartbeatService(db, {
+      issueContinuationCap: 10,
+      continuationBaseDelayMs: 25,
+    });
+    const executeCallsBeforeReap = mockAdapterExecute.mock.calls.length;
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const [retryRun] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.retryOfRunId, runId), eq(heartbeatRuns.invocationSource, "automation")));
+    expect(retryRun).toBeTruthy();
+    expect(retryRun?.status).toBe("queued");
+    expect((retryRun?.contextSnapshot as Record<string, unknown> | undefined)?.retryReason).toBe(
+      "issue_continuation_needed",
+    );
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(executeCallsBeforeReap);
+
+    const startedRun = await waitForValue(async () => {
+      if (!retryRun) return null;
+      const row = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retryRun.id)).then((rows) => rows[0] ?? null);
+      return row && row.status !== "queued" ? row : null;
+    }, 2_000);
+    expect(["running", "succeeded"]).toContain(startedRun?.status);
+    await waitForValue(
+      () =>
+        mockAdapterExecute.mock.calls.length > executeCallsBeforeReap
+          ? mockAdapterExecute.mock.calls.length
+          : null,
+      2_000,
+    );
+    if (retryRun) {
+      const settledRun = await waitForRunToSettle(heartbeat, retryRun.id, 2_000);
+      expect(settledRun?.status).toBe("succeeded");
+    }
+  });
+
+  it("blocks direct continuation requeue when wakeOnDemand is disabled", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: false,
+          maxConcurrentRuns: 1,
+        },
+      },
+    });
+    const heartbeat = heartbeatService(db, {
+      issueContinuationCap: 10,
+      continuationBaseDelayMs: 5,
+    });
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const directContinuations = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.retryOfRunId, runId), eq(heartbeatRuns.invocationSource, "automation")));
+    expect(directContinuations).toHaveLength(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.assigneeAgentId).toBe(agentId);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
+    await waitForHeartbeatIdle(db);
   });
 
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {
