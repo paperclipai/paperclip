@@ -1263,8 +1263,52 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           } satisfies PluginManagedRoutineResolution;
         },
         async reset(routineKey, companyId, overrides) {
-          const resolved = await this.reconcile(routineKey, companyId, overrides);
-          return { ...resolved, status: resolved.routine ? "reset" : resolved.status } satisfies PluginManagedRoutineResolution;
+          const existing = await this.get(routineKey, companyId);
+          if (!existing.routine) {
+            const created = await this.reconcile(routineKey, companyId, overrides);
+            return { ...created, status: created.routine ? "reset" : created.status } satisfies PluginManagedRoutineResolution;
+          }
+          const declaration = manifest.routines?.find((routine) => routine.routineKey === routineKey);
+          if (!declaration) return existing;
+          const agentRef = declaration.assigneeRef;
+          const projectRef = declaration.projectRef;
+          const assigneeAgentId = overrides?.assigneeAgentId
+            ?? (agentRef?.resourceKind === "agent"
+              ? [...agents.values()].find((agent) => isInCompany(agent, companyId) && isManagedAgent(agent, agentRef.resourceKey))?.id
+              : null)
+            ?? null;
+          const projectId = overrides?.projectId
+            ?? (projectRef?.resourceKind === "project"
+              ? [...projects.values()].find((project) => (
+                isInCompany(project, companyId)
+                && project.managedByPlugin?.pluginKey === manifest.id
+                && project.managedByPlugin?.resourceKey === projectRef.resourceKey
+              ))?.id
+              : null)
+            ?? null;
+          const missingRefs: NonNullable<PluginManagedRoutineResolution["missingRefs"]> = [];
+          if (agentRef && !assigneeAgentId) missingRefs.push({ ...agentRef, pluginKey: manifest.id });
+          if (projectRef && !projectId) missingRefs.push({ ...projectRef, pluginKey: manifest.id });
+          if (missingRefs.length > 0) {
+            return { ...existing, status: "missing_refs", missingRefs } satisfies PluginManagedRoutineResolution;
+          }
+          const next = {
+            ...existing.routine,
+            projectId,
+            goalId: declaration.goalId ?? null,
+            title: declaration.title,
+            description: declaration.description ?? null,
+            assigneeAgentId,
+            priority: declaration.priority ?? "medium",
+            status: declaration.status ?? (assigneeAgentId ? "active" : "paused"),
+            concurrencyPolicy: declaration.concurrencyPolicy ?? "coalesce_if_active",
+            catchUpPolicy: declaration.catchUpPolicy ?? "skip_missed",
+            variables: declaration.variables ?? [],
+            assigneeAdapterOverrides: declaration.assigneeAdapterOverrides ?? null,
+            updatedAt: new Date(),
+          } as Routine;
+          routines.set(next.id, next);
+          return { ...existing, routineId: next.id, routine: next, status: "reset" } satisfies PluginManagedRoutineResolution;
         },
         async update(routineKey, companyId, patch) {
           const resolved = await this.get(routineKey, companyId);

@@ -83,6 +83,41 @@ describe("plugin SDK test harness", () => {
     );
   });
 
+  it("reapplies the routine declaration, including assigneeAdapterOverrides, when resetting an existing managed routine", async () => {
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.test-managed-routine-reset",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Managed Routine Reset",
+      description: "Test plugin",
+      author: "Paperclip",
+      categories: ["automation"],
+      capabilities: ["routines.managed"],
+      entrypoints: { worker: "./dist/worker.js" },
+      routines: [{
+        routineKey: "nightly-digest",
+        title: "Nightly digest",
+        status: "active",
+        assigneeAdapterOverrides: { useProjectWorkspace: false },
+      }],
+    };
+    const harness = createTestHarness({ manifest });
+
+    const created = await harness.ctx.routines.managed.reconcile("nightly-digest", "company-1");
+    expect(created.status).toBe("created");
+    expect(created.routine?.assigneeAdapterOverrides).toEqual({ useProjectWorkspace: false });
+
+    await harness.ctx.routines.managed.update("nightly-digest", "company-1", { status: "paused" });
+
+    const reset = await harness.ctx.routines.managed.reset("nightly-digest", "company-1");
+    expect(reset.status).toBe("reset");
+    expect(reset.routine).toMatchObject({
+      id: created.routineId,
+      status: "active",
+      assigneeAdapterOverrides: { useProjectWorkspace: false },
+    });
+  });
+
   it("requires access and authorization capabilities for permission SDK calls", async () => {
     const manifest: PaperclipPluginManifestV1 = {
       id: "paperclip.test-missing-access-authz-capability",
