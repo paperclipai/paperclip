@@ -1716,10 +1716,33 @@ export function Inbox() {
     return "hidden";
   };
 
-  // Keep selection valid when the list shape changes, but do not auto-select on initial load.
+  // Keep selection on the same logical item when the list shape changes —
+  // rows archived/refreshed above the selection would otherwise shift the
+  // numeric index onto a neighboring row (and Enter would open the wrong
+  // task). Falls back to clamping when the item is gone; never auto-selects
+  // on initial load.
+  const navEntryKey = (entry: NavEntry | undefined): string | null =>
+    !entry
+      ? null
+      : entry.type === "top"
+        ? `top:${entry.itemKey}`
+        : entry.type === "child"
+          ? `child:${entry.issueId}`
+          : `group:${entry.groupKey}`;
+  const selectedNavKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    setSelectedIndex((prev) => resolveInboxSelectionIndex(prev, flatNavItems.length));
-  }, [flatNavItems.length]);
+    setSelectedIndex((prev) => {
+      if (prev < 0) return resolveInboxSelectionIndex(prev, flatNavItems.length);
+      const prevKey = selectedNavKeyRef.current;
+      const keyIndex = prevKey === null
+        ? -1
+        : flatNavItems.findIndex((entry) => navEntryKey(entry) === prevKey);
+      return keyIndex >= 0 ? keyIndex : resolveInboxSelectionIndex(prev, flatNavItems.length);
+    });
+  }, [flatNavItems]);
+  useEffect(() => {
+    selectedNavKeyRef.current = selectedIndex >= 0 ? navEntryKey(flatNavItems[selectedIndex]) : null;
+  }, [flatNavItems, selectedIndex]);
 
   useEffect(() => {
     setUndoableArchiveIssueIds([]);
@@ -1878,6 +1901,7 @@ export function Inbox() {
           break;
         }
         case "U": {
+          if (!st.canArchive) return;
           if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
           const { issue, item } = resolveNavEntry(st.selectedIndex);
@@ -1890,6 +1914,7 @@ export function Inbox() {
           break;
         }
         case "r": {
+          if (!st.canArchive) return;
           if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
           const { issue, item } = resolveNavEntry(st.selectedIndex);

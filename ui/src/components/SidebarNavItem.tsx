@@ -62,6 +62,8 @@ interface SidebarNavItemProps {
   active?: boolean;
   /** Rendered after the label, before the right-aligned status cluster. */
   trailing?: ReactNode;
+  /** Accessible text for `trailing` status content, surfaced in the collapsed rail (where `trailing` is hidden). */
+  trailingLabel?: string;
   /** Rendered inside the right-aligned status cluster, before the live dot. */
   liveAccessory?: ReactNode;
 }
@@ -82,6 +84,7 @@ export function SidebarNavItem({
   liveCount,
   active,
   trailing,
+  trailingLabel,
   liveAccessory,
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
@@ -98,15 +101,16 @@ export function SidebarNavItem({
 
   // Accessible text equivalent for the collapsed dot indicator. The visible
   // label is `sr-only` in the rail, so the count must be surfaced here.
-  const railAriaLabel = !rail
+  const railStatusText = hasLive
+    ? `${liveCount} live`
+    : hasBadge
+      ? `${badge}${badgeLabel ? ` ${badgeLabel}` : ""}`
+      : alert
+        ? "attention needed"
+        : undefined;
+  const railAriaLabel = !rail || (!railStatusText && !trailingLabel)
     ? undefined
-    : hasLive
-      ? `${label}, ${liveCount} live`
-      : hasBadge
-        ? `${label}, ${badge}${badgeLabel ? ` ${badgeLabel}` : ""}`
-        : alert
-          ? `${label}, attention needed`
-          : undefined;
+    : `${label}${railStatusText ? `, ${railStatusText}` : ""}${trailingLabel ? `, ${trailingLabel}` : ""}`;
 
   const link = (
     <NavLink

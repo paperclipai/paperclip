@@ -168,6 +168,7 @@ function SidebarAgentItem({
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
         ) : undefined
       }
+      trailingLabel={hasInvalidOrgChain ? "Invalid reporting chain" : undefined}
       liveAccessory={
         agent.pauseReason === "budget" ? <BudgetSidebarMarker title="Agent paused by budget" /> : undefined
       }
