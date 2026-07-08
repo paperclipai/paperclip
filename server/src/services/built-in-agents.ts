@@ -6,6 +6,7 @@ import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } f
 import { and, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
+import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
 import type { Agent, Approval, CompanySkill, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
@@ -824,20 +825,63 @@ export function builtInAgentService(db: Db) {
     });
   }
 
-  function routineDefaultsHash(routine: BuiltInAgentBundleDefinition["routine"], triggers: BuiltInAgentBundleDefinition["routine"]["triggers"]) {
+  function normalizeRoutineVariablesForHash(input: {
+    title: string;
+    description?: string | null;
+    variables?: RoutineVariable[] | null;
+  }) {
+    return syncRoutineVariablesWithTemplate(
+      [input.title, input.description ?? ""],
+      input.variables ?? [],
+    ).map((variable) => ({
+      name: variable.name,
+      label: variable.label ?? null,
+      type: variable.type ?? "text",
+      defaultValue: variable.defaultValue ?? null,
+      required: variable.required ?? true,
+      options: variable.options ?? [],
+    }));
+  }
+
+  function normalizeRoutineTriggersForHash(
+    triggers: Array<{
+      kind: string;
+      label?: string | null;
+      cronExpression?: string | null;
+      timezone?: string | null;
+    }>,
+  ) {
+    return triggers
+      .filter((trigger) => trigger.kind === "schedule")
+      .map((trigger) => ({
+        kind: "schedule",
+        label: trigger.label ?? null,
+        cronExpression: trigger.cronExpression ?? "",
+        timezone: trigger.timezone ?? "UTC",
+      }))
+      .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
+  }
+
+  function routineDefaultsHash(
+    routine: Pick<
+      BuiltInAgentBundleDefinition["routine"],
+      "title" | "description" | "priority" | "concurrencyPolicy" | "catchUpPolicy" | "variables"
+    >,
+    triggers: Array<{
+      kind: string;
+      label?: string | null;
+      cronExpression?: string | null;
+      timezone?: string | null;
+    }>,
+  ) {
     return stockHash({
       title: routine.title,
-      description: routine.description,
+      description: routine.description ?? "",
       priority: routine.priority,
       concurrencyPolicy: routine.concurrencyPolicy,
       catchUpPolicy: routine.catchUpPolicy,
-      variables: routine.variables,
-      triggers: triggers.map((trigger) => ({
-        kind: trigger.kind,
-        label: trigger.label,
-        cronExpression: trigger.cronExpression,
-        timezone: trigger.timezone,
-      })),
+      variables: normalizeRoutineVariablesForHash(routine),
+      triggers: normalizeRoutineTriggersForHash(triggers),
     });
   }
 
@@ -1013,21 +1057,13 @@ export function builtInAgentService(db: Db) {
     const stock = routineDefaultsHash(bundle.routine, bundle.routine.triggers);
     const { binding, routine, triggers } = await getRoutineByBinding(agent.companyId, definition);
     const currentHash = routine ? routineDefaultsHash({
-      ...bundle.routine,
       title: routine.title,
       description: routine.description ?? "",
-      status: routine.status as "active" | "paused",
       priority: routine.priority as "critical" | "high" | "medium" | "low",
       concurrencyPolicy: routine.concurrencyPolicy as "always_enqueue" | "coalesce_if_active" | "skip_if_active",
       catchUpPolicy: routine.catchUpPolicy as "enqueue_missed_with_cap" | "skip_missed",
       variables: routine.variables ?? [],
-    }, triggers.filter((trigger) => trigger.kind === "schedule").map((trigger) => ({
-      kind: "schedule" as const,
-      label: trigger.label,
-      enabled: trigger.enabled,
-      cronExpression: trigger.cronExpression ?? "",
-      timezone: trigger.timezone ?? "UTC",
-    }))) : null;
+    }, triggers) : null;
     const currentState = stockState({
       resourceKind: "routine",
       resourceKey: bundle.routine.routineKey,
@@ -1096,21 +1132,13 @@ export function builtInAgentService(db: Db) {
       ? stockHash(skillFiles)
       : null;
     const routineHash = routine ? routineDefaultsHash({
-      ...bundle.routine,
       title: routine.title,
       description: routine.description ?? "",
-      status: routine.status as "active" | "paused",
       priority: routine.priority as "critical" | "high" | "medium" | "low",
       concurrencyPolicy: routine.concurrencyPolicy as "always_enqueue" | "coalesce_if_active" | "skip_if_active",
       catchUpPolicy: routine.catchUpPolicy as "enqueue_missed_with_cap" | "skip_missed",
       variables: routine.variables ?? [],
-    }, triggers.filter((trigger) => trigger.kind === "schedule").map((trigger) => ({
-      kind: "schedule" as const,
-      label: trigger.label,
-      enabled: trigger.enabled,
-      cronExpression: trigger.cronExpression ?? "",
-      timezone: trigger.timezone ?? "UTC",
-    }))) : null;
+    }, triggers) : null;
     return [
       stockState({
         resourceKind: "instructions",
