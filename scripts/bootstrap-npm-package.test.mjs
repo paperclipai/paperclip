@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildPublishArgs, parseArgs, resolveTargetPackage } from "./bootstrap-npm-package.mjs";
+import {
+  buildBootstrapPublishCommand,
+  buildPublishArgs,
+  parseArgs,
+  resolveTargetPackage,
+} from "./bootstrap-npm-package.mjs";
 
 test("parseArgs recognizes publish and skip-build flags", () => {
   assert.deepEqual(parseArgs(["@paperclipai/adapter-acpx-local", "--publish", "--skip-build"]), {
@@ -84,4 +89,17 @@ test("buildPublishArgs includes dry-run and otp flags when requested", () => {
     "--otp",
     "123456",
   ]);
+});
+
+test("buildBootstrapPublishCommand supports passkey publish without an otp placeholder", () => {
+  const pkg = { dir: "packages/adapters/hermes", name: "@paperclipai/hermes-paperclip-adapter" };
+
+  assert.equal(
+    buildBootstrapPublishCommand(pkg),
+    "node scripts/bootstrap-npm-package.mjs @paperclipai/hermes-paperclip-adapter --publish",
+  );
+  assert.equal(
+    buildBootstrapPublishCommand(pkg, { otp: "123456" }),
+    "node scripts/bootstrap-npm-package.mjs @paperclipai/hermes-paperclip-adapter --publish --otp 123456",
+  );
 });
