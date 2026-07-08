@@ -3,7 +3,13 @@ import type { Readable } from "node:stream";
 
 export interface PutObjectInput {
   objectKey: string;
-  body: Buffer;
+  /**
+   * Object body. A `Buffer` for small in-memory payloads, or a `Readable` for
+   * large ones (e.g. cold-archiving a capped run-log that can still be hundreds
+   * of MB compressed). When streaming, `contentLength` MUST be the exact byte
+   * length so providers that need it up front (S3 PutObject) can set it.
+   */
+  body: Buffer | Readable;
   contentType: string;
   contentLength: number;
 }

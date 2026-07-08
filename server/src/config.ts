@@ -47,6 +47,19 @@ maybeRepairLegacyWorktreeConfigAndEnvFiles();
 
 const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
 
+/**
+ * Parse an integer config knob, clamped to `[min, ∞)`. Rejects anything that is
+ * not a finite integer — `Infinity`, `NaN`, and non-integers like `1.5` all
+ * fall back to `def` — so a fat-fingered env value can't produce a nonsensical
+ * sweep interval / budget.
+ */
+function clampIntEnv(raw: string | undefined, def: number, min: number): number {
+  if (raw == null || raw.trim() === "") return def;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed)) return def;
+  return Math.max(min, parsed);
+}
+
 type DatabaseMode = "embedded-postgres" | "postgres";
 
 export interface Config {
@@ -159,21 +172,25 @@ export function loadConfig(): Config {
   // scheduler and archiver share one resolved source of truth.
   const runLogArchiveMode: "auto" | "off" =
     process.env.PAPERCLIP_RUN_LOG_ARCHIVE?.trim().toLowerCase() === "off" ? "off" : "auto";
-  const runLogHotRetentionDays = Math.max(
+  const runLogHotRetentionDays = clampIntEnv(
+    process.env.PAPERCLIP_RUN_LOG_HOT_RETENTION_DAYS,
+    30,
     1,
-    Number(process.env.PAPERCLIP_RUN_LOG_HOT_RETENTION_DAYS) || 30,
   );
-  const runLogCompanyBudgetBytes = Math.max(
+  const runLogCompanyBudgetBytes = clampIntEnv(
+    process.env.PAPERCLIP_RUN_LOG_COMPANY_BUDGET_BYTES,
+    5 * 1024 * 1024 * 1024,
     1,
-    Number(process.env.PAPERCLIP_RUN_LOG_COMPANY_BUDGET_BYTES) || 5 * 1024 * 1024 * 1024,
   );
-  const runLogSweepIntervalMs = Math.max(
+  const runLogSweepIntervalMs = clampIntEnv(
+    process.env.PAPERCLIP_RUN_LOG_SWEEP_INTERVAL_MS,
+    60 * 60 * 1000,
     60_000,
-    Number(process.env.PAPERCLIP_RUN_LOG_SWEEP_INTERVAL_MS) || 60 * 60 * 1000,
   );
-  const runLogSweepItemLimit = Math.max(
+  const runLogSweepItemLimit = clampIntEnv(
+    process.env.PAPERCLIP_RUN_LOG_SWEEP_ITEM_LIMIT,
+    200,
     1,
-    Number(process.env.PAPERCLIP_RUN_LOG_SWEEP_ITEM_LIMIT) || 200,
   );
   const feedbackExportBackendUrl =
     process.env.PAPERCLIP_FEEDBACK_EXPORT_BACKEND_URL?.trim() ||

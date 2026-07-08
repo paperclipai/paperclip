@@ -988,6 +988,7 @@ export async function startServer(): Promise<StartedServer> {
   // unavailable (auto + non-s3 provider) logs a single line and never schedules,
   // so hot files simply age out via the infra janitor backstop.
   let runLogArchiveTimer: ReturnType<typeof setInterval> | null = null;
+  let runLogArchiveBootTimer: ReturnType<typeof setTimeout> | null = null;
   {
     const archiveConfig = resolveRunLogArchiverConfig(config);
     const archivingActive = archiveConfig.mode === "auto" && archiveConfig.storageEnabled;
@@ -1008,12 +1009,12 @@ export async function startServer(): Promise<StartedServer> {
         "run-log cold-archive sweeper enabled",
       );
       // Kick a first sweep shortly after boot, then on the sweep interval.
-      const bootTimer = setTimeout(() => {
+      runLogArchiveBootTimer = setTimeout(() => {
         void archiver.runSweep().catch((err) => {
           logger.error({ err }, "run-log archive boot sweep failed");
         });
       }, 30_000);
-      bootTimer.unref?.();
+      runLogArchiveBootTimer.unref?.();
       runLogArchiveTimer = setInterval(() => {
         void archiver.runSweep().catch((err) => {
           logger.error({ err }, "run-log archive sweep failed");
@@ -1103,6 +1104,10 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      if (runLogArchiveBootTimer) {
+        clearTimeout(runLogArchiveBootTimer);
+        runLogArchiveBootTimer = null;
+      }
       if (runLogArchiveTimer) {
         clearInterval(runLogArchiveTimer);
         runLogArchiveTimer = null;

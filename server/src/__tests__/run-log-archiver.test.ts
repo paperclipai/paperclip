@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
+import { Readable } from "node:stream";
+import { buffer as readStreamToBuffer } from "node:stream/consumers";
 import os from "node:os";
 import path from "node:path";
 import { gzipSync, gunzipSync } from "node:zlib";
@@ -72,11 +74,14 @@ function fakeDb(rows: HeartbeatRunLogRow[]): RunLogArchiverDb {
         .map((r) => ({ ...r }));
     },
     async markArchivedToS3(runId, objectKey) {
+      // Conditional flip: only local_file rows move. Returns affected-row count.
       const r = rows.find((x) => x.id === runId);
-      if (r) {
+      if (r && r.logStore === "local_file") {
         r.logStore = "s3";
         r.logRef = objectKey;
+        return 1;
       }
+      return 0;
     },
   };
 }
@@ -90,7 +95,10 @@ function fakeStorage(over?: Partial<RunLogArchiverStorage>): FakeStorage {
   return {
     objects,
     putObject: vi.fn(async ({ objectKey, body }) => {
-      objects.set(objectKey, Buffer.from(body));
+      // The archiver now streams the gz (a Readable) rather than buffering it.
+      // Consume the stream so the stored object is byte-for-byte the upload.
+      const buf = body instanceof Readable ? await readStreamToBuffer(body) : Buffer.from(body);
+      objects.set(objectKey, buf);
     }),
     headObject: vi.fn(async ({ objectKey }) => {
       const buf = objects.get(objectKey);
@@ -281,6 +289,124 @@ describe("run-log-archiver fairness budget", () => {
     // Other company untouched.
     expect(rows.find((r) => r.id === "t-other")!.logStore).toBe("local_file");
     expect(await exists(other)).toBe(true);
+  });
+});
+
+describe("run-log-archiver failure budgeting (Fix 4)", () => {
+  it("fairness-pass failures do not consume budget, so the age pass isn't starved", async () => {
+    // Budget of 1. A stuck (fail-to-archive) over-budget company would, under
+    // the old logic, spend the whole budget on its failure and leave the age
+    // pass with nothing. Failures must not consume budget, so the older
+    // age-archivable run in another company still gets archived this sweep.
+    const content = "payload for sizing\n";
+    const stuck1 = await seedGzLog("company-1", "agent-1", "stuck-1", content);
+    const stuck2 = await seedGzLog("company-1", "agent-1", "stuck-2", content);
+    const oneSize = (await fs.stat(path.join(base, stuck1))).size;
+    const ageRef = await seedGzLog("company-2", "agent-2", "age-1", content);
+
+    const rows = [
+      makeRow({ id: "stuck-1", logRef: stuck1, finishedAt: daysAgo(1) }),
+      makeRow({ id: "stuck-2", logRef: stuck2, finishedAt: daysAgo(1) }),
+      makeRow({ id: "age-1", companyId: "company-2", agentId: "agent-2", logRef: ageRef, finishedAt: daysAgo(40) }),
+    ];
+
+    const storage = fakeStorage();
+    const okHead = storage.headObject;
+    // company-1 uploads always verify-fail; company-2 verifies normally.
+    storage.headObject = vi.fn(async (input) =>
+      input.objectKey.includes("company-1")
+        ? { exists: true, contentLength: 999_999 }
+        : okHead(input),
+    );
+
+    const archiver = createRunLogArchiver({
+      db: fakeDb(rows),
+      storage,
+      files: createNodeRunLogArchiverFs(base),
+      // Budget 1; company budget = oneSize so company-1 (2*oneSize) is over and
+      // company-2 (oneSize) is not, keeping company-2 out of the fairness pass.
+      config: cfg({ itemLimit: 1, companyBudgetBytes: oneSize }),
+      now: () => NOW,
+      log: silentLog,
+    });
+
+    const res = await archiver.runSweep();
+    expect(res.failed).toBe(1); // the stuck company-1 fairness attempt
+    expect(res.ageArchived).toBe(1); // company-2 still archived despite the failure
+    expect(rows.find((r) => r.id === "age-1")!.logStore).toBe("s3");
+    expect(await exists(stuck1)).toBe(true);
+    expect(await exists(ageRef)).toBe(false);
+  });
+
+  it("stops after the per-sweep failure cap to avoid hot-looping", async () => {
+    const rows: HeartbeatRunLogRow[] = [];
+    for (let i = 0; i < 30; i += 1) {
+      const ref = await seedGzLog("company-1", "agent-1", `r${i}`, `payload ${i}\n`);
+      rows.push(makeRow({ id: `r${i}`, logRef: ref, finishedAt: daysAgo(40 + i) }));
+    }
+    const storage = fakeStorage({
+      headObject: vi.fn(async () => ({ exists: false })),
+    });
+    const archiver = createRunLogArchiver({
+      db: fakeDb(rows),
+      storage,
+      files: createNodeRunLogArchiverFs(base),
+      config: cfg({ itemLimit: 1000, companyBudgetBytes: 1024 * 1024 * 1024 }),
+      now: () => NOW,
+      log: silentLog,
+    });
+
+    const res = await archiver.runSweep();
+    expect(res.failed).toBe(25);
+    expect(res.examined).toBe(25);
+  });
+});
+
+describe("run-log-archiver overlap + conditional flip (Fix 5)", () => {
+  it("no-ops a concurrent sweep while one is already running", async () => {
+    const logRef = await seedGzLog("company-1", "agent-1", "run-1", "payload\n");
+    const rows = [makeRow({ id: "run-1", logRef, finishedAt: daysAgo(40) })];
+    const archiver = createRunLogArchiver({
+      db: fakeDb(rows),
+      storage: fakeStorage(),
+      files: createNodeRunLogArchiverFs(base),
+      config: cfg(),
+      now: () => NOW,
+      log: silentLog,
+    });
+
+    // The second call starts before the first resolves → guarded no-op.
+    const [r1, r2] = await Promise.all([archiver.runSweep(), archiver.runSweep()]);
+    const [running, skipped] = r1.skipped ? [r2, r1] : [r1, r2];
+    expect(skipped.skipped).toBe(true);
+    expect(skipped.reason).toBe("already_running");
+    expect(running.ageArchived).toBe(1);
+
+    // Guard resets: a later sweep runs normally again (row already s3 now → no-op).
+    const r3 = await archiver.runSweep();
+    expect(r3.skipped).toBe(false);
+  });
+
+  it("conditional flip: 0 rows updated (raced) keeps the local file and does not delete", async () => {
+    const logRef = await seedGzLog("company-1", "agent-1", "run-1", "payload\n");
+    const rows = [makeRow({ id: "run-1", logRef, finishedAt: daysAgo(40) })];
+    const db = fakeDb(rows);
+    // Simulate another worker winning the race: the conditional UPDATE matches 0.
+    db.markArchivedToS3 = vi.fn(async () => 0);
+    const archiver = createRunLogArchiver({
+      db,
+      storage: fakeStorage(),
+      files: createNodeRunLogArchiverFs(base),
+      config: cfg(),
+      now: () => NOW,
+      log: silentLog,
+    });
+
+    const res = await archiver.runSweep();
+    // Uploaded, but the flip found no local_file row → local copy left intact.
+    expect(res.ageArchived).toBe(0);
+    expect(await exists(logRef)).toBe(true);
+    expect(rows[0]!.logStore).toBe("local_file");
   });
 });
 

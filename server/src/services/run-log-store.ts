@@ -124,6 +124,13 @@ interface RunLogCapState {
  * `source` is any Readable of gzip bytes — a local `createReadStream` for the
  * hot tier, or an S3 object stream for the cold tier — so both tiers share one
  * decompression + slicing implementation.
+ *
+ * nextOffset divergence from the raw path: when the decompressed stream ends at
+ * (or before) what we returned, `nextOffset` is left undefined — i.e. "done".
+ * readFileRange instead clamps and can return nextOffset === size so a live tail
+ * keeps polling. That is intentional: a finalized `.gz` is immutable, so "no
+ * more bytes" is terminal and there is nothing to poll for. An offset at/beyond
+ * uncompressed EOF therefore yields `{ content: "", nextOffset: undefined }`.
  */
 export async function readGunzipRange(
   source: Readable,

@@ -1,4 +1,5 @@
-import { promises as fs } from "node:fs";
+import { createReadStream, promises as fs } from "node:fs";
+import type { Readable } from "node:stream";
 import path from "node:path";
 import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { createDb, heartbeatRuns } from "@paperclipai/db";
@@ -31,6 +32,14 @@ const TERMINAL_STATUSES = ["succeeded", "failed", "timed_out", "cancelled"] as c
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const GZIP_CONTENT_TYPE = "application/gzip";
 
+/**
+ * Cap on failed archive attempts per sweep. Failures do NOT consume the
+ * per-sweep itemLimit budget (so a burst of failures can't starve the age
+ * pass), but we still bound them here so a persistently-stuck row cannot make
+ * the sweep hot-loop over the same rows indefinitely.
+ */
+const MAX_ARCHIVE_FAILURES_PER_SWEEP = 25;
+
 /** A heartbeat run row projected down to just what the archiver reasons about. */
 export interface HeartbeatRunLogRow {
   id: string;
@@ -48,15 +57,21 @@ export interface RunLogArchiverDb {
   selectAgeArchivable(cutoff: Date, limit: number): Promise<HeartbeatRunLogRow[]>;
   /** Terminal `local_file` runs for one company, oldest first (ignores the age gate). */
   selectCompanyArchivableOldestFirst(companyId: string, limit: number): Promise<HeartbeatRunLogRow[]>;
-  /** Flip a run's tier pointer to `s3` and repoint its logRef at the object key. */
-  markArchivedToS3(runId: string, objectKey: string, now: Date): Promise<void>;
+  /**
+   * Conditionally flip a run's tier pointer to `s3` and repoint its logRef at
+   * the object key — ONLY if the row is still `local_file`. Returns the number
+   * of rows updated: 0 means another worker already moved it, so the caller
+   * must NOT delete the local file.
+   */
+  markArchivedToS3(runId: string, objectKey: string, now: Date): Promise<number>;
 }
 
 /** Object-storage port (raw provider, system-scoped keys — not company-prefixed). */
 export interface RunLogArchiverStorage {
   putObject(input: {
     objectKey: string;
-    body: Buffer;
+    // Streamed (not buffered) so a large capped gz isn't held whole in RAM.
+    body: Buffer | Readable;
     contentType: string;
     contentLength: number;
   }): Promise<void>;
@@ -67,7 +82,6 @@ export interface RunLogArchiverStorage {
 export interface RunLogArchiverFs {
   /** Resolve + ensure-gzipped the local file for a logRef, ready to upload. */
   prepareArchiveSource(logRef: string): Promise<RunLogArchiveSource>;
-  readFileBuffer(absPath: string): Promise<Buffer>;
   /** Unlink an uploaded file and prune now-empty agent/company dirs (best-effort). */
   removeArchivedFile(absPath: string): Promise<void>;
   /** Sum on-disk (compressed) run-log bytes per companyId by walking the base dir. */
@@ -95,7 +109,7 @@ export interface RunLogArchiverDeps {
 
 export interface RunLogSweepResult {
   skipped: boolean;
-  reason?: "mode_off" | "storage_unavailable";
+  reason?: "mode_off" | "storage_unavailable" | "already_running";
   examined: number;
   ageArchived: number;
   fairnessArchived: number;
@@ -118,6 +132,10 @@ export function resolveRunLogArchiverConfig(config: Config): RunLogArchiverConfi
 
 export function createRunLogArchiver(deps: RunLogArchiverDeps): RunLogArchiver {
   const log = deps.log ?? logger;
+  // Overlap guard: sweeps run on a timer and can be slow (many uploads). If the
+  // previous sweep hasn't finished, a new tick must no-op rather than double-
+  // archive rows or race the same files.
+  let sweeping = false;
 
   /**
    * Archive a single run end-to-end: gzip-if-needed → upload → head-verify →
@@ -140,10 +158,13 @@ export function createRunLogArchiver(deps: RunLogArchiverDeps): RunLogArchiver {
     }
 
     try {
-      const body = await deps.files.readFileBuffer(source.absPath);
+      // Stream the gz straight from disk instead of buffering it in RAM: a
+      // capped run can still be hundreds of MB compressed if incompressible.
+      // contentLength comes from prepareArchiveSource's stat, so S3 PutObject
+      // gets the exact length it needs up front.
       await deps.storage.putObject({
         objectKey: source.objectKey,
-        body,
+        body: createReadStream(source.absPath),
         contentType: GZIP_CONTENT_TYPE,
         contentLength: source.bytes,
       });
@@ -165,7 +186,17 @@ export function createRunLogArchiver(deps: RunLogArchiverDeps): RunLogArchiver {
         return 0;
       }
 
-      await deps.db.markArchivedToS3(row.id, source.objectKey, deps.now());
+      // Conditional flip: only if the row is still local_file. If another
+      // worker already moved it (0 rows updated), the local file is no longer
+      // ours to delete — leave it for whoever now owns the row.
+      const updated = await deps.db.markArchivedToS3(row.id, source.objectKey, deps.now());
+      if (updated === 0) {
+        log.warn(
+          { runId: row.id, objectKey: source.objectKey },
+          "run-log archive: row already moved by another worker; keeping local copy",
+        );
+        return 0;
+      }
       await deps.files.removeArchivedFile(source.absPath);
       log.info(
         { runId: row.id, companyId: row.companyId, objectKey: source.objectKey, bytes: source.bytes },
@@ -190,6 +221,13 @@ export function createRunLogArchiver(deps: RunLogArchiverDeps): RunLogArchiver {
       failed: 0,
     };
 
+    if (sweeping) {
+      result.skipped = true;
+      result.reason = "already_running";
+      log.info({}, "run-log archiver: sweep already in progress; skipping this tick");
+      return result;
+    }
+
     if (deps.config.mode === "off" || !deps.config.storageEnabled) {
       const reason = deps.config.mode === "off" ? "mode_off" : "storage_unavailable";
       result.skipped = true;
@@ -201,60 +239,79 @@ export function createRunLogArchiver(deps: RunLogArchiverDeps): RunLogArchiver {
       return result;
     }
 
-    // Budget of archive actions for this whole sweep, shared across both passes.
-    let budget = deps.config.itemLimit;
-
-    // ---- Fairness pass: over-budget companies first, ignoring the age gate. ----
+    sweeping = true;
     try {
-      const companyBytes = await deps.files.computeCompanyHotBytes();
-      for (const [companyId, initialBytes] of companyBytes) {
-        if (budget <= 0) break;
-        if (initialBytes <= deps.config.companyBudgetBytes) continue;
+      // Budget of SUCCESSFUL archive actions for this whole sweep, shared across
+      // both passes. Only successes consume it — a failed attempt must not eat
+      // the budget (that would let a run of failures starve the age pass);
+      // failures are bounded separately by MAX_ARCHIVE_FAILURES_PER_SWEEP.
+      let budget = deps.config.itemLimit;
+      const failureCapReached = () => result.failed >= MAX_ARCHIVE_FAILURES_PER_SWEEP;
 
-        let bytes = initialBytes;
-        const rows = await deps.db.selectCompanyArchivableOldestFirst(companyId, budget);
-        for (const row of rows) {
-          if (bytes <= deps.config.companyBudgetBytes || budget <= 0) break;
-          result.examined += 1;
-          budget -= 1;
-          const freed = await archiveOne(row);
-          if (freed > 0) {
-            bytes -= freed;
-            result.fairnessArchived += 1;
-          } else {
-            result.failed += 1;
+      // ---- Fairness pass: over-budget companies first, ignoring the age gate. ----
+      try {
+        const companyBytes = await deps.files.computeCompanyHotBytes();
+        for (const [companyId, initialBytes] of companyBytes) {
+          if (budget <= 0 || failureCapReached()) break;
+          if (initialBytes <= deps.config.companyBudgetBytes) continue;
+
+          let bytes = initialBytes;
+          const rows = await deps.db.selectCompanyArchivableOldestFirst(companyId, budget);
+          for (const row of rows) {
+            if (bytes <= deps.config.companyBudgetBytes || budget <= 0 || failureCapReached()) break;
+            result.examined += 1;
+            const freed = await archiveOne(row);
+            if (freed > 0) {
+              bytes -= freed;
+              budget -= 1;
+              result.fairnessArchived += 1;
+            } else {
+              result.failed += 1;
+            }
           }
         }
+      } catch (err) {
+        log.error({ err }, "run-log archiver: fairness pass failed");
       }
-    } catch (err) {
-      log.error({ err }, "run-log archiver: fairness pass failed");
-    }
 
-    // ---- Age pass: terminal runs older than the hot-retention window. ----
-    try {
-      if (budget > 0) {
-        const cutoff = new Date(deps.now().getTime() - deps.config.hotRetentionDays * MS_PER_DAY);
-        const rows = await deps.db.selectAgeArchivable(cutoff, budget);
-        for (const row of rows) {
-          if (budget <= 0) break;
-          result.examined += 1;
-          budget -= 1;
-          const freed = await archiveOne(row);
-          if (freed > 0) result.ageArchived += 1;
-          else result.failed += 1;
+      // ---- Age pass: terminal runs older than the hot-retention window. ----
+      try {
+        if (budget > 0 && !failureCapReached()) {
+          const cutoff = new Date(deps.now().getTime() - deps.config.hotRetentionDays * MS_PER_DAY);
+          const rows = await deps.db.selectAgeArchivable(cutoff, budget);
+          for (const row of rows) {
+            if (budget <= 0 || failureCapReached()) break;
+            result.examined += 1;
+            const freed = await archiveOne(row);
+            if (freed > 0) {
+              budget -= 1;
+              result.ageArchived += 1;
+            } else {
+              result.failed += 1;
+            }
+          }
         }
+      } catch (err) {
+        log.error({ err }, "run-log archiver: age pass failed");
       }
-    } catch (err) {
-      log.error({ err }, "run-log archiver: age pass failed");
-    }
 
-    if (result.ageArchived > 0 || result.fairnessArchived > 0 || result.failed > 0) {
-      log.info(
-        { ...result },
-        "run-log archiver sweep complete",
-      );
+      if (failureCapReached()) {
+        log.warn(
+          { failed: result.failed },
+          "run-log archiver: failure cap reached; ending sweep early to avoid hot-looping",
+        );
+      }
+
+      if (result.ageArchived > 0 || result.fairnessArchived > 0 || result.failed > 0) {
+        log.info(
+          { ...result },
+          "run-log archiver sweep complete",
+        );
+      }
+      return result;
+    } finally {
+      sweeping = false;
     }
-    return result;
   }
 
   return { runSweep };
@@ -317,10 +374,15 @@ export function createDrizzleRunLogArchiverDb(db: Db): RunLogArchiverDb {
     },
 
     async markArchivedToS3(runId, objectKey, now) {
-      await db
+      // Conditional on the row still being local_file: `.returning()` yields one
+      // row per update, so its length is the affected-row count. 0 means another
+      // worker already flipped it → caller keeps its hands off the local file.
+      const updated = await db
         .update(heartbeatRuns)
         .set({ logStore: "s3", logRef: objectKey, updatedAt: now })
-        .where(eq(heartbeatRuns.id, runId));
+        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.logStore, "local_file")))
+        .returning({ id: heartbeatRuns.id });
+      return updated.length;
     },
   };
 }
@@ -344,7 +406,6 @@ export function createNodeRunLogArchiverFs(baseDir: string): RunLogArchiverFs {
 
   return {
     prepareArchiveSource: (logRef) => prepareRunLogArchiveSource(baseDir, logRef),
-    readFileBuffer: (absPath) => fs.readFile(absPath),
 
     async removeArchivedFile(absPath) {
       await fs.unlink(absPath).catch(() => undefined);
