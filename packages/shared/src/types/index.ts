@@ -64,6 +64,8 @@ export type {
   CompanySkillSourceBadge,
   CompanySkillSharingScope,
   CompanySkillListSort,
+  CompanySkillListInclude,
+  CompanySkillLastEditor,
   CompanySkillFileInventoryEntry,
   CompanySkillVersionFileInventoryEntry,
   CompanySkill,

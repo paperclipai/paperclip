@@ -966,13 +966,14 @@ describe("company skill mutation permissions", () => {
     const app = await createApp({ type: "board", source: "local_implicit" });
 
     await request(app)
-      .get("/api/companies/company-1/skills?sort=stars&categories[]=memory&category=git&scope=company&q=review")
+      .get("/api/companies/company-1/skills?sort=stars&categories[]=memory&category=git&scope=company&q=review&include=lastEditor")
       .expect(200);
     expect(mockCompanySkillService.list).toHaveBeenCalledWith("company-1", {
       q: "review",
       sort: "stars",
       categories: ["git", "memory"],
       scope: "company",
+      include: ["lastEditor"],
     });
 
     await request(app).get("/api/companies/company-1/skills/categories").expect(200);

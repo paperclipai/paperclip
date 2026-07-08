@@ -192,6 +192,10 @@ export function companySkillRoutes(db: Db) {
         ...queryStringArray(req.query["categories[]"]),
       ],
       scope: firstQueryString(req.query.scope),
+      include: [
+        ...queryStringArray(req.query.include),
+        ...queryStringArray(req.query["include[]"]),
+      ],
     }));
     res.json(result);
   });

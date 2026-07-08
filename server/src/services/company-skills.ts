@@ -7,6 +7,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agents as agentsTable,
   assets,
+  authUsers,
   companies,
   companySkillComments,
   companySkillStars,
@@ -53,6 +54,7 @@ import type {
   CompanySkillInstallCatalogResult,
   CompanySkillListQuery,
   CompanySkillListItem,
+  CompanySkillLastEditor,
   CompanySkillOriginalSummary,
   CompanySkillProjectScanConflict,
   CompanySkillProjectScanRequest,
@@ -2362,6 +2364,66 @@ function toCompanySkillListItem(skill: CompanySkillListRow, attachedAgentCount: 
   };
 }
 
+async function listLastEditorsBySkillId(
+  db: Db,
+  companyId: string,
+  skillIds: string[],
+): Promise<Map<string, CompanySkillLastEditor | null>> {
+  if (skillIds.length === 0) return new Map();
+  const rows = await db
+    .selectDistinctOn([companySkillVersions.companySkillId], {
+      companySkillId: companySkillVersions.companySkillId,
+      authorAgentId: companySkillVersions.authorAgentId,
+      authorUserId: companySkillVersions.authorUserId,
+      userName: authUsers.name,
+      userImage: authUsers.image,
+      agentName: agentsTable.name,
+    })
+    .from(companySkillVersions)
+    .leftJoin(authUsers, eq(authUsers.id, companySkillVersions.authorUserId))
+    .leftJoin(
+      agentsTable,
+      and(
+        eq(agentsTable.companyId, companyId),
+        eq(agentsTable.id, companySkillVersions.authorAgentId),
+      ),
+    )
+    .where(and(
+      eq(companySkillVersions.companyId, companyId),
+      inArray(companySkillVersions.companySkillId, skillIds),
+    ))
+    .orderBy(
+      companySkillVersions.companySkillId,
+      desc(companySkillVersions.createdAt),
+      desc(companySkillVersions.revisionNumber),
+      desc(companySkillVersions.id),
+    );
+
+  const editors = new Map<string, CompanySkillLastEditor | null>();
+  for (const row of rows) {
+    if (row.authorUserId) {
+      editors.set(row.companySkillId, {
+        kind: "user",
+        id: row.authorUserId,
+        name: row.userName ?? null,
+        imageUrl: row.userImage ?? null,
+      });
+      continue;
+    }
+    if (row.authorAgentId) {
+      editors.set(row.companySkillId, {
+        kind: "agent",
+        id: row.authorAgentId,
+        name: row.agentName ?? null,
+        imageUrl: null,
+      });
+      continue;
+    }
+    editors.set(row.companySkillId, null);
+  }
+  return editors;
+}
+
 export function companySkillService(db: Db) {
   const agents = agentService(db);
   const projects = projectService(db);
@@ -2569,6 +2631,13 @@ export function companySkillService(db: Db) {
       if (sort === "forks") return right.forkCount - left.forkCount || left.name.localeCompare(right.name);
       return left.name.localeCompare(right.name) || left.key.localeCompare(right.key);
     });
+    if (query.include?.includes("lastEditor")) {
+      const lastEditors = await listLastEditorsBySkillId(db, companyId, items.map((item) => item.id));
+      return items.map((item) => ({
+        ...item,
+        lastEditor: lastEditors.get(item.id) ?? null,
+      }));
+    }
     return items;
   }
 

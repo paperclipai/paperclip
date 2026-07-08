@@ -6,6 +6,7 @@ export const companySkillCompatibilitySchema = z.enum(["compatible", "unknown", 
 export const companySkillSourceBadgeSchema = z.enum(["paperclip", "github", "local", "url", "catalog", "skills_sh"]);
 export const companySkillSharingScopeSchema = z.enum(["private", "company", "public_link"]);
 export const companySkillListSortSchema = z.enum(["alphabetical", "recent", "installs", "stars", "agents", "forks"]);
+export const companySkillListIncludeSchema = z.enum(["lastEditor"]);
 
 export const companySkillFileInventoryEntrySchema = z.object({
   path: z.string().min(1),
@@ -59,6 +60,12 @@ export const companySkillListItemSchema = companySkillSchema.extend({
   originHash: z.string().nullable(),
   packageName: z.string().nullable(),
   packageVersion: z.string().nullable(),
+  lastEditor: z.object({
+    kind: z.enum(["user", "agent"]),
+    id: z.string().min(1),
+    name: z.string().nullable(),
+    imageUrl: z.string().nullable(),
+  }).nullable().optional(),
 });
 
 export const companySkillUsageAgentSchema = z.object({
@@ -98,6 +105,7 @@ export const companySkillListQuerySchema = z.object({
   sort: companySkillListSortSchema.optional(),
   categories: z.array(z.string().min(1)).optional(),
   scope: companySkillSharingScopeSchema.optional(),
+  include: z.array(companySkillListIncludeSchema).optional(),
 });
 
 export const companySkillCategoryCountSchema = z.object({

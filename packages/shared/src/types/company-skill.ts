@@ -13,6 +13,15 @@ export type CompanySkillSharingScope = "private" | "company" | "public_link";
 
 export type CompanySkillListSort = "alphabetical" | "recent" | "installs" | "stars" | "agents" | "forks";
 
+export type CompanySkillListInclude = "lastEditor";
+
+export interface CompanySkillLastEditor {
+  kind: "user" | "agent";
+  id: string;
+  name: string | null;
+  imageUrl: string | null;
+}
+
 export interface CompanySkillFileInventoryEntry {
   path: string;
   kind: "skill" | "markdown" | "reference" | "script" | "asset" | "other";
@@ -94,6 +103,7 @@ export interface CompanySkillListItem {
   originHash: string | null;
   packageName: string | null;
   packageVersion: string | null;
+  lastEditor?: CompanySkillLastEditor | null;
 }
 
 export interface CompanySkillUsageAgent {
@@ -129,6 +139,7 @@ export interface CompanySkillListQuery {
   sort?: CompanySkillListSort;
   categories?: string[];
   scope?: CompanySkillSharingScope;
+  include?: CompanySkillListInclude[];
 }
 
 export interface CompanySkillCategoryCount {
