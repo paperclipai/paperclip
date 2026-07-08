@@ -208,6 +208,14 @@ describe("Cases list", () => {
     expect(text.indexOf("Updated")).toBeGreaterThan(text.indexOf("Status"));
     expect(text).not.toContain("Key");
     expect(text).not.toContain("Project");
+    const headerGrid = Array.from(container.querySelectorAll<HTMLElement>("div > span[style*='grid-template-columns']")).find((element) =>
+      element.textContent?.includes("ID")
+      && element.textContent.includes("Title")
+      && element.textContent.includes("Status")
+    );
+    expect(headerGrid?.style.gridTemplateColumns).toBe(
+      "max-content minmax(12rem, 1fr) minmax(6rem, 7rem) minmax(5rem, 6rem)",
+    );
 
     const blogGroupIndex = text.indexOf("blog_post");
     const tweetGroupIndex = text.indexOf("tweet_storm");

@@ -161,7 +161,7 @@ function caseTrailingGridTemplate(columns: CaseColumn[]): string {
   return columns
     .map((column) => {
       if (column === "title") return "minmax(12rem, 1fr)";
-      if (column === "id") return "minmax(9rem, 14rem)";
+      if (column === "id") return "max-content";
       if (column === "key") return "minmax(8rem, 12rem)";
       if (column === "status") return "minmax(6rem, 7rem)";
       if (column === "type") return "minmax(5rem, 8rem)";
