@@ -728,6 +728,13 @@
   color: inherit;
 }
 
+.skill-studio-input-editor,
+.skill-studio-input-editor .paperclip-mdxeditor,
+.skill-studio-input-editor .mdxeditor-root-contenteditable,
+.skill-studio-input-editor [class*="_contentEditable_"] {
+  min-height: 100%;
+}
+
 .paperclip-edit-in-place-content {
   font-size: 0.9375rem;
   line-height: 1.75rem;
@@ -1645,6 +1652,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-31: calc(100vh - 16rem); /* Extracted from ui/src/pages/CompanyImport.tsx (h-[calc(100vh-16rem)]). */
   --sz-calc-32: min(28rem,70vh); /* Extracted from ui/src/pages/CompanySkills.tsx (max-h-[min(28rem,70vh)]). */
   --sz-11_5rem: 11.5rem; /* Extracted from ui/src/pages/CompanySkills.tsx (min-h-[11.5rem]). */
+  --sz-11_75rem: 11.75rem; /* SkillStudio.tsx file/input browser cap: five min-h-9 rows plus p-1 vertical padding. */
   --sz-calc-33: calc(100dvh - 6rem); /* Extracted from ui/src/pages/CompanySkills.tsx (h-[calc(100dvh-6rem)]). */
   --sz-calc-34: clamp(14rem,45vh,28rem); /* Extracted from ui/src/pages/CompanySkills.tsx (h-[clamp(14rem,45vh,28rem)]). */
   --sz-400px: 400px; /* Extracted from ui/src/pages/CompanySkills.tsx (min-h-[400px]). */

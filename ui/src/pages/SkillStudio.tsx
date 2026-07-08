@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowLeft,
+  ChevronDown,
   ChevronRight,
   Clock,
   Copy,
@@ -14,6 +15,7 @@ import {
   History,
   MoreHorizontal,
   Play,
+  Plus,
   RotateCcw,
   Share2,
   Trash2,
@@ -312,6 +314,7 @@ function StudioShell({ companyId, skill }: { companyId: string; skill: CompanySk
         setAdHocMode(false);
       }}
       onSelectAdHoc={() => {
+        setAdHocContent("");
         setAdHocMode(true);
         setSelectedInputId(null);
       }}
@@ -428,7 +431,7 @@ function StudioHeader({
   }, [toast]);
 
   return (
-    <header className="flex items-center gap-3 border-b border-border px-4 py-2.5">
+    <header className="flex items-center gap-3 border-b border-border px-3 py-2">
       <SkillSwitcher
         skill={skill}
         skills={skills}
@@ -505,7 +508,7 @@ function SkillSwitcher({
       onValueChange={(value) => {
         if (value !== skill.id) onSelectSkill(value);
       }}
-      triggerClassName="h-8 w-64 border-0 bg-transparent px-1 text-base font-semibold shadow-none hover:bg-accent md:w-80"
+      triggerClassName="h-8 w-64 border-0 bg-transparent px-0 text-base font-semibold shadow-none hover:bg-accent md:w-80"
       contentClassName="w-80"
       contentWidth="auto"
       renderValue={(option) => option?.label ?? skill.name}
@@ -719,7 +722,7 @@ function SkillPane({
             <span>Unsaved edits live only in this Studio session. Save to create the next version before running tests or switching files.</span>
           </div>
         ) : null}
-        <div className="max-h-56 overflow-auto border-b border-border p-1">
+        <div className="max-h-(--sz-11_75rem) overflow-auto border-b border-border p-1">
           <FileTree
             nodes={nodes}
             selectedFile={selectedFile}
@@ -1132,6 +1135,7 @@ function InputPane({
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [savedDraft, setSavedDraft] = useState("");
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
 
   const selectedInput = inputs.find((i) => i.id === selectedInputId) ?? null;
 
@@ -1146,6 +1150,12 @@ function InputPane({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedInputId, adHocMode]);
+
+  useEffect(() => {
+    if (!loading && inputs.length === 0 && !adHocMode && !selectedInputId) {
+      onSelectAdHoc();
+    }
+  }, [adHocMode, inputs.length, loading, onSelectAdHoc, selectedInputId]);
 
   const nameToId = useMemo(
     () => new Map(inputs.map((i) => [i.name, i.id])),
@@ -1177,118 +1187,151 @@ function InputPane({
 
   return (
     <PaneScaffold
-      title="Input"
+      title={
+        <span className="flex min-w-0 items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                aria-label={collapsed ? "Expand input" : "Collapse input"}
+                onClick={() => setCollapsed((current) => !current)}
+              >
+                {collapsed ? (
+                  <ChevronRight className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                )}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{collapsed ? "Expand input" : "Collapse input"}</TooltipContent>
+          </Tooltip>
+          <span>Input</span>
+        </span>
+      }
       action={
         <div className="flex items-center gap-1">
-          <Button variant="outline" size="xs" onClick={onSelectAdHoc}>
-            Paste ad-hoc
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon-sm" onClick={onSelectAdHoc} aria-label="New input">
+                <Plus className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>New input</TooltipContent>
+          </Tooltip>
         </div>
       }
     >
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div className="max-h-56 overflow-auto border-b border-border p-1">
-          {loading ? (
-            <div className="p-3 text-xs text-muted-foreground">Loading inputs…</div>
-          ) : inputs.length === 0 && !adHocMode ? (
-            <EmptyState
-              icon={FilePlus}
-              message="No saved inputs. Paste text to test this skill."
-              action="Paste ad-hoc"
-              onAction={onSelectAdHoc}
-            />
-          ) : (
-            <>
-              {adHocMode && (
-                <div className="flex items-center gap-2 rounded px-2 py-1.5 text-sm italic text-muted-foreground">
-                  <FilePlus className="h-3.5 w-3.5" /> Ad-hoc paste (not saved)
-                </div>
+      {collapsed ? (
+        <button
+          type="button"
+          className="flex min-h-(--sz-32px) items-center gap-2 border-b border-border px-3 py-2 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+          onClick={() => setCollapsed(false)}
+        >
+          <ChevronRight className="h-3.5 w-3.5" />
+          <span>Input folded</span>
+        </button>
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col">
+          {loading || inputs.length > 0 ? (
+            <div className="max-h-(--sz-11_75rem) overflow-auto border-b border-border p-1">
+              {loading ? (
+                <div className="p-3 text-xs text-muted-foreground">Loading inputs…</div>
+              ) : (
+                <>
+                  {adHocMode && (
+                    <div className="flex items-center gap-2 rounded px-2 py-1.5 text-sm italic text-muted-foreground">
+                      <FilePlus className="h-3.5 w-3.5" /> New input (not saved)
+                    </div>
+                  )}
+                  <FileTree
+                    nodes={nodes}
+                    selectedFile={selectedName}
+                    expandedDirs={expandedDirs}
+                    onToggleDir={(path) =>
+                      setExpandedDirs((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(path)) next.delete(path);
+                        else next.add(path);
+                        return next;
+                      })
+                    }
+                    onSelectFile={(name) => {
+                      const id = nameToId.get(name);
+                      if (id) onSelectInput(id);
+                    }}
+                    showCheckboxes={false}
+                    renderFileExtra={(node) => {
+                      const id = nameToId.get(node.path);
+                      if (!id) return null;
+                      return (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                              aria-label={`Input actions for ${node.name}`}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <MoreHorizontal className="h-3.5 w-3.5" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-44">
+                            <DropdownMenuItem
+                              onClick={() => {
+                                const input = inputs.find((i) => i.id === id);
+                                if (input) navigator.clipboard?.writeText(input.content).catch(() => {});
+                              }}
+                            >
+                              <Copy className="mr-2 h-4 w-4" /> Copy content
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              variant="destructive"
+                              onClick={() => deleteMutation.mutate(id)}
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" /> Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      );
+                    }}
+                    ariaLabel="Test inputs"
+                  />
+                </>
               )}
-              <FileTree
-                nodes={nodes}
-                selectedFile={selectedName}
-                expandedDirs={expandedDirs}
-                onToggleDir={(path) =>
-                  setExpandedDirs((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(path)) next.delete(path);
-                    else next.add(path);
-                    return next;
-                  })
-                }
-                onSelectFile={(name) => {
-                  const id = nameToId.get(name);
-                  if (id) onSelectInput(id);
-                }}
-                showCheckboxes={false}
-                renderFileExtra={(node) => {
-                  const id = nameToId.get(node.path);
-                  if (!id) return null;
-                  return (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-                          aria-label={`Input actions for ${node.name}`}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <MoreHorizontal className="h-3.5 w-3.5" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-44">
-                        <DropdownMenuItem
-                          onClick={() => {
-                            const input = inputs.find((i) => i.id === id);
-                            if (input) navigator.clipboard?.writeText(input.content).catch(() => {});
-                          }}
-                        >
-                          <Copy className="mr-2 h-4 w-4" /> Copy content
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onClick={() => deleteMutation.mutate(id)}
-                        >
-                          <Trash2 className="mr-2 h-4 w-4" /> Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  );
-                }}
-                ariaLabel="Test inputs"
-              />
-            </>
-          )}
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto p-3">
-          <MarkdownEditor
-            value={draft}
-            onChange={setDraft}
-            bordered={false}
-            placeholder="Paste text — treated as a new-issue description."
-            className="min-h-(--sz-220px)"
-          />
-        </div>
-        <div className="flex items-center justify-end gap-2 border-t border-border px-3 py-2">
-          {selectedInput && dirty && (
+            </div>
+          ) : null}
+          <div className="flex min-h-0 flex-1 p-3">
+            <MarkdownEditor
+              value={draft}
+              onChange={setDraft}
+              bordered={false}
+              placeholder="Paste text - treated as a new issue description."
+              className="skill-studio-input-editor min-h-0 flex-1"
+            />
+          </div>
+          <div className="flex items-center justify-end gap-2 border-t border-border px-3 py-2">
+            {selectedInput && dirty && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={updateMutation.isPending}
+                onClick={() => updateMutation.mutate({ content: draft })}
+              >
+                Save changes
+              </Button>
+            )}
             <Button
-              variant="outline"
               size="sm"
-              disabled={updateMutation.isPending}
-              onClick={() => updateMutation.mutate({ content: draft })}
+              disabled={!draft.trim()}
+              onClick={() => setSaveDialogOpen(true)}
             >
-              Save changes
+              Save as input
             </Button>
-          )}
-          <Button
-            size="sm"
-            disabled={!draft.trim()}
-            onClick={() => setSaveDialogOpen(true)}
-          >
-            Save as input
-          </Button>
+          </div>
         </div>
-      </div>
+      )}
       <SaveInputDialog
         open={saveDialogOpen}
         onOpenChange={setSaveDialogOpen}
