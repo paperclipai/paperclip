@@ -5,7 +5,7 @@ import type { CaseSummary } from "@/api/cases";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/StatusBadge";
-import { CaseIdentifierKey } from "@/components/CaseIdentifierKey";
+import { CaseCopyableToken } from "@/components/CaseIdentifierKey";
 
 type CaseRelationRow = Pick<CaseSummary, "id" | "identifier" | "title" | "caseType" | "status"> & {
   key?: string | null;
@@ -42,10 +42,11 @@ export function CaseChildrenTree({
               to={caseHref(child.identifier)}
               className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm transition-colors hover:bg-accent/50"
             >
-              <CaseIdentifierKey
-                identifier={child.identifier}
-                caseKey={child.key}
-                className="shrink-0"
+              <CaseCopyableToken
+                value={child.identifier}
+                label="case ID"
+                className="shrink-0 font-mono text-xs text-muted-foreground"
+                containerClassName="shrink-0"
                 stopPropagation
               />
               <span className="min-w-0 flex-1 truncate" title={child.title}>{child.title}</span>

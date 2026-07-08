@@ -173,7 +173,7 @@ describe("Cases list", () => {
     act(() => root.unmount());
   });
 
-  it("shows default columns in id, title, status, updated order grouped by type", async () => {
+  it("shows default columns in id, title, status, updated order grouped by type without keys", async () => {
     mockCasesApi.list.mockResolvedValue([
       createCase({ id: "a", identifier: "PAP-C1", key: "launch/post-one", title: "Post one", caseType: "blog_post" }),
       createCase({ id: "b", identifier: "PAP-C2", title: "Storm one", caseType: "tweet_storm" }),
@@ -185,15 +185,16 @@ describe("Cases list", () => {
       expect(container.textContent).toContain("blog_post");
       expect(container.textContent).toContain("tweet_storm");
       expect(container.textContent).toContain("Post one");
-      expect(container.textContent).toContain("launch/post-one");
+      expect(container.textContent).not.toContain("launch/post-one");
       expect(container.textContent).toContain("Storm one");
     });
 
     const text = container.textContent ?? "";
-    expect(text.indexOf("ID / Key")).toBeGreaterThanOrEqual(0);
-    expect(text.indexOf("Title")).toBeGreaterThan(text.indexOf("ID / Key"));
+    expect(text.indexOf("ID")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("Title")).toBeGreaterThan(text.indexOf("ID"));
     expect(text.indexOf("Status")).toBeGreaterThan(text.indexOf("Title"));
     expect(text.indexOf("Updated")).toBeGreaterThan(text.indexOf("Status"));
+    expect(text).not.toContain("Key");
     expect(text).not.toContain("Project");
 
     const blogGroupIndex = text.indexOf("blog_post");
@@ -204,7 +205,7 @@ describe("Cases list", () => {
     act(() => root.unmount());
   });
 
-  it("copies case list identifiers and keys with feedback without following the row link", async () => {
+  it("copies case list identifiers with feedback without following the row link", async () => {
     mockCasesApi.list.mockResolvedValue([
       createCase({ id: "a", identifier: "PAP-C1", key: "launch/post-one", title: "Post one", caseType: "blog_post" }),
     ]);
@@ -212,11 +213,45 @@ describe("Cases list", () => {
     const root = renderPage(container);
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("launch/post-one");
+      expect(container.textContent).toContain("PAP-C1");
+      expect(container.textContent).not.toContain("launch/post-one");
     });
 
-    const identityGroup = container.querySelector('[data-case-identity-group="true"]');
-    expect(identityGroup?.className).toContain("whitespace-nowrap");
+    const idButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent === "PAP-C1"
+    );
+    expect(idButton).toBeTruthy();
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    act(() => {
+      idButton!.dispatchEvent(click);
+    });
+
+    await waitForAssertion(() => {
+      expect(click.defaultPrevented).toBe(true);
+      expect(mockCopyTextToClipboard).toHaveBeenCalledWith("PAP-C1");
+      expect(idButton!.parentElement?.textContent).toContain("Copied");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("shows and copies keys only when the key column is enabled", async () => {
+    window.localStorage.setItem(
+      "paperclip:cases:company-1:view",
+      JSON.stringify({
+        columns: ["id", "key", "title", "status", "updated"],
+      }),
+    );
+    mockCasesApi.list.mockResolvedValue([
+      createCase({ id: "a", identifier: "PAP-C1", key: "launch/post-one", title: "Post one", caseType: "blog_post" }),
+    ]);
+
+    const root = renderPage(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Key");
+      expect(container.textContent).toContain("launch/post-one");
+    });
 
     const keyButton = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent === "launch/post-one"
@@ -232,6 +267,59 @@ describe("Cases list", () => {
       expect(mockCopyTextToClipboard).toHaveBeenCalledWith("launch/post-one");
       expect(keyButton!.parentElement?.textContent).toContain("Copied");
     });
+
+    act(() => root.unmount());
+  });
+
+  it("tree mode forces an ungrouped parent-child order and adds the type column", async () => {
+    window.localStorage.setItem(
+      "paperclip:cases:company-1:view",
+      JSON.stringify({
+        treeView: true,
+        groupBy: "type",
+        columns: ["id", "title", "status", "updated"],
+        sortField: "updated",
+        sortDir: "desc",
+      }),
+    );
+    mockCasesApi.list.mockResolvedValue([
+      createCase({
+        id: "child",
+        identifier: "PAP-C2",
+        title: "Child case",
+        parentCaseId: "parent",
+        caseType: "asset",
+        updatedAt: "2026-07-08T00:00:00.000Z",
+      }),
+      createCase({
+        id: "parent",
+        identifier: "PAP-C1",
+        title: "Parent case",
+        caseType: "brief",
+        updatedAt: "2026-07-07T00:00:00.000Z",
+      }),
+      createCase({
+        id: "sibling",
+        identifier: "PAP-C3",
+        title: "Sibling case",
+        caseType: "brief",
+        updatedAt: "2026-07-06T00:00:00.000Z",
+      }),
+    ]);
+
+    const root = renderPage(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Type");
+      expect(container.textContent).toContain("brief");
+      expect(container.textContent).toContain("asset");
+      expect(container.querySelector('button[title="Show flat case list"]')).not.toBeNull();
+    });
+
+    const text = container.textContent ?? "";
+    expect(text.indexOf("Parent case")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("Child case")).toBeGreaterThan(text.indexOf("Parent case"));
+    expect(text.indexOf("Sibling case")).toBeGreaterThan(text.indexOf("Child case"));
 
     act(() => root.unmount());
   });

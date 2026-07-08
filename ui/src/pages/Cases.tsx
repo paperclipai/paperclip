@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpDown, Check, ChevronDown, Columns3, Filter, Layers, Search, SearchX } from "lucide-react";
+import { ArrowUpDown, Check, ChevronDown, Columns3, Filter, Layers, ListTree, Search, SearchX } from "lucide-react";
 import { Link, useCaseHref } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -18,11 +18,11 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
-import { CaseIdentifierKey } from "@/components/CaseIdentifierKey";
+import { CaseCopyableToken } from "@/components/CaseIdentifierKey";
 import { cn, relativeTime } from "@/lib/utils";
 
-type GroupBy = "type" | "project" | "status";
-type CaseColumn = "id" | "title" | "status" | "updated" | "created" | "type" | "project" | "parent";
+type GroupBy = "type" | "project" | "status" | "none";
+type CaseColumn = "id" | "key" | "title" | "status" | "updated" | "created" | "type" | "project" | "parent";
 type CaseSortField = "updated" | "created" | "title" | "status" | "id" | "type" | "project";
 type CaseViewState = {
   search: string;
@@ -34,6 +34,7 @@ type CaseViewState = {
   sortField: CaseSortField;
   sortDir: "asc" | "desc";
   columns: CaseColumn[];
+  treeView: boolean;
 };
 
 const STATUS_FILTER_OPTIONS: { value: CaseStatus; label: string }[] = [
@@ -48,9 +49,10 @@ const STATUS_FILTER_OPTIONS: { value: CaseStatus; label: string }[] = [
 const ALL = "__all__";
 const DEFAULT_STATUS_FILTERS: CaseStatus[] = CASE_STATUSES.filter((status) => !TERMINAL_CASE_STATUSES.includes(status));
 const DEFAULT_CASE_COLUMNS: CaseColumn[] = ["id", "title", "status", "updated"];
-const CASE_COLUMN_ORDER: CaseColumn[] = ["id", "title", "status", "updated", "created", "type", "project", "parent"];
+const CASE_COLUMN_ORDER: CaseColumn[] = ["id", "key", "title", "status", "updated", "created", "type", "project", "parent"];
 const CASE_COLUMN_LABELS: Record<CaseColumn, string> = {
-  id: "ID / Key",
+  id: "ID",
+  key: "Key",
   title: "Title",
   status: "Status",
   updated: "Updated",
@@ -78,6 +80,7 @@ const defaultCaseViewState: CaseViewState = {
   sortField: "updated",
   sortDir: "desc",
   columns: DEFAULT_CASE_COLUMNS,
+  treeView: false,
 };
 
 function getCaseViewStorageKey(companyId: string | null | undefined): string | null {
@@ -101,7 +104,7 @@ function normalizeStringArray(value: unknown): string[] {
 }
 
 function normalizeGroupBy(value: unknown): GroupBy {
-  return value === "project" || value === "status" || value === "type" ? value : defaultCaseViewState.groupBy;
+  return value === "project" || value === "status" || value === "type" || value === "none" ? value : defaultCaseViewState.groupBy;
 }
 
 function normalizeSortField(value: unknown): CaseSortField {
@@ -122,16 +125,21 @@ function loadCaseViewState(storageKey: string | null): CaseViewState {
     const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? "null");
     if (!parsed || typeof parsed !== "object") return { ...defaultCaseViewState };
     const record = parsed as Record<string, unknown>;
+    const treeView = record.treeView === true;
+    const columns = treeView
+      ? normalizeCaseColumns([...normalizeCaseColumns(record.columns), "type"])
+      : normalizeCaseColumns(record.columns);
     return {
       search: typeof record.search === "string" ? record.search : defaultCaseViewState.search,
       typeFilters: normalizeStringArray(record.typeFilters),
       statusFilters: normalizeCaseStatuses(record.statusFilters),
       projectFilters: normalizeStringArray(record.projectFilters),
       labelFilter: typeof record.labelFilter === "string" ? record.labelFilter : defaultCaseViewState.labelFilter,
-      groupBy: normalizeGroupBy(record.groupBy),
+      groupBy: treeView ? "none" : normalizeGroupBy(record.groupBy),
       sortField: normalizeSortField(record.sortField),
       sortDir: record.sortDir === "asc" ? "asc" : "desc",
-      columns: normalizeCaseColumns(record.columns),
+      columns,
+      treeView,
     };
   } catch {
     return { ...defaultCaseViewState };
@@ -152,6 +160,7 @@ function caseTrailingGridTemplate(columns: CaseColumn[]): string {
     .map((column) => {
       if (column === "title") return "minmax(12rem, 1fr)";
       if (column === "id") return "minmax(9rem, 14rem)";
+      if (column === "key") return "minmax(8rem, 12rem)";
       if (column === "status") return "minmax(6rem, 7rem)";
       if (column === "type") return "minmax(5rem, 8rem)";
       if (column === "project") return "minmax(5rem, 8rem)";
@@ -167,6 +176,18 @@ function sameStringSet(a: readonly string[], b: readonly string[]) {
 
 function sameStatusSet(a: readonly CaseStatus[], b: readonly CaseStatus[]) {
   return a.length === b.length && a.every((value) => b.includes(value));
+}
+
+function ensureCaseColumn(columns: readonly CaseColumn[], column: CaseColumn): CaseColumn[] {
+  return columns.includes(column) ? [...columns] : normalizeCaseColumns([...columns, column]);
+}
+
+function treeTitleIndentClass(depth: number): string {
+  if (depth <= 0) return "";
+  if (depth === 1) return "pl-4";
+  if (depth === 2) return "pl-8";
+  if (depth === 3) return "pl-12";
+  return "pl-16";
 }
 
 function CaseStatusPicker({
@@ -229,28 +250,70 @@ function CaseTrailingColumns({
   projectName,
   onStatusChange,
   statusPending,
+  treeDepth = 0,
+  childCount = 0,
+  treeView = false,
 }: {
   row: CaseSummary;
   columns: CaseColumn[];
   projectName: string | null;
   onStatusChange: (caseId: string, status: CaseStatus) => void;
   statusPending: boolean;
+  treeDepth?: number;
+  childCount?: number;
+  treeView?: boolean;
 }) {
   return (
     <span className="grid min-w-0 flex-1 items-center gap-2" style={{ gridTemplateColumns: caseTrailingGridTemplate(columns) }}>
       {columns.map((column) => {
         if (column === "id") {
           return (
-            <CaseIdentifierKey
+            <CaseCopyableToken
               key={column}
-              identifier={row.identifier}
-              caseKey={row.key}
+              value={row.identifier}
+              label="case ID"
+              className="font-mono text-xs text-muted-foreground"
+              containerClassName="shrink-0"
               stopPropagation
             />
           );
         }
+        if (column === "key") {
+          return row.key ? (
+            <CaseCopyableToken
+              key={column}
+              value={row.key}
+              label="case key"
+              className="font-mono text-xs text-muted-foreground"
+              stopPropagation
+            />
+          ) : (
+            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">None</span>
+          );
+        }
         if (column === "title") {
-          return <span key={column} className="min-w-0 truncate text-sm">{row.title}</span>;
+          return (
+            <span
+              key={column}
+              className={cn(
+                "min-w-0",
+                treeView ? "flex items-center gap-1.5" : "truncate text-sm",
+                treeView && treeTitleIndentClass(treeDepth),
+              )}
+            >
+              {treeView ? (
+                <span className="flex w-4 shrink-0 items-center text-muted-foreground">
+                  {treeDepth > 0 ? <span className="h-px w-3 bg-border" /> : childCount > 0 ? <ListTree className="h-3.5 w-3.5" /> : null}
+                </span>
+              ) : null}
+              <span className="min-w-0 truncate text-sm">{row.title}</span>
+              {treeView && childCount > 0 ? (
+                <span className="hidden shrink-0 text-xs text-muted-foreground lg:inline">
+                  {childCount} {childCount === 1 ? "child" : "children"}
+                </span>
+              ) : null}
+            </span>
+          );
         }
         if (column === "status") {
           return (
@@ -300,6 +363,9 @@ function CaseListRow({
   trailingColumns,
   onStatusChange,
   statusPending,
+  treeDepth,
+  childCount,
+  treeView,
 }: {
   row: CaseSummary;
   projectName: string | null;
@@ -307,6 +373,9 @@ function CaseListRow({
   trailingColumns: CaseColumn[];
   onStatusChange: (caseId: string, status: CaseStatus) => void;
   statusPending: boolean;
+  treeDepth?: number;
+  childCount?: number;
+  treeView?: boolean;
 }) {
   const caseHref = useCaseHref();
   return (
@@ -327,10 +396,19 @@ function CaseListRow({
             />
           ) : null}
           {visibleColumnSet.has("id") ? (
-            <CaseIdentifierKey
-              identifier={row.identifier}
-              caseKey={row.key}
-              className="shrink-0"
+            <CaseCopyableToken
+              value={row.identifier}
+              label="case ID"
+              className="font-mono text-xs text-muted-foreground"
+              containerClassName="shrink-0"
+              stopPropagation
+            />
+          ) : null}
+          {visibleColumnSet.has("key") && row.key ? (
+            <CaseCopyableToken
+              value={row.key}
+              label="case key"
+              className="shrink-0 font-mono text-xs text-muted-foreground"
               stopPropagation
             />
           ) : null}
@@ -345,6 +423,9 @@ function CaseListRow({
             projectName={projectName}
             statusPending={statusPending}
             onStatusChange={onStatusChange}
+            treeDepth={treeDepth}
+            childCount={childCount}
+            treeView={treeView}
           />
         </span>
       ) : null}
@@ -401,6 +482,18 @@ function CaseGroup({
     </div>
   );
 }
+
+type CaseGroupedRows = {
+  key: string;
+  label: string | null;
+  rows: CaseSummary[];
+};
+
+type CaseTreeRow = {
+  row: CaseSummary;
+  depth: number;
+  childCount: number;
+};
 
 function CaseToolbarButton({
   icon: Icon,
@@ -593,6 +686,15 @@ export function Cases() {
   function updateView(patch: Partial<CaseViewState>) {
     setViewState((current) => {
       const next = { ...current, ...patch };
+      if (current.treeView && patch.groupBy && patch.groupBy !== "none") {
+        next.treeView = false;
+      }
+      if (patch.treeView === true) {
+        next.groupBy = "none";
+        next.columns = ensureCaseColumn(next.columns, "type");
+      } else if (next.treeView) {
+        next.groupBy = "none";
+      }
       saveCaseViewState(viewStorageKey, next);
       return next;
     });
@@ -685,7 +787,10 @@ export function Cases() {
     [visibleColumnSet],
   );
 
-  const groups = useMemo(() => {
+  const groupedRows = useMemo((): CaseGroupedRows[] => {
+    if (viewState.groupBy === "none") {
+      return [{ key: "__all__", label: null, rows: sorted }];
+    }
     const map = new Map<string, CaseSummary[]>();
     for (const c of sorted) {
       let key: string;
@@ -696,8 +801,47 @@ export function Cases() {
       if (bucket) bucket.push(c);
       else map.set(key, [c]);
     }
-    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    return [...map.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([label, rows]) => ({ key: label, label, rows }));
   }, [sorted, viewState.groupBy, projectName]);
+
+  const treeRows = useMemo((): CaseTreeRow[] => {
+    const rowById = new Map(sorted.map((row) => [row.id, row]));
+    const childrenByParent = new Map<string, CaseSummary[]>();
+    for (const row of sorted) {
+      if (!row.parentCaseId || !rowById.has(row.parentCaseId)) continue;
+      const children = childrenByParent.get(row.parentCaseId) ?? [];
+      children.push(row);
+      childrenByParent.set(row.parentCaseId, children);
+    }
+
+    const roots = sorted.filter((row) => !row.parentCaseId || !rowById.has(row.parentCaseId));
+    const rows: CaseTreeRow[] = [];
+    const visited = new Set<string>();
+
+    function walk(row: CaseSummary, depth: number, ancestors: Set<string>) {
+      if (visited.has(row.id)) return;
+      visited.add(row.id);
+      const children = childrenByParent.get(row.id) ?? [];
+      rows.push({ row, depth, childCount: children.length });
+      if (ancestors.has(row.id)) return;
+      const nextAncestors = new Set(ancestors);
+      nextAncestors.add(row.id);
+      for (const child of children) {
+        walk(child, depth + 1, nextAncestors);
+      }
+    }
+
+    for (const root of roots) {
+      walk(root, 0, new Set());
+    }
+    for (const row of sorted) {
+      walk(row, 0, new Set());
+    }
+
+    return rows;
+  }, [sorted]);
 
   const activeFilters: FilterValue[] = [];
   if (viewState.search.trim()) activeFilters.push({ key: "search", label: "Search", value: viewState.search.trim() });
@@ -752,7 +896,7 @@ export function Cases() {
     updateView({ columns: normalizeCaseColumns(next) });
   }
   function resetColumns() {
-    updateView({ columns: DEFAULT_CASE_COLUMNS });
+    updateView({ columns: viewState.treeView ? ensureCaseColumn(DEFAULT_CASE_COLUMNS, "type") : DEFAULT_CASE_COLUMNS });
   }
   function toggleStringFilter(key: "typeFilters" | "projectFilters", value: string, enabled: boolean) {
     const current = viewState[key];
@@ -801,6 +945,19 @@ export function Cases() {
             </div>
 
             <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className={cn("h-8 w-8 shrink-0", viewState.treeView && "bg-accent")}
+                title={viewState.treeView ? "Show flat case list" : "Show parent/children tree"}
+                aria-label={viewState.treeView ? "Show flat case list" : "Show parent/children tree"}
+                aria-pressed={viewState.treeView}
+                onClick={() => updateView({ treeView: !viewState.treeView })}
+              >
+                <ListTree className="h-3.5 w-3.5" />
+              </Button>
+
               <CaseColumnPicker
                 visibleColumns={visibleColumnSet}
                 onToggle={toggleColumn}
@@ -891,6 +1048,7 @@ export function Cases() {
                     ["type", "Type"],
                     ["project", "Project"],
                     ["status", "Status"],
+                    ["none", "None"],
                   ] as const).map(([value, label]) => (
                     <button
                       key={value}
@@ -917,21 +1075,52 @@ export function Cases() {
           ) : (
             <div>
               <CaseColumnHeader visibleColumnSet={visibleColumnSet} trailingColumns={trailingColumns} />
-              {groups.map(([label, rows]) => (
-                <CaseGroup key={label} label={label} count={rows.length}>
-                  {rows.map((row) => (
-                    <CaseListRow
-                      key={row.id}
-                      row={row}
-                      projectName={row.projectId ? projectName.get(row.projectId) ?? null : null}
-                      visibleColumnSet={visibleColumnSet}
-                      trailingColumns={trailingColumns}
-                      statusPending={patchCase.isPending && patchCase.variables?.caseId === row.id}
-                      onStatusChange={(caseId, status) => patchCase.mutate({ caseId, status })}
-                    />
-                  ))}
-                </CaseGroup>
-              ))}
+              {viewState.treeView ? (
+                treeRows.map(({ row, depth, childCount }) => (
+                  <CaseListRow
+                    key={row.id}
+                    row={row}
+                    projectName={row.projectId ? projectName.get(row.projectId) ?? null : null}
+                    visibleColumnSet={visibleColumnSet}
+                    trailingColumns={trailingColumns}
+                    statusPending={patchCase.isPending && patchCase.variables?.caseId === row.id}
+                    onStatusChange={(caseId, status) => patchCase.mutate({ caseId, status })}
+                    treeDepth={depth}
+                    childCount={childCount}
+                    treeView
+                  />
+                ))
+              ) : (
+                groupedRows.map((group) => group.label ? (
+                  <CaseGroup key={group.key} label={group.label} count={group.rows.length}>
+                    {group.rows.map((row) => (
+                      <CaseListRow
+                        key={row.id}
+                        row={row}
+                        projectName={row.projectId ? projectName.get(row.projectId) ?? null : null}
+                        visibleColumnSet={visibleColumnSet}
+                        trailingColumns={trailingColumns}
+                        statusPending={patchCase.isPending && patchCase.variables?.caseId === row.id}
+                        onStatusChange={(caseId, status) => patchCase.mutate({ caseId, status })}
+                      />
+                    ))}
+                  </CaseGroup>
+                ) : (
+                  <div key={group.key}>
+                    {group.rows.map((row) => (
+                      <CaseListRow
+                        key={row.id}
+                        row={row}
+                        projectName={row.projectId ? projectName.get(row.projectId) ?? null : null}
+                        visibleColumnSet={visibleColumnSet}
+                        trailingColumns={trailingColumns}
+                        statusPending={patchCase.isPending && patchCase.variables?.caseId === row.id}
+                        onStatusChange={(caseId, status) => patchCase.mutate({ caseId, status })}
+                      />
+                    ))}
+                  </div>
+                ))
+              )}
             </div>
           )}
         </>
