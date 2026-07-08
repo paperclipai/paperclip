@@ -2596,6 +2596,7 @@ export function SkillDetailPage({
   updateSettingsPending,
   onDelete,
   deletePending,
+  studioHref,
 }: {
   detail: CompanySkillDetail | null | undefined;
   catalogSource?: CatalogSkillSource | null;
@@ -2635,6 +2636,7 @@ export function SkillDetailPage({
   updateSettingsPending: boolean;
   onDelete: () => void;
   deletePending: boolean;
+  studioHref?: string;
 }) {
   const [diffOpen, setDiffOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2688,6 +2690,7 @@ export function SkillDetailPage({
   }
 
   const skill = detail;
+  const resolvedStudioHref = studioHref ?? `${skillRoute(skill, routeSkills ?? [skill])}/studio`;
   const source = sourceMeta(skill.sourceBadge, skill.sourceLabel);
   const SourceIcon = source.icon;
   const body = file?.markdown ? stripFrontmatter(file.content) : file?.content ?? "";
@@ -3053,6 +3056,12 @@ export function SkillDetailPage({
               "Installs" counts agents that currently have this skill attached
               (PAP-10907); stars and fork are interactive. */}
           <div className="flex flex-wrap items-center justify-end gap-1">
+            <Button variant="outline" size="sm" asChild>
+              <Link to={resolvedStudioHref}>
+                <FlaskConical className="mr-1.5 h-3.5 w-3.5" />
+                Open in Studio
+              </Link>
+            </Button>
             <div className="flex items-center overflow-hidden rounded-md border border-border">
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -4706,6 +4715,7 @@ export function CompanySkills() {
           updateSettingsPending={updateSkillSettings.isPending}
           onDelete={openDeleteDialog}
           deletePending={deleteSkill.isPending}
+          studioHref={`${routeForSkillId(selectedSkillId)}/studio`}
         />
       ) : selectedCatalogRef ? (
         // Catalog / optional / bundled skills open as a regular full page in the

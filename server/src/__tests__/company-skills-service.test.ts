@@ -344,6 +344,72 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await expect(svc.categoryCounts(companyId)).resolves.toEqual([]);
   });
 
+  it("resolves detail by unique skill slug for Studio deep links", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const skill = await svc.createLocalSkill(companyId, {
+      name: "Paperclip Blog Cover Image",
+      slug: "paperclip-blog-cover-image",
+      markdown: "# Paperclip Blog Cover Image\n",
+    });
+
+    await expect(svc.detail(companyId, "paperclip-blog-cover-image")).resolves.toMatchObject({
+      id: skill.id,
+      slug: "paperclip-blog-cover-image",
+      name: "Paperclip Blog Cover Image",
+    });
+  });
+
+  it("does not resolve ambiguous skill slugs", async () => {
+    const companyId = randomUUID();
+    const skillA = randomUUID();
+    const skillB = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySkills).values([
+      {
+        id: skillA,
+        companyId,
+        key: `company/${companyId}/duplicate-a`,
+        slug: "duplicate",
+        name: "Duplicate A",
+        markdown: "# Duplicate A\n",
+        sourceType: "local_path",
+        sourceLocator: null,
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+        metadata: { sourceKind: "local_path" },
+      },
+      {
+        id: skillB,
+        companyId,
+        key: `company/${companyId}/duplicate-b`,
+        slug: "duplicate",
+        name: "Duplicate B",
+        markdown: "# Duplicate B\n",
+        sourceType: "local_path",
+        sourceLocator: null,
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+        metadata: { sourceKind: "local_path" },
+      },
+    ]);
+
+    await expect(svc.detail(companyId, "duplicate")).resolves.toBeNull();
+  });
+
   it("creates a fork from the creation flow with copied files and lineage", async () => {
     const companyId = randomUUID();
     const sourceSkillId = randomUUID();

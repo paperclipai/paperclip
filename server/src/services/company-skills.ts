@@ -75,7 +75,7 @@ import type {
   CompanySkillVersionCreateRequest,
   CompanySkillVersionFileInventoryEntry,
 } from "@paperclipai/shared";
-import { normalizeAgentUrlKey, parseFrontmatterMarkdown } from "@paperclipai/shared";
+import { isUuidLike, normalizeAgentUrlKey, parseFrontmatterMarkdown } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
@@ -2524,6 +2524,20 @@ export function companySkillService(db: Db) {
     return row ? toCompanySkill(row) : null;
   }
 
+  async function getBySlugIfUnique(companyId: string, slug: string) {
+    const rows = await db
+      .select(selectCompanySkillColumns())
+      .from(companySkills)
+      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.slug, slug)));
+    return rows.length === 1 ? toCompanySkill(rows[0]!) : null;
+  }
+
+  async function getByRouteRef(companyId: string, ref: string) {
+    return (isUuidLike(ref) ? await getById(companyId, ref) : null)
+      ?? await getBySlugIfUnique(companyId, ref)
+      ?? await getByKey(companyId, ref);
+  }
+
   async function getVersion(companyId: string, skillId: string, versionId: string): Promise<CompanySkillVersion | null> {
     const row = await db
       .select()
@@ -2658,7 +2672,7 @@ export function companySkillService(db: Db) {
 
   async function detail(companyId: string, id: string, actor?: SkillActor | null): Promise<CompanySkillDetail | null> {
     await ensureSkillInventoryCurrent(companyId);
-    const skill = await getById(companyId, id);
+    const skill = await getByRouteRef(companyId, id);
     if (!skill) return null;
     const usedByAgents = await usage(companyId, skill.key);
     const existingForks = await existingForkSummaries(companyId, skill.id, actor);
@@ -2667,7 +2681,7 @@ export function companySkillService(db: Db) {
       usedByAgents.length,
       usedByAgents,
       await getCurrentVersion(skill),
-      await isStarredByActor(companyId, id, actor),
+      await isStarredByActor(companyId, skill.id, actor),
       existingForks,
     );
   }
@@ -5328,6 +5342,7 @@ export function companySkillService(db: Db) {
     listFull,
     getById,
     getByKey,
+    getByRouteRef,
     resolveRequestedSkillKeys: async (companyId: string, requestedReferences: string[]) => {
       const skills = await listFull(companyId);
       return resolveRequestedSkillKeysOrThrow(skills, requestedReferences);
