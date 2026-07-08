@@ -1,4 +1,5 @@
 import type {
+  CompanySkillTestInput,
   CompanySkillTestRun,
   CompanySkillTestRunCreateRequest,
   CompanySkillTestRunDetail,
@@ -128,6 +129,80 @@ export function evaluateRunGate(input: RunGateInput): RunGateResult {
     return { disabled: true, reason: "A run is already in progress" };
   }
   return { disabled: false, reason: null };
+}
+
+// ---------------------------------------------------------------------------
+// Saved input editor state
+// ---------------------------------------------------------------------------
+
+export interface SavedInputDraftState {
+  inputId: string | null;
+  draft: string;
+  baselineContent: string;
+}
+
+export const EMPTY_SAVED_INPUT_DRAFT_STATE: SavedInputDraftState = {
+  inputId: null,
+  draft: "",
+  baselineContent: "",
+};
+
+/**
+ * Keep the saved-input editor synchronized with the selected input record while
+ * preserving local dirty edits across background refetches. This covers the
+ * deep-link case where `selectedInputId` is already set before the input rows
+ * arrive, and the normal switch-input case where the selected row changes.
+ */
+export function syncSavedInputDraftState(
+  previous: SavedInputDraftState,
+  selectedInput: Pick<CompanySkillTestInput, "id" | "content"> | null,
+): SavedInputDraftState {
+  if (!selectedInput) {
+    return previous.inputId === null
+      ? previous
+      : EMPTY_SAVED_INPUT_DRAFT_STATE;
+  }
+
+  if (previous.inputId !== selectedInput.id) {
+    return {
+      inputId: selectedInput.id,
+      draft: selectedInput.content,
+      baselineContent: selectedInput.content,
+    };
+  }
+
+  if (previous.baselineContent === selectedInput.content) {
+    return previous;
+  }
+
+  if (previous.draft === previous.baselineContent) {
+    return {
+      inputId: selectedInput.id,
+      draft: selectedInput.content,
+      baselineContent: selectedInput.content,
+    };
+  }
+
+  return previous;
+}
+
+export function selectedSavedInputDraft(
+  state: SavedInputDraftState,
+  selectedInput: Pick<CompanySkillTestInput, "id" | "content"> | null,
+): string {
+  if (!selectedInput) return "";
+  return state.inputId === selectedInput.id ? state.draft : selectedInput.content;
+}
+
+export function savedInputDraftDirty(
+  state: SavedInputDraftState,
+  selectedInput: Pick<CompanySkillTestInput, "id" | "content"> | null,
+): boolean {
+  return Boolean(
+    selectedInput
+    && state.inputId === selectedInput.id
+    && state.draft !== selectedInput.content,
+  );
 }
 
 // ---------------------------------------------------------------------------
