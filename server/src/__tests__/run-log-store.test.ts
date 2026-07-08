@@ -171,6 +171,36 @@ describe("run-log-store compression", () => {
     expect(res.content).toBe(raw);
   });
 
+  it("append after finalize is a no-op: returns 0, no raw recreated, gz unchanged", async () => {
+    const store = storeAt(base);
+    const { handle, raw } = await seedLines(store, 50);
+    const summary = await store.finalize(handle);
+    expect(summary.compressed).toBe(true);
+
+    const gzPath = path.resolve(base, summary.logRef);
+    const rawPath = path.resolve(base, handle.logRef);
+    const gzBefore = await fs.readFile(gzPath);
+
+    // A late runtime append (heartbeat released the service only after finalize).
+    const persisted = await store.append(handle, {
+      stream: "stdout",
+      chunk: "late byte after finalize should be dropped",
+      ts: new Date().toISOString(),
+    });
+    expect(persisted).toBe(0);
+
+    // The raw .ndjson must NOT be recreated (would be invisible stranded bytes).
+    await expect(fs.stat(rawPath)).rejects.toThrow();
+    // The gz content is byte-for-byte unchanged.
+    expect(await fs.readFile(gzPath)).toEqual(gzBefore);
+    // And a read still returns exactly the finalized content.
+    const res = await store.read(
+      { store: "local_file", logRef: summary.logRef },
+      { offset: 0, limitBytes: 10_000_000 },
+    );
+    expect(res.content).toBe(raw);
+  });
+
   it("compression disabled via env leaves raw file, compressed:false", async () => {
     process.env.PAPERCLIP_RUN_LOG_COMPRESS = "false";
     const store = storeAt(base);

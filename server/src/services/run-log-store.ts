@@ -70,6 +70,22 @@ function compressionEnabled(): boolean {
 }
 
 export function createLocalFileRunLogStore(basePath: string): RunLogStore {
+  // logRefs whose finalize() has begun. A finalized ref's raw `.ndjson` is
+  // gzipped and unlinked, so a late append() must NOT recreate/write it (that
+  // would strand invisible bytes: read() resolves the `.gz` first). Runtime
+  // services can still emit onLog appends after heartbeat calls finalize()
+  // (heartbeat releases runtime services only after finalizing), so we guard
+  // append() against it here.
+  //
+  // Accepted limitation: this Set lives only in-process. After a server restart
+  // it is empty, so a zombie appender could recreate a raw file for an
+  // already-finalized run. That raw file stays invisible (read() prefers the
+  // .gz) and is bounded by the infra janitor backstop — deliberate.
+  const finalizedRefs = new Set<string>();
+  // Refs we've already warned about appending-after-finalize, so the warn is
+  // emitted once per ref, not once per dropped chunk.
+  const appendAfterFinalizeWarned = new Set<string>();
+
   async function ensureDir(relativeDir: string) {
     const dir = resolveWithin(basePath, relativeDir);
     await fs.mkdir(dir, { recursive: true });
@@ -235,6 +251,16 @@ export function createLocalFileRunLogStore(basePath: string): RunLogStore {
 
     async append(handle, event) {
       if (handle.store !== "local_file") return 0;
+      if (finalizedRefs.has(handle.logRef)) {
+        if (!appendAfterFinalizeWarned.has(handle.logRef)) {
+          appendAfterFinalizeWarned.add(handle.logRef);
+          logger.warn(
+            { logRef: handle.logRef },
+            "run-log: append after finalize ignored; log is already compressed/sealed",
+          );
+        }
+        return 0;
+      }
       const absPath = resolveWithin(basePath, handle.logRef);
       const line = JSON.stringify({
         ts: event.ts,
@@ -247,6 +273,9 @@ export function createLocalFileRunLogStore(basePath: string): RunLogStore {
     },
 
     async finalize(handle) {
+      // Mark finalized at the START (before gzip/unlink) so any append() racing
+      // the compression is dropped rather than recreating the raw file.
+      finalizedRefs.add(handle.logRef);
       if (handle.store !== "local_file") {
         return { bytes: 0, compressed: false, logRef: handle.logRef };
       }

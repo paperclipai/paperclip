@@ -69,6 +69,18 @@ function compressionEnabled(): boolean {
 }
 
 function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceOperationLogStore {
+  // logRefs whose finalize() has begun. A finalized ref's raw `.ndjson` is
+  // gzipped and unlinked, so a late append() must NOT recreate/write it (that
+  // would strand invisible bytes: read() resolves the `.gz` first).
+  //
+  // Accepted limitation: this Set lives only in-process. After a restart it is
+  // empty, so a zombie appender could recreate an already-finalized run's raw
+  // file; it stays invisible (read() prefers the .gz) and is bounded by the
+  // infra janitor backstop — deliberate.
+  const finalizedRefs = new Set<string>();
+  // Warn once per ref, not once per dropped chunk.
+  const appendAfterFinalizeWarned = new Set<string>();
+
   async function ensureDir(relativeDir: string) {
     const dir = resolveWithin(basePath, relativeDir);
     await fs.mkdir(dir, { recursive: true });
@@ -218,6 +230,16 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
 
     async append(handle, event) {
       if (handle.store !== "local_file") return;
+      if (finalizedRefs.has(handle.logRef)) {
+        if (!appendAfterFinalizeWarned.has(handle.logRef)) {
+          appendAfterFinalizeWarned.add(handle.logRef);
+          logger.warn(
+            { logRef: handle.logRef },
+            "workspace-operation-log: append after finalize ignored; log is already compressed/sealed",
+          );
+        }
+        return;
+      }
       const absPath = resolveWithin(basePath, handle.logRef);
       const line = JSON.stringify({
         ts: event.ts,
@@ -228,6 +250,9 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
     },
 
     async finalize(handle) {
+      // Mark finalized at the START (before gzip/unlink) so a racing append() is
+      // dropped rather than recreating the raw file.
+      finalizedRefs.add(handle.logRef);
       if (handle.store !== "local_file") {
         return { bytes: 0, compressed: false, logRef: handle.logRef };
       }
