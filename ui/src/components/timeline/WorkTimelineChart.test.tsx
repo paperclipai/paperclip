@@ -46,6 +46,12 @@ function renderChart(
   });
 }
 
+async function flushTimelineEffects(count = 5) {
+  for (let index = 0; index < count; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
 function timelineSample(): WorkTimelineResult {
   return {
     actors: [
@@ -148,6 +154,28 @@ describe("WorkTimelineChart", () => {
     });
 
     expect(container.querySelector("[data-testid='work-timeline-actor-gutter']")?.textContent).toContain("CodexCoder");
+  });
+
+  it("reports the currently visible time window when the chart scrolls", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(640);
+    const onVisibleWindowChange = vi.fn();
+    const data = timelineSample();
+    renderChart(data, { onVisibleWindowChange });
+
+    await flushTimelineEffects();
+
+    const scroller = container.querySelector<HTMLElement>("[data-testid='work-timeline-scroll']")!;
+    expect(onVisibleWindowChange).toHaveBeenCalled();
+
+    flushSync(() => {
+      scroller.scrollLeft = 0;
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await flushTimelineEffects();
+
+    const lastCall = onVisibleWindowChange.mock.calls.at(-1)?.[0];
+    expect(lastCall?.fromMs).toBe(new Date(data.window.from).getTime());
+    expect(lastCall?.toMs).toBeCloseTo(new Date("2026-07-02T01:00:00.000Z").getTime(), -3);
   });
 
   it("renders configured agent icons in the actor gutter instead of generated initials", () => {
