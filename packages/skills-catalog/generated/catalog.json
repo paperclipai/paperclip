@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-07-07T12:23:29.613Z",
+  "generatedAt": "2026-07-08T17:35:21.619Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -72,6 +72,41 @@
         }
       ],
       "contentHash": "sha256:88dc13560371fb364963782cb4f6eeb4090fcde92ee3774479428ed6b90e11c1"
+    },
+    {
+      "id": "paperclipai:bundled:paperclip-operations:reflection-coach",
+      "key": "paperclipai/bundled/paperclip-operations/reflection-coach",
+      "kind": "bundled",
+      "category": "paperclip-operations",
+      "slug": "reflection-coach",
+      "name": "reflection-coach",
+      "description": "Reflect on another agent's recent execution record, name evidence-backed patterns, and propose the smallest durable change to their AGENTS.md, a reusable skill, or a tool description — as a reviewable, interaction-gated proposal, never a same-run hot-swap.",
+      "path": "catalog/bundled/paperclip-operations/reflection-coach",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "manager",
+        "general"
+      ],
+      "requires": [],
+      "tags": [
+        "paperclip",
+        "reflection",
+        "coaching",
+        "agents",
+        "skills"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 11240,
+          "sha256": "6318fabbcb44f6c6532f4785dbd6b91425dcadb707508cc4bc9cc58bdab92758"
+        }
+      ],
+      "contentHash": "sha256:cfae2e0cdb53edb3af88bb305c712f1e044a3d9cd4230eba64a0b40301e827db"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:task-planning",
