@@ -665,6 +665,7 @@ type GitWorktreeBranchCoherenceResult = {
   branchName: string | null;
   reconciledForward: boolean;
   pendingForwardBranchReconcile?: PendingForwardBranchReconcile | null;
+  warnings: string[];
 };
 
 export type PendingForwardBranchReconcile = {
@@ -791,9 +792,30 @@ async function inspectGitWorktreeBranchIncoherence(input: {
     sameHead,
     ancestryVerdict,
   });
-  const eligible = cleanliness === "clean" && expectedBranchExists && sameHead && registeredBranchMatchesHead;
+  const canCheckoutRecordedBranch =
+    cleanliness === "clean" && expectedBranchExists && sameHead && registeredBranchMatchesHead;
+  const canAdoptForwardActualBranch =
+    cleanliness === "clean" &&
+    expectedBranchExists &&
+    actualBranchExists === true &&
+    ancestryVerdict === "ancestor" &&
+    !sameHead &&
+    registeredBranchMatchesHead;
+  const canAttachRecordedBranchToDetachedHead =
+    cleanliness === "clean" &&
+    expectedBranchExists &&
+    input.actualBranchName === null &&
+    ancestryVerdict === "ancestor" &&
+    !sameHead &&
+    registeredBranchMatchesHead;
+  const eligible =
+    canCheckoutRecordedBranch || canAdoptForwardActualBranch || canAttachRecordedBranchToDetachedHead;
   const safeRepairReason = eligible
-    ? "clean worktree and expected branch points at the current HEAD"
+    ? canCheckoutRecordedBranch
+      ? "clean worktree and expected branch points at the current HEAD"
+      : canAdoptForwardActualBranch
+        ? "clean worktree and checked-out branch is forward of the recorded branch"
+        : "clean detached worktree HEAD is forward of the recorded branch"
     : cleanliness !== "clean"
       ? "worktree is not clean"
       : !registered
@@ -1025,17 +1047,18 @@ export async function ensureGitWorktreeBranchCoherent(input: {
   actualBranchName?: string | null;
   heartbeatRunId?: string | null;
   enableWorkspaceBranchReconcileForward?: boolean;
+  persistForwardReconcile?: boolean;
   reconcileOperationPhase?: "worktree_prepare" | "workspace_finalize";
   recorder?: WorkspaceOperationRecorder | null;
 }): Promise<GitWorktreeBranchCoherenceResult> {
   const expectedBranchName = input.expectedBranchName?.trim();
-  if (!expectedBranchName) return { branchName: null, reconciledForward: false };
+  if (!expectedBranchName) return { branchName: null, reconciledForward: false, warnings: [] };
 
   const currentBranch = input.actualBranchName !== undefined
     ? input.actualBranchName
     : await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], input.worktreePath).catch(() => null);
   if (currentBranch === expectedBranchName) {
-    return { branchName: expectedBranchName, reconciledForward: false };
+    return { branchName: expectedBranchName, reconciledForward: false, warnings: [] };
   }
 
   const evidence = await inspectGitWorktreeBranchIncoherence({
@@ -1053,7 +1076,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
     currentBranch
   ) {
     const reason = "Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch.";
-    if (input.executionWorkspaceId) {
+    if (input.executionWorkspaceId && input.persistForwardReconcile !== false) {
       if (!input.db) {
         evidence.safeRepair.reason = "forward reconciliation requires database access to update the execution workspace record";
         throw branchIncoherenceValidationFailure(evidence);
@@ -1107,7 +1130,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
           auditCommentId: result.auditCommentId,
           recoveryActionId: result.recoveryAction?.id ?? null,
         });
-        return { branchName: result.inspection.toBranch, reconciledForward: true };
+        return { branchName: result.inspection.toBranch, reconciledForward: true, warnings: [] };
       } catch (error) {
         evidence.safeRepair.reason =
           `forward reconciliation failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -1122,6 +1145,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
     return {
       branchName: currentBranch,
       reconciledForward: true,
+      warnings: [],
       pendingForwardBranchReconcile: {
         recordedBranchName: expectedBranchName,
         adoptedBranchName: currentBranch,
@@ -1136,6 +1160,75 @@ export async function ensureGitWorktreeBranchCoherent(input: {
   }
 
   evidence.safeRepair.attempted = true;
+  const warningPrefix =
+    `Execution workspace branch metadata was self-healed from "${expectedBranchName}" to "${formatBranchForMessage(currentBranch)}" at ${input.worktreePath}.`;
+  if (
+    currentBranch &&
+    evidence.provenance.actualBranchExists === true &&
+    evidence.provenance.ancestryVerdict === "ancestor" &&
+    !evidence.provenance.sameHead
+  ) {
+    evidence.safeRepair.succeeded = true;
+    evidence.safeRepair.reason = "clean worktree adopted the checked-out branch because it is forward of the recorded branch";
+    return {
+      branchName: currentBranch,
+      reconciledForward: false,
+      warnings: [
+        `${warningPrefix} The checked-out branch contains the recorded branch plus newer commits, so Paperclip adopted it for subsequent runs.`,
+      ],
+    };
+  }
+
+  if (
+    currentBranch === null &&
+    evidence.provenance.ancestryVerdict === "ancestor" &&
+    !evidence.provenance.sameHead &&
+    evidence.provenance.actualHeadSha
+  ) {
+    try {
+      await recordGitOperation(input.recorder, {
+        phase: "worktree_prepare",
+        args: ["checkout", "-B", expectedBranchName, evidence.provenance.actualHeadSha],
+        cwd: input.worktreePath,
+        metadata: {
+          repoRoot: input.repoRoot,
+          worktreePath: input.worktreePath,
+          expectedBranchName,
+          actualBranchName: currentBranch,
+          branchIncoherenceRepair: true,
+          detachedHeadRepair: true,
+          fingerprint: evidence.fingerprint,
+          sourceIssueId: evidence.sourceIssueId,
+          executionWorkspaceId: evidence.executionWorkspaceId,
+        },
+        successMessage: `Reattached detached git worktree HEAD at ${input.worktreePath} to ${expectedBranchName}\n`,
+        failureLabel: `git checkout -B ${expectedBranchName} ${formatShortSha(evidence.provenance.actualHeadSha)}`,
+      });
+    } catch (error) {
+      evidence.safeRepair.succeeded = false;
+      evidence.safeRepair.reason = `safe detached HEAD reattachment failed: ${error instanceof Error ? error.message : String(error)}`;
+      throw branchIncoherenceValidationFailure(evidence);
+    }
+
+    const repairedBranch = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], input.worktreePath)
+      .catch(() => null);
+    if (repairedBranch !== expectedBranchName) {
+      evidence.safeRepair.succeeded = false;
+      evidence.safeRepair.reason = `reattach completed but HEAD is ${formatBranchForMessage(repairedBranch)}`;
+      throw branchIncoherenceValidationFailure(evidence);
+    }
+
+    evidence.safeRepair.succeeded = true;
+    evidence.safeRepair.reason = "clean detached worktree HEAD was reattached to the recorded branch";
+    return {
+      branchName: expectedBranchName,
+      reconciledForward: false,
+      warnings: [
+        `${warningPrefix} The detached HEAD contained the recorded branch plus newer commits, so Paperclip moved the recorded branch to that HEAD.`,
+      ],
+    };
+  }
+
   try {
     await recordGitOperation(input.recorder, {
       phase: "worktree_prepare",
@@ -1170,7 +1263,13 @@ export async function ensureGitWorktreeBranchCoherent(input: {
 
   evidence.safeRepair.succeeded = true;
   evidence.safeRepair.reason = "clean worktree checked out the recorded branch";
-  return { branchName: expectedBranchName, reconciledForward: false };
+  return {
+    branchName: expectedBranchName,
+    reconciledForward: false,
+    warnings: [
+      `Execution workspace branch metadata was self-healed by checking out recorded branch "${expectedBranchName}" at ${input.worktreePath}.`,
+    ],
+  };
 }
 
 // Resolve the authoritative base ref for a fresh worktree. A configured local
@@ -1919,12 +2018,12 @@ export async function realizeExecutionWorkspace(input: {
 
   await fs.mkdir(worktreeParentDir, { recursive: true });
 
-  async function reuseExistingWorktree(reusablePath: string) {
+  async function reuseExistingWorktree(reusablePath: string, effectiveBranchName = branchName, extraWarnings: string[] = []) {
     const refresh = currentBaseRefSha
       ? await refreshUnstartedWorktreeToBase({
           repoRoot,
           worktreePath: reusablePath,
-          branchName,
+          branchName: effectiveBranchName,
           baseRef,
           currentBaseRefSha,
           recorder: input.recorder ?? null,
@@ -1945,7 +2044,7 @@ export async function realizeExecutionWorkspace(input: {
         metadata: {
           repoRoot,
           worktreePath: reusablePath,
-          branchName,
+          branchName: effectiveBranchName,
           baseRef,
           currentBaseRefSha: baseDrift.currentBaseRefSha,
           branchBaseRefSha: baseDrift.branchBaseRefSha,
@@ -1964,7 +2063,7 @@ export async function realizeExecutionWorkspace(input: {
       base: input.base,
       repoRoot,
       worktreePath: reusablePath,
-      branchName,
+      branchName: effectiveBranchName,
       issue: input.issue,
       agent: input.agent,
       created: false,
@@ -1975,9 +2074,9 @@ export async function realizeExecutionWorkspace(input: {
       repoRef: baseRef,
       strategy: "git_worktree" as const,
       cwd: reusablePath,
-      branchName,
+      branchName: effectiveBranchName,
       worktreePath: reusablePath,
-      warnings: [...baseRefreshWarnings, ...baseDrift.warnings],
+      warnings: [...extraWarnings, ...baseRefreshWarnings, ...baseDrift.warnings],
       created: false,
       baseRefSha: refresh.baseRefSha ?? baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha,
       pendingForwardBranchReconcile,
@@ -2004,35 +2103,43 @@ export async function realizeExecutionWorkspace(input: {
         reconcileOperationPhase: "worktree_prepare",
         recorder: input.recorder ?? null,
       });
-      if (coherence.reconciledForward && coherence.branchName) {
-        branchName = coherence.branchName;
+      const effectiveBranchName = coherence.branchName ?? branchName;
+      if (coherence.reconciledForward) {
+        branchName = effectiveBranchName;
         pendingForwardBranchReconcile = coherence.pendingForwardBranchReconcile ?? null;
       }
-      return await validateLinkedGitWorktree({
+      const nextValidation = await validateLinkedGitWorktree({
         repoRoot,
         worktreePath: reusablePath,
-        expectedBranchName: branchName,
+        expectedBranchName: effectiveBranchName,
       }).catch(() => null);
+      return {
+        validation: nextValidation,
+        branchName: effectiveBranchName,
+        warnings: coherence.warnings,
+      };
     }
-    return validation;
+    return { validation, branchName, warnings: [] };
   }
 
   const existingWorktree = await directoryExists(worktreePath);
   if (existingWorktree) {
-    const validation = await validateReusableWorktree(worktreePath);
-    if (validation?.valid) {
-      return await reuseExistingWorktree(worktreePath);
+    const reusable = await validateReusableWorktree(worktreePath);
+    if (reusable.validation?.valid) {
+      return await reuseExistingWorktree(worktreePath, reusable.branchName, reusable.warnings);
     }
+    const validation = reusable.validation;
     const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
     throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
   }
 
   const registeredBranchWorktree = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
   if (registeredBranchWorktree) {
-    const validation = await validateReusableWorktree(registeredBranchWorktree);
-    if (validation?.valid) {
-      return await reuseExistingWorktree(registeredBranchWorktree);
+    const reusable = await validateReusableWorktree(registeredBranchWorktree);
+    if (reusable.validation?.valid) {
+      return await reuseExistingWorktree(registeredBranchWorktree, reusable.branchName, reusable.warnings);
     }
+    const validation = reusable.validation;
     const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
     throw new Error(`Registered worktree for branch "${branchName}" at "${registeredBranchWorktree}" is not reusable${reason}.`);
   }
@@ -2167,6 +2274,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   if (await directoryExists(cwd)) {
     const reuseBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
     const reuseWorktreePath = realized.worktreePath ?? cwd;
+    const repairWarnings: string[] = [];
     if (await isGitCheckout(reuseWorktreePath)) {
       const coherence = await ensureGitWorktreeBranchCoherent({
         db: input.db ?? null,
@@ -2177,12 +2285,17 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
         executionWorkspaceId: input.workspace.id ?? null,
         heartbeatRunId: input.heartbeatRunId ?? null,
         enableWorkspaceBranchReconcileForward: input.enableWorkspaceBranchReconcileForward === true,
+        persistForwardReconcile: false,
         reconcileOperationPhase: "worktree_prepare",
         recorder: input.recorder ?? null,
       });
-      if (coherence.reconciledForward && coherence.branchName) {
+      if (coherence.branchName) {
         realized.branchName = coherence.branchName;
       }
+      if (coherence.reconciledForward) {
+        realized.pendingForwardBranchReconcile = coherence.pendingForwardBranchReconcile ?? null;
+      }
+      repairWarnings.push(...coherence.warnings);
     }
     const validation = await validateLinkedGitWorktree({
       repoRoot,
@@ -2224,7 +2337,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
       recordedBaseRefSha,
       skipRefresh: true,
     });
-    realized.warnings = [...baseRefreshWarnings, ...baseDrift.warnings];
+    realized.warnings = [...repairWarnings, ...baseRefreshWarnings, ...baseDrift.warnings];
     realized.baseRefSha = refresh.baseRefSha ?? recordedBaseRefSha ?? baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha;
     if (provisionCommand) {
       await provisionExecutionWorktree({
@@ -4133,6 +4246,9 @@ export function buildWorkspaceReadyComment(input: {
   lines.push(`- CWD: \`${input.workspace.cwd}\``);
   if (input.workspace.worktreePath && input.workspace.worktreePath !== input.workspace.cwd) {
     lines.push(`- Worktree: \`${input.workspace.worktreePath}\``);
+  }
+  for (const warning of input.workspace.warnings) {
+    lines.push(`- Warning: ${warning}`);
   }
   for (const service of input.runtimeServices) {
     const detail = service.url ? `${service.serviceName}: ${service.url}` : `${service.serviceName}: running`;

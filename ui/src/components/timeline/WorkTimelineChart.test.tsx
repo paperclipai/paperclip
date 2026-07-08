@@ -139,6 +139,8 @@ describe("WorkTimelineChart", () => {
     expect(gutter?.getAttribute("width")).toBe("176");
     expect(chartSvg?.getAttribute("width")).not.toBe(gutter?.getAttribute("width"));
     expect(gutter?.textContent).toContain("CodexCoder");
+    expect(gutter?.textContent).not.toContain("agent");
+    expect(gutter?.textContent).not.toContain("×");
 
     flushSync(() => {
       scroller!.scrollLeft = 10_000;
@@ -323,7 +325,7 @@ describe("WorkTimelineChart", () => {
     const onZoomScaleChange = vi.fn();
     renderChart(timelineSample(), { onZoomScaleChange });
 
-    const rightHandle = container.querySelector<SVGRectElement>("[data-testid='timeline-minimap-right-handle']")!;
+    const rightHandle = container.querySelector<SVGGElement>("[data-testid='timeline-minimap-right-handle']")!;
     const minimap = rightHandle.ownerSVGElement!;
     vi.spyOn(minimap, "getBoundingClientRect").mockReturnValue({
       x: 0,
@@ -344,6 +346,18 @@ describe("WorkTimelineChart", () => {
     });
 
     expect(onZoomScaleChange).toHaveBeenCalled();
+  });
+
+  it("shows grab-handle affordances on minimap selection edges", () => {
+    renderChart(timelineSample(), { onZoomScaleChange: vi.fn() });
+
+    const leftHandle = container.querySelector<SVGGElement>("[data-testid='timeline-minimap-left-handle']")!;
+    const rightHandle = container.querySelector<SVGGElement>("[data-testid='timeline-minimap-right-handle']")!;
+
+    expect(leftHandle.getAttribute("class")).toContain("cursor-grab");
+    expect(rightHandle.getAttribute("class")).toContain("cursor-grab");
+    expect(leftHandle.querySelectorAll("line")).toHaveLength(3);
+    expect(leftHandle.textContent).toContain("Drag left edge");
   });
 
   it("cleans up chart drag listeners when unmounted mid-drag", () => {
@@ -383,7 +397,7 @@ describe("WorkTimelineChart", () => {
     const remove = vi.spyOn(document, "removeEventListener");
     renderChart(timelineSample(), { onZoomScaleChange: vi.fn() });
 
-    const rightHandle = container.querySelector<SVGRectElement>("[data-testid='timeline-minimap-right-handle']")!;
+    const rightHandle = container.querySelector<SVGGElement>("[data-testid='timeline-minimap-right-handle']")!;
     const minimap = rightHandle.ownerSVGElement!;
     vi.spyOn(minimap, "getBoundingClientRect").mockReturnValue({
       x: 0,

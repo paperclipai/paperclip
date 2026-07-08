@@ -175,6 +175,7 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
         invocationSource: "issue_assigned",
         startedAt: new Date("2026-03-01T12:00:00Z"),
         finishedAt: null,
+        usageJson: { inputTokens: 120, cachedInputTokens: 30, outputTokens: 50 },
         contextSnapshot: { issueId: childIssueId },
       },
       {
@@ -237,7 +238,13 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
 
     expect(result.actors.map((actor) => actor.name)).toEqual(expect.arrayContaining(["Coder", "QA", "User One"]));
     expect(result.spans).toEqual(expect.arrayContaining([
-      expect.objectContaining({ runId: contextRunId, issueId: childIssueId, end: null, status: "running" }),
+      expect.objectContaining({
+        runId: contextRunId,
+        issueId: childIssueId,
+        end: null,
+        status: "running",
+        usage: { inputTokens: 120, cachedInputTokens: 30, outputTokens: 50, totalTokens: 200 },
+      }),
       expect.objectContaining({ runId: activityRunId, issueId: parentIssueId, status: "completed" }),
     ]));
     expect(result.events.map((event) => event.kind)).toEqual(expect.arrayContaining([

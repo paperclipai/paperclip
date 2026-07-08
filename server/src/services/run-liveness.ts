@@ -309,6 +309,10 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
     actionability,
   });
 
+  if (input.runStatus === "interrupted") {
+    return output("needs_followup", input.errorCode ? `Run interrupted (${input.errorCode})` : "Run interrupted");
+  }
+
   if (input.runStatus !== "succeeded") {
     return output("failed", input.errorCode ? `Run ended with ${input.runStatus} (${input.errorCode})` : `Run ended with ${input.runStatus}`);
   }

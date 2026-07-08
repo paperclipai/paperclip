@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AcpRuntimeOptions } from "acpx/runtime";
+import { DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC } from "@paperclipai/adapter-utils/execution-target";
 import { createAcpxLocalExecutor } from "./execute.js";
 
 const tempRoots: string[] = [];
@@ -62,6 +63,7 @@ async function runExecutor(
   options: {
     context?: Record<string, unknown>;
     executionTransport?: Record<string, unknown>;
+    executionTarget?: Record<string, unknown>;
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
@@ -84,6 +86,7 @@ async function runExecutor(
       config,
       context: options.context ?? {},
       executionTransport: options.executionTransport,
+      executionTarget: options.executionTarget,
       onLog: async (stream: "stdout" | "stderr", text: string) => {
         logs.push({ stream, text });
       },
@@ -699,4 +702,186 @@ describe("acpx_local runtime skill isolation", () => {
 
     expect(await pathExists(path.join(cwd, ".claude", "settings.local.json"))).toBe(false);
   });
+});
+
+describe("acpx_local execution timeouts", () => {
+  it("applies the 4h sandbox backstop when timeoutSec is unset on a sandbox execution target", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    const { logs, runtimeOptions } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd },
+      {
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "acme-sandbox",
+          environmentId: "env-1",
+          leaseId: "lease-1",
+          remoteCwd: cwd,
+        },
+      },
+    );
+
+    // The sandbox default flows into the ACPX runtime wall-clock timer.
+    expect(runtimeOptions[0]?.timeoutMs).toBe(DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC * 1000);
+    // The effective timeout and its source are stated at run start so a later
+    // timeout is diagnosable from the run log alone.
+    const startLine = logs.find(
+      (entry) => entry.stream === "stderr" && entry.text.includes("Adapter execution timeout:"),
+    );
+    expect(startLine).toBeTruthy();
+    expect(startLine!.text).toContain(
+      `[paperclip] Adapter execution timeout: timeoutSec=${DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC} ` +
+        "(sandbox default; set adapterConfig.timeoutSec to override).",
+    );
+  });
+
+  it("keeps local execution unlimited by default and logs the unlimited timeout", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    const { logs, runtimeOptions } = await runExecutor({
+      agent: "custom",
+      agentCommand: "node ./fake-acp.js",
+      stateDir,
+      cwd,
+    });
+
+    expect(runtimeOptions[0]?.timeoutMs).toBeUndefined();
+    const startLine = logs.find(
+      (entry) => entry.stream === "stderr" && entry.text.includes("Adapter execution timeout:"),
+    );
+    expect(startLine).toBeTruthy();
+    expect(startLine!.text).toContain("Adapter execution timeout: none");
+  });
+
+  it("prefers a configured timeoutSec over the sandbox default", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    const { logs, runtimeOptions } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd, timeoutSec: 90 },
+      {
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          remoteCwd: cwd,
+        },
+      },
+    );
+
+    expect(runtimeOptions[0]?.timeoutMs).toBe(90 * 1000);
+    const startLine = logs.find(
+      (entry) => entry.stream === "stderr" && entry.text.includes("Adapter execution timeout:"),
+    );
+    expect(startLine!.text).toContain(
+      "Adapter execution timeout: timeoutSec=90 (configured via adapterConfig.timeoutSec; set adapterConfig.timeoutSec to override).",
+    );
+  });
+
+  it("keeps the sandbox backstop for an explicit timeoutSec of 0 but honors a negative opt-out", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+    const sandboxContext = {
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: cwd,
+      },
+    };
+
+    // The config UI persists the schema default of 0 for untouched fields, so
+    // an explicit 0 cannot mean "no timeout" — it keeps the 4h backstop.
+    const explicitZero = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd, timeoutSec: 0 },
+      sandboxContext,
+    );
+    expect(explicitZero.runtimeOptions[0]?.timeoutMs).toBe(
+      DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC * 1000,
+    );
+
+    // A negative timeoutSec is the documented opt-out from any adapter
+    // wall-clock timeout, sandbox targets included.
+    const negativeOptOut = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd, timeoutSec: -1 },
+      sandboxContext,
+    );
+    expect(negativeOptOut.runtimeOptions[0]?.timeoutMs).toBeUndefined();
+    const startLine = negativeOptOut.logs.find(
+      (entry) => entry.stream === "stderr" && entry.text.includes("Adapter execution timeout:"),
+    );
+    expect(startLine!.text).toContain(
+      "Adapter execution timeout: none (explicitly disabled via adapterConfig.timeoutSec; " +
+        "set it to a positive value to add one).",
+    );
+  });
+
+  it("reports a self-describing timeout error when the wall-clock timer kills a turn", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    const cancelReasons: string[] = [];
+    let releaseTurn: (() => void) | null = null;
+    const turnCancelled = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+
+    const execute = createAcpxLocalExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          // Never yields on its own: only the Paperclip wall-clock timer's
+          // cancel unblocks the turn, simulating a hung run.
+          events: (async function* () {
+            await turnCancelled;
+          })(),
+          result: turnCancelled.then(() => ({ status: "cancelled", stopReason: "cancelled" })),
+          cancel: async ({ reason }: { reason: string }) => {
+            cancelReasons.push(reason);
+            releaseTurn?.();
+          },
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-timeout-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd,
+        timeoutSec: 1,
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    const expectedMessage =
+      "Run exceeded the adapter execution timeout (timeoutSec=1, configured via adapterConfig.timeoutSec). " +
+      "Set adapterConfig.timeoutSec to raise it.";
+    expect(result.timedOut).toBe(true);
+    expect(result.errorCode).toBe("acpx_timeout");
+    expect(result.errorMessage).toBe(expectedMessage);
+    expect(cancelReasons).toContain(expectedMessage);
+  }, 15_000);
 });

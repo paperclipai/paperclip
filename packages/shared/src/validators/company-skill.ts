@@ -73,6 +73,26 @@ export const companySkillUsageAgentSchema = z.object({
   versionId: z.string().uuid().nullable(),
 });
 
+export const companySkillOriginalSummarySchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1),
+  slug: z.string().min(1),
+  sourceType: companySkillSourceTypeSchema,
+  sourceLocator: z.string().nullable(),
+  sourceRef: z.string().nullable(),
+});
+
+export const companySkillForkSummarySchema = companySkillOriginalSummarySchema.extend({
+  key: z.string().min(1),
+  forkedFromSkillId: z.string().uuid().nullable(),
+  forkedFromCompanyId: z.string().uuid().nullable(),
+  currentVersionId: z.string().uuid().nullable(),
+  createdByCurrentActor: z.boolean(),
+  diverged: z.boolean(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+});
+
 export const companySkillListQuerySchema = z.object({
   q: z.string().min(1).optional(),
   sort: companySkillListSortSchema.optional(),
@@ -100,6 +120,7 @@ export const companySkillVersionSchema = z.object({
 export const companySkillDetailSchema = companySkillSchema.extend({
   attachedAgentCount: z.number().int().nonnegative(),
   usedByAgents: z.array(companySkillUsageAgentSchema).default([]),
+  existingForks: z.array(companySkillForkSummarySchema).default([]),
   editable: z.boolean(),
   editableReason: z.string().nullable(),
   sourceLabel: z.string().nullable(),
@@ -144,7 +165,28 @@ export const companySkillForkSchema = z.object({
   name: z.string().min(1).nullable().optional(),
   slug: z.string().min(1).nullable().optional(),
   sharingScope: companySkillSharingScopeSchema.optional(),
+  reassignAgentIds: z.array(z.string().uuid()).optional(),
 }).default({});
+
+export const companySkillForkReassignmentSchema = z.object({
+  agentId: z.string().uuid(),
+  previousSkillKey: z.string().min(1),
+  nextSkillKey: z.string().min(1),
+});
+
+export const companySkillForkResultSchema = z.object({
+  skill: companySkillSchema,
+  original: companySkillOriginalSummarySchema,
+  reassignments: z.array(companySkillForkReassignmentSchema),
+});
+
+export const companySkillForkPrecheckResultSchema = z.object({
+  skillId: z.string().uuid(),
+  original: companySkillOriginalSummarySchema,
+  agentUsageCount: z.number().int().nonnegative(),
+  usedByAgents: z.array(companySkillUsageAgentSchema),
+  existingForks: z.array(companySkillForkSummarySchema),
+});
 
 export const companySkillUpdateSchema = z.object({
   description: z.string().nullable().optional(),

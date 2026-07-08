@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { agents, companies, companySkills, createDb } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -428,12 +429,24 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       authorUserId: "board",
     });
 
-    const dedicatedFork = await svc.forkSkill(
+    const dedicatedForkResult = await svc.forkSkill(
       companyId,
       sourceSkillId,
       { name: "Dedicated Fork", slug: "dedicated-fork", sharingScope: "private" },
       { type: "user", userId: "board" },
     );
+    const dedicatedFork = dedicatedForkResult.skill;
+    expect(dedicatedForkResult).toMatchObject({
+      original: {
+        id: sourceSkillId,
+        name: "Source Skill",
+        slug: "source-skill",
+        sourceType: "local_path",
+        sourceLocator: sourceSkillDir,
+        sourceRef: null,
+      },
+      reassignments: [],
+    });
     expect(dedicatedFork).toMatchObject({
       name: "Source Skill",
       slug: "dedicated-fork",
@@ -449,6 +462,167 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       label: "Initial version",
       authorUserId: "board",
     });
+  });
+
+  it("prechecks existing forks and reassigns selected agents when forking", async () => {
+    const companyId = randomUUID();
+    const sourceSkillId = randomUUID();
+    const sourceSkillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-reassign-source-"));
+    cleanupDirs.add(sourceSkillDir);
+    await fs.writeFile(path.join(sourceSkillDir, "SKILL.md"), "# Source Skill\n", "utf8");
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySkills).values({
+      id: sourceSkillId,
+      companyId,
+      key: `company/${companyId}/source-skill`,
+      slug: "source-skill",
+      name: "Source Skill",
+      description: null,
+      markdown: "# Source Skill\n",
+      sourceType: "local_path",
+      sourceLocator: sourceSkillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "managed_local" },
+    });
+    const reassignAgentId = randomUUID();
+    const keepAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: reassignAgentId,
+        companyId,
+        name: "Reassign Me",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {
+          paperclipSkillSync: {
+            desiredSkills: [`company/${companyId}/source-skill`],
+          },
+        },
+      },
+      {
+        id: keepAgentId,
+        companyId,
+        name: "Keep Me",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {
+          paperclipSkillSync: {
+            desiredSkills: [`company/${companyId}/source-skill`],
+          },
+        },
+      },
+    ]);
+
+    const before = await svc.forkPrecheck(companyId, sourceSkillId, { type: "user", userId: "board" });
+    expect(before).toMatchObject({
+      skillId: sourceSkillId,
+      original: { id: sourceSkillId, slug: "source-skill" },
+      agentUsageCount: 2,
+      existingForks: [],
+    });
+
+    const forked = await svc.forkSkill(
+      companyId,
+      sourceSkillId,
+      { slug: "source-skill-fork", reassignAgentIds: [reassignAgentId] },
+      { type: "user", userId: "board" },
+    );
+
+    expect(forked).toMatchObject({
+      skill: {
+        slug: "source-skill-fork",
+        key: `company/${companyId}/source-skill-fork`,
+        forkedFromSkillId: sourceSkillId,
+      },
+      original: { id: sourceSkillId, slug: "source-skill" },
+      reassignments: [{
+        agentId: reassignAgentId,
+        previousSkillKey: `company/${companyId}/source-skill`,
+        nextSkillKey: `company/${companyId}/source-skill-fork`,
+      }],
+    });
+    const afterAgents = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    const reassignConfig = afterAgents.find((agent) => agent.id === reassignAgentId)?.adapterConfig as Record<string, any>;
+    const keepConfig = afterAgents.find((agent) => agent.id === keepAgentId)?.adapterConfig as Record<string, any>;
+    expect(reassignConfig.paperclipSkillSync.desiredSkills).toEqual([`company/${companyId}/source-skill-fork`]);
+    expect(keepConfig.paperclipSkillSync.desiredSkills).toEqual([`company/${companyId}/source-skill`]);
+
+    const after = await svc.forkPrecheck(companyId, sourceSkillId, { type: "user", userId: "board" });
+    expect(after?.existingForks).toEqual([
+      expect.objectContaining({
+        id: forked.skill.id,
+        key: forked.skill.key,
+        createdByCurrentActor: true,
+        diverged: false,
+      }),
+    ]);
+  });
+
+  it("forks external source types and deduplicates fork slugs", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const sourceTypes = ["github", "skills_sh", "url", "catalog"] as const;
+    await db.insert(companySkills).values(sourceTypes.map((sourceType) => ({
+      id: randomUUID(),
+      companyId,
+      key: `company/${companyId}/${sourceType}-skill`,
+      slug: `${sourceType}-skill`,
+      name: `${sourceType} Skill`,
+      description: null,
+      markdown: `# ${sourceType} Skill\n`,
+      sourceType,
+      sourceLocator: sourceType === "url"
+        ? `https://example.com/${sourceType}.md`
+        : sourceType === "catalog"
+          ? null
+          : `https://github.com/acme/${sourceType}-skill`,
+      sourceRef: sourceType === "github" || sourceType === "skills_sh" ? "main" : null,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: sourceType === "github" || sourceType === "skills_sh"
+        ? { sourceKind: sourceType, owner: "acme", repo: `${sourceType}-skill`, ref: "main", repoSkillDir: "." }
+        : { sourceKind: sourceType },
+    })));
+
+    const remoteReads: string[] = [];
+    vi.stubGlobal("fetch", async (url: string | URL) => {
+      remoteReads.push(String(url));
+      return new Response("# Remote Skill\n", { status: 200 });
+    });
+    try {
+      for (const sourceType of sourceTypes) {
+        const source = await svc.getByKey(companyId, `company/${companyId}/${sourceType}-skill`);
+        expect(source).not.toBeNull();
+        const first = await svc.forkSkill(companyId, source!.id, { slug: `${sourceType}-skill-fork` }, { type: "user", userId: "board" });
+        const second = await svc.forkSkill(companyId, source!.id, { slug: `${sourceType}-skill-fork` }, { type: "user", userId: "board" });
+        const normalizedForkSlug = `${sourceType.replace("_", "-")}-skill-fork`;
+        expect(first.skill).toMatchObject({
+          slug: normalizedForkSlug,
+          sourceType: "local_path",
+          forkedFromSkillId: source!.id,
+        });
+        expect(second.skill.slug).toBe(`${normalizedForkSlug}-2`);
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(remoteReads).toEqual(expect.arrayContaining([
+      "https://raw.githubusercontent.com/acme/github-skill/main/SKILL.md",
+      "https://raw.githubusercontent.com/acme/skills_sh-skill/main/SKILL.md",
+    ]));
   });
 
   it("validates version-aware desired skill selections", async () => {

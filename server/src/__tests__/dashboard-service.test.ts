@@ -156,14 +156,85 @@ describeEmbeddedPostgres("dashboard service", () => {
     expect(todayBucket).toMatchObject({
       succeeded: 105,
       failed: 0,
+      recovered: 0,
       other: 0,
       total: 105,
+      failedByErrorCode: {},
     });
     expect(weekAgoBucket).toMatchObject({
       succeeded: 0,
       failed: 2,
+      recovered: 0,
       other: 1,
       total: 3,
+      // failed + timed_out with no error code both bucket under "unknown"
+      failedByErrorCode: { unknown: 2 },
     });
+  });
+
+  it("separates recovered restart kills from true failures and breaks failures down by error code", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const day = utcDay(-2);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const base = {
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      createdAt: day,
+    };
+
+    // Direct recovery: a process-loss kill whose retry succeeded.
+    const original = randomUUID();
+    const retry = randomUUID();
+    // Chained recovery: kill -> failed retry -> succeeded retry (both kills recovered).
+    const chainedOriginal = randomUUID();
+    const chainedRetry = randomUUID();
+    const chainedRetrySuccess = randomUUID();
+    // A genuine, unrecovered failure that should remain in the failed count.
+    const trueFailure = randomUUID();
+
+    await db.insert(heartbeatRuns).values([
+      { ...base, id: original, status: "failed", errorCode: "process_lost" },
+      { ...base, id: retry, status: "succeeded", retryOfRunId: original },
+      { ...base, id: chainedOriginal, status: "failed", errorCode: "process_lost" },
+      { ...base, id: chainedRetry, status: "failed", errorCode: "process_lost", retryOfRunId: chainedOriginal },
+      { ...base, id: chainedRetrySuccess, status: "succeeded", retryOfRunId: chainedRetry },
+      { ...base, id: trueFailure, status: "failed", errorCode: "provider_quota" },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+    const bucket = summary.runActivity.find((b) => b.date === utcDateKey(day));
+
+    expect(bucket).toMatchObject({
+      succeeded: 2,
+      // original + chainedOriginal + chainedRetry all recovered via a later success
+      recovered: 3,
+      failed: 1,
+      other: 0,
+      total: 6,
+      failedByErrorCode: { provider_quota: 1 },
+    });
+    // process_lost kills that recovered must not leak into the failed breakdown.
+    expect(bucket?.failedByErrorCode.process_lost).toBeUndefined();
   });
 });

@@ -65,7 +65,7 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
-export type AdapterExecutionErrorFamily = "transient_upstream" | "model_refusal";
+export type AdapterExecutionErrorFamily = "transient_upstream" | "provider_quota" | "model_refusal";
 
 export interface AdapterExecutionResult {
   exitCode: number | null;
