@@ -417,13 +417,15 @@ function StudioNewSkillPanel({
   );
   const [draft, setDraft] = useState<SkillCreateDraft>(initialDraft);
   const [slugDirty, setSlugDirty] = useState(initialDraft.slug.trim().length > 0);
-  const categoryDraft = draft.categories.join(", ");
+  const [categoryDraft, setCategoryDraft] = useState(initialDraft.categories.join(", "));
+  const parsedCategories = splitCategoryDraft(categoryDraft);
   const effectiveSlug = draft.slug.trim() || normalizeSkillDraftSlug(draft.name);
   const nameValid = draft.name.trim().length > 0;
 
   useEffect(() => {
     setDraft(initialDraft);
     setSlugDirty(initialDraft.slug.trim().length > 0);
+    setCategoryDraft(initialDraft.categories.join(", "));
   }, [initialDraft]);
 
   function patchDraft(patch: Partial<SkillCreateDraft>) {
@@ -431,7 +433,10 @@ function StudioNewSkillPanel({
   }
 
   const createSkill = useMutation({
-    mutationFn: () => companySkillsApi.create(companyId, skillCreateDraftToPayload(draft)),
+    mutationFn: () => companySkillsApi.create(companyId, skillCreateDraftToPayload({
+      ...draft,
+      categories: parsedCategories,
+    })),
     onSuccess: async (skill) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(companyId) });
       toast?.pushToast({
@@ -464,7 +469,7 @@ function StudioNewSkillPanel({
     version: null,
     tagline: draft.tagline || null,
     description: draft.tagline,
-    categories: draft.categories,
+    categories: parsedCategories,
     iconUrl: null,
     color: draft.color,
     starCount: 0,
@@ -600,7 +605,7 @@ function StudioNewSkillPanel({
           <Input
             id="skill-categories"
             value={categoryDraft}
-            onChange={(event) => patchDraft({ categories: splitCategoryDraft(event.target.value) })}
+            onChange={(event) => setCategoryDraft(event.target.value)}
             placeholder="engineering, review, memory"
           />
         </div>

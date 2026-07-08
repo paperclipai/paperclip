@@ -526,7 +526,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     });
   });
 
-  it("updates categories, normalizes values, and reflects them in list filters and counts", async () => {
+  it("updates categories, allows spaces, and reflects them in list filters and counts", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
@@ -542,20 +542,23 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     });
 
     const updated = await svc.updateSkill(companyId, skill.id, {
-      categories: ["Memory", "review", "memory", "  "],
+      categories: ["Memory Tools", "review", "memory tools", "  "],
     });
 
-    expect(updated.categories).toEqual(["memory", "review"]);
+    expect(updated.categories).toEqual(["Memory Tools", "review"]);
     await expect(svc.detail(companyId, skill.id)).resolves.toMatchObject({
       id: skill.id,
-      categories: ["memory", "review"],
+      categories: ["Memory Tools", "review"],
     });
     await expect(svc.list(companyId, { categories: ["review"] })).resolves.toEqual([
-      expect.objectContaining({ id: skill.id, categories: ["memory", "review"] }),
+      expect.objectContaining({ id: skill.id, categories: ["Memory Tools", "review"] }),
+    ]);
+    await expect(svc.list(companyId, { categories: ["memory tools"] })).resolves.toEqual([
+      expect.objectContaining({ id: skill.id, categories: ["Memory Tools", "review"] }),
     ]);
     await expect(svc.list(companyId, { categories: ["engineering"] })).resolves.toEqual([]);
     await expect(svc.categoryCounts(companyId)).resolves.toEqual([
-      { slug: "memory", count: 1 },
+      { slug: "Memory Tools", count: 1 },
       { slug: "review", count: 1 },
     ]);
 
