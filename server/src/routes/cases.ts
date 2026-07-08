@@ -141,9 +141,16 @@ async function loadCaseByIdOrIdentifier(db: CaseRouteDb, idOrIdentifier: string,
   return db.select().from(cases).where(where).limit(1).then((rows) => rows[0] ?? null);
 }
 
+function caseLookupCompanyIds(req: Request) {
+  if (req.actor.type === "agent") return req.actor.companyId ? [req.actor.companyId] : [];
+  if (req.actor.type === "board" && req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+    return req.actor.companyIds ?? [];
+  }
+  return undefined;
+}
+
 async function assertCaseAccess(db: Db, req: Request, idOrIdentifier: string) {
-  const companyIds = req.actor.type === "agent" ? (req.actor.companyId ? [req.actor.companyId] : []) : undefined;
-  const row = await loadCaseByIdOrIdentifier(db, idOrIdentifier, companyIds);
+  const row = await loadCaseByIdOrIdentifier(db, idOrIdentifier, caseLookupCompanyIds(req));
   if (!row) throw notFound("Case not found");
   assertCompanyAccess(req, row.companyId);
   return row;

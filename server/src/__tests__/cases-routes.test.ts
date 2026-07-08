@@ -432,6 +432,13 @@ describeEmbeddedPostgres("cases routes", () => {
       caseType: "bug",
       title: "Other company case",
     }).returning();
+    const [ownCase] = await db.insert(cases).values({
+      companyId: ownCompany.id,
+      caseNumber: 1,
+      identifier: `${ownCompany.issuePrefix.toUpperCase()}-C1`,
+      caseType: "bug",
+      title: "Own company case",
+    }).returning();
     await db.insert(caseEvents).values({
       companyId: otherCompany.id,
       caseId: caseRow!.id,
@@ -470,7 +477,21 @@ describeEmbeddedPostgres("cases routes", () => {
       .expect(404);
     await http.get(`/api/cases/${caseRow!.id}/events`).expect(404);
 
-    expect(await db.select().from(cases)).toHaveLength(1);
+    const limitedBoardActor: Express.Request["actor"] = {
+      type: "board",
+      userId: "limited-board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [ownCompany.id],
+      memberships: [{ companyId: ownCompany.id, membershipRole: "operator", status: "active" }],
+    };
+    const limitedBoardHttp = request(app(limitedBoardActor));
+    const ownCaseResponse = await limitedBoardHttp.get(`/api/cases/${ownCase!.id}`).expect(200);
+    expect(ownCaseResponse.body.id).toBe(ownCase!.id);
+    await limitedBoardHttp.get(`/api/cases/${caseRow!.id}`).expect(404);
+    await limitedBoardHttp.get(`/api/cases/${caseRow!.identifier}`).expect(404);
+
+    expect(await db.select().from(cases)).toHaveLength(2);
     expect(await db.select().from(caseDocuments)).toHaveLength(0);
     expect(await db.select().from(documents)).toHaveLength(0);
     expect(await db.select().from(caseIssueLinks)).toHaveLength(0);
