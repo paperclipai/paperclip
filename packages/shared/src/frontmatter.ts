@@ -189,6 +189,60 @@ export function detectFrontmatterRoundTripIssues(rawYaml: string): FrontmatterRo
   return issues;
 }
 
+/**
+ * Recombine a split block into a full markdown document. This is the exact
+ * inverse of {@link splitFrontmatterBlock}: `join(split(x)) === x` for every
+ * input, so opening a file and saving it untouched is byte-identical. The body
+ * is passed through verbatim — never re-parsed or re-serialized.
+ */
+export function joinFrontmatterBlock(block: FrontmatterBlock): string {
+  if (!block.hasFrontmatter) return block.body;
+  return `---\n${block.frontmatterText}\n---\n${block.body}`;
+}
+
+/**
+ * Parse the raw YAML of a frontmatter block (the text between the `---` fences,
+ * as returned by {@link splitFrontmatterBlock}) into a plain object. Lenient:
+ * unparseable input yields `{}` rather than throwing.
+ */
+export function parseFrontmatterFields(frontmatterText: string): Record<string, unknown> {
+  return parseYamlFrontmatter(frontmatterText);
+}
+
+export interface FrontmatterAnalysis {
+  /** The parsed field object (best-effort; `{}` when nothing parses). */
+  parsed: Record<string, unknown>;
+  /**
+   * True when the field editor is safe to use: the raw YAML both parses and
+   * re-serializes byte-for-byte. When false, editing must stay in raw-YAML mode
+   * so bytes the serializer can't reproduce (comments, anchors, folded scalars,
+   * custom ordering, quoting) are never silently rewritten.
+   */
+  canRoundTrip: boolean;
+  /** Structural features that make the block non-round-trippable, if any. */
+  issues: FrontmatterRoundTripIssue[];
+}
+
+/**
+ * Decide whether a frontmatter block can be edited through the structured
+ * field form. Fields mode is only offered when re-serializing the parsed object
+ * reproduces the original block exactly — this is the load-bearing round-trip
+ * safety gate for the Skill Studio FrontmatterPanel (PAP-13145 Option B).
+ */
+export function analyzeFrontmatterBlock(frontmatterText: string): FrontmatterAnalysis {
+  const issues = detectFrontmatterRoundTripIssues(frontmatterText);
+  const parsed = parseYamlFrontmatter(frontmatterText);
+  let canRoundTrip = issues.length === 0;
+  if (canRoundTrip) {
+    try {
+      canRoundTrip = stringifyFrontmatter(parsed) === frontmatterText;
+    } catch {
+      canRoundTrip = false;
+    }
+  }
+  return { parsed, canRoundTrip, issues };
+}
+
 export function parseFrontmatterMarkdown(raw: string): MarkdownDoc {
   const normalized = raw.replace(/\r\n/g, "\n");
   if (!normalized.startsWith("---\n")) {
