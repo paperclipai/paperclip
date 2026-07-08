@@ -44,7 +44,20 @@ const ConfigureBuiltInAgentModal = lazy(() =>
   })),
 );
 
-type FilterTab = "all" | "active" | "paused" | "error" | "builtin";
+export const AGENT_FILTER_TABS = ["all", "active", "paused", "error", "builtin"] as const;
+type FilterTab = (typeof AGENT_FILTER_TABS)[number];
+
+const AGENT_FILTER_TAB_ITEMS: { value: FilterTab; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "active", label: "Active" },
+  { value: "paused", label: "Paused" },
+  { value: "error", label: "Error" },
+  { value: "builtin", label: "Built-in" },
+];
+
+function isFilterTab(value: string): value is FilterTab {
+  return (AGENT_FILTER_TABS as readonly string[]).includes(value);
+}
 
 interface EnvironmentDescriptor {
   label: string;
@@ -179,23 +192,36 @@ export function Agents() {
   const location = useLocation();
   const { isMobile } = useSidebar();
   const pathSegment = location.pathname.split("/").pop() ?? "all";
-  const tab: FilterTab = (pathSegment === "all" || pathSegment === "active" || pathSegment === "paused" || pathSegment === "error" || pathSegment === "builtin") ? pathSegment : "all";
+  const requestedTab: FilterTab = isFilterTab(pathSegment) ? pathSegment : "all";
   const [view, setView] = useState<"list" | "org">("org");
   const forceListView = isMobile;
   const effectiveView: "list" | "org" = forceListView ? "list" : view;
 
+  const { data: instanceSettings } = useQuery({
+    queryKey: queryKeys.instance.settings,
+    queryFn: () => instanceSettingsApi.get(),
+    enabled: !!selectedCompanyId,
+  });
+  const builtInAgentsEnabled = instanceSettings?.experimental.enableBuiltInAgents === true;
+  const tab: FilterTab = requestedTab === "builtin" && !builtInAgentsEnabled ? "all" : requestedTab;
+  const visibleTabItems = useMemo(
+    () => AGENT_FILTER_TAB_ITEMS.filter((item) => item.value !== "builtin" || builtInAgentsEnabled),
+    [builtInAgentsEnabled],
+  );
+
   const { data: builtInAgents } = useQuery({
     queryKey: queryKeys.builtInAgents.list(selectedCompanyId!),
     queryFn: () => builtInAgentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && builtInAgentsEnabled,
   });
   const builtInByAgentId = useMemo(() => {
     const map = new Map<string, BuiltInAgentState>();
+    if (!builtInAgentsEnabled) return map;
     for (const entry of builtInAgents ?? []) {
       if (entry.agentId) map.set(entry.agentId, entry);
     }
     return map;
-  }, [builtInAgents]);
+  }, [builtInAgents, builtInAgentsEnabled]);
   const builtInAgentIds = useMemo(() => new Set(builtInByAgentId.keys()), [builtInByAgentId]);
   const [configureState, setConfigureState] = useState<BuiltInAgentState | null>(null);
 
@@ -211,11 +237,6 @@ export function Agents() {
     enabled: !!selectedCompanyId && effectiveView === "org",
   });
 
-  const { data: instanceSettings } = useQuery({
-    queryKey: queryKeys.instance.settings,
-    queryFn: () => instanceSettingsApi.get(),
-    enabled: !!selectedCompanyId,
-  });
   const environmentsEnabled = instanceSettings?.experimental.enableEnvironments === true;
 
   const { data: environments } = useQuery({
@@ -285,6 +306,12 @@ export function Agents() {
   useEffect(() => {
     setBreadcrumbs([{ label: "Agents" }]);
   }, [setBreadcrumbs]);
+
+  useEffect(() => {
+    if (selectedCompanyId && requestedTab === "builtin" && instanceSettings && !builtInAgentsEnabled) {
+      navigate("/agents/all", { replace: true });
+    }
+  }, [builtInAgentsEnabled, instanceSettings, navigate, requestedTab, selectedCompanyId]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Bot} message="Select a company to view agents." />;
@@ -469,13 +496,7 @@ export function Agents() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
           <PageTabBar
-            items={[
-              { value: "all", label: "All" },
-              { value: "active", label: "Active" },
-              { value: "paused", label: "Paused" },
-              { value: "error", label: "Error" },
-              { value: "builtin", label: "Built-in" },
-            ]}
+            items={visibleTabItems}
             value={tab}
             onValueChange={(v) => navigate(`/agents/${v}`)}
           />
