@@ -240,6 +240,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
 
     expect(run).not.toBeNull();
     const terminalStatus = await waitForCompletedRun(run!.id, agentId);
+    await heartbeat.waitForRunExecutionDrain(run!.id);
     expect(terminalStatus).toBe("succeeded");
 
     const runCount = await db
