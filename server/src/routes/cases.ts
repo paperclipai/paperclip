@@ -424,6 +424,28 @@ async function loadCaseDetail(db: CaseRouteDb, row: typeof cases.$inferSelect) {
   };
 }
 
+async function loadCaseDocumentLink(db: CaseRouteDb, input: { companyId: string; caseId: string; key: string }) {
+  return db
+    .select({ link: caseDocuments, document: documents })
+    .from(caseDocuments)
+    .innerJoin(documents, eq(caseDocuments.documentId, documents.id))
+    .where(and(
+      eq(caseDocuments.companyId, input.companyId),
+      eq(caseDocuments.caseId, input.caseId),
+      eq(caseDocuments.key, input.key),
+    ))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+}
+
+function caseDocumentResponse(input: { key: string; document: typeof documents.$inferSelect }) {
+  return {
+    ...input.document,
+    key: input.key,
+    body: input.document.latestBody,
+  };
+}
+
 function singleFileUpload(req: Request, res: Response, maxBytes: number) {
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -563,6 +585,15 @@ export function caseRoutes(db: Db, storage: StorageService) {
     res.json(rows);
   });
 
+  router.get("/cases/:id/documents/:key", async (req, res, next) => {
+    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
+    if (!caseRow) return next();
+    const key = parseDocumentKey(req.params.key as string);
+    const link = await loadCaseDocumentLink(db, { companyId: caseRow.companyId, caseId: caseRow.id, key });
+    if (!link) throw notFound("Case document not found");
+    res.json(caseDocumentResponse({ key, document: link.document }));
+  });
+
   router.put("/cases/:id/documents/:key", async (req, res, next) => {
     const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
     if (!caseRow) return next();
@@ -585,6 +616,13 @@ export function caseRoutes(db: Db, storage: StorageService) {
         .limit(1)
         .then((rows) => rows[0] ?? null);
 
+      if (existing?.document.lockedAt) {
+        throw conflict("Document is locked", {
+          key,
+          documentId: existing.document.id,
+          lockedAt: existing.document.lockedAt,
+        });
+      }
       if (existing && !body.baseRevisionId) {
         throw conflict("Case document update requires baseRevisionId", {
           code: "stale_base_revision",
@@ -688,6 +726,154 @@ export function caseRoutes(db: Db, storage: StorageService) {
       };
     });
     res.json(result);
+  });
+
+  router.post("/cases/:id/documents/:key/lock", async (req, res, next) => {
+    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
+    if (!caseRow) return next();
+    const key = parseDocumentKey(req.params.key as string);
+    const actor = getActorInfo(req);
+    const result = await db.transaction(async (tx) => {
+      await lockCaseDocumentKey(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
+      const link = await loadCaseDocumentLink(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
+      if (!link) throw notFound("Case document not found");
+      if (link.document.lockedAt) return caseDocumentResponse({ key, document: link.document });
+      const now = new Date();
+      const [document] = await tx.update(documents).set({
+        lockedAt: now,
+        lockedByAgentId: actor.agentId,
+        lockedByUserId: actor.actorType === "user" ? actor.actorId : null,
+        updatedAt: now,
+      }).where(eq(documents.id, link.document.id)).returning();
+      await tx.update(caseDocuments).set({ updatedAt: now }).where(eq(caseDocuments.documentId, link.document.id));
+      return caseDocumentResponse({ key, document: document! });
+    });
+    res.json(result);
+  });
+
+  router.post("/cases/:id/documents/:key/unlock", async (req, res, next) => {
+    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
+    if (!caseRow) return next();
+    const key = parseDocumentKey(req.params.key as string);
+    const result = await db.transaction(async (tx) => {
+      await lockCaseDocumentKey(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
+      const link = await loadCaseDocumentLink(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
+      if (!link) throw notFound("Case document not found");
+      if (!link.document.lockedAt) return caseDocumentResponse({ key, document: link.document });
+      const now = new Date();
+      const [document] = await tx.update(documents).set({
+        lockedAt: null,
+        lockedByAgentId: null,
+        lockedByUserId: null,
+        updatedAt: now,
+      }).where(eq(documents.id, link.document.id)).returning();
+      await tx.update(caseDocuments).set({ updatedAt: now }).where(eq(caseDocuments.documentId, link.document.id));
+      return caseDocumentResponse({ key, document: document! });
+    });
+    res.json(result);
+  });
+
+  router.post("/cases/:id/documents/:key/revisions/:revisionId/restore", async (req, res, next) => {
+    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
+    if (!caseRow) return next();
+    const key = parseDocumentKey(req.params.key as string);
+    const revisionId = req.params.revisionId as string;
+    const actor = getActorInfo(req);
+
+    const result = await db.transaction(async (tx) => {
+      await lockCaseDocumentKey(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
+      const existing = await loadCaseDocumentLink(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
+      if (!existing) throw notFound("Case document not found");
+      if (existing.document.lockedAt) {
+        throw conflict("Document is locked", {
+          key,
+          documentId: existing.document.id,
+          lockedAt: existing.document.lockedAt,
+        });
+      }
+      const sourceRevision = await tx
+        .select()
+        .from(documentRevisions)
+        .where(and(eq(documentRevisions.id, revisionId), eq(documentRevisions.documentId, existing.document.id)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!sourceRevision) throw notFound("Case document revision not found");
+      if (existing.document.latestRevisionId === sourceRevision.id) {
+        throw conflict("Selected revision is already the latest revision", {
+          currentRevisionId: existing.document.latestRevisionId,
+        });
+      }
+
+      const now = new Date();
+      const nextRevisionNumber = existing.document.latestRevisionNumber + 1;
+      const [restoredRevision] = await tx.insert(documentRevisions).values({
+        companyId: caseRow.companyId,
+        documentId: existing.document.id,
+        revisionNumber: nextRevisionNumber,
+        title: sourceRevision.title ?? null,
+        format: sourceRevision.format,
+        body: sourceRevision.body,
+        changeSummary: `Restored from revision ${sourceRevision.revisionNumber}`,
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        createdByRunId: actor.runId && isUuidLike(actor.runId) ? actor.runId : null,
+        createdAt: now,
+      }).returning();
+      const [document] = await tx.update(documents).set({
+        title: sourceRevision.title ?? null,
+        format: sourceRevision.format,
+        latestBody: sourceRevision.body,
+        latestRevisionId: restoredRevision!.id,
+        latestRevisionNumber: nextRevisionNumber,
+        updatedByAgentId: actor.agentId,
+        updatedByUserId: actor.actorType === "user" ? actor.actorId : null,
+        updatedAt: now,
+      }).where(eq(documents.id, existing.document.id)).returning();
+      await tx.update(caseDocuments).set({ updatedAt: now }).where(eq(caseDocuments.documentId, existing.document.id));
+      await insertCaseEvent(tx, {
+        companyId: caseRow.companyId,
+        caseId: caseRow.id,
+        kind: "document_revised",
+        actor,
+        payload: {
+          key,
+          documentId: existing.document.id,
+          revisionId: restoredRevision!.id,
+          revisionNumber: restoredRevision!.revisionNumber,
+          restoredFromRevisionId: sourceRevision.id,
+          restoredFromRevisionNumber: sourceRevision.revisionNumber,
+        },
+      });
+      await autoLinkRunIssue(tx, { companyId: caseRow.companyId, caseId: caseRow.id, actor, role: "work" });
+      return {
+        document: caseDocumentResponse({ key, document: document! }),
+        revision: restoredRevision!,
+        restoredFromRevisionId: sourceRevision.id,
+        restoredFromRevisionNumber: sourceRevision.revisionNumber,
+      };
+    });
+    res.json(result);
+  });
+
+  router.delete("/cases/:id/documents/:key", async (req, res, next) => {
+    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
+    if (!caseRow) return next();
+    const key = parseDocumentKey(req.params.key as string);
+    await db.transaction(async (tx) => {
+      await lockCaseDocumentKey(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
+      const link = await loadCaseDocumentLink(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
+      if (!link) return;
+      if (link.document.lockedAt) {
+        throw conflict("Document is locked", {
+          key,
+          documentId: link.document.id,
+          lockedAt: link.document.lockedAt,
+        });
+      }
+      await tx.delete(caseDocuments).where(eq(caseDocuments.documentId, link.document.id));
+      await tx.delete(documents).where(eq(documents.id, link.document.id));
+    });
+    res.json({ ok: true });
   });
 
   router.post("/cases/:id/links", validate(createIssueLinkSchema), async (req, res) => {

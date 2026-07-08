@@ -9,11 +9,15 @@ import { queryKeys } from "@/lib/queryKeys";
 import {
   casesApi,
   CASE_STATUSES,
+  caseDocumentToIssueDocument,
+  caseRevisionToDocumentRevision,
+  type CaseDocument,
   type CaseDetail as CaseDetailData,
   type CaseStatus,
   type CaseSummary,
 } from "@/api/cases";
 import { issuesApi } from "@/api/issues";
+import type { IssueDocument } from "@paperclipai/shared";
 import { PROJECT_COLORS, type IssueLabel } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,7 +26,6 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/StatusBadge";
-import { MarkdownBody } from "@/components/MarkdownBody";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { CaseFieldValue } from "@/components/CaseFieldsPanel";
 import { CaseActivityFeed } from "@/components/CaseActivityFeed";
@@ -30,6 +33,7 @@ import { CaseChildrenTree } from "@/components/CaseChildrenTree";
 import { CaseAttachmentsGallery } from "@/components/CaseAttachmentsGallery";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { PropertyChip, PropertyRow, PropertySection } from "@/components/issue-properties";
+import { IssueDocumentsSection } from "@/components/IssueDocumentsSection";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 
@@ -78,6 +82,28 @@ function casePropertyRows(caseData: CaseDetailData) {
     .map(([key, value]) => ({ key, label: key, value }));
 
   return [...primary, ...generic];
+}
+
+function issueDocumentToCaseDocument(document: IssueDocument): CaseDocument {
+  return {
+    id: document.id,
+    companyId: document.companyId,
+    title: document.title,
+    format: document.format,
+    latestBody: document.body,
+    latestRevisionId: document.latestRevisionId,
+    latestRevisionNumber: document.latestRevisionNumber,
+    createdByAgentId: document.createdByAgentId,
+    createdByUserId: document.createdByUserId,
+    updatedByAgentId: document.updatedByAgentId,
+    updatedByUserId: document.updatedByUserId,
+    lockedAt: document.lockedAt ? new Date(document.lockedAt).toISOString() : null,
+    lockedByAgentId: document.lockedByAgentId,
+    lockedByUserId: document.lockedByUserId,
+    sourceTrust: document.sourceTrust,
+    createdAt: new Date(document.createdAt).toISOString(),
+    updatedAt: new Date(document.updatedAt).toISOString(),
+  };
 }
 
 function CasePropertyRow({
@@ -416,6 +442,7 @@ export function CaseDetail() {
     enabled: !!caseIdentifier,
   });
   const caseData = caseQuery.data;
+  const caseDetailQueryKey = queryKeys.cases.detail(caseIdentifier ?? "");
 
   const eventsQuery = useQuery({
     queryKey: queryKeys.cases.events(caseIdentifier ?? ""),
@@ -454,6 +481,67 @@ export function CaseDetail() {
   }, [setBreadcrumbs, caseData, caseIdentifier, caseHref]);
 
   const events = useMemo(() => eventsQuery.data ?? [], [eventsQuery.data]);
+  const caseDocumentSubject = useMemo(() => {
+    if (!caseData || !caseIdentifier) return null;
+    return {
+      id: caseData.id,
+      detailQueryKey: caseDetailQueryKey,
+      documentsQueryKey: queryKeys.cases.documents(caseData.id),
+      idleDocumentRevisionsQueryKey: ["cases", "revisions", caseData.id, "__idle__"] as const,
+      documentRevisionsQueryKey: (key: string) => queryKeys.cases.revisions(caseData.id, key),
+      listDocuments: async () => {
+        const cached = queryClient.getQueryData<CaseDetailData>(caseDetailQueryKey);
+        const detail = cached ?? await casesApi.get(caseIdentifier);
+        return detail.documents.map((documentRef) =>
+          caseDocumentToIssueDocument(detail.id, documentRef.key, documentRef.document)
+        );
+      },
+      listDocumentRevisions: async (key: string) => {
+        const revisions = await casesApi.listRevisions(caseIdentifier, key);
+        return revisions.revisions.map((revision) => caseRevisionToDocumentRevision(caseData.id, key, revision));
+      },
+      getDocument: async (key: string) => {
+        const document = await casesApi.getDocument(caseIdentifier, key);
+        return caseDocumentToIssueDocument(caseData.id, document.key, document);
+      },
+      upsertDocument: async (key: string, data: { title: string | null; format: "markdown"; body: string; baseRevisionId: string | null }) => {
+        const result = await casesApi.upsertDocument(caseIdentifier, key, data);
+        return caseDocumentToIssueDocument(caseData.id, result.document.key, result.document);
+      },
+      deleteDocument: (key: string) => casesApi.deleteDocument(caseIdentifier, key),
+      restoreDocumentRevision: async (key: string, revisionId: string) => {
+        const result = await casesApi.restoreDocumentRevision(caseIdentifier, key, revisionId);
+        return caseDocumentToIssueDocument(caseData.id, result.document.key, result.document);
+      },
+      setDocumentLock: async (key: string, locked: boolean) => {
+        const document = locked
+          ? await casesApi.lockDocument(caseIdentifier, key)
+          : await casesApi.unlockDocument(caseIdentifier, key);
+        return caseDocumentToIssueDocument(caseData.id, document.key, document);
+      },
+      syncDetailCache: (cache: typeof queryClient, document: IssueDocument) => {
+        cache.setQueryData<CaseDetailData | undefined>(caseDetailQueryKey, (current) => {
+          if (!current) return current;
+          const nextDocumentRef = {
+            key: document.key,
+            document: issueDocumentToCaseDocument(document),
+          };
+          const existingIndex = current.documents.findIndex((entry) => entry.key === document.key);
+          const documents = existingIndex === -1
+            ? [...current.documents, nextDocumentRef]
+            : current.documents.map((entry, index) => index === existingIndex ? nextDocumentRef : entry);
+          return {
+            ...current,
+            documents,
+            updatedAt: new Date(document.updatedAt).toISOString(),
+          };
+        });
+      },
+      hideSystemDocuments: false,
+      legacyPlanDocument: null,
+      annotations: null,
+    };
+  }, [caseData, caseDetailQueryKey, caseIdentifier, queryClient]);
   const panelContent = useMemo(() => {
     if (!caseData) return null;
     return (
@@ -487,7 +575,6 @@ export function CaseDetail() {
     );
   }
 
-  const bodyDoc = caseData.documents.find((d) => d.key === "body");
   const description = caseData.fields.description ?? caseData.fields.Description ?? null;
 
   function copyCaseToClipboard(currentCase: CaseDetailData) {
@@ -595,25 +682,13 @@ export function CaseDetail() {
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6">
-          <section className="space-y-2">
-            <div className="flex items-baseline justify-between">
-              <h2 className="text-sm font-semibold">Body</h2>
-              {bodyDoc && (
-                <span className="text-xs text-muted-foreground">
-                  document · rev {bodyDoc.document.latestRevisionNumber ?? 1}
-                </span>
-              )}
-            </div>
-            <Card className="px-4 py-3">
-              {bodyDoc?.document.latestBody ? (
-                <MarkdownBody linkIssueReferences linkCaseReferences>
-                  {bodyDoc.document.latestBody}
-                </MarkdownBody>
-              ) : (
-                <p className="text-sm text-muted-foreground">No body document yet</p>
-              )}
-            </Card>
-          </section>
+          {caseDocumentSubject ? (
+            <IssueDocumentsSection
+              subject={caseDocumentSubject}
+              canDeleteDocuments
+              canManageDocumentLocks
+            />
+          ) : null}
 
           {description ? (
             <section className="space-y-2">

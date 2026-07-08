@@ -13,7 +13,19 @@ function act(callback: () => void) {
 }
 
 const companyState = vi.hoisted(() => ({ selectedCompanyId: "company-1" }));
-const mockCasesApi = vi.hoisted(() => ({ get: vi.fn(), listEvents: vi.fn(), list: vi.fn(), patch: vi.fn() }));
+const mockCasesApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  listEvents: vi.fn(),
+  list: vi.fn(),
+  patch: vi.fn(),
+  getDocument: vi.fn(),
+  listRevisions: vi.fn(),
+  upsertDocument: vi.fn(),
+  lockDocument: vi.fn(),
+  unlockDocument: vi.fn(),
+  restoreDocumentRevision: vi.fn(),
+  deleteDocument: vi.fn(),
+}));
 const mockIssuesApi = vi.hoisted(() => ({ listLabels: vi.fn(), createLabel: vi.fn() }));
 const panelState = vi.hoisted(() => ({ openPanel: vi.fn(), closePanel: vi.fn() }));
 const mockCopyTextToClipboard = vi.hoisted(() => vi.fn(() => Promise.resolve()));
@@ -30,8 +42,14 @@ vi.mock("@/lib/clipboard", () => ({ copyTextToClipboard: mockCopyTextToClipboard
 vi.mock("@/components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: string }) => <div data-testid="md">{children}</div>,
 }));
+vi.mock("@/components/IssueDocumentsSection", () => ({
+  IssueDocumentsSection: ({ subject }: { subject?: { id: string } }) => (
+    <div data-testid="case-documents-section">Documents {subject?.id}</div>
+  ),
+}));
 vi.mock("@/lib/router", () => ({
   useParams: () => ({ caseIdentifier: "PAP-C7" }),
+  useLocation: () => ({ hash: "" }),
   Navigate: () => null,
   Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => (
     <a href={to} {...props}>{children}</a>
@@ -108,11 +126,20 @@ function detail(): CaseDetailData {
         key: "body",
         document: {
           id: "doc-1",
+          companyId: "company-1",
           title: "body",
           format: "markdown",
           latestBody: "# Draft body\n\nSome content.",
           latestRevisionId: "rev-8",
           latestRevisionNumber: 8,
+          createdByAgentId: null,
+          createdByUserId: null,
+          updatedByAgentId: "agent-1",
+          updatedByUserId: null,
+          lockedAt: null,
+          lockedByAgentId: null,
+          lockedByUserId: null,
+          createdAt: "2026-07-07T00:00:00.000Z",
           updatedAt: "2026-07-07T00:00:00.000Z",
         },
       },
@@ -144,6 +171,23 @@ describe("CaseDetail", () => {
     mockCasesApi.get.mockReset().mockResolvedValue(detail());
     mockCasesApi.listEvents.mockReset().mockResolvedValue([]);
     mockCasesApi.list.mockReset().mockResolvedValue([]);
+    mockCasesApi.getDocument.mockReset();
+    mockCasesApi.listRevisions.mockReset().mockResolvedValue({
+      key: "body",
+      document: {
+        id: "doc-1",
+        title: "body",
+        format: "markdown",
+        latestRevisionId: "rev-8",
+        latestRevisionNumber: 8,
+      },
+      revisions: [],
+    });
+    mockCasesApi.upsertDocument.mockReset();
+    mockCasesApi.lockDocument.mockReset();
+    mockCasesApi.unlockDocument.mockReset();
+    mockCasesApi.restoreDocumentRevision.mockReset();
+    mockCasesApi.deleteDocument.mockReset();
     mockIssuesApi.listLabels.mockReset().mockResolvedValue([]);
     mockCopyTextToClipboard.mockClear();
   });
@@ -161,9 +205,8 @@ describe("CaseDetail", () => {
       expect(container.textContent).toContain("Hermes agent launch post");
       // upsert key (detail-only)
       expect(container.textContent).toContain("v2026.707/hermes-agent-post");
-      // body document card
-      expect(container.textContent).toContain("Draft body");
-      expect(container.textContent).toContain("rev 8");
+      // shared document section
+      expect(container.textContent).toContain("Documents case-1");
       expect(container.textContent).toContain("Launch narrative");
       expect(container.textContent).not.toContain("Revisions");
       expect(container.textContent).not.toContain("1,850");

@@ -1,4 +1,4 @@
-import type { IssueLabel } from "@paperclipai/shared";
+import type { DocumentRevision, IssueDocument, IssueLabel } from "@paperclipai/shared";
 import { api } from "./client";
 
 // -----------------------------------------------------------------------------
@@ -44,15 +44,27 @@ export interface CaseSummary {
 
 export interface CaseDocumentRef {
   key: string;
-  document: {
-    id: string;
-    title: string;
-    format: string;
-    latestBody: string | null;
-    latestRevisionId: string | null;
-    latestRevisionNumber: number | null;
-    updatedAt: string;
-  };
+  document: CaseDocument;
+}
+
+export interface CaseDocument {
+  id: string;
+  companyId: string;
+  title: string | null;
+  format: string;
+  latestBody: string | null;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  lockedAt: string | null;
+  lockedByAgentId: string | null;
+  lockedByUserId: string | null;
+  sourceTrust?: IssueDocument["sourceTrust"];
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface CaseIssueLink {
@@ -148,6 +160,8 @@ export interface CaseEvent {
 /** One revision of a case document, with author + via-issue attribution. */
 export interface CaseDocumentRevision {
   id: string;
+  companyId?: string;
+  documentId?: string;
   revisionNumber: number;
   title: string;
   format: string;
@@ -216,6 +230,48 @@ export interface PatchCaseInput {
   labelIds?: string[];
 }
 
+export function caseDocumentToIssueDocument(caseId: string, key: string, document: CaseDocument): IssueDocument {
+  return {
+    id: document.id,
+    companyId: document.companyId,
+    issueId: caseId,
+    key,
+    title: document.title,
+    format: "markdown",
+    body: document.latestBody ?? "",
+    latestRevisionId: document.latestRevisionId,
+    latestRevisionNumber: document.latestRevisionNumber ?? 1,
+    createdByAgentId: document.createdByAgentId,
+    createdByUserId: document.createdByUserId,
+    updatedByAgentId: document.updatedByAgentId,
+    updatedByUserId: document.updatedByUserId,
+    lockedAt: document.lockedAt ? new Date(document.lockedAt) : null,
+    lockedByAgentId: document.lockedByAgentId,
+    lockedByUserId: document.lockedByUserId,
+    sourceTrust: document.sourceTrust,
+    createdAt: new Date(document.createdAt),
+    updatedAt: new Date(document.updatedAt),
+  };
+}
+
+export function caseRevisionToDocumentRevision(caseId: string, key: string, revision: CaseDocumentRevision): DocumentRevision {
+  return {
+    id: revision.id,
+    companyId: revision.companyId ?? "",
+    documentId: revision.documentId ?? "",
+    issueId: caseId,
+    key,
+    revisionNumber: revision.revisionNumber,
+    title: revision.title,
+    format: "markdown",
+    body: revision.body ?? "",
+    changeSummary: revision.changeSummary,
+    createdByAgentId: revision.createdByAgentId,
+    createdByUserId: revision.createdByUserId,
+    createdAt: new Date(revision.createdAt),
+  };
+}
+
 export const casesApi = {
   list: (companyId: string, params: ListCasesParams = {}) =>
     api.get<CaseSummary[]>(`/companies/${companyId}/cases${toQuery(params)}`),
@@ -226,8 +282,32 @@ export const casesApi = {
     api.get<CaseEvent[]>(`/cases/${idOrIdentifier}/events?limit=${limit}`),
   listChildren: (companyId: string, parentId: string) =>
     api.get<CaseSummary[]>(`/companies/${companyId}/cases${toQuery({ parent: parentId, limit: 200 })}`),
+  getDocument: (idOrIdentifier: string, key: string) =>
+    api.get<CaseDocument & { key: string; body: string }>(`/cases/${idOrIdentifier}/documents/${encodeURIComponent(key)}`),
+  upsertDocument: (
+    idOrIdentifier: string,
+    key: string,
+    data: { title?: string | null; format?: string; body: string; baseRevisionId?: string | null },
+  ) =>
+    api.put<{ document: CaseDocument & { key: string; body: string }; revision: CaseDocumentRevision }>(
+      `/cases/${idOrIdentifier}/documents/${encodeURIComponent(key)}`,
+      data,
+    ),
+  lockDocument: (idOrIdentifier: string, key: string) =>
+    api.post<CaseDocument & { key: string; body: string }>(`/cases/${idOrIdentifier}/documents/${encodeURIComponent(key)}/lock`, {}),
+  unlockDocument: (idOrIdentifier: string, key: string) =>
+    api.post<CaseDocument & { key: string; body: string }>(`/cases/${idOrIdentifier}/documents/${encodeURIComponent(key)}/unlock`, {}),
+  restoreDocumentRevision: (idOrIdentifier: string, key: string, revisionId: string) =>
+    api.post<{
+      document: CaseDocument & { key: string; body: string };
+      revision: CaseDocumentRevision;
+      restoredFromRevisionId: string;
+      restoredFromRevisionNumber: number;
+    }>(`/cases/${idOrIdentifier}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`, {}),
+  deleteDocument: (idOrIdentifier: string, key: string) =>
+    api.delete<{ ok: true }>(`/cases/${idOrIdentifier}/documents/${encodeURIComponent(key)}`),
   listRevisions: (idOrIdentifier: string, key: string) =>
-    api.get<CaseDocumentRevisions>(`/cases/${idOrIdentifier}/documents/${key}/revisions`),
+    api.get<CaseDocumentRevisions>(`/cases/${idOrIdentifier}/documents/${encodeURIComponent(key)}/revisions`),
   listForIssue: (issueIdOrIdentifier: string) =>
     api.get<IssueCaseLink[]>(`/issues/${issueIdOrIdentifier}/cases`),
 };

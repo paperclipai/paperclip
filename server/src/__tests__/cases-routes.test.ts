@@ -662,6 +662,56 @@ describeEmbeddedPostgres("cases routes", () => {
     expect(revisions.body.revisions[0].issue).toMatchObject({ id: issue!.id });
   });
 
+  it("locks, unlocks, deletes, and restores case documents through shared document controls", async () => {
+    await enableCases();
+    const company = await seedCompany("DOC");
+    const http = request(app(boardActor));
+    const created = await http
+      .post(`/api/companies/${company.id}/cases`)
+      .send({ caseType: "blog_post", title: "Document controls" })
+      .expect(201);
+
+    const firstRevision = await http
+      .put(`/api/cases/${created.body.id}/documents/body`)
+      .send({ body: "# v1" })
+      .expect(200);
+    const secondRevision = await http
+      .put(`/api/cases/${created.body.id}/documents/body`)
+      .send({ body: "# v2", baseRevisionId: firstRevision.body.revision.id })
+      .expect(200);
+
+    const loaded = await http.get(`/api/cases/${created.body.id}/documents/body`).expect(200);
+    expect(loaded.body.body).toBe("# v2");
+    expect(loaded.body.latestRevisionNumber).toBe(2);
+
+    const locked = await http.post(`/api/cases/${created.body.id}/documents/body/lock`).expect(200);
+    expect(locked.body.lockedAt).toBeTruthy();
+    await http
+      .put(`/api/cases/${created.body.id}/documents/body`)
+      .send({ body: "# blocked", baseRevisionId: secondRevision.body.revision.id })
+      .expect(409);
+    await http.delete(`/api/cases/${created.body.id}/documents/body`).expect(409);
+
+    const unlocked = await http.post(`/api/cases/${created.body.id}/documents/body/unlock`).expect(200);
+    expect(unlocked.body.lockedAt).toBeNull();
+
+    const restored = await http
+      .post(`/api/cases/${created.body.id}/documents/body/revisions/${firstRevision.body.revision.id}/restore`)
+      .expect(200);
+    expect(restored.body.document.body).toBe("# v1");
+    expect(restored.body.document.latestRevisionNumber).toBe(3);
+    expect(restored.body.restoredFromRevisionNumber).toBe(1);
+
+    const revisions = await http.get(`/api/cases/${created.body.id}/documents/body/revisions`).expect(200);
+    expect(revisions.body.revisions).toHaveLength(3);
+    expect(revisions.body.revisions[0].changeSummary).toBe("Restored from revision 1");
+
+    await http.delete(`/api/cases/${created.body.id}/documents/body`).expect(200);
+    await http.get(`/api/cases/${created.body.id}`).expect(200).expect((res) => {
+      expect(res.body.documents).toHaveLength(0);
+    });
+  });
+
   it("lists children by parent, exposes parent in detail, and lists cases for an issue", async () => {
     await enableCases();
     const company = await seedCompany("TREE");

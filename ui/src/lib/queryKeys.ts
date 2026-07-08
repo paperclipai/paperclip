@@ -188,6 +188,7 @@ export const queryKeys = {
   cases: {
     list: (companyId: string) => ["cases", companyId] as const,
     detail: (id: string) => ["cases", "detail", id] as const,
+    documents: (id: string) => ["cases", "documents", id] as const,
     events: (id: string) => ["cases", "events", id] as const,
     children: (parentId: string) => ["cases", "children", parentId] as const,
     revisions: (id: string, key: string) => ["cases", "revisions", id, key] as const,

@@ -152,9 +152,6 @@ vi.mock("@/components/ui/dropdown-menu", async () => {
   };
 });
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
 const localStorageEntries = new Map<string, string>();
 
 function ensureLocalStorageMock() {
@@ -592,6 +589,7 @@ describe("IssueDocumentsSection", () => {
     await act(async () => {
       restoreButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+    await flush();
 
     expect(mockIssuesApi.restoreDocumentRevision).toHaveBeenCalledWith("issue-1", "plan", "revision-3");
     expect(container.textContent).toContain("Restored plan body");
@@ -893,6 +891,86 @@ describe("IssueDocumentsSection", () => {
     expect(heading).toBeTruthy();
     expect(heading?.parentElement?.className).toContain("flex-wrap");
     expect(heading?.nextElementSibling?.className).toContain("flex-wrap");
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("renders and locks documents for a non-issue document subject", async () => {
+    const caseDocument = createIssueDocument({
+      id: "case-document-1",
+      issueId: "case-1",
+      key: "body",
+      title: "Body",
+      body: "Reusable case document body",
+      latestRevisionId: "case-revision-2",
+      latestRevisionNumber: 2,
+      updatedByAgentId: "agent-1",
+      updatedByUserId: null,
+    });
+    const lockedCaseDocument = {
+      ...caseDocument,
+      lockedAt: new Date("2026-03-31T12:06:00.000Z"),
+      lockedByUserId: "user-1",
+      updatedAt: new Date("2026-03-31T12:06:00.000Z"),
+    };
+    const listDocuments = vi.fn()
+      .mockResolvedValueOnce([caseDocument])
+      .mockResolvedValue([lockedCaseDocument]);
+    const setDocumentLock = vi.fn().mockResolvedValue(lockedCaseDocument);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection
+            subject={{
+              id: "case-1",
+              documentsQueryKey: ["cases", "documents", "case-1"],
+              idleDocumentRevisionsQueryKey: ["cases", "revisions", "case-1", "__idle__"],
+              documentRevisionsQueryKey: (key) => ["cases", "revisions", "case-1", key],
+              listDocuments,
+              listDocumentRevisions: vi.fn().mockResolvedValue([]),
+              getDocument: vi.fn().mockResolvedValue(caseDocument),
+              upsertDocument: vi.fn().mockResolvedValue(caseDocument),
+              deleteDocument: vi.fn().mockResolvedValue({ ok: true }),
+              restoreDocumentRevision: vi.fn().mockResolvedValue(caseDocument),
+              setDocumentLock,
+              hideSystemDocuments: false,
+              legacyPlanDocument: null,
+              annotations: null,
+            }}
+            canDeleteDocuments
+            canManageDocumentLocks
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    expect(listDocuments).toHaveBeenCalled();
+    expect(container.textContent).toContain("Reusable case document body");
+    expect(container.textContent).toContain("body");
+
+    const lockButton = container.querySelector('button[title="Lock document"]');
+    expect(lockButton).toBeTruthy();
+
+    await act(async () => {
+      lockButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(setDocumentLock).toHaveBeenCalledWith("body", true);
+    expect(container.querySelector('button[title="Unlock document"]')).toBeTruthy();
 
     await act(async () => {
       root.unmount();
