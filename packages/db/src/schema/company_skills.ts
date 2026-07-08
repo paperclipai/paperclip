@@ -160,6 +160,31 @@ export const companySkillTestInputs = pgTable(
   }),
 );
 
+export const companySkillTestRunTemplates = pgTable(
+  "company_skill_test_run_templates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    body: text("body").notNull(),
+    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    createdByUserId: text("created_by_user_id"),
+    updatedByAgentId: uuid("updated_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    updatedByUserId: text("updated_by_user_id"),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyActiveIdx: index("company_skill_test_run_templates_company_active_idx").on(
+      table.companyId,
+      table.deletedAt,
+      table.name,
+    ),
+  }),
+);
+
 export const companySkillTestRuns = pgTable(
   "company_skill_test_runs",
   {
@@ -172,6 +197,11 @@ export const companySkillTestRuns = pgTable(
     agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "restrict" }),
     agentConfigSnapshot: jsonb("agent_config_snapshot").$type<Record<string, unknown>>().notNull().default({}),
     issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "restrict" }),
+    templateId: text("template_id"),
+    templateName: text("template_name"),
+    templateBody: text("template_body"),
+    renderedTemplateBody: text("rendered_template_body"),
+    harnessIssueDescription: text("harness_issue_description").notNull().default(""),
     status: text("status").notNull().default("queued"),
     outputDocumentKey: text("output_document_key").notNull().default("output"),
     outputSnapshot: text("output_snapshot").notNull().default(""),

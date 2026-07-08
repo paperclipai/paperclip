@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   companies,
+  companySkillTestRunTemplates,
   companySkillTestRuns,
   companySkills,
   createDb,
@@ -45,6 +46,7 @@ describeEmbeddedPostgres("companySkillService skill test runs", () => {
     await db.delete(issueDocuments);
     await db.delete(documents);
     await db.delete(companySkillTestRuns);
+    await db.delete(companySkillTestRunTemplates);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companySkills);
@@ -104,6 +106,180 @@ describeEmbeddedPostgres("companySkillService skill test runs", () => {
     },
     wakeHarnessIssue: async () => null,
     retentionDays: 7,
+  });
+
+  it("appends the built-in default template while keeping the input snapshot clean", async () => {
+    const { companyId, skillId, agentId } = await seedSkillAndAgent();
+    const run = await svc.createTestRun(
+      companyId,
+      skillId,
+      { content: "test this skill", agentId },
+      { type: "user", userId: "local-board" },
+      runDeps(companyId),
+    );
+
+    expect(run.inputSnapshot).toBe("test this skill");
+    expect(run.templateId).toBe("built-in:default-test-template");
+    expect(run.templateName).toBe("Default test template");
+    expect(run.templateBody).toContain("{{skillName}}");
+    expect(run.renderedTemplateBody).toContain("Skills Studio test for `Review Skill`");
+    expect(run.renderedTemplateBody).toContain(`company/${companyId}/review`);
+    expect(run.renderedTemplateBody).toContain("issue document `output`");
+    expect(run.harnessIssueDescription).toBe(`test this skill\n\n---\n\n${run.renderedTemplateBody}`);
+
+    const issue = await db
+      .select({ description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, run.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.description).toBe(run.harnessIssueDescription);
+  });
+
+  it("honors No template without weakening the clean run snapshot", async () => {
+    const { companyId, skillId, agentId } = await seedSkillAndAgent();
+    const run = await svc.createTestRun(
+      companyId,
+      skillId,
+      { content: "test this skill", agentId, templateId: null },
+      { type: "user", userId: "local-board" },
+      runDeps(companyId),
+    );
+
+    expect(run.inputSnapshot).toBe("test this skill");
+    expect(run.templateId).toBeNull();
+    expect(run.templateName).toBeNull();
+    expect(run.templateBody).toBeNull();
+    expect(run.renderedTemplateBody).toBeNull();
+    expect(run.harnessIssueDescription).toBe("test this skill");
+
+    const issue = await db
+      .select({ description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, run.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.description).toBe("test this skill");
+  });
+
+  it("manages custom templates and renders only explicit placeholders", async () => {
+    const { companyId, skillId, agentId } = await seedSkillAndAgent();
+    const template = await svc.createTestRunTemplate(companyId, {
+      name: "Focused smoke",
+      description: "Short run",
+      body: "Run {{skillName}} v{{skillVersion}} for {{runId}} on {{issueId}} into {{outputDocumentKey}}.",
+    }, { type: "user", userId: "local-board" });
+
+    const listed = await svc.listTestRunTemplates(companyId);
+    expect(listed.map((entry) => entry.id)).toEqual(["built-in:default-test-template", template.id]);
+    expect(listed[0]?.builtIn).toBe(true);
+
+    const run = await svc.createTestRun(
+      companyId,
+      skillId,
+      { content: "custom template run", agentId, templateId: template.id },
+      { type: "user", userId: "local-board" },
+      runDeps(companyId),
+    );
+    expect(run.templateId).toBe(template.id);
+    expect(run.templateName).toBe("Focused smoke");
+    expect(run.renderedTemplateBody).toContain("Run Review Skill v1");
+    expect(run.renderedTemplateBody).toContain(run.id);
+    expect(run.renderedTemplateBody).toContain(run.issueId);
+    expect(run.renderedTemplateBody).toContain("into output");
+
+    await expect(
+      svc.createTestRunTemplate(companyId, {
+        name: "Bad template",
+        body: "Use {{unknownPlaceholder}}.",
+      }, { type: "user", userId: "local-board" }),
+    ).rejects.toThrow(/unknown template placeholder/i);
+
+    const updated = await svc.updateTestRunTemplate(companyId, template.id, {
+      name: "Focused smoke v2",
+      body: "Use {{skillKey}}.",
+    }, { type: "user", userId: "local-board" });
+    expect(updated?.name).toBe("Focused smoke v2");
+    expect(updated?.body).toBe("Use {{skillKey}}.");
+
+    await expect(
+      svc.updateTestRunTemplate(companyId, "built-in:default-test-template", { name: "Changed" }),
+    ).rejects.toThrow(/read-only/i);
+
+    const deleted = await svc.deleteTestRunTemplate(companyId, template.id);
+    expect(deleted?.deletedAt).toBeInstanceOf(Date);
+    expect((await svc.listTestRunTemplates(companyId)).map((entry) => entry.id)).toEqual([
+      "built-in:default-test-template",
+    ]);
+  });
+
+  it("rejects unknown or cross-company template ids", async () => {
+    const first = await seedSkillAndAgent();
+    const second = await seedSkillAndAgent();
+    const otherTemplate = await svc.createTestRunTemplate(second.companyId, {
+      name: "Other company",
+      body: "Other {{skillName}}.",
+    }, { type: "user", userId: "local-board" });
+
+    await expect(
+      svc.createTestRun(
+        first.companyId,
+        first.skillId,
+        { content: "test", agentId: first.agentId, templateId: randomUUID() },
+        { type: "user", userId: "local-board" },
+        runDeps(first.companyId),
+      ),
+    ).rejects.toThrow(/test run template not found/i);
+
+    await expect(
+      svc.createTestRun(
+        first.companyId,
+        first.skillId,
+        { content: "test", agentId: first.agentId, templateId: otherTemplate.id },
+        { type: "user", userId: "local-board" },
+        runDeps(first.companyId),
+      ),
+    ).rejects.toThrow(/test run template not found/i);
+  });
+
+  it("re-run can use the viewed template body snapshot after source template edits", async () => {
+    const { companyId, skillId, agentId } = await seedSkillAndAgent();
+    const template = await svc.createTestRunTemplate(companyId, {
+      name: "Snapshot me",
+      body: "Original {{skillName}}.",
+    }, { type: "user", userId: "local-board" });
+    const first = await svc.createTestRun(
+      companyId,
+      skillId,
+      { content: "repeatable", agentId, templateId: template.id },
+      { type: "user", userId: "local-board" },
+      runDeps(companyId),
+    );
+
+    await svc.updateTestRunTemplate(companyId, template.id, {
+      body: "Edited {{skillName}}.",
+    }, { type: "user", userId: "local-board" });
+
+    const reRun = await svc.createTestRun(
+      companyId,
+      skillId,
+      {
+        content: first.inputSnapshot,
+        agentId: first.agentId,
+        skillVersionId: first.skillVersionId,
+        templateSnapshot: {
+          templateId: first.templateId,
+          templateName: first.templateName,
+          templateBody: first.templateBody,
+        },
+      },
+      { type: "user", userId: "local-board" },
+      runDeps(companyId),
+    );
+    expect(reRun.skillVersionId).toBe(first.skillVersionId);
+    expect(reRun.templateId).toBe(template.id);
+    expect(reRun.templateBody).toBe("Original {{skillName}}.");
+    expect(reRun.renderedTemplateBody).toBe("Original Review Skill.");
+    expect(reRun.harnessIssueDescription).toContain("Original Review Skill.");
+    expect(reRun.harnessIssueDescription).not.toContain("Edited Review Skill.");
   });
 
   it("only deletes terminal runs and soft-deletes them out of history", async () => {

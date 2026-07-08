@@ -96,6 +96,7 @@ export {
   companySkillStars,
   companySkillComments,
   companySkillTestInputs,
+  companySkillTestRunTemplates,
   companySkillTestRuns,
 } from "./company_skills.js";
 export { plugins } from "./plugins.js";

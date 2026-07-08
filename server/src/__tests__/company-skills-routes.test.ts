@@ -42,6 +42,10 @@ const mockCompanySkillService = vi.hoisted(() => ({
   createTestInput: vi.fn(),
   updateTestInput: vi.fn(),
   deleteTestInput: vi.fn(),
+  listTestRunTemplates: vi.fn(),
+  createTestRunTemplate: vi.fn(),
+  updateTestRunTemplate: vi.fn(),
+  deleteTestRunTemplate: vi.fn(),
   createTestRun: vi.fn(),
   listTestRuns: vi.fn(),
   getTestRunDetail: vi.fn(),
@@ -446,6 +450,42 @@ describe("company skill mutation permissions", () => {
       createdAt: new Date("2026-05-26T00:00:00.000Z"),
       updatedAt: new Date("2026-05-26T00:02:00.000Z"),
     });
+    const templateResponse = {
+      id: "66666666-6666-4666-8666-666666666666",
+      companyId: "company-1",
+      name: "Custom template",
+      description: "Custom run guidance",
+      body: "Run {{skillName}} into {{outputDocumentKey}}.",
+      builtIn: false,
+      createdByAgentId: null,
+      createdByUserId: "local-board",
+      updatedByAgentId: null,
+      updatedByUserId: "local-board",
+      deletedAt: null,
+      createdAt: new Date("2026-05-26T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-26T00:00:00.000Z"),
+    };
+    mockCompanySkillService.listTestRunTemplates.mockResolvedValue([{
+      ...templateResponse,
+      id: "built-in:default-test-template",
+      name: "Default test template",
+      description: "Paperclip default",
+      body: "Default {{skillName}}",
+      builtIn: true,
+      createdByUserId: null,
+      updatedByUserId: null,
+    }, templateResponse]);
+    mockCompanySkillService.createTestRunTemplate.mockResolvedValue(templateResponse);
+    mockCompanySkillService.updateTestRunTemplate.mockResolvedValue({
+      ...templateResponse,
+      name: "Renamed template",
+      updatedAt: new Date("2026-05-26T00:01:00.000Z"),
+    });
+    mockCompanySkillService.deleteTestRunTemplate.mockResolvedValue({
+      ...templateResponse,
+      deletedAt: new Date("2026-05-26T00:02:00.000Z"),
+      updatedAt: new Date("2026-05-26T00:02:00.000Z"),
+    });
     mockCompanySkillService.listTestRuns.mockResolvedValue([]);
     mockCompanySkillService.getTestRunDetail.mockResolvedValue(null);
     mockCompanySkillService.createTestRun.mockResolvedValue({
@@ -458,6 +498,11 @@ describe("company skill mutation permissions", () => {
       agentId: "55555555-5555-4555-8555-555555555555",
       agentConfigSnapshot: { adapterType: "codex_local" },
       issueId: "44444444-4444-4444-8444-444444444444",
+      templateId: "built-in:default-test-template",
+      templateName: "Default test template",
+      templateBody: "Default {{skillName}}",
+      renderedTemplateBody: "Default Review",
+      harnessIssueDescription: "Try the skill\n\n---\n\nDefault Review",
       status: "queued",
       outputDocumentKey: "output",
       outputSnapshot: "",
@@ -481,6 +526,11 @@ describe("company skill mutation permissions", () => {
       agentId: "55555555-5555-4555-8555-555555555555",
       agentConfigSnapshot: { adapterType: "codex_local" },
       issueId: "44444444-4444-4444-8444-444444444444",
+      templateId: "built-in:default-test-template",
+      templateName: "Default test template",
+      templateBody: "Default {{skillName}}",
+      renderedTemplateBody: "Default Review",
+      harnessIssueDescription: "Try the skill\n\n---\n\nDefault Review",
       status: "cancelled",
       outputDocumentKey: "output",
       outputSnapshot: "",
@@ -1222,6 +1272,49 @@ describe("company skill mutation permissions", () => {
     );
   });
 
+  it("routes skill test run template CRUD through skills mutation permissions", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    });
+
+    const listed = await request(app).get("/api/companies/company-1/skill-test-run-templates");
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    expect(mockCompanySkillService.listTestRunTemplates).toHaveBeenCalledWith("company-1");
+
+    const created = await request(app)
+      .post("/api/companies/company-1/skill-test-run-templates")
+      .send({ name: "Custom template", description: "Custom run guidance", body: "Run {{skillName}}." });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(mockCompanySkillService.createTestRunTemplate).toHaveBeenCalledWith(
+      "company-1",
+      { name: "Custom template", description: "Custom run guidance", body: "Run {{skillName}}." },
+      { type: "user", userId: "local-board" },
+    );
+
+    const updated = await request(app)
+      .patch("/api/companies/company-1/skill-test-run-templates/66666666-6666-4666-8666-666666666666")
+      .send({ name: "Renamed template" });
+    expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+    expect(mockCompanySkillService.updateTestRunTemplate).toHaveBeenCalledWith(
+      "company-1",
+      "66666666-6666-4666-8666-666666666666",
+      { name: "Renamed template" },
+      { type: "user", userId: "local-board" },
+    );
+
+    const removed = await request(app)
+      .delete("/api/companies/company-1/skill-test-run-templates/66666666-6666-4666-8666-666666666666");
+    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+    expect(mockCompanySkillService.deleteTestRunTemplate).toHaveBeenCalledWith(
+      "company-1",
+      "66666666-6666-4666-8666-666666666666",
+    );
+  });
+
   it("creates and cancels skill test runs through hidden issue orchestration", async () => {
     mockCompanySkillService.createTestRun.mockImplementationOnce(async (
       _companyId: string,
@@ -1256,6 +1349,11 @@ describe("company skill mutation permissions", () => {
         agentId: "55555555-5555-4555-8555-555555555555",
         agentConfigSnapshot: { adapterType: "codex_local" },
         issueId: "44444444-4444-4444-8444-444444444444",
+        templateId: "built-in:default-test-template",
+        templateName: "Default test template",
+        templateBody: "Default {{skillName}}",
+        renderedTemplateBody: "Default Review",
+        harnessIssueDescription: "Try the skill\n\n---\n\nDefault Review",
         status: "queued",
         outputDocumentKey: "output",
         outputSnapshot: "",
@@ -1287,6 +1385,11 @@ describe("company skill mutation permissions", () => {
         agentId: "55555555-5555-4555-8555-555555555555",
         agentConfigSnapshot: { adapterType: "codex_local" },
         issueId: "44444444-4444-4444-8444-444444444444",
+        templateId: "built-in:default-test-template",
+        templateName: "Default test template",
+        templateBody: "Default {{skillName}}",
+        renderedTemplateBody: "Default Review",
+        harnessIssueDescription: "Try the skill\n\n---\n\nDefault Review",
         status: "cancelled",
         outputDocumentKey: "output",
         outputSnapshot: "",
@@ -1360,6 +1463,11 @@ describe("company skill mutation permissions", () => {
         agentId: "55555555-5555-4555-8555-555555555555",
         agentConfigSnapshot: { adapterType: "codex_local" },
         issueId: "44444444-4444-4444-8444-444444444444",
+        templateId: "built-in:default-test-template",
+        templateName: "Default test template",
+        templateBody: "Default {{skillName}}",
+        renderedTemplateBody: "Default Review",
+        harnessIssueDescription: "Try the skill\n\n---\n\nDefault Review",
         status: "succeeded",
         outputDocumentKey: "output",
         outputSnapshot: "",

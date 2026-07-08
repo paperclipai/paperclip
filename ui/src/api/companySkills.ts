@@ -28,6 +28,9 @@ import type {
   CompanySkillTestRunCreateRequest,
   CompanySkillTestRunDetail,
   CompanySkillTestRunListQuery,
+  CompanySkillTestRunTemplate,
+  CompanySkillTestRunTemplateCreateRequest,
+  CompanySkillTestRunTemplateUpdateRequest,
   CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
   CompanySkillVersion,
@@ -93,6 +96,25 @@ export const companySkillsApi = {
   deleteTestInput: (companyId: string, skillId: string, inputId: string) =>
     api.delete<CompanySkillTestInput>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/test-inputs/${encodeURIComponent(inputId)}`,
+    ),
+  // --- Skill Studio cross-skill run templates ---
+  testRunTemplates: (companyId: string) =>
+    api.get<CompanySkillTestRunTemplate[]>(
+      `/companies/${encodeURIComponent(companyId)}/skill-test-run-templates`,
+    ),
+  createTestRunTemplate: (companyId: string, payload: CompanySkillTestRunTemplateCreateRequest) =>
+    api.post<CompanySkillTestRunTemplate>(
+      `/companies/${encodeURIComponent(companyId)}/skill-test-run-templates`,
+      payload,
+    ),
+  updateTestRunTemplate: (companyId: string, templateId: string, payload: CompanySkillTestRunTemplateUpdateRequest) =>
+    api.patch<CompanySkillTestRunTemplate>(
+      `/companies/${encodeURIComponent(companyId)}/skill-test-run-templates/${encodeURIComponent(templateId)}`,
+      payload,
+    ),
+  deleteTestRunTemplate: (companyId: string, templateId: string) =>
+    api.delete<CompanySkillTestRunTemplate>(
+      `/companies/${encodeURIComponent(companyId)}/skill-test-run-templates/${encodeURIComponent(templateId)}`,
     ),
   // --- Skill Studio test runs ---
   testRuns: (companyId: string, skillId: string, query: CompanySkillTestRunListQuery = {}) => {

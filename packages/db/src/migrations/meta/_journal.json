@@ -953,6 +953,13 @@
       "when": 1783440300000,
       "tag": "0137_skill_studio_run_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 138,
+      "version": "7",
+      "when": 1783440600000,
+      "tag": "0138_skill_studio_run_templates",
+      "breakpoints": true
     }
   ]
 }
