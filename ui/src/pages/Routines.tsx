@@ -195,12 +195,12 @@ export function buildRoutineSections(
   if (builtInRoutines.length === 0) return customGroups;
 
   return [
+    ...customGroups,
     {
       key: builtInRoutineGroupKey,
       label: "Built-in routines",
       items: builtInRoutines,
     },
-    ...customGroups,
   ];
 }
 

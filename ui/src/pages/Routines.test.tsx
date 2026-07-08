@@ -376,7 +376,7 @@ describe("Routines page", () => {
     expect(groups[1]?.items.map((item) => item.title)).toEqual(["Weekly digest"]);
   });
 
-  it("keeps built-in routines in their own section before configured groups", () => {
+  it("keeps built-in routines in their own section after configured groups", () => {
     const groups = buildRoutineSections(
       [
         createRoutine({
@@ -393,9 +393,9 @@ describe("Routines page", () => {
       new Map([["agent-1", { name: "Agent One" }]]),
     );
 
-    expect(groups.map((group) => group.label)).toEqual(["Built-in routines", "Project Alpha"]);
-    expect(groups[0]?.items.map((item) => item.title)).toEqual(["Reflection review"]);
-    expect(groups[1]?.items.map((item) => item.title)).toEqual(["Morning sync"]);
+    expect(groups.map((group) => group.label)).toEqual(["Project Alpha", "Built-in routines"]);
+    expect(groups[0]?.items.map((item) => item.title)).toEqual(["Morning sync"]);
+    expect(groups[1]?.items.map((item) => item.title)).toEqual(["Reflection review"]);
   });
 
   it("sorts routines by selected field and direction without mutating the source list", () => {
@@ -570,9 +570,9 @@ describe("Routines page", () => {
     }
 
     const text = container.textContent ?? "";
-    expect(text.indexOf("Built-in routines")).toBeLessThan(text.indexOf("Reflection review"));
-    expect(text.indexOf("Reflection review")).toBeLessThan(text.indexOf("Project Alpha"));
     expect(text.indexOf("Project Alpha")).toBeLessThan(text.indexOf("Morning sync"));
+    expect(text.indexOf("Morning sync")).toBeLessThan(text.indexOf("Built-in routines"));
+    expect(text.indexOf("Built-in routines")).toBeLessThan(text.indexOf("Reflection review"));
 
     await act(async () => {
       root.unmount();
