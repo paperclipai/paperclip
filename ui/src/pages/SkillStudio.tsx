@@ -95,7 +95,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { FileTree, buildFileTree, type FileTreeNode } from "@/components/FileTree";
-import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { StatusBadge } from "@/components/StatusBadge";
 import { EmptyState } from "@/components/EmptyState";
@@ -531,6 +530,66 @@ function withCurrentSkill(
   return skills.some((candidate) => candidate.id === skill.id) ? skills : [skill, ...skills];
 }
 
+function sourceEditorPlaceholder(path: string) {
+  if (/\.ya?ml$/i.test(path)) return "key: value";
+  if (/\.md$/i.test(path)) return "---\nname: skill-name\ndescription: What this skill does.\n---\n\n# Skill";
+  return "";
+}
+
+function StudioSourceEditor({
+  value,
+  onChange,
+  readOnly,
+  ariaLabel,
+  placeholder,
+  className,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  readOnly: boolean;
+  ariaLabel: string;
+  placeholder?: string;
+  className?: string;
+}) {
+  const gutterRef = useRef<HTMLPreElement>(null);
+  const lineNumbers = useMemo(() => {
+    const lineCount = Math.max(1, value.split("\n").length);
+    return Array.from({ length: lineCount }, (_, index) => String(index + 1)).join("\n");
+  }, [value]);
+
+  return (
+    <div className={cn(
+      "flex min-h-0 flex-1 overflow-hidden rounded-md border border-border bg-background",
+      className,
+    )}>
+      <pre
+        ref={gutterRef}
+        aria-hidden="true"
+        className="min-w-(--sz-48px) shrink-0 select-none overflow-hidden border-r border-border bg-muted/30 px-2 py-3 text-right font-mono text-xs leading-6 text-muted-foreground"
+      >
+        {lineNumbers}
+      </pre>
+      <textarea
+        value={value}
+        onChange={(event) => {
+          if (readOnly) return;
+          onChange(event.target.value);
+        }}
+        onScroll={(event) => {
+          if (gutterRef.current) {
+            gutterRef.current.scrollTop = event.currentTarget.scrollTop;
+          }
+        }}
+        readOnly={readOnly}
+        aria-label={ariaLabel}
+        placeholder={placeholder}
+        spellCheck={false}
+        className="h-full min-h-0 flex-1 resize-none border-0 bg-transparent px-3 py-3 font-mono text-xs leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0"
+      />
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Left — Skill files + editor
 // ---------------------------------------------------------------------------
@@ -696,8 +755,6 @@ function SkillPane({
     );
   }
 
-  const isMarkdown = fileQuery.data?.markdown ?? /\.md$/i.test(selectedFile);
-
   return (
     <PaneScaffold
       title={<SkillPaneTitle skillName={skill.name} folder={currentFolder || "root"} />}
@@ -778,24 +835,15 @@ function SkillPane({
             )}
           </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
-          {isMarkdown ? (
-            <MarkdownEditor
-              value={draft}
-              onChange={setDraft}
-              bordered={false}
-              readOnly={readOnly}
-              className="min-h-(--sz-320px)"
-            />
-          ) : (
-            <Textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              readOnly={readOnly}
-              className="min-h-(--sz-320px) font-mono text-xs"
-              spellCheck={false}
-            />
-          )}
+        <div className="flex min-h-0 flex-1 px-3 pb-3">
+          <StudioSourceEditor
+            value={draft}
+            onChange={setDraft}
+            readOnly={readOnly}
+            ariaLabel={`Edit ${selectedFile}`}
+            placeholder={sourceEditorPlaceholder(selectedFile)}
+            className="min-h-(--sz-320px)"
+          />
         </div>
       </div>
       <SkillPathDialog
@@ -1302,13 +1350,13 @@ function InputPane({
               )}
             </div>
           ) : null}
-          <div className="flex min-h-0 flex-1 p-3">
-            <MarkdownEditor
+          <div className="flex min-h-0 flex-1">
+            <textarea
               value={draft}
-              onChange={setDraft}
-              bordered={false}
+              onChange={(event) => setDraft(event.target.value)}
               placeholder="Paste text - treated as a new issue description."
-              className="skill-studio-input-editor min-h-0 flex-1"
+              aria-label="Skill test input"
+              className="min-h-0 flex-1 resize-none border-0 bg-transparent px-3 py-3 text-sm leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0"
             />
           </div>
           <div className="flex items-center justify-end gap-2 border-t border-border px-3 py-2">

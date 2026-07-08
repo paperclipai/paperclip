@@ -728,13 +728,6 @@
   color: inherit;
 }
 
-.skill-studio-input-editor,
-.skill-studio-input-editor .paperclip-mdxeditor,
-.skill-studio-input-editor .mdxeditor-root-contenteditable,
-.skill-studio-input-editor [class*="_contentEditable_"] {
-  min-height: 100%;
-}
-
 .paperclip-edit-in-place-content {
   font-size: 0.9375rem;
   line-height: 1.75rem;
