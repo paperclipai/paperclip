@@ -333,4 +333,74 @@ describe("claude remote execution", () => {
     expect(call?.[2]).toContain("12345678-1234-4abc-9def-123456789012");
   });
 
+  const remoteExecutionTransport = {
+    remoteExecution: {
+      host: "127.0.0.1",
+      port: 2222,
+      username: "fixture",
+      remoteWorkspacePath: "/remote/workspace",
+      remoteCwd: "/remote/workspace",
+      privateKey: "PRIVATE KEY",
+      knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+      strictHostKeyChecking: true,
+    },
+  } as const;
+
+  it("suppresses plugin/user hooks on headless runs via a --settings overlay by default", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-hooks-default-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    await execute({
+      runId: "run-hooks-default",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "claude" },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      executionTransport: remoteExecutionTransport,
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    const args = call?.[2] ?? [];
+    const settingsIndex = args.indexOf("--settings");
+    expect(settingsIndex).toBeGreaterThanOrEqual(0);
+    expect(JSON.parse(args[settingsIndex + 1] ?? "{}")).toEqual({ disableAllHooks: true });
+  });
+
+  it("leaves hooks enabled on headless runs when config.disableHooks is false", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-hooks-optout-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    await execute({
+      runId: "run-hooks-optout",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "claude", disableHooks: false },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      executionTransport: remoteExecutionTransport,
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    expect(call?.[2]).not.toContain("--settings");
+  });
+
 });
