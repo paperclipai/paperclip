@@ -135,7 +135,7 @@ export function SetMyUserSecretDialog({
                   className="font-mono text-sm"
                   autoFocus
                 />
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-(length:--text-micro) text-muted-foreground">
                   Points at your own credential in the configured provider. Paperclip stores the
                   reference, not the value.
                 </p>
@@ -147,10 +147,10 @@ export function SetMyUserSecretDialog({
                   value={value}
                   onChange={(event) => setValue(event.target.value)}
                   placeholder="Paste your token or credential"
-                  className="font-mono text-sm min-h-[80px]"
+                  className="font-mono text-sm min-h-(--sz-80px)"
                   autoFocus
                 />
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-(length:--text-micro) text-muted-foreground">
                   Stored encrypted. Never shown back to anyone, including admins.
                 </p>
               </div>

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type {
   Agent,
   GitWorktreeBranchAncestryVerdict,
@@ -19,11 +19,13 @@ import {
 } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Textarea } from "@/components/ui/textarea";
 import { agentUrl } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import {
@@ -68,6 +70,27 @@ export interface IssueRecoveryActionCardProps {
   onReissueIsolated?: (request: RecoveryReissueRequest) => void;
   /** Whether an isolated re-issue is currently in flight (disables the action + shows a spinner). */
   reissuePending?: boolean;
+  /**
+   * Handler for action 1 — "Reconcile forward & continue" (workspace_validation only). Rendered
+   * only for an ancestry-proven (`ancestor`) git-worktree divergence; the caller invokes the S4
+   * reconcile op in `forward` mode, which re-verifies ancestry server-side (the client hint is
+   * never trusted). If omitted, the button is not shown.
+   */
+  onReconcileForward?: () => void;
+  /**
+   * Handler for action 2 — the audited break-glass override (workspace_validation only). Receives
+   * the operator's required, non-empty reason and invokes the S4 reconcile op in `override` mode.
+   * Rendered only when `canBreakGlass` is true AND this handler is provided; the server independently
+   * rejects agent actors and re-checks runtime-manage permission, so UI hiding is defense-in-depth.
+   */
+  onBreakGlassOverride?: (reason: string) => void;
+  /**
+   * Whether the viewer may run the permission-gated break-glass override. When false, action 2 is
+   * not rendered at all — a non-permitted user never sees the "reconcile anyway" affordance.
+   */
+  canBreakGlass?: boolean;
+  /** Whether a reconcile (forward or override) is currently in flight (disables both actions). */
+  reconcilePending?: boolean;
   /** Whether the viewer can run destructive board-only actions (e.g. false-positive dismissal). */
   canFalsePositive?: boolean;
   className?: string;
@@ -293,18 +316,18 @@ function BranchFacet({
   const shortSha = formatShortSha(sha);
   return (
     <div className="min-w-0 rounded-md border border-border/70 bg-background/60 px-2.5 py-2">
-      <div className="text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
+      <div className="text-(length:--text-nano) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
         {label}
       </div>
       <div className="mt-1 flex items-center gap-1.5">
         <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
         {branch ? (
-          <code className="truncate font-mono text-[12px] text-foreground/90">{branch}</code>
+          <code className="truncate font-mono text-xs text-foreground/90">{branch}</code>
         ) : (
-          <span className="text-[12px] italic text-muted-foreground">detached / unknown</span>
+          <span className="text-xs italic text-muted-foreground">detached / unknown</span>
         )}
       </div>
-      <div className="mt-0.5 pl-5 font-mono text-[11px] text-muted-foreground">
+      <div className="mt-0.5 pl-5 font-mono text-(length:--text-micro) text-muted-foreground">
         {shortSha ? `@ ${shortSha}` : "@ —"}
       </div>
     </div>
@@ -328,13 +351,13 @@ function DivergenceDiagnosis({
       )}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+        <span className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
           Divergence diagnosis
         </span>
         <span
           data-testid="recovery-ancestry-verdict"
           className={cn(
-            "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em]",
+            "inline-flex items-center rounded-full border px-2 py-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-label)",
             badge.className,
           )}
         >
@@ -354,9 +377,123 @@ function DivergenceDiagnosis({
         />
       </div>
       {divergence.plainLanguageReason ? (
-        <p className="text-[12px] leading-5 text-foreground/80">{divergence.plainLanguageReason}</p>
+        <p className="text-xs leading-5 text-foreground/80">{divergence.plainLanguageReason}</p>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Action 2 — the audited break-glass override. Gated by an explicit confirm step that *restates the
+ * divergence* (both branches + short SHAs + ancestry verdict) and a required, non-empty reason: the
+ * confirm button stays disabled until the operator records why. The server re-checks the actor and
+ * permission and appends the reason to the audit log — this UI gate is the operator-facing guardrail,
+ * not the security boundary.
+ */
+function BreakGlassOverride({
+  divergence,
+  onConfirm,
+  pending,
+}: {
+  divergence: WorkspaceDivergence;
+  onConfirm: (reason: string) => void;
+  pending: boolean;
+}) {
+  const [reason, setReason] = useState("");
+  const trimmedReason = reason.trim();
+  const canSubmit = trimmedReason.length > 0 && !pending;
+  const verdictBadge = ANCESTRY_BADGE[divergence.ancestryVerdict ?? "unknown"];
+  const expectedSha = formatShortSha(divergence.expectedHeadSha);
+  const liveSha = formatShortSha(divergence.liveHeadSha);
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={pending}
+          data-testid="recovery-action-breakglass-trigger"
+          className="border-red-400/60 text-red-700 hover:bg-red-500/10 dark:border-red-500/40 dark:text-red-300"
+        >
+          <OctagonAlert className="h-3.5 w-3.5" aria-hidden />
+          I&apos;ve verified this — reconcile anyway
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        sideOffset={6}
+        aria-labelledby="recovery-breakglass-title"
+        className="w-96 max-w-[calc(100vw-2rem)] space-y-3 p-3"
+      >
+        <div className="space-y-1">
+          <div
+            id="recovery-breakglass-title"
+            className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-red-700 dark:text-red-300"
+          >
+            <OctagonAlert className="h-3.5 w-3.5" aria-hidden />
+            Break-glass reconciliation
+          </div>
+          <p className="text-[12px] leading-5 text-muted-foreground">
+            This overrides Paperclip&apos;s safety check and points the recorded workspace at the live
+            branch{" "}
+            <span className="font-medium text-foreground/80">without an ancestry proof</span>. Confirm
+            the divergence below and record why before continuing.
+          </p>
+        </div>
+        <dl
+          data-testid="recovery-breakglass-restated-divergence"
+          className="space-y-1.5 rounded-md border border-red-400/40 bg-red-500/5 px-2.5 py-2 text-[11px]"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Recorded · expected</dt>
+            <dd className="min-w-0 truncate font-mono text-foreground/90">
+              {divergence.expectedBranch ?? "detached"}
+              {expectedSha ? ` @ ${expectedSha}` : ""}
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Live · checked out</dt>
+            <dd className="min-w-0 truncate font-mono text-foreground/90">
+              {divergence.liveBranch ?? "detached"}
+              {liveSha ? ` @ ${liveSha}` : ""}
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Ancestry verdict</dt>
+            <dd className="font-medium">{verdictBadge.label}</dd>
+          </div>
+        </dl>
+        <div className="space-y-1">
+          <Label htmlFor="recovery-breakglass-reason" className="text-[11px] text-muted-foreground">
+            Reason <span className="text-red-600 dark:text-red-400">(required — recorded in the audit log)</span>
+          </Label>
+          <Textarea
+            id="recovery-breakglass-reason"
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="e.g. Verified the live branch carries only the intended follow-up commits; safe to adopt."
+            className="min-h-20 text-[12px]"
+            data-testid="recovery-breakglass-reason"
+            aria-required="true"
+          />
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="destructive"
+          className="w-full"
+          disabled={!canSubmit}
+          data-testid="recovery-action-breakglass-confirm"
+          onClick={() => {
+            if (!canSubmit) return;
+            onConfirm(trimmedReason);
+          }}
+        >
+          {pending ? "Reconciling…" : "Reconcile anyway (break-glass)"}
+        </Button>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -412,8 +549,8 @@ function MetadataRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[7.5rem_1fr] gap-x-3 gap-y-0 px-3 py-1.5 text-xs sm:px-4">
-      <dt className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+    <div className="grid grid-cols-(--gtc-8) gap-x-3 gap-y-0 px-3 py-1.5 text-xs sm:px-4">
+      <dt className="truncate text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
         {label}
       </dt>
       <dd className="min-w-0 break-words text-foreground/90">{children}</dd>
@@ -465,11 +602,11 @@ function RunChip({
   const short = shortenRunId(runId);
   const inner = (
     <>
-      <code className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
+      <code className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-(length:--text-micro) text-foreground/80">
         run {short}
       </code>
       {status ? (
-        <span className="font-sans text-[11px] text-muted-foreground">{status}</span>
+        <span className="font-sans text-(length:--text-micro) text-muted-foreground">{status}</span>
       ) : null}
     </>
   );
@@ -531,6 +668,10 @@ export function IssueRecoveryActionCard({
   onResolve,
   onReissueIsolated,
   reissuePending = false,
+  onReconcileForward,
+  onBreakGlassOverride,
+  canBreakGlass = false,
+  reconcilePending = false,
   canFalsePositive = false,
   className,
 }: IssueRecoveryActionCardProps) {
@@ -585,7 +726,22 @@ export function IssueRecoveryActionCard({
   const reissueVerdictBadge = divergence
     ? ANCESTRY_BADGE[divergence.ancestryVerdict ?? "unknown"]
     : null;
-  const showFooter = showResolveActions || showReissueAction;
+  // Action 1 — the ancestry-proven safe path. Only offered when the server-computed verdict is
+  // "ancestor"; the server re-verifies before mutating, so this gate mirrors (not replaces) it.
+  const showReconcileForward =
+    onReconcileForward !== undefined &&
+    cardState !== "resolved" &&
+    divergence !== null &&
+    divergence.ancestryVerdict === "ancestor";
+  // Action 2 — the break-glass override. Permission-hidden: absent entirely unless the viewer is a
+  // permitted operator. The confirm step (restated divergence + required reason) lives in the popover.
+  const showBreakGlass =
+    onBreakGlassOverride !== undefined &&
+    cardState !== "resolved" &&
+    divergence !== null &&
+    canBreakGlass;
+  const showFooter =
+    showResolveActions || showReissueAction || showReconcileForward || showBreakGlass;
 
   return (
     <section
@@ -594,7 +750,7 @@ export function IssueRecoveryActionCard({
       data-recovery-state={cardState}
       data-recovery-kind={action.kind}
       className={cn(
-        "relative w-full overflow-hidden rounded-lg border text-sm shadow-[0_1px_0_rgba(15,23,42,0.02)]",
+        "relative w-full overflow-hidden rounded-lg border text-sm shadow-(--shadow-extract-8)",
         tone.containerClass,
         className,
       )}
@@ -610,10 +766,10 @@ export function IssueRecoveryActionCard({
           <ToneIcon className={cn("h-4 w-4", tone.iconClass)} />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-semibold uppercase tracking-[0.14em]">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow)">
             <span className={tone.labelClass}>{tone.label}</span>
             <span className="text-muted-foreground/60" aria-hidden>·</span>
-            <code className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[11px] tracking-normal text-muted-foreground">
+            <code className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-(length:--text-micro) tracking-normal text-muted-foreground">
               {KIND_LABEL[action.kind] ?? action.kind}
             </code>
             {updatedAtLabel ? (
@@ -625,7 +781,7 @@ export function IssueRecoveryActionCard({
               </>
             ) : null}
           </div>
-          <p className="mt-1 text-[14px] leading-6">{headline}</p>
+          <p className="mt-1 text-sm leading-6">{headline}</p>
         </div>
       </header>
       <dl className={cn("border-t bg-background/40 dark:bg-background/20", tone.divider)}>
@@ -663,7 +819,7 @@ export function IssueRecoveryActionCard({
         ) : null}
         <MetadataRow label="Evidence">
           {evidenceSummary ? (
-            <span className="break-words font-mono text-[11px] text-foreground/80">{evidenceSummary}</span>
+            <span className="break-words font-mono text-(length:--text-micro) text-foreground/80">{evidenceSummary}</span>
           ) : (
             <MissingValue />
           )}
@@ -675,12 +831,12 @@ export function IssueRecoveryActionCard({
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {wakeSummary ? <span>{wakeSummary}</span> : <MissingValue />}
             {showAttempt ? (
-              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
                 attempt {action.attemptCount} of {action.maxAttempts}
               </span>
             ) : null}
             {showTimeoutInline ? (
-              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
                 Times out {formatTimeShort(action.timeoutAt) ?? "soon"}
               </span>
             ) : null}
@@ -716,7 +872,7 @@ export function IssueRecoveryActionCard({
                 sideOffset={6}
                 className="w-72 p-1.5"
               >
-                <div className="px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                <div className="px-2 py-1 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                   Resolve recovery
                 </div>
                 <div className="flex flex-col">
@@ -732,12 +888,29 @@ export function IssueRecoveryActionCard({
                       )}
                     >
                       <span className="font-medium leading-5">{option.label}</span>
-                      <span className="text-[11px] leading-4 text-muted-foreground">{option.description}</span>
+                      <span className="text-(length:--text-micro) leading-4 text-muted-foreground">{option.description}</span>
                     </button>
                   ))}
                 </div>
               </PopoverContent>
             </Popover>
+          ) : null}
+          {showReconcileForward ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="default"
+              disabled={reconcilePending}
+              data-testid="recovery-action-reconcile-forward"
+              onClick={() => onReconcileForward?.()}
+            >
+              {reconcilePending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+              )}
+              Reconcile forward &amp; continue
+            </Button>
           ) : null}
           {showReissueAction && divergence && reissueBaseRef ? (
             <Popover>
@@ -759,15 +932,15 @@ export function IssueRecoveryActionCard({
               </PopoverTrigger>
               <PopoverContent align="start" sideOffset={6} className="w-80 space-y-3 p-3">
                 <div className="space-y-1">
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                  <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                     Re-issue on isolated workspace
                   </div>
-                  <p className="text-[12px] leading-5 text-muted-foreground">
+                  <p className="text-xs leading-5 text-muted-foreground">
                     Creates a fresh copy of this task on an isolated git worktree based on the live
                     branch. Your current workspace and its commits are left untouched.
                   </p>
                 </div>
-                <dl className="space-y-1 rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 text-[11px]">
+                <dl className="space-y-1 rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 text-(length:--text-micro)">
                   <div className="flex items-center justify-between gap-2">
                     <dt className="text-muted-foreground">Base ref</dt>
                     <dd className="min-w-0 truncate font-mono text-foreground/90">{reissueBaseRef}</dd>
@@ -805,13 +978,20 @@ export function IssueRecoveryActionCard({
               </PopoverContent>
             </Popover>
           ) : null}
+          {showBreakGlass && divergence ? (
+            <BreakGlassOverride
+              divergence={divergence}
+              pending={reconcilePending}
+              onConfirm={(reason) => onBreakGlassOverride?.(reason)}
+            />
+          ) : null}
           {showResolveActions ? (
             cardState === "observe_only" ? (
-              <span className="text-[11px] text-muted-foreground">
+              <span className="text-(length:--text-micro) text-muted-foreground">
                 Recovery is observing without interrupting the live run.
               </span>
             ) : (
-              <span className="text-[11px] text-muted-foreground">
+              <span className="text-(length:--text-micro) text-muted-foreground">
                 The card stays open until an explicit decision is recorded.
               </span>
             )

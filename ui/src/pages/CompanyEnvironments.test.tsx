@@ -673,7 +673,7 @@ describe("CompanyEnvironments — test provider button", () => {
     await waitForAssertion(() => {
       expect(getOpenDialog()?.textContent).toContain("Configure image");
     });
-    expect(mockEnvironmentsApi.customImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1");
+    expect(mockEnvironmentsApi.customImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
     await act(async () => click(findButton(document.body, "Cancel")));
     await waitForAssertion(() => expect(getOpenDialog()).toBeNull());
 
@@ -1037,6 +1037,7 @@ describe("CompanyEnvironments — test provider button", () => {
 
     expect(mockEnvironmentsApi.startCustomImageSetupSession).toHaveBeenCalledWith(
       "env-1",
+      "company-1",
       { templateId: "template-active" },
     );
     await waitForAssertion(() => {
@@ -1044,6 +1045,66 @@ describe("CompanyEnvironments — test provider button", () => {
       expect(getOpenDialog()?.textContent).toContain("SSH command fallback");
       expect(mockEnvironmentsApi.createCustomImageTerminalSessionToken).toHaveBeenCalledExactlyOnceWith("session-1", {});
       expect(FakeWebSocket.instances).toHaveLength(1);
+    });
+  });
+
+  it("passes company context when rolling back and disabling an active template", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue({
+      adapters: [],
+      drivers: { local: "supported", ssh: "supported", sandbox: "supported", plugin: "unsupported" },
+      sandboxProviders: {
+        daytona: {
+          status: "supported",
+          supportsSavedProbe: true,
+          supportsUnsavedProbe: true,
+          supportsRunExecution: true,
+          supportsReusableLeases: true,
+          supportsInteractiveSetup: true,
+          interactiveSetupConnectionTypes: ["ssh"],
+          supportsTemplateCapture: true,
+          supportsTemplateDelete: true,
+          displayName: "Daytona",
+        },
+      },
+    });
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: createTemplate({ id: "template-active" }),
+      activeSession: null,
+      latestSession: null,
+    });
+
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanyEnvironments />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      const dialog = getOpenDialog();
+      expect(dialog?.textContent).toContain("Active template");
+      expect(findButton(dialog!, "Rollback")).toBeTruthy();
+      expect(findButton(dialog!, "Disable")).toBeTruthy();
+    });
+
+    await act(async () => click(findButton(getOpenDialog()!, "Rollback")));
+    await waitForAssertion(() => {
+      expect(mockEnvironmentsApi.rollbackCustomImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
+    });
+
+    await act(async () => click(findButton(getOpenDialog()!, "Disable")));
+    await waitForAssertion(() => {
+      expect(mockEnvironmentsApi.disableCustomImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
     });
   });
 });

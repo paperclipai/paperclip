@@ -950,7 +950,7 @@ describe("MarkdownEditor", () => {
 
     const options = Array.from(menu.querySelectorAll('button[type="button"]'));
     expect(options).toHaveLength(12);
-    expect(menu.className).toContain("max-h-[208px]");
+    expect(menu.className).toContain("max-h-(--sz-208px)");
     expect(menu.className).toContain("overflow-y-auto");
     expect(menu.style.touchAction).toBe("pan-y");
 

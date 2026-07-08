@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "@/lib/router";
 import type { WorkTimelineActor, WorkTimelineResult } from "@paperclipai/shared";
 import { applyCompanyPrefix, extractCompanyPrefixFromPath } from "@/lib/company-routes";
+import { getAgentIcon } from "@/lib/agent-icons";
 import {
   AXIS_H,
   actorType,
@@ -134,25 +135,70 @@ function truncate(text: string, n = 42): string {
   return text.length > n ? `${text.slice(0, n - 1)}…` : text;
 }
 
-/** An SVG avatar glyph: square for humans, dashed circle for system, circle for agents. */
-function AvatarGlyph({
+function svgFragmentId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+/** An SVG avatar glyph: agents use their configured sidebar icon, humans use their avatar image. */
+function ActorGlyph({
+  actor,
   cx,
   cy,
   r,
-  label,
-  type,
+  clipId,
 }: {
+  actor: WorkTimelineActor;
   cx: number;
   cy: number;
   r: number;
-  label: string;
-  type: string;
+  clipId: string;
 }) {
+  if (actor.type === "agent") {
+    const Icon = getAgentIcon(actor.avatar);
+    const size = r > 10 ? 16 : 13;
+    return (
+      <Icon
+        data-testid="timeline-agent-icon"
+        x={cx - size / 2}
+        y={cy - size / 2}
+        width={size}
+        height={size}
+        strokeWidth={2.2}
+        color="var(--color-muted-foreground)"
+      />
+    );
+  }
+
   const stroke = "var(--color-foreground)";
-  const fill = type === "system" ? "var(--color-muted)" : "var(--color-card)";
+  const fill = actor.type === "system" ? "var(--color-muted)" : "var(--color-card)";
+  const label = shortLabel(actor.name);
+
+  if (actor.type === "user" && actor.avatar) {
+    return (
+      <g>
+        <defs>
+          <clipPath id={clipId}>
+            <circle cx={cx} cy={cy} r={r} />
+          </clipPath>
+        </defs>
+        <image
+          data-testid="timeline-user-avatar-image"
+          href={actor.avatar}
+          x={cx - r}
+          y={cy - r}
+          width={2 * r}
+          height={2 * r}
+          preserveAspectRatio="xMidYMid slice"
+          clipPath={`url(#${clipId})`}
+        />
+        <circle cx={cx} cy={cy} r={r} fill="none" stroke={stroke} strokeWidth={1.2} opacity={0.5} />
+      </g>
+    );
+  }
+
   return (
     <g>
-      {type === "user" ? (
+      {actor.type === "user" ? (
         <rect x={cx - r} y={cy - r} width={2 * r} height={2 * r} rx={3} fill={fill} stroke={stroke} strokeWidth={1.5} />
       ) : (
         <circle
@@ -162,7 +208,7 @@ function AvatarGlyph({
           fill={fill}
           stroke={stroke}
           strokeWidth={1.5}
-          strokeDasharray={type === "system" ? "3 2" : undefined}
+          strokeDasharray={actor.type === "system" ? "3 2" : undefined}
         />
       )}
       <text x={cx} y={cy + 3.4} fontSize={r > 10 ? 9 : 8} textAnchor="middle" fill={stroke}>
@@ -388,7 +434,7 @@ export function WorkTimelineChart({
     <div className="relative">
       <div
         ref={scrollRef}
-        className="max-h-[70vh] overflow-auto"
+        className="max-h-(--sz-70vh) overflow-auto"
         data-testid="work-timeline-scroll"
         onScroll={(e) => {
           setScrollLeft(e.currentTarget.scrollLeft);
@@ -439,7 +485,7 @@ export function WorkTimelineChart({
               );
             })}
 
-          {/* now line — teal "Signal" present marker */}
+          {/* now line — status-blue "Signal" present marker (gallery r2; was teal) */}
           {now >= layout.fromMs && now <= layout.toMs && (
             <line
               x1={layout.gutter + ((now - layout.fromMs) / 60000) * layout.pxPerMinute}
@@ -483,14 +529,12 @@ export function WorkTimelineChart({
           {/* rows: gutter avatar/label, lane baselines, bars, human kickoff chips */}
           {layout.rows.map((row) => {
             const cy = row.y + AXIS_H + row.h / 2;
+            const actorGlyphId = svgFragmentId(`plot-${row.actor.id}`);
             return (
               <g key={`row-${row.actor.id}`}>
-                <AvatarGlyph cx={26} cy={cy} r={AVATAR_R} label={shortLabel(row.actor.name)} type={row.actor.type} />
-                <text x={26 + AVATAR_R + 10} y={cy - 2} fontSize={13} fill="var(--color-foreground)">
+                <ActorGlyph actor={row.actor} cx={26} cy={cy} r={AVATAR_R} clipId={actorGlyphId} />
+                <text x={26 + AVATAR_R + 10} y={cy + 4} fontSize={13} fill="var(--color-foreground)">
                   {truncate(row.actor.name, 18)}
-                </text>
-                <text x={26 + AVATAR_R + 10} y={cy + 12} fontSize={11} fill="var(--color-muted-foreground)">
-                  {row.actor.type}
                 </text>
 
                 {Array.from({ length: row.laneCount }).map((_, ln) => {
@@ -561,12 +605,12 @@ export function WorkTimelineChart({
                       </g>
                       {bar.kickoff && actorType(bar.kickoff) === "user" && (
                         <g className="pointer-events-none" data-testid="timeline-kickoff-chip">
-                          <AvatarGlyph
+                          <ActorGlyph
+                            actor={bar.kickoff as WorkTimelineActor}
                             cx={bar.x1}
                             cy={yTop + bar.height / 2}
                             r={CHIP_R}
-                            label={shortLabel((bar.kickoff as WorkTimelineActor).name)}
-                            type={actorType(bar.kickoff)}
+                            clipId={svgFragmentId(`kickoff-${bar.span.runId}-${bar.kickoff.id}`)}
                           />
                         </g>
                       )}
@@ -623,6 +667,7 @@ function ActorGutter({ rows, height }: { rows: ReturnType<typeof computeLayout>[
       <rect x={0} y={0} width={GEOM.gutter} height={height} fill="var(--color-card)" />
       {rows.map((row, i) => {
         const cy = row.y + AXIS_H + row.h / 2;
+        const actorGlyphId = svgFragmentId(`gutter-${row.actor.id}`);
         return (
           <g key={`gutter-${row.actor.id}`}>
             <rect
@@ -633,23 +678,9 @@ function ActorGutter({ rows, height }: { rows: ReturnType<typeof computeLayout>[
               fill={i % 2 ? "var(--color-muted)" : "var(--color-card)"}
               opacity={i % 2 ? 0.35 : 1}
             />
-            <AvatarGlyph cx={26} cy={cy} r={AVATAR_R} label={shortLabel(row.actor.name)} type={row.actor.type} />
-            <text x={26 + AVATAR_R + 10} y={cy - 2} fontSize={13} fill="var(--color-foreground)">
+            <ActorGlyph actor={row.actor} cx={26} cy={cy} r={AVATAR_R} clipId={actorGlyphId} />
+            <text x={26 + AVATAR_R + 10} y={cy + 4} fontSize={13} fill="var(--color-foreground)">
               {truncate(row.actor.name, 16)}
-            </text>
-            <text x={26 + AVATAR_R + 10} y={cy + 12} fontSize={11} fill="var(--color-muted-foreground)">
-              {row.actor.type}
-            </text>
-            {/* "Signal" rail: run count + active time, right-aligned in the gutter. */}
-            <text
-              x={GEOM.gutter - 10}
-              y={cy + 11}
-              fontSize={10.5}
-              textAnchor="end"
-              fill="var(--color-muted-foreground)"
-              style={{ fontVariantNumeric: "tabular-nums" }}
-            >
-              {row.runCount}× · {formatDuration(0, row.activeMs)}
             </text>
           </g>
         );
@@ -721,10 +752,10 @@ function Tooltip({ tooltip, now }: { tooltip: TooltipState; now: number }) {
   const left = Math.min(tooltip.x + 14, (typeof window !== "undefined" ? window.innerWidth : 1200) - 300);
   return (
     <div
-      className="pointer-events-none fixed z-50 max-w-[280px] rounded-md border border-foreground bg-card px-2.5 py-2 text-xs shadow-md"
+      className="pointer-events-none fixed z-50 max-w-(--sz-280px) rounded-md border border-foreground bg-card px-2.5 py-2 text-xs shadow-md"
       style={{ left, top: tooltip.y + 14 }}
     >
-      <div className="text-[13px] font-medium text-foreground">{truncate(title)}</div>
+      <div className="text-(length:--text-compact) font-medium text-foreground">{truncate(title)}</div>
       <div className="mt-0.5 text-muted-foreground">
         {fmtClock(startMs)}–{bar.span.end ? fmtClock(endMs) : "now"} · {formatDuration(startMs, endMs)} ·{" "}
         <span className="font-medium text-foreground">{bar.span.status}</span>
@@ -774,6 +805,7 @@ function MiniMap({
   const visibleEndMs = timeAtX(scrollLeft + layout.gutter + (viewportW || W));
   const brushX = mx(visibleStartMs);
   const brushW = Math.max(24, mx(visibleEndMs) - brushX);
+  const handleW = 14;
 
   const clearDocumentDrag = () => {
     documentDragCleanupRef.current?.();
@@ -838,7 +870,7 @@ function MiniMap({
         width={W}
         height={H}
         viewBox={`0 0 ${W} ${H}`}
-        className="block cursor-ew-resize"
+        className="block cursor-grab active:cursor-grabbing"
         onMouseDown={(e) => {
           const el = e.currentTarget;
           seek(e.clientX, el);
@@ -876,27 +908,67 @@ function MiniMap({
           strokeWidth={1.5}
           onMouseDown={(e) => startRangeDrag("move", e)}
         />
-        <rect
-          data-testid="timeline-minimap-left-handle"
-          x={brushX - 3}
+        <MiniMapHandle
+          x={brushX}
           y={1}
-          width={6}
           height={H - 2}
-          fill="var(--color-foreground)"
-          opacity={0.55}
+          width={handleW}
+          testId="timeline-minimap-left-handle"
+          label="Drag left edge to resize visible range"
           onMouseDown={(e) => startRangeDrag("left", e)}
         />
-        <rect
-          data-testid="timeline-minimap-right-handle"
-          x={brushX + brushW - 3}
+        <MiniMapHandle
+          x={brushX + brushW}
           y={1}
-          width={6}
           height={H - 2}
-          fill="var(--color-foreground)"
-          opacity={0.55}
+          width={handleW}
+          testId="timeline-minimap-right-handle"
+          label="Drag right edge to resize visible range"
           onMouseDown={(e) => startRangeDrag("right", e)}
         />
       </svg>
     </div>
+  );
+}
+
+function MiniMapHandle({
+  x,
+  y,
+  width,
+  height,
+  testId,
+  label,
+  onMouseDown,
+}: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  testId: string;
+  label: string;
+  onMouseDown: (event: React.MouseEvent<SVGElement>) => void;
+}) {
+  const left = x - width / 2;
+  const gripTop = y + height / 2 - 7;
+  return (
+    <g
+      data-testid={testId}
+      className="cursor-grab active:cursor-grabbing"
+      onMouseDown={onMouseDown}
+    >
+      <title>{label}</title>
+      <rect
+        x={left}
+        y={y}
+        width={width}
+        height={height}
+        rx={3}
+        fill="var(--color-foreground)"
+        opacity={0.16}
+      />
+      <line x1={x - 3} y1={gripTop} x2={x - 3} y2={gripTop + 14} stroke="var(--color-foreground)" strokeWidth={1.5} opacity={0.85} />
+      <line x1={x} y1={gripTop} x2={x} y2={gripTop + 14} stroke="var(--color-foreground)" strokeWidth={1.5} opacity={0.85} />
+      <line x1={x + 3} y1={gripTop} x2={x + 3} y2={gripTop + 14} stroke="var(--color-foreground)" strokeWidth={1.5} opacity={0.85} />
+    </g>
   );
 }

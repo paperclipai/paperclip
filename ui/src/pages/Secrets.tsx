@@ -332,7 +332,7 @@ function StatusBadge({ status }: { status: SecretStatus }) {
 
 function MetaChip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex min-w-0 items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
+    <span className="inline-flex min-w-0 items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-(length:--text-micro) text-muted-foreground">
       {children}
     </span>
   );
@@ -1523,7 +1523,7 @@ export function Secrets() {
                 >
                   <div
                     role="row"
-                    className="grid grid-cols-[minmax(12rem,2.4fr)_minmax(5.25rem,0.75fr)_minmax(7rem,1fr)_minmax(5rem,0.7fr)_2.75rem] items-center gap-3 bg-muted/40 px-3 py-2 text-xs uppercase tracking-wide text-muted-foreground"
+                    className="grid grid-cols-(--gtc-54) items-center gap-3 bg-muted/40 px-3 py-2 text-xs uppercase tracking-wide text-muted-foreground"
                   >
                     <div role="columnheader" className="font-medium">Secret</div>
                     <div role="columnheader" className="font-medium">Status</div>
@@ -1548,7 +1548,7 @@ export function Secrets() {
                           key={row.id}
                           role="row"
                           className={cn(
-                            "grid cursor-pointer grid-cols-[minmax(12rem,2.4fr)_minmax(5.25rem,0.75fr)_minmax(7rem,1fr)_minmax(5rem,0.7fr)_2.75rem] items-center gap-3 border-b border-border/60 px-3 py-3 hover:bg-accent/40",
+                            "grid cursor-pointer grid-cols-(--gtc-54) items-center gap-3 border-b border-border/60 px-3 py-3 hover:bg-accent/40",
                             row.kind === "company" && selectedSecretId === row.secret.id && "bg-accent/60",
                             row.kind === "user" && selectedDefinitionId === row.definition.id && "bg-accent/60",
                           )}
@@ -1582,7 +1582,7 @@ export function Secrets() {
                                 </Tooltip>
                               )}
                             </div>
-                            <code className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                            <code className="mt-0.5 block truncate text-(length:--text-micro) text-muted-foreground">
                               {row.kind === "company" ? row.secret.key : row.definition.key}
                             </code>
                             <div className="mt-1">
@@ -1641,7 +1641,7 @@ export function Secrets() {
                             <div className="truncate font-medium text-foreground">
                               {row.kind === "company" ? row.secret.name : row.definition.name}
                             </div>
-                            <code className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                            <code className="mt-0.5 block truncate text-(length:--text-micro) text-muted-foreground">
                               {row.kind === "company" ? row.secret.key : row.definition.key}
                             </code>
                           </div>
@@ -2038,7 +2038,7 @@ export function Secrets() {
       )}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto p-4 sm:max-w-lg sm:p-6">
+        <DialogContent className="max-h-(--sz-calc-18) overflow-y-auto p-4 sm:max-w-lg sm:p-6">
           <DialogHeader>
             <DialogTitle>{editingDefinition ? "Edit user-provided secret" : "Create secret"}</DialogTitle>
             <DialogDescription>
@@ -2083,7 +2083,7 @@ export function Secrets() {
                   disabled={Boolean(editingDefinition)}
                   className={secretValueProvider === "user" ? "font-mono text-sm" : undefined}
                 />
-                <p className="mt-1 text-[11px] text-muted-foreground">
+                <p className="mt-1 text-(length:--text-micro) text-muted-foreground">
                   {secretValueProvider === "user"
                     ? editingDefinition
                       ? "Stable env binding key. Cannot be changed."
@@ -2129,7 +2129,7 @@ export function Secrets() {
                     <TabsTrigger value="user">Each user</TabsTrigger>
                   </TabsList>
                 </Tabs>
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-(length:--text-micro) text-muted-foreground">
                   Company stores one shared value. Each user lets every member supply their own value under My secrets.
                 </p>
               </div>
@@ -2194,12 +2194,12 @@ export function Secrets() {
                     ))}
                   </select>
                   {createProviderBlockReason ? (
-                    <p className="mt-1 flex items-center gap-1 text-[11px] text-destructive">
+                    <p className="mt-1 flex items-center gap-1 text-(length:--text-micro) text-destructive">
                       <AlertCircle className="h-3 w-3" />
                       {createProviderBlockReason}
                     </p>
                   ) : createProviderHealthText ? (
-                    <p className="mt-1 text-[11px] text-muted-foreground">{createProviderHealthText}</p>
+                    <p className="mt-1 text-(length:--text-micro) text-muted-foreground">{createProviderHealthText}</p>
                   ) : null}
                 </div>
                 <div>
@@ -2227,14 +2227,14 @@ export function Secrets() {
                   {selectedCreateProviderConfig ? (
                     <ProviderVaultInlineWarning config={selectedCreateProviderConfig} />
                   ) : (
-                    <p className="mt-1 text-[11px] text-muted-foreground">
+                    <p className="mt-1 text-(length:--text-micro) text-muted-foreground">
                       Existing deployment-level provider settings stay available for backwards compatibility.
                     </p>
                   )}
                 </div>
                 {createMode === "managed" ? (
                   <>
-                <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2 text-[11px] text-emerald-700 dark:text-emerald-300">
+                <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2 text-(length:--text-micro) text-emerald-700 dark:text-emerald-300">
                   Paperclip-managed secrets are created in the selected provider and future rotations
                   write a new provider version through Paperclip.
                   {awsManagedPathPreview ? (
@@ -2272,7 +2272,7 @@ export function Secrets() {
                       placeholder="arn:aws:secretsmanager:..."
                       className="font-mono text-xs"
                     />
-                    <p className="text-[11px] text-muted-foreground mt-1">
+                    <p className="text-(length:--text-micro) text-muted-foreground mt-1">
                       Existing provider secrets are resolve-only in Paperclip. Rotate the value in the provider,
                       then update this reference only if the path, ARN, or version changes.
                     </p>
@@ -2281,7 +2281,7 @@ export function Secrets() {
               </>
             ) : (
               <>
-                <div className="rounded-md border border-violet-500/30 bg-violet-500/5 p-2 text-[11px] text-violet-800 dark:text-violet-200">
+                <div className="rounded-md border border-violet-500/30 bg-violet-500/5 p-2 text-(length:--text-micro) text-violet-800 dark:text-violet-200">
                   Every member supplies their own value under My secrets. Agents resolve the responsible
                   user&apos;s value at runtime.
                 </div>
@@ -2296,7 +2296,7 @@ export function Secrets() {
                       setCreateForm((current) => ({ ...current, usageGuidance: event.target.value }))
                     }
                     placeholder="Tell members how to create their token, required scopes, etc."
-                    className="min-h-[70px] text-sm"
+                    className="min-h-(--sz-70px) text-sm"
                   />
                 </div>
               </>
@@ -2335,7 +2335,7 @@ export function Secrets() {
       </Dialog>
 
       <Dialog open={vaultDialogOpen} onOpenChange={setVaultDialogOpen}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+        <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{editingVault ? "Edit provider vault" : "Create provider vault"}</DialogTitle>
             <DialogDescription>
@@ -2498,7 +2498,7 @@ export function Secrets() {
             {selectedRotateProviderConfig ? (
               <ProviderVaultInlineWarning config={selectedRotateProviderConfig} />
             ) : (
-              <p className="mt-1 text-[11px] text-muted-foreground">
+              <p className="mt-1 text-(length:--text-micro) text-muted-foreground">
                 Rotating with the deployment default preserves current fallback behavior.
               </p>
             )}
@@ -2513,7 +2513,7 @@ export function Secrets() {
                 placeholder={selectedSecret.externalRef ?? "Updated reference"}
                 className="font-mono text-xs"
               />
-              <p className="mt-1 text-[11px] text-muted-foreground">
+              <p className="mt-1 text-(length:--text-micro) text-muted-foreground">
                 Rotate the actual value in the provider before changing this Paperclip reference.
               </p>
             </div>
@@ -2708,7 +2708,7 @@ function SecretsFiltersPopover({
         >
           <Filter className="h-3.5 w-3.5" />
           {activeFilterCount > 0 ? (
-            <span className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-[9px] font-bold text-white">
+            <span className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-(length:--text-nano) font-bold text-white">
               {activeFilterCount}
             </span>
           ) : null}
@@ -2716,7 +2716,7 @@ function SecretsFiltersPopover({
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="w-[min(520px,calc(100vw-2rem))] max-h-[min(80vh,34rem)] overflow-y-auto overscroll-contain p-0"
+        className="w-(--sz-calc-41) max-h-(--sz-calc-42) overflow-y-auto overscroll-contain p-0"
       >
         <div className="space-y-3 p-3">
           <div className="flex items-center justify-between">
@@ -2831,14 +2831,14 @@ function ProviderVaultInlineWarning({ config }: { config: CompanySecretProviderC
   const message = blockReason ?? config.healthMessage;
   if (!message) {
     return (
-      <p className="mt-1 text-[11px] text-muted-foreground">
+      <p className="mt-1 text-(length:--text-micro) text-muted-foreground">
         {config.isDefault ? "Default vault" : "Vault"} · {config.status.replace("_", " ")}
       </p>
     );
   }
   const warning = config.status === "warning" || config.healthStatus === "warning";
   return (
-    <p className={cn("mt-1 flex items-center gap-1 text-[11px]", warning ? "text-amber-600 dark:text-amber-400" : "text-destructive")}>
+    <p className={cn("mt-1 flex items-center gap-1 text-(length:--text-micro)", warning ? "text-amber-600 dark:text-amber-400" : "text-destructive")}>
       {warning ? <AlertTriangle className="h-3 w-3" /> : <AlertCircle className="h-3 w-3" />}
       {message}
     </p>
@@ -3374,7 +3374,7 @@ function AwsProviderVaultDiscoveryError({
                 Copy
               </Button>
             </div>
-            <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed">
+            <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-(length:--text-micro) leading-relaxed">
               {detailsText}
             </pre>
           </div>
@@ -3411,7 +3411,7 @@ function AwsProviderVaultDiscoveryCandidateRow({
             {fieldSummary.length > 0 ? fieldSummary.join(" / ") : "No stable namespace or prefix detected"}
           </p>
           {candidate.samples[0] ? (
-            <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
+            <p className="mt-1 truncate font-mono text-(length:--text-micro) text-muted-foreground">
               {candidate.samples[0].name}
             </p>
           ) : null}
@@ -3527,7 +3527,7 @@ function UserSecretDetailsTab({
       <DetailRow label="Usage guidance">
         {definition.usageGuidance ?? <span className="text-muted-foreground">—</span>}
       </DetailRow>
-      <div className="mt-3 rounded-md border border-violet-500/30 bg-violet-500/5 p-2 text-[11px] text-violet-800 dark:text-violet-200">
+      <div className="mt-3 rounded-md border border-violet-500/30 bg-violet-500/5 p-2 text-(length:--text-micro) text-violet-800 dark:text-violet-200">
         No value is stored on this admin row. Each member manages their own value under My secrets.
       </div>
     </dl>
@@ -3597,7 +3597,7 @@ function UserSecretUsageTab({ definition }: { definition: UserSecretDefinition }
       </div>
       {definition.usageGuidance ? (
         <div>
-          <p className="mb-1 text-[11px] uppercase tracking-wide text-muted-foreground">Member guidance</p>
+          <p className="mb-1 text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Member guidance</p>
           <p className="text-foreground">{definition.usageGuidance}</p>
         </div>
       ) : null}
@@ -3659,7 +3659,7 @@ function SecretDetailsTab({
       <DetailRow label="Updated">{formatRelative(secret.updatedAt)}</DetailRow>
       <DetailRow label="Last rotated">{formatRelative(secret.lastRotatedAt)}</DetailRow>
       <DetailRow label="Last resolved">{formatRelative(secret.lastResolvedAt)}</DetailRow>
-      <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-300">
+      <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-(length:--text-micro) text-amber-700 dark:text-amber-300">
         {modeDescription(secret.managedMode)} Paperclip never re-displays stored values.
       </div>
     </dl>
@@ -3668,8 +3668,8 @@ function SecretDetailsTab({
 
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-[8rem_minmax(0,1fr)] gap-3 py-2">
-      <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</dt>
+    <div className="grid grid-cols-(--gtc-55) gap-3 py-2">
+      <dt className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">{label}</dt>
       <dd className="min-w-0 text-foreground">{children}</dd>
     </div>
   );
@@ -3706,15 +3706,15 @@ function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: Com
               <span className="truncate font-medium">{binding.target.label}</span>
             )}
             {binding.target.status ? (
-              <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-normal">
+              <Badge variant="outline" className="h-5 px-1.5 text-(length:--text-nano) font-normal">
                 {binding.target.status.replaceAll("_", " ")}
               </Badge>
             ) : null}
           </div>
-          <div className="font-mono text-[11px] text-muted-foreground break-all">
+          <div className="font-mono text-(length:--text-micro) text-muted-foreground break-all">
             {binding.targetId}
           </div>
-          <div className="text-[11px] text-muted-foreground">
+          <div className="text-(length:--text-micro) text-muted-foreground">
             {binding.configPath} {binding.required ? "· required" : "· optional"}
           </div>
         </div>
@@ -3771,30 +3771,30 @@ function SecretEventsTab({
               {event.secretScope === "user" ? (
                 <Badge
                   variant="outline"
-                  className="border-violet-500/30 bg-violet-500/10 text-[10px] text-violet-700 dark:text-violet-300"
+                  className="border-violet-500/30 bg-violet-500/10 text-(length:--text-nano) text-violet-700 dark:text-violet-300"
                 >
                   User secret
                 </Badge>
               ) : null}
             </span>
-            <span className="text-[11px] text-muted-foreground">{formatRelative(event.createdAt)}</span>
+            <span className="text-(length:--text-micro) text-muted-foreground">{formatRelative(event.createdAt)}</span>
           </div>
-          <div className="font-mono text-[11px] text-muted-foreground break-all">
+          <div className="font-mono text-(length:--text-micro) text-muted-foreground break-all">
             {event.consumerId}
           </div>
           {event.responsibleUserId ? (
-            <div className="text-[11px] text-muted-foreground">
+            <div className="text-(length:--text-micro) text-muted-foreground">
               Responsible user: <span className="text-foreground">{userLabel(event.responsibleUserId)}</span>
             </div>
           ) : null}
           {event.credentialOwnerUserId &&
           event.credentialOwnerUserId !== event.responsibleUserId ? (
-            <div className="text-[11px] text-muted-foreground">
+            <div className="text-(length:--text-micro) text-muted-foreground">
               Credential owner: <span className="text-foreground">{userLabel(event.credentialOwnerUserId)}</span>
             </div>
           ) : null}
           {event.errorCode ? (
-            <div className="text-[11px] text-destructive">{event.errorCode}</div>
+            <div className="text-(length:--text-micro) text-destructive">{event.errorCode}</div>
           ) : null}
         </div>
       ))}

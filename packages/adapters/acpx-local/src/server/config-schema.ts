@@ -61,6 +61,7 @@ export function getConfigSchema(): AdapterConfigSchema {
         label: "Timeout seconds",
         type: "number",
         default: DEFAULT_ACPX_LOCAL_TIMEOUT_SEC,
+        hint: "Wall-clock timeout for a run. 0 uses the target default: no adapter timeout on local/SSH, 4 hours on sandbox targets. Set a negative value (e.g. -1) to disable the adapter timeout everywhere, including sandboxes.",
       },
       {
         key: "warmHandleIdleMs",

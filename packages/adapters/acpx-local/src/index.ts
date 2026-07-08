@@ -50,7 +50,7 @@ Core fields:
 - model (string, optional): requested ACP model. Claude and Codex ACP agents both receive this through ACP session config.
 - effort/modelReasoningEffort (string, optional): requested thinking effort. Claude uses effort; Codex uses modelReasoningEffort/reasoning_effort.
 - fastMode (boolean, optional): for ACPX Codex, request Codex fast mode through ACP session config.
-- timeoutSec (number, optional): run timeout in seconds. Defaults to 0, meaning no adapter timeout.
+- timeoutSec (number, optional): run timeout in seconds. Defaults to 0, meaning no adapter timeout for local/SSH execution. Sandbox execution targets default to a 4h wall-clock backstop when timeoutSec is unset; the output-inactivity monitor remains the primary hang detector.
 - warmHandleIdleMs (number, optional): live ACPX process idle window after a successful persistent run. Defaults to 0, meaning Paperclip shuts the process down after each run while retaining ACPX session state.
 - env (object, optional): KEY=VALUE environment variables or secret bindings.
 

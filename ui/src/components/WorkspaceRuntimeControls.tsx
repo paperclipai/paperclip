@@ -354,7 +354,7 @@ function CommandSection({
                 {item.healthStatus && item.statusLabel !== "stopped" ? (
                   <div className="flex items-center gap-2">
                     <span className={cn(
-                      "inline-flex items-center rounded-full border px-2.5 py-1 text-[11px]",
+                      "inline-flex items-center rounded-full border px-2.5 py-1 text-(length:--text-micro)",
                       item.healthStatus === "healthy"
                         ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
                         : item.healthStatus === "unhealthy"
@@ -405,7 +405,7 @@ export function WorkspaceRuntimeControls({
     <div className={cn("space-y-4", className)}>
       <div className={cn("border border-border/70 bg-background p-3", square ? "rounded-none" : "rounded-xl")}>
         <div className="space-y-1">
-          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace commands</div>
+          <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Workspace commands</div>
           <div className="flex flex-wrap items-center gap-2">
             <span
               className={cn(

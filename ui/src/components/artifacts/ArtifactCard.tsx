@@ -26,7 +26,7 @@ function PlaceholderPreview({ label }: { label?: string }) {
     <PreviewFrame className="flex items-center justify-center">
       <div className="flex flex-col items-center gap-1.5 text-muted-foreground/50">
         <Paperclip className="h-7 w-7" aria-hidden="true" />
-        {label ? <span className="text-[11px] font-medium uppercase tracking-wide">{label}</span> : null}
+        {label ? <span className="text-(length:--text-micro) font-medium uppercase tracking-wide">{label}</span> : null}
       </div>
     </PreviewFrame>
   );
@@ -197,7 +197,7 @@ export function ArtifactCard({ artifact }: ArtifactCardProps) {
       disableIssueQuicklook
       data-testid="artifact-card"
       data-media-kind={artifact.mediaKind}
-      className="group flex flex-col overflow-hidden rounded-[8px] border border-border bg-card transition-colors hover:border-foreground/20"
+      className="group flex flex-col overflow-hidden rounded-(--rad-8) border border-border bg-card transition-colors hover:border-foreground/20"
     >
       <ArtifactPreview artifact={artifact} />
 
@@ -223,7 +223,7 @@ export function ArtifactCard({ artifact }: ArtifactCardProps) {
           </div>
         </div>
 
-        <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground/65">
+        <div className="mt-0.5 flex items-center gap-1.5 text-(length:--text-micro) text-muted-foreground/65">
           <span>Last edited {formatDate(artifact.updatedAt)}</span>
           {artifact.createdByAgent ? (
             <>

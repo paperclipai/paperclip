@@ -106,6 +106,54 @@ describe("secret routes", () => {
     expect(mockSecretService.create).not.toHaveBeenCalled();
   });
 
+  it("returns sanitized AWS provider errors when managed secret creation fails", async () => {
+    mockSecretService.create.mockRejectedValue(
+      new HttpError(
+        403,
+        "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        {
+          code: "access_denied",
+          provider: "aws_secrets_manager",
+          operation: "secret.create",
+          providerConfigId: "11111111-1111-4111-8111-111111111111",
+          region: "us-east-1",
+          credentialPath: "Paperclip server runtime/provider credential path",
+          requiredCapability: "secretsmanager:CreateSecret",
+          actionableMessage:
+            "AWS managed secret creation needs secretsmanager:CreateSecret in the selected region for this provider vault.",
+          safeAlternative:
+            "If the secret already exists in AWS, link it as an external reference instead of creating a Paperclip-managed value.",
+        },
+      ),
+    );
+
+    const res = await request(createApp()).post("/api/companies/company-1/secrets").send({
+      name: "Vercel token",
+      key: "vercel_token",
+      provider: "aws_secrets_manager",
+      providerConfigId: "11111111-1111-4111-8111-111111111111",
+      managedMode: "paperclip_managed",
+      value: "vcp_test",
+    });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      code: "access_denied",
+      error: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+      details: {
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "secret.create",
+        providerConfigId: "11111111-1111-4111-8111-111111111111",
+        region: "us-east-1",
+        requiredCapability: "secretsmanager:CreateSecret",
+      },
+    });
+    expect(JSON.stringify(res.body)).not.toContain("arn:aws");
+    expect(JSON.stringify(res.body)).not.toContain("123456789012");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("restricts user secret definition management to company admins", async () => {
     const res = await request(createApp({
       type: "board",

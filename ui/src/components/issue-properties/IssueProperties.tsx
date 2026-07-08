@@ -178,6 +178,7 @@ export function IssueProperties({
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
+  // token-extraction: allowlisted — color-picker seed state, persisted into label-create payload; a var() string would break that payload.
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
   const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
   const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
@@ -1059,7 +1060,7 @@ export function IssueProperties({
           </span>
         ) : null}
       </div>
-      <dl className="grid grid-cols-[6rem_1fr] gap-y-1">
+      <dl className="grid grid-cols-(--gtc-15) gap-y-1">
         {scheduledRetryReasonLabel ? (
           <>
             <dt className="text-muted-foreground">Reason</dt>
@@ -1573,7 +1574,7 @@ export function IssueProperties({
     <>
       <span
         className="shrink-0 h-3 w-3 rounded-sm"
-        style={{ backgroundColor: orderedProjects.find((p) => p.id === issue.projectId)?.color ?? "#6366f1" }}
+        style={{ backgroundColor: orderedProjects.find((p) => p.id === issue.projectId)?.color ?? "var(--project-seed)" }}
       />
       <span className="text-sm truncate min-w-0" title={projectName(issue.projectId)}>{projectName(issue.projectId)}</span>
     </>
@@ -1646,7 +1647,7 @@ export function IssueProperties({
               {option.kind === "project" ? (
                 <span
                   className="shrink-0 h-3 w-3 rounded-sm"
-                  style={{ backgroundColor: option.color ?? "#6366f1" }}
+                  style={{ backgroundColor: option.color ?? "var(--project-seed)" }}
                 />
               ) : null}
               {option.name}
@@ -1946,7 +1947,7 @@ export function IssueProperties({
           onOpenChange={(open) => { setProjectOpen(open); if (!open) setProjectSearch(""); }}
           triggerContent={projectTrigger}
           triggerClassName="min-w-0 max-w-full"
-          popoverClassName="w-fit min-w-[11rem]"
+          popoverClassName="w-fit min-w-(--sz-11rem)"
           extra={issue.projectId ? (
             <Link
               to={projectLink(issue.projectId)!}
@@ -2142,7 +2143,7 @@ export function IssueProperties({
             onOpenChange={setScheduledRetryOpen}
             triggerContent={scheduledRetryTrigger}
             triggerClassName="min-w-0 max-w-full"
-            popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-[32rem]")}
+            popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-(--sz-32rem)")}
             extra={scheduledRetryAttemptBadge}
           >
             {scheduledRetryContent}
@@ -2156,7 +2157,7 @@ export function IssueProperties({
           onOpenChange={setMonitorOpen}
           triggerContent={monitorTrigger}
           triggerClassName="min-w-0 max-w-full"
-          popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-[32rem]")}
+          popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-(--sz-32rem)")}
           extra={monitorAttemptBadge}
         >
           {monitorContent}

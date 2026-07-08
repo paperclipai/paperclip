@@ -194,13 +194,13 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium text-foreground">{definition.name}</span>
-                    <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                    <code className="rounded bg-muted px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
                       {definition.key}
                     </code>
                     <UserSecretChip />
                     <Badge
                       variant="outline"
-                      className={cn("text-[11px]", secretStatusTone(definition.status))}
+                      className={cn("text-(length:--text-micro)", secretStatusTone(definition.status))}
                     >
                       {definition.status}
                     </Badge>
@@ -271,7 +271,7 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
                 className="font-mono text-sm"
                 disabled={Boolean(editing)}
               />
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-(length:--text-micro) text-muted-foreground">
                 Stable identifier referenced by env bindings. {editing ? "Cannot be changed." : ""}
               </p>
             </div>
@@ -295,7 +295,7 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
                   setForm((current) => ({ ...current, usageGuidance: event.target.value }))
                 }
                 placeholder="Tell members how to create their token, required scopes, etc."
-                className="min-h-[70px] text-sm"
+                className="min-h-(--sz-70px) text-sm"
               />
             </div>
             {editing ? (
@@ -375,7 +375,7 @@ function CoverageBadge({
   const summary = coverageQuery.data;
   const missing = summary ? summary.missingCount : 0;
   return (
-    <p className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+    <p className="mt-1 inline-flex items-center gap-1 text-(length:--text-micro) text-muted-foreground">
       <Users className="h-3 w-3" />
       Coverage: {coverageSummaryLabel(summary)}
       {summary && missing > 0 ? (

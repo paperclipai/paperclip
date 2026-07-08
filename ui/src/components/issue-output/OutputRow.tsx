@@ -31,7 +31,7 @@ export function OutputRow({ item, creatorName }: OutputRowProps) {
         </p>
         <p
           className={cn(
-            "truncate text-[11px]",
+            "truncate text-(length:--text-micro)",
             item.degraded ? "text-destructive" : "text-muted-foreground",
           )}
         >

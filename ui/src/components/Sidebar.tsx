@@ -60,6 +60,8 @@ export function Sidebar() {
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
   const showPipelines = experimentalSettings?.enablePipelines === true;
+  const goalsLinkPending = experimentalSettings === undefined;
+  const showGoalsLink = experimentalSettings?.enableGoalsSidebarLink === true;
   // Streamlined left navigation (top-level Projects link + starred children) is
   // now the standard product sidebar (PAP-12472). The former experimental
   // opt-out was retired; classic per-project collapsible mode is no longer
@@ -145,7 +147,7 @@ export function Sidebar() {
                 onClick={() => openNewIssue()}
                 data-slot="icon-button"
                 aria-label={rail ? "New Task" : undefined}
-                className="flex items-center gap-2.5 px-3 py-2 pointer-coarse:py-1.5 text-[13px] font-medium text-foreground/80 hover:bg-accent/50 hover:text-foreground transition-colors"
+                className="flex items-center gap-2.5 px-3 py-2 pointer-coarse:py-1.5 text-(length:--text-compact) font-medium text-foreground/80 hover:bg-accent/50 hover:text-foreground transition-colors"
               >
                 <SquarePen className="h-4 w-4 shrink-0" />
                 <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "truncate"}>New Task</span>
@@ -181,7 +183,15 @@ export function Sidebar() {
           {showPipelines ? (
             <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
           ) : null}
-          <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+          {showGoalsLink ? (
+            <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+          ) : goalsLinkPending ? (
+            <div
+              data-testid="sidebar-goals-placeholder"
+              className="h-9 pointer-coarse:h-8"
+              aria-hidden="true"
+            />
+          ) : null}
           <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           {showWorkspacesLink ? (
@@ -197,14 +207,14 @@ export function Sidebar() {
             slotTypes={["sidebar"]}
             context={pluginContext}
             className="flex flex-col gap-0.5"
-            itemClassName="text-[13px] font-medium"
+            itemClassName="text-(length:--text-compact) font-medium"
             missingBehavior="placeholder"
           />
           <PluginLauncherOutlet
             placementZones={["sidebar"]}
             context={pluginContext}
             className="flex flex-col gap-0.5"
-            itemClassName="text-[13px] font-medium"
+            itemClassName="text-(length:--text-compact) font-medium"
           />
         </SidebarSection>
 

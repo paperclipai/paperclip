@@ -131,6 +131,119 @@ function remoteProviderHttpError(error: unknown, context: {
   return new HttpError(502, "Remote secret provider request failed.", safeRemoteProviderErrorDetails(null, context));
 }
 
+function remoteProviderWriteHttpError(error: unknown, context: {
+  companyId: string;
+  provider: SecretProvider;
+  providerConfigId?: string | null;
+  providerConfig: SecretProviderVaultRuntimeConfig | null;
+  operation: string;
+}): HttpError {
+  return remoteProviderHttpError(error, {
+    companyId: context.companyId,
+    provider: context.provider,
+    providerConfigId: context.providerConfig?.id ?? context.providerConfigId ?? "deployment-default",
+    operation: context.operation,
+    providerConfig: context.providerConfig?.config ?? null,
+  });
+}
+
+async function throwProviderWriteOrReservedRowRollbackError(input: {
+  error: unknown;
+  rollbackReservedRow: () => Promise<unknown>;
+  companyId: string;
+  provider: SecretProvider;
+  providerConfigId?: string | null;
+  providerConfig: SecretProviderVaultRuntimeConfig | null;
+  operation: string;
+}): Promise<never> {
+  const providerError = remoteProviderWriteHttpError(input.error, input);
+  try {
+    await input.rollbackReservedRow();
+  } catch (rollbackError) {
+    const providerConfigId = input.providerConfig?.id ?? input.providerConfigId ?? "deployment-default";
+    logger.warn(
+      {
+        err: rollbackError,
+        providerErr: providerError,
+        companyId: input.companyId,
+        provider: input.provider,
+        providerConfigId,
+        operation: input.operation,
+      },
+      "remote secret provider write failed and reserved secret rollback failed",
+    );
+    throw new HttpError(500, "Secret create failed and Paperclip could not roll back the local secret reservation.", {
+      code: "secret_create_rollback_failed",
+      provider: input.provider,
+      operation: input.operation,
+      providerConfigId,
+      providerError: {
+        status: providerError.status,
+        message: providerError.message,
+        details: providerError.details ?? null,
+      },
+    });
+  }
+  throw providerError;
+}
+
+function providerConfigIdentifier(input: {
+  providerConfigId?: string | null;
+  providerConfig: SecretProviderVaultRuntimeConfig | null;
+}) {
+  return input.providerConfig?.id ?? input.providerConfigId ?? "deployment-default";
+}
+
+async function deleteLocalSecretCreateReservationOrThrow(input: {
+  db: Pick<Db, "delete">;
+  secretId: string;
+  companyId: string;
+  provider: SecretProvider;
+  providerConfigId?: string | null;
+  providerConfig: SecretProviderVaultRuntimeConfig | null;
+  operation: string;
+}) {
+  try {
+    await input.db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, input.secretId));
+    await input.db.delete(companySecrets).where(eq(companySecrets.id, input.secretId));
+  } catch (rollbackError) {
+    const providerConfigId = providerConfigIdentifier(input);
+    logger.warn(
+      {
+        err: rollbackError,
+        companyId: input.companyId,
+        provider: input.provider,
+        providerConfigId,
+        operation: input.operation,
+      },
+      "secret create failed and local reserved secret rollback failed",
+    );
+    throw new HttpError(500, "Secret create failed and Paperclip could not roll back the local secret reservation.", {
+      code: "secret_create_rollback_failed",
+      provider: input.provider,
+      operation: input.operation,
+      providerConfigId,
+    });
+  }
+}
+
+function throwProviderCleanupFailedAfterCreateRollback(input: {
+  companyId: string;
+  provider: SecretProvider;
+  providerConfigId?: string | null;
+  providerConfig: SecretProviderVaultRuntimeConfig | null;
+  operation: string;
+}): never {
+  const providerConfigId = providerConfigIdentifier(input);
+  throw new HttpError(500, "Secret create failed and Paperclip could not clean up the remote provider secret.", {
+    code: "secret_create_provider_cleanup_failed",
+    provider: input.provider,
+    operation: input.operation,
+    providerConfigId,
+    localCleanupHandle: true,
+  });
+}
+
 function safeRemoteProviderErrorDetails(
   error: { code: string } | null,
   context: {
@@ -144,7 +257,32 @@ function safeRemoteProviderErrorDetails(
     context.provider !== "aws_secrets_manager" ||
     context.operation !== "secret_provider_config.discovery.preview"
   ) {
-    return { code: error?.code ?? "provider_error" };
+    if (context.provider !== "aws_secrets_manager") {
+      return { code: error?.code ?? "provider_error" };
+    }
+    const details: Record<string, unknown> = {
+      code: error?.code ?? "provider_error",
+      provider: context.provider,
+      operation: context.operation,
+      providerConfigId: context.providerConfigId,
+    };
+    const region = safeString(context.providerConfig?.region);
+    if (region) details.region = region;
+    details.credentialPath = "Paperclip server runtime/provider credential path";
+    if (error?.code === "access_denied") {
+      if (context.operation === "secret.create") {
+        details.requiredCapability = "secretsmanager:CreateSecret";
+        details.actionableMessage =
+          "AWS managed secret creation needs secretsmanager:CreateSecret in the selected region for this provider vault. If the vault config uses a KMS key, the runtime credentials also need KMS write permissions for that key.";
+        details.safeAlternative =
+          "If the secret already exists in AWS, link it as an external reference instead of creating a Paperclip-managed value.";
+      } else if (context.operation === "secret.rotate") {
+        details.requiredCapability = "secretsmanager:PutSecretValue";
+        details.actionableMessage =
+          "AWS managed secret rotation needs secretsmanager:PutSecretValue for the selected provider vault and managed secret path.";
+      }
+    }
+    return details;
   }
   const details: Record<string, unknown> = {
     code: error?.code ?? "provider_error",
@@ -1591,8 +1729,15 @@ export function secretService(db: Db) {
               context: providerWriteContext,
             });
     } catch (error) {
-      await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
-      throw error;
+      throw await throwProviderWriteOrReservedRowRollbackError({
+        error,
+        rollbackReservedRow: () => db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)),
+        companyId,
+        provider: provider.id,
+        providerConfigId,
+        providerConfig,
+        operation: "secret.create",
+      });
     }
 
     try {
@@ -1625,17 +1770,33 @@ export function secretService(db: Db) {
       });
     } catch (error) {
       if (managedMode === "paperclip_managed") {
-        await cleanupPreparedProviderWrite({
+        const cleaned = await cleanupPreparedProviderWrite({
           provider,
           prepared,
           providerConfig,
           context: providerWriteContext,
           mode: "delete",
           operation: "user_secret_value.create_rollback",
-        }).catch(() => false);
+        });
+        if (!cleaned) {
+          throwProviderCleanupFailedAfterCreateRollback({
+            companyId,
+            provider: provider.id,
+            providerConfigId,
+            providerConfig,
+            operation: "user_secret_value.create_rollback",
+          });
+        }
       }
-      await db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, reservedSecret.id)).catch(() => undefined);
-      await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
+      await deleteLocalSecretCreateReservationOrThrow({
+        db,
+        secretId: reservedSecret.id,
+        companyId,
+        provider: provider.id,
+        providerConfigId,
+        providerConfig,
+        operation: "user_secret_value.create_rollback",
+      });
       throw error;
     }
   }
@@ -2855,8 +3016,15 @@ export function secretService(db: Db) {
                 context: providerWriteContext,
               });
       } catch (error) {
-        await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
-        throw error;
+        throw await throwProviderWriteOrReservedRowRollbackError({
+          error,
+          rollbackReservedRow: () => db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)),
+          companyId,
+          provider: provider.id,
+          providerConfigId: input.providerConfigId ?? null,
+          providerConfig,
+          operation: "secret.create",
+        });
       }
 
       try {
@@ -2889,14 +3057,25 @@ export function secretService(db: Db) {
             mode: "delete",
             operation: "create.prepare_rollback",
           });
-          if (cleaned) {
-            await db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, reservedSecret.id)).catch(() => undefined);
-            await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
+          if (!cleaned) {
+            throwProviderCleanupFailedAfterCreateRollback({
+              companyId,
+              provider: provider.id,
+              providerConfigId: input.providerConfigId ?? null,
+              providerConfig,
+              operation: "create.prepare_rollback",
+            });
           }
-        } else {
-          await db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, reservedSecret.id)).catch(() => undefined);
-          await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
         }
+        await deleteLocalSecretCreateReservationOrThrow({
+          db,
+          secretId: reservedSecret.id,
+          companyId,
+          provider: provider.id,
+          providerConfigId: input.providerConfigId ?? null,
+          providerConfig,
+          operation: "create.prepare_rollback",
+        });
         throw error;
       }
 
@@ -2936,14 +3115,25 @@ export function secretService(db: Db) {
             mode: "delete",
             operation: "create.rollback",
           });
-          if (cleaned) {
-            await db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, reservedSecret.id)).catch(() => undefined);
-            await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
+          if (!cleaned) {
+            throwProviderCleanupFailedAfterCreateRollback({
+              companyId,
+              provider: provider.id,
+              providerConfigId: input.providerConfigId ?? null,
+              providerConfig,
+              operation: "create.rollback",
+            });
           }
-        } else {
-          await db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, reservedSecret.id)).catch(() => undefined);
-          await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
         }
+        await deleteLocalSecretCreateReservationOrThrow({
+          db,
+          secretId: reservedSecret.id,
+          companyId,
+          provider: provider.id,
+          providerConfigId: input.providerConfigId ?? null,
+          providerConfig,
+          operation: "create.rollback",
+        });
         throw error;
       }
     },
@@ -2986,20 +3176,31 @@ export function secretService(db: Db) {
         secretName: secret.name,
         version: nextVersion,
       };
-      const prepared =
-        secret.managedMode === "external_reference"
-          ? await provider.linkExternalSecret({
-              externalRef: input.externalRef ?? secret.externalRef ?? "",
-              providerVersionRef: input.providerVersionRef ?? null,
-              providerConfig,
-              context: providerWriteContext,
-            })
-          : await provider.createVersion({
-              value: input.value ?? "",
-              externalRef: secret.externalRef ?? null,
-              providerConfig,
-              context: providerWriteContext,
-            });
+      let prepared: PreparedSecretVersion;
+      try {
+        prepared =
+          secret.managedMode === "external_reference"
+            ? await provider.linkExternalSecret({
+                externalRef: input.externalRef ?? secret.externalRef ?? "",
+                providerVersionRef: input.providerVersionRef ?? null,
+                providerConfig,
+                context: providerWriteContext,
+              })
+            : await provider.createVersion({
+                value: input.value ?? "",
+                externalRef: secret.externalRef ?? null,
+                providerConfig,
+                context: providerWriteContext,
+              });
+      } catch (error) {
+        throw remoteProviderWriteHttpError(error, {
+          companyId: secret.companyId,
+          provider: provider.id,
+          providerConfigId,
+          providerConfig,
+          operation: "secret.rotate",
+        });
+      }
 
       try {
         await db.insert(companySecretVersions).values({

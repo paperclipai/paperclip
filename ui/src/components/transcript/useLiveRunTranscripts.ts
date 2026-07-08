@@ -35,7 +35,7 @@ function readString(value: unknown): string | null {
 }
 
 function isTerminalStatus(status: string): boolean {
-  return status === "failed" || status === "timed_out" || status === "cancelled" || status === "succeeded";
+  return status === "failed" || status === "timed_out" || status === "cancelled" || status === "interrupted" || status === "succeeded";
 }
 
 function runKnownLogBytes(run: RunTranscriptSource): number | null {

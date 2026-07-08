@@ -216,6 +216,80 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdog?.triggerCount).toBe(1);
   });
 
+  it("does not append duplicate review comments for an already-open same-fingerprint review", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-DUPE", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const first = await service.reconcileTaskWatchdogs({ companyId });
+    expect(first).toMatchObject({ checked: 1, triggered: 1 });
+
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+    const initialComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, watchdogIssueId));
+    expect(initialComments).toHaveLength(1);
+
+    const second = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(second).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+    expect(wakes).toHaveLength(1);
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, watchdogIssueId));
+    expect(comments).toHaveLength(1);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.lastObservedFingerprint).toBe(firstWatchdog?.lastObservedFingerprint);
+    expect(watchdog?.triggerCount).toBe(1);
+  });
+
+  it("re-wakes a same-fingerprint watchdog review stuck in stale in_review", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-STALE", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const first = await service.reconcileTaskWatchdogs({ companyId });
+    expect(first).toMatchObject({ checked: 1, triggered: 1 });
+
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        executionState: null,
+        monitorNextCheckAt: null,
+      })
+      .where(eq(issues.id, watchdogIssueId));
+
+    const second = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(second).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(2);
+    const [watchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdogIssueId));
+    expect(watchdogIssue).toMatchObject({
+      status: "todo",
+      assigneeAgentId: agentId,
+      originFingerprint: firstWatchdog?.lastObservedFingerprint,
+    });
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, watchdogIssueId));
+    expect(comments).toHaveLength(2);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.triggerCount).toBe(2);
+  });
+
   it("does not trigger while a non-watchdog descendant has live work", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-2", status: "in_progress" });

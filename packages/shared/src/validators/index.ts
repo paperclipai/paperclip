@@ -119,6 +119,11 @@ export {
   companySkillCommentCreateSchema,
   companySkillCommentUpdateSchema,
   companySkillForkSchema,
+  companySkillOriginalSummarySchema,
+  companySkillForkSummarySchema,
+  companySkillForkReassignmentSchema,
+  companySkillForkResultSchema,
+  companySkillForkPrecheckResultSchema,
   companySkillUpdateSchema,
   companySkillUpdateStatusSchema,
   companySkillAuditFindingSchema,
@@ -416,6 +421,7 @@ export {
 
 export {
   executionWorkspaceConfigSchema,
+  reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   executionWorkspaceStatusSchema,
@@ -425,6 +431,7 @@ export {
   executionWorkspaceCloseLinkedIssueSchema,
   executionWorkspaceCloseReadinessSchema,
   executionWorkspaceCloseReadinessStateSchema,
+  type ReconcileExecutionWorkspaceBranch,
   type UpdateExecutionWorkspace,
   type WorkspaceOverviewQuery,
 } from "./execution-workspace.js";

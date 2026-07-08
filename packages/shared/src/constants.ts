@@ -783,6 +783,7 @@ export const HEARTBEAT_RUN_STATUSES = [
   "scheduled_retry",
   "running",
   "succeeded",
+  "interrupted",
   "failed",
   "cancelled",
   "timed_out",

@@ -1068,9 +1068,9 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const dialogContent = Array.from(container.querySelectorAll("div")).find((element) =>
-      typeof element.className === "string" && element.className.includes("max-h-[var(--new-issue-dialog-height)]"),
+      typeof element.className === "string" && element.className.includes("max-h-(--new-issue-dialog-height)"),
     );
-    expect(dialogContent?.className).toContain("h-[var(--new-issue-dialog-height)]");
+    expect(dialogContent?.className).toContain("h-(--new-issue-dialog-height)");
     expect(dialogContent?.className).toContain("overflow-hidden");
     expect(dialogContent?.getAttribute("style")).toContain("env(safe-area-inset-top)");
     expect(dialogContent?.getAttribute("style")).toContain("env(safe-area-inset-bottom)");

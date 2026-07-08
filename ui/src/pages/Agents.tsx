@@ -287,7 +287,7 @@ export function Agents() {
         // Fixed (truncating) title width so the `meta` group starts at a
         // constant x on every row — that's what makes the model + timestamp
         // columns line up vertically. Agent names vary in width, so
-        // a content-sized title (`min-w-[7rem]`) shifted meta's start per row.
+        // a content-sized title (`min-w-(--sz-7rem)`) shifted meta's start per row.
         titleClassName="w-56"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
@@ -550,7 +550,7 @@ function OrgTreeNode({
         ) : (
           <AgentStatusCapsule status={node.status} />
         )}
-        <div className="flex-1 min-w-[7rem]">
+        <div className="flex-1 min-w-(--sz-7rem)">
           <span className="text-sm font-medium">{node.name}</span>
           <span className="text-xs text-muted-foreground ml-2">
             {roleLabels[node.role] ?? node.role}
@@ -676,7 +676,7 @@ function AgentMetaColumns({
         >
           {model ?? "—"}
         </div>
-        <div className="truncate font-mono text-[11px] text-muted-foreground/70" title={adapterLabel}>
+        <div className="truncate font-mono text-(length:--text-micro) text-muted-foreground/70" title={adapterLabel}>
           {adapterLabel}
         </div>
       </div>
@@ -685,7 +685,7 @@ function AgentMetaColumns({
           <div className="truncate text-xs text-muted-foreground" title={environment.title}>
             {environment.label}
           </div>
-          <div className="truncate text-[11px] text-muted-foreground/70">
+          <div className="truncate text-(length:--text-micro) text-muted-foreground/70">
             {environment.detail}
           </div>
         </div>
@@ -716,7 +716,7 @@ function LiveRunIndicator({
         <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
         <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
       </span>
-      <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+      <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">
         Live{liveCount > 1 ? ` (${liveCount})` : ""}
       </span>
     </Link>
