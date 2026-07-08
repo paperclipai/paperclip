@@ -176,6 +176,48 @@ describeEmbeddedPostgres("cases routes", () => {
     await http.get(`/api/cases/${caseRow!.id}/events`).expect(403);
   });
 
+  it("falls through shared /cases paths to later routers when the id is not a Cases row", async () => {
+    // Pipelines mounts its own /cases/:caseId routes after caseRoutes in app.ts;
+    // pipeline case ids must reach that router regardless of the enableCases flag.
+    const instance = express();
+    instance.use(express.json());
+    instance.use((req, _res, next) => {
+      req.actor = boardActor;
+      next();
+    });
+    instance.use("/api", caseRoutes(db, storage));
+    const pipelinesStandIn = express.Router();
+    pipelinesStandIn.get("/cases/:caseId", (_req, res) => res.json({ handledBy: "pipelines" }));
+    pipelinesStandIn.patch("/cases/:caseId", (_req, res) => res.json({ handledBy: "pipelines" }));
+    pipelinesStandIn.put("/cases/:caseId/documents/:key", (_req, res) => res.json({ handledBy: "pipelines" }));
+    pipelinesStandIn.get("/cases/:caseId/documents/:key/revisions", (_req, res) => res.json({ handledBy: "pipelines" }));
+    instance.use("/api", pipelinesStandIn);
+    instance.use(errorHandler);
+    const http = request(instance);
+
+    const foreignId = randomUUID();
+    // Flag off: non-Cases ids are not blocked by the Cases gate.
+    await http.get(`/api/cases/${foreignId}`).expect(200, { handledBy: "pipelines" });
+    // Body is not validated against Cases schemas before falling through.
+    await http.patch(`/api/cases/${foreignId}`).send({ stageKey: "review" }).expect(200, { handledBy: "pipelines" });
+    await http.put(`/api/cases/${foreignId}/documents/body`).send({ markdown: "x" }).expect(200, { handledBy: "pipelines" });
+    await http.get(`/api/cases/${foreignId}/documents/body/revisions`).expect(200, { handledBy: "pipelines" });
+
+    // Flag on: real Cases rows are still handled by the cases router, unknown ids still fall through.
+    await enableCases();
+    const company = await seedCompany("FALL");
+    const [caseRow] = await db.insert(cases).values({
+      companyId: company.id,
+      caseNumber: 1,
+      identifier: `${company.issuePrefix}-C1`,
+      caseType: "bug",
+      title: "Ours",
+    }).returning();
+    const detail = await http.get(`/api/cases/${caseRow!.id}`).expect(200);
+    expect(detail.body.identifier).toBe(caseRow!.identifier);
+    await http.get(`/api/cases/${foreignId}`).expect(200, { handledBy: "pipelines" });
+  });
+
   it("creates cases and upserts idempotently by type and key", async () => {
     await enableCases();
     const company = await seedCompany("UPS");
