@@ -95,6 +95,7 @@ function renderPage(container: HTMLDivElement) {
 describe("Cases list", () => {
   let container: HTMLDivElement;
   beforeEach(() => {
+    window.localStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
     mockCasesApi.list.mockReset();
@@ -105,18 +106,19 @@ describe("Cases list", () => {
     container.remove();
   });
 
-  it("requests active cases by default", async () => {
+  it("loads cases by default and hides terminal cases client-side", async () => {
     mockCasesApi.list.mockResolvedValue([
       createCase({ id: "a", identifier: "PAP-C1", title: "Active post", status: "in_progress" }),
+      createCase({ id: "b", identifier: "PAP-C2", title: "Done post", status: "done" }),
     ]);
 
     const root = renderPage(container);
 
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Active post");
-      expect(container.textContent).toContain("1 active · 1 total");
+      expect(container.textContent).not.toContain("Done post");
+      expect(container.textContent).not.toContain("active ·");
       expect(mockCasesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
-        status: "active",
         limit: 200,
       }));
     });
@@ -145,7 +147,6 @@ describe("Cases list", () => {
     await waitForAssertion(() => {
       expect(mockCasesApi.list).toHaveBeenLastCalledWith("company-1", expect.objectContaining({
         q: "launch",
-        status: "active",
         limit: 200,
       }));
     });
@@ -169,7 +170,7 @@ describe("Cases list", () => {
     act(() => root.unmount());
   });
 
-  it("shows the default case columns", async () => {
+  it("shows default columns in id, title, status, last-updated order grouped by type", async () => {
     mockCasesApi.list.mockResolvedValue([
       createCase({ id: "a", identifier: "PAP-C1", title: "Post one", caseType: "blog_post" }),
       createCase({ id: "b", identifier: "PAP-C2", title: "Storm one", caseType: "tweet_storm" }),
@@ -182,6 +183,92 @@ describe("Cases list", () => {
       expect(container.textContent).toContain("tweet_storm");
       expect(container.textContent).toContain("Post one");
       expect(container.textContent).toContain("Storm one");
+    });
+
+    const text = container.textContent ?? "";
+    expect(text.indexOf("ID")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("Title")).toBeGreaterThan(text.indexOf("ID"));
+    expect(text.indexOf("Status")).toBeGreaterThan(text.indexOf("Title"));
+    expect(text.indexOf("Last updated")).toBeGreaterThan(text.indexOf("Status"));
+    expect(text).not.toContain("Project");
+
+    const blogGroupIndex = text.indexOf("blog_post");
+    const tweetGroupIndex = text.indexOf("tweet_storm");
+    expect(blogGroupIndex).toBeGreaterThanOrEqual(0);
+    expect(tweetGroupIndex).toBeGreaterThan(blogGroupIndex);
+
+    act(() => root.unmount());
+  });
+
+  it("restores persisted search, filters, group, sort, and columns", async () => {
+    window.localStorage.setItem(
+      "paperclip:cases:company-1:view",
+      JSON.stringify({
+        search: "launch",
+        statusFilters: ["done"],
+        typeFilters: ["blog_post"],
+        projectFilters: [],
+        labelFilter: "__all__",
+        groupBy: "status",
+        sortField: "created",
+        sortDir: "asc",
+        columns: ["id", "title", "status", "updated", "created"],
+      }),
+    );
+    mockCasesApi.list.mockResolvedValue([
+      createCase({
+        id: "a",
+        identifier: "PAP-C1",
+        title: "Active launch",
+        status: "in_progress",
+        caseType: "blog_post",
+      }),
+      createCase({
+        id: "b",
+        identifier: "PAP-C2",
+        title: "Done launch",
+        status: "done",
+        caseType: "blog_post",
+      }),
+    ]);
+
+    const root = renderPage(container);
+
+    await waitForAssertion(() => {
+      expect(mockCasesApi.list).toHaveBeenLastCalledWith("company-1", expect.objectContaining({
+        q: "launch",
+        limit: 200,
+      }));
+      expect(container.textContent).toContain("Done launch");
+      expect(container.textContent).not.toContain("Active launch");
+      expect(container.textContent).toContain("Created at");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("applies multi-select type and status filters from persisted state", async () => {
+    window.localStorage.setItem(
+      "paperclip:cases:company-1:view",
+      JSON.stringify({
+        statusFilters: ["in_progress", "done"],
+        typeFilters: ["blog_post", "docs_page"],
+      }),
+    );
+    mockCasesApi.list.mockResolvedValue([
+      createCase({ id: "a", identifier: "PAP-C1", title: "Blog active", status: "in_progress", caseType: "blog_post" }),
+      createCase({ id: "b", identifier: "PAP-C2", title: "Docs done", status: "done", caseType: "docs_page" }),
+      createCase({ id: "c", identifier: "PAP-C3", title: "Tweet active", status: "in_progress", caseType: "tweet_storm" }),
+      createCase({ id: "d", identifier: "PAP-C4", title: "Blog cancelled", status: "cancelled", caseType: "blog_post" }),
+    ]);
+
+    const root = renderPage(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Blog active");
+      expect(container.textContent).toContain("Docs done");
+      expect(container.textContent).not.toContain("Tweet active");
+      expect(container.textContent).not.toContain("Blog cancelled");
     });
 
     act(() => root.unmount());

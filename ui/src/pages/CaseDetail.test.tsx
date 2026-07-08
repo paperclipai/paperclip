@@ -71,7 +71,7 @@ function detail(): CaseDetailData {
     title: "Hermes agent launch post",
     summary: null,
     status: "in_review",
-    fields: { slug: "hermes-agent-post", word_count: 1850, published: true },
+    fields: { slug: "hermes-agent-post", word_count: 1850, published: true, description: "Launch narrative" },
     parent: null,
     parentCaseId: null,
     createdByAgentId: null,
@@ -117,6 +117,8 @@ describe("CaseDetail", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    panelState.openPanel.mockClear();
+    panelState.closePanel.mockClear();
     mockCasesApi.get.mockReset().mockResolvedValue(detail());
     mockCasesApi.listEvents.mockReset().mockResolvedValue([]);
     mockCasesApi.list.mockReset().mockResolvedValue([]);
@@ -126,7 +128,7 @@ describe("CaseDetail", () => {
     container.remove();
   });
 
-  it("renders the case header, generic fields, and body document", async () => {
+  it("renders the case header and body-first overview without duplicating generic fields", async () => {
     const root = renderPage(container);
 
     await waitForAssertion(() => {
@@ -136,14 +138,48 @@ describe("CaseDetail", () => {
       expect(container.textContent).toContain("Hermes agent launch post");
       // upsert key (detail-only)
       expect(container.textContent).toContain("v2026.707/hermes-agent-post");
-      // generic fields rendered
-      expect(container.textContent).toContain("hermes-agent-post");
-      expect(container.textContent).toContain("1,850");
       // body document card
       expect(container.textContent).toContain("Draft body");
       expect(container.textContent).toContain("rev 8");
+      expect(container.textContent).toContain("Launch narrative");
+      expect(container.textContent).not.toContain("Revisions");
+      expect(container.textContent).not.toContain("1,850");
     });
 
+    act(() => root.unmount());
+  });
+
+  it("keeps title, body, description, and activity out of the properties panel", async () => {
+    const root = renderPage(container);
+
+    await waitForAssertion(() => {
+      expect(panelState.openPanel).toHaveBeenCalled();
+    });
+
+    const panelContainer = document.createElement("div");
+    document.body.appendChild(panelContainer);
+    const panelRoot = createRoot(panelContainer);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    act(() => {
+      panelRoot.render(
+        <QueryClientProvider client={queryClient}>
+          {panelState.openPanel.mock.calls.at(-1)?.[0]}
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      const text = panelContainer.textContent ?? "";
+      expect(text).toContain("Fields");
+      expect(text).toContain("word_count");
+      expect(text).not.toContain("Hermes agent launch post");
+      expect(text).not.toContain("Draft body");
+      expect(text).not.toContain("Launch narrative");
+      expect(text).not.toContain("Activity");
+    });
+
+    act(() => panelRoot.unmount());
+    panelContainer.remove();
     act(() => root.unmount());
   });
 });

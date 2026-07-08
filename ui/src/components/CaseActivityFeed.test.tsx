@@ -75,7 +75,8 @@ describe("CaseActivityFeed", () => {
     expect(text).toContain("via");
     // The issue chip links to the issue detail.
     const issueLink = container.querySelector('a[href="/issues/PAP-42"]');
-    expect(issueLink?.textContent).toBe("PAP-42");
+    expect(issueLink?.textContent).toContain("PAP-42");
+    expect(issueLink?.textContent).toContain("Source task");
     act(() => root.unmount());
   });
 
@@ -102,13 +103,18 @@ describe("CaseActivityFeed", () => {
     // The status-transition detail only appears in the status_changed row.
     expect(container.textContent).toContain("draft → in_review");
 
-    // Click the "created" filter chip → only created rows remain, so the
-    // status-transition detail disappears (the chip label itself stays).
-    const createdChip = Array.from(container.querySelectorAll("button")).find(
-      (b) => b.textContent === "created",
+    // Open the activity filter dropdown and choose "created"; only created
+    // rows remain, so the status-transition detail disappears.
+    const filterButton = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("All activity"),
     );
-    expect(createdChip).toBeTruthy();
-    act(() => createdChip!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(filterButton).toBeTruthy();
+    act(() => filterButton!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+    const createdItem = Array.from(document.body.querySelectorAll('[role="menuitemcheckbox"]')).find(
+      (item) => item.textContent === "created",
+    );
+    expect(createdItem).toBeTruthy();
+    act(() => createdItem!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(container.textContent).not.toContain("draft → in_review");
     act(() => root.unmount());
   });

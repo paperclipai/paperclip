@@ -10,7 +10,6 @@ import {
   casesApi,
   CASE_STATUSES,
   type CaseDetail as CaseDetailData,
-  type CaseEvent,
   type CaseStatus,
   type CaseSummary,
 } from "@/api/cases";
@@ -23,11 +22,11 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/StatusBadge";
+import { StatusIcon } from "@/components/StatusIcon";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { PageSkeleton } from "@/components/PageSkeleton";
-import { CaseFieldValue, CaseFieldsPanel } from "@/components/CaseFieldsPanel";
-import { CaseActivityFeed, CaseEventRow } from "@/components/CaseActivityFeed";
-import { CaseRevisionRail } from "@/components/CaseRevisionRail";
+import { CaseFieldValue } from "@/components/CaseFieldsPanel";
+import { CaseActivityFeed } from "@/components/CaseActivityFeed";
 import { CaseChildrenTree } from "@/components/CaseChildrenTree";
 import { CaseAttachmentsGallery } from "@/components/CaseAttachmentsGallery";
 import { EntityRow } from "@/components/EntityRow";
@@ -191,52 +190,22 @@ function CaseLabelsPicker({
 function CaseSidePanel({
   caseData,
   childCases,
-  events,
   companyId,
   labelsPending,
   onLabelIdsChange,
 }: {
   caseData: CaseDetailData;
   childCases: CaseSummary[];
-  events: CaseEvent[];
   companyId: string | null | undefined;
   labelsPending?: boolean;
   onLabelIdsChange: (labelIds: string[]) => void;
 }) {
-  const bodyDoc = caseData.documents.find((documentRef) => documentRef.key === "body") ?? null;
-  const description = caseData.fields.description ?? caseData.fields.Description ?? null;
-  const name = caseData.fields.name ?? caseData.fields.Name ?? caseData.key ?? null;
   const reservedFieldKeys = new Set(["name", "Name", "title", "Title", "body", "Body", "description", "Description"]);
   const genericFields = Object.entries(caseData.fields).filter(([key]) => !reservedFieldKeys.has(key));
-  const bodyPreview = bodyDoc?.document.latestBody
-    ? bodyDoc.document.latestBody.split("\n").map((line) => line.trim()).find(Boolean) ?? bodyDoc.document.latestBody
-    : null;
 
   return (
     <div className="space-y-4 p-4">
       <PropertySection title="Case" first>
-        {name ? (
-          <PropertyRow label="Name">
-            <span className="min-w-0 truncate text-sm" title={String(name)}>
-              <CaseFieldValue value={name} />
-            </span>
-          </PropertyRow>
-        ) : null}
-        <PropertyRow label="Title">
-          <span className="min-w-0 truncate text-sm" title={caseData.title}>{caseData.title}</span>
-        </PropertyRow>
-        {bodyPreview ? (
-          <PropertyRow label="Body">
-            <span className="min-w-0 truncate text-sm text-muted-foreground" title={bodyPreview}>{bodyPreview}</span>
-          </PropertyRow>
-        ) : null}
-        {description ? (
-          <PropertyRow label="Description">
-            <span className="min-w-0 truncate text-sm" title={String(description)}>
-              <CaseFieldValue value={description} />
-            </span>
-          </PropertyRow>
-        ) : null}
         <PropertyRow label="Type">
           <PropertyChip>{caseData.caseType}</PropertyChip>
         </PropertyRow>
@@ -295,6 +264,7 @@ function CaseSidePanel({
               <EntityRow
                 key={link.id}
                 to={`/issues/${link.issue.identifier}`}
+                leading={<StatusIcon status={link.issue.status} />}
                 identifier={link.issue.identifier}
                 title={link.issue.title}
                 trailing={<Badge variant="secondary">{ROLE_LABEL[link.role] ?? link.role}</Badge>}
@@ -308,19 +278,29 @@ function CaseSidePanel({
         <CaseChildrenTree children={childCases} />
       </PropertySection>
 
-      <PropertySection title="Activity">
-        {events.length === 0 ? (
-          <PropertyRow label="Events">
-            <span className="text-xs text-muted-foreground">No activity yet</span>
-          </PropertyRow>
-        ) : (
-          <div className="divide-y divide-border">
-            {events.slice(0, 4).map((event) => (
-              <CaseEventRow key={event.id} event={event} compact />
+      {caseData.documents.length > 0 ? (
+        <PropertySection title="Documents">
+          <div className="space-y-1">
+            {caseData.documents.map((documentRef) => (
+              <PropertyRow key={documentRef.key} label={documentRef.key}>
+                <span className="text-xs text-muted-foreground">
+                  rev {documentRef.document.latestRevisionNumber ?? 1}
+                </span>
+              </PropertyRow>
             ))}
           </div>
-        )}
-      </PropertySection>
+        </PropertySection>
+      ) : null}
+
+      {caseData.attachments.length > 0 ? (
+        <PropertySection title="Attachments">
+          <PropertyRow label="Files">
+            <span className="text-xs text-muted-foreground">
+              {caseData.attachments.length} {caseData.attachments.length === 1 ? "file" : "files"}
+            </span>
+          </PropertyRow>
+        </PropertySection>
+      ) : null}
     </div>
   );
 }
@@ -332,7 +312,6 @@ export function CaseDetail() {
   const { openPanel, closePanel } = usePanel();
   const queryClient = useQueryClient();
   const caseHref = useCaseHref();
-  const [selectedRevisionDocumentKey, setSelectedRevisionDocumentKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   const caseQuery = useQuery({
@@ -385,13 +364,12 @@ export function CaseDetail() {
       <CaseSidePanel
         caseData={caseData}
         childCases={children}
-        events={events}
         companyId={selectedCompanyId}
         labelsPending={patchMutation.isPending}
         onLabelIdsChange={handleLabelIdsChange}
       />
     );
-  }, [caseData, children, events, selectedCompanyId, patchMutation.isPending, handleLabelIdsChange]);
+  }, [caseData, children, selectedCompanyId, patchMutation.isPending, handleLabelIdsChange]);
 
   useEffect(() => {
     if (!panelContent) return;
@@ -413,11 +391,7 @@ export function CaseDetail() {
   }
 
   const bodyDoc = caseData.documents.find((d) => d.key === "body");
-  const revisionDocs = caseData.documents.filter((documentRef) => (documentRef.document.latestRevisionNumber ?? 0) > 0);
-  const activeRevisionDocumentKey = selectedRevisionDocumentKey
-    && revisionDocs.some((documentRef) => documentRef.key === selectedRevisionDocumentKey)
-    ? selectedRevisionDocumentKey
-    : bodyDoc?.key ?? revisionDocs[0]?.key ?? null;
+  const description = caseData.fields.description ?? caseData.fields.Description ?? null;
 
   function copyCaseToClipboard(currentCase: CaseDetailData) {
     const markdown = [
@@ -504,12 +478,9 @@ export function CaseDetail() {
           <TabsTrigger value="activity">
             Activity{events.length > 0 && <span className="ml-1 text-muted-foreground">{events.length}</span>}
           </TabsTrigger>
-          <TabsTrigger value="revisions">Revisions</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6">
-          <CaseFieldsPanel fields={caseData.fields} />
-
           <section className="space-y-2">
             <div className="flex items-baseline justify-between">
               <h2 className="text-sm font-semibold">Body</h2>
@@ -530,6 +501,15 @@ export function CaseDetail() {
             </Card>
           </section>
 
+          {description ? (
+            <section className="space-y-2">
+              <h2 className="text-sm font-semibold">Description</h2>
+              <Card className="px-4 py-3">
+                <CaseFieldValue value={description} />
+              </Card>
+            </section>
+          ) : null}
+
           {children.length > 0 && (
             <section className="space-y-2">
               <h2 className="text-sm font-semibold">Children ({children.length})</h2>
@@ -547,38 +527,6 @@ export function CaseDetail() {
 
         <TabsContent value="activity">
           <CaseActivityFeed events={events} />
-        </TabsContent>
-
-        <TabsContent value="revisions">
-          {activeRevisionDocumentKey ? (
-            <div className="space-y-4">
-              {revisionDocs.length > 1 ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  {revisionDocs.map((documentRef) => (
-                    <Button
-                      key={documentRef.key}
-                      type="button"
-                      variant={documentRef.key === activeRevisionDocumentKey ? "secondary" : "ghost"}
-                      size="sm"
-                      onClick={() => setSelectedRevisionDocumentKey(documentRef.key)}
-                    >
-                      {documentRef.key}
-                      {documentRef.document.latestRevisionNumber ? (
-                        <span className="ml-1 text-xs text-muted-foreground">
-                          rev {documentRef.document.latestRevisionNumber}
-                        </span>
-                      ) : null}
-                    </Button>
-                  ))}
-                </div>
-              ) : null}
-              <CaseRevisionRail caseIdentifier={caseData.identifier} documentKey={activeRevisionDocumentKey} />
-            </div>
-          ) : (
-            <p className="py-6 text-center text-sm text-muted-foreground">
-              No documents to show revisions for.
-            </p>
-          )}
         </TabsContent>
       </Tabs>
     </div>
