@@ -73,6 +73,8 @@ function buildClient(config: OpenShellProviderConfig) {
   });
 }
 
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 function wrapCommandWithEnv(
   command: string[],
   env?: Record<string, string>
@@ -80,8 +82,11 @@ function wrapCommandWithEnv(
   if (!env || Object.keys(env).length === 0) return command;
 
   const exports = Object.entries(env)
+    .filter(([k]) => ENV_KEY_RE.test(k))
     .map(([k, v]) => `export ${k}=${shellQuote(v)}`)
     .join("; ");
+
+  if (!exports) return command;
 
   return ["/bin/sh", "-lc", `${exports}; exec ${command.map(shellQuote).join(" ")}`];
 }
