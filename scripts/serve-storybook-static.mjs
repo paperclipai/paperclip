@@ -15,8 +15,18 @@ const root = resolve(
 );
 const portArgIndex = process.argv.indexOf("--port");
 const explicitPort =
-  portArgIndex >= 0 && process.argv[portArgIndex + 1] ? process.argv[portArgIndex + 1] : null;
-const port = Number(explicitPort ?? process.env.PORT ?? 6106);
+  portArgIndex >= 0 &&
+  process.argv[portArgIndex + 1] &&
+  !process.argv[portArgIndex + 1].startsWith("--")
+    ? process.argv[portArgIndex + 1]
+    : null;
+const portSource = explicitPort ?? process.env.PORT ?? 6106;
+const port = Number(portSource);
+
+if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+  console.error(`Invalid Storybook static server port: ${portSource}`);
+  process.exit(1);
+}
 
 if (!existsSync(join(root, "index.html"))) {
   console.error(`No built Storybook at ${root}. Run \`pnpm build-storybook\` first.`);
