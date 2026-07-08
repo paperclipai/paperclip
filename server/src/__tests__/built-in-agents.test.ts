@@ -79,14 +79,14 @@ describeEmbeddedPostgres("built-in agents", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedCompany() {
+  async function seedCompany(options: { requireApproval?: boolean } = {}) {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
       issuePrefix: issuePrefix(companyId),
       defaultResponsibleUserId: "responsible-user",
-      requireBoardApprovalForNewAgents: true,
+      requireBoardApprovalForNewAgents: options.requireApproval ?? true,
     });
     return companyId;
   }
@@ -413,7 +413,7 @@ describeEmbeddedPostgres("built-in agents", () => {
   });
 
   it("auto-provisions a paused Reflection Coach bundle with skill sync and a disabled routine", async () => {
-    const companyId = await seedCompany();
+    const companyId = await seedCompany({ requireApproval: false });
     await agentService(db).create(companyId, {
       name: "CEO",
       role: "ceo",
@@ -486,6 +486,45 @@ describeEmbeddedPostgres("built-in agents", () => {
       cronExpression: "0 9 * * 1",
       timezone: "UTC",
     });
+  });
+
+  it("preserves new-agent approval gates during automatic Reflection Coach provisioning", async () => {
+    const companyId = await seedCompany({ requireApproval: true });
+
+    const result = await reconcileBuiltInAgentsOnStartup(db);
+
+    expect(result).toMatchObject({
+      autoEnsured: 1,
+      pendingApprovals: 1,
+    });
+    const state = await builtInAgentService(db).get(companyId, "reflection-coach");
+    expect(state).toMatchObject({
+      status: "pending_approval",
+      agent: {
+        companyId,
+        name: "Reflection Coach",
+        status: "pending_approval",
+        budgetMonthlyCents: 0,
+      },
+    });
+    expect(state.resources.map((resource) => resource.stockStatus)).toEqual(["missing", "missing", "missing"]);
+
+    const [approval] = await db.select().from(approvals).where(eq(approvals.companyId, companyId));
+    expect(approval).toMatchObject({
+      type: "hire_agent",
+      status: "pending",
+      payload: {
+        agentId: state.agentId,
+        sourceBuiltInAgentKey: "reflection-coach",
+        featureKeys: ["reflection-coach"],
+      },
+    });
+
+    await reconcileBuiltInAgentsOnStartup(db);
+    const agentRows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(agentRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
+    const approvalRows = await db.select().from(approvals).where(eq(approvals.companyId, companyId));
+    expect(approvalRows).toHaveLength(1);
   });
 
   it("preserves Reflection Coach instruction drift on reconcile and restores it on reset", async () => {

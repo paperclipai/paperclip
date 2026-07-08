@@ -1495,6 +1495,22 @@ export function builtInAgentService(db: Db) {
     throw builtInAgentNotConfiguredError(current);
   }
 
+  async function autoProvisionBundledAgents(companyId: string) {
+    const company = await ensureCompany(companyId);
+    let autoEnsured = 0;
+    let pendingApprovals = 0;
+    for (const definition of DEFINITIONS.filter((entry) => entry.bundle)) {
+      if (company.requireBoardApprovalForNewAgents) {
+        const result = await provision(companyId, definition.key);
+        if (result.approval) pendingApprovals += 1;
+      } else {
+        await ensure(companyId, definition.key);
+      }
+      autoEnsured += 1;
+    }
+    return { autoEnsured, pendingApprovals };
+  }
+
   return {
     definitions: listBuiltInAgentDefinitions,
     get,
@@ -1516,6 +1532,7 @@ export function builtInAgentService(db: Db) {
     ) => setRoutineSchedule(companyId, key, routineKey, false, actor),
     runRoutine,
     requireBuiltInAgent,
+    autoProvisionBundledAgents,
     reconcileDefinitionDefaults,
   };
 }
@@ -1526,11 +1543,11 @@ export async function reconcileBuiltInAgentsOnStartup(db: Db) {
     .select({ id: companies.id })
     .from(companies);
   let autoEnsured = 0;
+  let pendingApprovals = 0;
   for (const company of companyRows) {
-    for (const definition of DEFINITIONS.filter((entry) => entry.bundle)) {
-      await svc.ensure(company.id, definition.key);
-      autoEnsured += 1;
-    }
+    const result = await svc.autoProvisionBundledAgents(company.id);
+    autoEnsured += result.autoEnsured;
+    pendingApprovals += result.pendingApprovals;
   }
   const rows = await db
     .select({
@@ -1564,5 +1581,5 @@ export async function reconcileBuiltInAgentsOnStartup(db: Db) {
     reconciled += 1;
   }
 
-  return { scanned, reconciled, unknown, duplicates, autoEnsured };
+  return { scanned, reconciled, unknown, duplicates, autoEnsured, pendingApprovals };
 }
