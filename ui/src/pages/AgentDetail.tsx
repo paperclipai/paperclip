@@ -754,6 +754,38 @@ export function AgentDetail() {
       setActionError(error instanceof Error ? error.message : "Failed to update bundle resource");
     },
   });
+  const runBuiltInRoutine = useMutation({
+    mutationFn: (routineKey: string) =>
+      builtInAgentsApi.runRoutine(resolvedCompanyId!, builtInState!.definition.key, routineKey),
+    onSuccess: invalidateBuiltIn,
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Failed to run built-in routine");
+    },
+  });
+  const enableBuiltInSchedule = useMutation({
+    mutationFn: (routineKey: string) =>
+      builtInAgentsApi.enableRoutineSchedule(resolvedCompanyId!, builtInState!.definition.key, routineKey),
+    onSuccess: invalidateBuiltIn,
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Failed to enable routine schedule");
+    },
+  });
+  const disableBuiltInSchedule = useMutation({
+    mutationFn: (routineKey: string) =>
+      builtInAgentsApi.disableRoutineSchedule(resolvedCompanyId!, builtInState!.definition.key, routineKey),
+    onSuccess: invalidateBuiltIn,
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Failed to disable routine schedule");
+    },
+  });
+  const builtInRoutineActionPending =
+    runBuiltInRoutine.isPending
+      ? "run"
+      : enableBuiltInSchedule.isPending
+        ? "enable"
+        : disableBuiltInSchedule.isPending
+          ? "disable"
+          : null;
 
   const { data: runtimeState } = useQuery({
     queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? routeAgentRef),
@@ -1161,7 +1193,11 @@ export function AgentDetail() {
           agentRef={canonicalAgentRef}
           onConfigure={() => setShowBuiltInConfigure(true)}
           onResetResource={(kind) => resetBuiltInResource.mutate(kind)}
+          onRunRoutine={(routineKey) => runBuiltInRoutine.mutate(routineKey)}
+          onEnableSchedule={(routineKey) => enableBuiltInSchedule.mutate(routineKey)}
+          onDisableSchedule={(routineKey) => disableBuiltInSchedule.mutate(routineKey)}
           resettingResource={resetBuiltInResource.isPending ? resetBuiltInResource.variables ?? null : null}
+          routineActionPending={builtInRoutineActionPending}
         />
       )}
 

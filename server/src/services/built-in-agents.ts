@@ -3,9 +3,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
-import { and, eq, ne } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, builtInManagedResources, companies, routines, routineTriggers } from "@paperclipai/db";
+import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
 import type { Agent, Approval, CompanySkill, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
@@ -82,6 +82,10 @@ export interface BuiltInManagedResourceState {
   updateAvailable: boolean;
   resetAvailable: boolean;
   changedFiles?: string[];
+  scheduleEnabled?: boolean;
+  pendingUpdateInteractionId?: string | null;
+  pendingUpdateIssueId?: string | null;
+  pendingUpdateIssueIdentifier?: string | null;
 }
 
 export interface BuiltInAgentBundleDefinition {
@@ -313,6 +317,10 @@ function stockState(input: {
   currentHash: string | null;
   bindingStockHash: string | null;
   changedFiles?: string[];
+  scheduleEnabled?: boolean;
+  pendingUpdateInteractionId?: string | null;
+  pendingUpdateIssueId?: string | null;
+  pendingUpdateIssueIdentifier?: string | null;
 }): BuiltInManagedResourceState {
   const status = resourceStatus({
     resourceId: input.resourceId,
@@ -331,6 +339,14 @@ function stockState(input: {
     updateAvailable: status === "stock_update_available" || status === "operator_modified",
     resetAvailable: status !== "stock_current",
     ...(input.changedFiles && input.changedFiles.length > 0 ? { changedFiles: input.changedFiles } : {}),
+    ...(input.scheduleEnabled !== undefined ? { scheduleEnabled: input.scheduleEnabled } : {}),
+    ...(input.pendingUpdateInteractionId !== undefined
+      ? { pendingUpdateInteractionId: input.pendingUpdateInteractionId }
+      : {}),
+    ...(input.pendingUpdateIssueId !== undefined ? { pendingUpdateIssueId: input.pendingUpdateIssueId } : {}),
+    ...(input.pendingUpdateIssueIdentifier !== undefined
+      ? { pendingUpdateIssueIdentifier: input.pendingUpdateIssueIdentifier }
+      : {}),
   };
 }
 
@@ -812,7 +828,6 @@ export function builtInAgentService(db: Db) {
     return stockHash({
       title: routine.title,
       description: routine.description,
-      status: routine.status,
       priority: routine.priority,
       concurrencyPolicy: routine.concurrencyPolicy,
       catchUpPolicy: routine.catchUpPolicy,
@@ -820,7 +835,6 @@ export function builtInAgentService(db: Db) {
       triggers: triggers.map((trigger) => ({
         kind: trigger.kind,
         label: trigger.label,
-        enabled: trigger.enabled,
         cronExpression: trigger.cronExpression,
         timezone: trigger.timezone,
       })),
@@ -852,6 +866,73 @@ export function builtInAgentService(db: Db) {
         .then((rows) => rows as RoutineTrigger[])
       : [];
     return { binding, routine, triggers };
+  }
+
+  function routineScheduleEnabled(routine: Routine | null, triggers: RoutineTrigger[]) {
+    return Boolean(
+      routine?.status === "active"
+      && triggers.some((trigger) => trigger.kind === "schedule" && trigger.enabled),
+    );
+  }
+
+  async function pendingUpdateProposal(agent: Agent | null) {
+    if (!agent) return null;
+    return db
+      .select({
+        interactionId: issueThreadInteractions.id,
+        issueId: issues.id,
+        issueIdentifier: issues.identifier,
+      })
+      .from(issueThreadInteractions)
+      .innerJoin(issues, eq(issueThreadInteractions.issueId, issues.id))
+      .where(and(
+        eq(issueThreadInteractions.companyId, agent.companyId),
+        eq(issueThreadInteractions.createdByAgentId, agent.id),
+        eq(issueThreadInteractions.kind, "request_confirmation"),
+        eq(issueThreadInteractions.status, "pending"),
+      ))
+      .orderBy(desc(issueThreadInteractions.createdAt), desc(issueThreadInteractions.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  function withRoutineControls(
+    state: BuiltInManagedResourceState,
+    input: {
+      routine: Routine | null;
+      triggers: RoutineTrigger[];
+      proposal: Awaited<ReturnType<typeof pendingUpdateProposal>>;
+    },
+  ) {
+    if (state.resourceKind !== "routine") return state;
+    return {
+      ...state,
+      scheduleEnabled: routineScheduleEnabled(input.routine, input.triggers),
+      pendingUpdateInteractionId: input.proposal?.interactionId ?? null,
+      pendingUpdateIssueId: input.proposal?.issueId ?? null,
+      pendingUpdateIssueIdentifier: input.proposal?.issueIdentifier ?? null,
+    };
+  }
+
+  async function requireBundleRoutine(companyId: string, key: string, routineKey: string) {
+    const definition = requireBuiltInAgentDefinition(key);
+    if (!definition.bundle || definition.bundle.routine.routineKey !== routineKey) {
+      throw notFound("Built-in routine not found");
+    }
+    await ensureCompany(companyId);
+    const agent = await findSingleAgent(companyId, definition);
+    if (!agent) throw notFound("Built-in agent is not provisioned");
+    const current = await getRoutineByBinding(companyId, definition);
+    if (!current.routine) throw notFound("Built-in routine not found");
+    const schedule = current.triggers.find((trigger) => trigger.kind === "schedule") ?? null;
+    return { definition, agent, routine: current.routine, triggers: current.triggers, schedule };
+  }
+
+  async function ensureBuiltInAgentAssignable(agent: Agent) {
+    if (agent.status !== "paused") return agent;
+    const resumed = await agentSvc.resume(agent.id);
+    if (!resumed) throw notFound("Built-in agent not found");
+    return resumed as Agent;
   }
 
   async function createOrResetRoutine(agent: Agent, definition: BuiltInAgentDefinition, existing: Routine | null, mode: "reconcile" | "reset") {
@@ -977,7 +1058,8 @@ export function builtInAgentService(db: Db) {
         triggerCount: bundle.routine.triggers.length,
       },
     });
-    return stockState({
+    const next = await getRoutineByBinding(agent.companyId, definition);
+    return withRoutineControls(stockState({
       resourceKind: "routine",
       resourceKey: bundle.routine.routineKey,
       resourceId: nextRoutine.id,
@@ -985,6 +1067,10 @@ export function builtInAgentService(db: Db) {
       latestStockHash: stock,
       currentHash: shouldWrite ? stock : currentHash,
       bindingStockHash: shouldWrite ? stock : binding?.stockHash ?? stock,
+    }), {
+      routine: next.routine,
+      triggers: next.triggers,
+      proposal: await pendingUpdateProposal(agent),
     });
   }
 
@@ -1002,6 +1088,7 @@ export function builtInAgentService(db: Db) {
       : await skillSvc.getByKey(companyId, bundle.skill.canonicalKey);
     const skillFiles = await getCurrentSkillFiles(companyId, skill, bundle);
     const { routine, triggers } = await getRoutineByBinding(companyId, definition);
+    const proposal = await pendingUpdateProposal(agent);
     const instructionHash = Object.values(instructionFiles).every((value) => value !== null)
       ? stockHash(instructionFiles)
       : null;
@@ -1045,7 +1132,7 @@ export function builtInAgentService(db: Db) {
         bindingStockHash: skillBinding?.stockHash ?? null,
         changedFiles: changedFileList(skillFiles, bundle.skill.files),
       }),
-      stockState({
+      withRoutineControls(stockState({
         resourceKind: "routine",
         resourceKey: bundle.routine.routineKey,
         resourceId: routine?.id ?? null,
@@ -1053,7 +1140,7 @@ export function builtInAgentService(db: Db) {
         latestStockHash: routineDefaultsHash(bundle.routine, bundle.routine.triggers),
         currentHash: routineHash,
         bindingStockHash: routineBinding?.stockHash ?? null,
-      }),
+      }), { routine, triggers, proposal }),
     ];
   }
 
@@ -1327,6 +1414,37 @@ export function builtInAgentService(db: Db) {
     return state(definition, await agentSvc.getById(current.agent.id) as Agent, resources);
   }
 
+  async function setRoutineSchedule(
+    companyId: string,
+    key: string,
+    routineKey: string,
+    enabled: boolean,
+    actor: { agentId?: string | null; userId?: string | null; runId?: string | null } = {},
+  ) {
+    const { definition, agent, routine, schedule } = await requireBundleRoutine(companyId, key, routineKey);
+    if (!schedule) throw notFound("Built-in routine schedule not found");
+    if (enabled) {
+      await ensureBuiltInAgentAssignable(agent);
+      await routineSvc.update(routine.id, { status: "active" }, actor);
+      await routineSvc.updateTrigger(schedule.id, { enabled: true }, actor);
+    } else {
+      await routineSvc.updateTrigger(schedule.id, { enabled: false }, actor);
+      await routineSvc.update(routine.id, { status: "paused" }, actor);
+    }
+    return state(definition, await agentSvc.getById(agent.id) as Agent);
+  }
+
+  async function runRoutine(
+    companyId: string,
+    key: string,
+    routineKey: string,
+    actor: { agentId?: string | null; userId?: string | null; runId?: string | null } = {},
+  ) {
+    const { agent, routine } = await requireBundleRoutine(companyId, key, routineKey);
+    await ensureBuiltInAgentAssignable(agent);
+    return routineSvc.runRoutine(routine.id, { source: "manual" }, actor);
+  }
+
   async function requireBuiltInAgent(companyId: string, key: string): Promise<RequiredBuiltInAgent> {
     const current = await get(companyId, key);
     if (!current.agent) throw builtInAgentNotConfiguredError(current);
@@ -1356,6 +1474,19 @@ export function builtInAgentService(db: Db) {
     provision,
     list,
     reset,
+    enableRoutineSchedule: (
+      companyId: string,
+      key: string,
+      routineKey: string,
+      actor?: { agentId?: string | null; userId?: string | null; runId?: string | null },
+    ) => setRoutineSchedule(companyId, key, routineKey, true, actor),
+    disableRoutineSchedule: (
+      companyId: string,
+      key: string,
+      routineKey: string,
+      actor?: { agentId?: string | null; userId?: string | null; runId?: string | null },
+    ) => setRoutineSchedule(companyId, key, routineKey, false, actor),
+    runRoutine,
     requireBuiltInAgent,
     reconcileDefinitionDefaults,
   };

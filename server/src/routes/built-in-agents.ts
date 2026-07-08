@@ -9,6 +9,26 @@ import { authorizationDeniedDetails } from "../services/authorization.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import type { BuiltInAgentState } from "../services/built-in-agents.js";
 
+const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function formatScheduleLabel(trigger: { cronExpression: string; timezone: string } | undefined) {
+  if (!trigger) return "Weekly schedule";
+  const parts = trigger.cronExpression.trim().split(/\s+/);
+  const [minute, hour, , , dayOfWeek] = parts;
+  const weekdayIndex = dayOfWeek ? Number(dayOfWeek) : Number.NaN;
+  if (
+    parts.length === 5
+    && /^\d+$/.test(minute ?? "")
+    && /^\d+$/.test(hour ?? "")
+    && Number.isInteger(weekdayIndex)
+    && weekdayIndex >= 0
+    && weekdayIndex < WEEKDAY_LABELS.length
+  ) {
+    return `Weekly · ${WEEKDAY_LABELS[weekdayIndex]} ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")} ${trigger.timezone}`;
+  }
+  return `Weekly · ${trigger.timezone}`;
+}
+
 function redactBuiltInAgentListState(state: BuiltInAgentState): BuiltInAgentState {
   const definition = {
     ...state.definition,
@@ -32,6 +52,7 @@ function redactBuiltInAgentListState(state: BuiltInAgentState): BuiltInAgentStat
           title: state.definition.bundle.routine.title,
           status: state.definition.bundle.routine.status,
           triggerCount: state.definition.bundle.routine.triggers.length,
+          scheduleLabel: formatScheduleLabel(state.definition.bundle.routine.triggers[0]),
         },
       }
       : undefined,
@@ -72,15 +93,36 @@ export function builtInAgentRoutes(db: Db) {
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
+  async function assertCanControlBuiltInRoutine(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      throw forbidden("Only board operators can control built-in routines.");
+    }
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
+    if (!allowed) {
+      throw forbidden("Missing permission: tasks:assign");
+    }
+  }
+
   async function logBuiltInAgentMutation(
     req: Request,
-    input: {
-      companyId: string;
-      action: "built_in_agent.provision_requested" | "built_in_agent.reconcile" | "built_in_agent.reset" | "approval.created";
+      input: {
+        companyId: string;
+      action:
+        | "built_in_agent.provision_requested"
+        | "built_in_agent.reconcile"
+        | "built_in_agent.reset"
+        | "built_in_agent.routine_schedule_enabled"
+        | "built_in_agent.routine_schedule_disabled"
+        | "built_in_agent.routine_run_triggered"
+        | "approval.created";
       key: string;
       agentId: string | null;
       status: string;
       approvalId?: string | null;
+      routineKey?: string | null;
+      routineRunId?: string | null;
     },
   ) {
     const actor = getActorInfo(req);
@@ -97,6 +139,8 @@ export function builtInAgentRoutes(db: Db) {
         key: input.key,
         status: input.status,
         approvalId: input.approvalId ?? null,
+        routineKey: input.routineKey ?? null,
+        routineRunId: input.routineRunId ?? null,
       },
     });
   }
@@ -183,6 +227,94 @@ export function builtInAgentRoutes(db: Db) {
     });
     res.json(redactBuiltInAgentListState(state));
   });
+
+  router.post(
+    "/companies/:companyId/built-in-agents/:key/routines/:routineKey/enable",
+    validate(builtInAgentEmptyMutationSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const key = req.params.key as string;
+      const routineKey = req.params.routineKey as string;
+      await assertBuiltInAgentsEnabled();
+      assertCompanyAccess(req, companyId);
+      const current = await svc.get(companyId, key);
+      await assertCanControlBuiltInRoutine(req, companyId);
+      const actor = getActorInfo(req);
+      const state = await svc.enableRoutineSchedule(companyId, key, routineKey, {
+        agentId: actor.actorType === "agent" ? actor.actorId : null,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+        runId: actor.runId ?? null,
+      });
+      await logBuiltInAgentMutation(req, {
+        companyId,
+        action: "built_in_agent.routine_schedule_enabled",
+        key,
+        agentId: state.agentId,
+        status: state.status,
+        routineKey,
+      });
+      res.json(redactBuiltInAgentListState(state));
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/built-in-agents/:key/routines/:routineKey/disable",
+    validate(builtInAgentEmptyMutationSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const key = req.params.key as string;
+      const routineKey = req.params.routineKey as string;
+      await assertBuiltInAgentsEnabled();
+      assertCompanyAccess(req, companyId);
+      const current = await svc.get(companyId, key);
+      await assertCanControlBuiltInRoutine(req, companyId);
+      const actor = getActorInfo(req);
+      const state = await svc.disableRoutineSchedule(companyId, key, routineKey, {
+        agentId: actor.actorType === "agent" ? actor.actorId : null,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+        runId: actor.runId ?? null,
+      });
+      await logBuiltInAgentMutation(req, {
+        companyId,
+        action: "built_in_agent.routine_schedule_disabled",
+        key,
+        agentId: state.agentId,
+        status: state.status,
+        routineKey,
+      });
+      res.json(redactBuiltInAgentListState(state));
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/built-in-agents/:key/routines/:routineKey/run",
+    validate(builtInAgentEmptyMutationSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const key = req.params.key as string;
+      const routineKey = req.params.routineKey as string;
+      await assertBuiltInAgentsEnabled();
+      assertCompanyAccess(req, companyId);
+      const current = await svc.get(companyId, key);
+      await assertCanControlBuiltInRoutine(req, companyId);
+      const actor = getActorInfo(req);
+      const run = await svc.runRoutine(companyId, key, routineKey, {
+        agentId: actor.actorType === "agent" ? actor.actorId : null,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+        runId: actor.runId ?? null,
+      });
+      await logBuiltInAgentMutation(req, {
+        companyId,
+        action: "built_in_agent.routine_run_triggered",
+        key,
+        agentId: current.agentId,
+        status: current.status,
+        routineKey,
+        routineRunId: run.id,
+      });
+      res.status(202).json(run);
+    },
+  );
 
   return router;
 }

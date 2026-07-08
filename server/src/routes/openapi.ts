@@ -10,6 +10,7 @@ import {
   updateAgentInstructionsBundleSchema,
   upsertAgentInstructionsFileSchema,
   createAgentKeySchema,
+  builtInAgentEmptyMutationSchema,
   builtInAgentProvisionSchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
@@ -1188,6 +1189,32 @@ registry.registerPath({
     409: r.conflict,
   },
 });
+
+for (const route of [
+  ["enable", "Enable a built-in routine schedule", 200],
+  ["disable", "Disable a built-in routine schedule", 200],
+  ["run", "Run a built-in routine once", 202],
+] as const) {
+  registry.registerPath({
+    method: "post",
+    path: `/api/companies/{companyId}/built-in-agents/{key}/routines/{routineKey}/${route[0]}`,
+    tags: ["agents"],
+    summary: route[1],
+    request: {
+      params: z.object({ companyId: z.string(), key: z.string(), routineKey: z.string() }),
+      body: jsonBody(builtInAgentEmptyMutationSchema),
+    },
+    responses: {
+      [route[2]]: r.ok(),
+      400: r.badRequest,
+      401: r.unauthorized,
+      403: r.forbidden,
+      404: r.notFound,
+      409: r.conflict,
+      422: r.unprocessable,
+    },
+  });
+}
 
 registry.registerPath({
   method: "get",

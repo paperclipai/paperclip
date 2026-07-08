@@ -12,6 +12,8 @@ import {
   companySkillVersions,
   companySkills,
   createDb,
+  issueThreadInteractions,
+  issues,
   principalPermissionGrants,
   routines,
   routineTriggers,
@@ -59,6 +61,8 @@ describeEmbeddedPostgres("built-in agents", () => {
   afterEach(async () => {
     await db.delete(routineTriggers);
     await db.delete(routines);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issues);
     await db.delete(builtInManagedResources);
     await db.delete(companySkillVersions);
     await db.delete(companySkills);
@@ -444,11 +448,14 @@ describeEmbeddedPostgres("built-in agents", () => {
       instructionsEntryFile: "AGENTS.md",
     });
     expect(state.agent?.adapterConfig).not.toMatchObject({ model: "gpt-5.4", apiKey: "do-not-copy" });
-    expect(state.resources.map((resource) => [resource.resourceKind, resource.stockStatus])).toEqual([
+    expect(state.resources.map((resource) => [resource.resourceKind, resource.stockStatus]).slice(0, 2)).toEqual([
       ["instructions", "stock_current"],
       ["skill", "stock_current"],
-      ["routine", "stock_current"],
     ]);
+    expect(state.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
+      resourceId: expect.any(String),
+      scheduleEnabled: false,
+    });
 
     const agentRows = await db.select().from(agents).where(eq(agents.companyId, companyId));
     expect(agentRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
@@ -708,6 +715,106 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(grants.map((grant) => grant.permissionKey)).not.toContain("tasks:assign");
   });
 
+  it("controls the Reflection Coach routine schedule without enabling it by default", async () => {
+    const companyId = await seedCompany();
+    await agentService(db).create(companyId, {
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const builtIns = builtInAgentService(db);
+    const created = await builtIns.ensure(companyId, "reflection-coach");
+    expect(created.status).toBe("paused");
+    expect(created.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
+      scheduleEnabled: false,
+    });
+
+    const enabled = await builtIns.enableRoutineSchedule(
+      companyId,
+      "reflection-coach",
+      "recent-agent-reflection",
+      { userId: "board-user" },
+    );
+    expect(enabled.status).toBe("needs_setup");
+    expect(enabled.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
+      scheduleEnabled: true,
+    });
+    const [enabledRoutine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    const [enabledTrigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, enabledRoutine!.id));
+    expect(enabledRoutine).toMatchObject({ status: "active" });
+    expect(enabledTrigger).toMatchObject({ enabled: true });
+
+    const disabled = await builtIns.disableRoutineSchedule(
+      companyId,
+      "reflection-coach",
+      "recent-agent-reflection",
+      { userId: "board-user" },
+    );
+    expect(disabled.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
+      scheduleEnabled: false,
+    });
+    const [disabledRoutine] = await db.select().from(routines).where(eq(routines.id, enabledRoutine!.id));
+    const [disabledTrigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.id, enabledTrigger!.id));
+    expect(disabledRoutine).toMatchObject({ status: "paused" });
+    expect(disabledTrigger).toMatchObject({ enabled: false });
+  });
+
+  it("surfaces pending Reflection Coach proposal interactions on the routine resource", async () => {
+    const companyId = await seedCompany();
+    await agentService(db).create(companyId, {
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const created = await builtInAgentService(db).ensure(companyId, "reflection-coach");
+    const proposalIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: proposalIssueId,
+      companyId,
+      title: "Review Reflection Coach proposal",
+      status: "in_review",
+      priority: "medium",
+      identifier: `${issuePrefix(companyId)}-42`,
+      issueNumber: 42,
+      assigneeAgentId: created.agentId,
+      createdByAgentId: created.agentId,
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: proposalIssueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      title: "Review proposed coaching change",
+      summary: "Accept or reject the proposed update.",
+      createdByAgentId: created.agentId,
+      payload: {
+        version: 1,
+        prompt: "Accept the proposed coaching change?",
+        acceptLabel: "Accept",
+        rejectLabel: "Reject",
+      },
+    });
+
+    const state = await builtInAgentService(db).get(companyId, "reflection-coach");
+
+    expect(state.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
+      pendingUpdateInteractionId: interactionId,
+      pendingUpdateIssueId: proposalIssueId,
+      pendingUpdateIssueIdentifier: `${issuePrefix(companyId)}-42`,
+    });
+  });
+
   it("preserves Reflection Coach stock drift until explicit reset", async () => {
     const companyId = await seedCompany();
     const created = await builtInAgentService(db).ensure(companyId, "reflection-coach");
@@ -742,6 +849,6 @@ describeEmbeddedPostgres("built-in agents", () => {
       stockStatus: "operator_modified",
       resetAvailable: true,
     });
-    expect((await instructionsSvc.readFile(reset.agent!, "AGENTS.md")).content).toContain("built-in Reflection Coach");
+    expect((await instructionsSvc.readFile(reset.agent!, "AGENTS.md")).content).toContain("You are Reflection Coach");
   });
 });

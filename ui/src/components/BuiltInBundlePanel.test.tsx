@@ -20,6 +20,7 @@ vi.mock("@/lib/router", () => ({
 function resource(
   resourceKind: BuiltInManagedResourceState["resourceKind"],
   stockStatus: BuiltInManagedResourceStockStatus,
+  overrides: Partial<BuiltInManagedResourceState> = {},
 ): BuiltInManagedResourceState {
   return {
     resourceKind,
@@ -31,6 +32,7 @@ function resource(
     stockStatus,
     updateAvailable: stockStatus === "stock_update_available" || stockStatus === "operator_modified",
     resetAvailable: stockStatus !== "stock_current",
+    ...overrides,
   };
 }
 
@@ -63,6 +65,7 @@ function makeState(
           title: "Recent agent reflection",
           status: "paused",
           triggerCount: 1,
+          scheduleLabel: "Weekly · Mon 09:00 UTC",
         },
       },
     },
@@ -96,6 +99,9 @@ describe("BuiltInBundlePanel (PAP-13099)", () => {
   function render(state: BuiltInAgentState, handlers: Partial<{
     onConfigure: () => void;
     onResetResource: (kind: BuiltInManagedResourceState["resourceKind"]) => void;
+    onRunRoutine: (routineKey: string) => void;
+    onEnableSchedule: (routineKey: string) => void;
+    onDisableSchedule: (routineKey: string) => void;
   }> = {}) {
     root = createRoot(container);
     flushSync(() => {
@@ -105,6 +111,9 @@ describe("BuiltInBundlePanel (PAP-13099)", () => {
           agentRef="reflectioncoach"
           onConfigure={handlers.onConfigure ?? (() => {})}
           onResetResource={handlers.onResetResource ?? (() => {})}
+          onRunRoutine={handlers.onRunRoutine ?? (() => {})}
+          onEnableSchedule={handlers.onEnableSchedule ?? (() => {})}
+          onDisableSchedule={handlers.onDisableSchedule ?? (() => {})}
         />,
       );
     });
@@ -135,6 +144,36 @@ describe("BuiltInBundlePanel (PAP-13099)", () => {
     expect(text).toContain("costs zero tokens by default");
     expect(text).toContain("Schedule off");
     expect(text).toContain("Ready");
+    expect(text).toContain("Run once");
+    expect(text).toContain("Enable weekly");
+  });
+
+  it("shows the active weekly schedule and disable action when enabled", () => {
+    render(makeState("ready", [
+      resource("skill", "stock_current"),
+      resource("instructions", "stock_current"),
+      resource("routine", "stock_current", { scheduleEnabled: true }),
+    ]));
+    const text = container.textContent ?? "";
+    expect(text).toContain("Weekly · Mon 09:00 UTC");
+    expect(text).toContain("can create background work");
+    expect(text).toContain("Disable schedule");
+    expect(text).not.toContain("Enable weekly");
+  });
+
+  it("links to a pending proposal interaction when the routine resource reports one", () => {
+    render(makeState("ready", [
+      resource("skill", "stock_current"),
+      resource("instructions", "stock_current"),
+      resource("routine", "stock_current", {
+        pendingUpdateInteractionId: "interaction-1",
+        pendingUpdateIssueId: "issue-1",
+        pendingUpdateIssueIdentifier: "PAP-42",
+      }),
+    ]));
+    const link = Array.from(container.querySelectorAll("a")).find((anchor) => anchor.textContent === "Review proposal");
+    expect(container.textContent).toContain("Proposal pending");
+    expect(link?.getAttribute("href")).toBe("/issues/PAP-42#interaction-interaction-1");
   });
 
   it("shows Needs setup for the adapter when the agent is not configured yet", () => {

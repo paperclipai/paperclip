@@ -134,6 +134,42 @@ function ResourceActionButton({
   );
 }
 
+function ConfirmActionButton({
+  title,
+  body,
+  triggerLabel,
+  confirmLabel,
+  pending,
+  onConfirm,
+}: {
+  title: string;
+  body: string;
+  triggerLabel: string;
+  confirmLabel: string;
+  pending: boolean;
+  onConfirm: () => void;
+}) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="outline" size="sm" disabled={pending}>
+          {pending ? "Working…" : triggerLabel}
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{body}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={onConfirm}>{confirmLabel}</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 interface BundleRowProps {
   label: string;
   secondary?: string;
@@ -191,8 +227,15 @@ export interface BuiltInBundlePanelProps {
   onConfigure: () => void;
   /** Scoped reset for one resource (apply update / reset drift / recreate). */
   onResetResource: (kind: BuiltInManagedResourceKind) => void;
+  /** Trigger the managed routine once without enabling its weekly schedule. */
+  onRunRoutine?: (routineKey: string) => void;
+  /** Enable the managed routine's weekly schedule. */
+  onEnableSchedule?: (routineKey: string) => void;
+  /** Disable the managed routine's weekly schedule. */
+  onDisableSchedule?: (routineKey: string) => void;
   /** The resource kind whose reset is currently in flight, if any. */
   resettingResource?: BuiltInManagedResourceKind | null;
+  routineActionPending?: "run" | "enable" | "disable" | null;
   className?: string;
 }
 
@@ -201,7 +244,11 @@ export function BuiltInBundlePanel({
   agentRef,
   onConfigure,
   onResetResource,
+  onRunRoutine,
+  onEnableSchedule,
+  onDisableSchedule,
   resettingResource = null,
+  routineActionPending = null,
   className,
 }: BuiltInBundlePanelProps) {
   const { status, definition, resources } = state;
@@ -224,6 +271,13 @@ export function BuiltInBundlePanel({
   const skill = findResource(resources, "skill");
   const instructions = findResource(resources, "instructions");
   const routine = findResource(resources, "routine");
+  const scheduleEnabled = routine?.scheduleEnabled === true;
+  const routineKey = bundle.routine.routineKey;
+  const scheduleLabel = bundle.routine.scheduleLabel ?? "Weekly schedule";
+  const proposalIssueRef = routine?.pendingUpdateIssueIdentifier ?? routine?.pendingUpdateIssueId ?? null;
+  const proposalHref = proposalIssueRef && routine?.pendingUpdateInteractionId
+    ? `/issues/${proposalIssueRef}#interaction-${routine.pendingUpdateInteractionId}`
+    : null;
 
   const renderResourceRow = (
     kind: BuiltInManagedResourceKind,
@@ -303,24 +357,78 @@ export function BuiltInBundlePanel({
           secondary={bundle.routine.title}
           chips={
             <>
-              <ResourceStatusChip variant="schedule_off" />
+              <ResourceStatusChip
+                variant={scheduleEnabled ? "schedule_on" : "schedule_off"}
+                label={scheduleEnabled ? scheduleLabel : undefined}
+              />
               {routine && driftVariant(routine) && (
                 <ResourceStatusChip variant={driftVariant(routine)!} />
               )}
             </>
           }
-          detail="Nothing runs until you enable the weekly schedule — it costs zero tokens by default."
+          detail={
+            scheduleEnabled
+              ? "The weekly schedule is enabled and can create background work."
+              : "Nothing runs until you enable the weekly schedule — it costs zero tokens by default."
+          }
           actions={
-            routine && driftVariant(routine) ? (
-              <ResourceActionButton
-                resource={routine}
-                label="routine"
-                onConfirm={() => onResetResource("routine")}
-                pending={resettingResource === "routine"}
-              />
+            routine ? (
+              <>
+                {onRunRoutine && (
+                  <ConfirmActionButton
+                    title="Run Reflection Coach once?"
+                    body="Paperclip will create one routine task now. This does not enable the weekly schedule or turn on background work."
+                    triggerLabel="Run once"
+                    confirmLabel="Run once"
+                    pending={routineActionPending === "run"}
+                    onConfirm={() => onRunRoutine(routineKey)}
+                  />
+                )}
+                {scheduleEnabled
+                  ? onDisableSchedule && (
+                    <ConfirmActionButton
+                      title="Disable the weekly schedule?"
+                      body="Paperclip will stop future scheduled Reflection Coach runs. Manual Run once remains available."
+                      triggerLabel="Disable schedule"
+                      confirmLabel="Disable schedule"
+                      pending={routineActionPending === "disable"}
+                      onConfirm={() => onDisableSchedule(routineKey)}
+                    />
+                  )
+                  : onEnableSchedule && (
+                    <ConfirmActionButton
+                      title="Enable the weekly schedule?"
+                      body="Paperclip will allow Reflection Coach to create routine tasks on the weekly schedule. It can spend tokens when those tasks run."
+                      triggerLabel="Enable weekly"
+                      confirmLabel="Enable weekly"
+                      pending={routineActionPending === "enable"}
+                      onConfirm={() => onEnableSchedule(routineKey)}
+                    />
+                  )}
+                {driftVariant(routine) && (
+                  <ResourceActionButton
+                    resource={routine}
+                    label="routine"
+                    onConfirm={() => onResetResource("routine")}
+                    pending={resettingResource === "routine"}
+                  />
+                )}
+              </>
             ) : undefined
           }
         />
+        {proposalHref && (
+          <BundleRow
+            label="Proposal"
+            chips={<ResourceStatusChip variant="proposal_pending" />}
+            detail="A proposed Reflection Coach update is waiting for review."
+            actions={
+              <Button asChild variant="link" size="sm">
+                <Link to={proposalHref}>Review proposal</Link>
+              </Button>
+            }
+          />
+        )}
       </div>
     </section>
   );

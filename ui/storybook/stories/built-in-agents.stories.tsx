@@ -354,6 +354,9 @@ function BundleCase({ title, state }: { title: string; state: BuiltInAgentState 
         agentRef="reflectioncoach"
         onConfigure={() => {}}
         onResetResource={() => {}}
+        onRunRoutine={() => {}}
+        onEnableSchedule={() => {}}
+        onDisableSchedule={() => {}}
       />
     </div>
   );

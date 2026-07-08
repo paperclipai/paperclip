@@ -39,6 +39,7 @@ export interface BuiltInAgentBundleMeta {
     title: string;
     status: "active" | "paused";
     triggerCount: number;
+    scheduleLabel?: string;
   };
 }
 
@@ -83,6 +84,13 @@ export interface BuiltInManagedResourceState {
   /** True when the resource has drifted and can be reset to the default. */
   resetAvailable: boolean;
   changedFiles?: string[];
+  /** True when the managed weekly schedule is active and can create background work. */
+  scheduleEnabled?: boolean;
+  /** Pending request_confirmation for a Reflection Coach update proposal, when one exists. */
+  pendingUpdateInteractionId?: string | null;
+  /** Issue containing the pending proposal interaction. */
+  pendingUpdateIssueId?: string | null;
+  pendingUpdateIssueIdentifier?: string | null;
 }
 
 export interface BuiltInAgentState {
@@ -148,4 +156,10 @@ export const builtInAgentsApi = {
    */
   reconcile: (companyId: string, key: string) =>
     api.post<BuiltInAgentState>(`/companies/${companyId}/built-in-agents/${key}/reconcile`, {}),
+  runRoutine: (companyId: string, key: string, routineKey: string) =>
+    api.post<unknown>(`/companies/${companyId}/built-in-agents/${key}/routines/${routineKey}/run`, {}),
+  enableRoutineSchedule: (companyId: string, key: string, routineKey: string) =>
+    api.post<BuiltInAgentState>(`/companies/${companyId}/built-in-agents/${key}/routines/${routineKey}/enable`, {}),
+  disableRoutineSchedule: (companyId: string, key: string, routineKey: string) =>
+    api.post<BuiltInAgentState>(`/companies/${companyId}/built-in-agents/${key}/routines/${routineKey}/disable`, {}),
 };
