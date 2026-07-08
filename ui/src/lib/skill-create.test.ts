@@ -50,6 +50,7 @@ function skill(overrides: Partial<CompanySkillDetail> = {}): CompanySkillDetail 
     sourcePath: null,
     currentVersion: null,
     starredByCurrentActor: false,
+    existingForks: [],
     ...overrides,
   };
 }
