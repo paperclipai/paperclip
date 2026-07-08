@@ -1,9 +1,10 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpDown, Check, ChevronDown, Columns3, Filter, Layers, ListTree, Search, SearchX } from "lucide-react";
-import { Link, useCaseHref } from "@/lib/router";
+import { Link, useCaseHref, useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
+import { useGeneralSettings } from "@/context/GeneralSettingsContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { casesApi, CASE_STATUSES, TERMINAL_CASE_STATUSES, type CaseStatus, type CaseSummary } from "@/api/cases";
 import { projectsApi } from "@/api/projects";
@@ -19,6 +20,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
 import { CaseCopyableToken } from "@/components/CaseIdentifierKey";
+import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "@/lib/keyboardShortcuts";
 import { cn, relativeTime } from "@/lib/utils";
 
 type GroupBy = "type" | "project" | "status" | "none";
@@ -383,6 +385,8 @@ function CaseListRow({
   treeView,
   treeCollapsed,
   onTreeToggle,
+  selected = false,
+  onSelect,
 }: {
   row: CaseSummary;
   projectName: string | null;
@@ -395,12 +399,19 @@ function CaseListRow({
   treeView?: boolean;
   treeCollapsed?: boolean;
   onTreeToggle?: (caseId: string) => void;
+  selected?: boolean;
+  onSelect?: () => void;
 }) {
   const caseHref = useCaseHref();
   return (
     <Link
+      data-case-item
       to={caseHref(row.identifier)}
-      className="group flex items-start gap-2 border-b border-border py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors last:border-b-0 hover:bg-accent/50 sm:items-center sm:py-2 sm:pl-1"
+      className={cn(
+        "group flex items-start gap-2 border-b border-border py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors last:border-b-0 hover:bg-accent/50 sm:items-center sm:py-2 sm:pl-1",
+        selected && "bg-accent/50",
+      )}
+      onMouseEnter={onSelect}
     >
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
         <span className="line-clamp-2 text-sm sm:hidden">
@@ -479,26 +490,39 @@ function CaseColumnHeader({
 function CaseGroup({
   label,
   count,
+  collapsed,
+  selected,
+  onToggle,
+  onSelect,
   children,
 }: {
   label: string;
   count: number;
+  collapsed: boolean;
+  selected: boolean;
+  onToggle: () => void;
+  onSelect: () => void;
   children: React.ReactNode;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
   return (
     <div className="mt-6 first:mt-0">
-      <IssueGroupHeader
-        label={label}
-        collapsible
-        collapsed={collapsed}
-        onToggle={() => setCollapsed((current) => !current)}
-        trailing={(
-          <span className="text-xs text-muted-foreground tabular-nums">
-            {count} {count === 1 ? "case" : "cases"}
-          </span>
-        )}
-      />
+      <div
+        data-case-item
+        className={cn("transition-colors", selected && "bg-accent/50")}
+        onMouseEnter={onSelect}
+      >
+        <IssueGroupHeader
+          label={label}
+          collapsible
+          collapsed={collapsed}
+          onToggle={onToggle}
+          trailing={(
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {count} {count === 1 ? "case" : "cases"}
+            </span>
+          )}
+        />
+      </div>
       {!collapsed && <div>{children}</div>}
     </div>
   );
@@ -516,6 +540,21 @@ type CaseTreeRow = {
   childCount: number;
   collapsed: boolean;
 };
+type CaseKeyboardNavEntry =
+  | { type: "group"; groupKey: string; collapsed: boolean }
+  | { type: "case"; row: CaseSummary; childCount: number; collapsed: boolean };
+
+function getCaseKeyboardSelectionIndex(
+  previousIndex: number,
+  itemCount: number,
+  direction: "next" | "previous",
+): number {
+  if (itemCount === 0) return -1;
+  if (previousIndex < 0) return 0;
+  return direction === "next"
+    ? Math.min(previousIndex + 1, itemCount - 1)
+    : Math.max(previousIndex - 1, 0);
+}
 
 function CaseToolbarButton({
   icon: Icon,
@@ -692,11 +731,17 @@ function CasesEmptyHero() {
 export function Cases() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { keyboardShortcutsEnabled } = useGeneralSettings();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const caseHref = useCaseHref();
+  const caseListRef = useRef<HTMLDivElement | null>(null);
 
   const viewStorageKey = getCaseViewStorageKey(selectedCompanyId);
   const [viewState, setViewState] = useState<CaseViewState>(() => loadCaseViewState(viewStorageKey));
   const [collapsedTreeCaseIds, setCollapsedTreeCaseIds] = useState<Set<string>>(() => new Set());
+  const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(() => new Set());
+  const [selectedIndex, setSelectedIndex] = useState(-1);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Cases" }]);
@@ -704,6 +749,9 @@ export function Cases() {
 
   useEffect(() => {
     setViewState(loadCaseViewState(viewStorageKey));
+    setCollapsedGroupKeys(new Set());
+    setCollapsedTreeCaseIds(new Set());
+    setSelectedIndex(-1);
   }, [viewStorageKey]);
 
   function updateView(patch: Partial<CaseViewState>) {
@@ -884,6 +932,44 @@ export function Cases() {
     return rows;
   }, [collapsedTreeCaseIds, sorted]);
 
+  const keyboardNavItems = useMemo((): CaseKeyboardNavEntry[] => {
+    if (viewState.treeView) {
+      return treeRows.map(({ row, childCount, collapsed }) => ({
+        type: "case",
+        row,
+        childCount,
+        collapsed,
+      }));
+    }
+
+    const entries: CaseKeyboardNavEntry[] = [];
+    for (const group of groupedRows) {
+      const collapsed = collapsedGroupKeys.has(group.key);
+      if (group.label) {
+        entries.push({ type: "group", groupKey: group.key, collapsed });
+      }
+      if (collapsed) continue;
+      for (const row of group.rows) {
+        entries.push({ type: "case", row, childCount: 0, collapsed: false });
+      }
+    }
+    return entries;
+  }, [collapsedGroupKeys, groupedRows, treeRows, viewState.treeView]);
+
+  useEffect(() => {
+    setSelectedIndex((current) => {
+      if (keyboardNavItems.length === 0) return -1;
+      if (current < 0) return -1;
+      return Math.min(current, keyboardNavItems.length - 1);
+    });
+  }, [keyboardNavItems.length]);
+
+  useEffect(() => {
+    if (selectedIndex < 0 || !caseListRef.current) return;
+    const rows = caseListRef.current.querySelectorAll("[data-case-item]");
+    rows[selectedIndex]?.scrollIntoView({ block: "nearest" });
+  }, [selectedIndex]);
+
   const activeFilters: FilterValue[] = [];
   if (viewState.search.trim()) activeFilters.push({ key: "search", label: "Search", value: viewState.search.trim() });
   if (viewState.typeFilters.length > 0) {
@@ -947,6 +1033,30 @@ export function Cases() {
       return next;
     });
   }
+  function setTreeRowCollapsed(caseId: string, collapsed: boolean) {
+    setCollapsedTreeCaseIds((current) => {
+      const next = new Set(current);
+      if (collapsed) next.add(caseId);
+      else next.delete(caseId);
+      return next;
+    });
+  }
+  function toggleGroup(groupKey: string) {
+    setCollapsedGroupKeys((current) => {
+      const next = new Set(current);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      return next;
+    });
+  }
+  function setGroupCollapsed(groupKey: string, collapsed: boolean) {
+    setCollapsedGroupKeys((current) => {
+      const next = new Set(current);
+      if (collapsed) next.add(groupKey);
+      else next.delete(groupKey);
+      return next;
+    });
+  }
   function toggleStringFilter(key: "typeFilters" | "projectFilters", value: string, enabled: boolean) {
     const current = viewState[key];
     updateView({
@@ -961,6 +1071,70 @@ export function Cases() {
       : viewState.statusFilters.filter((item) => item !== status);
     updateView({ statusFilters: normalizeCaseStatuses(next) });
   }
+
+  useEffect(() => {
+    if (!keyboardShortcutsEnabled) return;
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented) return;
+      const target = event.target;
+      if (
+        !(target instanceof HTMLElement)
+        || isKeyboardShortcutTextInputTarget(target)
+        || hasBlockingShortcutDialog(document)
+        || event.metaKey
+        || event.ctrlKey
+        || event.altKey
+      ) {
+        return;
+      }
+
+      const navCount = keyboardNavItems.length;
+      if (navCount === 0) return;
+
+      switch (event.key) {
+        case "j":
+        case "ArrowDown":
+          event.preventDefault();
+          setSelectedIndex((current) => getCaseKeyboardSelectionIndex(current, navCount, "next"));
+          break;
+        case "k":
+        case "ArrowUp":
+          event.preventDefault();
+          setSelectedIndex((current) => getCaseKeyboardSelectionIndex(current, navCount, "previous"));
+          break;
+        case "ArrowLeft":
+        case "ArrowRight": {
+          if (selectedIndex < 0 || selectedIndex >= navCount) return;
+          const entry = keyboardNavItems[selectedIndex];
+          if (!entry) return;
+          if (entry.type === "group") {
+            event.preventDefault();
+            setGroupCollapsed(entry.groupKey, event.key === "ArrowLeft");
+            return;
+          }
+          if (viewState.treeView && entry.childCount > 0) {
+            event.preventDefault();
+            setTreeRowCollapsed(entry.row.id, event.key === "ArrowLeft");
+          }
+          break;
+        }
+        case "Enter": {
+          if (selectedIndex < 0 || selectedIndex >= navCount) return;
+          const entry = keyboardNavItems[selectedIndex];
+          if (!entry || entry.type !== "case") return;
+          event.preventDefault();
+          navigate(caseHref(entry.row.identifier));
+          break;
+        }
+        default:
+          return;
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [caseHref, keyboardNavItems, keyboardShortcutsEnabled, navigate, selectedIndex, viewState.treeView]);
 
   if (casesQuery.isLoading) return <PageSkeleton variant="list" />;
 
@@ -1122,53 +1296,76 @@ export function Cases() {
           {filtered.length === 0 ? (
             <EmptyState icon={SearchX} message="No cases match these filters." action="Clear filters" onAction={clearFilters} />
           ) : (
-            <div>
+            <div ref={caseListRef}>
               <CaseColumnHeader visibleColumnSet={visibleColumnSet} trailingColumns={trailingColumns} />
               {viewState.treeView ? (
-                treeRows.map(({ row, depth, childCount, collapsed }) => (
-                  <CaseListRow
-                    key={row.id}
-                    row={row}
-                    projectName={row.projectId ? projectName.get(row.projectId) ?? null : null}
-                    visibleColumnSet={visibleColumnSet}
-                    trailingColumns={trailingColumns}
-                    statusPending={patchCase.isPending && patchCase.variables?.caseId === row.id}
-                    onStatusChange={(caseId, status) => patchCase.mutate({ caseId, status })}
-                    treeDepth={depth}
-                    childCount={childCount}
-                    treeCollapsed={collapsed}
-                    onTreeToggle={toggleTreeRow}
-                    treeView
-                  />
-                ))
+                treeRows.map(({ row, depth, childCount, collapsed }) => {
+                  const navIndex = keyboardNavItems.findIndex((item) => item.type === "case" && item.row.id === row.id);
+                  return (
+                    <CaseListRow
+                      key={row.id}
+                      row={row}
+                      projectName={row.projectId ? projectName.get(row.projectId) ?? null : null}
+                      visibleColumnSet={visibleColumnSet}
+                      trailingColumns={trailingColumns}
+                      statusPending={patchCase.isPending && patchCase.variables?.caseId === row.id}
+                      onStatusChange={(caseId, status) => patchCase.mutate({ caseId, status })}
+                      treeDepth={depth}
+                      childCount={childCount}
+                      treeCollapsed={collapsed}
+                      onTreeToggle={toggleTreeRow}
+                      selected={selectedIndex === navIndex}
+                      onSelect={() => setSelectedIndex(navIndex)}
+                      treeView
+                    />
+                  );
+                })
               ) : (
                 groupedRows.map((group) => group.label ? (
-                  <CaseGroup key={group.key} label={group.label} count={group.rows.length}>
-                    {group.rows.map((row) => (
-                      <CaseListRow
-                        key={row.id}
-                        row={row}
-                        projectName={row.projectId ? projectName.get(row.projectId) ?? null : null}
-                        visibleColumnSet={visibleColumnSet}
-                        trailingColumns={trailingColumns}
-                        statusPending={patchCase.isPending && patchCase.variables?.caseId === row.id}
-                        onStatusChange={(caseId, status) => patchCase.mutate({ caseId, status })}
-                      />
-                    ))}
+                  <CaseGroup
+                    key={group.key}
+                    label={group.label}
+                    count={group.rows.length}
+                    collapsed={collapsedGroupKeys.has(group.key)}
+                    selected={selectedIndex === keyboardNavItems.findIndex((item) => item.type === "group" && item.groupKey === group.key)}
+                    onToggle={() => toggleGroup(group.key)}
+                    onSelect={() => setSelectedIndex(keyboardNavItems.findIndex((item) => item.type === "group" && item.groupKey === group.key))}
+                  >
+                    {group.rows.map((row) => {
+                      const navIndex = keyboardNavItems.findIndex((item) => item.type === "case" && item.row.id === row.id);
+                      return (
+                        <CaseListRow
+                          key={row.id}
+                          row={row}
+                          projectName={row.projectId ? projectName.get(row.projectId) ?? null : null}
+                          visibleColumnSet={visibleColumnSet}
+                          trailingColumns={trailingColumns}
+                          statusPending={patchCase.isPending && patchCase.variables?.caseId === row.id}
+                          onStatusChange={(caseId, status) => patchCase.mutate({ caseId, status })}
+                          selected={selectedIndex === navIndex}
+                          onSelect={() => setSelectedIndex(navIndex)}
+                        />
+                      );
+                    })}
                   </CaseGroup>
                 ) : (
                   <div key={group.key}>
-                    {group.rows.map((row) => (
-                      <CaseListRow
-                        key={row.id}
-                        row={row}
-                        projectName={row.projectId ? projectName.get(row.projectId) ?? null : null}
-                        visibleColumnSet={visibleColumnSet}
-                        trailingColumns={trailingColumns}
-                        statusPending={patchCase.isPending && patchCase.variables?.caseId === row.id}
-                        onStatusChange={(caseId, status) => patchCase.mutate({ caseId, status })}
-                      />
-                    ))}
+                    {group.rows.map((row) => {
+                      const navIndex = keyboardNavItems.findIndex((item) => item.type === "case" && item.row.id === row.id);
+                      return (
+                        <CaseListRow
+                          key={row.id}
+                          row={row}
+                          projectName={row.projectId ? projectName.get(row.projectId) ?? null : null}
+                          visibleColumnSet={visibleColumnSet}
+                          trailingColumns={trailingColumns}
+                          statusPending={patchCase.isPending && patchCase.variables?.caseId === row.id}
+                          onStatusChange={(caseId, status) => patchCase.mutate({ caseId, status })}
+                          selected={selectedIndex === navIndex}
+                          onSelect={() => setSelectedIndex(navIndex)}
+                        />
+                      );
+                    })}
                   </div>
                 ))
               )}

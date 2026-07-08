@@ -17,9 +17,12 @@ const mockCasesApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockProjectsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockIssuesApi = vi.hoisted(() => ({ listLabels: vi.fn() }));
 const mockCopyTextToClipboard = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+const mockNavigate = vi.hoisted(() => vi.fn());
+const generalSettingsState = vi.hoisted(() => ({ keyboardShortcutsEnabled: false }));
 
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => companyState }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }) }));
+vi.mock("@/context/GeneralSettingsContext", () => ({ useGeneralSettings: () => generalSettingsState }));
 vi.mock("@/api/cases", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/cases")>()),
   casesApi: mockCasesApi,
@@ -31,6 +34,7 @@ vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => (
     <a href={to} {...props}>{children}</a>
   ),
+  useNavigate: () => mockNavigate,
   useCaseHref: () => (...segments: string[]) =>
     `/PAP/${["cases", ...segments].filter(Boolean).join("/")}`,
 }));
@@ -56,6 +60,11 @@ async function waitForAssertion(assertion: () => void, attempts = 20) {
     }
   }
   throw lastError;
+}
+function dispatchShortcut(key: string) {
+  act(() => {
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  });
 }
 
 function createCase(overrides: Partial<CaseSummary>): CaseSummary {
@@ -104,6 +113,9 @@ describe("Cases list", () => {
     mockProjectsApi.list.mockReset().mockResolvedValue([]);
     mockIssuesApi.listLabels.mockReset().mockResolvedValue([]);
     mockCopyTextToClipboard.mockClear();
+    mockNavigate.mockClear();
+    generalSettingsState.keyboardShortcutsEnabled = false;
+    HTMLElement.prototype.scrollIntoView = vi.fn();
   });
   afterEach(() => {
     container.remove();
@@ -336,6 +348,110 @@ describe("Cases list", () => {
       expect(container.textContent).not.toContain("Child case");
       expect(container.querySelector<HTMLButtonElement>('button[aria-label="Expand Parent case"]')?.getAttribute("aria-expanded")).toBe("false");
     });
+
+    act(() => root.unmount());
+  });
+
+  it("supports inbox-style keyboard navigation, group folding, and opening on grouped case rows", async () => {
+    generalSettingsState.keyboardShortcutsEnabled = true;
+    mockCasesApi.list.mockResolvedValue([
+      createCase({
+        id: "blog",
+        identifier: "PAP-C1",
+        title: "Blog active",
+        caseType: "blog_post",
+        updatedAt: "2026-07-08T00:00:00.000Z",
+      }),
+      createCase({
+        id: "docs",
+        identifier: "PAP-C2",
+        title: "Docs active",
+        caseType: "docs_page",
+        updatedAt: "2026-07-07T00:00:00.000Z",
+      }),
+    ]);
+
+    const root = renderPage(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Blog active");
+      expect(container.textContent).toContain("Docs active");
+    });
+
+    dispatchShortcut("j");
+    await flush();
+    dispatchShortcut("ArrowLeft");
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("blog_post");
+      expect(container.textContent).not.toContain("Blog active");
+    });
+
+    dispatchShortcut("ArrowRight");
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Blog active");
+    });
+
+    dispatchShortcut("j");
+    await flush();
+    dispatchShortcut("Enter");
+
+    expect(mockNavigate).toHaveBeenCalledWith("/PAP/cases/PAP-C1");
+
+    act(() => root.unmount());
+  });
+
+  it("supports keyboard tree folding and opening parent case rows", async () => {
+    generalSettingsState.keyboardShortcutsEnabled = true;
+    window.localStorage.setItem(
+      "paperclip:cases:company-1:view",
+      JSON.stringify({
+        treeView: true,
+        columns: ["id", "title", "type", "status", "updated"],
+      }),
+    );
+    mockCasesApi.list.mockResolvedValue([
+      createCase({
+        id: "child",
+        identifier: "PAP-C2",
+        title: "Child case",
+        parentCaseId: "parent",
+        caseType: "asset",
+        updatedAt: "2026-07-08T00:00:00.000Z",
+      }),
+      createCase({
+        id: "parent",
+        identifier: "PAP-C1",
+        title: "Parent case",
+        caseType: "brief",
+        updatedAt: "2026-07-07T00:00:00.000Z",
+      }),
+    ]);
+
+    const root = renderPage(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Parent case");
+      expect(container.textContent).toContain("Child case");
+    });
+
+    dispatchShortcut("j");
+    await flush();
+    dispatchShortcut("ArrowLeft");
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Parent case");
+      expect(container.textContent).not.toContain("Child case");
+    });
+
+    dispatchShortcut("ArrowRight");
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Child case");
+    });
+
+    dispatchShortcut("Enter");
+
+    expect(mockNavigate).toHaveBeenCalledWith("/PAP/cases/PAP-C1");
 
     act(() => root.unmount());
   });
