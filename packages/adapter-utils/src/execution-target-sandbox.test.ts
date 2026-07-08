@@ -212,6 +212,16 @@ describe("sandbox adapter execution targets", () => {
       timeoutSec: 0,
       source: "unlimited",
     });
+    // Fractional (sub-second) configured timeouts are preserved rather than
+    // floored to 0, which would silently mean "no timeout".
+    expect(resolveAdapterExecutionTargetTimeout({ kind: "local" }, 0.01)).toEqual({
+      timeoutSec: 0.01,
+      source: "configured",
+    });
+    expect(resolveAdapterExecutionTargetTimeout(sandboxTarget, 0.5)).toEqual({
+      timeoutSec: 0.5,
+      source: "configured",
+    });
   });
 
   it("formats self-describing timeout errors naming the timer and knob", () => {

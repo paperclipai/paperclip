@@ -730,7 +730,7 @@ describe("acpx_local execution timeouts", () => {
     // The effective timeout and its source are stated at run start so a later
     // timeout is diagnosable from the run log alone.
     const startLine = logs.find(
-      (entry) => entry.stream === "stdout" && entry.text.includes("Adapter execution timeout:"),
+      (entry) => entry.stream === "stderr" && entry.text.includes("Adapter execution timeout:"),
     );
     expect(startLine).toBeTruthy();
     expect(startLine!.text).toContain(
@@ -754,7 +754,7 @@ describe("acpx_local execution timeouts", () => {
 
     expect(runtimeOptions[0]?.timeoutMs).toBeUndefined();
     const startLine = logs.find(
-      (entry) => entry.stream === "stdout" && entry.text.includes("Adapter execution timeout:"),
+      (entry) => entry.stream === "stderr" && entry.text.includes("Adapter execution timeout:"),
     );
     expect(startLine).toBeTruthy();
     expect(startLine!.text).toContain("Adapter execution timeout: none");
@@ -779,7 +779,7 @@ describe("acpx_local execution timeouts", () => {
 
     expect(runtimeOptions[0]?.timeoutMs).toBe(90 * 1000);
     const startLine = logs.find(
-      (entry) => entry.stream === "stdout" && entry.text.includes("Adapter execution timeout:"),
+      (entry) => entry.stream === "stderr" && entry.text.includes("Adapter execution timeout:"),
     );
     expect(startLine!.text).toContain(
       "Adapter execution timeout: timeoutSec=90 (configured via adapterConfig.timeoutSec; set adapterConfig.timeoutSec to override).",

@@ -1400,9 +1400,11 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
   return async function executeAcpxLocal(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
     const prepared = await buildRuntime({ ctx });
     // State the effective wall-clock timeout and its source up front so a
-    // later timeout is diagnosable from the run log alone.
+    // later timeout is diagnosable from the run log alone. Goes to stderr:
+    // the acpx stdout log stream carries JSON acpx.* event payloads and must
+    // stay machine-parseable line by line.
     await ctx.onLog(
-      "stdout",
+      "stderr",
       `[paperclip] ${formatAdapterExecutionTimeoutStartLogLine(prepared.timeoutResolution)}\n`,
     );
     const warmIdleMs = asNumber(ctx.config.warmHandleIdleMs, DEFAULT_ACPX_LOCAL_WARM_HANDLE_IDLE_MS);

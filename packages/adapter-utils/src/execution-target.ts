@@ -275,9 +275,12 @@ export function resolveAdapterExecutionTargetTimeout(
   target: AdapterExecutionTarget | null | undefined,
   configuredTimeoutSec: number | null | undefined,
 ): AdapterExecutionTargetTimeoutResolution {
+  // Preserve fractional (sub-second) configured values instead of flooring:
+  // adapters historically honored e.g. timeoutSec=0.5, and flooring would
+  // silently turn it into "no timeout".
   const normalizedConfiguredTimeoutSec =
     typeof configuredTimeoutSec === "number" && Number.isFinite(configuredTimeoutSec) && configuredTimeoutSec > 0
-      ? Math.floor(configuredTimeoutSec)
+      ? configuredTimeoutSec
       : 0;
   if (normalizedConfiguredTimeoutSec > 0) {
     return { timeoutSec: normalizedConfiguredTimeoutSec, source: "configured" };
