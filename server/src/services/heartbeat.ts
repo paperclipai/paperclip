@@ -136,6 +136,7 @@ import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./exec
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
+  HEARTBEAT_RUN_SCRATCH_MARKER,
   buildHeartbeatRunScratchEnv,
   cleanupHeartbeatRunScratch,
   prepareHeartbeatRunScratch,
@@ -11212,28 +11213,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const executionTarget = realizationResult.executionTarget;
     const remoteExecution = realizationResult.remoteExecution;
     if (!executionTarget || executionTarget.kind === "local") {
-      runScratch = await prepareHeartbeatRunScratch({
-        companyId: agent.companyId,
-        agentId: agent.id,
-        runId: run.id,
-        issueId: issueRef?.id ?? null,
-        issueIdentifier: issueRef?.identifier ?? null,
-      });
-      const scratchEnv = buildHeartbeatRunScratchEnv(parseObject(runtimeConfig.env), runScratch);
-      runtimeConfig = {
-        ...runtimeConfig,
-        env: {
-          ...parseObject(runtimeConfig.env),
-          ...scratchEnv.env,
-        },
-      };
-      context.paperclipScratch = {
-        type: "heartbeat_run",
-        dir: runScratch.dir,
-        cleanupPolicy: "terminal_run",
-        marker: ".paperclip-run-scratch.json",
-        tempKeysApplied: scratchEnv.tempKeysApplied,
-      };
+      try {
+        runScratch = await prepareHeartbeatRunScratch({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          issueId: issueRef?.id ?? null,
+          issueIdentifier: issueRef?.identifier ?? null,
+        });
+        const existingRuntimeEnv = parseObject(runtimeConfig.env);
+        const scratchEnv = buildHeartbeatRunScratchEnv(existingRuntimeEnv, runScratch);
+        runtimeConfig = {
+          ...runtimeConfig,
+          env: {
+            ...existingRuntimeEnv,
+            ...scratchEnv.env,
+          },
+        };
+        context.paperclipScratch = {
+          type: "heartbeat_run",
+          dir: runScratch.dir,
+          cleanupPolicy: "terminal_run",
+          marker: HEARTBEAT_RUN_SCRATCH_MARKER,
+          tempKeysApplied: scratchEnv.tempKeysApplied,
+        };
+      } catch (scratchPrepareError) {
+        runScratch = null;
+        delete context.paperclipScratch;
+        logger.warn(
+          {
+            err: scratchPrepareError,
+            runId: run.id,
+            issueId,
+            agentId: agent.id,
+          },
+          "failed to prepare heartbeat run scratch directory; continuing without scratch env",
+        );
+      }
     } else {
       delete context.paperclipScratch;
     }
