@@ -1,7 +1,6 @@
 /**
- * OpenShell gRPC client -- calls the OpenShell gateway directly
- * without ShoreGuard as a middleman.
- * 
+ * OpenShell gRPC client -- calls the OpenShell gateway directly.
+ *
  * Uses dynamic proto loading via @grpc/proto-loader to avoid
  * needing a proto compilation step.
  */
@@ -9,20 +8,23 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { accessSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH_RELATIVE = resolve(__dirname, "../proto/openshell.proto");
 const PROTO_PATH_ABSOLUTE = "/paperclip/adapters/openshell-direct/proto/openshell.proto";
-const PROTO_PATH = existsSync(PROTO_PATH_RELATIVE) ? PROTO_PATH_RELATIVE : PROTO_PATH_ABSOLUTE;
 
 function existsSync(p: string): boolean {
-  try { require("fs").accessSync(p); return true; } catch { return false; }
+  try { accessSync(p); return true; } catch { return false; }
 }
 
-let _client: any = null;
+const PROTO_PATH = existsSync(PROTO_PATH_RELATIVE) ? PROTO_PATH_RELATIVE : PROTO_PATH_ABSOLUTE;
+
+const _clients = new Map<string, any>();
 
 function getClient(endpoint: string): any {
-  if (_client) return _client;
+  const existing = _clients.get(endpoint);
+  if (existing) return existing;
 
   const packageDef = protoLoader.loadSync(PROTO_PATH, {
     keepCase: false,
@@ -34,17 +36,19 @@ function getClient(endpoint: string): any {
   });
 
   const proto = grpc.loadPackageDefinition(packageDef) as any;
-  _client = new proto.openshell.v1.OpenShell(
+  const client = new proto.openshell.v1.OpenShell(
     endpoint,
     grpc.credentials.createInsecure()
   );
 
-  return _client;
+  _clients.set(endpoint, client);
+  return client;
 }
 
 export interface SandboxInfo {
   name: string;
   phase: string;
+  id?: string;
 }
 
 export async function healthCheck(endpoint: string): Promise<boolean> {
@@ -52,6 +56,21 @@ export async function healthCheck(endpoint: string): Promise<boolean> {
   return new Promise((resolve) => {
     client.Health({}, { deadline: Date.now() + 5000 }, (err: any) => {
       resolve(!err);
+    });
+  });
+}
+
+export async function getSandbox(endpoint: string, name: string): Promise<SandboxInfo> {
+  const client = getClient(endpoint);
+  return new Promise((resolve, reject) => {
+    client.GetSandbox({ name }, { deadline: Date.now() + 10000 }, (err: any, res: any) => {
+      if (err) return reject(new Error(`GetSandbox failed: ${err.message}`));
+      const sb = res?.sandbox;
+      resolve({
+        name: sb?.metadata?.name || name,
+        phase: sb?.status?.phase || "unknown",
+        id: sb?.metadata?.id,
+      });
     });
   });
 }
@@ -70,17 +89,16 @@ export async function createSandbox(
 ): Promise<SandboxInfo> {
   const client = getClient(endpoint);
 
-  const spec: any = {};
-  if (opts.image) {
-    spec.template = { image: opts.image };
+  const template: any = {};
+  if (opts.image) template.image = opts.image;
+  if (opts.environment) template.environment = opts.environment;
+  if (opts.labels) template.labels = opts.labels;
+
+  const spec: any = { template };
+
+  if (opts.gpu) {
+    spec.resourceRequirements = { gpu: { count: 1 } };
   }
-  if (opts.cpu || opts.memory) {
-    spec.resources = {};
-    if (opts.cpu) spec.resources.cpu = opts.cpu;
-    if (opts.memory) spec.resources.memory = opts.memory;
-  }
-  if (opts.gpu) spec.gpu = true;
-  if (opts.environment) spec.environment = opts.environment;
 
   const request: any = { spec };
   if (opts.name) request.name = opts.name;
@@ -93,6 +111,7 @@ export async function createSandbox(
       resolve({
         name: sb?.metadata?.name || opts.name || "unknown",
         phase: sb?.status?.phase || "unknown",
+        id: sb?.metadata?.id,
       });
     });
   });
@@ -114,9 +133,9 @@ export async function waitForSandboxReady(
       });
     });
 
-    if (phase === "RUNNING" || phase === "Running" || phase === "running") return;
-    if (phase === "FAILED" || phase === "Failed") {
-      throw new Error(`Sandbox ${name} failed to start`);
+    if (phase === "SANDBOX_PHASE_READY") return;
+    if (phase === "SANDBOX_PHASE_ERROR") {
+      throw new Error(`Sandbox ${name} failed to start (phase: ${phase})`);
     }
 
     await new Promise((r) => setTimeout(r, 2000));
@@ -192,6 +211,7 @@ export async function listSandboxes(endpoint: string): Promise<SandboxInfo[]> {
       const items = (res?.sandboxes || []).map((sb: any) => ({
         name: sb?.metadata?.name || "unknown",
         phase: sb?.status?.phase || "unknown",
+        id: sb?.metadata?.id,
       }));
       resolve(items);
     });

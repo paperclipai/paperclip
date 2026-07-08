@@ -16,6 +16,7 @@ import {
   deleteSandbox,
   healthCheck,
   listSandboxes,
+  getSandbox,
 } from "./openshell-client.js";
 
 function asString(v: unknown, fallback: string): string {
@@ -32,7 +33,6 @@ function parseObject(v: unknown): Record<string, unknown> {
   return {};
 }
 
-// Paperclip ServerAdapterModule interface
 interface AdapterExecutionContext {
   runId: string;
   agent: { id: string; name: string; companyId: string };
@@ -68,13 +68,19 @@ interface ServerAdapterModule {
   agentConfigurationDoc: string;
 }
 
+/**
+ * Shell-escape a string for safe inclusion in a single-quoted shell argument.
+ * Replaces each ' with '\'' (end quote, escaped quote, reopen quote).
+ */
+function shellEscape(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
 async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { config, runId, agent, context, onLog } = ctx;
 
   const endpoint = asString(config.gatewayEndpoint, "openshell.openshell.svc:8080");
   const image = asString(config.sandboxImage, "ghcr.io/nvidia/openshell-community/sandboxes/base:latest");
-  const cpu = asString(config.cpu, "2");
-  const memory = asString(config.memory, "4Gi");
   const gpu = Boolean(config.gpu);
   const reuseStrategy = asString(config.reuseStrategy, "per-run");
   const timeoutSecs = asNumber(config.timeoutSecs, 600);
@@ -95,12 +101,11 @@ async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionRe
   await onLog("stdout", `[openshell] Agent command: ${agentCommand}\n\n`);
 
   try {
-    // Check if sandbox already exists (reuse case)
     let needsCreate = true;
     if (reuseStrategy === "per-agent") {
       try {
         const existing = await listSandboxes(endpoint);
-        if (existing.some((s) => s.name === sandboxName && s.phase.toLowerCase().includes("running"))) {
+        if (existing.some((s) => s.name === sandboxName && s.phase === "SANDBOX_PHASE_READY")) {
           await onLog("stdout", `[openshell] Reusing existing sandbox: ${sandboxName}\n`);
           needsCreate = false;
         }
@@ -109,14 +114,11 @@ async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionRe
       }
     }
 
-    // Create sandbox
     if (needsCreate) {
       await onLog("stdout", `[openshell] Creating sandbox...\n`);
       const sb = await createSandbox(endpoint, {
         name: sandboxName,
         image,
-        cpu,
-        memory,
         gpu,
         environment: {
           PAPERCLIP_RUN_ID: runId,
@@ -130,51 +132,31 @@ async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionRe
       });
       await onLog("stdout", `[openshell] Sandbox created: ${sb.name} (phase: ${sb.phase})\n`);
 
-      // Wait for sandbox to be ready
       await onLog("stdout", `[openshell] Waiting for sandbox to be ready...\n`);
       await waitForSandboxReady(endpoint, sandboxName, 120000);
       await onLog("stdout", `[openshell] Sandbox is ready.\n\n`);
     }
 
-    // Execute agent command in sandbox
-    await onLog("stdout", `[openshell] Executing: ${agentCommand} --prompt "..."\n`);
+    await onLog("stdout", `[openshell] Executing: ${agentCommand}\n`);
     await onLog("stdout", `[openshell] Timeout: ${timeoutSecs}s\n\n`);
 
     if (ctx.onSpawn) {
       await ctx.onSpawn({ pid: 0, processGroupId: null, startedAt: new Date().toISOString() });
     }
 
-    // Get sandbox ID for exec
-    const sbInfo = await new Promise<any>((resolve, reject) => {
-      const { getClient: _gc, ...mod } = require("./openshell-client.js");
-      // Use the client directly
-      const grpc = require("@grpc/grpc-js");
-      const protoLoader = require("@grpc/proto-loader");
-      const protoPath = "/paperclip/adapters/openshell-direct/proto/openshell.proto";
-      const pkgDef = protoLoader.loadSync(protoPath, {
-        keepCase: false, longs: String, enums: String, defaults: true, oneofs: true,
-        includeDirs: ["/paperclip/adapters/openshell-direct/proto"],
-      });
-      const proto = grpc.loadPackageDefinition(pkgDef);
-      const c = new proto.openshell.v1.OpenShell(endpoint, grpc.credentials.createInsecure());
-      c.GetSandbox({ name: sandboxName }, { deadline: Date.now() + 10000 }, (err: any, res: any) => {
-        if (err) return reject(err);
-        resolve(res?.sandbox);
-      });
-    });
-    const sandboxId = sbInfo?.metadata?.id;
+    const sbInfo = await getSandbox(endpoint, sandboxName);
+    const sandboxId = sbInfo.id;
+    if (!sandboxId) {
+      throw new Error(`Sandbox ${sandboxName} has no ID -- cannot exec`);
+    }
     await onLog("stdout", `[openshell] Sandbox ID: ${sandboxId}\n`);
 
-    const cmd = [
-      "sh", "-c",
-      `${agentCommand} "${wakePrompt.replace(/"/g, '\\"')}" 2>&1 || echo "[openshell] Agent exited with code $?"`,
-    ];
+    const cmd = [agentCommand, "--print", "-", "--prompt", wakePrompt];
 
     const result = await execInSandbox(endpoint, sandboxId, cmd, {
       timeoutSecs,
     });
 
-    // Stream output
     if (result.stdout) {
       await onLog("stdout", result.stdout);
     }
@@ -182,7 +164,6 @@ async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionRe
       await onLog("stderr", result.stderr);
     }
 
-    // Cleanup per-run sandboxes
     if (reuseStrategy === "per-run") {
       await onLog("stdout", `\n[openshell] Cleaning up sandbox...\n`);
       try {
@@ -202,7 +183,6 @@ async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionRe
   } catch (err: any) {
     await onLog("stderr", `[openshell] Error: ${err.message}\n`);
 
-    // Try cleanup on error
     if (reuseStrategy === "per-run") {
       try { await deleteSandbox(endpoint, sandboxName); } catch {}
     }
@@ -259,15 +239,12 @@ Required fields:
 Optional fields:
 - sandboxImage (string): Container image for sandboxes (default: base image)
 - agentCommand (string): Agent CLI to run inside sandbox (default: claude)
-- cpu (string): CPU request/limit (default: 2)
-- memory (string): Memory request/limit (default: 4Gi)
 - gpu (boolean): Request GPU (default: false)
 - reuseStrategy (string): "per-run" (ephemeral) or "per-agent" (reuse) (default: per-run)
 - timeoutSecs (number): Command execution timeout (default: 600)
 `,
 };
 
-// Export for Paperclip external adapter loading
 export function createServerAdapter() {
   return openshellDirectAdapter;
 }
