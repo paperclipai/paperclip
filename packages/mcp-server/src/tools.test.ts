@@ -87,6 +87,47 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("resumes an issue subtree to clear a pause hold", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ hold: { mode: "resume" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipControlIssueTree");
+    await tool.execute({
+      issueId: "PAP-1135",
+      mode: "resume",
+      reason: "Clearing pause to re-dispatch",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-1135/tree-holds");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      mode: "resume",
+      reason: "Clearing pause to re-dispatch",
+    });
+  });
+
+  it("omits reason from the tree-control body when not provided", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ hold: { mode: "pause" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getTool("paperclipControlIssueTree").execute({ issueId: "PAP-1135", mode: "pause" });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ mode: "pause" });
+  });
+
+  it("rejects an unknown tree-control mode", async () => {
+    const response = await getTool("paperclipControlIssueTree").execute({
+      issueId: "PAP-1135",
+      mode: "unpause",
+    });
+    expect(response.content[0]?.text.toLowerCase()).toContain("error");
+  });
+
   it("allows create issue requests to omit status so the API applies assignee defaults", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ id: "issue-1", status: "todo" }),

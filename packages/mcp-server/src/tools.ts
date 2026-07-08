@@ -6,6 +6,7 @@ import {
   createApprovalSchema,
   createIssueInputSchema,
   issueThreadInteractionContinuationPolicySchema,
+  issueTreeControlModeSchema,
   requestCheckboxConfirmationPayloadSchema,
   requestConfirmationPayloadSchema,
   suggestTasksPayloadSchema,
@@ -485,6 +486,19 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "Release an issue checkout",
       z.object({ issueId: issueIdSchema }),
       async ({ issueId }) => client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/release`, { body: {} }),
+    ),
+    makeTool(
+      "paperclipControlIssueTree",
+      "Pause, resume, cancel, or restore an issue and its subtree. Use mode 'resume' to clear an active subtree pause hold — the gate behind the 409 \"Issue checkout blocked by active subtree pause hold\" that blocks checkout and dispatch. There is NO separate release/unpause/delete endpoint for holds: a pause is cleared by calling this with mode 'resume', and a cancel by mode 'restore'. mode: pause | resume | cancel | restore.",
+      z.object({
+        issueId: issueIdSchema,
+        mode: issueTreeControlModeSchema,
+        reason: z.string().trim().min(1).max(1000).optional(),
+      }),
+      async ({ issueId, mode, reason }) =>
+        client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/tree-holds`, {
+          body: { mode, ...(reason ? { reason } : {}) },
+        }),
     ),
     makeTool(
       "paperclipAddComment",
