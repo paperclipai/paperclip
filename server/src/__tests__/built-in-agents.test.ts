@@ -448,9 +448,10 @@ describeEmbeddedPostgres("built-in agents", () => {
       instructionsEntryFile: "AGENTS.md",
     });
     expect(state.agent?.adapterConfig).not.toMatchObject({ model: "gpt-5.4", apiKey: "do-not-copy" });
-    expect(state.resources.map((resource) => [resource.resourceKind, resource.stockStatus]).slice(0, 2)).toEqual([
+    expect(state.resources.map((resource) => [resource.resourceKind, resource.stockStatus])).toEqual([
       ["instructions", "stock_current"],
       ["skill", "stock_current"],
+      ["routine", "stock_current"],
     ]);
     expect(state.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
       resourceId: expect.any(String),
@@ -681,6 +682,14 @@ describeEmbeddedPostgres("built-in agents", () => {
       ["skill", "stock_current"],
       ["routine", "stock_current"],
     ]);
+    const reported = await builtInAgentService(db).get(companyId, "reflection-coach");
+    const reportedRoutine = reported.resources.find((resource) => resource.resourceKind === "routine");
+    expect(reportedRoutine).toMatchObject({
+      stockStatus: "stock_current",
+      updateAvailable: false,
+      resetAvailable: false,
+    });
+    expect(reportedRoutine?.currentHash).toBe(reportedRoutine?.stockHash);
 
     const [skill] = await db
       .select()
@@ -730,6 +739,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     const created = await builtIns.ensure(companyId, "reflection-coach");
     expect(created.status).toBe("paused");
     expect(created.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
+      stockStatus: "stock_current",
       scheduleEnabled: false,
     });
 
@@ -741,6 +751,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     );
     expect(enabled.status).toBe("needs_setup");
     expect(enabled.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
+      stockStatus: "stock_current",
       scheduleEnabled: true,
     });
     const [enabledRoutine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
@@ -755,6 +766,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       { userId: "board-user" },
     );
     expect(disabled.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
+      stockStatus: "stock_current",
       scheduleEnabled: false,
     });
     const [disabledRoutine] = await db.select().from(routines).where(eq(routines.id, enabledRoutine!.id));
@@ -826,6 +838,10 @@ describeEmbeddedPostgres("built-in agents", () => {
       .update(companySkills)
       .set({ markdown: "---\nname: reflection-coach\n---\n\n# Custom skill\n" })
       .where(eq(companySkills.companyId, companyId));
+    await db
+      .update(routines)
+      .set({ title: "DRIFTED BY TEST - do not clobber" })
+      .where(eq(routines.companyId, companyId));
 
     const drifted = await builtInAgentService(db).ensure(companyId, "reflection-coach");
     expect(drifted.resources.find((resource) => resource.resourceKind === "instructions")).toMatchObject({
@@ -836,10 +852,16 @@ describeEmbeddedPostgres("built-in agents", () => {
       stockStatus: "operator_modified",
       resetAvailable: true,
     });
+    expect(drifted.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
+      stockStatus: "operator_modified",
+      resetAvailable: true,
+    });
     expect((await instructionsSvc.readFile(drifted.agent!, "AGENTS.md")).content).toContain("Do not overwrite me.");
+    const [preservedRoutine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    expect(preservedRoutine?.title).toBe("DRIFTED BY TEST - do not clobber");
 
     const reset = await builtInAgentService(db).reset(companyId, "reflection-coach", {
-      resources: ["instructions"],
+      resources: ["instructions", "routine"],
     });
     expect(reset.resources.find((resource) => resource.resourceKind === "instructions")).toMatchObject({
       stockStatus: "stock_current",
@@ -849,6 +871,12 @@ describeEmbeddedPostgres("built-in agents", () => {
       stockStatus: "operator_modified",
       resetAvailable: true,
     });
+    expect(reset.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
+      stockStatus: "stock_current",
+      resetAvailable: false,
+    });
     expect((await instructionsSvc.readFile(reset.agent!, "AGENTS.md")).content).toContain("You are Reflection Coach");
+    const [resetRoutine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    expect(resetRoutine?.title).toBe("Review recent agent trajectories for coaching proposals");
   });
 });
