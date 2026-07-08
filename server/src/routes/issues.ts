@@ -571,7 +571,7 @@ function summarizeIssueWorkspaceForActivity(
   issue: IssueWorkspaceAuditInput,
   names: WorkspaceNameMaps,
 ) {
-  const settings = parseIssueExecutionWorkspaceSettings(issue.executionWorkspaceSettings);
+  const settings = parseIssueExecutionWorkspaceSettings(issue.executionWorkspaceSettings, { includeEnvironmentId: true });
   const mode = settings?.mode ?? issue.executionWorkspacePreference ?? null;
   const executionWorkspaceId = issue.executionWorkspaceId ?? null;
   const projectWorkspaceId = issue.projectWorkspaceId ?? null;

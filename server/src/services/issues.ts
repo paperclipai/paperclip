@@ -249,7 +249,7 @@ function buildPreRealizationExecutionWorkspaceSettings(raw: unknown): Record<str
       : null;
   const next: Record<string, unknown> = {};
   if (mode) next.mode = mode;
-  if (settings.environmentId) next.environmentId = settings.environmentId;
+  if (settings.environmentId !== undefined) next.environmentId = settings.environmentId;
   if (settings.workspaceRuntime) next.workspaceRuntime = settings.workspaceRuntime;
   if (settings.workspaceStrategy) {
     next.workspaceStrategy = {
