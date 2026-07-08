@@ -19,16 +19,21 @@ function createProgram(): Command {
   return program;
 }
 
+const ORIGINAL_ENV = { ...process.env };
+
 describe("project and goal commands", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    process.env = { ...ORIGINAL_ENV };
     delete process.env.PAPERCLIP_API_KEY;
     delete process.env.PAPERCLIP_API_URL;
     delete process.env.PAPERCLIP_COMPANY_ID;
+    process.env.PAPERCLIP_CONTEXT = "/nonexistent/paperclip-test-context.json";
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    process.env = { ...ORIGINAL_ENV };
   });
 
   it("creates and updates projects with shared schemas", async () => {
