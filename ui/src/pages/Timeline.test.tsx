@@ -234,6 +234,44 @@ describe("Timeline", () => {
     expect(container.textContent).toContain("2h 0m");
   });
 
+  it("prorates summary tokens to the returned timeline window for clipped spans", async () => {
+    mockWorkTimelineApi.get.mockResolvedValue({
+      ...populatedTimeline,
+      spans: [
+        {
+          ...populatedTimeline.spans[0],
+          start: "2026-07-02T00:00:00.000Z",
+          end: "2026-07-02T04:00:00.000Z",
+          usage: {
+            inputTokens: 2_000,
+            cachedInputTokens: 0,
+            outputTokens: 2_000,
+            totalTokens: 4_000,
+          },
+        },
+      ],
+      window: {
+        from: "2026-07-02T02:00:00.000Z",
+        to: "2026-07-02T04:00:00.000Z",
+        capped: false,
+      },
+    });
+    root = createRoot(container);
+
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <Timeline />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Tokens used");
+    expect(container.textContent).toContain("2K");
+    expect(container.textContent).not.toContain("4K");
+  });
+
   it("requests the company timeline without a user lens parameter", async () => {
     root = createRoot(container);
 

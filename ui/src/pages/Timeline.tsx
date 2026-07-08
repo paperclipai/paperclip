@@ -86,6 +86,28 @@ function spanEndMs(span: WorkTimelineResult["spans"][number], fallbackEndMs: num
   return span.end ? new Date(span.end).getTime() : fallbackEndMs;
 }
 
+function spanWindowOverlap(
+  span: WorkTimelineResult["spans"][number],
+  windowFromMs: number,
+  windowToMs: number,
+) {
+  const rawStartMs = spanStartMs(span);
+  const rawEndMs = spanEndMs(span, windowToMs);
+  const startMs = Math.max(rawStartMs, windowFromMs);
+  const endMs = Math.min(rawEndMs, windowToMs);
+  return {
+    clippedMs: Math.max(0, endMs - startMs),
+    rawMs: Math.max(0, rawEndMs - rawStartMs),
+  };
+}
+
+function spanWindowTokens(span: WorkTimelineResult["spans"][number], rawMs: number, clippedMs: number) {
+  const totalTokens = span.usage?.totalTokens ?? 0;
+  if (totalTokens <= 0 || clippedMs <= 0) return 0;
+  if (rawMs <= 0 || clippedMs >= rawMs) return totalTokens;
+  return Math.round(totalTokens * (clippedMs / rawMs));
+}
+
 function timelineSummary(data: WorkTimelineResult) {
   const actorById = new Map(data.actors.map((actor) => [actor.id, actor]));
   const activeAgentIds = new Set<string>();
@@ -98,10 +120,9 @@ function timelineSummary(data: WorkTimelineResult) {
     if (actorById.get(span.actorId)?.type === "agent") {
       activeAgentIds.add(span.actorId);
     }
-    const startMs = Math.max(spanStartMs(span), windowFromMs);
-    const endMs = Math.min(spanEndMs(span, windowToMs), windowToMs);
-    activeMs += Math.max(0, endMs - startMs);
-    totalTokens += span.usage?.totalTokens ?? 0;
+    const overlap = spanWindowOverlap(span, windowFromMs, windowToMs);
+    activeMs += overlap.clippedMs;
+    totalTokens += spanWindowTokens(span, overlap.rawMs, overlap.clippedMs);
   }
 
   return {
