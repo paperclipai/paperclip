@@ -106,6 +106,7 @@ function boardRoutes() {
       <Route path="company/settings/instance/plugins/:pluginId" element={<PluginSettings />} />
       <Route path="company/settings/instance/adapters" element={<AdapterManager />} />
       <Route path="company/settings/:settingsRoutePath/*" element={<CompanySettingsPluginPage />} />
+      <Route path="skills/studio" element={<SkillStudio />} />
       <Route path="skills/:skillId/studio" element={<SkillStudio />} />
       <Route path="skills/*" element={<CompanySkills />} />
       <Route path="settings" element={<LegacySettingsRedirect />} />
@@ -423,6 +424,7 @@ export function App() {
           <Route path="pipelines/:pipelineId/cases/:caseId" element={<UnprefixedBoardRedirect />} />
           <Route path="artifacts" element={<UnprefixedBoardRedirect />} />
           <Route path="u/:userSlug" element={<UnprefixedBoardRedirect />} />
+          <Route path="skills/studio" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/:skillId/studio" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />

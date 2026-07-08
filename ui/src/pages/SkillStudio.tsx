@@ -185,7 +185,14 @@ export function SkillStudio() {
   const { skillId = "" } = useParams<{ skillId: string }>();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const navigate = useNavigate();
   const companyId = selectedCompanyId ?? "";
+
+  const skillsQuery = useQuery({
+    queryKey: queryKeys.companySkills.list(companyId),
+    queryFn: () => companySkillsApi.list(companyId, { sort: "alphabetical" }),
+    enabled: Boolean(companyId),
+  });
 
   const detailQuery = useQuery({
     queryKey: queryKeys.companySkills.detail(companyId, skillId),
@@ -195,16 +202,31 @@ export function SkillStudio() {
   const skill = detailQuery.data ?? null;
 
   useEffect(() => {
-    if (!skill) return;
-    setBreadcrumbs([
-      { label: "Skills", href: "/skills" },
-      { label: "Studio", href: "/skills" },
-      { label: skill.name },
-    ]);
+    setBreadcrumbs(
+      skill
+        ? [
+            { label: "Skills", href: "/skills" },
+            { label: "Studio", href: "/skills/studio" },
+            { label: skill.name },
+          ]
+        : [
+            { label: "Skills", href: "/skills" },
+            { label: "Studio" },
+          ],
+    );
   }, [setBreadcrumbs, skill]);
 
   if (!companyId) {
     return <StudioMessage message="Select a company to open Skill Studio." />;
+  }
+  if (!skillId) {
+    return (
+      <StudioEmptyState
+        skills={skillsQuery.data ?? []}
+        skillsLoading={skillsQuery.isLoading}
+        onSelectSkill={(nextSkillId) => navigate(`/skills/${encodeURIComponent(nextSkillId)}/studio`)}
+      />
+    );
   }
   if (detailQuery.isLoading) {
     return <StudioMessage message="Loading skill…" />;
@@ -213,7 +235,14 @@ export function SkillStudio() {
     return <StudioMessage message="Skill not found." />;
   }
 
-  return <StudioShell companyId={companyId} skill={detailQuery.data} />;
+  return (
+    <StudioShell
+      companyId={companyId}
+      skill={detailQuery.data}
+      skills={skillsQuery.data ?? []}
+      skillsLoading={skillsQuery.isLoading}
+    />
+  );
 }
 
 function StudioMessage({ message }: { message: string }) {
@@ -224,11 +253,52 @@ function StudioMessage({ message }: { message: string }) {
   );
 }
 
+function StudioEmptyState({
+  skills,
+  skillsLoading,
+  onSelectSkill,
+}: {
+  skills: CompanySkillListItem[];
+  skillsLoading: boolean;
+  onSelectSkill: (skillId: string) => void;
+}) {
+  return (
+    <TooltipProvider delayDuration={200}>
+      <div className="flex h-full min-h-0 flex-col">
+        <header className="flex items-center gap-3 border-b border-border px-3 py-2">
+          <SkillSwitcher
+            skill={null}
+            skills={skills}
+            loading={skillsLoading}
+            onSelectSkill={onSelectSkill}
+          />
+        </header>
+        <div className="flex flex-1 items-center justify-center">
+          <EmptyState
+            icon={FileCode}
+            message={skillsLoading ? "Loading skills..." : "Select a skill to open Studio."}
+          />
+        </div>
+      </div>
+    </TooltipProvider>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Shell — header + three panes (or mobile tabs)
 // ---------------------------------------------------------------------------
 
-function StudioShell({ companyId, skill }: { companyId: string; skill: CompanySkillDetail }) {
+function StudioShell({
+  companyId,
+  skill,
+  skills,
+  skillsLoading,
+}: {
+  companyId: string;
+  skill: CompanySkillDetail;
+  skills: CompanySkillListItem[];
+  skillsLoading: boolean;
+}) {
   const skillId = skill.id;
   const isMobile = useIsMobile();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -267,12 +337,6 @@ function StudioShell({ companyId, skill }: { companyId: string; skill: CompanySk
     queryKey: queryKeys.companySkills.testInputs(companyId, skillId),
     queryFn: () => companySkillsApi.testInputs(companyId, skillId),
     enabled: Boolean(companyId && skillId),
-  });
-
-  const skillsQuery = useQuery({
-    queryKey: queryKeys.companySkills.list(companyId),
-    queryFn: () => companySkillsApi.list(companyId, { sort: "alphabetical" }),
-    enabled: Boolean(companyId),
   });
 
   const persistLayout = useCallback((layout: Record<string, number>) => {
@@ -344,8 +408,8 @@ function StudioShell({ companyId, skill }: { companyId: string; skill: CompanySk
         <StudioHeader
           skill={skill}
           skillDirty={skillDirty}
-          skills={skillsQuery.data ?? []}
-          skillsLoading={skillsQuery.isLoading}
+          skills={skills}
+          skillsLoading={skillsLoading}
           onSelectSkill={(nextSkillId) => navigate(`/skills/${encodeURIComponent(nextSkillId)}/studio`)}
           onOpenVersions={() => setVersionSheetOpen(true)}
         />
@@ -479,7 +543,7 @@ function SkillSwitcher({
   loading,
   onSelectSkill,
 }: {
-  skill: CompanySkillDetail;
+  skill: CompanySkillDetail | null;
   skills: CompanySkillListItem[];
   loading: boolean;
   onSelectSkill: (skillId: string) => void;
@@ -498,7 +562,7 @@ function SkillSwitcher({
 
   return (
     <SearchableSelect<string, SkillSwitcherOption>
-      value={skill.id}
+      value={skill?.id ?? ""}
       groups={groups}
       loading={loading}
       loadingMessage="Loading skills..."
@@ -506,12 +570,12 @@ function SkillSwitcher({
       searchPlaceholder="Search skills..."
       emptyMessage="No matching skills."
       onValueChange={(value) => {
-        if (value !== skill.id) onSelectSkill(value);
+        if (value !== skill?.id) onSelectSkill(value);
       }}
       triggerClassName="h-8 w-64 border-0 bg-transparent px-0 text-base font-semibold shadow-none hover:bg-accent md:w-80"
       contentClassName="w-80"
       contentWidth="auto"
-      renderValue={(option) => option?.label ?? skill.name}
+      renderValue={(option) => option?.label ?? skill?.name ?? "Select skill"}
       renderOption={(option, { selected }) => (
         <span className="flex min-w-0 flex-col">
           <span className={cn("truncate", selected && "font-medium")}>{option.label}</span>
@@ -526,8 +590,9 @@ function SkillSwitcher({
 
 function withCurrentSkill(
   skills: CompanySkillListItem[],
-  skill: CompanySkillDetail,
+  skill: CompanySkillDetail | null,
 ): Array<CompanySkillListItem | CompanySkillDetail> {
+  if (!skill) return skills;
   return skills.some((candidate) => candidate.id === skill.id) ? skills : [skill, ...skills];
 }
 
