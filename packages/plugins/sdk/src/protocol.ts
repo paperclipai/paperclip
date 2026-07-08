@@ -1242,6 +1242,7 @@ export interface WorkerToHostMethods {
   "issues.create": [
     params: {
       companyId: string;
+      idempotencyKey?: string;
       projectId?: string;
       goalId?: string;
       parentId?: string;

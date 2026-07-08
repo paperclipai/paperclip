@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+import { validatePluginIssueIdempotencyKey } from "./types.js";
 import type {
   PaperclipPluginManifestV1,
   PluginCapability,
@@ -489,6 +490,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const routines = new Map<string, Routine>();
   const routineRuns = new Map<string, RoutineRun>();
   const issues = new Map<string, Issue>();
+  const issueCreateIdempotencyKeys = new Map<string, string>();
   const blockedByIssueIds = new Map<string, string[]>();
   const issueComments = new Map<string, IssueComment[]>();
   const issueInteractions = new Map<string, IssueThreadInteraction[]>();
@@ -1549,6 +1551,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async create(input) {
         requireCapability(manifest, capabilitySet, "issues.create");
+        const idempotencyKey = input.idempotencyKey === undefined
+          ? undefined
+          : validatePluginIssueIdempotencyKey(input.idempotencyKey);
+        if (idempotencyKey !== undefined) {
+          const existingId = issueCreateIdempotencyKeys.get(`${input.companyId}\0${idempotencyKey}`);
+          const existing = existingId ? issues.get(existingId) : null;
+          if (existing) return existing;
+        }
         const now = new Date();
         const originKind = normalizePluginOriginKind(
           input.surfaceVisibility === "plugin_operation" && !input.originKind
@@ -1595,6 +1605,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           updatedAt: now,
         };
         issues.set(record.id, record);
+        if (idempotencyKey !== undefined) {
+          issueCreateIdempotencyKeys.set(`${input.companyId}\0${idempotencyKey}`, record.id);
+        }
         if (input.blockedByIssueIds) blockedByIssueIds.set(record.id, [...new Set(input.blockedByIssueIds)]);
         return record;
       },

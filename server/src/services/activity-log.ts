@@ -62,9 +62,15 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
-export async function logActivity(db: Db, input: LogActivityInput) {
+type ActivityDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+export async function logActivity(
+  db: ActivityDb,
+  input: LogActivityInput,
+  options: { publish?: boolean } = {},
+) {
   const currentUserRedactionOptions = {
-    enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
+    enabled: (await instanceSettingsService(db as Db).getGeneral()).censorUsernameInLogs,
   };
   const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
   const redactedDetails = sanitizedDetails
@@ -82,38 +88,43 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     details: redactedDetails,
   });
 
-  publishLiveEvent({
-    companyId: input.companyId,
-    type: "activity.logged",
-    payload: {
-      actorType: input.actorType,
-      actorId: input.actorId,
-      action: input.action,
-      entityType: input.entityType,
-      entityId: input.entityId,
-      agentId: input.agentId ?? null,
-      runId: input.runId ?? null,
-      details: redactedDetails,
-    },
-  });
-
-  const pluginEventType = eventTypeForActivityAction(input.action);
-  if (pluginEventType) {
-    const event: PluginEvent = {
-      eventId: randomUUID(),
-      eventType: pluginEventType,
-      occurredAt: new Date().toISOString(),
-      actorId: input.actorId,
-      actorType: input.actorType,
-      entityId: input.entityId,
-      entityType: input.entityType,
+  const publish = () => {
+    publishLiveEvent({
       companyId: input.companyId,
+      type: "activity.logged",
       payload: {
-        ...redactedDetails,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
         agentId: input.agentId ?? null,
         runId: input.runId ?? null,
+        details: redactedDetails,
       },
-    };
-    publishPluginDomainEvent(event);
-  }
+    });
+
+    const pluginEventType = eventTypeForActivityAction(input.action);
+    if (pluginEventType) {
+      const event: PluginEvent = {
+        eventId: randomUUID(),
+        eventType: pluginEventType,
+        occurredAt: new Date().toISOString(),
+        actorId: input.actorId,
+        actorType: input.actorType,
+        entityId: input.entityId,
+        entityType: input.entityType,
+        companyId: input.companyId,
+        payload: {
+          ...redactedDetails,
+          agentId: input.agentId ?? null,
+          runId: input.runId ?? null,
+        },
+      };
+      publishPluginDomainEvent(event);
+    }
+  };
+
+  if (options.publish !== false) publish();
+  return publish;
 }

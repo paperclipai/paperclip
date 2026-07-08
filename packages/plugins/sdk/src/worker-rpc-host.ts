@@ -771,6 +771,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         async create(input) {
           return callHost("issues.create", {
             companyId: input.companyId,
+            idempotencyKey: input.idempotencyKey,
             projectId: input.projectId,
             goalId: input.goalId,
             parentId: input.parentId,

@@ -15,6 +15,7 @@ import {
   heartbeatRuns,
   issueRelations,
   issues,
+  pluginIssueCreateIdempotency,
   pluginManagedResources,
   plugins,
   projects,
@@ -41,6 +42,19 @@ function createEventBusStub() {
 
 function issuePrefix(id: string) {
   return `T${id.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+}
+
+function createBarrier(parties: number) {
+  let arrivals = 0;
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return async () => {
+    arrivals += 1;
+    if (arrivals === parties) release();
+    await ready;
+  };
 }
 
 if (!embeddedPostgresSupport.supported) {
@@ -233,6 +247,185 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         }),
       ]),
     );
+  });
+
+  it("creates plugin issues idempotently within a company without mutating the original payload", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other company",
+      issuePrefix: issuePrefix(otherCompanyId),
+      requireBoardApprovalForNewAgents: false,
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const otherPluginServices = buildHostServices(
+      db,
+      "other-plugin-record-id",
+      "paperclip.other",
+      createEventBusStub(),
+    );
+
+    const original = await services.issues.create({
+      companyId,
+      title: "Original title",
+      description: "Original description",
+      idempotencyKey: "mission:durable-create",
+    });
+    const retryServices = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    await expect(
+      services.issues.update({
+        issueId: original.id,
+        companyId,
+        patch: { companyId: otherCompanyId },
+      }),
+    ).rejects.toThrow("Unsupported plugin issue update field: companyId");
+    const retry = await retryServices.issues.create({
+      companyId,
+      title: "Changed retry title",
+      description: "Changed retry description",
+      idempotencyKey: "mission:durable-create",
+    });
+    const otherCompanyIssue = await services.issues.create({
+      companyId: otherCompanyId,
+      title: "Other company issue",
+      idempotencyKey: "mission:durable-create",
+    });
+    const otherPluginIssue = await otherPluginServices.issues.create({
+      companyId,
+      title: "Other plugin issue",
+      idempotencyKey: "mission:durable-create",
+    });
+
+    expect(retry).toMatchObject({
+      id: original.id,
+      title: "Original title",
+      description: "Original description",
+    });
+    expect(original).not.toHaveProperty("pluginIssueIdempotencyKey");
+    expect(retry).not.toHaveProperty("pluginIssueIdempotencyKey");
+    expect(otherCompanyIssue.id).not.toBe(original.id);
+    expect(otherPluginIssue.id).not.toBe(original.id);
+    const companyIssues = await db.select().from(issues).where(eq(issues.companyId, companyId));
+    expect(companyIssues).toHaveLength(2);
+    expect(companyIssues[0]).not.toHaveProperty("pluginIssueIdempotencyKey");
+    await expect(
+      db
+        .select()
+        .from(activityLog)
+        .where(and(eq(activityLog.entityType, "issue"), eq(activityLog.entityId, original.id))),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("converges concurrent plugin issue creates with the same company and idempotency key", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const afterPrelookup = createBarrier(2);
+    const services = buildHostServices(
+      db,
+      "plugin-record-id",
+      "paperclip.missions",
+      createEventBusStub(),
+      undefined,
+      { testHooks: { afterPluginIssueIdempotencyPrelookup: afterPrelookup } },
+    );
+
+    const [first, second] = await Promise.all([
+      services.issues.create({
+        companyId,
+        title: "Concurrent issue",
+        idempotencyKey: "mission:concurrent-create",
+      }),
+      services.issues.create({
+        companyId,
+        title: "Concurrent issue",
+        idempotencyKey: "mission:concurrent-create",
+      }),
+    ]);
+
+    expect(second.id).toBe(first.id);
+    const nextIssue = await services.issues.create({
+      companyId,
+      title: "Next issue",
+    });
+    expect(nextIssue.issueNumber).toBe(first.issueNumber! + 1);
+    await expect(
+      db.select().from(issues).where(eq(issues.companyId, companyId)),
+    ).resolves.toHaveLength(2);
+    const claims = await db
+      .select()
+      .from(pluginIssueCreateIdempotency)
+      .where(eq(pluginIssueCreateIdempotency.companyId, companyId));
+    expect(claims).toHaveLength(1);
+    expect(claims[0]?.issueId).toBe(first.id);
+    await expect(
+      db
+        .select()
+        .from(activityLog)
+        .where(and(eq(activityLog.entityType, "issue"), eq(activityLog.entityId, first.id))),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("rolls back an idempotent issue when its creation activity cannot persist", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const failingServices = buildHostServices(
+      db,
+      "plugin-record-id",
+      "paperclip.missions",
+      createEventBusStub(),
+      undefined,
+      {
+        testHooks: {
+          afterPluginIssueCreatedActivityPersisted: async () => {
+            throw new Error("activity failed");
+          },
+        },
+      },
+    );
+
+    await expect(failingServices.issues.create({
+      companyId,
+      title: "Rolled back issue",
+      idempotencyKey: "mission:activity-failure",
+    })).rejects.toThrow("activity failed");
+    await expect(db.select().from(issues).where(eq(issues.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(pluginIssueCreateIdempotency)).resolves.toHaveLength(0);
+    await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const issue = await services.issues.create({
+      companyId,
+      title: "Retry after rollback",
+      idempotencyKey: "mission:activity-failure",
+    });
+    expect(issue.issueNumber).toBe(1);
+  });
+
+  it("rejects malformed plugin issue idempotency keys without creating state", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+
+    await expect(services.issues.create({
+      companyId,
+      title: "Empty key",
+      idempotencyKey: "",
+    })).rejects.toThrow("idempotencyKey must be a non-empty string");
+    await expect(services.issues.create({
+      companyId,
+      title: "Null key",
+      idempotencyKey: null,
+    } as any)).rejects.toThrow("idempotencyKey must be a non-empty string");
+    await expect(services.issues.create({
+      companyId,
+      title: "Oversized key",
+      idempotencyKey: "é".repeat(128),
+    })).rejects.toThrow("idempotencyKey must not exceed 255 UTF-8 bytes");
+
+    await expect(
+      db.select().from(issues).where(eq(issues.companyId, companyId)),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(pluginIssueCreateIdempotency),
+    ).resolves.toHaveLength(0);
   });
 
   it("enforces plugin origin namespaces", async () => {

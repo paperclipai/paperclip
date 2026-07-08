@@ -31,6 +31,7 @@ import {
   issueThreadInteractions,
   issues,
   labels,
+  pluginIssueCreateIdempotency,
   projectWorkspaces,
   projects,
   workspaceOperations,
@@ -413,6 +414,7 @@ export interface IssueFilters {
 }
 
 type IssueRow = typeof issues.$inferSelect;
+type IssueDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 type IssueLabelRow = typeof labels.$inferSelect;
 type IssuePlanDecompositionRow = typeof issuePlanDecompositions.$inferSelect;
 type IssueActiveRunRow = {
@@ -3551,14 +3553,14 @@ export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
 
-  async function getIssueByUuid(id: string) {
-    const row = await db
+  async function getIssueByUuid(id: string, dbOrTx: IssueDb = db) {
+    const row = await dbOrTx
       .select()
       .from(issues)
       .where(eq(issues.id, id))
-      .then((rows) => rows[0] ?? null);
+      .then((rows: IssueRow[]) => rows[0] ?? null);
     if (!row) return null;
-    const [enriched] = await withIssueLabels(db, [row]);
+    const [enriched] = await withIssueLabels(dbOrTx, [row]);
     return enriched;
   }
 
@@ -4509,7 +4511,7 @@ export function issueService(db: Db) {
     });
   }
 
-  return {
+  const service = {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
 
@@ -4914,6 +4916,20 @@ export function issueService(db: Db) {
 
     getByIdentifier: async (identifier: string) => {
       return getIssueByIdentifier(identifier);
+    },
+
+    getByPluginIssueIdempotencyDigest: async (companyId: string, keyDigest: string) => {
+      const row = await db
+        .select({ issueId: pluginIssueCreateIdempotency.issueId })
+        .from(pluginIssueCreateIdempotency)
+        .where(and(
+          eq(pluginIssueCreateIdempotency.companyId, companyId),
+          eq(pluginIssueCreateIdempotency.keyDigest, keyDigest),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (!row?.issueId) return null;
+      const issue = await getIssueByUuid(row.issueId);
+      return issue?.companyId === companyId ? issue : null;
     },
 
     getCurrentScheduledRetry: async (issueId: string) => {
@@ -5868,9 +5884,11 @@ export function issueService(db: Db) {
       });
     },
 
-    create: async (
+    createIssue: async (
       companyId: string,
       data: IssueCreateInput,
+      pluginIdempotencyDigest?: string,
+      onCreated?: (tx: IssueDb, issue: IssueRow) => Promise<void>,
     ) => {
       const {
         labelIds: inputLabelIds,
@@ -5902,6 +5920,32 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        if (pluginIdempotencyDigest !== undefined) {
+          const claim = await tx
+            .insert(pluginIssueCreateIdempotency)
+            .values({ companyId, keyDigest: pluginIdempotencyDigest })
+            .onConflictDoNothing()
+            .returning({ keyDigest: pluginIssueCreateIdempotency.keyDigest })
+            .then((rows) => rows[0] ?? null);
+          if (!claim) {
+            const existingClaim = await tx
+              .select({ issueId: pluginIssueCreateIdempotency.issueId })
+              .from(pluginIssueCreateIdempotency)
+              .where(and(
+                eq(pluginIssueCreateIdempotency.companyId, companyId),
+                eq(pluginIssueCreateIdempotency.keyDigest, pluginIdempotencyDigest),
+              ))
+              .then((rows) => rows[0] ?? null);
+            if (!existingClaim?.issueId) {
+              throw new Error("Plugin issue idempotency claim is not bound to an issue");
+            }
+            const existingIssue = await getIssueByUuid(existingClaim.issueId, tx);
+            if (!existingIssue || existingIssue.companyId !== companyId) {
+              throw new Error("Plugin issue idempotency claim references a missing issue");
+            }
+            return { issue: existingIssue, created: false };
+          }
+        }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
@@ -6102,9 +6146,19 @@ export function issueService(db: Db) {
             tx,
           );
         }
+        if (pluginIdempotencyDigest !== undefined) {
+          await tx
+            .update(pluginIssueCreateIdempotency)
+            .set({ issueId: issue.id })
+            .where(and(
+              eq(pluginIssueCreateIdempotency.companyId, companyId),
+              eq(pluginIssueCreateIdempotency.keyDigest, pluginIdempotencyDigest),
+            ));
+        }
         const [enriched] = await withIssueLabels(tx, [issue]);
         const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
-        return withRelations;
+        await onCreated?.(tx, withRelations);
+        return { issue: withRelations, created: true };
       });
     },
 
@@ -7449,5 +7503,16 @@ export function issueService(db: Db) {
         goal: a.goalId ? goalMap.get(a.goalId) ?? null : null,
       }));
     },
+  };
+  const { createIssue, ...publicService } = service;
+  return {
+    ...publicService,
+    create: async (companyId: string, data: IssueCreateInput) => (await createIssue(companyId, data)).issue,
+    createWithPluginIdempotency: (
+      companyId: string,
+      data: IssueCreateInput,
+      keyDigest: string,
+      onCreated?: (tx: IssueDb, issue: IssueRow) => Promise<void>,
+    ) => createIssue(companyId, data, keyDigest, onCreated),
   };
 }
