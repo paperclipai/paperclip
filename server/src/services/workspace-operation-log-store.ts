@@ -1,8 +1,11 @@
-import { createReadStream, promises as fs } from "node:fs";
+import { createReadStream, createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { createGzip, createGunzip } from "node:zlib";
+import { pipeline } from "node:stream/promises";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
 
 export type WorkspaceOperationLogStoreType = "local_file";
 
@@ -22,9 +25,13 @@ export interface WorkspaceOperationLogReadResult {
 }
 
 export interface WorkspaceOperationLogFinalizeSummary {
+  /** Byte length of the ORIGINAL, uncompressed log content. */
   bytes: number;
+  /** sha256 of the ORIGINAL, uncompressed log content. */
   sha256?: string;
   compressed: boolean;
+  /** Final relative logRef to persist — `.ndjson.gz` when compressed, else `.ndjson`. */
+  logRef: string;
 }
 
 export interface WorkspaceOperationLogStore {
@@ -48,6 +55,17 @@ function resolveWithin(basePath: string, relativePath: string) {
     throw new Error("Invalid log path");
   }
   return resolved;
+}
+
+/**
+ * Shares the run-log compression toggle: `PAPERCLIP_RUN_LOG_COMPRESS=0`/`false`
+ * disables gzip-on-complete. Read at finalize time so it can be toggled per run.
+ */
+function compressionEnabled(): boolean {
+  const raw = process.env.PAPERCLIP_RUN_LOG_COMPRESS;
+  if (raw == null) return true;
+  const normalized = raw.trim().toLowerCase();
+  return normalized !== "0" && normalized !== "false" && normalized !== "no" && normalized !== "off";
 }
 
 function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceOperationLogStore {
@@ -82,6 +100,77 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
     return { content, nextOffset };
   }
 
+  /**
+   * Range-read a gzip-compressed log; offset/limitBytes are over the
+   * UNCOMPRESSED byte stream. Never buffers the whole decompressed file.
+   */
+  async function readGzipRange(filePath: string, offset: number, limitBytes: number): Promise<WorkspaceOperationLogReadResult> {
+    const exists = await fs.stat(filePath).catch(() => null);
+    if (!exists) throw notFound("Workspace operation log not found");
+
+    if (limitBytes <= 0) {
+      return { content: "", nextOffset: offset };
+    }
+
+    let skipped = 0;
+    let collected = 0;
+    let hasMore = false;
+    const chunks: Buffer[] = [];
+
+    const source = createReadStream(filePath);
+    const gunzip = createGunzip();
+
+    await new Promise<void>((resolve, reject) => {
+      let finished = false;
+      const finish = (err?: Error) => {
+        if (finished) return;
+        finished = true;
+        source.destroy();
+        gunzip.destroy();
+        if (err) reject(err);
+        else resolve();
+      };
+
+      source.on("error", finish);
+      gunzip.on("error", finish);
+      gunzip.on("end", () => finish());
+
+      gunzip.on("data", (raw: Buffer) => {
+        let buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+
+        if (skipped < offset) {
+          const toSkip = Math.min(offset - skipped, buf.length);
+          skipped += toSkip;
+          buf = buf.subarray(toSkip);
+          if (buf.length === 0) return;
+        }
+
+        if (collected >= limitBytes) {
+          hasMore = true;
+          finish();
+          return;
+        }
+
+        const remaining = limitBytes - collected;
+        if (buf.length <= remaining) {
+          chunks.push(buf);
+          collected += buf.length;
+        } else {
+          chunks.push(buf.subarray(0, remaining));
+          collected += remaining;
+          hasMore = true;
+          finish();
+        }
+      });
+
+      source.pipe(gunzip);
+    });
+
+    const content = Buffer.concat(chunks).toString("utf8");
+    const nextOffset = hasMore ? offset + collected : undefined;
+    return { content, nextOffset };
+  }
+
   async function sha256File(filePath: string): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       const hash = createHash("sha256");
@@ -90,6 +179,27 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
       stream.on("error", reject);
       stream.on("end", () => resolve(hash.digest("hex")));
     });
+  }
+
+  async function resolveReadTarget(logRef: string): Promise<{ absPath: string; compressed: boolean }> {
+    const absPath = resolveWithin(basePath, logRef);
+    if (await fs.stat(absPath).catch(() => null)) {
+      return { absPath, compressed: logRef.endsWith(".gz") };
+    }
+
+    if (logRef.endsWith(".ndjson")) {
+      const gzAbs = resolveWithin(basePath, `${logRef}.gz`);
+      if (await fs.stat(gzAbs).catch(() => null)) {
+        return { absPath: gzAbs, compressed: true };
+      }
+    } else if (logRef.endsWith(".ndjson.gz")) {
+      const rawAbs = resolveWithin(basePath, logRef.slice(0, -".gz".length));
+      if (await fs.stat(rawAbs).catch(() => null)) {
+        return { absPath: rawAbs, compressed: false };
+      }
+    }
+
+    throw notFound("Workspace operation log not found");
   }
 
   return {
@@ -119,28 +229,65 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
 
     async finalize(handle) {
       if (handle.store !== "local_file") {
-        return { bytes: 0, compressed: false };
+        return { bytes: 0, compressed: false, logRef: handle.logRef };
       }
       const absPath = resolveWithin(basePath, handle.logRef);
       const stat = await fs.stat(absPath).catch(() => null);
       if (!stat) throw notFound("Workspace operation log not found");
 
-      const hash = await sha256File(absPath);
-      return {
-        bytes: stat.size,
-        sha256: hash,
+      const rawBytes = stat.size;
+      const rawSha256 = await sha256File(absPath);
+
+      const uncompressedSummary: WorkspaceOperationLogFinalizeSummary = {
+        bytes: rawBytes,
+        sha256: rawSha256,
         compressed: false,
+        logRef: handle.logRef,
       };
+
+      if (!compressionEnabled()) {
+        return uncompressedSummary;
+      }
+
+      const gzRef = `${handle.logRef}.gz`;
+      const gzAbs = resolveWithin(basePath, gzRef);
+      const tmpAbs = `${gzAbs}.tmp`;
+
+      try {
+        await pipeline(createReadStream(absPath), createGzip(), createWriteStream(tmpAbs));
+        await fs.rename(tmpAbs, gzAbs);
+        await fs.unlink(absPath).catch((unlinkErr) => {
+          logger.warn(
+            { err: unlinkErr, logRef: handle.logRef },
+            "workspace-operation-log: failed to unlink raw file after compression",
+          );
+        });
+        return {
+          bytes: rawBytes,
+          sha256: rawSha256,
+          compressed: true,
+          logRef: gzRef,
+        };
+      } catch (err) {
+        await fs.unlink(tmpAbs).catch(() => undefined);
+        logger.warn(
+          { err, logRef: handle.logRef },
+          "workspace-operation-log: compression failed; leaving raw log uncompressed",
+        );
+        return uncompressedSummary;
+      }
     },
 
     async read(handle, opts) {
       if (handle.store !== "local_file") {
         throw notFound("Workspace operation log not found");
       }
-      const absPath = resolveWithin(basePath, handle.logRef);
       const offset = opts?.offset ?? 0;
       const limitBytes = opts?.limitBytes ?? 256_000;
-      return readFileRange(absPath, offset, limitBytes);
+      const { absPath, compressed } = await resolveReadTarget(handle.logRef);
+      return compressed
+        ? readGzipRange(absPath, offset, limitBytes)
+        : readFileRange(absPath, offset, limitBytes);
     },
   };
 }

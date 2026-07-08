@@ -171,6 +171,7 @@ export function workspaceOperationService(db: Db) {
                 logBytes: finalized.bytes,
                 logSha256: finalized.sha256,
                 logCompressed: finalized.compressed,
+                logRef: finalized.logRef,
                 metadata: redactCurrentUserValue(
                   combineMetadata(recordInput.metadata, result.metadata),
                   currentUserRedactionOptions,
@@ -197,6 +198,7 @@ export function workspaceOperationService(db: Db) {
                 logBytes: finalized?.bytes ?? null,
                 logSha256: finalized?.sha256 ?? null,
                 logCompressed: finalized?.compressed ?? false,
+                logRef: finalized?.logRef ?? undefined,
                 finishedAt,
                 updatedAt: finishedAt,
               })

@@ -11914,7 +11914,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? (adapterResult.errorCode ?? recordedResponsibleUserDenialCode ?? "adapter_failed")
               : null;
 
-      let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
+      let logSummary: { bytes: number; sha256?: string; compressed: boolean; logRef: string } | null = null;
       if (handle) {
         logSummary = await runLogStore.finalize(handle);
       }
@@ -11996,6 +11996,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
+        logRef: logSummary?.logRef,
       });
       if (!persistedRunWrite.updated) {
         logger.info(
@@ -12218,7 +12219,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ?? "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
 
-      let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
+      let logSummary: { bytes: number; sha256?: string; compressed: boolean; logRef: string } | null = null;
       if (handle) {
         try {
           logSummary = await runLogStore.finalize(handle);
@@ -12248,6 +12249,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
+        logRef: logSummary?.logRef,
       });
       if (!failedRunWrite.updated) {
         logger.info(
