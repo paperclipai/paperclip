@@ -4,6 +4,7 @@ import request from "supertest";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   assets,
   caseAttachments,
@@ -14,6 +15,8 @@ import {
   cases,
   companies,
   createDb,
+  documentAnnotationComments,
+  documentAnnotationThreads,
   documents,
   documentRevisions,
   heartbeatRuns,
@@ -75,6 +78,9 @@ describeEmbeddedPostgres("cases routes", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(documentAnnotationComments);
+    await db.delete(documentAnnotationThreads);
     await db.delete(caseAttachments);
     await db.delete(caseLabels);
     await db.delete(caseDocuments);
@@ -171,6 +177,7 @@ describeEmbeddedPostgres("cases routes", () => {
     await http.get(`/api/cases/${caseRow!.id}`).expect(403);
     await http.patch(`/api/cases/${caseRow!.id}`).send({ status: "in_progress" }).expect(403);
     await http.put(`/api/cases/${caseRow!.id}/documents/body`).send({ body: "Body" }).expect(403);
+    await http.get(`/api/cases/${caseRow!.id}/documents/body/annotations`).expect(403);
     await http.post(`/api/cases/${caseRow!.id}/links`).send({ issueId: randomUUID(), role: "work" }).expect(403);
     await http.post(`/api/cases/${caseRow!.id}/attachments`).attach("file", Buffer.from("x"), "x.txt").expect(403);
     await http.get(`/api/cases/${caseRow!.id}/events`).expect(403);
@@ -710,6 +717,87 @@ describeEmbeddedPostgres("cases routes", () => {
     await http.get(`/api/cases/${created.body.id}`).expect(200).expect((res) => {
       expect(res.body.documents).toHaveLength(0);
     });
+  });
+
+  it("creates, replies to, resolves, reopens, and remaps case document annotations", async () => {
+    await enableCases();
+    const company = await seedCompany("ANN");
+    const http = request(app(boardActor));
+    const created = await http
+      .post(`/api/companies/${company.id}/cases`)
+      .send({ caseType: "brief", title: "Annotated case" })
+      .expect(201);
+    const document = await http
+      .put(`/api/cases/${created.body.id}/documents/body`)
+      .send({ body: "Alpha beta gamma" })
+      .expect(200);
+
+    const annotation = await http
+      .post(`/api/cases/${created.body.id}/documents/body/annotations`)
+      .send({
+        baseRevisionId: document.body.revision.id,
+        baseRevisionNumber: document.body.revision.revisionNumber,
+        selector: {
+          quote: { exact: "beta", prefix: "Alpha ", suffix: " gamma" },
+          position: { normalizedStart: 6, normalizedEnd: 10, markdownStart: 6, markdownEnd: 10 },
+        },
+        body: "Clarify this word.",
+      })
+      .expect(201);
+
+    expect(annotation.body.caseId).toBe(created.body.id);
+    expect(annotation.body.issueId).toBeNull();
+    expect(annotation.body.routineId).toBeNull();
+    expect(annotation.body.comments[0].caseId).toBe(created.body.id);
+
+    const listed = await http
+      .get(`/api/cases/${created.body.identifier}/documents/body/annotations?status=all&includeComments=true`)
+      .expect(200);
+    expect(listed.body).toHaveLength(1);
+    expect(listed.body[0].comments).toHaveLength(1);
+
+    const reply = await http
+      .post(`/api/cases/${created.body.id}/documents/body/annotations/${annotation.body.id}/comments`)
+      .send({ body: "Added context." })
+      .expect(201);
+    expect(reply.body.caseId).toBe(created.body.id);
+
+    const resolved = await http
+      .patch(`/api/cases/${created.body.id}/documents/body/annotations/${annotation.body.id}`)
+      .send({ status: "resolved" })
+      .expect(200);
+    expect(resolved.body.status).toBe("resolved");
+
+    const reopened = await http
+      .patch(`/api/cases/${created.body.id}/documents/body/annotations/${annotation.body.id}`)
+      .send({ status: "open" })
+      .expect(200);
+    expect(reopened.body.status).toBe("open");
+
+    const updatedDocument = await http
+      .put(`/api/cases/${created.body.id}/documents/body`)
+      .send({
+        body: "Alpha beta gamma delta",
+        baseRevisionId: document.body.revision.id,
+      })
+      .expect(200);
+    const remapped = await http
+      .get(`/api/cases/${created.body.id}/documents/body/annotations/${annotation.body.id}`)
+      .expect(200);
+    expect(remapped.body.currentRevisionNumber).toBe(updatedDocument.body.revision.revisionNumber);
+    expect(remapped.body.comments).toHaveLength(2);
+
+    const activities = await db
+      .select({ action: activityLog.action, entityType: activityLog.entityType, entityId: activityLog.entityId })
+      .from(activityLog)
+      .where(eq(activityLog.entityId, created.body.id));
+    expect(activities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: "case", action: "case.document_annotation_thread_created" }),
+      expect.objectContaining({ entityType: "case", action: "case.document_annotation_comment_added" }),
+      expect.objectContaining({ entityType: "case", action: "case.document_annotation_thread_resolved" }),
+      expect.objectContaining({ entityType: "case", action: "case.document_annotation_thread_reopened" }),
+      expect.objectContaining({ entityType: "case", action: "case.document_annotation_remapped" }),
+    ]));
   });
 
   it("lists children by parent, exposes parent in detail, and lists cases for an issue", async () => {

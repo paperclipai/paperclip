@@ -19,11 +19,17 @@ import {
   labels,
   projects,
 } from "@paperclipai/db";
-import { isUuidLike } from "@paperclipai/shared";
+import {
+  createDocumentAnnotationCommentSchema,
+  createDocumentAnnotationThreadSchema,
+  updateDocumentAnnotationThreadSchema,
+  isUuidLike,
+} from "@paperclipai/shared";
 import { normalizeContentType } from "../attachment-types.js";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { documentAnnotationService, logActivity } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
@@ -127,6 +133,24 @@ function parseDocumentKey(raw: string | undefined) {
   const parsed = documentKeySchema.safeParse(raw);
   if (!parsed.success) throw badRequest("Invalid document key", parsed.error.issues);
   return parsed.data;
+}
+
+function parseBooleanQuery(value: unknown) {
+  return value === true || value === "true" || value === "1";
+}
+
+function annotationActorInput(req: Request) {
+  const actor = getActorInfo(req);
+  return {
+    actor,
+    annotationActor: {
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+      runId: actor.runId,
+    },
+  };
 }
 
 async function loadCaseByIdOrIdentifier(db: CaseRouteDb, idOrIdentifier: string, companyIds?: string[]) {
@@ -461,6 +485,46 @@ function singleFileUpload(req: Request, res: Response, maxBytes: number) {
 
 export function caseRoutes(db: Db, storage: StorageService) {
   const router = Router();
+  const documentAnnotationsSvc = documentAnnotationService(db);
+
+  async function logCaseAnnotationRemaps(input: {
+    caseRow: typeof cases.$inferSelect;
+    key: string;
+    document: Pick<typeof documents.$inferSelect, "id" | "latestRevisionId" | "latestRevisionNumber">;
+    body: string;
+    actor: CaseActor;
+  }) {
+    const remapped = await documentAnnotationsSvc.remapOpenThreadsForCaseDocument({
+      caseId: input.caseRow.id,
+      key: input.key,
+      documentId: input.document.id,
+      nextRevisionId: input.document.latestRevisionId,
+      nextRevisionNumber: input.document.latestRevisionNumber,
+      nextBody: input.body,
+    });
+    for (const remap of remapped) {
+      await logActivity(db, {
+        companyId: input.caseRow.companyId,
+        actorType: input.actor.actorType,
+        actorId: input.actor.actorId,
+        agentId: input.actor.agentId,
+        runId: input.actor.runId,
+        action: "case.document_annotation_remapped",
+        entityType: "case",
+        entityId: input.caseRow.id,
+        details: {
+          key: input.key,
+          documentKey: input.key,
+          documentId: input.document.id,
+          threadId: remap.thread.id,
+          revisionNumber: input.document.latestRevisionNumber,
+          anchorState: remap.thread.anchorState,
+          anchorConfidence: remap.thread.anchorConfidence,
+          snapshotId: remap.snapshot.id,
+        },
+      });
+    }
+  }
 
   router.post("/companies/:companyId/cases", validate(createCaseSchema), async (req, res) => {
     await assertCasesEnabled(db);
@@ -594,6 +658,143 @@ export function caseRoutes(db: Db, storage: StorageService) {
     res.json(caseDocumentResponse({ key, document: link.document }));
   });
 
+  router.get("/cases/:id/documents/:key/annotations", async (req, res, next) => {
+    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
+    if (!caseRow) return next();
+    const key = parseDocumentKey(req.params.key as string);
+    const status = req.query.status === "resolved" || req.query.status === "all" ? req.query.status : "open";
+    const threads = await documentAnnotationsSvc.listThreadsForCaseDocument(caseRow.id, key, {
+      status,
+      includeComments: parseBooleanQuery(req.query.includeComments),
+    });
+    res.json(threads);
+  });
+
+  router.get("/cases/:id/documents/:key/annotations/:threadId", async (req, res, next) => {
+    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
+    if (!caseRow) return next();
+    const key = parseDocumentKey(req.params.key as string);
+    const thread = await documentAnnotationsSvc.getThreadForCaseDocument(
+      caseRow.id,
+      key,
+      req.params.threadId as string,
+    );
+    if (!thread) throw notFound("Annotation thread not found");
+    res.json(thread);
+  });
+
+  router.post(
+    "/cases/:id/documents/:key/annotations",
+    validate(createDocumentAnnotationThreadSchema),
+    async (req, res, next) => {
+      const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
+      if (!caseRow) return next();
+      const key = parseDocumentKey(req.params.key as string);
+      const { actor, annotationActor } = annotationActorInput(req);
+      const thread = await documentAnnotationsSvc.createCaseThread(
+        caseRow.id,
+        key,
+        req.body,
+        annotationActor,
+      );
+      const firstComment = thread.comments[0];
+      await logActivity(db, {
+        companyId: caseRow.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "case.document_annotation_thread_created",
+        entityType: "case",
+        entityId: caseRow.id,
+        details: {
+          key: thread.documentKey,
+          documentKey: thread.documentKey,
+          documentId: thread.documentId,
+          threadId: thread.id,
+          commentId: firstComment?.id ?? null,
+          revisionNumber: thread.currentRevisionNumber,
+          quote: thread.selectedText.slice(0, 240),
+        },
+      });
+      res.status(201).json(thread);
+    },
+  );
+
+  router.post(
+    "/cases/:id/documents/:key/annotations/:threadId/comments",
+    validate(createDocumentAnnotationCommentSchema),
+    async (req, res, next) => {
+      const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
+      if (!caseRow) return next();
+      const key = parseDocumentKey(req.params.key as string);
+      const { actor, annotationActor } = annotationActorInput(req);
+      const comment = await documentAnnotationsSvc.addCaseComment(
+        caseRow.id,
+        key,
+        req.params.threadId as string,
+        req.body,
+        annotationActor,
+      );
+      await logActivity(db, {
+        companyId: caseRow.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "case.document_annotation_comment_added",
+        entityType: "case",
+        entityId: caseRow.id,
+        details: {
+          key,
+          documentKey: key,
+          threadId: comment.threadId,
+          commentId: comment.id,
+          bodySnippet: comment.body.slice(0, 120),
+        },
+      });
+      res.status(201).json(comment);
+    },
+  );
+
+  router.patch(
+    "/cases/:id/documents/:key/annotations/:threadId",
+    validate(updateDocumentAnnotationThreadSchema),
+    async (req, res, next) => {
+      const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
+      if (!caseRow) return next();
+      const key = parseDocumentKey(req.params.key as string);
+      const { actor, annotationActor } = annotationActorInput(req);
+      const thread = await documentAnnotationsSvc.updateCaseThread(
+        caseRow.id,
+        key,
+        req.params.threadId as string,
+        req.body,
+        annotationActor,
+      );
+      await logActivity(db, {
+        companyId: caseRow.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: thread.status === "resolved"
+          ? "case.document_annotation_thread_resolved"
+          : "case.document_annotation_thread_reopened",
+        entityType: "case",
+        entityId: caseRow.id,
+        details: {
+          key: thread.documentKey,
+          documentKey: thread.documentKey,
+          documentId: thread.documentId,
+          threadId: thread.id,
+          status: thread.status,
+        },
+      });
+      res.json(thread);
+    },
+  );
+
   router.put("/cases/:id/documents/:key", async (req, res, next) => {
     const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
     if (!caseRow) return next();
@@ -725,6 +926,13 @@ export function caseRoutes(db: Db, storage: StorageService) {
         revision,
       };
     });
+    await logCaseAnnotationRemaps({
+      caseRow,
+      key,
+      document: result.document,
+      body: result.document.latestBody,
+      actor,
+    });
     res.json(result);
   });
 
@@ -851,6 +1059,13 @@ export function caseRoutes(db: Db, storage: StorageService) {
         restoredFromRevisionId: sourceRevision.id,
         restoredFromRevisionNumber: sourceRevision.revisionNumber,
       };
+    });
+    await logCaseAnnotationRemaps({
+      caseRow,
+      key,
+      document: result.document,
+      body: result.document.body,
+      actor,
     });
     res.json(result);
   });

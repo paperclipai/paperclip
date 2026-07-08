@@ -539,7 +539,10 @@ export function CaseDetail() {
       },
       hideSystemDocuments: false,
       legacyPlanDocument: null,
-      annotations: null,
+      annotations: {
+        issueId: caseData.id,
+        target: (documentKey: string) => ({ kind: "case" as const, caseId: caseData.id, documentKey }),
+      },
     };
   }, [caseData, caseDetailQueryKey, caseIdentifier, queryClient]);
   const panelContent = useMemo(() => {

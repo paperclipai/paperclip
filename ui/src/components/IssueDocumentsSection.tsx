@@ -78,7 +78,7 @@ type DocumentSubjectConfig = {
   legacyPlanDocument?: { body: string } | null;
   annotations?: {
     issueId: string;
-    target?: DocumentAnnotationTarget;
+    target?: DocumentAnnotationTarget | ((documentKey: string) => DocumentAnnotationTarget);
   } | null;
 };
 
@@ -294,6 +294,14 @@ export function IssueDocumentsSection({
     if (!issue) throw new Error("IssueDocumentsSection requires either issue or subject");
     return makeIssueDocumentSubject(issue);
   }, [issue, subject]);
+  const annotationTargetForKey = useCallback((documentKey: string) => {
+    const configured = documentSubject.annotations?.target;
+    if (!configured) return undefined;
+    if (typeof configured === "function") return configured(documentKey);
+    if (configured.kind === "issue") return { ...configured, documentKey };
+    if (configured.kind === "case") return { ...configured, documentKey };
+    return configured;
+  }, [documentSubject]);
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftState | null>(null);
@@ -1005,6 +1013,7 @@ export function IssueDocumentsSection({
           const showTitle = !isPlanKey(doc.key) && !!displayedTitle.trim() && !titlesMatchKey(displayedTitle, doc.key);
           const canVoteOnDocument = Boolean(doc.latestRevisionId && doc.updatedByAgentId && !doc.updatedByUserId && onVote);
           const lockActionPending = setDocumentLock.isPending && setDocumentLock.variables?.key === doc.key;
+          const annotationTarget = annotationTargetForKey(doc.key);
 
           return (
             <div
@@ -1040,7 +1049,7 @@ export function IssueDocumentsSection({
                 annotationSlot={documentSubject.annotations && !isSystemIssueDocumentKey(doc.key) ? (
                   <DocumentAnnotationsCountChip
                     issueId={documentSubject.annotations.issueId}
-                    target={documentSubject.annotations.target}
+                    target={annotationTarget}
                     docKey={doc.key}
                     panelOpen={annotationPanelOpenKeys.includes(doc.key)}
                     onToggle={() => toggleAnnotationPanel(doc.key)}
@@ -1293,7 +1302,7 @@ export function IssueDocumentsSection({
                       return documentSubject.annotations ? (
                         <IssueDocumentAnnotations
                           issueId={documentSubject.annotations.issueId}
-                          target={documentSubject.annotations.target}
+                          target={annotationTarget}
                           doc={doc}
                           bodyMarkdown={displayedBody}
                           draftDirty={Boolean(activeDraft) && (

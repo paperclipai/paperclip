@@ -995,6 +995,13 @@
       "when": 1783457051766,
       "tag": "0143_cases_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 137,
+      "version": "7",
+      "when": 1783520000000,
+      "tag": "0137_case_document_annotations",
+      "breakpoints": true
     }
   ]
 }
