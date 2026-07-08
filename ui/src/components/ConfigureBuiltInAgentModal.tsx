@@ -32,6 +32,13 @@ function defaultAdapterType(state: BuiltInAgentState): string {
   return state.definition.allowedAdapterTypes?.[0] ?? "codex_local";
 }
 
+function parseBudgetMonthlyCents(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const cents = Math.round(Number(trimmed) * 100);
+  return Number.isFinite(cents) && cents >= 0 ? cents : undefined;
+}
+
 export interface ConfigureBuiltInAgentModalProps {
   companyId: string;
   state: BuiltInAgentState;
@@ -75,11 +82,10 @@ export function ConfigureBuiltInAgentModal({
   // Restrict adapter choices to the registry's allow-list.
   const disabledTypes = useMemo(() => {
     const allowed = new Set(definition.allowedAdapterTypes ?? []);
-    if (allowed.size === 0) return new Set<string>();
     return new Set(
       listAdapterOptions()
         .map((option) => option.value)
-        .filter((value) => !allowed.has(value)),
+        .filter((value) => (allowed.size > 0 && !allowed.has(value)) || !isModelBasedAdapter(value)),
     );
   }, [definition.allowedAdapterTypes]);
 
@@ -90,8 +96,11 @@ export function ConfigureBuiltInAgentModal({
   });
   const models = fetchedModels ?? [];
 
-  const modelRequired = isModelBasedAdapter(adapterType);
-  const canSubmit = !modelRequired || model.trim().length > 0;
+  const setupSupportedInModal = isModelBasedAdapter(adapterType);
+  const modelRequired = setupSupportedInModal;
+  const budgetMonthlyCents = parseBudgetMonthlyCents(budgetDollars);
+  const budgetValid = !budgetDollars.trim() || budgetMonthlyCents !== undefined;
+  const canSubmit = setupSupportedInModal && (!modelRequired || model.trim().length > 0) && budgetValid;
 
   const provision = useMutation({
     mutationFn: async () => {
@@ -100,18 +109,8 @@ export function ConfigureBuiltInAgentModal({
       const result = await builtInAgentsApi.provision(companyId, definition.key, {
         adapterType,
         adapterConfig,
+        ...(budgetMonthlyCents !== undefined ? { budgetMonthlyCents } : {}),
       });
-      // Budget lives on the agent row, not the provision payload — patch it
-      // separately when the operator sets a non-default value.
-      const trimmed = budgetDollars.trim();
-      // Skip the budget patch while approval is pending — the agent isn't active
-      // yet and the board approval already captured the requested config.
-      if (result.status !== "pending_approval" && result.agentId && trimmed) {
-        const cents = Math.round(Number(trimmed) * 100);
-        if (Number.isFinite(cents) && cents >= 0 && cents !== (result.agent?.budgetMonthlyCents ?? 0)) {
-          await agentsApi.update(result.agentId, { budgetMonthlyCents: cents }, companyId);
-        }
-      }
       return result;
     },
     onSuccess: (result) => {
@@ -167,6 +166,14 @@ export function ConfigureBuiltInAgentModal({
               groupByProvider={false}
               creatable
             />
+          )}
+
+          {!setupSupportedInModal && (
+            <InlineBanner tone="warning" compact>
+              This setup dialog can only complete model-based adapters. Choose a model-based
+              adapter here, or configure command and endpoint adapters from the full agent
+              configuration after provisioning.
+            </InlineBanner>
           )}
 
           <Field label="Monthly budget (optional)" hint="Leave blank for no cap.">

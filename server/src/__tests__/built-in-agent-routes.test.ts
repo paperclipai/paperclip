@@ -115,6 +115,7 @@ describe("built-in agent routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockBuiltInAgentService.list).toHaveBeenCalledWith(companyId);
     expect(res.body).toEqual([expect.objectContaining({ status: "ready", agentId })]);
+    expect(res.body[0].agent.adapterConfig).toEqual({});
   });
 
   it("denies list requests outside the actor company boundary", async () => {
@@ -143,7 +144,7 @@ describe("built-in agent routes", () => {
 
     const res = await request(app)
       .post(`/api/companies/${companyId}/built-in-agents/briefs/provision`)
-      .send({ adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" } });
+      .send({ adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" }, budgetMonthlyCents: 5000 });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAccessService.decide).toHaveBeenCalledWith({
@@ -157,6 +158,7 @@ describe("built-in agent routes", () => {
       {
         adapterType: "codex_local",
         adapterConfig: { model: "gpt-5.4" },
+        budgetMonthlyCents: 5000,
       },
       { requestedByAgentId: null, requestedByUserId: "board-user" },
     );

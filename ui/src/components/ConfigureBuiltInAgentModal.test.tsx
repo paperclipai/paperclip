@@ -52,7 +52,7 @@ vi.mock("@/components/agent-config-primitives", () => ({
   ),
 }));
 
-function makeState(): BuiltInAgentState {
+function makeState(overrides: Partial<BuiltInAgentState> = {}): BuiltInAgentState {
   return {
     definition: {
       key: "briefs",
@@ -68,6 +68,7 @@ function makeState(): BuiltInAgentState {
     agentId: null,
     agent: null,
     pauseReason: null,
+    ...overrides,
   };
 }
 
@@ -91,7 +92,7 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
   const onOpenChange = vi.fn();
   const onConfigured = vi.fn();
 
-  async function renderModal() {
+  async function renderModal(state: BuiltInAgentState = makeState()) {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     flushSync(() => {
@@ -99,7 +100,7 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
         <QueryClientProvider client={queryClient}>
           <ConfigureBuiltInAgentModal
             companyId="c1"
-            state={makeState()}
+            state={state}
             open
             onOpenChange={onOpenChange}
             onConfigured={onConfigured}
@@ -160,15 +161,13 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
-  it("patches the budget after provisioning when set", async () => {
+  it("sends the budget with provisioning so approval-gated setup preserves it", async () => {
     provisionMock.mockResolvedValue({
       ...makeState(),
-      status: "ready",
+      status: "pending_approval",
       agentId: "a1",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      agent: { id: "a1", budgetMonthlyCents: 0 } as any,
+      approval: { id: "approval-1", status: "pending" },
     });
-    updateMock.mockResolvedValue({});
     await renderModal();
 
     const modelInput = document.body.querySelector('[data-testid="model-input"]') as HTMLInputElement;
@@ -192,7 +191,32 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
     await flushReact();
 
     expect(provisionMock).toHaveBeenCalled();
-    expect(updateMock).toHaveBeenCalledWith("a1", { budgetMonthlyCents: 5000 }, "c1");
+    expect(provisionMock).toHaveBeenCalledWith("c1", "briefs", {
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5" },
+      budgetMonthlyCents: 5000,
+    });
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it("does not submit non-model adapters that need command or endpoint fields", async () => {
+    await renderModal(makeState({
+      definition: {
+        ...makeState().definition,
+        allowedAdapterTypes: ["process"],
+      },
+    }));
+
+    expect(document.body.textContent).toContain("can only complete model-based adapters");
+    const submit = findButton("Configure");
+    expect(submit).toBeTruthy();
+    expect(submit!.disabled).toBe(true);
+    flushSync(() => {
+      submit!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(provisionMock).not.toHaveBeenCalled();
   });
 
   it("surfaces provision errors inline instead of closing", async () => {
