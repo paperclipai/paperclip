@@ -117,6 +117,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { FileTree, buildFileTree, type FileTreeNode } from "@/components/FileTree";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
+import { FrontmatterPanel } from "@/components/FrontmatterPanel";
+import { joinFrontmatterBlock, splitFrontmatterBlock } from "@paperclipai/shared";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { StatusBadge } from "@/components/StatusBadge";
 import { EmptyState } from "@/components/EmptyState";
@@ -1222,6 +1224,10 @@ function SkillPane({
   const [savedContent, setSavedContent] = useState<string>("");
   const [createDialog, setCreateDialog] = useState<"file" | "folder" | null>(null);
   const [deleteFolderOpen, setDeleteFolderOpen] = useState(false);
+  // Gate rich-editor onChange until the user actually interacts with the body.
+  // MDXEditor can emit a normalizing onChange on mount, which would otherwise
+  // dirty the file on open and break the byte-identity guarantee (PAP-13156).
+  const bodyInteractedRef = useRef(false);
 
   const nodes: FileTreeNode[] = useMemo(
     () => buildFileTree(Object.fromEntries(paths.map((p) => [p, ""]))),
@@ -1236,6 +1242,7 @@ function SkillPane({
 
   useEffect(() => {
     if (fileQuery.data) {
+      bodyInteractedRef.current = false;
       setDraft(fileQuery.data.content);
       setSavedContent(fileQuery.data.content);
     }
@@ -1360,6 +1367,7 @@ function SkillPane({
   }
 
   const isMarkdown = fileQuery.data?.markdown ?? /\.md$/i.test(selectedFile);
+  const markdownBlock = isMarkdown ? splitFrontmatterBlock(draft) : null;
 
   return (
     <PaneScaffold
@@ -1441,11 +1449,43 @@ function SkillPane({
             )}
           </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
-          {isMarkdown ? (
+        {isMarkdown && markdownBlock ? (
+          <FrontmatterPanel
+            key={`fm:${selectedFile}`}
+            frontmatterText={markdownBlock.frontmatterText}
+            hasFrontmatter={markdownBlock.hasFrontmatter}
+            fileName={selectedFile}
+            skillSlug={skill.slug}
+            readOnly={readOnly}
+            onChange={(change) => {
+              setDraft((prev) =>
+                joinFrontmatterBlock({
+                  frontmatterText: change.frontmatterText,
+                  body: splitFrontmatterBlock(prev).body,
+                  hasFrontmatter: change.hasFrontmatter,
+                }),
+              );
+            }}
+          />
+        ) : null}
+        <div
+          className="min-h-0 flex-1 overflow-auto px-3 pb-3"
+          onInput={() => {
+            bodyInteractedRef.current = true;
+          }}
+        >
+          {isMarkdown && markdownBlock ? (
             <MarkdownEditor
-              value={draft}
-              onChange={setDraft}
+              key={`body:${selectedFile}`}
+              value={markdownBlock.body}
+              onChange={(nextBody) => {
+                // Ignore MDXEditor's on-mount normalization; only apply real edits.
+                if (!bodyInteractedRef.current) return;
+                setDraft((prev) => {
+                  const block = splitFrontmatterBlock(prev);
+                  return joinFrontmatterBlock({ ...block, body: nextBody });
+                });
+              }}
               bordered={false}
               readOnly={readOnly}
               className="min-h-(--sz-320px)"
