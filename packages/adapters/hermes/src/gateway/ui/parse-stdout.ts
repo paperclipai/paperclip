@@ -41,8 +41,7 @@ function extractDirectReasoningText(data: Record<string, unknown>): string {
     asString(data.thinking).trim() ||
     asString(data.text).trim() ||
     asString(data.summary).trim() ||
-    asString(data.content).trim() ||
-    asString(data.delta).trim()
+    asString(data.content).trim()
   );
 }
 
