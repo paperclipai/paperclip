@@ -203,7 +203,16 @@ async function buildGeminiSkillsDir(
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const engineSelection = await resolveGeminiExecutionEngineForRun(ctx);
   if (engineSelection.engine === "acp") {
-    return executeGeminiAcp(ctx);
+    try {
+      return await executeGeminiAcp(ctx);
+    } catch (err) {
+      if (engineSelection.explicit) throw err;
+      const reason = err instanceof Error ? err.message : String(err);
+      await ctx.onLog(
+        "stderr",
+        formatGeminiAcpFallbackMessage(`Gemini ACP startup failed: ${reason}`),
+      );
+    }
   }
   if (!engineSelection.explicit && engineSelection.fallbackReason) {
     await ctx.onLog("stderr", formatGeminiAcpFallbackMessage(engineSelection.fallbackReason));

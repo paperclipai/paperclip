@@ -330,7 +330,16 @@ export async function ensureCodexSkillsInjected(
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
   if (engineSelection.engine === "acp") {
-    return executeCodexAcp(ctx);
+    try {
+      return await executeCodexAcp(ctx);
+    } catch (err) {
+      if (engineSelection.explicit) throw err;
+      const reason = err instanceof Error ? err.message : String(err);
+      await ctx.onLog(
+        "stderr",
+        formatCodexAcpFallbackMessage(`Codex ACP startup failed: ${reason}`),
+      );
+    }
   }
   if (!engineSelection.explicit && engineSelection.fallbackReason) {
     await ctx.onLog("stderr", formatCodexAcpFallbackMessage(engineSelection.fallbackReason));
