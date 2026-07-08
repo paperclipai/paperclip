@@ -75,7 +75,7 @@ function accumulateUsage(
   );
 }
 
-export function parseGeminiJsonl(stdout: string) {
+export function parseAntigravityJsonl(stdout: string) {
   let sessionId: string | null = null;
   const messages: string[] = [];
   let errorMessage: string | null = null;
@@ -127,11 +127,6 @@ export function parseGeminiJsonl(stdout: string) {
       continue;
     }
 
-    // Gemini CLI v0.38+ stream-json schema emits assistant turns as:
-    // {"type":"message","role":"assistant","content":"...","delta":true}
-    // These are discrete final messages (one per assistant turn), not
-    // cumulative streaming tokens, so collecting all of them produces the
-    // expected concatenated turn-by-turn summary rather than duplicated text.
     if (type === "message") {
       const role = asString(event.role, "").trim().toLowerCase();
       if (role === "assistant") {
@@ -209,19 +204,19 @@ export function parseGeminiJsonl(stdout: string) {
   };
 }
 
-export function isGeminiSessionUnrecoverableError(stdout: string, stderr: string): boolean {
+export function isAntigravitySessionUnrecoverableError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
     .join("\n");
 
-  return /unknown\s+session|session\s+.*\s+not\s+found|resume\s+.*\s+not\s+found|checkpoint\s+.*\s+not\s+found|cannot\s+resume|failed\s+to\s+resume|exceeds\s+the\s+maximum\s+number\s+of\s+tokens|input\s+token\s+count\s+exceeds/i.test(
+  return /unknown\s+session|session\s+.*\s+not\s+found|resume\s+.*\s+not\s+found|continue\s+.*\s+not\s+found|checkpoint\s+.*\s+not\s+found|cannot\s+resume|failed\s+to\s+resume|exceeds\s+the\s+maximum\s+number\s+of\s+tokens|input\s+token\s+count\s+exceeds/i.test(
     haystack,
   );
 }
 
-export function isGeminiTransientNetworkError(stdout: string, stderr: string): boolean {
+export function isAntigravityTransientNetworkError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -233,7 +228,7 @@ export function isGeminiTransientNetworkError(stdout: string, stderr: string): b
   );
 }
 
-function extractGeminiErrorMessages(parsed: Record<string, unknown>): string[] {
+function extractAntigravityErrorMessages(parsed: Record<string, unknown>): string[] {
   const messages: string[] = [];
   const errorMsg = asString(parsed.error, "").trim();
   if (errorMsg) messages.push(errorMsg);
@@ -262,54 +257,54 @@ function extractGeminiErrorMessages(parsed: Record<string, unknown>): string[] {
   return messages;
 }
 
-export function describeGeminiFailure(parsed: Record<string, unknown>): string | null {
+export function describeAntigravityFailure(parsed: Record<string, unknown>): string | null {
   const status = asString(parsed.status, "");
-  const errors = extractGeminiErrorMessages(parsed);
+  const errors = extractAntigravityErrorMessages(parsed);
 
   const detail = errors[0] ?? "";
-  const parts = ["Gemini run failed"];
+  const parts = ["Antigravity run failed"];
   if (status) parts.push(`status=${status}`);
   if (detail) parts.push(detail);
   return parts.length > 1 ? parts.join(": ") : null;
 }
 
-const GEMINI_AUTH_REQUIRED_RE = /(?:not\s+authenticated|please\s+authenticate|api[_ ]?key\s+(?:required|missing|invalid)|authentication\s+required|manual\s+authorization\s+is\s+required|unauthorized|invalid\s+credentials|not\s+logged\s+in|login\s+required|run\s+`?gemini\s+auth(?:\s+login)?`?\s+first)/i;
-const GEMINI_QUOTA_EXHAUSTED_RE =
+const ANTIGRAVITY_AUTH_REQUIRED_RE = /(?:not\s+authenticated|please\s+authenticate|api[_ ]?key\s+(?:required|missing|invalid)|authentication\s+required|manual\s+authorization\s+is\s+required|unauthorized|invalid\s+credentials|not\s+logged\s+in|login\s+required|run\s+`?agy\s+auth(?:\s+login)?`?\s+first)/i;
+const ANTIGRAVITY_QUOTA_EXHAUSTED_RE =
   /(?:resource_exhausted|quota|rate[-\s]?limit|too many requests|\b429\b|billing details)/i;
 
-export function detectGeminiAuthRequired(input: {
+export function detectAntigravityAuthRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
 }): { requiresAuth: boolean } {
-  const errors = extractGeminiErrorMessages(input.parsed ?? {});
+  const errors = extractAntigravityErrorMessages(input.parsed ?? {});
   const messages = [...errors, input.stdout, input.stderr]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
 
-  const requiresAuth = messages.some((line) => GEMINI_AUTH_REQUIRED_RE.test(line));
+  const requiresAuth = messages.some((line) => ANTIGRAVITY_AUTH_REQUIRED_RE.test(line));
   return { requiresAuth };
 }
 
-export function detectGeminiQuotaExhausted(input: {
+export function detectAntigravityQuotaExhausted(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
 }): { exhausted: boolean } {
-  const errors = extractGeminiErrorMessages(input.parsed ?? {});
+  const errors = extractAntigravityErrorMessages(input.parsed ?? {});
   const messages = [...errors, input.stdout, input.stderr]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
 
-  const exhausted = messages.some((line) => GEMINI_QUOTA_EXHAUSTED_RE.test(line));
+  const exhausted = messages.some((line) => ANTIGRAVITY_QUOTA_EXHAUSTED_RE.test(line));
   return { exhausted };
 }
 
-export function isGeminiTurnLimitResult(
+export function isAntigravityTurnLimitResult(
   parsed: Record<string, unknown> | null | undefined,
   exitCode?: number | null,
 ): boolean {

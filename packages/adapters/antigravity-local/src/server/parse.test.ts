@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  detectGeminiAuthRequired,
-  isGeminiTransientNetworkError,
-  isGeminiSessionUnrecoverableError,
-  parseGeminiJsonl,
+  detectAntigravityAuthRequired,
+  isAntigravityTransientNetworkError,
+  isAntigravitySessionUnrecoverableError,
+  parseAntigravityJsonl,
 } from "./parse.js";
 
-describe("parseGeminiJsonl", () => {
+describe("parseAntigravityJsonl", () => {
   it("collects assistant text from message events with string content", () => {
     const stdout = [
       '{"type":"init","session_id":"session-1"}',
@@ -15,7 +15,7 @@ describe("parseGeminiJsonl", () => {
       '{"type":"result","status":"success"}',
     ].join("\n");
 
-    const parsed = parseGeminiJsonl(stdout);
+    const parsed = parseAntigravityJsonl(stdout);
 
     expect(parsed.sessionId).toBe("session-1");
     expect(parsed.summary).toBe("hello");
@@ -29,7 +29,7 @@ describe("parseGeminiJsonl", () => {
       '{"type":"result","status":"success"}',
     ].join("\n");
 
-    const parsed = parseGeminiJsonl(stdout);
+    const parsed = parseAntigravityJsonl(stdout);
 
     expect(parsed.sessionId).toBe("session-2");
     expect(parsed.summary).toBe("first part\n\nsecond part");
@@ -44,12 +44,12 @@ describe("parseGeminiJsonl", () => {
       '{"type":"result","status":"success"}',
     ].join("\n");
 
-    const parsed = parseGeminiJsonl(stdout);
+    const parsed = parseAntigravityJsonl(stdout);
 
     expect(parsed.summary).toBe("visible response");
   });
 
-  it("captures assistant text from gemini CLI v0.38 stream-json schema", () => {
+  it("captures assistant text from Antigravity CLI stream-json schema", () => {
     const stdout = [
       JSON.stringify({
         type: "init",
@@ -84,7 +84,7 @@ describe("parseGeminiJsonl", () => {
       }),
     ].join("\n");
 
-    const result = parseGeminiJsonl(stdout);
+    const result = parseAntigravityJsonl(stdout);
     expect(result.summary).toBe("hello.");
     expect(result.sessionId).toBe("session-abc");
     expect(result.errorMessage).toBeNull();
@@ -100,7 +100,7 @@ describe("parseGeminiJsonl", () => {
       JSON.stringify({ type: "message", role: "assistant", content: "second" }),
     ].join("\n");
 
-    const result = parseGeminiJsonl(stdout);
+    const result = parseAntigravityJsonl(stdout);
     expect(result.summary).toBe("first\n\nsecond");
   });
 
@@ -118,7 +118,7 @@ describe("parseGeminiJsonl", () => {
       JSON.stringify({ type: "result", subtype: "success", result: "legacy hello" }),
     ].join("\n");
 
-    const result = parseGeminiJsonl(stdout);
+    const result = parseAntigravityJsonl(stdout);
     expect(result.summary).toBe("legacy hello");
     expect(result.sessionId).toBe("legacy-session");
   });
@@ -132,26 +132,26 @@ describe("parseGeminiJsonl", () => {
       }),
     ].join("\n");
 
-    const result = parseGeminiJsonl(stdout);
+    const result = parseAntigravityJsonl(stdout);
     expect(result.errorMessage).toBe("boom");
   });
 
   it("falls back to raw stdout text if no valid JSON events are parsed", () => {
     const stdout = "hello\n";
-    const result = parseGeminiJsonl(stdout);
+    const result = parseAntigravityJsonl(stdout);
     expect(result.summary).toBe("hello");
     expect(result.sessionId).toBeNull();
   });
 
   it("truncates raw stdout text if it exceeds the length limit", () => {
     const stdout = "a".repeat(5000);
-    const result = parseGeminiJsonl(stdout);
+    const result = parseAntigravityJsonl(stdout);
     expect(result.summary.length).toBe(4003); // 4000 + "..."
     expect(result.summary.endsWith("...")).toBe(true);
   });
 
   it("classifies non-interactive manual authorization failures as auth required", () => {
-    const result = detectGeminiAuthRequired({
+    const result = detectAntigravityAuthRequired({
       parsed: null,
       stdout: "",
       stderr:
@@ -162,34 +162,34 @@ describe("parseGeminiJsonl", () => {
   });
 });
 
-describe("isGeminiSessionUnrecoverableError", () => {
+describe("isAntigravitySessionUnrecoverableError", () => {
   it("matches 'unknown session'", () => {
-    expect(isGeminiSessionUnrecoverableError("", "Error: unknown session 'abc-123'")).toBe(true);
+    expect(isAntigravitySessionUnrecoverableError("", "Error: unknown session 'abc-123'")).toBe(true);
   });
 
   it("matches 'session ... not found'", () => {
-    expect(isGeminiSessionUnrecoverableError("", "Resumed session abc-123 not found on disk")).toBe(true);
+    expect(isAntigravitySessionUnrecoverableError("", "Resumed session abc-123 not found on disk")).toBe(true);
   });
 
   it("matches 'exceeds the maximum number of tokens' (compression overflow)", () => {
     const stderr =
       '_ApiError: {"error":{"code":400,"message":"The input token count exceeds the maximum number of tokens allowed 1048576","status":"INVALID_ARGUMENT"}} at ChatCompressionService.compress';
-    expect(isGeminiSessionUnrecoverableError("", stderr)).toBe(true);
+    expect(isAntigravitySessionUnrecoverableError("", stderr)).toBe(true);
   });
 
   it("matches 'input token count exceeds'", () => {
     expect(
-      isGeminiSessionUnrecoverableError("", "input token count exceeds maximum"),
+      isAntigravitySessionUnrecoverableError("", "input token count exceeds maximum"),
     ).toBe(true);
   });
 
   it("does not match unrelated stderr", () => {
-    expect(isGeminiSessionUnrecoverableError("", "Some other error")).toBe(false);
+    expect(isAntigravitySessionUnrecoverableError("", "Some other error")).toBe(false);
   });
 
-  it("does not match transient network errors (those go to isGeminiTransientNetworkError)", () => {
+  it("does not match transient network errors (those go to isAntigravityTransientNetworkError)", () => {
     expect(
-      isGeminiSessionUnrecoverableError(
+      isAntigravitySessionUnrecoverableError(
         "",
         "_GaxiosError: getaddrinfo ENOTFOUND oauth2.googleapis.com",
       ),
@@ -197,16 +197,16 @@ describe("isGeminiSessionUnrecoverableError", () => {
   });
 });
 
-describe("isGeminiTransientNetworkError", () => {
+describe("isAntigravityTransientNetworkError", () => {
   it("matches DNS failure on oauth2.googleapis.com", () => {
     const stderr =
       "_GaxiosError: request to https://oauth2.googleapis.com/token failed, reason: getaddrinfo ENOTFOUND oauth2.googleapis.com";
-    expect(isGeminiTransientNetworkError("", stderr)).toBe(true);
+    expect(isAntigravityTransientNetworkError("", stderr)).toBe(true);
   });
 
   it("matches EAI_AGAIN", () => {
     expect(
-      isGeminiTransientNetworkError("", "Error: getaddrinfo EAI_AGAIN sts.googleapis.com"),
+      isAntigravityTransientNetworkError("", "Error: getaddrinfo EAI_AGAIN sts.googleapis.com"),
     ).toBe(true);
   });
 
@@ -214,16 +214,16 @@ describe("isGeminiTransientNetworkError", () => {
     const stderr =
       "at _UserRefreshClient.refreshTokenNoCache (.../google-auth-library/...)\n" +
       "  caused by: ENOTFOUND oauth2.googleapis.com";
-    expect(isGeminiTransientNetworkError("", stderr)).toBe(true);
+    expect(isAntigravityTransientNetworkError("", stderr)).toBe(true);
   });
 
   it("does not match unrelated stderr", () => {
-    expect(isGeminiTransientNetworkError("", "Some other error")).toBe(false);
+    expect(isAntigravityTransientNetworkError("", "Some other error")).toBe(false);
   });
 
-  it("does not match unknown-session errors (those go to isGeminiSessionUnrecoverableError)", () => {
+  it("does not match unknown-session errors (those go to isAntigravitySessionUnrecoverableError)", () => {
     expect(
-      isGeminiTransientNetworkError("", "Error: unknown session 'abc-123'"),
+      isAntigravityTransientNetworkError("", "Error: unknown session 'abc-123'"),
     ).toBe(false);
   });
 });

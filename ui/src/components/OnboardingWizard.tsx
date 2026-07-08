@@ -42,6 +42,7 @@ import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_ANTIGRAVITY_LOCAL_MODEL } from "@paperclipai/adapter-antigravity-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
@@ -297,6 +298,7 @@ export function OnboardingWizard() {
     claude_local: "claude",
     codex_local: "codex",
     gemini_local: "gemini",
+    antigravity_local: "agy",
     pi_local: "pi",
     cursor: "agent",
     opencode_local: "opencode",
@@ -1311,6 +1313,10 @@ export function OnboardingWizard() {
                               setAdapterType(nextType);
                               if (nextType === "gemini_local" && !model) {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+                                return;
+                              }
+                              if (nextType === "antigravity_local" && !model) {
+                                setModel(DEFAULT_ANTIGRAVITY_LOCAL_MODEL);
                                 return;
                               }
                               if (nextType === "cursor" && !model) {
