@@ -9,6 +9,7 @@ import { InlineBanner } from "@/components/InlineBanner";
 import { AgentStatusBadge } from "@/components/StatusBadge";
 import { BuiltInAgentBadge, BuiltInLifecycleChip } from "@/components/BuiltInAgentBadges";
 import { ConfigureBuiltInAgentModal } from "@/components/ConfigureBuiltInAgentModal";
+import { BuiltInBundlePanel } from "@/components/BuiltInBundlePanel";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,7 +20,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import type { BuiltInAgentState } from "@/api/builtInAgents";
+import type { BuiltInAgentState, BuiltInManagedResourceState } from "@/api/builtInAgents";
 import { Bot, Clock3 } from "lucide-react";
 
 const briefsAgent: Agent = {
@@ -264,6 +265,134 @@ export const PauseConfirmDialog: Story = {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  ),
+};
+
+// ---------------------------------------------------------------------------
+// Reflection Coach bundle status panel (PAP-13099).
+// ---------------------------------------------------------------------------
+
+const reflectionBundle = {
+  stockVersion: "2026-07-08",
+  instructions: { entryFile: "AGENTS.md", files: ["AGENTS.md"] },
+  skill: {
+    skillKey: "reflection-coach",
+    displayName: "reflection-coach",
+    slug: "reflection-coach",
+    canonicalKey: "paperclipai/bundled/paperclip-operations/reflection-coach",
+    files: ["reflection-coach/SKILL.md"],
+  },
+  routine: {
+    routineKey: "recent-agent-reflection",
+    title: "Recent agent reflection",
+    status: "paused" as const,
+    triggerCount: 1,
+  },
+};
+
+const reflectionDefinition = {
+  key: "reflection-coach",
+  displayName: "Reflection Coach",
+  featureKeys: ["reflection"],
+  shortPurpose: "Reviews recent agents and coaches them.",
+  defaultInstructions: "You are Paperclip's built-in Reflection Coach.",
+  defaultRole: "general",
+  allowedAdapterTypes: ["codex_local", "claude_local"],
+  defaultBudgetMonthlyCents: 0,
+  bundle: reflectionBundle,
+};
+
+function bundleResource(
+  resourceKind: BuiltInManagedResourceState["resourceKind"],
+  stockStatus: BuiltInManagedResourceState["stockStatus"],
+): BuiltInManagedResourceState {
+  return {
+    resourceKind,
+    resourceKey:
+      resourceKind === "skill"
+        ? "reflection-coach"
+        : resourceKind === "routine"
+          ? "recent-agent-reflection"
+          : "AGENTS.md",
+    resourceId: "res-1",
+    stockVersion: "2026-07-08",
+    stockHash: "aaaa",
+    currentHash: stockStatus === "missing" ? null : stockStatus === "stock_current" ? "aaaa" : "bbbb",
+    stockStatus,
+    updateAvailable: stockStatus === "stock_update_available" || stockStatus === "operator_modified",
+    resetAvailable: stockStatus !== "stock_current",
+  };
+}
+
+function bundleState(
+  status: BuiltInAgentState["status"],
+  resources: BuiltInManagedResourceState[],
+): BuiltInAgentState {
+  return {
+    definition: reflectionDefinition,
+    status,
+    agentId: "agent-reflection",
+    agent: null,
+    pauseReason: null,
+    resources,
+  };
+}
+
+const READY = [
+  bundleResource("skill", "stock_current"),
+  bundleResource("instructions", "stock_current"),
+  bundleResource("routine", "stock_current"),
+];
+
+function BundleCase({ title, state }: { title: string; state: BuiltInAgentState }) {
+  return (
+    <div className="space-y-2">
+      <p className="text-(length:--text-micro) font-medium text-muted-foreground">{title}</p>
+      <BuiltInBundlePanel
+        state={state}
+        agentRef="reflectioncoach"
+        onConfigure={() => {}}
+        onResetResource={() => {}}
+      />
+    </div>
+  );
+}
+
+/**
+ * Board — Reflection Coach bundle status panel across the ux-spec states
+ * (§5a needs-adapter, §5b all-ready, §5c update available, §5d drifted,
+ * §5f missing). Light + dark are captured by the screenshot recipe.
+ */
+export const BundleStatusPanel: Story = {
+  render: () => (
+    <div className="mx-auto grid max-w-3xl gap-8 p-6">
+      <BundleCase title="§5a — needs adapter (nothing runs yet)" state={bundleState("needs_setup", READY)} />
+      <BundleCase title="§5b — all ready, schedule off (healthy default)" state={bundleState("ready", READY)} />
+      <BundleCase
+        title="§5c — update available (unedited stock, newer default shipped)"
+        state={bundleState("ready", [
+          bundleResource("skill", "stock_current"),
+          bundleResource("instructions", "stock_update_available"),
+          bundleResource("routine", "stock_current"),
+        ])}
+      />
+      <BundleCase
+        title="§5d — drifted (operator-modified, edits preserved)"
+        state={bundleState("ready", [
+          bundleResource("skill", "operator_modified"),
+          bundleResource("instructions", "stock_current"),
+          bundleResource("routine", "stock_current"),
+        ])}
+      />
+      <BundleCase
+        title="§5f — missing resource (reconcile recreates it)"
+        state={bundleState("ready", [
+          bundleResource("skill", "missing"),
+          bundleResource("instructions", "stock_current"),
+          bundleResource("routine", "stock_current"),
+        ])}
+      />
     </div>
   ),
 };

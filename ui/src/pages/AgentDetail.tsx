@@ -7,7 +7,7 @@ import {
   type ClaudeLoginResult,
   type AgentPermissionUpdate,
 } from "../api/agents";
-import { builtInAgentsApi } from "../api/builtInAgents";
+import { builtInAgentsApi, type BuiltInManagedResourceKind } from "../api/builtInAgents";
 import { companySkillsApi } from "../api/companySkills";
 import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -45,6 +45,8 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { InlineBanner } from "../components/InlineBanner";
 import { BuiltInAgentBadge } from "../components/BuiltInAgentBadges";
+import { BuiltInBundlePanel } from "../components/BuiltInBundlePanel";
+import { ConfigureBuiltInAgentModal } from "../components/ConfigureBuiltInAgentModal";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { TrustPresetSection } from "../components/TrustPresetSection";
 import { FileTree, buildFileTree } from "../components/FileTree";
@@ -730,14 +732,26 @@ export function AgentDetail() {
         .map((key) => key.charAt(0).toUpperCase() + key.slice(1))
         .join(", ")
     : "";
+  const invalidateBuiltIn = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.builtInAgents.list(resolvedCompanyId!) });
+    if (resolvedAgentId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(resolvedAgentId) });
+    }
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+  }, [queryClient, resolvedCompanyId, resolvedAgentId, routeAgentRef]);
+
   const resetBuiltIn = useMutation({
     mutationFn: () => builtInAgentsApi.reset(resolvedCompanyId!, builtInState!.definition.key),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.builtInAgents.list(resolvedCompanyId!) });
-      if (resolvedAgentId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(resolvedAgentId) });
-      }
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+    onSuccess: invalidateBuiltIn,
+  });
+
+  const [showBuiltInConfigure, setShowBuiltInConfigure] = useState(false);
+  const resetBuiltInResource = useMutation({
+    mutationFn: (kind: BuiltInManagedResourceKind) =>
+      builtInAgentsApi.reset(resolvedCompanyId!, builtInState!.definition.key, [kind]),
+    onSuccess: invalidateBuiltIn,
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Failed to update bundle resource");
     },
   });
 
@@ -1139,6 +1153,29 @@ export function AgentDetail() {
           any agent — model, instructions, budget. It can be paused but not deleted; pausing it
           pauses {builtInFeatureLabel}.
         </InlineBanner>
+      )}
+
+      {builtInState?.definition.bundle && (
+        <BuiltInBundlePanel
+          state={builtInState}
+          agentRef={canonicalAgentRef}
+          onConfigure={() => setShowBuiltInConfigure(true)}
+          onResetResource={(kind) => resetBuiltInResource.mutate(kind)}
+          resettingResource={resetBuiltInResource.isPending ? resetBuiltInResource.variables ?? null : null}
+        />
+      )}
+
+      {builtInState && resolvedCompanyId && (
+        <ConfigureBuiltInAgentModal
+          companyId={resolvedCompanyId}
+          state={builtInState}
+          open={showBuiltInConfigure}
+          onOpenChange={setShowBuiltInConfigure}
+          onConfigured={() => {
+            setShowBuiltInConfigure(false);
+            invalidateBuiltIn();
+          }}
+        />
       )}
 
       {!urlRunId && (
