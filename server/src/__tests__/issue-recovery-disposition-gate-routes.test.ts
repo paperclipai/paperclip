@@ -252,6 +252,16 @@ function recoveryOwnerActor() {
   };
 }
 
+function originalAgentActor() {
+  return {
+    type: "agent",
+    agentId: originalAgentId,
+    companyId,
+    source: "agent_key",
+    runId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+  };
+}
+
 function boardActor() {
   return {
     type: "board",
@@ -486,6 +496,52 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
       expect(res.status).toBe(422);
       expect(res.body.code).toBe("recovery_previous_assignee_agent_write_forbidden");
       expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects done when previousAssigneeAgentId was fabricated without reassignment", async () => {
+      mockIssueService.getById.mockResolvedValue(
+        makeRecoveryIssue({
+          assigneeAgentId: originalAgentId,
+          previousAssigneeAgentId: originalAgentId,
+        }),
+      );
+      const app = await createApp(originalAgentActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .set("Content-Type", "application/json")
+        .send({ status: "done", recoveryKind: "recovery_completion" });
+
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe("recovery_previous_assignee_not_self_settable");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("allows a same-call recovery handoff that moves assigneeAgentId off the actor", async () => {
+      mockIssueService.getById.mockResolvedValue(
+        makeRecoveryIssue({
+          assigneeAgentId: originalAgentId,
+          previousAssigneeAgentId: null,
+        }),
+      );
+      const app = await createApp(originalAgentActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .set("Content-Type", "application/json")
+        .send({
+          assigneeAgentId: recoveryOwnerAgentId,
+          previousAssigneeAgentId: originalAgentId,
+        });
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        issueId,
+        expect.objectContaining({
+          assigneeAgentId: recoveryOwnerAgentId,
+          previousAssigneeAgentId: originalAgentId,
+        }),
+      );
     });
   });
 
