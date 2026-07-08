@@ -87,6 +87,58 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
     await tempDb?.cleanup();
   });
 
+  it("clears agent errorReason when a new heartbeat starts", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ProcessAgent",
+      role: "engineer",
+      status: "error",
+      errorReason: "Configured OpenCode model is unavailable: openai/gpt-5.1-codex-mini.",
+      adapterType: "process",
+      adapterConfig: {
+        command: process.execPath,
+        args: ["-e", "setTimeout(() => process.exit(0), 500)"],
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const heartbeat = heartbeatService(db);
+    const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(queued).not.toBeNull();
+
+    const deadline = Date.now() + 5_000;
+    let sawRunningWithClearedError = false;
+    while (Date.now() < deadline) {
+      const [agentRow] = await db
+        .select({ status: agents.status, errorReason: agents.errorReason })
+        .from(agents)
+        .where(eq(agents.id, agentId));
+      if (agentRow?.status === "running" && agentRow?.errorReason === null) {
+        sawRunningWithClearedError = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(sawRunningWithClearedError).toBe(true);
+
+    const finished = await waitForRunToFinish(heartbeat, queued!.id);
+    expect(finished?.status).toBe("succeeded");
+  });
+
   it("runs work through the default Local environment lease", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
