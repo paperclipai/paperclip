@@ -52,7 +52,7 @@ const CASE_COLUMN_LABELS: Record<CaseColumn, string> = {
   id: "ID",
   title: "Title",
   status: "Status",
-  updated: "Last updated",
+  updated: "Updated",
   created: "Created at",
   type: "Type",
   project: "Project",
@@ -310,7 +310,7 @@ function CaseListRow({
         <span className="line-clamp-2 text-sm sm:hidden">
           {visibleColumnSet.has("title") ? row.title : row.identifier}
         </span>
-        <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
+        <span className="flex items-center gap-2 sm:hidden">
           {visibleColumnSet.has("status") ? (
             <CaseStatusPicker
               status={row.status}

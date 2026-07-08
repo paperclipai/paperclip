@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, Copy, MoreVertical, Plus, SlidersHorizontal } from "lucide-react";
 import { Link, Navigate, useCaseHref, useParams } from "@/lib/router";
@@ -22,15 +22,16 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/StatusBadge";
-import { StatusIcon } from "@/components/StatusIcon";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { CaseFieldValue } from "@/components/CaseFieldsPanel";
 import { CaseActivityFeed } from "@/components/CaseActivityFeed";
 import { CaseChildrenTree } from "@/components/CaseChildrenTree";
 import { CaseAttachmentsGallery } from "@/components/CaseAttachmentsGallery";
-import { EntityRow } from "@/components/EntityRow";
+import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { PropertyChip, PropertyRow, PropertySection } from "@/components/issue-properties";
+import { copyTextToClipboard } from "@/lib/clipboard";
+import { cn } from "@/lib/utils";
 
 const STATUS_LABEL: Record<CaseStatus, string> = {
   draft: "Draft",
@@ -41,7 +42,84 @@ const STATUS_LABEL: Record<CaseStatus, string> = {
   cancelled: "Cancelled",
 };
 
-const ROLE_LABEL: Record<string, string> = { origin: "origin", work: "work", reference: "reference" };
+const PRIMARY_FIELD_KEYS = ["name", "title", "body", "description"] as const;
+const ISSUE_REFERENCE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"] as const;
+
+type CasePropertyDisplayMode = "compact" | "full";
+type IssueReferenceStatus = (typeof ISSUE_REFERENCE_STATUSES)[number];
+
+function issueReferenceStatus(status: string): IssueReferenceStatus | undefined {
+  return ISSUE_REFERENCE_STATUSES.includes(status as IssueReferenceStatus)
+    ? status as IssueReferenceStatus
+    : undefined;
+}
+
+function fieldValueByName(fields: Record<string, unknown>, name: string): unknown {
+  return fields[name] ?? fields[name.charAt(0).toUpperCase() + name.slice(1)];
+}
+
+function hasFieldValue(value: unknown): boolean {
+  return value !== null && value !== undefined && !(typeof value === "string" && value.trim() === "");
+}
+
+function casePropertyRows(caseData: CaseDetailData) {
+  const reservedKeys = new Set(PRIMARY_FIELD_KEYS.flatMap((key) => [key, key.charAt(0).toUpperCase() + key.slice(1)]));
+  const bodyDoc = caseData.documents.find((documentRef) => documentRef.key === "body");
+  const primary = PRIMARY_FIELD_KEYS.map((key) => {
+    let value: unknown;
+    if (key === "title") value = fieldValueByName(caseData.fields, key) ?? caseData.title;
+    else if (key === "body") value = fieldValueByName(caseData.fields, key) ?? bodyDoc?.document.latestBody;
+    else value = fieldValueByName(caseData.fields, key);
+    return { key, label: key, value };
+  }).filter((row) => hasFieldValue(row.value));
+
+  const generic = Object.entries(caseData.fields)
+    .filter(([key]) => !reservedKeys.has(key))
+    .map(([key, value]) => ({ key, label: key, value }));
+
+  return [...primary, ...generic];
+}
+
+function CasePropertyRow({
+  label,
+  children,
+  wrap,
+  mode,
+}: {
+  label: string;
+  children: ReactNode;
+  wrap?: boolean;
+  mode: CasePropertyDisplayMode;
+}) {
+  if (mode === "compact") {
+    return (
+      <PropertyRow label={label} wrap={wrap}>
+        {children}
+      </PropertyRow>
+    );
+  }
+
+  return (
+    <div
+      className={cn(
+        "flex w-full min-w-0 gap-3 py-1",
+        wrap ? "items-start" : "items-center",
+      )}
+      data-property-row="true"
+    >
+      <span
+        className={cn(
+          "w-40 shrink-0 break-words text-xs text-muted-foreground",
+          wrap && "mt-0.5",
+        )}
+        data-property-label={label}
+      >
+        {label}
+      </span>
+      <div className={cn("flex min-w-0 flex-1 items-center gap-1.5", wrap && "flex-wrap")}>{children}</div>
+    </div>
+  );
+}
 
 /** Status dropdown — the primary human write in v1 (§3). */
 function CaseStatusPicker({
@@ -187,36 +265,45 @@ function CaseLabelsPicker({
 }
 
 /** Right-rail content pushed into the shared PropertiesPanel (§3). */
-function CaseSidePanel({
+function CasePropertiesContent({
   caseData,
   childCases,
   companyId,
   labelsPending,
   onLabelIdsChange,
+  mode,
 }: {
   caseData: CaseDetailData;
   childCases: CaseSummary[];
   companyId: string | null | undefined;
   labelsPending?: boolean;
   onLabelIdsChange: (labelIds: string[]) => void;
+  mode: CasePropertyDisplayMode;
 }) {
-  const reservedFieldKeys = new Set(["name", "Name", "title", "Title", "body", "Body", "description", "Description"]);
-  const genericFields = Object.entries(caseData.fields).filter(([key]) => !reservedFieldKeys.has(key));
+  const propertyRows = casePropertyRows(caseData);
+  const isFull = mode === "full";
 
   return (
-    <div className="space-y-4 p-4">
+    <div className={cn("space-y-4", isFull && "space-y-6")}>
       <PropertySection title="Case" first>
-        <PropertyRow label="Type">
+        <CasePropertyRow label="Type" mode={mode}>
           <PropertyChip>{caseData.caseType}</PropertyChip>
-        </PropertyRow>
+        </CasePropertyRow>
         {caseData.key ? (
-          <PropertyRow label="Key">
-            <span className="min-w-0 truncate font-mono text-xs text-muted-foreground" title={caseData.key}>
+          <CasePropertyRow label="Key" mode={mode}>
+            <span
+              className={cn(
+                "min-w-0 font-mono text-xs text-muted-foreground",
+                !isFull && "truncate",
+                isFull && "break-all",
+              )}
+              title={caseData.key}
+            >
               {caseData.key}
             </span>
-          </PropertyRow>
+          </CasePropertyRow>
         ) : null}
-        <PropertyRow label="Labels" wrap>
+        <CasePropertyRow label="Labels" wrap mode={mode}>
           {caseData.labels.length > 0 ? (
             caseData.labels.map((label) => (
               <PropertyChip
@@ -238,39 +325,47 @@ function CaseSidePanel({
             />
           ) : null}
           {labelsPending ? <span className="text-xs text-muted-foreground">Saving...</span> : null}
-        </PropertyRow>
+        </CasePropertyRow>
       </PropertySection>
 
-      {genericFields.length > 0 ? (
+      {propertyRows.length > 0 ? (
         <PropertySection title="Fields">
-          {genericFields.map(([key, value]) => (
-            <PropertyRow key={key} label={key} wrap={Array.isArray(value)}>
-              <span className="min-w-0 truncate text-sm">
-                <CaseFieldValue value={value} />
+          {propertyRows.map(({ key, label, value }) => (
+            <CasePropertyRow
+              key={key}
+              label={label}
+              wrap={isFull || Array.isArray(value) || (typeof value === "object" && value !== null)}
+              mode={mode}
+            >
+              <span className={cn("min-w-0 text-sm", !isFull && "truncate")}>
+                <CaseFieldValue value={value} fieldKey={key} variant={mode} />
               </span>
-            </PropertyRow>
+            </CasePropertyRow>
           ))}
         </PropertySection>
       ) : null}
 
       <PropertySection title="Linked tasks">
         {caseData.issueLinks.length === 0 ? (
-          <PropertyRow label="Tasks">
+          <CasePropertyRow label="Tasks" mode={mode}>
             <span className="text-xs text-muted-foreground">None yet</span>
-          </PropertyRow>
+          </CasePropertyRow>
         ) : (
-          <div className="space-y-1">
-            {caseData.issueLinks.map((link) => (
-              <EntityRow
-                key={link.id}
-                to={`/issues/${link.issue.identifier}`}
-                leading={<StatusIcon status={link.issue.status} />}
-                identifier={link.issue.identifier}
-                title={link.issue.title}
-                trailing={<Badge variant="secondary">{ROLE_LABEL[link.role] ?? link.role}</Badge>}
-              />
-            ))}
-          </div>
+          <CasePropertyRow label="Tasks" wrap mode={mode}>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {caseData.issueLinks.map((link) => (
+                <IssueReferencePill
+                  key={link.id}
+                  issue={{
+                    id: link.issue.id,
+                    identifier: link.issue.identifier,
+                    title: link.issue.title,
+                    status: issueReferenceStatus(link.issue.status),
+                  }}
+                />
+              ))}
+            </div>
+          </CasePropertyRow>
         )}
       </PropertySection>
 
@@ -282,11 +377,11 @@ function CaseSidePanel({
         <PropertySection title="Documents">
           <div className="space-y-1">
             {caseData.documents.map((documentRef) => (
-              <PropertyRow key={documentRef.key} label={documentRef.key}>
+              <CasePropertyRow key={documentRef.key} label={documentRef.key} mode={mode}>
                 <span className="text-xs text-muted-foreground">
                   rev {documentRef.document.latestRevisionNumber ?? 1}
                 </span>
-              </PropertyRow>
+              </CasePropertyRow>
             ))}
           </div>
         </PropertySection>
@@ -294,11 +389,11 @@ function CaseSidePanel({
 
       {caseData.attachments.length > 0 ? (
         <PropertySection title="Attachments">
-          <PropertyRow label="Files">
+          <CasePropertyRow label="Files" mode={mode}>
             <span className="text-xs text-muted-foreground">
               {caseData.attachments.length} {caseData.attachments.length === 1 ? "file" : "files"}
             </span>
-          </PropertyRow>
+          </CasePropertyRow>
         </PropertySection>
       ) : null}
     </div>
@@ -313,6 +408,7 @@ export function CaseDetail() {
   const queryClient = useQueryClient();
   const caseHref = useCaseHref();
   const [copied, setCopied] = useState(false);
+  const [copiedIdentifier, setCopiedIdentifier] = useState(false);
 
   const caseQuery = useQuery({
     queryKey: queryKeys.cases.detail(caseIdentifier ?? ""),
@@ -361,12 +457,13 @@ export function CaseDetail() {
   const panelContent = useMemo(() => {
     if (!caseData) return null;
     return (
-      <CaseSidePanel
+      <CasePropertiesContent
         caseData={caseData}
         childCases={children}
         companyId={selectedCompanyId}
         labelsPending={patchMutation.isPending}
         onLabelIdsChange={handleLabelIdsChange}
+        mode="compact"
       />
     );
   }, [caseData, children, selectedCompanyId, patchMutation.isPending, handleLabelIdsChange]);
@@ -402,9 +499,16 @@ export function CaseDetail() {
       `- Status: ${STATUS_LABEL[currentCase.status]}`,
       currentCase.labels.length > 0 ? `- Labels: ${currentCase.labels.map((label) => label.name).join(", ")}` : "- Labels: none",
     ].join("\n");
-    void navigator.clipboard?.writeText(markdown).then(() => {
+    void copyTextToClipboard(markdown).then(() => {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
+    });
+  }
+
+  function copyCaseIdentifier(currentCase: CaseDetailData) {
+    void copyTextToClipboard(currentCase.identifier).then(() => {
+      setCopiedIdentifier(true);
+      window.setTimeout(() => setCopiedIdentifier(false), 1500);
     });
   }
 
@@ -413,11 +517,21 @@ export function CaseDetail() {
       <header className="space-y-3">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 space-y-1">
-            {caseData.key ? (
-              <div className="truncate font-mono text-xs text-muted-foreground" title={caseData.key}>
-                {caseData.key}
-              </div>
-            ) : null}
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="shrink-0 font-mono text-xs text-muted-foreground hover:text-foreground"
+                title={copiedIdentifier ? "Copied case ID" : "Copy case ID"}
+                onClick={() => copyCaseIdentifier(caseData)}
+              >
+                {caseData.identifier}
+              </button>
+              {caseData.key ? (
+                <span className="min-w-0 truncate font-mono text-xs text-muted-foreground" title={caseData.key}>
+                  {caseData.key}
+                </span>
+              ) : null}
+            </div>
             <h1 className="text-xl font-bold">{caseData.title}</h1>
           </div>
           <div className="flex shrink-0 items-center gap-1">
@@ -457,7 +571,6 @@ export function CaseDetail() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-xs text-muted-foreground">{caseData.identifier}</span>
           <Badge variant="secondary">{caseData.caseType}</Badge>
         </div>
 
@@ -475,6 +588,7 @@ export function CaseDetail() {
       <Tabs defaultValue="overview" className="space-y-4">
         <TabsList variant="line" className="w-full justify-start gap-1">
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="properties">Properties</TabsTrigger>
           <TabsTrigger value="activity">
             Activity{events.length > 0 && <span className="ml-1 text-muted-foreground">{events.length}</span>}
           </TabsTrigger>
@@ -523,6 +637,17 @@ export function CaseDetail() {
               <CaseAttachmentsGallery attachments={caseData.attachments} />
             </section>
           )}
+        </TabsContent>
+
+        <TabsContent value="properties">
+          <CasePropertiesContent
+            caseData={caseData}
+            childCases={children}
+            companyId={selectedCompanyId}
+            labelsPending={patchMutation.isPending}
+            onLabelIdsChange={handleLabelIdsChange}
+            mode="full"
+          />
         </TabsContent>
 
         <TabsContent value="activity">

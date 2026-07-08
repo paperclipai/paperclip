@@ -170,7 +170,7 @@ describe("Cases list", () => {
     act(() => root.unmount());
   });
 
-  it("shows default columns in id, title, status, last-updated order grouped by type", async () => {
+  it("shows default columns in id, title, status, updated order grouped by type", async () => {
     mockCasesApi.list.mockResolvedValue([
       createCase({ id: "a", identifier: "PAP-C1", title: "Post one", caseType: "blog_post" }),
       createCase({ id: "b", identifier: "PAP-C2", title: "Storm one", caseType: "tweet_storm" }),
@@ -189,7 +189,7 @@ describe("Cases list", () => {
     expect(text.indexOf("ID")).toBeGreaterThanOrEqual(0);
     expect(text.indexOf("Title")).toBeGreaterThan(text.indexOf("ID"));
     expect(text.indexOf("Status")).toBeGreaterThan(text.indexOf("Title"));
-    expect(text.indexOf("Last updated")).toBeGreaterThan(text.indexOf("Status"));
+    expect(text.indexOf("Updated")).toBeGreaterThan(text.indexOf("Status"));
     expect(text).not.toContain("Project");
 
     const blogGroupIndex = text.indexOf("blog_post");

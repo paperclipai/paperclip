@@ -16,6 +16,7 @@ const companyState = vi.hoisted(() => ({ selectedCompanyId: "company-1" }));
 const mockCasesApi = vi.hoisted(() => ({ get: vi.fn(), listEvents: vi.fn(), list: vi.fn(), patch: vi.fn() }));
 const mockIssuesApi = vi.hoisted(() => ({ listLabels: vi.fn(), createLabel: vi.fn() }));
 const panelState = vi.hoisted(() => ({ openPanel: vi.fn(), closePanel: vi.fn() }));
+const mockCopyTextToClipboard = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => companyState }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }) }));
@@ -25,6 +26,7 @@ vi.mock("@/api/cases", async (importOriginal) => ({
   casesApi: mockCasesApi,
 }));
 vi.mock("@/api/issues", () => ({ issuesApi: mockIssuesApi }));
+vi.mock("@/lib/clipboard", () => ({ copyTextToClipboard: mockCopyTextToClipboard }));
 vi.mock("@/components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: string }) => <div data-testid="md">{children}</div>,
 }));
@@ -71,7 +73,13 @@ function detail(): CaseDetailData {
     title: "Hermes agent launch post",
     summary: null,
     status: "in_review",
-    fields: { slug: "hermes-agent-post", word_count: 1850, published: true, description: "Launch narrative" },
+    fields: {
+      slug: "hermes-agent-post",
+      word_count: 1850,
+      published: true,
+      description: "Launch narrative",
+      issue_identifiers: ["PAP-12947"],
+    },
     parent: null,
     parentCaseId: null,
     createdByAgentId: null,
@@ -80,7 +88,21 @@ function detail(): CaseDetailData {
     createdAt: "2026-07-07T00:00:00.000Z",
     updatedAt: "2026-07-07T00:00:00.000Z",
     labels: [],
-    issueLinks: [],
+    issueLinks: [
+      {
+        id: "link-1",
+        caseId: "case-1",
+        issueId: "issue-1",
+        role: "reference",
+        createdAt: "2026-07-07T00:00:00.000Z",
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-12947",
+          title: "Case object exploration",
+          status: "in_progress",
+        },
+      },
+    ],
     documents: [
       {
         key: "body",
@@ -123,6 +145,7 @@ describe("CaseDetail", () => {
     mockCasesApi.listEvents.mockReset().mockResolvedValue([]);
     mockCasesApi.list.mockReset().mockResolvedValue([]);
     mockIssuesApi.listLabels.mockReset().mockResolvedValue([]);
+    mockCopyTextToClipboard.mockClear();
   });
   afterEach(() => {
     container.remove();
@@ -149,7 +172,29 @@ describe("CaseDetail", () => {
     act(() => root.unmount());
   });
 
-  it("keeps title, body, description, and activity out of the properties panel", async () => {
+  it("copies the case identifier from the header", async () => {
+    const root = renderPage(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("PAP-C7");
+    });
+
+    const caseIdButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent === "PAP-C7"
+    );
+    expect(caseIdButton).toBeTruthy();
+    act(() => {
+      caseIdButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockCopyTextToClipboard).toHaveBeenCalledWith("PAP-C7");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("renders primary fields and task references in the compact properties panel", async () => {
     const root = renderPage(container);
 
     await waitForAssertion(() => {
@@ -171,15 +216,50 @@ describe("CaseDetail", () => {
     await waitForAssertion(() => {
       const text = panelContainer.textContent ?? "";
       expect(text).toContain("Fields");
+      expect(text).toContain("title");
+      expect(text).toContain("Hermes agent launch post");
+      expect(text).toContain("body");
+      expect(text).toContain("Draft body");
+      expect(text).toContain("description");
+      expect(text).toContain("Launch narrative");
       expect(text).toContain("word_count");
-      expect(text).not.toContain("Hermes agent launch post");
-      expect(text).not.toContain("Draft body");
-      expect(text).not.toContain("Launch narrative");
+      expect(text).toContain("Linked tasks");
+      expect(text).toContain("PAP-12947");
+      expect(text).not.toContain("reference");
       expect(text).not.toContain("Activity");
     });
 
     act(() => panelRoot.unmount());
     panelContainer.remove();
+    act(() => root.unmount());
+  });
+
+  it("adds a full properties tab with expanded values", async () => {
+    const root = renderPage(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Properties");
+    });
+
+    const propertiesTab = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Properties")
+    );
+    expect(propertiesTab).toBeTruthy();
+    act(() => {
+      propertiesTab!.focus();
+      propertiesTab!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      const text = container.textContent ?? "";
+      expect(text).toContain("title");
+      expect(text).toContain("Hermes agent launch post");
+      expect(text).toContain("body");
+      expect(text).toContain("# Draft body");
+      expect(text).toContain("issue_identifiers");
+      expect(container.querySelector('a[data-mention-kind="issue"][href="/issues/PAP-12947"]')).not.toBeNull();
+    });
+
     act(() => root.unmount());
   });
 });
