@@ -91,6 +91,7 @@ export type CreateAgent = z.infer<typeof createAgentSchema>;
 export const builtInAgentProvisionSchema = z.object({
   adapterType: agentAdapterTypeSchema.optional(),
   adapterConfig: adapterConfigSchema.optional(),
+  budgetMonthlyCents: z.number().int().nonnegative().optional(),
 }).strict();
 
 export type BuiltInAgentProvision = z.infer<typeof builtInAgentProvisionSchema>;

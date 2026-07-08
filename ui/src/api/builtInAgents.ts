@@ -41,6 +41,7 @@ export interface BuiltInAgentState {
 export interface BuiltInAgentProvisionInput {
   adapterType?: string;
   adapterConfig?: Record<string, unknown>;
+  budgetMonthlyCents?: number;
 }
 
 /**

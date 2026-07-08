@@ -7,6 +7,19 @@ import { accessService, logActivity } from "../services/index.js";
 import { builtInAgentService } from "../services/built-in-agents.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import type { BuiltInAgentState } from "../services/built-in-agents.js";
+
+function redactBuiltInAgentListState(state: BuiltInAgentState): BuiltInAgentState {
+  if (!state.agent) return state;
+  return {
+    ...state,
+    agent: {
+      ...state.agent,
+      adapterConfig: {},
+      runtimeConfig: {},
+    },
+  };
+}
 
 export function builtInAgentRoutes(db: Db) {
   const router = Router();
@@ -56,7 +69,8 @@ export function builtInAgentRoutes(db: Db) {
   router.get("/companies/:companyId/built-in-agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json(await svc.list(companyId));
+    const states = await svc.list(companyId);
+    res.json(states.map(redactBuiltInAgentListState));
   });
 
   router.post(

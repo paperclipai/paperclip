@@ -35,6 +35,7 @@ export interface BuiltInAgentState {
 export interface BuiltInAgentProvisionInput {
   adapterType?: string;
   adapterConfig?: Record<string, unknown>;
+  budgetMonthlyCents?: number;
 }
 
 export interface BuiltInAgentProvisionActor {
@@ -224,7 +225,7 @@ function definitionPatch(definition: BuiltInAgentDefinition, input: BuiltInAgent
     capabilities: definition.shortPurpose,
     adapterType,
     adapterConfig: input.adapterConfig ?? {},
-    budgetMonthlyCents: definition.defaultBudgetMonthlyCents ?? 0,
+    budgetMonthlyCents: input.budgetMonthlyCents ?? definition.defaultBudgetMonthlyCents ?? 0,
   };
 }
 
@@ -313,6 +314,9 @@ export function builtInAgentService(db: Db) {
         assertAdapterAllowed(definition, adapterType);
         patch.adapterType = adapterType;
         patch.adapterConfig = input.adapterConfig ?? existing.adapterConfig;
+      }
+      if (input.budgetMonthlyCents !== undefined) {
+        patch.budgetMonthlyCents = input.budgetMonthlyCents;
       }
       const updated = await agentSvc.update(existing.id, patch, {
         allowBuiltInAgentMetadata: true,

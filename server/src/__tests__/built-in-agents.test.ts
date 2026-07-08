@@ -6,6 +6,7 @@ import {
   agentConfigRevisions,
   agents,
   approvals,
+  budgetPolicies,
   companies,
   createDb,
 } from "@paperclipai/db";
@@ -52,6 +53,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     await db.delete(activityLog);
     await db.delete(approvals);
     await db.delete(agents);
+    await db.delete(budgetPolicies);
     await db.delete(companies);
   });
 
@@ -142,6 +144,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     const result = await builtIns.provision(companyId, "briefs", {
       adapterType: "process",
       adapterConfig: { command: "echo safe" },
+      budgetMonthlyCents: 5000,
     }, { requestedByUserId: "board-user" });
 
     expect(result.state).toMatchObject({
@@ -152,6 +155,7 @@ describeEmbeddedPostgres("built-in agents", () => {
         status: "pending_approval",
         adapterType: "process",
         adapterConfig: { command: "echo safe" },
+        budgetMonthlyCents: 5000,
       },
     });
     expect(result.approval).toMatchObject({
@@ -165,6 +169,7 @@ describeEmbeddedPostgres("built-in agents", () => {
         role: "general",
         adapterType: "process",
         adapterConfig: { command: "echo safe" },
+        budgetMonthlyCents: 5000,
         agentId: result.state.agentId,
         sourceBuiltInAgentKey: "briefs",
         featureKeys: ["briefs"],
@@ -205,7 +210,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     await expect(builtIns.get(companyId, "briefs")).resolves.toMatchObject({
       status: "ready",
       agentId: result.state.agentId,
-      agent: { status: "idle", adapterType: "process", adapterConfig: { command: "echo safe" } },
+      agent: { status: "idle", adapterType: "process", adapterConfig: { command: "echo safe" }, budgetMonthlyCents: 5000 },
     });
   });
 
