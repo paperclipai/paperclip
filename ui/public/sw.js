@@ -13,6 +13,48 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    data = { title: "Paperclip", body: event.data ? event.data.text() : "" };
+  }
+  const title = data.title ?? "Paperclip";
+  const options = {
+    body: data.body ?? "",
+    icon: "/android-chrome-192x192.png",
+    badge: "/favicon-32x32.png",
+    data: data.data ?? {},
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  let targetUrl = "/";
+  try {
+    const rawUrl = event.notification.data?.url ?? "/";
+    const parsedUrl = new URL(rawUrl, self.location.origin);
+    if (parsedUrl.origin === self.location.origin) {
+      targetUrl = parsedUrl.href;
+    }
+  } catch {
+    targetUrl = "/";
+  }
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clients) => {
+        const match = clients.find((c) => c.url.includes(self.location.origin));
+        if (match) {
+          return match.focus().then((client) => client.navigate(targetUrl));
+        }
+        return self.clients.openWindow(targetUrl);
+      })
+  );
+});
+
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
