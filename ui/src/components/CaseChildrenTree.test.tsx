@@ -77,6 +77,32 @@ describe("CaseChildrenTree", () => {
     expect(text).toContain("Hero image");
     expect(container.querySelector('a[href="/PAP/cases/PAP-C8"]')).not.toBeNull();
     expect(container.querySelector('a[href="/PAP/cases/PAP-C9"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/PAP/cases/PAP-C8"]')?.className).not.toContain("border");
+    act(() => root.unmount());
+  });
+
+  it("caps long child lists until show more is clicked", () => {
+    const root = createRoot(container);
+    const children = Array.from({ length: 7 }, (_, index) =>
+      child({ id: `child-${index + 1}`, identifier: `PAP-C${index + 1}`, title: `Child ${index + 1}` })
+    );
+    act(() => root.render(<CaseChildrenTree children={children} maxVisible={5} />));
+
+    expect(container.textContent).toContain("Child 5");
+    expect(container.textContent).not.toContain("Child 6");
+    expect(container.textContent).toContain("Show 2 more");
+
+    const showMore = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Show 2 more")
+    );
+    expect(showMore).toBeTruthy();
+    act(() => {
+      showMore!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Child 6");
+    expect(container.textContent).toContain("Child 7");
+    expect(container.textContent).not.toContain("Show 2 more");
     act(() => root.unmount());
   });
 });

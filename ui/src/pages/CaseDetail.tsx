@@ -13,6 +13,7 @@ import {
   caseRevisionToDocumentRevision,
   type CaseDocument,
   type CaseDetail as CaseDetailData,
+  type CaseParentRef,
   type CaseStatus,
   type CaseSummary,
 } from "@/api/cases";
@@ -112,6 +113,33 @@ function issueDocumentToCaseDocument(document: IssueDocument): CaseDocument {
     createdAt: new Date(document.createdAt).toISOString(),
     updatedAt: new Date(document.updatedAt).toISOString(),
   };
+}
+
+function CaseRelationshipsSection({
+  parent,
+  children,
+}: {
+  parent: CaseParentRef | null;
+  children: CaseSummary[];
+}) {
+  if (!parent && children.length === 0) return null;
+
+  return (
+    <section className="space-y-3" aria-label="Case relationships">
+      {parent ? (
+        <div className="space-y-1">
+          <h2 className="text-xs font-medium text-muted-foreground">Parent</h2>
+          <CaseChildrenTree children={[parent]} />
+        </div>
+      ) : null}
+      {children.length > 0 ? (
+        <div className="space-y-1">
+          <h2 className="text-xs font-medium text-muted-foreground">Children {children.length}</h2>
+          <CaseChildrenTree children={children} maxVisible={5} />
+        </div>
+      ) : null}
+    </section>
+  );
 }
 
 function CasePropertyRow({
@@ -658,15 +686,7 @@ export function CaseDetail() {
           <Badge variant="secondary">{caseData.caseType}</Badge>
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-          {caseData.parent ? (
-            <Link to={caseHref(caseData.parent.identifier)} className="hover:underline">
-              ↑ {caseData.parent.identifier} — {caseData.parent.title}
-            </Link>
-          ) : (
-            <span />
-          )}
-        </div>
+        <CaseRelationshipsSection parent={caseData.parent} children={children} />
       </header>
 
       <Tabs defaultValue="overview" className="space-y-4">
@@ -695,13 +715,6 @@ export function CaseDetail() {
               </Card>
             </section>
           ) : null}
-
-          {children.length > 0 && (
-            <section className="space-y-2">
-              <h2 className="text-sm font-semibold">Children ({children.length})</h2>
-              <CaseChildrenTree children={children} />
-            </section>
-          )}
 
           {caseData.attachments.length > 0 && (
             <section className="space-y-2">

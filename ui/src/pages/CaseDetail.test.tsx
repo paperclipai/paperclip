@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import type { AnchorHTMLAttributes } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CaseDetail as CaseDetailData } from "@/api/cases";
+import type { CaseDetail as CaseDetailData, CaseSummary } from "@/api/cases";
 import { CaseDetail } from "./CaseDetail";
 
 function act(callback: () => void) {
@@ -17,6 +17,7 @@ const mockCasesApi = vi.hoisted(() => ({
   get: vi.fn(),
   listEvents: vi.fn(),
   list: vi.fn(),
+  listChildren: vi.fn(),
   patch: vi.fn(),
   getDocument: vi.fn(),
   listRevisions: vi.fn(),
@@ -171,6 +172,28 @@ function detail(): CaseDetailData {
   };
 }
 
+function childCase(index: number): CaseSummary {
+  return {
+    id: `child-${index}`,
+    companyId: "company-1",
+    projectId: null,
+    caseNumber: index,
+    identifier: `PAP-C${index}`,
+    caseType: "child_case",
+    key: null,
+    title: `Child case ${index}`,
+    summary: null,
+    status: "in_progress",
+    fields: {},
+    parentCaseId: "case-1",
+    createdByAgentId: null,
+    createdByUserId: null,
+    completedAt: null,
+    createdAt: "2026-07-07T00:00:00.000Z",
+    updatedAt: "2026-07-07T00:00:00.000Z",
+  };
+}
+
 function renderPage(container: HTMLDivElement) {
   const root = createRoot(container);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -194,6 +217,7 @@ describe("CaseDetail", () => {
     mockCasesApi.get.mockReset().mockResolvedValue(detail());
     mockCasesApi.listEvents.mockReset().mockResolvedValue([]);
     mockCasesApi.list.mockReset().mockResolvedValue([]);
+    mockCasesApi.listChildren.mockReset().mockResolvedValue([]);
     mockCasesApi.getDocument.mockReset();
     mockCasesApi.listRevisions.mockReset().mockResolvedValue({
       key: "body",
@@ -255,6 +279,52 @@ describe("CaseDetail", () => {
 
     await waitForAssertion(() => {
       expect(mockCopyTextToClipboard).toHaveBeenCalledWith("PAP-C7");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("shows parent and capped children together above the tabs", async () => {
+    const caseWithParent = {
+      ...detail(),
+      parentCaseId: "case-parent",
+      parent: {
+        id: "case-parent",
+        identifier: "PAP-C2",
+        title: "Parent case",
+        caseType: "campaign",
+        status: "approved" as const,
+      },
+    };
+    mockCasesApi.get.mockResolvedValue(caseWithParent);
+    mockCasesApi.listChildren.mockResolvedValue(Array.from({ length: 6 }, (_, index) => childCase(index + 3)));
+
+    const root = renderPage(container);
+
+    await waitForAssertion(() => {
+      const text = container.textContent ?? "";
+      expect(text).toContain("Parent");
+      expect(text).toContain("PAP-C2");
+      expect(text).toContain("Parent case");
+      expect(text).toContain("Children 6");
+      expect(text).toContain("Child case 7");
+      expect(text).not.toContain("Child case 8");
+      expect(text).toContain("Show 1 more");
+      expect(text.indexOf("Parent")).toBeLessThan(text.indexOf("Overview"));
+      expect(text.indexOf("Children 6")).toBeLessThan(text.indexOf("Overview"));
+    });
+
+    const showMore = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Show 1 more")
+    );
+    expect(showMore).toBeTruthy();
+    act(() => {
+      showMore!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Child case 8");
+      expect(container.textContent).not.toContain("Show 1 more");
     });
 
     act(() => root.unmount());
