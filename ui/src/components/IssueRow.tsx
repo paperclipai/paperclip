@@ -47,6 +47,8 @@ interface IssueRowProps {
   onArchive?: () => void;
   archiveDisabled?: boolean;
   className?: string;
+  /** Pointer entered the row (used by list keyboard nav to track hover). */
+  onMouseEnter?: () => void;
   /** Ancestor levels; renders that many vertical tree-guide slots (desktop). */
   treeGuides?: number;
   /** Suppress the row divider (parents with expanded children keep visual attachment to their subtree). */
@@ -75,6 +77,7 @@ export function IssueRow({
   onArchive,
   archiveDisabled,
   className,
+  onMouseEnter,
   treeGuides = 0,
   hideDivider = false,
 }: IssueRowProps) {
@@ -126,6 +129,7 @@ export function IssueRow({
       id={checklistRowId}
       aria-current={checklistCurrentStep ? "step" : undefined}
       onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
+      onMouseEnter={onMouseEnter}
       className={cn(
         "group flex items-start gap-2 rounded-lg py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors sm:items-center sm:py-2 sm:pl-1",
         !hideDivider && "border-b border-border last:border-b-0",

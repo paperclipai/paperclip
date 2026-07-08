@@ -338,6 +338,7 @@ export function Layout() {
     onToggleCollapse: toggleCollapse,
     onTogglePanel: togglePanel,
     onShowShortcuts: () => setShortcutsOpen(true),
+    onGoToInbox: () => navigate("/inbox"),
   });
 
   useEffect(() => {

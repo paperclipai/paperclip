@@ -74,6 +74,9 @@ import {
   type KanbanColumnPageSize,
 } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
+import { getInboxKeyboardSelectionIndex } from "../lib/inbox";
+import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
+import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
@@ -632,6 +635,23 @@ export function IssuesList({
   onUpdateIssue,
 }: IssuesListProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const { keyboardShortcutsEnabled } = useGeneralSettings();
+  // Keyboard selection for the list view (mirrors the inbox). Hover moves the
+  // selection only after real pointer movement, so keyboard-driven scrolling
+  // doesn't hand the selection to whatever row lands under the cursor.
+  const [selectedNavIssueId, setSelectedNavIssueId] = useState<string | null>(null);
+  const pointerMovedSinceKeyNavRef = useRef(true);
+  useEffect(() => {
+    const handlePointerMove = () => {
+      pointerMovedSinceKeyNavRef.current = true;
+    };
+    window.addEventListener("mousemove", handlePointerMove, { passive: true });
+    return () => window.removeEventListener("mousemove", handlePointerMove);
+  }, []);
+  const setNavSelectionFromPointer = useCallback((issueId: string) => {
+    if (!pointerMovedSinceKeyNavRef.current) return;
+    setSelectedNavIssueId(issueId);
+  }, []);
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
   const { data: session } = useQuery({
@@ -1198,6 +1218,97 @@ export function IssuesList({
     companyUserLabelMap,
     projectById,
   ]);
+
+  // Flattened visible row order (groups -> tree DFS, skipping collapsed
+  // groups/parents) — must match render order below for keyboard traversal.
+  const flatNavIssues = useMemo(() => {
+    if (viewState.viewMode !== "list") return [] as Issue[];
+    const out: Issue[] = [];
+    for (const group of groupedContent) {
+      if (group.label && viewState.collapsedGroups.includes(group.key)) continue;
+      const { roots, childMap } = viewState.nestingEnabled
+        ? buildIssueTree(group.items)
+        : { roots: group.items, childMap: new Map<string, Issue[]>() };
+      const walk = (issue: Issue) => {
+        out.push(issue);
+        if (!viewState.collapsedParents.includes(issue.id)) {
+          for (const child of childMap.get(issue.id) ?? []) walk(child);
+        }
+      };
+      for (const root of roots) walk(root);
+    }
+    return out;
+  }, [
+    groupedContent,
+    viewState.viewMode,
+    viewState.collapsedGroups,
+    viewState.collapsedParents,
+    viewState.nestingEnabled,
+  ]);
+
+  const listNavStateRef = useRef({ flatNavIssues, selectedNavIssueId, viewMode: viewState.viewMode });
+  listNavStateRef.current = { flatNavIssues, selectedNavIssueId, viewMode: viewState.viewMode };
+
+  const findSelectedNavRowLink = useCallback((issueId: string) => {
+    const row = rootRef.current?.querySelector(`[data-issue-row-id="${CSS.escape(issueId)}"]`);
+    const link = row?.querySelector(":scope > [data-inbox-issue-link]");
+    return link instanceof HTMLElement ? link : null;
+  }, []);
+
+  useEffect(() => {
+    if (!keyboardShortcutsEnabled) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      const target = e.target;
+      if (
+        !(target instanceof HTMLElement) ||
+        isKeyboardShortcutTextInputTarget(target) ||
+        hasBlockingShortcutDialog(document) ||
+        e.metaKey ||
+        e.ctrlKey ||
+        e.altKey
+      ) {
+        return;
+      }
+      const st = listNavStateRef.current;
+      if (st.viewMode !== "list" || st.flatNavIssues.length === 0) return;
+      const currentIndex = st.selectedNavIssueId
+        ? st.flatNavIssues.findIndex((issue) => issue.id === st.selectedNavIssueId)
+        : -1;
+      switch (e.key) {
+        case "j":
+        case "ArrowDown":
+        case "k":
+        case "ArrowUp": {
+          e.preventDefault();
+          pointerMovedSinceKeyNavRef.current = false;
+          const direction = e.key === "j" || e.key === "ArrowDown" ? "next" : "previous";
+          const nextIndex = getInboxKeyboardSelectionIndex(currentIndex, st.flatNavIssues.length, direction);
+          const nextIssue = st.flatNavIssues[nextIndex];
+          if (nextIssue) setSelectedNavIssueId(nextIssue.id);
+          break;
+        }
+        case "Enter": {
+          if (currentIndex < 0 || !st.selectedNavIssueId) return;
+          const link = findSelectedNavRowLink(st.selectedNavIssueId);
+          if (!link) return;
+          e.preventDefault();
+          link.click();
+          break;
+        }
+        default:
+          return;
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [findSelectedNavRowLink, keyboardShortcutsEnabled]);
+
+  // Keep the keyboard selection visible while navigating.
+  useEffect(() => {
+    if (!selectedNavIssueId) return;
+    findSelectedNavRowLink(selectedNavIssueId)?.scrollIntoView({ block: "nearest" });
+  }, [findSelectedNavRowLink, selectedNavIssueId]);
 
   useEffect(() => {
     if (viewState.viewMode !== "list") return;
@@ -1781,6 +1892,7 @@ export function IssuesList({
                   return (
                     <div
                       key={issue.id}
+                      data-issue-row-id={issue.id}
                       // Desktop indentation comes from IssueRow's treeGuides
                       // (vertical connector slots); mobile keeps a plain
                       // padding indent (guides are sm-only).
@@ -1795,6 +1907,8 @@ export function IssuesList({
                       <IssueRow
                         issue={issue}
                         issueLinkState={issueLinkState}
+                        selected={selectedNavIssueId === issue.id}
+                        onMouseEnter={() => setNavSelectionFromPointer(issue.id)}
                         treeGuides={depth}
                         hideDivider={hasChildren && isExpanded}
                         checklistStepNumber={checklistStepNumber}
@@ -1838,7 +1952,7 @@ export function IssuesList({
                             ) : null}
                           </>
                         )}
-                        className={isMutedIssue ? "opacity-70" : undefined}
+                        className={cn(isMutedIssue && "opacity-70", selectedNavIssueId === issue.id && "bg-accent/50")}
                         mobileLeading={
                           hasChildren ? (
                             <button type="button" data-slot="icon-button" onClick={toggleCollapse}>

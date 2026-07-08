@@ -540,7 +540,7 @@ function OrgTreeNode({
       <Link
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
         className={cn(
-          "group flex items-center gap-3 px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit",
+          "group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit",
           agent?.pausedAt && tab !== "paused" && "opacity-50",
           membershipState === "left" && "text-foreground/55",
         )}
