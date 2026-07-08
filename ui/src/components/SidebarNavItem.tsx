@@ -44,6 +44,7 @@ interface SidebarNavItemProps {
   iconNode?: ReactNode;
   end?: boolean;
   className?: string;
+  labelClassName?: string;
   badge?: number;
   badgeTone?: "default" | "danger";
   /**
@@ -75,6 +76,7 @@ export function SidebarNavItem({
   iconNode,
   end,
   className,
+  labelClassName,
   badge,
   badgeTone = "default",
   badgeLabel,
@@ -156,7 +158,7 @@ export function SidebarNavItem({
           />
         )}
       </span>
-      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "flex-1 truncate"}>{label}</span>
+      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</span>
       {!rail && trailing}
       {!rail && textBadge && (
         <Badge variant="ghost"

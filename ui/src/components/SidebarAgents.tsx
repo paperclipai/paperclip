@@ -165,6 +165,7 @@ function SidebarAgentItem({
       iconNode={<AgentIcon icon={agent.icon} className="shrink-0 h-4 w-4" />}
       active={isActive}
       liveCount={runCount}
+      labelClassName={builtInStatus ? "min-w-(--sz-4_5rem) flex-initial" : undefined}
       className={cn(
         "min-w-0 flex-1",
         // Reserve room for the hover ⋯ menu; starred rows widen it for the

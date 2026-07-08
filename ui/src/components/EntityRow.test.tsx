@@ -70,7 +70,7 @@ describe("EntityRow", () => {
     );
 
     // The name keeps a usable floor instead of collapsing to zero...
-    expect(markup).toContain("min-w-(--sz-7rem)");
+    expect(markup).toContain("min-w-(--sz-6rem)");
     // ...and the meta cluster is the item that yields (shrinks), not the title.
     expect(markup).toContain("min-w-0 shrink");
     expect(markup).not.toContain('class="flex items-center gap-2 shrink-0"');

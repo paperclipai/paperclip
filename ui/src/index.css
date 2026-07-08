@@ -1565,6 +1565,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-80vh: 80vh; /* Extracted from ui/src/components/DocumentAnnotationPanel.tsx (max-h-[80vh]). */
   --sz-360px: 360px; /* Extracted from ui/src/components/DocumentAnnotationPanel.tsx (w-[360px]). */
   --sz-85vh: 85vh; /* Extracted from ui/src/components/DocumentDiffModal.tsx (max-h-[85vh]). */
+  --sz-6rem: 6rem; /* Extracted from ui/src/components/EntityRow.tsx (min-w-[6rem]). */
   --sz-1px: 1px; /* Extracted from ui/src/components/EntityRow.tsx (top-[1px]). */
   --sz-100px: 100px; /* Extracted from ui/src/components/ExecutionParticipantPicker.tsx (max-w-[100px]). */
   --sz-calc-3: min(840px,calc(100dvh - 2rem)); /* Extracted from ui/src/components/FileViewerSheet.tsx (h-[min(840px,calc(100dvh-2rem))]). */
@@ -1618,6 +1619,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-23: min(32rem,calc(100vw - 2rem)); /* Extracted from ui/src/components/SearchableSelect.tsx (max-w-[min(32rem,calc(100vw-2rem))]). */
   --sz-277px: 277px; /* Extracted from ui/src/components/SidebarAccountMenu.test.tsx (w-[277px]). */
   --sz-calc-24: calc(100vw - 1rem); /* Extracted from ui/src/components/SidebarAccountMenu.tsx (max-w-[calc(100vw-1rem)]). */
+  --sz-4_5rem: 4.5rem; /* Extracted from ui/src/components/SidebarAgents.tsx (min-w-[4.5rem]). */
   --sz-36px: 36px; /* Extracted from ui/src/components/WorkspaceFileBrowser.tsx (min-h-[36px]). */
   --sz-32px: 32px; /* Extracted from ui/src/components/WorkspaceFileBrowser.tsx (min-h-[32px]). */
   --sz-30px: 30px; /* Extracted from ui/src/components/WorkspaceFileBrowser.tsx (min-h-[30px]). */

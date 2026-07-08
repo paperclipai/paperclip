@@ -77,7 +77,7 @@ export function EntityRow({
         className={cn(
           // `titlePriority` gives the name a floor so it ellipsizes instead of
           // collapsing to zero; otherwise the title may shrink to nothing.
-          titlePriority ? "min-w-(--sz-7rem)" : "min-w-0",
+          titlePriority ? "min-w-(--sz-6rem)" : "min-w-0",
           !meta && "flex-1",
           titleClassName,
         )}
