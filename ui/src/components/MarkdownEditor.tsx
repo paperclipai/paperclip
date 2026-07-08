@@ -47,6 +47,7 @@ import { normalizeMarkdown } from "../lib/normalize-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
+import { TtsDebugLog, describeBeforeInput, isTtsDebugEnabled } from "../lib/tts-debug";
 
 /* ---- Mention types ---- */
 
@@ -596,6 +597,30 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const [richEditorError, setRichEditorError] = useState<string | null>(null);
   const dragDepthRef = useRef(0);
 
+  /* ---- NEO-405/NEO-409 dictation logging harness (instrumentation only) ---- */
+  // Gated opt-in, evaluated once per mount. When false, every hook below is a
+  // no-op and no listeners are attached, so normal users are unaffected.
+  const ttsDebug = useMemo(() => isTtsDebugEnabled(), []);
+  const ttsLogRef = useRef<TtsDebugLog | null>(null);
+  if (ttsDebug && !ttsLogRef.current) ttsLogRef.current = new TtsDebugLog();
+  // Bump to re-render the panel; records are coalesced into one rAF per frame.
+  const [ttsLogVersion, setTtsLogVersion] = useState(0);
+  const ttsFlushScheduledRef = useRef(false);
+  const recordTts = useCallback(
+    (type: string, detail: Record<string, unknown> = {}) => {
+      const log = ttsLogRef.current;
+      if (!log) return;
+      log.record(type, detail);
+      if (ttsFlushScheduledRef.current) return;
+      ttsFlushScheduledRef.current = true;
+      requestAnimationFrame(() => {
+        ttsFlushScheduledRef.current = false;
+        setTtsLogVersion((v) => v + 1);
+      });
+    },
+    [],
+  );
+
   // Stable ref for imageUploadHandler so plugins don't recreate on every render
   const imageUploadHandlerRef = useRef(imageUploadHandler);
   imageUploadHandlerRef.current = imageUploadHandler;
@@ -636,10 +661,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     if (valueRef.current !== latestValueRef.current) {
       // Re-apply the latest controlled value once MDXEditor exposes its imperative API.
       echoIgnoreMarkdownRef.current = valueRef.current;
+      recordTts("setMarkdown", { origin: "ref-attach", len: valueRef.current.length });
       instance.setMarkdown(valueRef.current);
       latestValueRef.current = valueRef.current;
     }
-  }, []);
+  }, [recordTts]);
 
   const filteredMentions = useMemo<AutocompleteOption[]>(() => {
     if (!mentionState) return [];
@@ -738,6 +764,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               if (updated !== current) {
                 latestValueRef.current = updated;
                 echoIgnoreMarkdownRef.current = updated;
+                recordTts("setMarkdown", { origin: "image", len: updated.length });
                 ref.current?.setMarkdown(updated);
                 onChange(updated);
                 requestAnimationFrame(() => {
@@ -781,11 +808,61 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       if (ref.current) {
         // Pair with onChange echo suppression (echoIgnoreMarkdownRef).
         echoIgnoreMarkdownRef.current = editorValue;
+        recordTts("setMarkdown", { origin: "prop-sync", len: editorValue.length });
         ref.current.setMarkdown(editorValue);
         latestValueRef.current = editorValue;
       }
     }
-  }, [editorValue]);
+  }, [editorValue, recordTts]);
+
+  // NEO-405/NEO-409: capture the raw input timeline (beforeinput + composition)
+  // that Lexical/MDXEditor otherwise swallow. Container-level capture listeners
+  // survive contenteditable remounts and catch the async `insertReplacementText`
+  // corrections iOS delivers after dictation. Gated — attaches only when opted in.
+  useEffect(() => {
+    if (!ttsDebug) return;
+    const container = containerRef.current;
+    if (!container) return;
+
+    const snapshotMarkdown = (): number => {
+      try {
+        return ref.current?.getMarkdown().length ?? -1;
+      } catch {
+        return -1;
+      }
+    };
+
+    const onBeforeInput = (event: Event) => {
+      if (!(event instanceof InputEvent)) return;
+      recordTts("beforeinput", describeBeforeInput(event));
+    };
+    const onCompositionStart = (event: Event) => {
+      recordTts("compositionstart", {
+        data: (event as CompositionEvent).data ?? null,
+        markdownLen: snapshotMarkdown(),
+      });
+    };
+    const onCompositionUpdate = (event: Event) => {
+      recordTts("compositionupdate", { data: (event as CompositionEvent).data ?? null });
+    };
+    const onCompositionEnd = (event: Event) => {
+      recordTts("compositionend", {
+        data: (event as CompositionEvent).data ?? null,
+        markdownLen: snapshotMarkdown(),
+      });
+    };
+
+    container.addEventListener("beforeinput", onBeforeInput, true);
+    container.addEventListener("compositionstart", onCompositionStart, true);
+    container.addEventListener("compositionupdate", onCompositionUpdate, true);
+    container.addEventListener("compositionend", onCompositionEnd, true);
+    return () => {
+      container.removeEventListener("beforeinput", onBeforeInput, true);
+      container.removeEventListener("compositionstart", onCompositionStart, true);
+      container.removeEventListener("compositionupdate", onCompositionUpdate, true);
+      container.removeEventListener("compositionend", onCompositionEnd, true);
+    };
+  }, [ttsDebug, recordTts]);
 
   const decorateProjectMentions = useCallback(() => {
     const editable = containerRef.current?.querySelector('[contenteditable="true"]');
@@ -943,6 +1020,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       if (next !== current) {
         latestValueRef.current = next;
         echoIgnoreMarkdownRef.current = next;
+        recordTts("setMarkdown", { origin: "mention", len: next.length });
         ref.current?.setMarkdown(next);
         onChange(next);
       }
@@ -972,7 +1050,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       setMentionState(null);
       return true;
     },
-    [decorateProjectMentions, onChange],
+    [decorateProjectMentions, onChange, recordTts],
   );
 
   const handleAutocompletePress = useCallback((
@@ -1052,6 +1130,33 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         getMentionMenuSize(filteredMentions.length),
       )
     : null;
+
+  // NEO-405/NEO-409 debug panel — rendered text recomputed whenever a new event
+  // is captured (ttsLogVersion bumps). Only meaningful when `ttsDebug` is on.
+  const ttsLogText = useMemo(
+    () => (ttsDebug ? ttsLogRef.current?.format() ?? "" : ""),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ttsDebug, ttsLogVersion],
+  );
+  const [ttsCopied, setTtsCopied] = useState(false);
+  const handleCopyTtsLog = useCallback(() => {
+    const log = ttsLogRef.current;
+    if (!log) return;
+    const text = log.format();
+    const done = () => {
+      setTtsCopied(true);
+      window.setTimeout(() => setTtsCopied(false), 1500);
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => {
+        /* clipboard blocked — the panel text is still selectable for manual copy */
+      });
+    }
+  }, []);
+  const handleClearTtsLog = useCallback(() => {
+    ttsLogRef.current?.clear();
+    setTtsLogVersion((v) => v + 1);
+  }, []);
 
   if (richEditorError) {
     return (
@@ -1220,6 +1325,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         onChange={(next) => {
           if (readOnly) return;
           const echo = echoIgnoreMarkdownRef.current;
+          recordTts("onChange", {
+            len: next.length,
+            echo: echo !== null && next === echo,
+            preview: next.slice(0, 60),
+          });
           if (echo !== null && next === echo) {
             echoIgnoreMarkdownRef.current = null;
             latestValueRef.current = next;
@@ -1233,6 +1343,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             initialChildOnChangeRef.current = false;
             if (next === "" && editorValue !== "") {
               echoIgnoreMarkdownRef.current = editorValue;
+              recordTts("setMarkdown", { origin: "initial-empty", len: editorValue.length });
               ref.current?.setMarkdown(editorValue);
               return;
             }
@@ -1356,6 +1467,41 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       )}
       {uploadError && (
         <p className="px-3 pb-2 text-xs text-destructive">{uploadError}</p>
+      )}
+
+      {/* NEO-405/NEO-409 dictation logging panel — dev-only, gated behind
+          ?ttsdebug=1 or localStorage["neo405-tts-debug"]="1". Never renders for
+          normal users. Instrumentation only; removed before promotion to live. */}
+      {ttsDebug && (
+        <div className="mt-2 border-t border-border/60 bg-muted/30 px-3 py-2">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              TTS debug · {ttsLogRef.current?.size() ?? 0} events
+            </span>
+            <span className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleCopyTtsLog}
+                className="rounded border border-border px-2 py-0.5 text-[11px] font-medium hover:bg-accent"
+              >
+                {ttsCopied ? "Copied ✓" : "Copy log"}
+              </button>
+              <button
+                type="button"
+                onClick={handleClearTtsLog}
+                className="rounded border border-border px-2 py-0.5 text-[11px] font-medium hover:bg-accent"
+              >
+                Clear
+              </button>
+            </span>
+          </div>
+          <textarea
+            readOnly
+            value={ttsLogText}
+            spellCheck={false}
+            className="h-40 w-full resize-y rounded bg-background/80 p-2 font-mono text-[10px] leading-4 text-foreground outline-none"
+          />
+        </div>
       )}
     </div>
   );
