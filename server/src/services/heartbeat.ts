@@ -12508,27 +12508,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           });
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           if (runScratch && latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
+            const scratchForCleanup = runScratch;
+            let scratchCleanup: Awaited<ReturnType<typeof cleanupHeartbeatRunScratch>> | null = null;
             try {
-              const scratchCleanup = await cleanupHeartbeatRunScratch({
-                scratch: runScratch,
+              scratchCleanup = await cleanupHeartbeatRunScratch({
+                scratch: scratchForCleanup,
                 processGroupId: latestRun.processGroupId,
                 isProcessGroupAlive,
               });
-              await appendRunEvent(latestRun, await nextRunEventSeq(latestRun.id), {
-                eventType: "lifecycle",
-                stream: "system",
-                level: scratchCleanup.removed ? "info" : "warn",
-                message: scratchCleanup.removed
-                  ? "run scratch cleaned"
-                  : `run scratch cleanup skipped: ${scratchCleanup.reason}`,
-                payload: scratchCleanup,
-              }).catch(() => undefined);
             } catch (scratchCleanupError) {
               logger.warn(
                 {
                   err: scratchCleanupError,
                   runId: run.id,
-                  scratchDir: runScratch.dir,
+                  scratchDir: scratchForCleanup.dir,
                 },
                 "failed to clean heartbeat run scratch directory",
               );
@@ -12538,12 +12531,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 level: "warn",
                 message: "run scratch cleanup failed",
                 payload: {
-                  dir: runScratch.dir,
+                  dir: scratchForCleanup.dir,
                   error: scratchCleanupError instanceof Error
                     ? scratchCleanupError.message
                     : String(scratchCleanupError),
                 },
               }).catch(() => undefined);
+            }
+            if (scratchCleanup) {
+              await appendRunEvent(latestRun, await nextRunEventSeq(latestRun.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: scratchCleanup.removed ? "info" : "warn",
+                message: scratchCleanup.removed
+                  ? "run scratch cleaned"
+                  : `run scratch cleanup skipped: ${scratchCleanup.reason}`,
+                payload: scratchCleanup,
+              }).catch((scratchCleanupEventError) => {
+                logger.warn(
+                  {
+                    err: scratchCleanupEventError,
+                    runId: run.id,
+                    scratchDir: scratchForCleanup.dir,
+                  },
+                  "failed to record heartbeat run scratch cleanup event",
+                );
+              });
             }
           }
           activeRunExecutions.delete(run.id);
