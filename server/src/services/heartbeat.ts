@@ -136,6 +136,12 @@ import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./exec
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
+  buildHeartbeatRunScratchEnv,
+  cleanupHeartbeatRunScratch,
+  prepareHeartbeatRunScratch,
+  type HeartbeatRunScratch,
+} from "./run-scratch.js";
+import {
   buildExecutionWorkspaceAdapterConfig,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
@@ -10197,6 +10203,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     activeRunExecutions.add(run.id);
+    let runScratch: HeartbeatRunScratch | null = null;
 
     try {
     const agent = await getAgent(run.agentId);
@@ -10702,7 +10709,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
       versionSelections: skillVersionSelectionMap(runtimeSkillPreference.desiredSkillEntries),
     });
-    let runtimeConfig = {
+    let runtimeConfig: Record<string, unknown> = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
@@ -11204,6 +11211,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const workspaceRealization = realizationResult.workspaceRealization;
     const executionTarget = realizationResult.executionTarget;
     const remoteExecution = realizationResult.remoteExecution;
+    if (!executionTarget || executionTarget.kind === "local") {
+      runScratch = await prepareHeartbeatRunScratch({
+        companyId: agent.companyId,
+        agentId: agent.id,
+        runId: run.id,
+        issueId: issueRef?.id ?? null,
+        issueIdentifier: issueRef?.identifier ?? null,
+      });
+      const scratchEnv = buildHeartbeatRunScratchEnv(parseObject(runtimeConfig.env), runScratch);
+      runtimeConfig = {
+        ...runtimeConfig,
+        env: {
+          ...parseObject(runtimeConfig.env),
+          ...scratchEnv.env,
+        },
+      };
+      context.paperclipScratch = {
+        type: "heartbeat_run",
+        dir: runScratch.dir,
+        cleanupPolicy: "terminal_run",
+        marker: ".paperclip-run-scratch.json",
+        tempKeysApplied: scratchEnv.tempKeysApplied,
+      };
+    } else {
+      delete context.paperclipScratch;
+    }
     context.paperclipEnvironment = {
       id: selectedEnvironment.id,
       name: selectedEnvironment.name,
@@ -12458,6 +12491,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             failureReason: latestRun?.error ?? undefined,
           });
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
+          if (runScratch && latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
+            try {
+              const scratchCleanup = await cleanupHeartbeatRunScratch({
+                scratch: runScratch,
+                processGroupId: latestRun.processGroupId,
+                isProcessGroupAlive,
+              });
+              await appendRunEvent(latestRun, await nextRunEventSeq(latestRun.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: scratchCleanup.removed ? "info" : "warn",
+                message: scratchCleanup.removed
+                  ? "run scratch cleaned"
+                  : `run scratch cleanup skipped: ${scratchCleanup.reason}`,
+                payload: scratchCleanup,
+              }).catch(() => undefined);
+            } catch (scratchCleanupError) {
+              logger.warn(
+                {
+                  err: scratchCleanupError,
+                  runId: run.id,
+                  scratchDir: runScratch.dir,
+                },
+                "failed to clean heartbeat run scratch directory",
+              );
+              await appendRunEvent(latestRun, await nextRunEventSeq(latestRun.id), {
+                eventType: "error",
+                stream: "system",
+                level: "warn",
+                message: "run scratch cleanup failed",
+                payload: {
+                  dir: runScratch.dir,
+                  error: scratchCleanupError instanceof Error
+                    ? scratchCleanupError.message
+                    : String(scratchCleanupError),
+                },
+              }).catch(() => undefined);
+            }
+          }
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
         }
