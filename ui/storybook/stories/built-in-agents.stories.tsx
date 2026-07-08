@@ -66,6 +66,42 @@ const notProvisionedState: BuiltInAgentState = {
   pauseReason: null,
 };
 
+/**
+ * Mirrors Agents.tsx renderAgentRow: the built-in cluster sits inline in `meta`
+ * at xl and drops to a full-width `secondaryRow` beneath the name below xl, with
+ * `titlePriority` giving the name a floor so it never collapses (PAP-12988).
+ */
+function RosterRow({
+  name,
+  lifecycle,
+  status,
+}: {
+  name: string;
+  lifecycle?: "needs_setup" | "pending_approval";
+  status: string;
+}) {
+  const cluster = (
+    <>
+      <BuiltInAgentBadge />
+      {lifecycle && <BuiltInLifecycleChip status={lifecycle} />}
+      {lifecycle === "needs_setup" && (
+        <Button size="xs" variant="outline">Set up</Button>
+      )}
+    </>
+  );
+  return (
+    <EntityRow
+      title={name}
+      titleClassName="w-56"
+      titlePriority
+      subtitle="General"
+      secondaryRow={<div className="xl:hidden flex flex-wrap items-center gap-1.5">{cluster}</div>}
+      meta={<div className="hidden xl:flex items-center gap-1.5">{cluster}</div>}
+      trailing={<AgentStatusBadge status={status} />}
+    />
+  );
+}
+
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -89,40 +125,15 @@ export const SurfaceGallery: Story = {
       <div className="space-y-3">
         <SectionLabel>Board 1 — Roster rows</SectionLabel>
         <div className="rounded-lg border border-border divide-y divide-border">
-          <EntityRow
-            title="Briefs Agent"
-            subtitle="General"
-            meta={
-              <div className="flex items-center gap-1.5">
-                <BuiltInAgentBadge />
-                <BuiltInLifecycleChip status="needs_setup" />
-                <Button size="xs" variant="outline">Set up</Button>
-              </div>
-            }
-            trailing={<AgentStatusBadge status="idle" />}
-          />
-          <EntityRow
-            title="Learning Agent"
-            subtitle="General"
-            meta={
-              <div className="flex items-center gap-1.5">
-                <BuiltInAgentBadge />
-              </div>
-            }
-            trailing={<AgentStatusBadge status="active" />}
-          />
-          <EntityRow
-            title="Briefs Agent"
-            subtitle="General"
-            meta={
-              <div className="flex items-center gap-1.5">
-                <BuiltInAgentBadge />
-                <BuiltInLifecycleChip status="pending_approval" />
-              </div>
-            }
-            trailing={<AgentStatusBadge status="idle" />}
-          />
+          <RosterRow name="Briefs Agent" lifecycle="needs_setup" status="idle" />
+          <RosterRow name="Learning Agent" status="active" />
+          <RosterRow name="Briefs Agent" lifecycle="pending_approval" status="idle" />
         </div>
+        <p className="text-[11px] text-muted-foreground">
+          Resize below the <code>xl</code> breakpoint to see the badge/action
+          cluster drop to a second line so the agent name never collapses
+          (PAP-12988).
+        </p>
       </div>
 
       <div className="space-y-3">

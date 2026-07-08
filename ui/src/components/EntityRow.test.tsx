@@ -59,4 +59,37 @@ describe("EntityRow", () => {
     const markup = renderToStaticMarkup(<EntityRow title="Alpha" />);
     expect(markup).toContain("min-w-0 flex-1");
   });
+
+  it("gives the title a min-width floor and lets meta shrink under titlePriority (PAP-12988)", () => {
+    const markup = renderToStaticMarkup(
+      <EntityRow
+        title="Alpha"
+        titlePriority
+        meta={<span data-testid="meta-cell">chips</span>}
+      />,
+    );
+
+    // The name keeps a usable floor instead of collapsing to zero...
+    expect(markup).toContain("min-w-(--sz-7rem)");
+    // ...and the meta cluster is the item that yields (shrinks), not the title.
+    expect(markup).toContain("min-w-0 shrink");
+    expect(markup).not.toContain('class="flex items-center gap-2 shrink-0"');
+  });
+
+  it("stacks a secondaryRow on its own line beneath the main row (PAP-12988)", () => {
+    const markup = renderToStaticMarkup(
+      <EntityRow
+        title="Alpha"
+        titlePriority
+        meta={<span>chips-inline</span>}
+        secondaryRow={<span data-testid="secondary-cell">chips-stacked</span>}
+      />,
+    );
+
+    // The secondary content renders, and the shell switches from a single flex
+    // row to a stacked block layout so the cluster gets its own full-width line.
+    expect(markup).toContain("secondary-cell");
+    expect(markup).toContain("chips-stacked");
+    expect(markup).not.toMatch(/^<div class="flex items-center gap-3 px-4/);
+  });
 });

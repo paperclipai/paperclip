@@ -151,17 +151,10 @@ function SidebarAgentItem({
       : isPaused && hasInvalidOrgChain
         ? "Invalid org chain"
       : pauseResumeLabel;
-  const trailingLabelParts: string[] = [];
-  if (builtInStatus) {
-    trailingLabelParts.push(
-      builtInStatus === "pending_approval"
-        ? "Built-in, pending approval"
-        : builtInStatus === "needs_setup"
-          ? "Built-in, needs setup"
-          : "Built-in",
-    );
-  }
-  if (hasInvalidOrgChain) trailingLabelParts.push("Invalid reporting chain");
+  const trailingLabel = [
+    builtInStatus ? `Built-in agent ${builtInStatus.replace(/_/g, " ")}` : null,
+    hasInvalidOrgChain ? "Invalid reporting chain" : null,
+  ].filter(Boolean).join(", ") || undefined;
 
   // C11 (DECISION-SHEET.md): the row itself is a SidebarNavItem, so agent rows
   // share the nav-row chrome (type, active state, rail tooltip, live dot).
@@ -180,7 +173,7 @@ function SidebarAgentItem({
       )}
       trailing={
         builtInStatus || hasInvalidOrgChain ? (
-          <span className="flex min-w-0 shrink-0 items-center gap-1">
+          <span className="ml-1 flex shrink-0 items-center gap-1">
             {builtInStatus ? (
               <>
                 <BuiltInAgentBadge compact />
@@ -193,7 +186,7 @@ function SidebarAgentItem({
           </span>
         ) : undefined
       }
-      trailingLabel={trailingLabelParts.length > 0 ? trailingLabelParts.join(", ") : undefined}
+      trailingLabel={trailingLabel}
       liveAccessory={
         agent.pauseReason === "budget" ? <BudgetSidebarMarker title="Agent paused by budget" /> : undefined
       }
