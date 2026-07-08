@@ -5408,6 +5408,7 @@ export function companySkillService(db: Db) {
         originFingerprint: string;
       }) => Promise<{ id: string }>;
       wakeHarnessIssue: (issueId: string, agentId: string) => Promise<unknown>;
+      cleanupHarnessIssue?: (issueId: string) => Promise<unknown>;
       retentionDays?: number;
     },
   ): Promise<CompanySkillTestRun> {
@@ -5471,6 +5472,9 @@ export function companySkillService(db: Db) {
     const now = new Date();
     const retentionDays = Math.max(0, deps.retentionDays ?? 7);
     const previousExpiresAt = new Date(now.getTime() + retentionDays * 24 * 60 * 60 * 1000);
+    const cleanupCreatedHarnessIssue = async () => {
+      await deps.cleanupHarnessIssue?.(issueId).catch(() => {});
+    };
     const row = await db.transaction(async (tx) => {
       await tx
         .update(companySkillTestRuns)
@@ -5509,8 +5513,14 @@ export function companySkillService(db: Db) {
         })
         .returning()
         .then((rows) => rows[0] ?? null);
+    }).catch(async (error) => {
+      await cleanupCreatedHarnessIssue();
+      throw error;
     });
-    if (!row) throw notFound("Failed to persist skill test run");
+    if (!row) {
+      await cleanupCreatedHarnessIssue();
+      throw notFound("Failed to persist skill test run");
+    }
     await deps.wakeHarnessIssue(issueId, agent.id);
     return (await hydrateTestRuns(companyId, [row]))[0]!;
   }

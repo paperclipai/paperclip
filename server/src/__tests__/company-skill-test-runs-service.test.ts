@@ -114,6 +114,51 @@ describeEmbeddedPostgres("companySkillService skill test runs", () => {
     retentionDays: 7,
   });
 
+  it("cleans up the harness issue if persisting the test run fails", async () => {
+    const { companyId, skillId, agentId } = await seedSkillAndAgent();
+    const cleanedIssueIds: string[] = [];
+    let createdIssueId: string | null = null;
+    let wakeCalls = 0;
+
+    await expect(
+      svc.createTestRun(
+        companyId,
+        skillId,
+        { content: "test this skill", agentId },
+        { type: "user", userId: "local-board" },
+        {
+          createHarnessIssue: async (issue) => {
+            createdIssueId = issue.id;
+            await db.insert(issues).values({ ...issue, companyId, priority: "medium" });
+            return { id: issue.id };
+          },
+          wakeHarnessIssue: async () => {
+            wakeCalls += 1;
+          },
+          cleanupHarnessIssue: async (issueId) => {
+            cleanedIssueIds.push(issueId);
+            await db
+              .update(issues)
+              .set({ status: "cancelled", hiddenAt: new Date() })
+              .where(eq(issues.id, issueId));
+          },
+          retentionDays: Number.NaN,
+        },
+      ),
+    ).rejects.toThrow();
+
+    expect(createdIssueId).toBeTruthy();
+    expect(cleanedIssueIds).toEqual([createdIssueId]);
+    expect(wakeCalls).toBe(0);
+    const issue = await db
+      .select({ status: issues.status, hiddenAt: issues.hiddenAt })
+      .from(issues)
+      .where(eq(issues.id, createdIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("cancelled");
+    expect(issue?.hiddenAt).toBeInstanceOf(Date);
+  });
+
   it("appends the built-in default template while keeping the input snapshot clean", async () => {
     const { companyId, skillId, agentId } = await seedSkillAndAgent();
     const run = await svc.createTestRun(

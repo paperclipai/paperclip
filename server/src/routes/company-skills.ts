@@ -484,6 +484,27 @@ export function companySkillRoutes(db: Db) {
           requestedByActorId: actor.actorId,
           contextSnapshot: { issueId, source: "company.skill_test_run" },
         }),
+        cleanupHarnessIssue: async (issueId) => {
+          const issue = await issues.getById(issueId);
+          if (!issue || issue.companyId !== companyId) return;
+          await issues.update(issueId, {
+            status: "cancelled",
+            hiddenAt: new Date(),
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          });
+          await logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "company.skill_test_harness_issue_cleaned_up",
+            entityType: "issue",
+            entityId: issueId,
+            details: { skillId },
+          });
+        },
       });
       await logActivity(db, {
         companyId,
