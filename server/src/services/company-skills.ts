@@ -209,6 +209,33 @@ type ImportedSkill = {
   metadata: Record<string, unknown> | null;
 };
 
+type ImportedSkillPersistValues = Pick<
+  CompanySkill,
+  | "companyId"
+  | "key"
+  | "slug"
+  | "name"
+  | "description"
+  | "markdown"
+  | "sourceType"
+  | "sourceLocator"
+  | "sourceRef"
+  | "trustLevel"
+  | "compatibility"
+  | "iconUrl"
+  | "color"
+  | "tagline"
+  | "authorName"
+  | "homepageUrl"
+  | "categories"
+  | "sharingScope"
+  | "installCount"
+> & {
+  fileInventory: Array<Record<string, unknown>>;
+  metadata: Record<string, unknown>;
+  updatedAt: Date;
+};
+
 type PackageSkillConflictStrategy = "replace" | "rename" | "skip";
 
 export type ImportPackageSkillResult = {
@@ -1011,6 +1038,61 @@ function inventoryEntriesEqual(
     const other = normalizedRight[index];
     return other?.path === entry.path && other.kind === entry.kind;
   });
+}
+
+function stableJsonComparable(value: unknown): unknown {
+  if (value === undefined) return undefined;
+  if (Array.isArray(value)) {
+    return value.map((entry) => stableJsonComparable(entry) ?? null);
+  }
+  if (isPlainRecord(value)) {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) {
+      const normalized = stableJsonComparable(value[key]);
+      if (normalized !== undefined) out[key] = normalized;
+    }
+    return out;
+  }
+  return value;
+}
+
+function stableJsonEqual(left: unknown, right: unknown) {
+  return JSON.stringify(stableJsonComparable(left)) === JSON.stringify(stableJsonComparable(right));
+}
+
+function stringArraysEqual(left: string[], right: string[]) {
+  if (left.length !== right.length) return false;
+  return left.every((entry, index) => entry === right[index]);
+}
+
+function importedSkillPersistValuesMatchExisting(
+  existing: CompanySkill,
+  values: ImportedSkillPersistValues,
+) {
+  return existing.companyId === values.companyId
+    && existing.key === values.key
+    && existing.slug === values.slug
+    && existing.name === values.name
+    && existing.description === values.description
+    && existing.markdown === values.markdown
+    && existing.sourceType === values.sourceType
+    && existing.sourceLocator === values.sourceLocator
+    && existing.sourceRef === values.sourceRef
+    && existing.trustLevel === values.trustLevel
+    && existing.compatibility === values.compatibility
+    && inventoryEntriesEqual(
+      existing.fileInventory,
+      normalizeFileInventory({ fileInventory: values.fileInventory }),
+    )
+    && existing.iconUrl === values.iconUrl
+    && existing.color === values.color
+    && existing.tagline === values.tagline
+    && existing.authorName === values.authorName
+    && existing.homepageUrl === values.homepageUrl
+    && stringArraysEqual(existing.categories, normalizeCategoryList(values.categories))
+    && existing.sharingScope === values.sharingScope
+    && existing.installCount === values.installCount
+    && stableJsonEqual(existing.metadata ?? null, values.metadata);
 }
 
 function inferLocalSkillInventoryMode(
@@ -4895,7 +4977,7 @@ export function companySkillService(db: Db) {
       };
       const parsed = parseFrontmatterMarkdown(skill.markdown);
       const storeMetadata = readSkillStoreMetadata(parsed.frontmatter, metadata);
-      const values = {
+      const values: ImportedSkillPersistValues = {
         companyId,
         key: skill.key,
         slug: skill.slug,
@@ -4919,6 +5001,10 @@ export function companySkillService(db: Db) {
         metadata,
         updatedAt: new Date(),
       };
+      if (existing && importedSkillPersistValuesMatchExisting(existing, values)) {
+        out.push(existing);
+        continue;
+      }
       const row = existing
         ? await db
           .update(companySkills)

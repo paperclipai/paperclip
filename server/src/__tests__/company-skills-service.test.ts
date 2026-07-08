@@ -272,6 +272,65 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     });
   });
 
+  it("does not retouch unchanged bundled skills during list refresh", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const initialList = await svc.list(companyId, { sort: "recent" });
+    const bundledSkill = initialList.find((skill) => skill.key.startsWith("paperclipai/paperclip/"));
+    expect(bundledSkill).toBeDefined();
+    if (!bundledSkill) throw new Error("Expected bundled Paperclip skills fixture");
+
+    const preservedUpdatedAt = new Date("2026-01-01T00:00:00.000Z");
+    await db
+      .update(companySkills)
+      .set({ updatedAt: preservedUpdatedAt })
+      .where(eq(companySkills.id, bundledSkill.id));
+
+    const refreshedList = await svc.list(companyId, { sort: "recent" });
+    const refreshedSkill = refreshedList.find((skill) => skill.id === bundledSkill.id);
+
+    expect(refreshedSkill?.updatedAt.toISOString()).toBe(preservedUpdatedAt.toISOString());
+  });
+
+  it("does not retouch unchanged local-path imports", async () => {
+    const companyId = randomUUID();
+    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-idempotent-import-skill-"));
+    cleanupDirs.add(skillDir);
+    await fs.writeFile(
+      path.join(skillDir, "SKILL.md"),
+      "---\nname: Idempotent Import Skill\n---\n\n# Idempotent Import Skill\n",
+      "utf8",
+    );
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const imported = await svc.importFromSource(companyId, skillDir);
+    const skillId = imported.imported[0]?.id;
+    expect(skillId).toEqual(expect.any(String));
+    if (!skillId) throw new Error("Expected imported skill id");
+
+    const preservedUpdatedAt = new Date("2026-01-02T00:00:00.000Z");
+    await db
+      .update(companySkills)
+      .set({ updatedAt: preservedUpdatedAt })
+      .where(eq(companySkills.id, skillId));
+
+    await svc.importFromSource(companyId, skillDir);
+    const stored = await svc.getById(companyId, skillId);
+
+    expect(stored?.updatedAt.toISOString()).toBe(preservedUpdatedAt.toISOString());
+  });
+
   it("does not persist audit failures for remote-source skills", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();
