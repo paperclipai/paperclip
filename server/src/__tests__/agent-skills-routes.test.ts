@@ -695,6 +695,7 @@ describe.sequential("agent skill routes", () => {
           instructionsFilePath: `/tmp/${createdAgentId}/instructions/AGENTS.md`,
         }),
       }),
+      expect.objectContaining({ allowPendingApprovalConfigUpdate: true }),
     );
     expect(mockAgentService.update.mock.calls.at(-1)?.[1]).not.toMatchObject({
       adapterConfig: expect.objectContaining({

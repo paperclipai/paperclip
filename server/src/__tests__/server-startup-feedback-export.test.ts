@@ -218,6 +218,12 @@ vi.mock("../services/index.js", () => ({
     failed: 0,
     seededAgentIds: [],
   })),
+  reconcileBuiltInAgentsOnStartup: vi.fn(async () => ({
+    scanned: 0,
+    reconciled: 0,
+    unknown: 0,
+    duplicates: 0,
+  })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
