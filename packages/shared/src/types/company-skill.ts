@@ -111,7 +111,6 @@ export interface CompanySkillUsageAgent {
 export interface CompanySkillDetail extends CompanySkill {
   attachedAgentCount: number;
   usedByAgents: CompanySkillUsageAgent[];
-  agentUsageCount: number;
   existingForks: CompanySkillForkSummary[];
   editable: boolean;
   editableReason: string | null;

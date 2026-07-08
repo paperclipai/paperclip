@@ -158,7 +158,6 @@ function makeDetail(currentVersion: CompanySkillVersion, overrides: Partial<Comp
     updatedAt: new Date("2026-01-02T00:00:00Z"),
     attachedAgentCount: 0,
     usedByAgents: [],
-    agentUsageCount: 0,
     existingForks: [],
     editable: true,
     editableReason: null,

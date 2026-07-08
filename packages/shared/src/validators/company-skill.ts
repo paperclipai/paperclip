@@ -120,7 +120,6 @@ export const companySkillVersionSchema = z.object({
 export const companySkillDetailSchema = companySkillSchema.extend({
   attachedAgentCount: z.number().int().nonnegative(),
   usedByAgents: z.array(companySkillUsageAgentSchema).default([]),
-  agentUsageCount: z.number().int().nonnegative(),
   existingForks: z.array(companySkillForkSummarySchema).default([]),
   editable: z.boolean(),
   editableReason: z.string().nullable(),

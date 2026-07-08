@@ -48,7 +48,6 @@ const MOCK_DETAIL: CompanySkillDetail = {
   createdAt: NOW,
   updatedAt: NOW,
   attachedAgentCount: 4,
-  agentUsageCount: 4,
   existingForks: [],
   usedByAgents: [
     { id: "a-1", name: "Astra", urlKey: "astra", adapterType: "process", desired: true, actualState: null, versionId: null },

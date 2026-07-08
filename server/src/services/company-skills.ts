@@ -293,7 +293,6 @@ type SkillActor = {
 
 type PlannedSkillReassignment = {
   agentId: string;
-  adapterConfig: Record<string, unknown>;
   reassignment: CompanySkillForkReassignment;
 };
 
@@ -2083,7 +2082,6 @@ function enrichSkill(
     ...skill,
     attachedAgentCount,
     usedByAgents,
-    agentUsageCount: attachedAgentCount,
     existingForks,
     currentVersion,
     starredByCurrentActor,
@@ -2894,14 +2892,8 @@ export function companySkillService(db: Db) {
           skillKey: source.key,
         });
       }
-      const nextEntries = desiredEntries.map((entry) =>
-        entry.key === source.key
-          ? { key: forkKey, versionId: null }
-          : entry
-      );
       return {
         agentId,
-        adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, nextEntries),
         reassignment: {
           agentId,
           previousSkillKey: source.key,
@@ -2913,21 +2905,83 @@ export function companySkillService(db: Db) {
 
   async function applySkillReassignments(
     companyId: string,
+    source: CompanySkill,
+    forkKey: string,
     planned: PlannedSkillReassignment[],
   ): Promise<CompanySkillForkReassignment[]> {
     if (planned.length === 0) return [];
+    const skills = await listReferenceTargets(companyId);
     await db.transaction(async (tx) => {
       for (const item of planned) {
         const row = await tx
+          .select({
+            id: agentsTable.id,
+            name: agentsTable.name,
+            adapterConfig: agentsTable.adapterConfig,
+          })
+          .from(agentsTable)
+          .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.id, item.agentId)))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!row) throw notFound(`Agent not found for skill reassignment: ${item.agentId}`);
+        const adapterConfig = row.adapterConfig as Record<string, unknown>;
+        const desiredEntries = resolveDesiredSkillEntries(skills, adapterConfig);
+        const hasSource = desiredEntries.some((entry) => entry.key === source.key);
+        if (!hasSource) {
+          throw unprocessable(`Agent "${row.name}" does not currently use skill "${source.name}".`, {
+            agentId: item.agentId,
+            skillId: source.id,
+            skillKey: source.key,
+          });
+        }
+        const nextEntries = desiredEntries.map((entry) =>
+          entry.key === source.key
+            ? { key: forkKey, versionId: null }
+            : entry
+        );
+        const updated = await tx
           .update(agentsTable)
-          .set({ adapterConfig: item.adapterConfig, updatedAt: new Date() })
+          .set({
+            adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, nextEntries),
+            updatedAt: new Date(),
+          })
           .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.id, item.agentId)))
           .returning({ id: agentsTable.id })
           .then((rows) => rows[0] ?? null);
-        if (!row) throw notFound(`Agent not found for skill reassignment: ${item.agentId}`);
+        if (!updated) throw notFound(`Agent not found for skill reassignment: ${item.agentId}`);
       }
     });
     return planned.map((item) => item.reassignment);
+  }
+
+  async function cleanupFailedFork(companyId: string, sourceSkillId: string, forkSkillId: string, forkDir: string) {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(companySkills)
+        .set({ currentVersionId: null, updatedAt: new Date() })
+        .where(and(eq(companySkills.id, forkSkillId), eq(companySkills.companyId, companyId)));
+      await tx
+        .delete(companySkillComments)
+        .where(and(eq(companySkillComments.companyId, companyId), eq(companySkillComments.companySkillId, forkSkillId)));
+      await tx
+        .delete(companySkillStars)
+        .where(and(eq(companySkillStars.companyId, companyId), eq(companySkillStars.companySkillId, forkSkillId)));
+      await tx
+        .delete(companySkillVersions)
+        .where(and(eq(companySkillVersions.companyId, companyId), eq(companySkillVersions.companySkillId, forkSkillId)));
+      await tx
+        .delete(companySkills)
+        .where(and(eq(companySkills.id, forkSkillId), eq(companySkills.companyId, companyId)));
+      await tx
+        .update(companySkills)
+        .set({
+          forkCount: sql`greatest(${companySkills.forkCount} - 1, 0)`,
+          installCount: sql`greatest(${companySkills.installCount} - 1, 0)`,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(companySkills.id, sourceSkillId), eq(companySkills.companyId, companyId)));
+    });
+    await fs.rm(forkDir, { recursive: true, force: true });
   }
 
   async function forkSkill(
@@ -3013,7 +3067,13 @@ export function companySkillService(db: Db) {
       if (!skill) throw notFound("Forked skill not found");
       return skill;
     });
-    const reassignments = await applySkillReassignments(companyId, plannedReassignments);
+    let reassignments: CompanySkillForkReassignment[];
+    try {
+      reassignments = await applySkillReassignments(companyId, source, forkKey, plannedReassignments);
+    } catch (error) {
+      await cleanupFailedFork(companyId, source.id, forked.id, forkDir);
+      throw error;
+    }
     return {
       skill: persistedFork,
       original: summarizeOriginalSkill(source),
