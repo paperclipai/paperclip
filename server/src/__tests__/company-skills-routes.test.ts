@@ -21,6 +21,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
   starSkill: vi.fn(),
   unstarSkill: vi.fn(),
   forkSkill: vi.fn(),
+  forkPrecheck: vi.fn(),
   listComments: vi.fn(),
   createComment: vi.fn(),
   updateComment: vi.fn(),
@@ -150,7 +151,7 @@ describe("company skill mutation permissions", () => {
       starred: false,
       starCount: 0,
     });
-    mockCompanySkillService.forkSkill.mockResolvedValue({
+    const forkedSkill = {
       id: "skill-fork",
       companyId: "company-1",
       key: "company/company-1/review-fork",
@@ -181,6 +182,32 @@ describe("company skill mutation permissions", () => {
       metadata: null,
       createdAt: new Date("2026-05-26T00:00:00.000Z"),
       updatedAt: new Date("2026-05-26T00:00:00.000Z"),
+    };
+    mockCompanySkillService.forkSkill.mockResolvedValue({
+      skill: forkedSkill,
+      original: {
+        id: "skill-1",
+        name: "Review",
+        slug: "review",
+        sourceType: "github",
+        sourceLocator: "https://github.com/acme/review",
+        sourceRef: "abc123",
+      },
+      reassignments: [],
+    });
+    mockCompanySkillService.forkPrecheck.mockResolvedValue({
+      skillId: "skill-1",
+      original: {
+        id: "skill-1",
+        name: "Review",
+        slug: "review",
+        sourceType: "github",
+        sourceLocator: "https://github.com/acme/review",
+        sourceRef: "abc123",
+      },
+      agentUsageCount: 0,
+      usedByAgents: [],
+      existingForks: [],
     });
     mockCompanySkillService.listComments.mockResolvedValue([]);
     mockCompanySkillService.createComment.mockResolvedValue({
@@ -834,8 +861,27 @@ describe("company skill mutation permissions", () => {
       userId: "user-1",
     });
 
-    await request(app).post("/api/companies/company-1/skills/skill-1/fork").send({ slug: "review-fork" }).expect(201);
-    expect(mockCompanySkillService.forkSkill).toHaveBeenCalledWith("company-1", "skill-1", { slug: "review-fork" }, {
+    const forkRes = await request(app)
+      .post("/api/companies/company-1/skills/skill-1/fork")
+      .send({ slug: "review-fork", reassignAgentIds: ["11111111-1111-4111-8111-111111111111"] })
+      .expect(201);
+    expect(forkRes.body).toMatchObject({
+      skill: { id: "skill-fork", slug: "review-fork" },
+      original: { id: "skill-1", slug: "review" },
+      reassignments: [],
+    });
+    expect(mockCompanySkillService.forkSkill).toHaveBeenCalledWith(
+      "company-1",
+      "skill-1",
+      { slug: "review-fork", reassignAgentIds: ["11111111-1111-4111-8111-111111111111"] },
+      {
+        type: "user",
+        userId: "user-1",
+      },
+    );
+
+    await request(app).get("/api/companies/company-1/skills/skill-1/fork-precheck").expect(200);
+    expect(mockCompanySkillService.forkPrecheck).toHaveBeenCalledWith("company-1", "skill-1", {
       type: "user",
       userId: "user-1",
     });
