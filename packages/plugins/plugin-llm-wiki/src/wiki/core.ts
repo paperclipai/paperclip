@@ -5241,6 +5241,10 @@ function parseCount(value: string | number | null | undefined): number {
   return 0;
 }
 
+function graphSqlPlaceholders(startIndex: number, count: number): string {
+  return Array.from({ length: count }, (_, index) => `$${startIndex + index}`).join(", ");
+}
+
 function truncateLabel(value: string, max = 96): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= max) return normalized;
@@ -5541,8 +5545,10 @@ export async function getKnowledgeGraph(ctx: PluginContext, input: {
     issueParams.push(projectScopeId);
     issueWhere += ` AND i.project_id = $${issueParams.length}`;
   } else if (projectRows.length > 0) {
-    issueParams.push(projectRows.map((project) => project.id));
-    issueWhere += ` AND (i.project_id = ANY($${issueParams.length}::uuid[]) OR i.status IN ('blocked', 'in_progress', 'in_review'))`;
+    const projectIds = projectRows.map((project) => project.id);
+    const projectPlaceholders = graphSqlPlaceholders(issueParams.length + 1, projectIds.length);
+    issueParams.push(...projectIds);
+    issueWhere += ` AND (i.project_id IN (${projectPlaceholders}) OR i.status IN ('blocked', 'in_progress', 'in_review'))`;
   }
   issueParams.push(limit);
   const issueRows = await ctx.db.query<KnowledgeIssueRow>(
@@ -5574,11 +5580,12 @@ export async function getKnowledgeGraph(ctx: PluginContext, input: {
   const missingProjectIds = [...new Set(issueRows.map((issue) => issue.project_id).filter((id): id is string => Boolean(id)))]
     .filter((id) => !knownProjectIds.has(id));
   if (missingProjectIds.length > 0) {
+    const extraProjectParams: unknown[] = [input.companyId, ...missingProjectIds];
     const extraProjects = await ctx.db.query<KnowledgeProjectRow>(
       `SELECT id, name, status, color, updated_at::text AS updated_at, 0::text AS issue_count
          FROM projects
-        WHERE company_id = $1 AND id = ANY($2::uuid[])`,
-      [input.companyId, missingProjectIds],
+        WHERE company_id = $1 AND id IN (${graphSqlPlaceholders(2, missingProjectIds.length)})`,
+      extraProjectParams,
     );
     for (const project of extraProjects) {
       const nodeId = graphId("project", project.id);
@@ -5795,11 +5802,12 @@ export async function getKnowledgeGraph(ctx: PluginContext, input: {
   if (issueIds.length > 0) {
     const assigneeIds = [...new Set(issueRows.map((issue) => issue.assignee_agent_id).filter((id): id is string => Boolean(id)))];
     if (assigneeIds.length > 0) {
+      const agentParams: unknown[] = [input.companyId, ...assigneeIds];
       const agentRows = await ctx.db.query<KnowledgeAgentRow>(
         `SELECT id, name, role, status, icon, updated_at::text AS updated_at
            FROM agents
-          WHERE company_id = $1 AND id = ANY($2::uuid[])`,
-        [input.companyId, assigneeIds],
+          WHERE company_id = $1 AND id IN (${graphSqlPlaceholders(2, assigneeIds.length)})`,
+        agentParams,
       );
       for (const agent of agentRows) {
         addGraphNode(nodes, {
@@ -5828,15 +5836,17 @@ export async function getKnowledgeGraph(ctx: PluginContext, input: {
       }
     }
 
+    const issueIdPlaceholders = graphSqlPlaceholders(2, issueIds.length);
+    const issueIdLimitIndex = issueIds.length + 2;
     const relationRows = await safeKnowledgeGraphQuery(ctx, warnings, "issue relation edges", () =>
       ctx.db.query<{ issue_id: string; related_issue_id: string; type: string; created_at: string | null }>(
         `SELECT issue_id, related_issue_id, type, created_at::text AS created_at
            FROM issue_relations
           WHERE company_id = $1
-            AND (issue_id = ANY($2::uuid[]) OR related_issue_id = ANY($2::uuid[]))
+            AND (issue_id IN (${issueIdPlaceholders}) OR related_issue_id IN (${issueIdPlaceholders}))
           ORDER BY created_at DESC NULLS LAST
-          LIMIT $3`,
-        [input.companyId, issueIds, KNOWLEDGE_GRAPH_REFERENCE_EDGE_LIMIT],
+          LIMIT $${issueIdLimitIndex}`,
+        [input.companyId, ...issueIds, KNOWLEDGE_GRAPH_REFERENCE_EDGE_LIMIT],
       ),
     );
     for (const relation of relationRows) {
@@ -5855,11 +5865,11 @@ export async function getKnowledgeGraph(ctx: PluginContext, input: {
         `SELECT source_issue_id, target_issue_id, source_kind, count(*)::text AS count
            FROM issue_reference_mentions
           WHERE company_id = $1
-            AND (source_issue_id = ANY($2::uuid[]) OR target_issue_id = ANY($2::uuid[]))
+            AND (source_issue_id IN (${issueIdPlaceholders}) OR target_issue_id IN (${issueIdPlaceholders}))
           GROUP BY source_issue_id, target_issue_id, source_kind
           ORDER BY count(*) DESC
-          LIMIT $3`,
-        [input.companyId, issueIds, KNOWLEDGE_GRAPH_REFERENCE_EDGE_LIMIT],
+          LIMIT $${issueIdLimitIndex}`,
+        [input.companyId, ...issueIds, KNOWLEDGE_GRAPH_REFERENCE_EDGE_LIMIT],
       ),
     );
     for (const mention of mentionRows) {
@@ -5877,10 +5887,10 @@ export async function getKnowledgeGraph(ctx: PluginContext, input: {
       ctx.db.query<KnowledgeDocumentRow>(
         `SELECT id, issue_id, key, document_id, updated_at::text AS updated_at
            FROM issue_documents
-          WHERE company_id = $1 AND issue_id = ANY($2::uuid[])
+          WHERE company_id = $1 AND issue_id IN (${issueIdPlaceholders})
           ORDER BY updated_at DESC NULLS LAST
-          LIMIT $3`,
-        [input.companyId, issueIds, KNOWLEDGE_GRAPH_DOCUMENT_LIMIT],
+          LIMIT $${issueIdLimitIndex}`,
+        [input.companyId, ...issueIds, KNOWLEDGE_GRAPH_DOCUMENT_LIMIT],
       ),
     );
     for (const doc of documentRows) {
@@ -5911,10 +5921,10 @@ export async function getKnowledgeGraph(ctx: PluginContext, input: {
       ctx.db.query<KnowledgeWorkProductRow>(
         `SELECT id, issue_id, type, title, status, health_status, updated_at::text AS updated_at
            FROM issue_work_products
-          WHERE company_id = $1 AND issue_id = ANY($2::uuid[])
+          WHERE company_id = $1 AND issue_id IN (${issueIdPlaceholders})
           ORDER BY updated_at DESC NULLS LAST
-          LIMIT $3`,
-        [input.companyId, issueIds, KNOWLEDGE_GRAPH_WORK_PRODUCT_LIMIT],
+          LIMIT $${issueIdLimitIndex}`,
+        [input.companyId, ...issueIds, KNOWLEDGE_GRAPH_WORK_PRODUCT_LIMIT],
       ),
     );
     for (const workProduct of workProductRows) {
