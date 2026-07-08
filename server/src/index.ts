@@ -984,17 +984,22 @@ export async function startServer(): Promise<StartedServer> {
     }, backupIntervalMs);
   }
 
-  // Run-log cold-archive sweeper. Decided once at boot: `off` or storage-
-  // unavailable (auto + non-s3 provider) logs a single line and never schedules,
-  // so hot files simply age out via the infra janitor backstop.
+  // Run-log cold-archive sweeper. Decided once at boot: `off`, or storage-
+  // unavailable (auto + non-s3 provider, or forced `s3` mode with no bucket),
+  // logs a single line and never schedules, so hot files simply age out via the
+  // infra janitor backstop.
   let runLogArchiveTimer: ReturnType<typeof setInterval> | null = null;
   let runLogArchiveBootTimer: ReturnType<typeof setTimeout> | null = null;
   {
     const archiveConfig = resolveRunLogArchiverConfig(config);
-    const archivingActive = archiveConfig.mode === "auto" && archiveConfig.storageEnabled;
+    const archivingActive = archiveConfig.mode !== "off" && archiveConfig.storageEnabled;
     if (!archivingActive) {
       logger.info(
-        { mode: archiveConfig.mode, storageProvider: config.storageProvider },
+        {
+          mode: archiveConfig.mode,
+          storageProvider: config.storageProvider,
+          storageEnabled: archiveConfig.storageEnabled,
+        },
         "run-log cold-archive disabled; hot files age out via the infra janitor backstop only",
       );
     } else {

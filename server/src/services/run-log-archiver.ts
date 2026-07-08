@@ -10,7 +10,7 @@ import {
   resolveRunLogBasePath,
   type RunLogArchiveSource,
 } from "./run-log-store.js";
-import { getStorageProvider } from "../storage/index.js";
+import { getRunLogArchiveStorageProvider } from "../storage/index.js";
 
 /**
  * Run-log cold-archive sweeper.
@@ -89,8 +89,11 @@ export interface RunLogArchiverFs {
 }
 
 export interface RunLogArchiverConfig {
-  mode: "auto" | "off";
-  /** True when object storage is actually configured (storageProvider === "s3"). */
+  mode: "auto" | "off" | "s3";
+  /**
+   * True when the archive leg has usable object storage: the app-wide provider
+   * is s3 (`auto` mode) or forced `s3` mode has a bucket configured.
+   */
   storageEnabled: boolean;
   hotRetentionDays: number;
   companyBudgetBytes: number;
@@ -121,9 +124,13 @@ export interface RunLogArchiver {
 }
 
 export function resolveRunLogArchiverConfig(config: Config): RunLogArchiverConfig {
+  const storageEnabled =
+    config.runLogArchiveMode === "s3"
+      ? config.storageS3Bucket.trim().length > 0
+      : config.storageProvider === "s3";
   return {
     mode: config.runLogArchiveMode,
-    storageEnabled: config.storageProvider === "s3",
+    storageEnabled,
     hotRetentionDays: config.runLogHotRetentionDays,
     companyBudgetBytes: config.runLogCompanyBudgetBytes,
     itemLimit: config.runLogSweepItemLimit,
@@ -443,12 +450,12 @@ export function createNodeRunLogArchiverFs(baseDir: string): RunLogArchiverFs {
   };
 }
 
-/** Wrap the raw {@link getStorageProvider} into the archiver's storage port. */
+/** Wrap the raw {@link getRunLogArchiveStorageProvider} into the archiver's storage port. */
 export function createProviderRunLogArchiverStorage(): RunLogArchiverStorage {
   return {
-    putObject: (input) => getStorageProvider().putObject(input),
+    putObject: (input) => getRunLogArchiveStorageProvider().putObject(input),
     async headObject(input) {
-      const head = await getStorageProvider().headObject({ objectKey: input.objectKey });
+      const head = await getRunLogArchiveStorageProvider().headObject({ objectKey: input.objectKey });
       return { exists: head.exists, contentLength: head.contentLength };
     },
   };

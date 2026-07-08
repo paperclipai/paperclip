@@ -7,7 +7,7 @@ import type { Readable } from "node:stream";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { logger } from "../middleware/logger.js";
-import { getStorageProvider } from "../storage/index.js";
+import { getRunLogArchiveStorageProvider } from "../storage/index.js";
 
 /**
  * Storage tier a run-log currently lives in.
@@ -564,7 +564,7 @@ export function getRunLogStore() {
   // still transparently readable when object storage is configured.
   cachedStore = createLocalFileRunLogStore(basePath, {
     s3Reader: {
-      getObject: (input) => getStorageProvider().getObject({ objectKey: input.objectKey }),
+      getObject: (input) => getRunLogArchiveStorageProvider().getObject({ objectKey: input.objectKey }),
     },
   });
   return cachedStore;

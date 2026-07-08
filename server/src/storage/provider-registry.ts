@@ -3,11 +3,8 @@ import type { StorageProvider } from "./types.js";
 import { createLocalDiskStorageProvider } from "./local-disk-provider.js";
 import { createS3StorageProvider } from "./s3-provider.js";
 
-export function createStorageProviderFromConfig(config: Config): StorageProvider {
-  if (config.storageProvider === "local_disk") {
-    return createLocalDiskStorageProvider(config.storageLocalDiskBaseDir);
-  }
-
+/** Build an S3 provider from the `storageS3*` config, independent of the app-wide provider. */
+export function createS3StorageProviderFromConfig(config: Config): StorageProvider {
   return createS3StorageProvider({
     bucket: config.storageS3Bucket,
     region: config.storageS3Region,
@@ -15,4 +12,12 @@ export function createStorageProviderFromConfig(config: Config): StorageProvider
     prefix: config.storageS3Prefix,
     forcePathStyle: config.storageS3ForcePathStyle,
   });
+}
+
+export function createStorageProviderFromConfig(config: Config): StorageProvider {
+  if (config.storageProvider === "local_disk") {
+    return createLocalDiskStorageProvider(config.storageLocalDiskBaseDir);
+  }
+
+  return createS3StorageProviderFromConfig(config);
 }

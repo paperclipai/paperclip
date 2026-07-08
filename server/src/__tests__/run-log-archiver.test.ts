@@ -8,11 +8,14 @@ import { gzipSync, gunzipSync } from "node:zlib";
 import {
   createNodeRunLogArchiverFs,
   createRunLogArchiver,
+  resolveRunLogArchiverConfig,
   type HeartbeatRunLogRow,
   type RunLogArchiverConfig,
   type RunLogArchiverDb,
   type RunLogArchiverStorage,
 } from "../services/run-log-archiver.ts";
+import { loadConfig } from "../config.ts";
+import { getRunLogArchiveStorageProvider, getStorageProvider } from "../storage/index.ts";
 
 const NOW = new Date("2026-07-08T10:00:00.000Z");
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -450,5 +453,61 @@ describe("run-log-archiver disabled", () => {
     expect(res.skipped).toBe(true);
     expect(res.reason).toBe("mode_off");
     expect(storage.putObject).not.toHaveBeenCalled();
+  });
+});
+
+describe("forced s3 archive mode (local_disk primary storage)", () => {
+  const ENV_KEYS = [
+    "PAPERCLIP_RUN_LOG_ARCHIVE",
+    "PAPERCLIP_STORAGE_PROVIDER",
+    "PAPERCLIP_STORAGE_S3_BUCKET",
+  ] as const;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+  });
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it("parses PAPERCLIP_RUN_LOG_ARCHIVE=s3 into forced mode", () => {
+    process.env.PAPERCLIP_RUN_LOG_ARCHIVE = "s3";
+    expect(loadConfig().runLogArchiveMode).toBe("s3");
+  });
+
+  it("activates the sweep even when the app-wide provider is local_disk", () => {
+    process.env.PAPERCLIP_RUN_LOG_ARCHIVE = "s3";
+    process.env.PAPERCLIP_STORAGE_S3_BUCKET = "paperclip";
+    delete process.env.PAPERCLIP_STORAGE_PROVIDER; // defaults to local_disk
+    const config = loadConfig();
+    expect(config.storageProvider).toBe("local_disk");
+    const resolved = resolveRunLogArchiverConfig(config);
+    expect(resolved.mode).toBe("s3");
+    expect(resolved.storageEnabled).toBe(true);
+  });
+
+  it("stays disabled in forced mode when no bucket is configured", () => {
+    process.env.PAPERCLIP_RUN_LOG_ARCHIVE = "s3";
+    process.env.PAPERCLIP_STORAGE_S3_BUCKET = "   ";
+    const resolved = resolveRunLogArchiverConfig(loadConfig());
+    expect(resolved.storageEnabled).toBe(false);
+  });
+
+  it("returns a dedicated s3 provider (not the local_disk app provider) when forced", () => {
+    process.env.PAPERCLIP_RUN_LOG_ARCHIVE = "s3";
+    process.env.PAPERCLIP_STORAGE_S3_BUCKET = "paperclip";
+    delete process.env.PAPERCLIP_STORAGE_PROVIDER;
+    expect(getRunLogArchiveStorageProvider()).not.toBe(getStorageProvider());
+  });
+
+  it("delegates to the app provider when not forced (auto mode)", () => {
+    process.env.PAPERCLIP_RUN_LOG_ARCHIVE = "auto";
+    delete process.env.PAPERCLIP_STORAGE_PROVIDER;
+    expect(getRunLogArchiveStorageProvider()).toBe(getStorageProvider());
   });
 });

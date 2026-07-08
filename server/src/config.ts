@@ -94,7 +94,7 @@ export interface Config {
   storageS3Endpoint: string | undefined;
   storageS3Prefix: string;
   storageS3ForcePathStyle: boolean;
-  runLogArchiveMode: "auto" | "off";
+  runLogArchiveMode: "auto" | "off" | "s3";
   runLogHotRetentionDays: number;
   runLogCompanyBudgetBytes: number;
   runLogSweepIntervalMs: number;
@@ -166,12 +166,15 @@ export function loadConfig(): Config {
     process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE !== undefined
       ? process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE === "true"
       : (fileStorage?.s3?.forcePathStyle ?? false);
-  // Run-log cold-archive knobs. `auto` archives only when object storage is
-  // configured (storageProvider === "s3"); `off` disables the sweeper. Hot
+  // Run-log cold-archive knobs. `auto` archives only when the app-wide storage
+  // provider is object storage (storageProvider === "s3"); `s3` forces the
+  // archive leg onto object storage (using the storageS3* settings) even while
+  // the app's primary storage stays local_disk; `off` disables the sweeper. Hot
   // files then only age out via the infra janitor backstop. Read here so the
   // scheduler and archiver share one resolved source of truth.
-  const runLogArchiveMode: "auto" | "off" =
-    process.env.PAPERCLIP_RUN_LOG_ARCHIVE?.trim().toLowerCase() === "off" ? "off" : "auto";
+  const runLogArchiveModeRaw = process.env.PAPERCLIP_RUN_LOG_ARCHIVE?.trim().toLowerCase();
+  const runLogArchiveMode: "auto" | "off" | "s3" =
+    runLogArchiveModeRaw === "off" ? "off" : runLogArchiveModeRaw === "s3" ? "s3" : "auto";
   const runLogHotRetentionDays = clampIntEnv(
     process.env.PAPERCLIP_RUN_LOG_HOT_RETENTION_DAYS,
     30,
