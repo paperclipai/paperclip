@@ -241,7 +241,7 @@ function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
 // Accepted-plan children are not realized yet, so carry only unresolved
 // workspace intent and let the first child run render/persist its own branch.
 function buildPreRealizationExecutionWorkspaceSettings(raw: unknown): Record<string, unknown> | null {
-  const settings = parseIssueExecutionWorkspaceSettings(raw);
+  const settings = parseIssueExecutionWorkspaceSettings(raw, { includeEnvironmentId: true });
   if (!settings) return null;
   const mode =
     settings.mode && settings.mode !== "inherit" && settings.mode !== "reuse_existing"
@@ -6409,7 +6409,10 @@ export function issueService(db: Db) {
 
       let cleared = 0;
       for (const row of rows) {
-        const settings = parseIssueExecutionWorkspaceSettings(row.executionWorkspaceSettings);
+        const settings = parseIssueExecutionWorkspaceSettings(
+          row.executionWorkspaceSettings,
+          { includeEnvironmentId: true },
+        );
         if (settings?.environmentId !== environmentId) continue;
 
         await db

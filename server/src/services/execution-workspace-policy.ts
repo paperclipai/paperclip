@@ -88,7 +88,14 @@ export function gateProjectExecutionWorkspacePolicy(
   return projectPolicy;
 }
 
-export function parseIssueExecutionWorkspaceSettings(raw: unknown): IssueExecutionWorkspaceSettings | null {
+type ParseIssueExecutionWorkspaceSettingsOptions = {
+  includeEnvironmentId?: boolean;
+};
+
+export function parseIssueExecutionWorkspaceSettings(
+  raw: unknown,
+  options: ParseIssueExecutionWorkspaceSettingsOptions = {},
+): IssueExecutionWorkspaceSettings | null {
   const parsed = parseObject(raw);
   if (Object.keys(parsed).length === 0) return null;
   const workspaceStrategy = parseExecutionWorkspaceStrategy(parsed.workspaceStrategy);
@@ -112,7 +119,7 @@ export function parseIssueExecutionWorkspaceSettings(raw: unknown): IssueExecuti
     ...(normalizedMode
       ? { mode: normalizedMode as IssueExecutionWorkspaceSettings["mode"] }
       : {}),
-    ...(parsed.environmentId && typeof parsed.environmentId === "string"
+    ...(options.includeEnvironmentId && (typeof parsed.environmentId === "string" || parsed.environmentId === null)
       ? { environmentId: parsed.environmentId }
       : {}),
     ...(workspaceStrategy ? { workspaceStrategy } : {}),

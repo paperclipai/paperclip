@@ -155,9 +155,22 @@ describe("execution workspace policy helpers", () => {
     expect(
       parseIssueExecutionWorkspaceSettings({
         mode: "project_primary",
+        environmentId: "11111111-1111-4111-8111-111111111111",
       }),
     ).toEqual({
       mode: "shared_workspace",
+    });
+    expect(
+      parseIssueExecutionWorkspaceSettings(
+        {
+          mode: "project_primary",
+          environmentId: "11111111-1111-4111-8111-111111111111",
+        },
+        { includeEnvironmentId: true },
+      ),
+    ).toEqual({
+      mode: "shared_workspace",
+      environmentId: "11111111-1111-4111-8111-111111111111",
     });
   });
 
