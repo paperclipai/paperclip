@@ -786,6 +786,45 @@ describe("acpx_local execution timeouts", () => {
     );
   });
 
+  it("keeps the sandbox backstop for an explicit timeoutSec of 0 but honors a negative opt-out", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+    const sandboxContext = {
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: cwd,
+      },
+    };
+
+    // The config UI persists the schema default of 0 for untouched fields, so
+    // an explicit 0 cannot mean "no timeout" — it keeps the 4h backstop.
+    const explicitZero = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd, timeoutSec: 0 },
+      sandboxContext,
+    );
+    expect(explicitZero.runtimeOptions[0]?.timeoutMs).toBe(
+      DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC * 1000,
+    );
+
+    // A negative timeoutSec is the documented opt-out from any adapter
+    // wall-clock timeout, sandbox targets included.
+    const negativeOptOut = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd, timeoutSec: -1 },
+      sandboxContext,
+    );
+    expect(negativeOptOut.runtimeOptions[0]?.timeoutMs).toBeUndefined();
+    const startLine = negativeOptOut.logs.find(
+      (entry) => entry.stream === "stderr" && entry.text.includes("Adapter execution timeout:"),
+    );
+    expect(startLine!.text).toContain(
+      "Adapter execution timeout: none (explicitly disabled via adapterConfig.timeoutSec; " +
+        "set it to a positive value to add one).",
+    );
+  });
+
   it("reports a self-describing timeout error when the wall-clock timer kills a turn", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

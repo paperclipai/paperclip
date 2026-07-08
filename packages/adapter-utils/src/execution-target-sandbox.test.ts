@@ -224,6 +224,43 @@ describe("sandbox adapter execution targets", () => {
     });
   });
 
+  it("treats a negative timeoutSec as the explicit no-timeout opt-out, even on sandbox targets", () => {
+    const sandboxTarget: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner: createLocalSandboxRunner(),
+    };
+
+    expect(resolveAdapterExecutionTargetTimeout(sandboxTarget, -1)).toEqual({
+      timeoutSec: 0,
+      source: "configured",
+    });
+    expect(resolveAdapterExecutionTargetTimeout({ kind: "local" }, -1)).toEqual({
+      timeoutSec: 0,
+      source: "configured",
+    });
+    expect(resolveAdapterExecutionTargetTimeoutSec(sandboxTarget, -1)).toBe(0);
+
+    // Explicit zero intentionally does NOT opt out: the adapter config UI
+    // persists the schema default of 0 for untouched fields, so a stored
+    // timeoutSec=0 cannot be read as operator intent. It keeps the sandbox
+    // backstop; the documented opt-out is a negative value.
+    expect(resolveAdapterExecutionTargetTimeout(sandboxTarget, 0)).toEqual({
+      timeoutSec: DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
+      source: "sandbox_default",
+    });
+    // Unset behaves like zero.
+    expect(resolveAdapterExecutionTargetTimeout(sandboxTarget, undefined)).toEqual({
+      timeoutSec: DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
+      source: "sandbox_default",
+    });
+    expect(resolveAdapterExecutionTargetTimeout({ kind: "local" }, undefined)).toEqual({
+      timeoutSec: 0,
+      source: "unlimited",
+    });
+  });
+
   it("formats self-describing timeout errors naming the timer and knob", () => {
     expect(
       formatAdapterExecutionTimeoutErrorMessage({
@@ -260,6 +297,12 @@ describe("sandbox adapter execution targets", () => {
       formatAdapterExecutionTimeoutStartLogLine({ timeoutSec: 0, source: "unlimited" }),
     ).toBe(
       "Adapter execution timeout: none (no adapter wall-clock timeout for this target; set adapterConfig.timeoutSec to add one).",
+    );
+    // Negative opt-out resolves to { timeoutSec: 0, source: "configured" }.
+    expect(
+      formatAdapterExecutionTimeoutStartLogLine({ timeoutSec: 0, source: "configured" }),
+    ).toBe(
+      "Adapter execution timeout: none (explicitly disabled via adapterConfig.timeoutSec; set it to a positive value to add one).",
     );
   });
 

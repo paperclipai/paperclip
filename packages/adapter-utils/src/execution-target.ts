@@ -275,15 +275,21 @@ export function resolveAdapterExecutionTargetTimeout(
   target: AdapterExecutionTarget | null | undefined,
   configuredTimeoutSec: number | null | undefined,
 ): AdapterExecutionTargetTimeoutResolution {
-  // Preserve fractional (sub-second) configured values instead of flooring:
-  // adapters historically honored e.g. timeoutSec=0.5, and flooring would
-  // silently turn it into "no timeout".
-  const normalizedConfiguredTimeoutSec =
-    typeof configuredTimeoutSec === "number" && Number.isFinite(configuredTimeoutSec) && configuredTimeoutSec > 0
-      ? configuredTimeoutSec
-      : 0;
-  if (normalizedConfiguredTimeoutSec > 0) {
-    return { timeoutSec: normalizedConfiguredTimeoutSec, source: "configured" };
+  if (typeof configuredTimeoutSec === "number" && Number.isFinite(configuredTimeoutSec)) {
+    // Preserve fractional (sub-second) configured values instead of flooring:
+    // adapters historically honored e.g. timeoutSec=0.5, and flooring would
+    // silently turn it into "no timeout".
+    if (configuredTimeoutSec > 0) {
+      return { timeoutSec: configuredTimeoutSec, source: "configured" };
+    }
+    // A negative timeoutSec is the explicit "no adapter wall-clock timeout"
+    // opt-out, honored even on sandbox targets. Zero cannot carry that
+    // meaning: the adapter config UI persists the schema default of 0 for
+    // untouched fields, so timeoutSec=0 in stored config does not signal
+    // operator intent and falls through to target defaults below.
+    if (configuredTimeoutSec < 0) {
+      return { timeoutSec: 0, source: "configured" };
+    }
   }
   // Local and SSH adapters preserve the historical "0 means no adapter
   // timeout" behavior. Sandbox-backed runs execute through provider RPCs
@@ -339,6 +345,12 @@ export function formatAdapterExecutionTimeoutStartLogLine(
   resolution: AdapterExecutionTargetTimeoutResolution,
 ): string {
   if (resolution.timeoutSec <= 0) {
+    if (resolution.source === "configured") {
+      return (
+        "Adapter execution timeout: none " +
+        "(explicitly disabled via adapterConfig.timeoutSec; set it to a positive value to add one)."
+      );
+    }
     return (
       "Adapter execution timeout: none " +
       "(no adapter wall-clock timeout for this target; set adapterConfig.timeoutSec to add one)."
