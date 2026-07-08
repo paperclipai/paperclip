@@ -25,6 +25,7 @@ COPY packages/mcp-server/package.json packages/mcp-server/
 COPY packages/skills-catalog/package.json packages/skills-catalog/
 COPY packages/teams-catalog/package.json packages/teams-catalog/
 COPY packages/adapters/acpx-local/package.json packages/adapters/acpx-local/
+COPY packages/adapters/antigravity-local/package.json packages/adapters/antigravity-local/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
 COPY packages/adapters/cursor-cloud/package.json packages/adapters/cursor-cloud/
