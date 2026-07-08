@@ -238,6 +238,28 @@ function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
   };
 }
 
+// Accepted-plan children are not realized yet, so carry only unresolved
+// workspace intent and let the first child run render/persist its own branch.
+function buildPreRealizationExecutionWorkspaceSettings(raw: unknown): Record<string, unknown> | null {
+  const settings = parseIssueExecutionWorkspaceSettings(raw);
+  if (!settings) return null;
+  const mode =
+    settings.mode && settings.mode !== "inherit" && settings.mode !== "reuse_existing"
+      ? settings.mode
+      : null;
+  const next: Record<string, unknown> = {};
+  if (mode) next.mode = mode;
+  if (settings.workspaceStrategy) {
+    next.workspaceStrategy = {
+      type: settings.workspaceStrategy.type,
+      ...(settings.workspaceStrategy.baseRef ? { baseRef: settings.workspaceStrategy.baseRef } : {}),
+      ...(settings.workspaceStrategy.branchTemplate ? { branchTemplate: settings.workspaceStrategy.branchTemplate } : {}),
+      ...(settings.workspaceStrategy.worktreeParentDir ? { worktreeParentDir: settings.workspaceStrategy.worktreeParentDir } : {}),
+    };
+  }
+  return Object.keys(next).length > 0 ? next : null;
+}
+
 function toTimestampMs(value: Date | string | null | undefined) {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -494,6 +516,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
+  skipExecutionWorkspaceInheritance?: boolean;
   watchdog?: { agentId: string; instructions?: string | null } | null;
   watchdogActorRunId?: string | null;
   actorRunId?: string | null;
@@ -503,6 +526,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
   blockParentUntilDone?: boolean;
+  executionWorkspaceInheritanceMode?: "linkage" | "strategy_only";
   actorAgentId?: string | null;
   actorUserId?: string | null;
 };
@@ -693,6 +717,8 @@ const ACCEPTED_PLAN_DECOMPOSITION_FINGERPRINT_CHILD_METADATA_KEYS = new Set([
   "updatedByUserId",
   "actorAgentId",
   "actorUserId",
+  "executionWorkspaceInheritanceMode",
+  "skipExecutionWorkspaceInheritance",
 ]);
 
 function normalizeAcceptedPlanDecompositionFingerprintChild(child: IssueChildCreateInput) {
@@ -5558,14 +5584,25 @@ export function issueService(db: Db) {
       const {
         acceptanceCriteria,
         blockParentUntilDone,
+        executionWorkspaceInheritanceMode = "linkage",
         actorAgentId,
         actorUserId,
         ...issueData
       } = data;
+      const inheritStrategyOnly = executionWorkspaceInheritanceMode === "strategy_only";
+      const hasExplicitExecutionWorkspaceOverride =
+        issueData.executionWorkspaceId !== undefined ||
+        issueData.executionWorkspacePreference !== undefined ||
+        issueData.executionWorkspaceSettings !== undefined;
+      const inheritedPreRealizationWorkspaceSettings =
+        inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
+          ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
+          : null;
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
         projectId: issueData.projectId ?? parent.projectId,
+        projectWorkspaceId: issueData.projectWorkspaceId ?? (inheritStrategyOnly ? parent.projectWorkspaceId : undefined),
         goalId: issueData.goalId ?? parent.goalId,
         actorResponsibleUserId: issueData.actorResponsibleUserId ?? null,
         trustExplicitResponsibleUserId: issueData.trustExplicitResponsibleUserId === true,
@@ -5573,7 +5610,12 @@ export function issueService(db: Db) {
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
         description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
-        inheritExecutionWorkspaceFromIssueId: parent.id,
+        ...(inheritedPreRealizationWorkspaceSettings
+          ? { executionWorkspaceSettings: inheritedPreRealizationWorkspaceSettings }
+          : {}),
+        ...(inheritStrategyOnly
+          ? { skipExecutionWorkspaceInheritance: true }
+          : { inheritExecutionWorkspaceFromIssueId: parent.id }),
       });
 
       if (blockParentUntilDone) {
@@ -5748,7 +5790,10 @@ export function issueService(db: Db) {
             throw new Error("Accepted-plan decomposition child cursor moved past the requested children");
           }
 
-          const createdChild = await issueService(tx as unknown as Db).createChild(sourceIssue.id, nextChildInput);
+          const createdChild = await issueService(tx as unknown as Db).createChild(sourceIssue.id, {
+            ...nextChildInput,
+            executionWorkspaceInheritanceMode: "strategy_only",
+          });
           const nextIds = [...existingChildIssueIds, createdChild.issue.id];
           const now = new Date();
           const nextStatus = nextIds.length === data.children.length ? "completed" : "in_flight";
@@ -5876,6 +5921,7 @@ export function issueService(db: Db) {
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
+        skipExecutionWorkspaceInheritance,
         watchdog,
         watchdogActorRunId,
         actorRunId,
@@ -5908,7 +5954,9 @@ export function issueService(db: Db) {
         let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
-        const workspaceInheritanceIssueId = inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
+        const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
+          ? null
+          : inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
         const hasExplicitExecutionWorkspaceOverride =
           issueData.executionWorkspaceId !== undefined ||
           issueData.executionWorkspacePreference !== undefined ||
