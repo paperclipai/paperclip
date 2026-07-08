@@ -249,12 +249,16 @@ function buildPreRealizationExecutionWorkspaceSettings(raw: unknown): Record<str
       : null;
   const next: Record<string, unknown> = {};
   if (mode) next.mode = mode;
+  if (settings.environmentId) next.environmentId = settings.environmentId;
+  if (settings.workspaceRuntime) next.workspaceRuntime = settings.workspaceRuntime;
   if (settings.workspaceStrategy) {
     next.workspaceStrategy = {
       type: settings.workspaceStrategy.type,
       ...(settings.workspaceStrategy.baseRef ? { baseRef: settings.workspaceStrategy.baseRef } : {}),
       ...(settings.workspaceStrategy.branchTemplate ? { branchTemplate: settings.workspaceStrategy.branchTemplate } : {}),
       ...(settings.workspaceStrategy.worktreeParentDir ? { worktreeParentDir: settings.workspaceStrategy.worktreeParentDir } : {}),
+      ...(settings.workspaceStrategy.provisionCommand ? { provisionCommand: settings.workspaceStrategy.provisionCommand } : {}),
+      ...(settings.workspaceStrategy.teardownCommand ? { teardownCommand: settings.workspaceStrategy.teardownCommand } : {}),
     };
   }
   return Object.keys(next).length > 0 ? next : null;
