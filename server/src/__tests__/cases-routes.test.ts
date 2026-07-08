@@ -191,6 +191,7 @@ describeEmbeddedPostgres("cases routes", () => {
     pipelinesStandIn.patch("/cases/:caseId", (_req, res) => res.json({ handledBy: "pipelines" }));
     pipelinesStandIn.put("/cases/:caseId/documents/:key", (_req, res) => res.json({ handledBy: "pipelines" }));
     pipelinesStandIn.get("/cases/:caseId/documents/:key/revisions", (_req, res) => res.json({ handledBy: "pipelines" }));
+    pipelinesStandIn.get("/cases/:caseId/events", (_req, res) => res.json({ handledBy: "pipelines" }));
     instance.use("/api", pipelinesStandIn);
     instance.use(errorHandler);
     const http = request(instance);
@@ -202,6 +203,7 @@ describeEmbeddedPostgres("cases routes", () => {
     await http.patch(`/api/cases/${foreignId}`).send({ stageKey: "review" }).expect(200, { handledBy: "pipelines" });
     await http.put(`/api/cases/${foreignId}/documents/body`).send({ markdown: "x" }).expect(200, { handledBy: "pipelines" });
     await http.get(`/api/cases/${foreignId}/documents/body/revisions`).expect(200, { handledBy: "pipelines" });
+    await http.get(`/api/cases/${foreignId}/events`).expect(200, { handledBy: "pipelines" });
 
     // Flag on: real Cases rows are still handled by the cases router, unknown ids still fall through.
     await enableCases();

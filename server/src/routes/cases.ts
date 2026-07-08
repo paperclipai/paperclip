@@ -803,9 +803,9 @@ export function caseRoutes(db: Db, storage: StorageService) {
     res.status(201).json(result);
   });
 
-  router.get("/cases/:id/events", async (req, res) => {
-    await assertCasesEnabled(db);
-    const caseRow = await assertCaseAccess(db, req, req.params.id as string);
+  router.get("/cases/:id/events", async (req, res, next) => {
+    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
+    if (!caseRow) return next();
     const parsed = listEventsQuerySchema.safeParse(req.query);
     if (!parsed.success) throw badRequest("Invalid case events query", parsed.error.issues);
     const rows = await db
