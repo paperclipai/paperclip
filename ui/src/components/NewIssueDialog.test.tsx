@@ -596,6 +596,9 @@ describe("NewIssueDialog", () => {
     });
     await flush();
 
+    expect(titleInput!.value).toBe("Typed issue");
+    expect(descriptionInput!.value).toBe("Typed description");
+
     const submitButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Create Issue"));
     expect(submitButton).not.toBeUndefined();

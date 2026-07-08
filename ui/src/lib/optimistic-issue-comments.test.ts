@@ -701,6 +701,8 @@ describe("optimistic issue comments", () => {
       },
       {
         status: "in_review",
+        title: "Updated property pane",
+        description: "Keep the edited description visible while saving.",
         assigneeAgentId: null,
         assigneeUserId: "board-2",
         labelIds: ["label-2"],
@@ -712,6 +714,8 @@ describe("optimistic issue comments", () => {
     );
 
     expect(next?.status).toBe("in_review");
+    expect(next?.title).toBe("Updated property pane");
+    expect(next?.description).toBe("Keep the edited description visible while saving.");
     expect(next?.assigneeAgentId).toBeNull();
     expect(next?.assigneeUserId).toBe("board-2");
     expect(next?.labelIds).toEqual(["label-2"]);

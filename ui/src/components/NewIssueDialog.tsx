@@ -723,6 +723,7 @@ export function NewIssueDialog() {
 
   const handleTitleChange = useCallback((nextTitle: string) => {
     titleRef.current = nextTitle;
+    setTitle(nextTitle);
     const nextTitleHasText = nextTitle.trim().length > 0;
     const nextDraftHasText = nextTitleHasText || descriptionRef.current.trim().length > 0;
     setTitleHasText((current) => current === nextTitleHasText ? current : nextTitleHasText);
@@ -732,6 +733,7 @@ export function NewIssueDialog() {
 
   const handleDescriptionChange = useCallback((nextDescription: string) => {
     descriptionRef.current = nextDescription;
+    setDescription(nextDescription);
     const nextDraftHasText = titleRef.current.trim().length > 0 || nextDescription.trim().length > 0;
     setDraftHasText((current) => current === nextDraftHasText ? current : nextDraftHasText);
     queueDraftSave({ description: nextDescription });

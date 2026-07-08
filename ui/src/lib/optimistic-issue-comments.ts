@@ -298,6 +298,8 @@ export function applyOptimisticIssueFieldUpdate(
   };
 
   assign("status");
+  assign("title");
+  assign("description");
   assign("priority");
   assign("assigneeAgentId");
   assign("assigneeUserId");
