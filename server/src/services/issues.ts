@@ -69,8 +69,14 @@ import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
+  isUnrunnableWorktreeCombo,
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
+  resolvePinnedIssueWorkspaceStrategyType,
+  WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
+  WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
+  WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+  type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
@@ -165,6 +171,48 @@ function applyStatusSideEffects(
     patch.cancelledAt = new Date();
   }
   return patch;
+}
+
+function workspaceWorktreeRequiresProjectDetails() {
+  return {
+    code: WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
+    remediation: WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+  };
+}
+
+function assertExplicitPinnedWorktreeIssueRunnable(input: {
+  projectId: string | null | undefined;
+  projectWorkspaceId: string | null | undefined;
+  executionWorkspaceId: string | null | undefined;
+  executionWorkspacePreference: string | null | undefined;
+  executionWorkspaceSettings: unknown;
+}) {
+  const settings = parseIssueExecutionWorkspaceSettings(input.executionWorkspaceSettings);
+  const mode = settings?.mode;
+  if (mode !== "isolated_workspace" && mode !== "operator_branch") return;
+
+  const resolvedMode = mode as ParsedExecutionWorkspaceMode;
+  if (
+    isUnrunnableWorktreeCombo({
+      issue: {
+        projectId: input.projectId ?? null,
+        projectWorkspaceId: input.projectWorkspaceId ?? null,
+        executionWorkspaceId: input.executionWorkspaceId ?? null,
+        executionWorkspacePreference: input.executionWorkspacePreference ?? null,
+      },
+      resolvedMode,
+      resolvedStrategy: resolvePinnedIssueWorkspaceStrategyType({
+        mode: resolvedMode,
+        issueSettings: settings,
+      }),
+      hasResolvablePriorSessionWorkspace: false,
+    })
+  ) {
+    throw unprocessable(
+      WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
+      workspaceWorktreeRequiresProjectDetails(),
+    );
+  }
 }
 
 function readStringFromRecord(record: unknown, key: string) {
@@ -6008,6 +6056,15 @@ export function issueService(db: Db) {
         if (executionWorkspaceId) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
         }
+        if (isolatedWorkspacesEnabled && issueData.executionWorkspaceSettings !== undefined) {
+          assertExplicitPinnedWorktreeIssueRunnable({
+            projectId: issueData.projectId ?? null,
+            projectWorkspaceId,
+            executionWorkspaceId,
+            executionWorkspacePreference,
+            executionWorkspaceSettings: issueData.executionWorkspaceSettings,
+          });
+        }
         // Self-correcting counter: use MAX(issue_number) + 1 if the counter
         // has drifted below the actual max, preventing identifier collisions.
         const [maxRow] = await tx
@@ -6222,6 +6279,15 @@ export function issueService(db: Db) {
         if (!validatedExecutionWorkspace) {
           await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
         }
+      }
+      if (isolatedWorkspacesEnabled && issueData.executionWorkspaceSettings !== undefined) {
+        assertExplicitPinnedWorktreeIssueRunnable({
+          projectId: nextProjectId ?? null,
+          projectWorkspaceId: nextProjectWorkspaceId ?? null,
+          executionWorkspaceId: nextExecutionWorkspaceId ?? null,
+          executionWorkspacePreference: nextExecutionWorkspacePreference ?? null,
+          executionWorkspaceSettings: issueData.executionWorkspaceSettings,
+        });
       }
 
       applyStatusSideEffects(issueData.status, patch);

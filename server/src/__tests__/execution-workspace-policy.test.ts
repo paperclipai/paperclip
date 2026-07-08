@@ -3,10 +3,12 @@ import {
   buildExecutionWorkspaceAdapterConfig,
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
+  isUnrunnableWorktreeCombo,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
   resolveExecutionWorkspaceEnvironmentId,
+  resolvePinnedIssueWorkspaceStrategyType,
   resolveExecutionWorkspaceMode,
 } from "../services/execution-workspace-policy.ts";
 
@@ -35,6 +37,112 @@ describe("execution workspace policy helpers", () => {
         legacyUseProjectWorkspace: false,
       }),
     ).toBe("isolated_workspace");
+  });
+
+  it("centralizes unrunnable isolated worktree detection", () => {
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: null,
+          projectWorkspaceId: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+        },
+        resolvedMode: "isolated_workspace",
+        resolvedStrategy: "git_worktree",
+      }),
+    ).toBe(true);
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: "project-1",
+          projectWorkspaceId: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+        },
+        resolvedMode: "isolated_workspace",
+        resolvedStrategy: "git_worktree",
+      }),
+    ).toBe(false);
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: null,
+          projectWorkspaceId: null,
+          executionWorkspaceId: "workspace-1",
+          executionWorkspacePreference: "reuse_existing",
+        },
+        resolvedMode: "isolated_workspace",
+        resolvedStrategy: "git_worktree",
+      }),
+    ).toBe(false);
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: null,
+          projectWorkspaceId: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+        },
+        resolvedMode: "shared_workspace",
+        resolvedStrategy: "git_worktree",
+      }),
+    ).toBe(false);
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: null,
+          projectWorkspaceId: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+        },
+        resolvedMode: "agent_default",
+        resolvedStrategy: "git_worktree",
+      }),
+    ).toBe(false);
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: null,
+          projectWorkspaceId: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+        },
+        resolvedMode: "operator_branch",
+        resolvedStrategy: "git_worktree",
+      }),
+    ).toBe(true);
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: null,
+          projectWorkspaceId: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+        },
+        resolvedMode: "isolated_workspace",
+        resolvedStrategy: "git_worktree",
+        hasResolvablePriorSessionWorkspace: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("defaults pinned isolated issue settings to git_worktree", () => {
+    expect(
+      resolvePinnedIssueWorkspaceStrategyType({
+        mode: "isolated_workspace",
+        issueSettings: { mode: "isolated_workspace" },
+      }),
+    ).toBe("git_worktree");
+    expect(
+      resolvePinnedIssueWorkspaceStrategyType({
+        mode: "isolated_workspace",
+        issueSettings: {
+          mode: "isolated_workspace",
+          workspaceStrategy: { type: "project_primary" },
+        },
+      }),
+    ).toBe("project_primary");
   });
 
   it("falls back to project policy before legacy project-workspace compatibility flag", () => {
