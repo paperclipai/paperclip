@@ -172,11 +172,33 @@ async function waitForRunToFinish(heartbeat: Heartbeat, runId: string, timeoutMs
 
 async function waitForHeartbeatIdle(db: Db, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
+  let idleSince: number | null = null;
   while (Date.now() < deadline) {
     const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
-    if (!runs.some((run) => run.status === "queued" || run.status === "running")) return;
+    if (!runs.some((run) => run.status === "queued" || run.status === "running")) {
+      idleSince ??= Date.now();
+      if (Date.now() - idleSince >= 250) return;
+    } else {
+      idleSince = null;
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+}
+
+async function deleteHeartbeatRunsForCleanup(db: Db) {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
+    try {
+      await db.delete(heartbeatRuns);
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  throw lastError;
 }
 
 async function waitForContainmentSideEffects(input: {
@@ -873,9 +895,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     await db.delete(heartbeatRunEvents);
     // Heartbeat failure/finalization paths can emit run-linked events and
     // activity after the first cleanup pass observes all runs as non-active.
-    await db.delete(heartbeatRunEvents);
-    await db.delete(activityLog);
-    await db.delete(heartbeatRuns);
+    await deleteHeartbeatRunsForCleanup(db);
     await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(projectWorkspaces);

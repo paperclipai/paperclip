@@ -4862,6 +4862,7 @@ for (const route of [
   ["get", "/api/companies/{companyId}/skills/{skillId}/versions/{versionId}", "Get a skill version"],
   ["post", "/api/companies/{companyId}/skills/{skillId}/star", "Star a company skill"],
   ["delete", "/api/companies/{companyId}/skills/{skillId}/star", "Unstar a company skill"],
+  ["get", "/api/companies/{companyId}/skills/{skillId}/fork-precheck", "Preview company skill fork impact"],
   ["post", "/api/companies/{companyId}/skills/{skillId}/fork", "Fork a company skill"],
   ["get", "/api/companies/{companyId}/skills/{skillId}/comments", "List skill comments"],
   ["post", "/api/companies/{companyId}/skills/{skillId}/comments", "Create a skill comment"],
