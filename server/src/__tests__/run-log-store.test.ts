@@ -425,6 +425,13 @@ describe("run-log-store s3 (cold) read path", () => {
     const store = createLocalFileRunLogStore(base);
     await expect(store.read({ store: "s3", logRef: KEY }, { offset: 0, limitBytes: 100 })).rejects.toThrow();
   });
+
+  it("rejects a 'missing' handle with notFound (purged hot copy, no archive)", async () => {
+    const store = createLocalFileRunLogStore(base);
+    await expect(
+      store.read({ store: "missing", logRef: "company-1/agent-1/gone.ndjson.gz" }, { offset: 0, limitBytes: 100 }),
+    ).rejects.toMatchObject({ status: 404 });
+  });
 });
 
 describe("run-log-store gz read-path edges", () => {
