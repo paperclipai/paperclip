@@ -1,8 +1,11 @@
-import { createReadStream, promises as fs } from "node:fs";
+import { createReadStream, createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { createGzip, createGunzip } from "node:zlib";
+import { pipeline } from "node:stream/promises";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
 
 export type RunLogStoreType = "local_file";
 
@@ -22,9 +25,13 @@ export interface RunLogReadResult {
 }
 
 export interface RunLogFinalizeSummary {
+  /** Byte length of the ORIGINAL, uncompressed log content. */
   bytes: number;
+  /** sha256 of the ORIGINAL, uncompressed log content. */
   sha256?: string;
   compressed: boolean;
+  /** Final relative logRef to persist — `.ndjson.gz` when compressed, else `.ndjson`. */
+  logRef: string;
 }
 
 export interface RunLogStore {
@@ -50,7 +57,35 @@ function resolveWithin(basePath: string, relativePath: string) {
   return resolved;
 }
 
-function createLocalFileRunLogStore(basePath: string): RunLogStore {
+/**
+ * Compression is on by default. Set `PAPERCLIP_RUN_LOG_COMPRESS=0` (or `false`)
+ * to keep completed run-logs as raw `.ndjson`. Read at finalize time so tests
+ * and operators can toggle it without a restart.
+ */
+function compressionEnabled(): boolean {
+  const raw = process.env.PAPERCLIP_RUN_LOG_COMPRESS;
+  if (raw == null) return true;
+  const normalized = raw.trim().toLowerCase();
+  return normalized !== "0" && normalized !== "false" && normalized !== "no" && normalized !== "off";
+}
+
+export function createLocalFileRunLogStore(basePath: string): RunLogStore {
+  // logRefs whose finalize() has begun. A finalized ref's raw `.ndjson` is
+  // gzipped and unlinked, so a late append() must NOT recreate/write it (that
+  // would strand invisible bytes: read() resolves the `.gz` first). Runtime
+  // services can still emit onLog appends after heartbeat calls finalize()
+  // (heartbeat releases runtime services only after finalizing), so we guard
+  // append() against it here.
+  //
+  // Accepted limitation: this Set lives only in-process. After a server restart
+  // it is empty, so a zombie appender could recreate a raw file for an
+  // already-finalized run. That raw file stays invisible (read() prefers the
+  // .gz) and is bounded by the infra janitor backstop — deliberate.
+  const finalizedRefs = new Set<string>();
+  // Refs we've already warned about appending-after-finalize, so the warn is
+  // emitted once per ref, not once per dropped chunk.
+  const appendAfterFinalizeWarned = new Set<string>();
+
   async function ensureDir(relativeDir: string) {
     const dir = resolveWithin(basePath, relativeDir);
     await fs.mkdir(dir, { recursive: true });
@@ -82,6 +117,83 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
     return { content, nextOffset };
   }
 
+  /**
+   * Range-read a gzip-compressed log. offset/limitBytes semantics are over the
+   * UNCOMPRESSED byte stream (identical to readFileRange). The whole file is
+   * never buffered: the first `offset` decompressed bytes are discarded, up to
+   * `limitBytes` bytes are collected, then the stream is destroyed. nextOffset
+   * is set only when the underlying stream still had data past what we returned.
+   */
+  async function readGzipRange(filePath: string, offset: number, limitBytes: number): Promise<RunLogReadResult> {
+    const exists = await fs.stat(filePath).catch(() => null);
+    if (!exists) throw notFound("Run log not found");
+
+    if (limitBytes <= 0) {
+      return { content: "", nextOffset: offset };
+    }
+
+    let skipped = 0; // uncompressed bytes discarded so far (up to offset)
+    let collected = 0; // uncompressed bytes retained (up to limitBytes)
+    let hasMore = false; // stream produced data beyond what we returned
+    const chunks: Buffer[] = [];
+
+    const source = createReadStream(filePath);
+    const gunzip = createGunzip();
+
+    await new Promise<void>((resolve, reject) => {
+      let finished = false;
+      const finish = (err?: Error) => {
+        if (finished) return;
+        finished = true;
+        // Stop the pipeline early once we have enough; ignore late errors.
+        source.destroy();
+        gunzip.destroy();
+        if (err) reject(err);
+        else resolve();
+      };
+
+      source.on("error", finish);
+      gunzip.on("error", finish);
+      gunzip.on("end", () => finish());
+
+      gunzip.on("data", (raw: Buffer) => {
+        let buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+
+        // Discard bytes before `offset`.
+        if (skipped < offset) {
+          const toSkip = Math.min(offset - skipped, buf.length);
+          skipped += toSkip;
+          buf = buf.subarray(toSkip);
+          if (buf.length === 0) return;
+        }
+
+        if (collected >= limitBytes) {
+          // Already full; any further byte means there is more data.
+          hasMore = true;
+          finish();
+          return;
+        }
+
+        const remaining = limitBytes - collected;
+        if (buf.length <= remaining) {
+          chunks.push(buf);
+          collected += buf.length;
+        } else {
+          chunks.push(buf.subarray(0, remaining));
+          collected += remaining;
+          hasMore = true;
+          finish();
+        }
+      });
+
+      source.pipe(gunzip);
+    });
+
+    const content = Buffer.concat(chunks).toString("utf8");
+    const nextOffset = hasMore ? offset + collected : undefined;
+    return { content, nextOffset };
+  }
+
   async function sha256File(filePath: string): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       const hash = createHash("sha256");
@@ -90,6 +202,37 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       stream.on("error", reject);
       stream.on("end", () => resolve(hash.digest("hex")));
     });
+  }
+
+  /**
+   * Resolve which file backs a logRef, tolerating drift between the DB row's
+   * ref and what is on disk:
+   *  - exact path if present
+   *  - `.ndjson` ref → try `.ndjson.gz` (legacy rows + the compress crash window)
+   *  - `.ndjson.gz` ref → try raw `.ndjson` (gzip-failure fallback)
+   * Step 3 will extend this with an S3 fallback.
+   */
+  async function resolveReadTarget(logRef: string): Promise<{ absPath: string; compressed: boolean }> {
+    const absPath = resolveWithin(basePath, logRef);
+    if (await fs.stat(absPath).catch(() => null)) {
+      return { absPath, compressed: logRef.endsWith(".gz") };
+    }
+
+    if (logRef.endsWith(".ndjson")) {
+      const gzRef = `${logRef}.gz`;
+      const gzAbs = resolveWithin(basePath, gzRef);
+      if (await fs.stat(gzAbs).catch(() => null)) {
+        return { absPath: gzAbs, compressed: true };
+      }
+    } else if (logRef.endsWith(".ndjson.gz")) {
+      const rawRef = logRef.slice(0, -".gz".length);
+      const rawAbs = resolveWithin(basePath, rawRef);
+      if (await fs.stat(rawAbs).catch(() => null)) {
+        return { absPath: rawAbs, compressed: false };
+      }
+    }
+
+    throw notFound("Run log not found");
   }
 
   return {
@@ -108,6 +251,16 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
 
     async append(handle, event) {
       if (handle.store !== "local_file") return 0;
+      if (finalizedRefs.has(handle.logRef)) {
+        if (!appendAfterFinalizeWarned.has(handle.logRef)) {
+          appendAfterFinalizeWarned.add(handle.logRef);
+          logger.warn(
+            { logRef: handle.logRef },
+            "run-log: append after finalize ignored; log is already compressed/sealed",
+          );
+        }
+        return 0;
+      }
       const absPath = resolveWithin(basePath, handle.logRef);
       const line = JSON.stringify({
         ts: event.ts,
@@ -120,29 +273,75 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
     },
 
     async finalize(handle) {
+      // Mark finalized at the START (before gzip/unlink) so any append() racing
+      // the compression is dropped rather than recreating the raw file.
+      finalizedRefs.add(handle.logRef);
       if (handle.store !== "local_file") {
-        return { bytes: 0, compressed: false };
+        return { bytes: 0, compressed: false, logRef: handle.logRef };
       }
       const absPath = resolveWithin(basePath, handle.logRef);
       const stat = await fs.stat(absPath).catch(() => null);
       if (!stat) throw notFound("Run log not found");
 
-      const hash = await sha256File(absPath);
-      return {
-        bytes: stat.size,
-        sha256: hash,
+      // bytes/sha256 always describe the ORIGINAL uncompressed content.
+      const rawBytes = stat.size;
+      const rawSha256 = await sha256File(absPath);
+
+      const uncompressedSummary: RunLogFinalizeSummary = {
+        bytes: rawBytes,
+        sha256: rawSha256,
         compressed: false,
+        logRef: handle.logRef,
       };
+
+      if (!compressionEnabled()) {
+        return uncompressedSummary;
+      }
+
+      const gzRef = `${handle.logRef}.gz`;
+      const gzAbs = resolveWithin(basePath, gzRef);
+      const tmpAbs = `${gzAbs}.tmp`;
+
+      // Crash-safe ordering: write tmp → rename → unlink raw. On any failure,
+      // clean up the tmp and keep the raw file. finalize must never lose the
+      // log or throw just because gzip failed.
+      try {
+        await pipeline(createReadStream(absPath), createGzip(), createWriteStream(tmpAbs));
+        await fs.rename(tmpAbs, gzAbs);
+        await fs.unlink(absPath).catch((unlinkErr) => {
+          // Compressed copy is durable; a leftover raw file is harmless (read()
+          // prefers the exact ref, which is now the .gz).
+          logger.warn(
+            { err: unlinkErr, logRef: handle.logRef },
+            "run-log: failed to unlink raw file after compression",
+          );
+        });
+        return {
+          bytes: rawBytes,
+          sha256: rawSha256,
+          compressed: true,
+          logRef: gzRef,
+        };
+      } catch (err) {
+        await fs.unlink(tmpAbs).catch(() => undefined);
+        logger.warn(
+          { err, logRef: handle.logRef },
+          "run-log: compression failed; leaving raw log uncompressed",
+        );
+        return uncompressedSummary;
+      }
     },
 
     async read(handle, opts) {
       if (handle.store !== "local_file") {
         throw notFound("Run log not found");
       }
-      const absPath = resolveWithin(basePath, handle.logRef);
       const offset = opts?.offset ?? 0;
       const limitBytes = opts?.limitBytes ?? 256_000;
-      return readFileRange(absPath, offset, limitBytes);
+      const { absPath, compressed } = await resolveReadTarget(handle.logRef);
+      return compressed
+        ? readGzipRange(absPath, offset, limitBytes)
+        : readFileRange(absPath, offset, limitBytes);
     },
   };
 }
