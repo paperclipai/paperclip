@@ -832,6 +832,12 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `agent.sessions.send`
 - `agent.sessions.close`
 
+`PluginIssuesClient.create` accepts an optional `idempotencyKey` containing 1-255
+UTF-8 bytes. Keys are unique within a plugin installation and company and durable
+across worker or host restarts. A retry, including one with a different create
+payload, returns the original issue unchanged. The same key may create a separate
+issue for another plugin installation or company.
+
 ### Plugin State
 
 - `plugin.state.read`

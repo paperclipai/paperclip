@@ -89,6 +89,58 @@ const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 /** Only these protocols are allowed for plugin HTTP requests. */
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
+const PLUGIN_ISSUE_IDEMPOTENCY_KEY_MAX_BYTES = 255;
+const PLUGIN_ISSUE_UPDATE_FIELDS = new Set([
+  "title",
+  "description",
+  "status",
+  "priority",
+  "assigneeAgentId",
+  "assigneeUserId",
+  "billingCode",
+  "originKind",
+  "originId",
+  "originRunId",
+  "requestDepth",
+  "executionWorkspaceId",
+  "executionWorkspacePreference",
+  "blockedByIssueIds",
+  "labelIds",
+  "executionWorkspaceSettings",
+  "actorAgentId",
+  "actorUserId",
+  "actorRunId",
+]);
+
+function assertPluginIssueUpdateFields(patch: Record<string, unknown>): void {
+  for (const field of Object.keys(patch)) {
+    if (!PLUGIN_ISSUE_UPDATE_FIELDS.has(field)) {
+      throw new Error(`Unsupported plugin issue update field: ${field}`);
+    }
+  }
+}
+
+function validatePluginIssueIdempotencyKey(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error("idempotencyKey must be a non-empty string");
+  }
+  const byteLength = new TextEncoder().encode(value).byteLength;
+  if (byteLength === 0) {
+    throw new Error("idempotencyKey must be a non-empty string");
+  }
+  if (byteLength > PLUGIN_ISSUE_IDEMPOTENCY_KEY_MAX_BYTES) {
+    throw new Error(`idempotencyKey must not exceed ${PLUGIN_ISSUE_IDEMPOTENCY_KEY_MAX_BYTES} UTF-8 bytes`);
+  }
+  return value;
+}
+
+function pluginIssueIdempotencyDigest(pluginId: string, idempotencyKey: string): string {
+  return createHash("sha256")
+    .update(pluginId)
+    .update("\0")
+    .update(idempotencyKey)
+    .digest("hex");
+}
 
 /**
  * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
@@ -493,7 +545,14 @@ export function buildHostServices(
   pluginKey: string,
   eventBus: PluginEventBus,
   notifyWorker?: (method: string, params: unknown) => void,
-  options: { pluginWorkerManager?: PluginWorkerManager; manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1 } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1;
+    testHooks?: {
+      afterPluginIssueIdempotencyPrelookup?: () => Promise<void>;
+      afterPluginIssueCreatedActivityPersisted?: () => Promise<void>;
+    };
+  } = {},
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
@@ -691,15 +750,18 @@ export function buildHostServices(
     normalizePluginOriginKind(originKind);
   };
 
-  const logPluginActivity = async (input: {
-    companyId: string;
-    action: string;
-    entityType: string;
-    entityId: string;
-    details?: Record<string, unknown> | null;
-    actor?: { actorAgentId?: string | null; actorUserId?: string | null; actorRunId?: string | null };
-  }) => {
-    await logActivity(db, {
+  const logPluginActivity = async (
+    input: {
+      companyId: string;
+      action: string;
+      entityType: string;
+      entityId: string;
+      details?: Record<string, unknown> | null;
+      actor?: { actorAgentId?: string | null; actorUserId?: string | null; actorRunId?: string | null };
+    },
+    options: { db?: Parameters<typeof logActivity>[0]; publish?: boolean } = {},
+  ) => {
+    return logActivity(options.db ?? db, {
       companyId: input.companyId,
       actorType: "plugin",
       actorId: pluginId,
@@ -709,7 +771,7 @@ export function buildHostServices(
       entityType: input.entityType,
       entityId: input.entityId,
       details: pluginActivityDetails(input.details, input.actor),
-    });
+    }, { publish: options.publish });
   };
 
   const collectIssueSubtreeIds = async (companyId: string, rootIssueId: string) => {
@@ -1544,13 +1606,29 @@ export function buildHostServices(
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const { actorAgentId, actorUserId, actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
+        const {
+          actorAgentId,
+          actorUserId,
+          actorRunId,
+          originKind,
+          surfaceVisibility,
+          idempotencyKey,
+          ...issueInput
+        } = params;
+        const idempotencyDigest = idempotencyKey === undefined
+          ? undefined
+          : pluginIssueIdempotencyDigest(pluginId, validatePluginIssueIdempotencyKey(idempotencyKey));
+        if (idempotencyDigest !== undefined) {
+          const existing = await issues.getByPluginIssueIdempotencyDigest(companyId, idempotencyDigest);
+          if (existing) return existing as Issue;
+          await options.testHooks?.afterPluginIssueIdempotencyPrelookup?.();
+        }
         const normalizedOriginKind = normalizePluginOriginKind(
           surfaceVisibility === "plugin_operation" && !originKind
             ? pluginOperationIssueOriginKind(pluginKey)
             : originKind,
         );
-        const issue = (await issues.create(companyId, {
+        const createInput = {
           ...(issueInput as any),
           originKind: normalizedOriginKind,
           originId: params.originId ?? null,
@@ -1559,22 +1637,44 @@ export function buildHostServices(
           createdByUserId: actorUserId ?? null,
           actorResponsibleUserId: actorUserId ?? null,
           trustExplicitResponsibleUserId: true,
-        })) as Issue;
-        await logPluginActivity({
+        };
+        const logCreatedActivity = (
+          createdIssue: Issue,
+          activityOptions?: Parameters<typeof logPluginActivity>[1],
+        ) => logPluginActivity({
           companyId,
           action: "issue.created",
           entityType: "issue",
-          entityId: issue.id,
+          entityId: createdIssue.id,
           actor: { actorAgentId, actorUserId, actorRunId },
           details: {
-            title: issue.title,
-            identifier: issue.identifier,
+            title: createdIssue.title,
+            identifier: createdIssue.identifier,
             originKind: normalizedOriginKind,
-            originId: issue.originId,
-            billingCode: issue.billingCode,
+            originId: createdIssue.originId,
+            billingCode: createdIssue.billingCode,
             blockedByIssueIds: params.blockedByIssueIds ?? [],
           },
-        });
+        }, activityOptions);
+        let publishCreatedActivity: (() => void) | undefined;
+        const result = idempotencyDigest === undefined
+          ? { issue: await issues.create(companyId, createInput), created: true }
+          : await issues.createWithPluginIdempotency(
+            companyId,
+            createInput,
+            idempotencyDigest,
+            async (tx, createdIssue) => {
+              publishCreatedActivity = await logCreatedActivity(createdIssue as Issue, {
+                db: tx,
+                publish: false,
+              });
+              await options.testHooks?.afterPluginIssueCreatedActivityPersisted?.();
+            },
+          );
+        const issue = result.issue as Issue;
+        if (!result.created) return issue;
+        if (publishCreatedActivity) publishCreatedActivity();
+        else await logCreatedActivity(issue);
         return issue;
       },
       async update(params) {
@@ -1582,6 +1682,7 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const existing = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
         const patch = { ...(params.patch as Record<string, unknown>) };
+        assertPluginIssueUpdateFields(patch);
         const actorAgentId = typeof patch.actorAgentId === "string" ? patch.actorAgentId : null;
         const actorUserId = typeof patch.actorUserId === "string" ? patch.actorUserId : null;
         const actorRunId = typeof patch.actorRunId === "string" ? patch.actorRunId : null;

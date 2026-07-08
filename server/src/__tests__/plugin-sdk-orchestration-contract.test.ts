@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import type { Issue, PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { createTestHarness } from "../../../packages/plugins/sdk/src/testing.js";
 
-function manifest(capabilities: PaperclipPluginManifestV1["capabilities"]): PaperclipPluginManifestV1 {
+function manifest(
+  capabilities: PaperclipPluginManifestV1["capabilities"],
+  id = "paperclip.test-orchestration",
+): PaperclipPluginManifestV1 {
   return {
-    id: "paperclip.test-orchestration",
+    id,
     apiVersion: 1,
     version: "0.1.0",
     displayName: "Test Orchestration",
@@ -113,6 +116,59 @@ describe("plugin SDK orchestration contract", () => {
         },
       },
     });
+  });
+
+  it("models plugin- and company-scoped idempotent issue creation in the test harness", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const harness = createTestHarness({
+      manifest: manifest(["issues.create"]),
+    });
+    const otherPluginHarness = createTestHarness({
+      manifest: manifest(["issues.create"], "paperclip.other-orchestration"),
+    });
+
+    const original = await harness.ctx.issues.create({
+      companyId,
+      title: "Original title",
+      idempotencyKey: "sync:create",
+    });
+    const retry = await harness.ctx.issues.create({
+      companyId,
+      title: "Changed retry title",
+      idempotencyKey: "sync:create",
+    });
+    const otherCompanyIssue = await harness.ctx.issues.create({
+      companyId: otherCompanyId,
+      title: "Other company title",
+      idempotencyKey: "sync:create",
+    });
+    const otherPluginIssue = await otherPluginHarness.ctx.issues.create({
+      companyId,
+      title: "Other plugin title",
+      idempotencyKey: "sync:create",
+    });
+
+    expect(retry).toMatchObject({ id: original.id, title: "Original title" });
+    expect(otherCompanyIssue.id).not.toBe(original.id);
+    expect(otherPluginIssue.id).not.toBe(original.id);
+  });
+
+  it("enforces the production idempotency-key bounds in the test harness", async () => {
+    const harness = createTestHarness({
+      manifest: manifest(["issues.create"]),
+    });
+    const companyId = randomUUID();
+    const create = (idempotencyKey: unknown) => harness.ctx.issues.create({
+      companyId,
+      title: "Bounded key",
+      idempotencyKey,
+    } as Parameters<typeof harness.ctx.issues.create>[0]);
+
+    await expect(create("")).rejects.toThrow("idempotencyKey must be a non-empty string");
+    await expect(create(null)).rejects.toThrow("idempotencyKey must be a non-empty string");
+    await expect(create("é".repeat(128))).rejects.toThrow("idempotencyKey must not exceed 255 UTF-8 bytes");
+    await expect(create(`${"é".repeat(127)}a`)).resolves.toMatchObject({ title: "Bounded key" });
   });
 
   it("enforces plugin origin namespaces in the test harness", async () => {

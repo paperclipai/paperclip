@@ -1314,6 +1314,22 @@ export interface PluginIssueSummariesClient {
   }): Promise<PluginIssueOrchestrationSummary>;
 }
 
+export const PLUGIN_ISSUE_IDEMPOTENCY_KEY_MAX_BYTES = 255;
+
+export function validatePluginIssueIdempotencyKey(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error("idempotencyKey must be a non-empty string");
+  }
+  const byteLength = new TextEncoder().encode(value).byteLength;
+  if (byteLength === 0) {
+    throw new Error("idempotencyKey must be a non-empty string");
+  }
+  if (byteLength > PLUGIN_ISSUE_IDEMPOTENCY_KEY_MAX_BYTES) {
+    throw new Error(`idempotencyKey must not exceed ${PLUGIN_ISSUE_IDEMPOTENCY_KEY_MAX_BYTES} UTF-8 bytes`);
+  }
+  return value;
+}
+
 /**
  * `ctx.issues` — read and mutate issues plus comments.
  *
@@ -1344,8 +1360,14 @@ export interface PluginIssuesClient {
     offset?: number;
   }): Promise<Issue[]>;
   get(issueId: string, companyId: string): Promise<Issue | null>;
+  /**
+   * Create an issue, optionally exactly once per plugin, company, and idempotency key.
+   * Reusing a key returns the original issue unchanged, even when the retry
+   * supplies a different payload. Keys must contain 1-255 UTF-8 bytes.
+   */
   create(input: {
     companyId: string;
+    idempotencyKey?: string;
     projectId?: string;
     goalId?: string;
     parentId?: string;
