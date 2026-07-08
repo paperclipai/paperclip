@@ -15,7 +15,7 @@ import {
   type CaseSummary,
 } from "@/api/cases";
 import { issuesApi } from "@/api/issues";
-import type { IssueLabel } from "@paperclipai/shared";
+import { PROJECT_COLORS, type IssueLabel } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -25,12 +25,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/StatusBadge";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { PageSkeleton } from "@/components/PageSkeleton";
-import { CaseFieldsPanel } from "@/components/CaseFieldsPanel";
+import { CaseFieldValue, CaseFieldsPanel } from "@/components/CaseFieldsPanel";
 import { CaseActivityFeed, CaseEventRow } from "@/components/CaseActivityFeed";
 import { CaseRevisionRail } from "@/components/CaseRevisionRail";
 import { CaseChildrenTree } from "@/components/CaseChildrenTree";
 import { CaseAttachmentsGallery } from "@/components/CaseAttachmentsGallery";
 import { EntityRow } from "@/components/EntityRow";
+import { PropertyChip, PropertyRow, PropertySection } from "@/components/issue-properties";
 
 const STATUS_LABEL: Record<CaseStatus, string> = {
   draft: "Draft",
@@ -99,7 +100,7 @@ function CaseLabelsPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [newColor, setNewColor] = useState("#6366f1");
+  const [newColor, setNewColor] = useState<string>(PROJECT_COLORS[0]);
   const queryClient = useQueryClient();
   const labelsQuery = useQuery({
     queryKey: queryKeys.issues.labels(companyId),
@@ -196,14 +197,69 @@ function CaseSidePanel({
   childCases: CaseSummary[];
   events: CaseEvent[];
 }) {
+  const bodyDoc = caseData.documents.find((documentRef) => documentRef.key === "body") ?? null;
+  const description = caseData.fields.description ?? caseData.fields.Description ?? null;
+  const name = caseData.fields.name ?? caseData.fields.Name ?? caseData.key ?? null;
+  const reservedFieldKeys = new Set(["name", "Name", "title", "Title", "body", "Body", "description", "Description"]);
+  const genericFields = Object.entries(caseData.fields).filter(([key]) => !reservedFieldKeys.has(key));
+  const bodyPreview = bodyDoc?.document.latestBody
+    ? bodyDoc.document.latestBody.split("\n").map((line) => line.trim()).find(Boolean) ?? bodyDoc.document.latestBody
+    : null;
+
   return (
-    <div className="space-y-6 p-4">
-      <section className="space-y-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Linked issues
-        </h3>
+    <div className="space-y-4 p-4">
+      <PropertySection title="Case" first>
+        {name ? (
+          <PropertyRow label="Name">
+            <span className="min-w-0 truncate text-sm" title={String(name)}>
+              <CaseFieldValue value={name} />
+            </span>
+          </PropertyRow>
+        ) : null}
+        <PropertyRow label="Title">
+          <span className="min-w-0 truncate text-sm" title={caseData.title}>{caseData.title}</span>
+        </PropertyRow>
+        {bodyPreview ? (
+          <PropertyRow label="Body">
+            <span className="min-w-0 truncate text-sm text-muted-foreground" title={bodyPreview}>{bodyPreview}</span>
+          </PropertyRow>
+        ) : null}
+        {description ? (
+          <PropertyRow label="Description">
+            <span className="min-w-0 truncate text-sm" title={String(description)}>
+              <CaseFieldValue value={description} />
+            </span>
+          </PropertyRow>
+        ) : null}
+        <PropertyRow label="Type">
+          <PropertyChip>{caseData.caseType}</PropertyChip>
+        </PropertyRow>
+        {caseData.key ? (
+          <PropertyRow label="Key">
+            <span className="min-w-0 truncate font-mono text-xs text-muted-foreground" title={caseData.key}>
+              {caseData.key}
+            </span>
+          </PropertyRow>
+        ) : null}
+      </PropertySection>
+
+      {genericFields.length > 0 ? (
+        <PropertySection title="Fields">
+          {genericFields.map(([key, value]) => (
+            <PropertyRow key={key} label={key} wrap={Array.isArray(value)}>
+              <span className="min-w-0 truncate text-sm">
+                <CaseFieldValue value={value} />
+              </span>
+            </PropertyRow>
+          ))}
+        </PropertySection>
+      ) : null}
+
+      <PropertySection title="Linked tasks">
         {caseData.issueLinks.length === 0 ? (
-          <p className="text-xs text-muted-foreground">None yet</p>
+          <PropertyRow label="Tasks">
+            <span className="text-xs text-muted-foreground">None yet</span>
+          </PropertyRow>
         ) : (
           <div className="space-y-1">
             {caseData.issueLinks.map((link) => (
@@ -217,22 +273,17 @@ function CaseSidePanel({
             ))}
           </div>
         )}
-        <p className="text-[11px] text-muted-foreground">
-          auto-linked: any agent write from a run links its issue
-        </p>
-      </section>
+      </PropertySection>
 
-      <section className="space-y-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Children {childCases.length > 0 && <span className="text-muted-foreground/70">({childCases.length})</span>}
-        </h3>
+      <PropertySection title={`Children${childCases.length > 0 ? ` ${childCases.length}` : ""}`}>
         <CaseChildrenTree children={childCases} />
-      </section>
+      </PropertySection>
 
-      <section className="space-y-1">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Activity</h3>
+      <PropertySection title="Activity">
         {events.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No activity yet</p>
+          <PropertyRow label="Events">
+            <span className="text-xs text-muted-foreground">No activity yet</span>
+          </PropertyRow>
         ) : (
           <div className="divide-y divide-border">
             {events.slice(0, 4).map((event) => (
@@ -240,7 +291,7 @@ function CaseSidePanel({
             ))}
           </div>
         )}
-      </section>
+      </PropertySection>
     </div>
   );
 }
@@ -252,6 +303,7 @@ export function CaseDetail() {
   const { openPanel, closePanel } = usePanel();
   const queryClient = useQueryClient();
   const caseHref = useCaseHref();
+  const [selectedRevisionDocumentKey, setSelectedRevisionDocumentKey] = useState<string | null>(null);
 
   const caseQuery = useQuery({
     queryKey: queryKeys.cases.detail(caseIdentifier ?? ""),
@@ -313,6 +365,11 @@ export function CaseDetail() {
   }
 
   const bodyDoc = caseData.documents.find((d) => d.key === "body");
+  const revisionDocs = caseData.documents.filter((documentRef) => (documentRef.document.latestRevisionNumber ?? 0) > 0);
+  const activeRevisionDocumentKey = selectedRevisionDocumentKey
+    && revisionDocs.some((documentRef) => documentRef.key === selectedRevisionDocumentKey)
+    ? selectedRevisionDocumentKey
+    : bodyDoc?.key ?? revisionDocs[0]?.key ?? null;
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -415,8 +472,30 @@ export function CaseDetail() {
         </TabsContent>
 
         <TabsContent value="revisions">
-          {bodyDoc ? (
-            <CaseRevisionRail caseIdentifier={caseData.identifier} documentKey="body" />
+          {activeRevisionDocumentKey ? (
+            <div className="space-y-4">
+              {revisionDocs.length > 1 ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  {revisionDocs.map((documentRef) => (
+                    <Button
+                      key={documentRef.key}
+                      type="button"
+                      variant={documentRef.key === activeRevisionDocumentKey ? "secondary" : "ghost"}
+                      size="sm"
+                      onClick={() => setSelectedRevisionDocumentKey(documentRef.key)}
+                    >
+                      {documentRef.key}
+                      {documentRef.document.latestRevisionNumber ? (
+                        <span className="ml-1 text-xs text-muted-foreground">
+                          rev {documentRef.document.latestRevisionNumber}
+                        </span>
+                      ) : null}
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
+              <CaseRevisionRail caseIdentifier={caseData.identifier} documentKey={activeRevisionDocumentKey} />
+            </div>
           ) : (
             <p className="py-6 text-center text-sm text-muted-foreground">
               No documents to show revisions for.

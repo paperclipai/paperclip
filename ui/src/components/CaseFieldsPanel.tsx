@@ -50,7 +50,7 @@ function StringValue({ value }: { value: string }) {
   return <span className="text-sm break-words">{value}</span>;
 }
 
-function FieldValue({ value }: { value: unknown }) {
+export function CaseFieldValue({ value }: { value: unknown }) {
   if (value === null || value === undefined) return <EmptyValue />;
 
   if (typeof value === "string") return <StringValue value={value} />;
@@ -115,8 +115,8 @@ export function CaseFieldsPanel({ fields }: { fields: Record<string, unknown> })
             {entries.map(([key, value]) => (
               <div key={key} className="flex items-start justify-between gap-4 px-4 py-1.5">
                 <dt className="shrink-0 text-xs text-muted-foreground">{key}</dt>
-                <dd className="min-w-0 max-w-[70%] text-right">
-                  <FieldValue value={value} />
+                <dd className="min-w-0 max-w-(--pct-70) text-right">
+                  <CaseFieldValue value={value} />
                 </dd>
               </div>
             ))}

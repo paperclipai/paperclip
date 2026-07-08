@@ -63,15 +63,15 @@ export function CaseAttachmentsGallery({ attachments }: { attachments: CaseAttac
                   src={caseAttachmentUrl(attachment)}
                   alt={filename}
                   loading="lazy"
-                  className="h-full w-full object-cover transition-transform group-hover:scale-[1.02]"
+                  className="h-full w-full object-cover transition-transform group-hover:scale-(--s-1_02)"
                 />
               ) : (
                 <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-2 text-muted-foreground">
                   <FileText className="h-6 w-6" aria-hidden />
-                  <span className="w-full truncate text-center text-[11px]">{filename}</span>
+                  <span className="w-full truncate text-center text-(length:--text-micro)">{filename}</span>
                 </div>
               )}
-              <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/60 to-transparent px-1.5 py-1 text-[10px] text-white/90">
+              <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/60 to-transparent px-1.5 py-1 text-(length:--text-nano) text-white/90">
                 {humanBytes(attachment.asset.byteSize)}
               </span>
             </button>

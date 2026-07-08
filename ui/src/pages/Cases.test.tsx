@@ -134,7 +134,7 @@ describe("Cases list", () => {
       expect(container.textContent).toContain("Active post");
     });
 
-    const input = container.querySelector<HTMLInputElement>("input[placeholder='Search cases…']");
+    const input = container.querySelector<HTMLInputElement>("input[placeholder='Search cases...']");
     expect(input).toBeTruthy();
     act(() => {
       const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
@@ -169,7 +169,7 @@ describe("Cases list", () => {
     act(() => root.unmount());
   });
 
-  it("groups by case_type by default", async () => {
+  it("shows the default case columns", async () => {
     mockCasesApi.list.mockResolvedValue([
       createCase({ id: "a", identifier: "PAP-C1", title: "Post one", caseType: "blog_post" }),
       createCase({ id: "b", identifier: "PAP-C2", title: "Storm one", caseType: "tweet_storm" }),

@@ -1682,6 +1682,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --pct-90: 90%; /* Extracted from ui/src/components/DocumentDiffModal.tsx (max-w-[90%]). */
   --pct-50: 50%; /* Extracted from ui/src/components/ImageGalleryModal.tsx (max-w-[50%]). */
   --pct-85: 85%; /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-w-[85%]). */
+  --pct-70: 70%; /* Extracted from ui/src/components/CaseFieldsPanel.tsx (max-w-[70%]). */
   --pct-neg-50: -50%; /* Extracted from ui/src/components/ui/alert-dialog.tsx (translate-x-[-50%]). */
   --pct-72: 72%; /* Extracted from ui/src/pages/IssueDetail.tsx (w-[72%]). */
   --shadow-extract-1: 0 16px 40px rgba(37,99,235,0.08); /* ActiveAgentsPanel.tsx live-box glow. Gallery feedback r2: liveness glow recolored cyan->status blue (value edit, site unchanged; originally extracted as rgba(6,182,212,0.08)). */
@@ -1739,6 +1740,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 */
 :root {
   --gtc-1: 56px 56px 24px minmax(0,1fr); /* Extracted from ui/src/components/DocumentDiffModal.tsx (grid-cols-[56px_56px_24px_minmax(0,1fr)]). */
+  --gtc-case-revisions: 16rem 1fr; /* Extracted from ui/src/components/CaseRevisionRail.tsx (grid-cols-[16rem_1fr]). */
   --gtc-2: auto minmax(0,1fr) 2.25rem; /* Extracted from ui/src/components/FileTree.tsx (grid-cols-[auto_minmax(0,1fr)_2.25rem]). */
   --gtc-3: minmax(0,1fr) 2.25rem; /* Extracted from ui/src/components/FileTree.tsx (grid-cols-[minmax(0,1fr)_2.25rem]). */
   --gtc-4: minmax(0,1fr); /* Extracted from ui/src/components/FileTree.tsx (grid-cols-[minmax(0,1fr)]). */
@@ -1825,6 +1827,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --z-9999: 9999; /* Extracted from ui/src/components/MarkdownEditor.tsx (z-[9999]). */
   --z-120: 120; /* Extracted from ui/src/components/ToastViewport.tsx (z-[120]). */
   --s-0_98: 0.98; /* Extracted from ui/src/pages/Inbox.tsx (scale-[0.98]). */
+  --s-1_02: 1.02; /* Extracted from ui/src/components/CaseAttachmentsGallery.tsx (scale-[1.02]). */
   --e-cubic-bezier-0_16-1-0_3-1: cubic-bezier(0.16,1,0.3,1); /* Extracted from ui/src/components/ui/alert-dialog.tsx (ease-[cubic-bezier(0.16,1,0.3,1)]). */
   --va-0_125em: -0.125em; /* Extracted from ui/src/components/ExternalObjectStatusIcon.tsx (align-[-0.125em]). */
   --sw-2_3: 2.3; /* Extracted from ui/src/components/MobileBottomNav.tsx (stroke-[2.3]). */
