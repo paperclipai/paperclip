@@ -11,15 +11,19 @@ const RUN = "run-1";
 
 let base: string;
 const savedEnv = process.env.PAPERCLIP_RUN_LOG_COMPRESS;
+const savedMaxBytesEnv = process.env.PAPERCLIP_RUN_LOG_MAX_BYTES;
 
 beforeEach(async () => {
   base = await fs.mkdtemp(path.join(os.tmpdir(), "run-log-store-"));
   delete process.env.PAPERCLIP_RUN_LOG_COMPRESS;
+  delete process.env.PAPERCLIP_RUN_LOG_MAX_BYTES;
 });
 
 afterEach(async () => {
   if (savedEnv === undefined) delete process.env.PAPERCLIP_RUN_LOG_COMPRESS;
   else process.env.PAPERCLIP_RUN_LOG_COMPRESS = savedEnv;
+  if (savedMaxBytesEnv === undefined) delete process.env.PAPERCLIP_RUN_LOG_MAX_BYTES;
+  else process.env.PAPERCLIP_RUN_LOG_MAX_BYTES = savedMaxBytesEnv;
   await fs.rm(base, { recursive: true, force: true });
 });
 
@@ -215,6 +219,153 @@ describe("run-log-store compression", () => {
     await expect(fs.stat(path.resolve(base, handle.logRef))).resolves.toBeTruthy();
     await expect(fs.stat(path.resolve(base, `${handle.logRef}.gz`))).rejects.toThrow();
 
+    const res = await store.read(handle, { offset: 0, limitBytes: 10_000_000 });
+    expect(res.content).toBe(raw);
+  });
+});
+
+function parseLines(raw: string): Array<{ stream: string; chunk: string }> {
+  return raw
+    .trimEnd()
+    .split("\n")
+    .filter((l) => l.length > 0)
+    .map((l) => JSON.parse(l) as { stream: string; chunk: string });
+}
+
+function truncationMarkers(raw: string) {
+  return parseLines(raw).filter((l) => l.stream === "system" && l.chunk.includes("run-log truncated"));
+}
+
+describe("run-log-store size cap", () => {
+  it("stops persisting at the cap: one truncation marker, further appends drop and return 0", async () => {
+    process.env.PAPERCLIP_RUN_LOG_MAX_BYTES = "200";
+    const store = storeAt(base);
+    const handle = await store.begin({ companyId: COMPANY, agentId: AGENT, runId: RUN });
+
+    let sawTruncation = false;
+    let sawZeroAfterTruncation = false;
+    for (let i = 0; i < 40; i += 1) {
+      const persisted = await store.append(handle, {
+        stream: "stdout",
+        chunk: `chunk number ${i} with some repetitive streaming delta payload`,
+        ts: new Date(1_700_000_000_000 + i).toISOString(),
+      });
+      if (sawTruncation) sawZeroAfterTruncation = sawZeroAfterTruncation || persisted === 0;
+      if (persisted === 0) sawTruncation = true;
+    }
+    expect(sawTruncation).toBe(true);
+    expect(sawZeroAfterTruncation).toBe(true);
+
+    const raw = await fs.readFile(path.resolve(base, handle.logRef), "utf8");
+    const markers = truncationMarkers(raw);
+    expect(markers).toHaveLength(1);
+    expect(markers[0]!.chunk).toContain("size cap 200 bytes reached");
+
+    const sizeAfterTruncation = (await fs.stat(path.resolve(base, handle.logRef))).size;
+
+    for (let i = 0; i < 5; i += 1) {
+      const persisted = await store.append(handle, {
+        stream: "stdout",
+        chunk: "more output after truncation",
+        ts: new Date().toISOString(),
+      });
+      expect(persisted).toBe(0);
+    }
+    const sizeAfterMore = (await fs.stat(path.resolve(base, handle.logRef))).size;
+    expect(sizeAfterMore).toBe(sizeAfterTruncation);
+
+    const rawAfter = await fs.readFile(path.resolve(base, handle.logRef), "utf8");
+    expect(truncationMarkers(rawAfter)).toHaveLength(1);
+  });
+
+  it("seeds truncated from disk on restart: a file already over the cap drops silently, no second marker", async () => {
+    process.env.PAPERCLIP_RUN_LOG_MAX_BYTES = "200";
+    const firstInstance = storeAt(base);
+    const handle = await firstInstance.begin({ companyId: COMPANY, agentId: AGENT, runId: RUN });
+
+    // Manually write past the cap directly to disk, bypassing the store's
+    // in-memory tracking entirely (simulates state left behind before a
+    // server restart re-creates the store instance). The previous instance
+    // already wrote whatever marker it was going to write before the restart.
+    const absPath = path.resolve(base, handle.logRef);
+    const preexistingLine = JSON.stringify({
+      ts: new Date().toISOString(),
+      stream: "stdout",
+      chunk: "x".repeat(250),
+    });
+    await fs.appendFile(absPath, `${preexistingLine}\n`, "utf8");
+    const sizeAfterSeed = (await fs.stat(absPath)).size;
+    expect(sizeAfterSeed).toBeGreaterThan(200);
+
+    // New store instance over the same basePath: no in-memory state for this
+    // logRef. Seeding sees size >= cap → truncated, so the append drops
+    // silently WITHOUT writing a second truncation marker.
+    const secondInstance = storeAt(base);
+    const persisted = await secondInstance.append(handle, {
+      stream: "stdout",
+      chunk: "more output",
+      ts: new Date().toISOString(),
+    });
+    expect(persisted).toBe(0);
+
+    const raw = await fs.readFile(absPath, "utf8");
+    // No marker written by the new instance (none existed on disk; none added).
+    expect(truncationMarkers(raw)).toHaveLength(0);
+    // Nothing was written at all — the file is byte-for-byte unchanged.
+    expect((await fs.stat(absPath)).size).toBe(sizeAfterSeed);
+
+    // A second append stays a silent no-op too.
+    const persistedAgain = await secondInstance.append(handle, {
+      stream: "stdout",
+      chunk: "even more output",
+      ts: new Date().toISOString(),
+    });
+    expect(persistedAgain).toBe(0);
+    expect((await fs.stat(absPath)).size).toBe(sizeAfterSeed);
+    expect(truncationMarkers(await fs.readFile(absPath, "utf8"))).toHaveLength(0);
+  });
+
+  it("finalize on a truncated log still compresses and returns a correct summary", async () => {
+    process.env.PAPERCLIP_RUN_LOG_MAX_BYTES = "200";
+    const store = storeAt(base);
+    const handle = await store.begin({ companyId: COMPANY, agentId: AGENT, runId: RUN });
+
+    for (let i = 0; i < 20; i += 1) {
+      await store.append(handle, {
+        stream: "stdout",
+        chunk: `chunk number ${i} with some repetitive streaming delta payload`,
+        ts: new Date(1_700_000_000_000 + i).toISOString(),
+      });
+    }
+
+    const rawBeforeFinalize = await fs.readFile(path.resolve(base, handle.logRef), "utf8");
+    const rawBytes = Buffer.byteLength(rawBeforeFinalize, "utf8");
+
+    const summary = await store.finalize(handle);
+    expect(summary.compressed).toBe(true);
+    expect(summary.bytes).toBe(rawBytes);
+    expect(summary.logRef.endsWith(".ndjson.gz")).toBe(true);
+
+    await expect(fs.stat(path.resolve(base, summary.logRef))).resolves.toBeTruthy();
+    await expect(fs.stat(path.resolve(base, handle.logRef))).rejects.toThrow();
+
+    const decompressed = await readRawFromDisk(summary.logRef);
+    expect(decompressed).toBe(rawBeforeFinalize);
+    expect(decompressed).toContain("run-log truncated");
+  });
+
+  it("a huge cap leaves normal append behavior unchanged", async () => {
+    process.env.PAPERCLIP_RUN_LOG_MAX_BYTES = "999999999999";
+    const store = storeAt(base);
+    const { handle, raw } = await seedLines(store, 200);
+    const res = await store.read(handle, { offset: 0, limitBytes: 10_000_000 });
+    expect(res.content).toBe(raw);
+  });
+
+  it("invalid cap env values fall back to the default (no truncation for normal-sized runs)", async () => {
+    process.env.PAPERCLIP_RUN_LOG_MAX_BYTES = "not-a-number";
+    const store = storeAt(base);
+    const { handle, raw } = await seedLines(store, 200);
     const res = await store.read(handle, { offset: 0, limitBytes: 10_000_000 });
     expect(res.content).toBe(raw);
   });
