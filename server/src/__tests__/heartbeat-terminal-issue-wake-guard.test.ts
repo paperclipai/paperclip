@@ -59,6 +59,7 @@ describeEmbeddedPostgres("heartbeat terminal-issue wake guard (#7841)", () => {
       status: "active",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values({
