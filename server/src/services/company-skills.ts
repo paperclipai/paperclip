@@ -1049,7 +1049,7 @@ function stableJsonComparable(value: unknown): unknown {
     const out: Record<string, unknown> = {};
     for (const key of Object.keys(value).sort()) {
       const normalized = stableJsonComparable(value[key]);
-      if (normalized !== undefined) out[key] = normalized;
+      if (normalized !== undefined && normalized !== null) out[key] = normalized;
     }
     return out;
   }

@@ -331,6 +331,52 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(stored?.updatedAt.toISOString()).toBe(preservedUpdatedAt.toISOString());
   });
 
+  it("does not retouch local-path imports with legacy null metadata fields", async () => {
+    const companyId = randomUUID();
+    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-null-metadata-import-skill-"));
+    cleanupDirs.add(skillDir);
+    await fs.writeFile(
+      path.join(skillDir, "SKILL.md"),
+      "---\nname: Null Metadata Import Skill\n---\n\n# Null Metadata Import Skill\n",
+      "utf8",
+    );
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const imported = await svc.importFromSource(companyId, skillDir);
+    const skillId = imported.imported[0]?.id;
+    const skillKey = imported.imported[0]?.key;
+    expect(skillId).toEqual(expect.any(String));
+    expect(skillKey).toEqual(expect.any(String));
+    if (!skillId || !skillKey) throw new Error("Expected imported skill id and key");
+
+    const preservedUpdatedAt = new Date("2026-01-03T00:00:00.000Z");
+    await db
+      .update(companySkills)
+      .set({
+        metadata: {
+          sourceKind: "local_path",
+          skillKey,
+          owner: null,
+          repo: null,
+          ref: null,
+          trackingRef: null,
+          repoSkillDir: null,
+        },
+        updatedAt: preservedUpdatedAt,
+      })
+      .where(eq(companySkills.id, skillId));
+
+    await svc.importFromSource(companyId, skillDir);
+    const stored = await svc.getById(companyId, skillId);
+
+    expect(stored?.updatedAt.toISOString()).toBe(preservedUpdatedAt.toISOString());
+  });
+
   it("does not persist audit failures for remote-source skills", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();
