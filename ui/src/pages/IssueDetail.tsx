@@ -218,18 +218,62 @@ function hasExecutionContract(value: unknown): value is Record<string, unknown> 
   return Object.keys(value).length > 0;
 }
 
-function IssueExecutionContractPanel({ contract }: { contract: unknown }) {
+function readContractString(record: Record<string, unknown> | null | undefined, ...keys: string[]) {
+  if (!record) return null;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function readContractRecord(record: Record<string, unknown> | null | undefined, key: string) {
+  const value = record?.[key];
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function IssueExecutionContractPanel({
+  contract,
+  defaultOpen = false,
+}: {
+  contract: unknown;
+  defaultOpen?: boolean;
+}) {
   if (!hasExecutionContract(contract)) return null;
+  const core = readContractRecord(contract, "core");
+  const taskType = readContractString(contract, "taskType", "task_type");
+  const objective = readContractString(core, "objective");
+  const why = readContractString(core, "why");
 
   return (
-    <details className="group rounded-md border border-border bg-muted/20">
+    <details open={defaultOpen} className="group rounded-md border border-border bg-muted/20">
       <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium">
         <span className="flex min-w-0 items-center gap-2">
           <ListTree className="h-4 w-4 shrink-0 text-muted-foreground" />
           <span className="truncate">Execution Contract</span>
         </span>
-        <span className="shrink-0 text-xs font-normal text-muted-foreground">Hidden handoff</span>
+        <span className="shrink-0 text-xs font-normal text-muted-foreground">
+          {taskType ?? "handoff"}
+        </span>
       </summary>
+      {objective || why ? (
+        <div className="space-y-2 border-t border-border px-3 py-2 text-xs leading-5">
+          {objective ? (
+            <p>
+              <span className="font-medium text-foreground">Objective: </span>
+              <span className="text-muted-foreground">{objective}</span>
+            </p>
+          ) : null}
+          {why ? (
+            <p>
+              <span className="font-medium text-foreground">Why: </span>
+              <span className="text-muted-foreground">{why}</span>
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       <pre className="max-h-96 overflow-auto border-t border-border px-3 py-2 text-xs leading-5 text-muted-foreground">
         {JSON.stringify(contract, null, 2)}
       </pre>
@@ -4308,23 +4352,34 @@ export function IssueDetail() {
           className="text-2xl font-bold leading-snug tracking-tight"
         />
 
-        <InlineEditor
-          value={issue.description ?? ""}
-          onSave={(description) => updateIssue.mutateAsync({ description })}
-          as="p"
-          className="text-[15px] leading-7 text-muted-foreground"
-          placeholder="Add a description..."
-          multiline
-          foldable
-          mentions={mentionOptions}
-          imageUploadHandler={async (file) => {
-            const attachment = await uploadAttachment.mutateAsync(file);
-            return attachment.contentPath;
-          }}
-          onDropFile={async (file) => {
-            await uploadAttachment.mutateAsync(file);
-          }}
-        />
+        <div className="space-y-3 rounded-lg border border-border bg-background px-5 py-4 shadow-sm">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">Description</h3>
+            {issue.description?.trim() ? null : (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                Empty
+              </span>
+            )}
+          </div>
+          <InlineEditor
+            value={issue.description ?? ""}
+            onSave={(description) => updateIssue.mutateAsync({ description })}
+            as="p"
+            className="text-[15px] leading-7 text-muted-foreground"
+            placeholder="Add a description..."
+            multiline
+            nullable
+            foldable
+            mentions={mentionOptions}
+            imageUploadHandler={async (file) => {
+              const attachment = await uploadAttachment.mutateAsync(file);
+              return attachment.contentPath;
+            }}
+            onDropFile={async (file) => {
+              await uploadAttachment.mutateAsync(file);
+            }}
+          />
+        </div>
 
         <IssueStateSummary
           issue={issue}
@@ -4333,7 +4388,7 @@ export function IssueDetail() {
           activePauseSummary={activePauseSummary}
         />
         <IssuePlanningStrip issue={issue} childIssues={childIssues} />
-        <IssueExecutionContractPanel contract={issue.executionContract} />
+        <IssueExecutionContractPanel contract={issue.executionContract} defaultOpen={!issue.description?.trim()} />
       </div>
 
       <PluginSlotOutlet

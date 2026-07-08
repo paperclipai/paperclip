@@ -620,6 +620,62 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("includes staged attachment context in the submitted description", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Issue title"]') as HTMLTextAreaElement | null;
+    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement | null;
+    expect(titleInput).not.toBeNull();
+    expect(descriptionInput).not.toBeNull();
+    expect(fileInput).not.toBeNull();
+
+    await typeTextareaValue(titleInput!, "Photo does not show");
+    await typeTextareaValue(descriptionInput!, "Dashboard workspace photo is missing.");
+
+    const file = new File(["image"], "workspace-photo.png", {
+      type: "image/png",
+      lastModified: new Date("2026-07-08T00:00:00.000Z").getTime(),
+    });
+    Object.defineProperty(fileInput!, "files", {
+      configurable: true,
+      value: [file],
+    });
+    await act(async () => {
+      fileInput!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Photo does not show",
+        description: [
+          "Dashboard workspace photo is missing.",
+          "",
+          "---",
+          "Attached files (1):",
+          "- workspace-photo.png (attachment, 5 B)",
+        ].join("\n"),
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
   it("submits planning work mode when planning is selected", async () => {
     const { root } = renderDialog(container);
     await flush();

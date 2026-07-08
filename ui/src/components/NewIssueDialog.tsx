@@ -237,6 +237,26 @@ function formatFileSize(file: File) {
   return `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function formatStagedFileDescriptionLine(stagedFile: StagedIssueFile) {
+  const scope = stagedFile.kind === "document"
+    ? `document${stagedFile.documentKey ? `:${stagedFile.documentKey}` : ""}`
+    : "attachment";
+  return `- ${stagedFile.file.name} (${scope}, ${formatFileSize(stagedFile.file)})`;
+}
+
+function buildIssueDescriptionForSubmit(description: string, stagedFiles: StagedIssueFile[]) {
+  const trimmedDescription = description.trim();
+  if (stagedFiles.length === 0) return trimmedDescription;
+
+  const attachmentSummary = [
+    "---",
+    `Attached files (${stagedFiles.length}):`,
+    ...stagedFiles.map(formatStagedFileDescriptionLine),
+  ].join("\n");
+
+  return trimmedDescription ? `${trimmedDescription}\n\n${attachmentSummary}` : attachmentSummary;
+}
+
 const statuses: ReadonlyArray<{ value: string; label: string; color: string; description?: string }> = [
   {
     value: "backlog",
@@ -970,6 +990,7 @@ export function NewIssueDialog() {
     const currentTitle = titleRef.current.trim();
     const currentDescription = descriptionRef.current.trim();
     if (!effectiveCompanyId || !currentTitle || createIssue.isPending) return;
+    const descriptionForIssue = buildIssueDescriptionForSubmit(currentDescription, stagedFiles);
     const effectiveLane = assigneeSupportsCheapLane
       ? assigneeModelLane
       : assigneeModelLane === "cheap"
@@ -1005,7 +1026,7 @@ export function NewIssueDialog() {
       companyId: effectiveCompanyId,
       stagedFiles,
       title: currentTitle,
-      description: currentDescription || undefined,
+      description: descriptionForIssue || undefined,
       status,
       priority: priority || "medium",
       workMode,

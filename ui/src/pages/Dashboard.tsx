@@ -516,125 +516,135 @@ export function Dashboard() {
                   </p>
                 </div>
               </div>
-              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-                {credentialQuota.slice(0, 6).map((row) => {
-                  const usage = credentialUsageById.get(row.credentialId);
-                  const totalTokens = credentialUsageTokens(usage);
-                  const weekValue = usage?.windows.find((entry) => entry.label === "7d")?.apiEquivalentCostCents ?? 0;
-                  const observedPercent = Math.min(
-                    100,
-                    credentialUsageTotals.maxCredentialTokens > 0
-                      ? (totalTokens / credentialUsageTotals.maxCredentialTokens) * 100
-                      : 0,
-                  );
-                  const visibleQuotaWindows = row.quotaWindows
-                    .filter((entry) => entry.usedPercent != null || entry.valueLabel)
-                    .slice(0, 4);
-                  const isCooling = isCredentialCooldownActive(row.cooldownUntil);
-                  const quotaStatusLabel = row.stale
-                    ? "stale"
-                    : row.disabledAt
-                      ? "disabled"
-                      : isCooling
-                        ? "cooling"
-                        : !row.ok
-                          ? "retrying"
-                          : row.type;
-                  const quotaStatusTitle = row.stale && row.cachedAt
-                    ? `Showing last successful quota sample from ${new Date(row.cachedAt).toLocaleString()}`
-                    : row.error;
-                  return (
-                    <div key={row.credentialId} className="rounded-md border border-border/60 bg-muted/20 px-3 py-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="truncate text-xs font-medium">{row.name}</span>
-                        <span className={cn(
-                          "shrink-0 rounded px-1.5 py-0.5 text-[10px]",
-                          row.stale
-                            ? "bg-amber-500/10 text-amber-600"
-                            : row.disabledAt
-                            ? "bg-destructive/10 text-destructive"
-                            : isCooling
-                              ? "bg-sky-500/10 text-sky-600"
-                              : "bg-muted text-muted-foreground",
-                        )}
-                        title={quotaStatusTitle}
-                        >
-                          {quotaStatusLabel}
-                        </span>
-                      </div>
-                      <div className="mt-2 flex items-end justify-between gap-2">
-                        <div>
-                          <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">MTD tokens</p>
+              <div className="overflow-hidden rounded-md border border-border/60 bg-muted/10">
+                <div className="hidden grid-cols-[minmax(12rem,1.6fr)_minmax(8rem,0.8fr)_minmax(8rem,0.8fr)_minmax(14rem,1fr)] gap-3 border-b border-border/60 px-3 py-2 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground md:grid">
+                  <span>Credential</span>
+                  <span>MTD tokens</span>
+                  <span>7d value</span>
+                  <span>Quota</span>
+                </div>
+                <div className="divide-y divide-border/60">
+                  {credentialQuota.map((row) => {
+                    const usage = credentialUsageById.get(row.credentialId);
+                    const totalTokens = credentialUsageTokens(usage);
+                    const weekValue = usage?.windows.find((entry) => entry.label === "7d")?.apiEquivalentCostCents ?? 0;
+                    const observedPercent = Math.min(
+                      100,
+                      credentialUsageTotals.maxCredentialTokens > 0
+                        ? (totalTokens / credentialUsageTotals.maxCredentialTokens) * 100
+                        : 0,
+                    );
+                    const visibleQuotaWindows = row.quotaWindows
+                      .filter((entry) => entry.usedPercent != null || entry.valueLabel)
+                      .slice(0, 4);
+                    const isCooling = isCredentialCooldownActive(row.cooldownUntil);
+                    const quotaStatusLabel = row.stale
+                      ? "stale"
+                      : row.disabledAt
+                        ? "disabled"
+                        : isCooling
+                          ? "cooling"
+                          : !row.ok
+                            ? "retrying"
+                            : row.type;
+                    const quotaStatusTitle = row.stale && row.cachedAt
+                      ? `Showing last successful quota sample from ${new Date(row.cachedAt).toLocaleString()}`
+                      : row.error;
+                    const quotaStatusClass = cn(
+                      "shrink-0 rounded px-1.5 py-0.5 text-[10px]",
+                      row.stale
+                        ? "bg-amber-500/10 text-amber-600"
+                        : row.disabledAt
+                          ? "bg-destructive/10 text-destructive"
+                          : isCooling
+                            ? "bg-sky-500/10 text-sky-600"
+                            : "bg-muted text-muted-foreground",
+                    );
+                    return (
+                      <div
+                        key={row.credentialId}
+                        className="grid gap-3 px-3 py-3 md:grid-cols-[minmax(12rem,1.6fr)_minmax(8rem,0.8fr)_minmax(8rem,0.8fr)_minmax(14rem,1fr)] md:items-start"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="truncate text-xs font-medium" title={row.name}>{row.name}</span>
+                            <span className={quotaStatusClass} title={quotaStatusTitle}>
+                              {quotaStatusLabel}
+                            </span>
+                          </div>
+                          <p className="mt-1 max-w-full truncate text-[10px] text-muted-foreground" title={credentialModelTitle(usage)}>
+                            {row.type} · {credentialTopModelLabel(usage)}
+                          </p>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground md:hidden">MTD tokens</p>
                           <DotMatrixText className="text-base leading-none">
                             {formatTokens(totalTokens)}
                           </DotMatrixText>
-                          <p className="mt-1 max-w-[12rem] truncate text-[10px] text-muted-foreground" title={credentialUsageBreakdown(usage)}>
+                          <p className="mt-1 max-w-full truncate text-[10px] text-muted-foreground" title={credentialUsageBreakdown(usage)}>
                             {credentialUsageBreakdown(usage)}
                           </p>
+                          <DottedUsageBar usedPercent={observedPercent} className="mt-2" />
                         </div>
-                        <div className="text-right">
-                          <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">API value</p>
+                        <div className="min-w-0">
+                          <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground md:hidden">7d value</p>
                           <span className="text-xs tabular-nums" title={credentialModelTitle(usage)}>
-                            {formatCents(usage?.apiEquivalentCostCents ?? 0)}
+                            {formatCents(weekValue)}
                           </span>
-                          <p className="mt-1 max-w-[9rem] truncate text-[10px] text-muted-foreground" title={credentialModelTitle(usage)}>
-                            {credentialTopModelLabel(usage)}
+                          <p className="mt-1 text-[10px] text-muted-foreground">
+                            5h {formatTokens(credentialUsageWindowTokens(usage, "5h"))}
                           </p>
                         </div>
-                      </div>
-                      <DottedUsageBar usedPercent={observedPercent} className="mt-2" />
-                      <div className="mt-2 grid grid-cols-2 gap-1.5 text-[10px] text-muted-foreground">
-                        <span>5h {formatTokens(credentialUsageWindowTokens(usage, "5h"))}</span>
-                        <span className="text-right">7d {formatCents(weekValue)}</span>
-                      </div>
-                      <div
-                        className="mt-3 space-y-1.5"
-                        title={row.quotaWindows
-                          .map((entry) => {
-                            const reset = formatQuotaResetOrDetail(entry);
-                            return `${entry.label}: ${entry.usedPercent != null ? `${Math.round(entry.usedPercent)}% used, ${Math.max(0, Math.round(100 - entry.usedPercent))}% available` : entry.valueLabel ?? "reported"}${reset ? ` · ${reset}` : ""}`;
-                          })
-                          .join(" · ")}
-                      >
-                        {row.stale && row.error ? (
-                          <p className="text-[10px] text-amber-600" title={row.error}>
-                            stale quota sample
-                          </p>
-                        ) : null}
-                        {!row.supported ? (
-                          <p className="text-[10px] text-muted-foreground">quota n/a</p>
-                        ) : !row.ok && visibleQuotaWindows.length === 0 ? (
-                          <p className="text-[10px] text-amber-600" title={row.error ?? "quota unavailable"}>
-                            quota retrying
-                          </p>
-                        ) : visibleQuotaWindows.length === 0 ? (
-                          <p className="text-[10px] text-muted-foreground">quota ok</p>
-                        ) : (
-                          visibleQuotaWindows.map((window) => (
-                            <div key={window.label} className="space-y-1">
-                              <div className="flex items-center justify-between gap-2 text-[10px]">
-                                <span className="truncate text-muted-foreground">{compactQuotaLabel(window.label)}</span>
-                                <span className="shrink-0 tabular-nums">
-                                  {window.usedPercent != null
-                                    ? `${Math.max(0, Math.round(100 - window.usedPercent))}% left`
-                                    : window.valueLabel ?? "ok"}
-                                </span>
-                              </div>
-                              {formatQuotaResetOrDetail(window) ? (
-                                <div className="truncate text-[10px] text-muted-foreground">
-                                  {formatQuotaResetOrDetail(window)}
+                        <div
+                          className="min-w-0 space-y-1.5"
+                          title={row.quotaWindows
+                            .map((entry) => {
+                              const reset = formatQuotaResetOrDetail(entry);
+                              return `${entry.label}: ${entry.usedPercent != null ? `${Math.round(entry.usedPercent)}% used, ${Math.max(0, Math.round(100 - entry.usedPercent))}% available` : entry.valueLabel ?? "reported"}${reset ? ` · ${reset}` : ""}`;
+                            })
+                            .join(" · ")}
+                        >
+                          <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground md:hidden">Quota</p>
+                          {row.stale && row.error ? (
+                            <p className="text-[10px] text-amber-600" title={row.error}>
+                              stale quota sample
+                            </p>
+                          ) : null}
+                          {!row.supported ? (
+                            <p className="text-[10px] text-muted-foreground">quota n/a</p>
+                          ) : !row.ok && visibleQuotaWindows.length === 0 ? (
+                            <p className="text-[10px] text-amber-600" title={row.error ?? "quota unavailable"}>
+                              quota retrying
+                            </p>
+                          ) : visibleQuotaWindows.length === 0 ? (
+                            <p className="text-[10px] text-muted-foreground">quota ok</p>
+                          ) : (
+                            visibleQuotaWindows.map((window) => (
+                              <div key={window.label} className="space-y-1">
+                                <div className="flex items-center justify-between gap-2 text-[10px]">
+                                  <span className="truncate text-muted-foreground">{compactQuotaLabel(window.label)}</span>
+                                  <span className="shrink-0 tabular-nums">
+                                    {window.usedPercent != null
+                                      ? `${Math.max(0, Math.round(100 - window.usedPercent))}% left`
+                                      : window.valueLabel ?? "ok"}
+                                  </span>
                                 </div>
-                              ) : null}
-                              {window.usedPercent != null ? (
-                                <DottedUsageBar usedPercent={window.usedPercent} />
-                              ) : null}
-                            </div>
-                          ))
-                        )}
+                                {formatQuotaResetOrDetail(window) ? (
+                                  <div className="truncate text-[10px] text-muted-foreground">
+                                    {formatQuotaResetOrDetail(window)}
+                                  </div>
+                                ) : null}
+                                {window.usedPercent != null ? (
+                                  <DottedUsageBar usedPercent={window.usedPercent} />
+                                ) : null}
+                              </div>
+                            ))
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             </div>
           )}

@@ -1109,6 +1109,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           selectedCredentialIds.length > 0 ? (
             <CredentialMultiSelect
               credentials={availableCredentials}
+              totalCredentialCount={credentials.length}
               selectedIds={selectedCredentialIds}
               onToggle={toggleCredential}
               open={credentialOpen}
@@ -2322,6 +2323,7 @@ function credentialTypesForAdapterType(
 
 function CredentialMultiSelect({
   credentials,
+  totalCredentialCount,
   selectedIds,
   onToggle,
   open,
@@ -2329,6 +2331,7 @@ function CredentialMultiSelect({
   enforceCodexAuthMode,
 }: {
   credentials: ProviderCredential[];
+  totalCredentialCount: number;
   selectedIds: string[];
   onToggle: (id: string) => void;
   open: boolean;
@@ -2340,6 +2343,7 @@ function CredentialMultiSelect({
     () => selectedIds.map((id) => credentials.find((c) => c.id === id)).filter(Boolean) as ProviderCredential[],
     [credentials, selectedIds],
   );
+  const filteredCredentialCount = Math.max(0, totalCredentialCount - credentials.length);
 
   const typeCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -2445,7 +2449,7 @@ function CredentialMultiSelect({
             })}
             {credentials.length === 0 && (
               <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                No compatible credentials.{" "}
+                No compatible credentials from {totalCredentialCount} company credentials.{" "}
                 <Link
                   to="/company/settings"
                   className="text-blue-600 dark:text-blue-400 underline underline-offset-2"
@@ -2457,6 +2461,10 @@ function CredentialMultiSelect({
           </div>
         </PopoverContent>
       </Popover>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Showing {credentials.length} compatible of {totalCredentialCount} company credentials
+        {filteredCredentialCount > 0 ? ` (${filteredCredentialCount} filtered by adapter type)` : ""}.
+      </p>
       {pooledTypes.length > 0 && (
         <p className="text-xs text-muted-foreground mt-1">
           Multiple {pooledTypes.join(", ")} credentials form a rotation pool — the
