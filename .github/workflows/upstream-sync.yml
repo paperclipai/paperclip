@@ -63,7 +63,7 @@ jobs:
           permission-pull-requests: write
 
       - name: Checkout master (full history)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: master
           fetch-depth: 0
