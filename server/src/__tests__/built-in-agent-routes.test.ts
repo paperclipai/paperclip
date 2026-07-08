@@ -9,6 +9,10 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
 
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
+
 const mockBuiltInAgentService = vi.hoisted(() => ({
   list: vi.fn(),
   ensure: vi.fn(),
@@ -66,6 +70,7 @@ function builtInState(overrides: Record<string, unknown> = {}) {
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
+    instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
   }));
   vi.doMock("../services/built-in-agents.js", () => ({
@@ -95,6 +100,7 @@ describe("built-in agent routes", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockAccessService.decide.mockResolvedValue(allowDecision());
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableBuiltInAgents: true });
     mockBuiltInAgentService.list.mockResolvedValue([builtInState()]);
     mockBuiltInAgentService.ensure.mockResolvedValue(builtInState());
     mockBuiltInAgentService.provision.mockResolvedValue({ state: builtInState(), approval: null });
@@ -130,6 +136,23 @@ describe("built-in agent routes", () => {
     const res = await request(app).get(`/api/companies/${companyId}/built-in-agents`);
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockBuiltInAgentService.list).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 and does not load built-in state when the experimental flag is disabled", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableBuiltInAgents: false });
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app).get(`/api/companies/${companyId}/built-in-agents`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toContain("Built-in agents are not enabled");
     expect(mockBuiltInAgentService.list).not.toHaveBeenCalled();
   });
 

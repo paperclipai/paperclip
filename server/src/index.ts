@@ -780,8 +780,13 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of codex_local managed homes failed");
     });
 
-  void reconcileBuiltInAgentsOnStartup(db as any)
+  void instanceSettingsService(db as any).getExperimental()
+    .then((experimental) => {
+      if (experimental.enableBuiltInAgents !== true) return null;
+      return reconcileBuiltInAgentsOnStartup(db as any);
+    })
     .then((result) => {
+      if (!result) return;
       if (result.reconciled > 0 || result.unknown > 0 || result.duplicates > 0) {
         logger.warn(
           result,

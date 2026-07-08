@@ -215,9 +215,11 @@ const environmentCapabilities: EnvironmentCapabilities = {
 function makeInstanceSettings({
   defaultEnvironmentId = null,
   enableEnvironments = true,
+  enableBuiltInAgents = false,
 }: {
   defaultEnvironmentId?: string | null;
   enableEnvironments?: boolean;
+  enableBuiltInAgents?: boolean;
 } = {}) {
   return {
     id: "instance-settings-1",
@@ -243,6 +245,7 @@ function makeInstanceSettings({
       enableExperimentalFileViewer: false,
       enableCloudSync: false,
       enableExternalObjects: false,
+      enableBuiltInAgents,
       autoRestartDevServerWhenIdle: false,
       enableIssueGraphLivenessAutoRecovery: false,
       issueGraphLivenessAutoRecoveryLookbackHours: 24,
@@ -441,6 +444,7 @@ describe("Agents", () => {
 
   it("uses the built-in agents route segment as the built-in filter", async () => {
     mockRouterState.pathname = "/agents/builtin";
+    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
     const builtInAgent = makeAgent({
       id: "built-in-agent",
       name: "Briefs Agent",
@@ -806,6 +810,82 @@ describe("Agents", () => {
 
     expect(container.querySelector('select[aria-label="Filter by environment"]')).toBeNull();
     expect(container.querySelector('select[aria-label="Group agents"]')).toBeNull();
+  });
+
+  it("hides built-in agent surfaces while the experimental flag is disabled", async () => {
+    mockRouterState.pathname = "/agents/builtin";
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockBuiltInAgentsApi.list).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Built-in");
+    expect(mockRouterState.navigate).toHaveBeenCalledWith("/agents/all", { replace: true });
+  });
+
+  it("shows and filters built-in agents when the experimental flag is enabled", async () => {
+    mockRouterState.pathname = "/agents/builtin";
+    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        id: "built-in-agent",
+        name: "Briefs Agent",
+        urlKey: "briefs-agent",
+      }),
+      makeAgent({
+        id: "regular-agent",
+        name: "Regular Agent",
+        urlKey: "regular-agent",
+      }),
+    ]);
+    mockAgentsApi.org.mockResolvedValue([
+      {
+        id: "built-in-agent",
+        name: "Briefs Agent",
+        role: "engineer",
+        status: "active",
+        reports: [],
+      },
+      {
+        id: "regular-agent",
+        name: "Regular Agent",
+        role: "engineer",
+        status: "active",
+        reports: [],
+      },
+    ]);
+    mockBuiltInAgentsApi.list.mockResolvedValue([
+      makeBuiltInAgentState({ agentId: "built-in-agent" }),
+    ]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockBuiltInAgentsApi.list).toHaveBeenCalledWith("company-1");
+    expect(container.textContent).toContain("Built-in");
+    expect(container.textContent).toContain("Briefs Agent");
+    expect(container.textContent).not.toContain("Regular Agent");
+    expect(mockRouterState.navigate).not.toHaveBeenCalledWith("/agents/all", { replace: true });
   });
 
   it("gives list-view rows a fixed-width title so meta columns align (PAP-86)", async () => {

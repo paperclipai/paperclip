@@ -711,12 +711,20 @@ export function AgentDetail() {
     ? resourceMembershipState(membershipsQuery.data, "agent", resolvedAgentId)
     : "joined";
 
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    enabled: !!resolvedCompanyId,
+  });
+  const builtInAgentsEnabled = experimentalSettings?.enableBuiltInAgents === true;
   const { data: builtInStates } = useQuery({
     queryKey: queryKeys.builtInAgents.list(resolvedCompanyId!),
     queryFn: () => builtInAgentsApi.list(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId,
+    enabled: !!resolvedCompanyId && builtInAgentsEnabled,
   });
-  const builtInState = builtInStates?.find((entry) => entry.agentId === resolvedAgentId) ?? null;
+  const builtInState = builtInAgentsEnabled
+    ? builtInStates?.find((entry) => entry.agentId === resolvedAgentId) ?? null
+    : null;
   const builtInFeatureLabel = builtInState
     ? builtInState.definition.featureKeys
         .map((key) => key.charAt(0).toUpperCase() + key.slice(1))

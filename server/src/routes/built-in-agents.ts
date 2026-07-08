@@ -2,8 +2,8 @@ import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import { builtInAgentProvisionSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { forbidden } from "../errors.js";
-import { accessService, logActivity } from "../services/index.js";
+import { forbidden, notFound } from "../errors.js";
+import { accessService, instanceSettingsService, logActivity } from "../services/index.js";
 import { builtInAgentService } from "../services/built-in-agents.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -25,6 +25,14 @@ export function builtInAgentRoutes(db: Db) {
   const router = Router();
   const access = accessService(db);
   const svc = builtInAgentService(db);
+  const settings = instanceSettingsService(db);
+
+  async function assertBuiltInAgentsEnabled() {
+    const experimental = await settings.getExperimental();
+    if (experimental.enableBuiltInAgents !== true) {
+      throw notFound("Built-in agents are not enabled");
+    }
+  }
 
   async function assertCanProvisionBuiltInAgents(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
@@ -69,6 +77,7 @@ export function builtInAgentRoutes(db: Db) {
   router.get("/companies/:companyId/built-in-agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertBuiltInAgentsEnabled();
     const states = await svc.list(companyId);
     res.json(states.map(redactBuiltInAgentListState));
   });
@@ -79,6 +88,7 @@ export function builtInAgentRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const key = req.params.key as string;
+      await assertBuiltInAgentsEnabled();
       await assertCanProvisionBuiltInAgents(req, companyId);
       const actor = getActorInfo(req);
       const result = await svc.provision(companyId, key, req.body, {
@@ -110,6 +120,7 @@ export function builtInAgentRoutes(db: Db) {
   router.post("/companies/:companyId/built-in-agents/:key/reset", async (req, res) => {
     const companyId = req.params.companyId as string;
     const key = req.params.key as string;
+    await assertBuiltInAgentsEnabled();
     await assertCanProvisionBuiltInAgents(req, companyId);
     const state = await svc.reset(companyId, key);
     await logBuiltInAgentMutation(req, {
