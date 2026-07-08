@@ -67,7 +67,26 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours: 24,
     enableWorkspaceBranchReconcileForward: false,
+    enableWorktreeRunExecution: false,
   };
+}
+
+const WORKTREE_RUN_EXECUTION_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle worktree run execution setting"]';
+
+function setWorktreeRuntimeMeta(enabled: boolean) {
+  const name = "paperclip-worktree-enabled";
+  let meta = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`);
+  if (enabled) {
+    if (!meta) {
+      meta = document.createElement("meta");
+      meta.setAttribute("name", name);
+      document.head.appendChild(meta);
+    }
+    meta.setAttribute("content", "true");
+  } else if (meta) {
+    meta.remove();
+  }
 }
 
 describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)", () => {
@@ -109,6 +128,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     });
     root = null;
     container.remove();
+    setWorktreeRuntimeMeta(false);
     vi.clearAllMocks();
   });
 
@@ -218,6 +238,38 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
 
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableGoalsSidebarLink: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("hides the worktree run-execution toggle when not running in a worktree", async () => {
+    setWorktreeRuntimeMeta(false);
+    await renderPage();
+
+    const headings = [...container.querySelectorAll("section h2")].map((h) => h.textContent);
+    expect(headings).not.toContain("Run tasks in this worktree");
+    expect(container.querySelector(WORKTREE_RUN_EXECUTION_TOGGLE_SELECTOR)).toBeNull();
+  });
+
+  it("renders and patches the worktree run-execution toggle when in a worktree", async () => {
+    setWorktreeRuntimeMeta(true);
+    await renderPage();
+
+    expect(container.textContent).toContain("Run tasks in this worktree");
+    expect(container.textContent).toContain(
+      "isolated git-worktree preview instance",
+    );
+
+    const toggle = container.querySelector<HTMLButtonElement>(WORKTREE_RUN_EXECUTION_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableWorktreeRunExecution: true,
     });
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });

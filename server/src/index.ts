@@ -45,7 +45,6 @@ import {
   reconcileCloudUpstreamRunsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
-  resolveHeartbeatSchedulingSuppression,
   routineService,
 } from "./services/index.js";
 import {
@@ -825,7 +824,7 @@ export async function startServer(): Promise<StartedServer> {
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
-    const heartbeatSchedulingSuppression = resolveHeartbeatSchedulingSuppression();
+    const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
     // into a dead "running" row during startup recovery.
@@ -916,6 +915,10 @@ export async function startServer(): Promise<StartedServer> {
     }
 
     heartbeatSchedulerInterval = setInterval(() => {
+      // Async so the suppression checks below can honor the override-aware
+      // resolver (e.g. worktree run-execution opt-in). The gated work is still
+      // wrapped in trackHeartbeatSchedulerWork with its own error handling.
+      void (async () => {
       if (heartbeatSchedulerStopped) return;
       const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
       if (sweptRuntimeStatuses > 0) {
@@ -925,7 +928,7 @@ export async function startServer(): Promise<StartedServer> {
         );
       }
 
-      if (!resolveHeartbeatSchedulingSuppression().suppressed) {
+      if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
         trackHeartbeatSchedulerWork(heartbeat
           .tickTimers(new Date())
           .then((result) => {
@@ -962,7 +965,7 @@ export async function startServer(): Promise<StartedServer> {
         }));
 
       if (heartbeatSchedulerStopped) return;
-      if (!resolveHeartbeatSchedulingSuppression().suppressed) {
+      if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
         // Periodically reap orphaned runs (5-min staleness threshold) and make sure
         // persisted queued work is still being driven forward.
         trackHeartbeatSchedulerWork(heartbeat
@@ -1019,6 +1022,7 @@ export async function startServer(): Promise<StartedServer> {
             logger.error({ err }, "periodic heartbeat recovery failed");
           }));
       }
+      })();
     }, config.heartbeatSchedulerIntervalMs);
   }
   

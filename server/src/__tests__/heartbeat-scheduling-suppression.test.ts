@@ -30,6 +30,33 @@ describe("heartbeat scheduling suppression", () => {
     });
   });
 
+  it("lifts worktree suppression when run execution is explicitly allowed", () => {
+    expect(
+      resolveHeartbeatSchedulingSuppression(
+        { PAPERCLIP_IN_WORKTREE: "true" },
+        { allowWorktreeRunExecution: true },
+      ),
+    ).toEqual({
+      suppressed: false,
+      reason: null,
+    });
+  });
+
+  it("still suppresses database restore even when worktree run execution is allowed", () => {
+    expect(
+      resolveHeartbeatSchedulingSuppression(
+        {
+          PAPERCLIP_IN_WORKTREE: "true",
+          PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS: "1",
+        },
+        { allowWorktreeRunExecution: true },
+      ),
+    ).toEqual({
+      suppressed: true,
+      reason: "database_restore_in_progress",
+    });
+  });
+
   it("maps unsuccessful heartbeat outcomes to terminal skill test run outcomes", () => {
     expect(resolveSkillTestRunCompletionForHeartbeatOutcome("succeeded", null)).toBeNull();
     expect(resolveSkillTestRunCompletionForHeartbeatOutcome("cancelled", null)).toEqual({

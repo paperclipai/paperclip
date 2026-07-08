@@ -4934,8 +4934,9 @@ function isTruthyRuntimeEnvValue(value: string | undefined) {
 
 export function resolveHeartbeatSchedulingSuppression(
   env: Record<string, string | undefined> = process.env,
+  overrides: { allowWorktreeRunExecution?: boolean } = {},
 ): { suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | null } {
-  if (isTruthyRuntimeEnvValue(env.PAPERCLIP_IN_WORKTREE)) {
+  if (isTruthyRuntimeEnvValue(env.PAPERCLIP_IN_WORKTREE) && !overrides.allowWorktreeRunExecution) {
     return { suppressed: true, reason: "worktree_instance" };
   }
   if (
@@ -4953,7 +4954,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
   });
   const runtimeEnv = options.runtimeEnv ?? process.env;
-  const getSchedulingSuppression = () => resolveHeartbeatSchedulingSuppression(runtimeEnv);
+  const inWorktreeRuntime = isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE);
+  // Preview worktree instances suppress the run engine by default. Users can lift
+  // that per-worktree via the `enableWorktreeRunExecution` experimental setting
+  // (worktree instances have their own isolated DB, so it can't affect the parent).
+  // Only worktree runtimes ever read the setting; a short TTL keeps the hot-path
+  // suppression checks off the DB, and a read failure falls back to prior/default
+  // (fail closed to suppression).
+  let cachedWorktreeRunExecutionOverride: { value: boolean; at: number } = { value: false, at: 0 };
+  const WORKTREE_RUN_EXECUTION_OVERRIDE_TTL_MS = 3_000;
+  const resolveWorktreeRunExecutionOverride = async (): Promise<boolean> => {
+    if (!inWorktreeRuntime) return false;
+    const now = Date.now();
+    if (now - cachedWorktreeRunExecutionOverride.at < WORKTREE_RUN_EXECUTION_OVERRIDE_TTL_MS) {
+      return cachedWorktreeRunExecutionOverride.value;
+    }
+    try {
+      const experimental = await instanceSettings.getExperimental();
+      cachedWorktreeRunExecutionOverride = {
+        value: experimental.enableWorktreeRunExecution === true,
+        at: now,
+      };
+    } catch {
+      // Keep the prior (default-false) value so a settings read failure fails
+      // closed to the safe suppressed state.
+    }
+    return cachedWorktreeRunExecutionOverride.value;
+  };
+  const getSchedulingSuppression = async () =>
+    resolveHeartbeatSchedulingSuppression(runtimeEnv, {
+      allowWorktreeRunExecution: await resolveWorktreeRunExecutionOverride(),
+    });
 
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
@@ -10139,7 +10170,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function resumeQueuedRuns() {
-    if (getSchedulingSuppression().suppressed) return;
+    if ((await getSchedulingSuppression()).suppressed) return;
 
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
@@ -10267,7 +10298,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
-    if (getSchedulingSuppression().suppressed) return [];
+    if ((await getSchedulingSuppression()).suppressed) return [];
 
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
@@ -10347,7 +10378,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function executeRun(runId: string) {
-    if (getSchedulingSuppression().suppressed) return;
+    if ((await getSchedulingSuppression()).suppressed) return;
 
     let run = await getRun(runId);
     if (!run) return;
@@ -13649,7 +13680,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     };
 
-    const schedulingSuppression = getSchedulingSuppression();
+    const schedulingSuppression = await getSchedulingSuppression();
     if (schedulingSuppression.suppressed) {
       await writeSkippedHeartbeatRequest("heartbeat.scheduling_suppressed", {
         reason: schedulingSuppression.reason,
@@ -15237,6 +15268,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reportRunActivity: clearDetachedRunWarning,
 
     reapOrphanedRuns,
+    // Override-aware scheduling-suppression check (honors the worktree
+    // run-execution experimental setting). Callers outside the service that
+    // gate on suppression should prefer this over the env-only resolver.
+    resolveSchedulingSuppression: getSchedulingSuppression,
     drainRunningRunsForShutdown,
 
     promoteDueScheduledRetries,
@@ -15279,7 +15314,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
-      if (getSchedulingSuppression().suppressed) {
+      if ((await getSchedulingSuppression()).suppressed) {
         return {
           checked: 0,
           enqueued: 0,
