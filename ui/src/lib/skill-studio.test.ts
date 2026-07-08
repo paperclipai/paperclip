@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
+  CompanySkillLastEditor,
+  CompanySkillListItem,
   CompanySkillTestRunStatus,
   CompanySkillTestRunTemplate,
   IssueAttachment,
@@ -22,6 +24,9 @@ import {
   isInteractionAnswerable,
   isRunActive,
   isTerminalRunStatus,
+  orderRecentlyUpdatedSkills,
+  orderRecentlyVisitedSkills,
+  skillEditorAvatar,
   routeInteraction,
   runBadgeStatus,
   runOutputMode,
@@ -630,5 +635,145 @@ describe("advanced run template helpers", () => {
         templateId: null,
       }).templateId,
     ).toBeNull();
+  });
+});
+
+describe("studio landing recency helpers", () => {
+  function makeSkill(
+    overrides: Partial<CompanySkillListItem> & { id: string },
+  ): CompanySkillListItem {
+    return {
+      companyId: "company-1",
+      key: overrides.id,
+      slug: overrides.id,
+      name: overrides.id,
+      description: null,
+      sourceType: "local_path",
+      sourceLocator: null,
+      sourceRef: null,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [],
+      iconUrl: null,
+      color: null,
+      tagline: null,
+      authorName: null,
+      homepageUrl: null,
+      categories: [],
+      sharingScope: "private",
+      publicShareToken: null,
+      forkedFromSkillId: null,
+      forkedFromCompanyId: null,
+      starCount: 0,
+      installCount: 0,
+      forkCount: 0,
+      currentVersionId: null,
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      updatedAt: new Date("2026-01-01T00:00:00Z"),
+      attachedAgentCount: 0,
+      editable: true,
+      editableReason: null,
+      sourceLabel: null,
+      sourceBadge: "local",
+      sourcePath: null,
+      catalogKind: null,
+      originHash: null,
+      packageName: null,
+      packageVersion: null,
+      ...overrides,
+    };
+  }
+
+  describe("orderRecentlyVisitedSkills", () => {
+    it("orders by recency, drops stale/foreign ids, and caps at the limit", () => {
+      const skills = [makeSkill({ id: "a" }), makeSkill({ id: "b" }), makeSkill({ id: "c" })];
+      const result = orderRecentlyVisitedSkills(skills, ["c", "missing", "a"]);
+      expect(result.map((s) => s.id)).toEqual(["c", "a"]);
+    });
+
+    it("dedupes repeated ids and respects the limit", () => {
+      const skills = Array.from({ length: 8 }, (_, i) => makeSkill({ id: `s${i}` }));
+      const recent = ["s0", "s0", "s1", "s2", "s3", "s4", "s5"];
+      const result = orderRecentlyVisitedSkills(skills, recent, 5);
+      expect(result.map((s) => s.id)).toEqual(["s0", "s1", "s2", "s3", "s4"]);
+    });
+
+    it("returns empty when nothing matches", () => {
+      expect(orderRecentlyVisitedSkills([makeSkill({ id: "a" })], ["x", "y"])).toEqual([]);
+    });
+  });
+
+  describe("orderRecentlyUpdatedSkills", () => {
+    it("sorts by updatedAt desc and excludes the visited ids", () => {
+      const skills = [
+        makeSkill({ id: "old", updatedAt: new Date("2026-01-01T00:00:00Z") }),
+        makeSkill({ id: "new", updatedAt: new Date("2026-03-01T00:00:00Z") }),
+        makeSkill({ id: "mid", updatedAt: new Date("2026-02-01T00:00:00Z") }),
+      ];
+      const result = orderRecentlyUpdatedSkills(skills, ["mid"]);
+      expect(result.map((s) => s.id)).toEqual(["new", "old"]);
+    });
+
+    it("handles ISO-string updatedAt from the wire and caps at the limit", () => {
+      const skills = Array.from({ length: 12 }, (_, i) =>
+        makeSkill({
+          id: `s${i}`,
+          // later index -> more recent
+          updatedAt: new Date(2026, 0, i + 1).toISOString() as unknown as Date,
+        }),
+      );
+      const result = orderRecentlyUpdatedSkills(skills, []);
+      expect(result).toHaveLength(10);
+      expect(result[0]!.id).toBe("s11");
+    });
+
+    it("breaks updatedAt ties by name", () => {
+      const when = new Date("2026-01-01T00:00:00Z");
+      const skills = [
+        makeSkill({ id: "z", name: "Zebra", updatedAt: when }),
+        makeSkill({ id: "a", name: "Apple", updatedAt: when }),
+      ];
+      expect(orderRecentlyUpdatedSkills(skills, []).map((s) => s.name)).toEqual([
+        "Apple",
+        "Zebra",
+      ]);
+    });
+  });
+
+  describe("skillEditorAvatar", () => {
+    const userEditor: CompanySkillLastEditor = {
+      kind: "user",
+      id: "user-1",
+      name: "Ada Lovelace",
+      imageUrl: "https://example.com/ada.png",
+    };
+
+    it("returns image + initials for a human editor", () => {
+      expect(skillEditorAvatar(userEditor)).toEqual({
+        name: "Ada Lovelace",
+        imageUrl: "https://example.com/ada.png",
+        initials: "AL",
+      });
+    });
+
+    it("derives two-letter initials from a single name", () => {
+      expect(skillEditorAvatar({ ...userEditor, name: "Cher" })?.initials).toBe("CH");
+    });
+
+    it("falls back to a placeholder name when unnamed", () => {
+      expect(skillEditorAvatar({ ...userEditor, name: null })).toEqual({
+        name: "Unknown editor",
+        imageUrl: "https://example.com/ada.png",
+        initials: "UE",
+      });
+    });
+
+    it("returns null for agent edits and unattributed syncs", () => {
+      expect(
+        skillEditorAvatar({ kind: "agent", id: "a1", name: "Bot", imageUrl: null }),
+      ).toBeNull();
+      expect(skillEditorAvatar(null)).toBeNull();
+      expect(skillEditorAvatar(undefined)).toBeNull();
+    });
   });
 });

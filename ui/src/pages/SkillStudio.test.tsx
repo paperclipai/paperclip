@@ -4,7 +4,11 @@ import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { CompanySkillDetail } from "@paperclipai/shared";
+import type {
+  CompanySkillDetail,
+  CompanySkillLastEditor,
+  CompanySkillListItem,
+} from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SkillStudio } from "./SkillStudio";
 
@@ -257,5 +261,158 @@ describe("SkillStudio create mode", () => {
       }),
     );
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/skills/studio/created-skill"));
+  });
+});
+
+function makeListItem(
+  overrides: Partial<CompanySkillListItem> & { id: string },
+): CompanySkillListItem {
+  return {
+    companyId: "company-1",
+    key: overrides.id,
+    slug: overrides.id,
+    name: overrides.id,
+    description: null,
+    sourceType: "local_path",
+    sourceLocator: null,
+    sourceRef: null,
+    trustLevel: "markdown_only",
+    compatibility: "compatible",
+    fileInventory: [],
+    iconUrl: null,
+    color: null,
+    tagline: null,
+    authorName: null,
+    homepageUrl: null,
+    categories: [],
+    sharingScope: "private",
+    publicShareToken: null,
+    forkedFromSkillId: null,
+    forkedFromCompanyId: null,
+    starCount: 0,
+    installCount: 0,
+    forkCount: 0,
+    currentVersionId: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    attachedAgentCount: 0,
+    editable: true,
+    editableReason: null,
+    sourceLabel: null,
+    sourceBadge: "local",
+    sourcePath: null,
+    catalogKind: null,
+    originHash: null,
+    packageName: null,
+    packageVersion: null,
+    ...overrides,
+  };
+}
+
+const userEditor = (name: string): CompanySkillLastEditor => ({
+  kind: "user",
+  id: `user-${name}`,
+  name,
+  imageUrl: null,
+});
+const agentEditor: CompanySkillLastEditor = {
+  kind: "agent",
+  id: "agent-1",
+  name: "Bot",
+  imageUrl: null,
+};
+
+function findRowButton(node: ParentNode, name: string): HTMLButtonElement | undefined {
+  return Array.from(node.querySelectorAll("button")).find((button) =>
+    button.textContent?.includes(name),
+  ) as HTMLButtonElement | undefined;
+}
+
+describe("SkillStudio landing", () => {
+  beforeEach(() => {
+    routeState.pathname = "/skills/studio";
+    routeState.search = "";
+    routeState.skillId = undefined;
+    localStorage.clear();
+  });
+
+  it("renders recently-visited and recently-updated sections, gating avatars to humans", async () => {
+    localStorage.setItem("paperclip:recent-studio-skills", JSON.stringify(["visited-1"]));
+    mockCompanySkillsApi.list.mockResolvedValue([
+      makeListItem({
+        id: "visited-1",
+        name: "Visited One",
+        updatedAt: new Date("2026-01-01T00:00:00Z"),
+        lastEditor: userEditor("Ada Lovelace"),
+      }),
+      makeListItem({
+        id: "agent-updated",
+        name: "Agent Updated",
+        updatedAt: new Date("2026-03-01T00:00:00Z"),
+        lastEditor: agentEditor,
+      }),
+      makeListItem({
+        id: "user-updated",
+        name: "User Updated",
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+        lastEditor: userEditor("Grace Hopper"),
+      }),
+    ]);
+
+    const node = await renderStudio();
+
+    await waitFor(() => expect(node.textContent).toContain("Recently visited"));
+    expect(node.textContent).toContain("Recently updated");
+
+    // Visited section surfaces the visited skill; updated section excludes it.
+    const visitedSection = Array.from(node.querySelectorAll("section")).find((s) =>
+      s.querySelector("h2")?.textContent === "Recently visited",
+    )!;
+    const updatedSection = Array.from(node.querySelectorAll("section")).find((s) =>
+      s.querySelector("h2")?.textContent === "Recently updated",
+    )!;
+    expect(visitedSection.textContent).toContain("Visited One");
+    expect(updatedSection.textContent).not.toContain("Visited One");
+    expect(updatedSection.textContent).toContain("Agent Updated");
+    expect(updatedSection.textContent).toContain("User Updated");
+
+    // Only the two human-edited rows render an avatar (initials fallback); the
+    // agent-edited row renders none.
+    const initials = Array.from(node.querySelectorAll('[data-slot="avatar-fallback"]')).map(
+      (el) => el.textContent,
+    );
+    expect(initials).toEqual(["AL", "GH"]);
+  });
+
+  it("opens the clicked skill in Studio", async () => {
+    mockCompanySkillsApi.list.mockResolvedValue([
+      makeListItem({ id: "user-updated", name: "User Updated", lastEditor: userEditor("Grace Hopper") }),
+    ]);
+
+    const node = await renderStudio();
+
+    await waitFor(() => expect(node.textContent).toContain("User Updated"));
+    const row = findRowButton(node, "User Updated")!;
+    await click(row);
+
+    expect(mockNavigate).toHaveBeenCalledWith(expect.stringContaining("user-updated"));
+  });
+
+  it("falls back to the empty state when there are no skills", async () => {
+    mockCompanySkillsApi.list.mockResolvedValue([]);
+
+    const node = await renderStudio();
+
+    await waitFor(() => expect(node.textContent).toContain("Select a skill to open Studio."));
+    expect(node.textContent).toContain("Create a new skill");
+    expect(node.textContent).not.toContain("Recently updated");
+  });
+
+  it("shows the loading fallback while skills load", async () => {
+    mockCompanySkillsApi.list.mockReturnValue(new Promise(() => {}));
+
+    const node = await renderStudio();
+
+    await waitFor(() => expect(node.textContent).toContain("Loading skills..."));
   });
 });
