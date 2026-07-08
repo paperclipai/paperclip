@@ -21,6 +21,10 @@
 import { execFile } from "node:child_process";
 
 const CONCURRENCY = Number(process.env.RELEASE_REGISTRY_CONCURRENCY || 10);
+if (!Number.isInteger(CONCURRENCY) || CONCURRENCY < 1) {
+  console.error("RELEASE_REGISTRY_CONCURRENCY must be a positive integer.");
+  process.exit(2);
+}
 
 function npmView(args) {
   return new Promise((resolve) => {

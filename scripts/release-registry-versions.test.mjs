@@ -135,6 +135,17 @@ test("assert-absent fails and names packages that already have the version", () 
   assert.doesNotMatch(result.stderr, /@paperclipai\/absent@/);
 });
 
+test("invalid concurrency fails instead of skipping registry checks", () => {
+  const fixture = makeFixture();
+  const result = runScript(["assert-absent", "2026.707.2", "@paperclipai/present"], fixture, {
+    RELEASE_REGISTRY_CONCURRENCY: "0",
+  });
+
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /RELEASE_REGISTRY_CONCURRENCY must be a positive integer\./);
+  assert.equal(result.calls, "");
+});
+
 test("next_stable_version reads RELEASE_PACKAGE_VERSIONS_FILE without calling npm", () => {
   const fixture = makeFixture();
   const versionsFile = join(fixture.fixtureDir, "versions.json");
