@@ -10265,7 +10265,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : null;
     const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
     const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
-      ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings)
+      ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, { includeEnvironmentId: true })
       : null;
     const contextProjectId = readNonEmptyString(context.projectId);
     const executionProjectId = issueContext?.projectId ?? contextProjectId;
@@ -11108,7 +11108,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
       if (Object.keys(nextIssuePatch).length > 0) {
-        await issuesSvc.update(issueId, nextIssuePatch);
+        await issuesSvc.update(issueId, {
+          ...nextIssuePatch,
+          preserveExecutionWorkspaceEnvironmentId: true,
+        });
       }
     }
     if (persistedExecutionWorkspace) {

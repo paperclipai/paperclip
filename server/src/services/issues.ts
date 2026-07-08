@@ -6167,6 +6167,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        preserveExecutionWorkspaceEnvironmentId?: boolean;
       },
       dbOrTx: any = db,
     ) => {
@@ -6182,6 +6183,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        preserveExecutionWorkspaceEnvironmentId,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -6244,8 +6246,14 @@ export function issueService(db: Db) {
           : existing.executionWorkspacePreference;
       const nextExecutionWorkspaceSettings =
         issueData.executionWorkspaceSettings !== undefined
-          ? parseIssueExecutionWorkspaceSettings(issueData.executionWorkspaceSettings)
-          : parseIssueExecutionWorkspaceSettings(existing.executionWorkspaceSettings);
+          ? parseIssueExecutionWorkspaceSettings(
+              issueData.executionWorkspaceSettings,
+              { includeEnvironmentId: preserveExecutionWorkspaceEnvironmentId === true },
+            )
+          : parseIssueExecutionWorkspaceSettings(
+              existing.executionWorkspaceSettings,
+              { includeEnvironmentId: preserveExecutionWorkspaceEnvironmentId === true },
+            );
       if (issueData.executionWorkspaceSettings !== undefined) {
         patch.executionWorkspaceSettings = nextExecutionWorkspaceSettings
           ? { ...nextExecutionWorkspaceSettings }

@@ -290,6 +290,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     const projectWorkspaceId = randomUUID();
     const sharedExecutionWorkspaceId = randomUUID();
     const issueId = randomUUID();
+    const issueEnvironmentId = randomUUID();
     const agentId = randomUUID();
     const repoRoot = await createGitRepo();
     tempRoots.push(repoRoot);
@@ -367,6 +368,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       executionWorkspaceId: sharedExecutionWorkspaceId,
       executionWorkspaceSettings: {
         mode: "isolated_workspace",
+        environmentId: issueEnvironmentId,
       },
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -444,6 +446,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(refreshedIssue?.executionWorkspaceId).not.toBe(sharedExecutionWorkspaceId);
     expect(refreshedIssue?.executionWorkspaceSettings).toMatchObject({
       mode: "isolated_workspace",
+      environmentId: issueEnvironmentId,
     });
 
     const isolatedRows = await db
