@@ -962,6 +962,57 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
     });
     expect(result.warning).toBeNull();
   });
+
+  it("drops persisted session when a project-workspace session is being resumed from agent home", () => {
+    const agentId = "agent-123";
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir(agentId);
+
+    const result = resolveRuntimeSessionParamsForWorkspace({
+      agentId,
+      previousSessionParams: {
+        sessionId: "stale-project-session",
+        cwd: "/tmp/some-project-cwd",
+        workspaceId: "workspace-1",
+      },
+      resolvedWorkspace: buildResolvedWorkspace({
+        cwd: fallbackCwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+      }),
+    });
+
+    expect(result.sessionParams).toBeNull();
+    expect(result.warning).toContain("stale-project-session");
+    expect(result.warning).toContain("fresh session");
+  });
+
+  it("preserves persisted session when resuming into agent home from the same fallback cwd", () => {
+    const agentId = "agent-123";
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir(agentId);
+
+    const result = resolveRuntimeSessionParamsForWorkspace({
+      agentId,
+      previousSessionParams: {
+        sessionId: "session-1",
+        cwd: fallbackCwd,
+        workspaceId: null,
+      },
+      resolvedWorkspace: buildResolvedWorkspace({
+        cwd: fallbackCwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+      }),
+    });
+
+    expect(result.sessionParams).toEqual({
+      sessionId: "session-1",
+      cwd: fallbackCwd,
+      workspaceId: null,
+    });
+    expect(result.warning).toBeNull();
+  });
 });
 
 describe("applyPersistedExecutionWorkspaceConfig", () => {
