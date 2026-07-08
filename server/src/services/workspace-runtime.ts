@@ -2094,6 +2094,12 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     projectWorkspaceCwd: input.projectWorkspace?.cwd ?? null,
   });
   const createdByRuntime = input.workspace.metadata?.createdByRuntime === true;
+  const isSharedProjectPrimaryLocalSession =
+    !createdByRuntime &&
+    input.workspace.providerType === "local_fs" &&
+    input.workspace.mode === "shared_workspace" &&
+    input.workspace.strategyType === "project_primary" &&
+    input.workspace.metadata?.source === "project_primary";
   const recordOnlyLocalCleanup =
     !createdByRuntime &&
     (input.workspace.providerType === "local_fs" || input.workspace.providerType === "git_worktree");
@@ -2184,7 +2190,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   } else if (input.workspace.providerType === "local_fs" && workspacePath) {
     if (!createdByRuntime) {
-      if (await directoryExists(workspacePath)) {
+      if (!isSharedProjectPrimaryLocalSession && (await directoryExists(workspacePath))) {
         warnings.push(`Archived execution workspace record only; kept existing local path "${workspacePath}" because Paperclip did not create it.`);
       }
     } else {

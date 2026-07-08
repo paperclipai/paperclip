@@ -2953,7 +2953,7 @@ describe("realizeExecutionWorkspace", () => {
     });
   });
 
-  it("treats shared project-primary local paths as record-only cleanup", async () => {
+  it("treats shared project-primary local paths as clean record-only cleanup", async () => {
     const workspacePath = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-shared-project-primary-"));
 
     const cleanup = await cleanupExecutionWorkspaceArtifacts({
@@ -2983,9 +2983,7 @@ describe("realizeExecutionWorkspace", () => {
 
     expect(cleanup.cleaned).toBe(true);
     expect(cleanup.cleanedPath).toBe(workspacePath);
-    expect(cleanup.warnings).toEqual([
-      `Archived execution workspace record only; kept existing local path "${workspacePath}" because Paperclip did not create it.`,
-    ]);
+    expect(cleanup.warnings).toEqual([]);
     await expect(fs.stat(workspacePath)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
   });
 
