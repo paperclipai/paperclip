@@ -6,7 +6,14 @@ import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import { readAdapterExecutionTarget, adapterExecutionTargetSessionIdentity } from "@paperclipai/adapter-utils/execution-target";
+import {
+  adapterExecutionTargetSessionIdentity,
+  formatAdapterExecutionTimeoutErrorMessage,
+  formatAdapterExecutionTimeoutStartLogLine,
+  readAdapterExecutionTarget,
+  resolveAdapterExecutionTargetTimeout,
+  type AdapterExecutionTargetTimeoutResolution,
+} from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   applyPaperclipWorkspaceEnv,
@@ -100,6 +107,7 @@ interface AcpxPreparedRuntime {
   requestedThinkingEffort: string;
   fastMode: boolean;
   timeoutSec: number;
+  timeoutResolution: AdapterExecutionTargetTimeoutResolution;
   sessionKey: string;
   fingerprint: string;
   agentCommand: string | null;
@@ -929,7 +937,14 @@ async function buildRuntime(input: {
   const requestedModel = asString(config.model, "").trim();
   const requestedThinkingEffort = normalizeRequestedThinkingEffort(config);
   const fastMode = acpxAgent === "codex" && config.fastMode === true;
-  const timeoutSec = asNumber(config.timeoutSec, DEFAULT_ACP_ENGINE_TIMEOUT_SEC);
+  // Resolve the wall-clock timeout through the shared execution-target
+  // resolver so sandbox-backed runs pick up the 4h backstop default while
+  // local/SSH runs keep the historical "0 = no adapter timeout" behavior.
+  const timeoutResolution = resolveAdapterExecutionTargetTimeout(
+    executionTarget,
+    asNumber(config.timeoutSec, DEFAULT_ACP_ENGINE_TIMEOUT_SEC),
+  );
+  const timeoutSec = timeoutResolution.timeoutSec;
   const stateDir = path.resolve(asString(config.stateDir, "") || defaultStateDir(agent.companyId, agent.id));
   await fs.mkdir(stateDir, { recursive: true });
 
@@ -1121,6 +1136,7 @@ async function buildRuntime(input: {
     requestedThinkingEffort,
     fastMode,
     timeoutSec,
+    timeoutResolution,
     sessionKey,
     fingerprint,
     agentCommand,
@@ -1477,8 +1493,8 @@ async function emitAcpxFailure(input: {
   err: unknown;
   phase: AcpxExecutionPhase;
   // Replace the err-derived message in both the stderr-tail log header and the
-  // acpx.error payload. Used by the turn path to surface "Timed out after Ns"
-  // instead of the raw underlying error message.
+  // acpx.error payload. Used by the turn path to surface the self-describing
+  // adapter execution timeout message instead of the raw underlying error.
   messageOverride?: string;
 }): Promise<{
   classified: Pick<AdapterExecutionResult, "errorCode" | "errorMeta">;
@@ -1603,6 +1619,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
   return async function executeAcpxEngine(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
     const prepared = await buildRuntime({ ctx, engine });
+    // State the effective wall-clock timeout and its source up front so a
+    // later timeout is diagnosable from the run log alone. Goes to stderr:
+    // the acpx stdout log stream carries JSON acpx.* event payloads and must
+    // stay machine-parseable line by line.
+    await ctx.onLog(
+      "stderr",
+      `[paperclip] ${formatAdapterExecutionTimeoutStartLogLine(prepared.timeoutResolution)}\n`,
+    );
     const warmIdleMs = asNumber(ctx.config.warmHandleIdleMs, DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS);
     await cleanupIdleHandles({ handles: warmHandles, now: now(), idleMs: warmIdleMs });
 
@@ -1795,7 +1819,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         timeout = setTimeout(() => {
           timedOut = true;
           controller?.abort();
-          void cancelActiveTurn?.(`Timed out after ${prepared.timeoutSec}s`).catch(() => {});
+          void cancelActiveTurn?.(formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)).catch(() => {});
         }, timeoutMs);
       }
       const turn = runtime.startTurn({
@@ -1875,7 +1899,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       }
 
       const errorMessage = timedOut
-        ? `Timed out after ${prepared.timeoutSec}s`
+        ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
         : resultErrorMessage(terminal);
       const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
       await emitAcpxLog(ctx, {
@@ -1911,7 +1935,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
     } catch (err) {
       if (timeout) clearTimeout(timeout);
-      const messageOverride = timedOut ? `Timed out after ${prepared.timeoutSec}s` : undefined;
+      const messageOverride = timedOut
+        ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
+        : undefined;
       const cancel = cancelActiveTurn as ((reason: string) => Promise<void>) | null;
       const preEmitMessage =
         messageOverride ?? (err instanceof Error ? err.message : String(err));

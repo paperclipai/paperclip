@@ -127,7 +127,14 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
 
 export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 
-export const DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC = 1_800;
+// 4-hour wall-clock backstop for sandbox-backed adapter runs. This is a
+// last-resort kill switch, not the primary hang detector: genuinely hung runs
+// are caught much earlier by the adapters' output-inactivity monitors (e.g.
+// codex-local's 7-minute monitor). The value intentionally matches the
+// recovery watchdog's ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS (4h) in
+// server/src/services/recovery/service.ts so healthy long runs are never
+// killed by the adapter before the watchdog would even consider them stuck.
+export const DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC = 14_400;
 
 function parseObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -252,24 +259,107 @@ export function describeAdapterExecutionTarget(
   return `sandbox environment${target.providerKey ? ` (${target.providerKey})` : ""}`;
 }
 
-export function resolveAdapterExecutionTargetTimeoutSec(
+export type AdapterExecutionTargetTimeoutSource =
+  | "configured"
+  | "sandbox_default"
+  | "unlimited";
+
+export interface AdapterExecutionTargetTimeoutResolution {
+  /** Resolved wall-clock timeout in seconds; 0 means no adapter timeout. */
+  timeoutSec: number;
+  /** Which knob produced the resolved value, for logs and error messages. */
+  source: AdapterExecutionTargetTimeoutSource;
+}
+
+export function resolveAdapterExecutionTargetTimeout(
   target: AdapterExecutionTarget | null | undefined,
   configuredTimeoutSec: number | null | undefined,
-): number {
-  const normalizedConfiguredTimeoutSec =
-    typeof configuredTimeoutSec === "number" && Number.isFinite(configuredTimeoutSec) && configuredTimeoutSec > 0
-      ? Math.floor(configuredTimeoutSec)
-      : 0;
-  if (normalizedConfiguredTimeoutSec > 0) return normalizedConfiguredTimeoutSec;
+): AdapterExecutionTargetTimeoutResolution {
+  if (typeof configuredTimeoutSec === "number" && Number.isFinite(configuredTimeoutSec)) {
+    // Preserve fractional (sub-second) configured values instead of flooring:
+    // adapters historically honored e.g. timeoutSec=0.5, and flooring would
+    // silently turn it into "no timeout".
+    if (configuredTimeoutSec > 0) {
+      return { timeoutSec: configuredTimeoutSec, source: "configured" };
+    }
+    // A negative timeoutSec is the explicit "no adapter wall-clock timeout"
+    // opt-out, honored even on sandbox targets. Zero cannot carry that
+    // meaning: the adapter config UI persists the schema default of 0 for
+    // untouched fields, so timeoutSec=0 in stored config does not signal
+    // operator intent and falls through to target defaults below.
+    if (configuredTimeoutSec < 0) {
+      return { timeoutSec: 0, source: "configured" };
+    }
+  }
   // Local and SSH adapters preserve the historical "0 means no adapter
   // timeout" behavior. Sandbox-backed runs execute through provider RPCs
   // that usually apply their own shorter command defaults, so request an
   // explicit longer timeout for full adapter runs when the adapter leaves
   // timeoutSec unset.
   if (target?.kind === "remote" && target.transport === "sandbox") {
-    return DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC;
+    return { timeoutSec: DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC, source: "sandbox_default" };
   }
-  return 0;
+  return { timeoutSec: 0, source: "unlimited" };
+}
+
+export function resolveAdapterExecutionTargetTimeoutSec(
+  target: AdapterExecutionTarget | null | undefined,
+  configuredTimeoutSec: number | null | undefined,
+): number {
+  return resolveAdapterExecutionTargetTimeout(target, configuredTimeoutSec).timeoutSec;
+}
+
+function describeAdapterExecutionTimeoutSource(
+  source: AdapterExecutionTargetTimeoutSource,
+): string {
+  switch (source) {
+    case "configured":
+      return "configured via adapterConfig.timeoutSec";
+    case "sandbox_default":
+      return "sandbox default";
+    case "unlimited":
+      return "no adapter wall-clock timeout";
+  }
+}
+
+/**
+ * Self-describing error message for when the adapter wall-clock execution
+ * timeout kills a run. Names the timer that fired and the knob that controls
+ * it so run failures never surface as a bare "Timed out".
+ */
+export function formatAdapterExecutionTimeoutErrorMessage(
+  resolution: AdapterExecutionTargetTimeoutResolution,
+): string {
+  return (
+    `Run exceeded the adapter execution timeout ` +
+    `(timeoutSec=${resolution.timeoutSec}, ${describeAdapterExecutionTimeoutSource(resolution.source)}). ` +
+    `Set adapterConfig.timeoutSec to raise it.`
+  );
+}
+
+/**
+ * One-line start-of-run statement of the effective wall-clock timeout and its
+ * source. Callers prefix with `[paperclip] ` and append a newline.
+ */
+export function formatAdapterExecutionTimeoutStartLogLine(
+  resolution: AdapterExecutionTargetTimeoutResolution,
+): string {
+  if (resolution.timeoutSec <= 0) {
+    if (resolution.source === "configured") {
+      return (
+        "Adapter execution timeout: none " +
+        "(explicitly disabled via adapterConfig.timeoutSec; set it to a positive value to add one)."
+      );
+    }
+    return (
+      "Adapter execution timeout: none " +
+      "(no adapter wall-clock timeout for this target; set adapterConfig.timeoutSec to add one)."
+    );
+  }
+  return (
+    `Adapter execution timeout: timeoutSec=${resolution.timeoutSec} ` +
+    `(${describeAdapterExecutionTimeoutSource(resolution.source)}; set adapterConfig.timeoutSec to override).`
+  );
 }
 
 function requireSandboxRunner(target: AdapterSandboxExecutionTarget): CommandManagedRuntimeRunner {
