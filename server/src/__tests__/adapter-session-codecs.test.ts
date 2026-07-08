@@ -13,7 +13,7 @@ import {
   sessionCodec as opencodeSessionCodec,
   isOpenCodeUnknownSessionError,
 } from "@paperclipai/adapter-opencode-local/server";
-import { sessionCodec as acpxSessionCodec } from "@paperclipai/acpx-engine/session-codec";
+import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
 
 describe("adapter session codecs", () => {
   it("normalizes claude session params with cwd", () => {

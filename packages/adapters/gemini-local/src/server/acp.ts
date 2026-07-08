@@ -14,8 +14,8 @@ import {
   DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACP_ENGINE_PERMISSION_MODE,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
-} from "@paperclipai/acpx-engine/constants";
-import type { AcpxEngineExecutorOptions } from "@paperclipai/acpx-engine/execute";
+} from "@paperclipai/adapter-utils/acpx-engine/constants";
+import type { AcpxEngineExecutorOptions } from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asNumber,
   asString,
@@ -127,7 +127,7 @@ export function createGeminiAcpExecutor(options: GeminiAcpExecutorOptions = {}):
   return async (ctx) => {
     let currentExecutor = executor;
     if (!currentExecutor) {
-      const { createAcpxEngineExecutor } = await import("@paperclipai/acpx-engine/execute");
+      const { createAcpxEngineExecutor } = await import("@paperclipai/adapter-utils/acpx-engine/execute");
       currentExecutor = createAcpxEngineExecutor(withGeminiAcpDefaults(options));
       executor = currentExecutor;
     }

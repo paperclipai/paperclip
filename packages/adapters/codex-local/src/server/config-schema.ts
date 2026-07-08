@@ -3,7 +3,7 @@ import {
   DEFAULT_ACP_ENGINE_MODE,
   DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
-} from "@paperclipai/acpx-engine/constants";
+} from "@paperclipai/adapter-utils/acpx-engine/constants";
 
 const acpVisible = { visibleWhen: { key: "engine", values: ["acp"] } };
 

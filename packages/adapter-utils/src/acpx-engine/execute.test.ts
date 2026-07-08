@@ -869,7 +869,7 @@ describe("findAncestorBin", () => {
 
   it("finds the binary in the start directory's own node_modules/.bin", async () => {
     const root = await makeTempRoot();
-    const packageDir = path.join(root, "node_modules", "@paperclipai", "acpx-engine");
+    const packageDir = path.join(root, "node_modules", "@paperclipai", "adapter-utils");
     await fs.mkdir(packageDir, { recursive: true });
     const expectedBin = await writeFakeBin(packageDir, "claude-agent-acp");
 
@@ -880,7 +880,7 @@ describe("findAncestorBin", () => {
 
   it("finds the binary hoisted to an ancestor node_modules/.bin", async () => {
     const root = await makeTempRoot();
-    const packageDir = path.join(root, "node_modules", "@paperclipai", "acpx-engine");
+    const packageDir = path.join(root, "node_modules", "@paperclipai", "adapter-utils");
     await fs.mkdir(packageDir, { recursive: true });
     const expectedBin = await writeFakeBin(root, "claude-agent-acp");
 
@@ -891,7 +891,7 @@ describe("findAncestorBin", () => {
 
   it("returns null when the binary is not present in any ancestor", async () => {
     const root = await makeTempRoot();
-    const packageDir = path.join(root, "node_modules", "@paperclipai", "acpx-engine");
+    const packageDir = path.join(root, "node_modules", "@paperclipai", "adapter-utils");
     await fs.mkdir(packageDir, { recursive: true });
 
     const resolved = await findAncestorBin(packageDir, "claude-agent-acp");

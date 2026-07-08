@@ -29,7 +29,7 @@ export {
   claudeConfigDir,
 } from "./quota.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
-import { sessionCodec as acpxSessionCodec } from "@paperclipai/acpx-engine/session-codec";
+import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;

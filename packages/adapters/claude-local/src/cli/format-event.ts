@@ -1,5 +1,5 @@
 import pc from "picocolors";
-import { printAcpxStreamEvent } from "@paperclipai/acpx-engine/cli";
+import { printAcpxStreamEvent } from "@paperclipai/adapter-utils/acpx-engine/cli";
 
 function asErrorText(value: unknown): string {
   if (typeof value === "string") return value;

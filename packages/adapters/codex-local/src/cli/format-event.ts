@@ -1,5 +1,5 @@
 import pc from "picocolors";
-import { printAcpxStreamEvent } from "@paperclipai/acpx-engine/cli";
+import { printAcpxStreamEvent } from "@paperclipai/adapter-utils/acpx-engine/cli";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
