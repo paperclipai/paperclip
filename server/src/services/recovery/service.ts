@@ -2670,6 +2670,83 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  function isRoutineExecutionIssue(issue: typeof issues.$inferSelect) {
+    return issue.originKind === "routine_execution";
+  }
+
+  function buildCancelledRoutineExecutionRecoveryComment(input: {
+    issue: typeof issues.$inferSelect;
+    previousStatus: StrandedPreviousStatus;
+    latestRun: LatestIssueRun;
+    prefix: string;
+  }) {
+    const runLink = input.latestRun
+      ? runUiLink({ id: input.latestRun.id, agentId: input.latestRun.agentId }, input.prefix)
+      : "none";
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    return [
+      "Paperclip cancelled this stranded routine-execution issue instead of blocking it.",
+      "",
+      `- Previous status: \`${input.previousStatus}\``,
+      `- Latest run: ${runLink}`,
+      `- Latest run status: \`${input.latestRun?.status ?? "unknown"}\``,
+      failureSummary ? `- Failure: ${failureSummary.trim()}` : "- Failure: none recorded",
+      "",
+      "This issue is a disposable instance of a recurring routine. The routine will",
+      "create a fresh execution issue on its next scheduled fire, so there is nothing",
+      "to recover here. No action is required; if the failure recurs across fires,",
+      "repair the routine configuration or the underlying runtime/adapter fault.",
+    ].join("\n");
+  }
+
+  async function cancelStrandedRoutineExecutionIssue(input: {
+    issue: typeof issues.$inferSelect;
+    previousStatus: StrandedPreviousStatus;
+    latestRun: LatestIssueRun;
+    recoveryCause: StrandedRecoveryCause;
+  }) {
+    const updated = await issuesSvc.update(input.issue.id, { status: "cancelled" });
+    if (!updated) return null;
+
+    const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+    await issuesSvc.addComment(
+      input.issue.id,
+      buildCancelledRoutineExecutionRecoveryComment({
+        issue: input.issue,
+        previousStatus: input.previousStatus,
+        latestRun: input.latestRun,
+        prefix,
+      }),
+      {},
+      { authorType: "system" },
+    );
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        status: "cancelled",
+        previousStatus: input.previousStatus,
+        source: "recovery.cancel_stranded_routine_execution",
+        recoveryCause: input.recoveryCause,
+        latestRunId: input.latestRun?.id ?? null,
+        latestRunStatus: input.latestRun?.status ?? null,
+        latestRunErrorCode: input.latestRun?.errorCode ?? null,
+        originKind: input.issue.originKind,
+        originId: input.issue.originId,
+      },
+    });
+
+    return updated;
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: StrandedPreviousStatus;
@@ -2684,6 +2761,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issue: input.issue,
         previousStatus: input.previousStatus,
         latestRun: input.latestRun,
+      });
+    }
+
+    // Routine-execution issues are throwaway instances of a recurring routine: the
+    // routine regenerates a fresh execution issue on its next scheduled fire, so a
+    // stranded instance has nothing to "recover" — the forward path is the next fire,
+    // not a repair of this issue. Parking it in `blocked` therefore produces a
+    // permanent zombie: it carries no first-class blocker (none pre-exists, so the
+    // blocked-with-empty-blockers heuristic flags it as stuck) and its assignee has
+    // no meaningful action to take on a disposable run. Cancel it instead so it
+    // leaves the stranded/blocked population cleanly; the routine restores forward
+    // motion on schedule.
+    if (isRoutineExecutionIssue(input.issue)) {
+      return cancelStrandedRoutineExecutionIssue({
+        issue: input.issue,
+        previousStatus: input.previousStatus,
+        latestRun: input.latestRun,
+        recoveryCause: input.recoveryCause ?? "stranded_assigned_issue",
       });
     }
 

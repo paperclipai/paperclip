@@ -324,6 +324,67 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("cancels a stranded routine-execution issue instead of blocking it into a zombie", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const routineIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: routineIssueId,
+      companyId,
+      title: "Daily backlog do",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+      originKind: "routine_execution",
+      originId: randomUUID(),
+    });
+    const [routineIssue] = await db.select().from(issues).where(eq(issues.id, routineIssueId));
+
+    const latestRun = {
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed",
+      error: "adapter failed",
+      errorCode: "adapter_failed",
+      contextSnapshot: { retryReason: "issue_continuation_needed" },
+      livenessState: "needs_followup",
+    } as const;
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: routineIssue!,
+      previousStatus: "in_progress",
+      latestRun,
+      comment: "Automatic continuation recovery failed.",
+    });
+
+    // The throwaway routine instance is cancelled, not blocked: the routine
+    // regenerates a fresh execution issue on its next fire, so there is nothing
+    // to recover and no zombie is left in the blocked population.
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, routineIssueId));
+    expect(updatedIssue).toMatchObject({ status: "cancelled" });
+
+    // No source-scoped recovery action is created and no owner is woken, because
+    // there is no recovery work to own.
+    const actionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, routineIssueId));
+    expect(actionRows).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+
+    // A single system note explains the cancellation.
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, routineIssueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("cancelled this stranded routine-execution issue");
+  });
+
   it("reuses the same source-scoped action when latest run IDs change while the cause stays the same", async () => {
     const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);
