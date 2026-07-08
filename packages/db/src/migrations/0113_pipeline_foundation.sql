@@ -150,9 +150,45 @@ CREATE TABLE IF NOT EXISTS "pipelines" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "pipelines" ADD COLUMN IF NOT EXISTS "company_id" uuid;--> statement-breakpoint
-ALTER TABLE "pipelines" ALTER COLUMN "company_id" SET NOT NULL;--> statement-breakpoint
 ALTER TABLE "pipelines" ADD COLUMN IF NOT EXISTS "project_id" uuid;--> statement-breakpoint
+ALTER TABLE "pipelines" ADD COLUMN IF NOT EXISTS "company_id" uuid;--> statement-breakpoint
+UPDATE "pipelines"
+SET "company_id" = "projects"."company_id"
+FROM "projects"
+WHERE "pipelines"."project_id" = "projects"."id"
+  AND "pipelines"."company_id" IS NULL;--> statement-breakpoint
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'pipeline_cases'
+      AND column_name = 'company_id'
+  ) THEN
+    UPDATE "pipelines"
+    SET "company_id" = "case_companies"."company_id"
+    FROM (
+      SELECT "pipeline_id", (array_agg(DISTINCT "company_id"))[1] AS "company_id", count(DISTINCT "company_id") AS "company_count"
+      FROM "pipeline_cases"
+      WHERE "company_id" IS NOT NULL
+      GROUP BY "pipeline_id"
+    ) AS "case_companies"
+    WHERE "pipelines"."id" = "case_companies"."pipeline_id"
+      AND "case_companies"."company_count" = 1
+      AND "pipelines"."company_id" IS NULL;
+  END IF;
+END $$;--> statement-breakpoint
+UPDATE "pipelines"
+SET "company_id" = "companies"."id"
+FROM "companies"
+WHERE "pipelines"."company_id" IS NULL
+  AND (SELECT count(*) FROM "companies") = 1;--> statement-breakpoint
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM "pipelines" WHERE "company_id" IS NULL) THEN
+    RAISE EXCEPTION 'Cannot backfill pipelines.company_id for existing rows without project, case, or single-company ownership';
+  END IF;
+END $$;--> statement-breakpoint
+ALTER TABLE "pipelines" ALTER COLUMN "company_id" SET NOT NULL;--> statement-breakpoint
 ALTER TABLE "pipelines" ADD COLUMN IF NOT EXISTS "key" text;--> statement-breakpoint
 UPDATE "pipelines"
 SET "key" = "id"::text
@@ -166,6 +202,81 @@ WHERE "pipeline_cases"."pipeline_id" = "pipelines"."id"
   AND "pipeline_cases"."company_id" IS NULL;--> statement-breakpoint
 ALTER TABLE "pipeline_cases" ALTER COLUMN "company_id" SET NOT NULL;--> statement-breakpoint
 ALTER TABLE "pipeline_cases" ADD COLUMN IF NOT EXISTS "case_key" text;--> statement-breakpoint
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'pipeline_cases'
+      AND column_name = 'fields'
+  ) THEN
+    WITH candidates AS (
+      SELECT
+        "id",
+        "pipeline_id",
+        coalesce(
+          nullif("fields"->>'caseKey', ''),
+          nullif("fields"->>'case_key', ''),
+          nullif("fields"->>'key', ''),
+          nullif("fields"->>'externalKey', ''),
+          nullif("fields"->>'external_key', '')
+        ) AS "candidate"
+      FROM "pipeline_cases"
+      WHERE "case_key" IS NULL
+    ),
+    unique_candidates AS (
+      SELECT
+        "id",
+        "candidate",
+        count(*) OVER (PARTITION BY "pipeline_id", "candidate") AS "candidate_count"
+      FROM candidates
+      WHERE "candidate" IS NOT NULL
+    )
+    UPDATE "pipeline_cases"
+    SET "case_key" = unique_candidates."candidate"
+    FROM unique_candidates
+    WHERE "pipeline_cases"."id" = unique_candidates."id"
+      AND unique_candidates."candidate_count" = 1
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "pipeline_cases" AS "existing_cases"
+        WHERE "existing_cases"."pipeline_id" = "pipeline_cases"."pipeline_id"
+          AND "existing_cases"."case_key" = unique_candidates."candidate"
+      );
+  END IF;
+END $$;--> statement-breakpoint
+WITH candidates AS (
+  SELECT
+    "pipeline_cases"."id",
+    "pipeline_cases"."pipeline_id",
+    "issues"."identifier" AS "candidate"
+  FROM "pipeline_cases"
+  INNER JOIN "pipeline_case_issue_links"
+    ON "pipeline_case_issue_links"."case_id" = "pipeline_cases"."id"
+   AND "pipeline_case_issue_links"."role" = 'origin'
+  INNER JOIN "issues"
+    ON "issues"."id" = "pipeline_case_issue_links"."issue_id"
+  WHERE "pipeline_cases"."case_key" IS NULL
+    AND "issues"."identifier" IS NOT NULL
+),
+unique_candidates AS (
+  SELECT
+    "id",
+    "candidate",
+    count(*) OVER (PARTITION BY "pipeline_id", "candidate") AS "candidate_count"
+  FROM candidates
+)
+UPDATE "pipeline_cases"
+SET "case_key" = unique_candidates."candidate"
+FROM unique_candidates
+WHERE "pipeline_cases"."id" = unique_candidates."id"
+  AND unique_candidates."candidate_count" = 1
+  AND NOT EXISTS (
+    SELECT 1
+    FROM "pipeline_cases" AS "existing_cases"
+    WHERE "existing_cases"."pipeline_id" = "pipeline_cases"."pipeline_id"
+      AND "existing_cases"."case_key" = unique_candidates."candidate"
+  );--> statement-breakpoint
 UPDATE "pipeline_cases"
 SET "case_key" = "id"::text
 WHERE "case_key" IS NULL;--> statement-breakpoint
@@ -227,10 +338,18 @@ UPDATE "pipeline_case_events"
 SET "payload" = '{}'::jsonb
 WHERE "payload" IS NULL;--> statement-breakpoint
 ALTER TABLE "pipeline_case_events" ALTER COLUMN "payload" SET NOT NULL;--> statement-breakpoint
+ALTER TABLE "pipeline_case_events" ADD COLUMN IF NOT EXISTS "updated_at" timestamp with time zone DEFAULT now();--> statement-breakpoint
 ALTER TABLE "pipeline_case_events" ADD COLUMN IF NOT EXISTS "created_at" timestamp with time zone DEFAULT now();--> statement-breakpoint
 UPDATE "pipeline_case_events"
-SET "created_at" = now()
-WHERE "created_at" IS NULL;--> statement-breakpoint
+SET "created_at" = coalesce(
+  "pipeline_case_events"."updated_at",
+  "pipeline_cases"."updated_at",
+  "pipeline_cases"."created_at",
+  now()
+)
+FROM "pipeline_cases"
+WHERE "pipeline_case_events"."case_id" = "pipeline_cases"."id"
+  AND "pipeline_case_events"."created_at" IS NULL;--> statement-breakpoint
 ALTER TABLE "pipeline_case_events" ALTER COLUMN "created_at" SET NOT NULL;--> statement-breakpoint
 ALTER TABLE "pipeline_cases" ADD COLUMN IF NOT EXISTS "lease_agent_id" uuid;--> statement-breakpoint
 ALTER TABLE "pipeline_cases" ADD COLUMN IF NOT EXISTS "created_by_agent_id" uuid;--> statement-breakpoint
@@ -251,9 +370,28 @@ SET "key" = "id"::text
 WHERE "key" IS NULL;--> statement-breakpoint
 ALTER TABLE "pipeline_stages" ALTER COLUMN "key" SET NOT NULL;--> statement-breakpoint
 ALTER TABLE "pipeline_stages" ADD COLUMN IF NOT EXISTS "position" integer DEFAULT 0;--> statement-breakpoint
+WITH existing_stage_positions AS (
+  SELECT "pipeline_id", max("position") AS "max_position"
+  FROM "pipeline_stages"
+  WHERE "position" IS NOT NULL
+  GROUP BY "pipeline_id"
+),
+ranked_null_positions AS (
+  SELECT
+    "pipeline_stages"."id",
+    coalesce(existing_stage_positions."max_position", -1) + row_number() OVER (
+      PARTITION BY "pipeline_stages"."pipeline_id"
+      ORDER BY "pipeline_stages"."created_at" NULLS LAST, "pipeline_stages"."name", "pipeline_stages"."id"
+    ) AS "next_position"
+  FROM "pipeline_stages"
+  LEFT JOIN existing_stage_positions
+    ON existing_stage_positions."pipeline_id" = "pipeline_stages"."pipeline_id"
+  WHERE "position" IS NULL
+)
 UPDATE "pipeline_stages"
-SET "position" = 0
-WHERE "position" IS NULL;--> statement-breakpoint
+SET "position" = ranked_null_positions."next_position"
+FROM ranked_null_positions
+WHERE "pipeline_stages"."id" = ranked_null_positions."id";--> statement-breakpoint
 ALTER TABLE "pipeline_stages" ALTER COLUMN "position" SET NOT NULL;--> statement-breakpoint
 DO $$ BEGIN
  ALTER TABLE "pipeline_automation_executions" ADD CONSTRAINT "pipeline_automation_executions_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;
