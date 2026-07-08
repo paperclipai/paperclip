@@ -2817,6 +2817,72 @@ export function issueRoutes(
     return true;
   }
 
+  function assertRecoveryPreviousAssigneePatchAllowed(input: {
+    existing: {
+      id: string;
+      assigneeAgentId: string | null;
+      previousAssigneeAgentId: string | null | undefined;
+    };
+    updateFields: Record<string, unknown>;
+    actorAgentId: string | null | undefined;
+  }, res: Response): boolean {
+    const actorAgentId = input.actorAgentId;
+    if (!actorAgentId) return true;
+
+    const nextStatus = typeof input.updateFields.status === "string" ? input.updateFields.status : null;
+    const isTerminalDisposition = nextStatus === "done" || nextStatus === "cancelled";
+    const suppliedPreviousAssigneeAgentId =
+      typeof input.updateFields.previousAssigneeAgentId === "string"
+        ? input.updateFields.previousAssigneeAgentId
+        : null;
+    const nextAssigneeAgentId =
+      typeof input.updateFields.assigneeAgentId === "string"
+        ? input.updateFields.assigneeAgentId
+        : input.updateFields.assigneeAgentId === null
+          ? null
+          : input.existing.assigneeAgentId;
+    const movesAssigneeOffActor =
+      input.existing.assigneeAgentId === actorAgentId &&
+      typeof nextAssigneeAgentId === "string" &&
+      nextAssigneeAgentId !== actorAgentId;
+
+    if (suppliedPreviousAssigneeAgentId && !isTerminalDisposition && !movesAssigneeOffActor) {
+      res.status(422).json({
+        error:
+          "Agents cannot directly set previousAssigneeAgentId unless the same PATCH reassigns the issue away from the actor.",
+        code: "recovery_previous_assignee_not_self_settable",
+        details: {
+          issueId: input.existing.id,
+          currentAssigneeAgentId: input.existing.assigneeAgentId,
+          nextAssigneeAgentId,
+          actorAgentId,
+          suppliedPreviousAssigneeAgentId,
+          securityPrinciples: ["Separation of Disposition Authority"],
+        },
+      });
+      return false;
+    }
+
+    if (input.existing.previousAssigneeAgentId === actorAgentId && nextAssigneeAgentId === actorAgentId) {
+      res.status(422).json({
+        error:
+          "Recovery disposition requires a distinct prior assignee and recovery owner; previousAssigneeAgentId cannot be the acting assignee.",
+        code: "recovery_previous_assignee_not_self_settable",
+        details: {
+          issueId: input.existing.id,
+          currentAssigneeAgentId: input.existing.assigneeAgentId,
+          nextAssigneeAgentId,
+          actorAgentId,
+          previousAssigneeAgentId: input.existing.previousAssigneeAgentId,
+          securityPrinciples: ["Separation of Disposition Authority"],
+        },
+      });
+      return false;
+    }
+
+    return true;
+  }
+
   async function logExpiredRequestConfirmations(input: {
     issue: { id: string; companyId: string; identifier?: string | null };
     interactions: Array<{ id: string; kind: string; status: string; result?: unknown }>;
@@ -7189,11 +7255,17 @@ export function issueRoutes(
       return;
     }
 
+    const previousAssigneePatchMovesIssueOffActor =
+      req.actor.type === "agent" &&
+      existing.assigneeAgentId === req.actor.agentId &&
+      typeof normalizedAssigneeAgentId === "string" &&
+      normalizedAssigneeAgentId !== req.actor.agentId;
     if (
       req.actor.type === "agent" &&
       updateFields.previousAssigneeAgentId !== undefined &&
       updateFields.status !== "done" &&
-      updateFields.status !== "cancelled"
+      updateFields.status !== "cancelled" &&
+      !previousAssigneePatchMovesIssueOffActor
     ) {
       res.status(422).json({
         error:
@@ -7350,6 +7422,19 @@ export function issueRoutes(
     });
 
     if (req.actor.type === "agent") {
+      if (!assertRecoveryPreviousAssigneePatchAllowed(
+        {
+          existing: {
+            id: existing.id,
+            assigneeAgentId: existing.assigneeAgentId,
+            previousAssigneeAgentId: existing.previousAssigneeAgentId ?? null,
+          },
+          updateFields,
+          actorAgentId: req.actor.agentId,
+        },
+        res,
+      )) return;
+
       if (!assertRecoveryDispositionGate(
         {
           existing: {
