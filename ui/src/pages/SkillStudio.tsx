@@ -9,11 +9,14 @@ import {
   Copy,
   FileCode,
   FilePlus,
+  FileText,
   FolderMinus,
   FolderPlus,
   FlaskConical,
+  GitFork,
   History,
   MoreHorizontal,
+  Pencil,
   Play,
   Plus,
   RotateCcw,
@@ -27,12 +30,16 @@ import type {
   CompanySkillTestInput,
   CompanySkillTestRun,
   CompanySkillTestRunDetail,
+  CompanySkillTestRunTemplate,
+  CompanySkillTestRunTemplateCreateRequest,
+  CompanySkillTestRunTemplateUpdateRequest,
   CompanySkillVersion,
+  IssueDocument,
   IssueThreadInteraction,
   AskUserQuestionsInteraction,
   AskUserQuestionsAnswer,
 } from "@paperclipai/shared";
-import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import {
   SearchableSelect,
   type SearchableSelectGroup,
@@ -46,8 +53,21 @@ import { companySkillsApi } from "@/api/companySkills";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
-import { skillStudioRoute } from "@/lib/company-skill-routes";
+import { skillStudioNewRoute, skillStudioRoute } from "@/lib/company-skill-routes";
+import {
+  buildBlankSkillDraft,
+  buildForkSkillDraft,
+  defaultSkillMarkdown,
+  normalizeSkillDraftSlug,
+  SKILL_CREATE_ACCENTS,
+  skillAccentColor,
+  skillCreateDraftToPayload,
+  splitCategoryDraft,
+  type SkillCreateDraft,
+} from "@/lib/skill-create";
+import { getRecentStudioSkillIds, trackRecentStudioSkill } from "@/lib/recent-skills";
 import { cn, formatCents, relativeTime } from "@/lib/utils";
+import { SkillCardIcon, type DiscoveryCard } from "./CompanySkills";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -104,30 +124,50 @@ import { EntityRow } from "@/components/EntityRow";
 import { FilterBar } from "@/components/FilterBar";
 import { Identity } from "@/components/Identity";
 import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
+import { IssueAttachmentsSection } from "@/components/IssueAttachmentsSection";
+import { ImageGalleryModal, type GalleryMediaItem } from "@/components/ImageGalleryModal";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { IssueOutputSection } from "@/components/issue-output/IssueOutputSection";
 import { buildLineDiff } from "@/lib/line-diff";
 import {
+  buildCreateRunRequest,
   buildReRunRequest,
+  DEFAULT_TEST_RUN_TEMPLATE_ID,
   EMPTY_SAVED_INPUT_DRAFT_STATE,
   evaluateRunGate,
+  getRunAdditionalDocuments,
+  getRunMediaGalleryItems,
+  getRunRawAttachments,
   isAgentSelectable,
   isInteractionAnswerable,
   isTerminalRunStatus,
+  orderRecentlyUpdatedSkills,
+  orderRecentlyVisitedSkills,
+  skillEditorAvatar,
+  NO_TEST_RUN_TEMPLATE_STORAGE_VALUE,
+  parseRunTemplateSelection,
   routeInteraction,
   runBadgeStatus,
+  runHarnessUnavailableCopy,
   runOutputMode,
   runShortId,
+  resolveRunTemplateSelection,
+  serializeRunTemplateSelection,
   savedInputDraftDirty,
   selectedSavedInputDraft,
   shouldPollRun,
   showRunErrorCard,
   syncSavedInputDraftState,
   testTaskLinkState,
+  type RunTemplateSelection,
   type SavedInputDraftState,
 } from "@/lib/skill-studio";
 
 const PANE_STORAGE_KEY = "skillStudio.paneSizes";
+const RUN_TEMPLATE_STORAGE_KEY_PREFIX = "skillStudio.runTemplate";
 const MOBILE_BREAKPOINT = 900;
 const POLL_MS = 2000;
+const EMPTY_RUN_TEMPLATES: CompanySkillTestRunTemplate[] = [];
 
 /**
  * Surface a mutation rejection as an error toast. Every Studio mutation routes
@@ -171,6 +211,26 @@ function loadPaneLayout(): PaneLayout {
   return DEFAULT_LAYOUT;
 }
 
+function runTemplateStorageKey(companyId: string) {
+  return `${RUN_TEMPLATE_STORAGE_KEY_PREFIX}.${companyId}`;
+}
+
+function loadRunTemplateSelection(companyId: string): RunTemplateSelection {
+  try {
+    return parseRunTemplateSelection(localStorage.getItem(runTemplateStorageKey(companyId)));
+  } catch {
+    return DEFAULT_TEST_RUN_TEMPLATE_ID;
+  }
+}
+
+function persistRunTemplateSelection(companyId: string, selection: RunTemplateSelection) {
+  try {
+    localStorage.setItem(runTemplateStorageKey(companyId), serializeRunTemplateSelection(selection));
+  } catch {
+    /* storage may be unavailable (private mode) — non-fatal */
+  }
+}
+
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(
     () => typeof window !== "undefined" && window.innerWidth < MOBILE_BREAKPOINT,
@@ -189,10 +249,14 @@ function useIsMobile() {
 
 export function SkillStudio() {
   const { skillId = "" } = useParams<{ skillId: string }>();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const companyId = selectedCompanyId ?? "";
+  const isCreateMode = location.pathname.replace(/\/+$/, "").endsWith("/skills/studio/new");
+  const forkFromSkillId = isCreateMode ? searchParams.get("forkFrom")?.trim() || null : null;
 
   const skillsQuery = useQuery({
     queryKey: queryKeys.companySkills.list(companyId),
@@ -203,13 +267,24 @@ export function SkillStudio() {
   const detailQuery = useQuery({
     queryKey: queryKeys.companySkills.detail(companyId, skillId),
     queryFn: () => companySkillsApi.detail(companyId, skillId),
-    enabled: Boolean(companyId && skillId),
+    enabled: Boolean(companyId && skillId && !isCreateMode),
+  });
+  const forkDetailQuery = useQuery({
+    queryKey: queryKeys.companySkills.detail(companyId, forkFromSkillId ?? ""),
+    queryFn: () => companySkillsApi.detail(companyId, forkFromSkillId!),
+    enabled: Boolean(companyId && forkFromSkillId),
   });
   const skill = detailQuery.data ?? null;
 
   useEffect(() => {
     setBreadcrumbs(
-      skill
+      isCreateMode
+        ? [
+            { label: "Skills", href: "/skills" },
+            { label: "Studio", href: "/skills/studio" },
+            { label: "New skill" },
+          ]
+        : skill
         ? [
             { label: "Skills", href: "/skills" },
             { label: "Studio", href: "/skills/studio" },
@@ -220,17 +295,39 @@ export function SkillStudio() {
             { label: "Studio" },
           ],
     );
-  }, [setBreadcrumbs, skill]);
+  }, [isCreateMode, setBreadcrumbs, skill]);
+
+  // Record a per-browser visit whenever a skill successfully opens, powering the
+  // landing's "Recently visited" section (PAP-13150).
+  useEffect(() => {
+    if (skill?.id) trackRecentStudioSkill(skill.id);
+  }, [skill?.id]);
 
   if (!companyId) {
     return <StudioMessage message="Select a company to open Skill Studio." />;
   }
+  if (isCreateMode) {
+    return (
+      <StudioCreateMode
+        companyId={companyId}
+        skills={skillsQuery.data ?? []}
+        skillsLoading={skillsQuery.isLoading}
+        forkFromSkillId={forkFromSkillId}
+        forkSkill={forkDetailQuery.data ?? null}
+        forkLoading={forkDetailQuery.isLoading}
+        forkError={forkDetailQuery.isError}
+        onSelectSkill={(nextSkillId) => navigate(skillStudioRoute(nextSkillId))}
+      />
+    );
+  }
   if (!skillId) {
     return (
-      <StudioEmptyState
+      <StudioLanding
+        companyId={companyId}
         skills={skillsQuery.data ?? []}
         skillsLoading={skillsQuery.isLoading}
         onSelectSkill={(nextSkillId) => navigate(skillStudioRoute(nextSkillId))}
+        onCreateNew={() => navigate(skillStudioNewRoute())}
       />
     );
   }
@@ -251,6 +348,317 @@ export function SkillStudio() {
   );
 }
 
+function StudioCreateMode({
+  companyId,
+  skills,
+  skillsLoading,
+  forkFromSkillId,
+  forkSkill,
+  forkLoading,
+  forkError,
+  onSelectSkill,
+}: {
+  companyId: string;
+  skills: CompanySkillListItem[];
+  skillsLoading: boolean;
+  forkFromSkillId: string | null;
+  forkSkill: CompanySkillDetail | null;
+  forkLoading: boolean;
+  forkError: boolean;
+  onSelectSkill: (skillId: string) => void;
+}) {
+  return (
+    <TooltipProvider delayDuration={200}>
+      <div className="flex h-full min-h-0 flex-col">
+        <header className="flex items-center gap-3 border-b border-border px-3 py-2">
+          <SkillSwitcher
+            skill={null}
+            skills={skills}
+            loading={skillsLoading}
+            onSelectSkill={onSelectSkill}
+            emptyLabel="New skill"
+          />
+        </header>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <StudioNewSkillPanel
+            companyId={companyId}
+            forkFromSkillId={forkFromSkillId}
+            forkSkill={forkSkill}
+            forkLoading={forkLoading}
+            forkError={forkError}
+          />
+        </div>
+      </div>
+    </TooltipProvider>
+  );
+}
+
+function StudioNewSkillPanel({
+  companyId,
+  forkFromSkillId,
+  forkSkill,
+  forkLoading,
+  forkError,
+}: {
+  companyId: string;
+  forkFromSkillId: string | null;
+  forkSkill: CompanySkillDetail | null;
+  forkLoading: boolean;
+  forkError: boolean;
+}) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const toast = useOptionalToastActions();
+  const initialDraft = useMemo(
+    () => (forkSkill ? buildForkSkillDraft(forkSkill) : buildBlankSkillDraft()),
+    [forkSkill],
+  );
+  const [draft, setDraft] = useState<SkillCreateDraft>(initialDraft);
+  const [slugDirty, setSlugDirty] = useState(initialDraft.slug.trim().length > 0);
+  const categoryDraft = draft.categories.join(", ");
+  const effectiveSlug = draft.slug.trim() || normalizeSkillDraftSlug(draft.name);
+  const nameValid = draft.name.trim().length > 0;
+
+  useEffect(() => {
+    setDraft(initialDraft);
+    setSlugDirty(initialDraft.slug.trim().length > 0);
+  }, [initialDraft]);
+
+  function patchDraft(patch: Partial<SkillCreateDraft>) {
+    setDraft((current) => ({ ...current, ...patch }));
+  }
+
+  const createSkill = useMutation({
+    mutationFn: () => companySkillsApi.create(companyId, skillCreateDraftToPayload(draft)),
+    onSuccess: async (skill) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(companyId) });
+      toast?.pushToast({
+        tone: "success",
+        title: skill.forkedFromSkillId ? "Skill fork created" : "Skill created",
+        body: `${skill.name} is now editable in the Paperclip workspace.`,
+      });
+      navigate(skillStudioRoute(skill.id));
+    },
+    onError: (error) => {
+      toast?.pushToast({
+        tone: "error",
+        title: "Skill creation failed",
+        body: error instanceof Error ? error.message : "Failed to create skill.",
+      });
+    },
+  });
+
+  if (forkFromSkillId && forkLoading) {
+    return <StudioMessage message="Loading fork source..." />;
+  }
+
+  const previewCard: DiscoveryCard = {
+    key: effectiveSlug || draft.name || "new-skill",
+    skillId: null,
+    catalogRef: null,
+    name: draft.name || "New Skill",
+    slug: effectiveSlug || "skill",
+    author: "you",
+    version: null,
+    tagline: draft.tagline || null,
+    description: draft.tagline,
+    categories: draft.categories,
+    iconUrl: null,
+    color: draft.color,
+    starCount: 0,
+    agentCount: 0,
+    forkCount: 0,
+    installed: false,
+    required: false,
+    forkedFrom: Boolean(draft.forkedFromSkillId),
+    updatedAt: Date.now(),
+  };
+
+  return (
+    <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 px-4 py-6">
+      <div className="space-y-1">
+        <h1 className="text-lg font-semibold text-foreground">
+          {draft.forkedFromSkillId ? "Fork skill" : "Create a new skill"}
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          Create an editable company skill and open it directly in Studio.
+        </p>
+      </div>
+
+      {draft.forkedFromName ? (
+        <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+          <GitFork className="h-4 w-4" />
+          Forking {draft.forkedFromName}
+        </div>
+      ) : forkError ? (
+        <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <AlertTriangle className="h-4 w-4" />
+          Fork source not found. You can still create a blank skill.
+        </div>
+      ) : null}
+
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-sm font-medium text-foreground">Basics</h2>
+          <p className="text-xs text-muted-foreground">Name the skill and set the route-safe slug.</p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="skill-name">Name</Label>
+            <Input
+              id="skill-name"
+              value={draft.name}
+              onChange={(event) => {
+                const nextName = event.target.value;
+                patchDraft({
+                  name: nextName,
+                  slug: slugDirty ? draft.slug : normalizeSkillDraftSlug(nextName),
+                  markdown: draft.markdown === defaultSkillMarkdown(draft.name, draft.tagline)
+                    ? defaultSkillMarkdown(nextName, draft.tagline)
+                    : draft.markdown,
+                });
+              }}
+              placeholder="Code review"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="skill-slug">Slug</Label>
+            <Input
+              id="skill-slug"
+              value={draft.slug}
+              onChange={(event) => {
+                const nextSlug = normalizeSkillDraftSlug(event.target.value);
+                setSlugDirty(nextSlug.length > 0);
+                patchDraft({ slug: nextSlug });
+              }}
+              placeholder="code-review"
+              className="font-mono"
+            />
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="skill-tagline">Tagline</Label>
+          <Textarea
+            id="skill-tagline"
+            value={draft.tagline}
+            onChange={(event) => {
+              const nextTagline = event.target.value;
+              patchDraft({
+                tagline: nextTagline,
+                description: draft.description ? draft.description : nextTagline,
+                markdown: draft.markdown === defaultSkillMarkdown(draft.name, draft.tagline)
+                  ? defaultSkillMarkdown(draft.name, nextTagline)
+                  : draft.markdown,
+              });
+            }}
+            placeholder="Review repository changes for correctness, tests, and maintainability."
+            className="min-h-20"
+          />
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-sm font-medium text-foreground">Appearance</h2>
+          <p className="text-xs text-muted-foreground">Tune how the skill appears in the store and Studio switcher.</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <SkillCardIcon card={previewCard} size={48} />
+          <div className="min-w-0">
+            <div className="truncate text-sm font-medium">{previewCard.name}</div>
+            <div className="truncate text-xs text-muted-foreground">{draft.tagline || "No tagline yet."}</div>
+          </div>
+        </div>
+        <div className="space-y-2">
+          <Label>Color</Label>
+          <div className="flex flex-wrap items-center gap-2">
+            {SKILL_CREATE_ACCENTS.map((color) => (
+              <button
+                key={color}
+                type="button"
+                onClick={() => patchDraft({ color })}
+                className={cn(
+                  "h-7 w-7 rounded-md border",
+                  draft.color === color ? "border-foreground" : "border-border",
+                )}
+                style={{ backgroundColor: color }}
+                aria-label={`Use ${color}`}
+              />
+            ))}
+            <Input
+              aria-label="Hex color"
+              value={draft.color}
+              onChange={(event) => patchDraft({ color: event.target.value })}
+              className="h-7 w-28 font-mono text-xs"
+            />
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="skill-categories">Categories</Label>
+          <Input
+            id="skill-categories"
+            value={categoryDraft}
+            onChange={(event) => patchDraft({ categories: splitCategoryDraft(event.target.value) })}
+            placeholder="engineering, review, memory"
+          />
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-sm font-medium text-foreground">Sharing</h2>
+          <p className="text-xs text-muted-foreground">Choose who can discover this skill inside Paperclip.</p>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-3">
+          {(["company", "private"] as const).map((scope) => (
+            <button
+              key={scope}
+              type="button"
+              onClick={() => patchDraft({ sharingScope: scope })}
+              className={cn(
+                "rounded-md border px-3 py-2 text-left text-sm",
+                draft.sharingScope === scope ? "border-foreground bg-accent/50" : "border-border",
+              )}
+            >
+              <span className="block font-medium">{scope === "company" ? "Company" : "Private"}</span>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                {scope === "company" ? "Visible inside this company." : "Only visible in your library."}
+              </span>
+            </button>
+          ))}
+          <button
+            type="button"
+            disabled
+            className="rounded-md border border-dashed border-border px-3 py-2 text-left text-sm text-muted-foreground"
+          >
+            <span className="block font-medium">Public</span>
+            <span className="mt-1 block text-xs">Coming later.</span>
+          </button>
+        </div>
+      </section>
+
+      <details className="rounded-md border border-border px-3 py-2">
+        <summary className="cursor-pointer text-sm font-medium text-foreground">Starter content</summary>
+        <Textarea
+          value={draft.markdown}
+          onChange={(event) => patchDraft({ markdown: event.target.value })}
+          className="mt-3 min-h-(--sz-22rem) resize-y font-mono text-xs"
+        />
+      </details>
+
+      <div className="flex items-center justify-end gap-2 border-t border-border pt-4">
+        <Button variant="ghost" onClick={() => navigate("/skills/studio")} disabled={createSkill.isPending}>
+          Cancel
+        </Button>
+        <Button onClick={() => createSkill.mutate()} disabled={createSkill.isPending || !nameValid}>
+          <FilePlus className="h-4 w-4" />
+          {createSkill.isPending ? "Creating..." : draft.forkedFromSkillId ? "Create fork" : "Create skill"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function StudioMessage({ message }: { message: string }) {
   return (
     <div className="flex h-full min-h-(--sz-60vh) items-center justify-center text-sm text-muted-foreground">
@@ -263,10 +671,12 @@ function StudioEmptyState({
   skills,
   skillsLoading,
   onSelectSkill,
+  onCreateNew,
 }: {
   skills: CompanySkillListItem[];
   skillsLoading: boolean;
   onSelectSkill: (skillId: string) => void;
+  onCreateNew: () => void;
 }) {
   return (
     <TooltipProvider delayDuration={200}>
@@ -277,16 +687,196 @@ function StudioEmptyState({
             skills={skills}
             loading={skillsLoading}
             onSelectSkill={onSelectSkill}
+            emptyLabel="Select skill"
           />
         </header>
         <div className="flex flex-1 items-center justify-center">
           <EmptyState
             icon={FileCode}
             message={skillsLoading ? "Loading skills..." : "Select a skill to open Studio."}
+            action="Create a new skill"
+            onAction={onCreateNew}
           />
         </div>
       </div>
     </TooltipProvider>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Landing — recently visited + recently updated (PAP-13150)
+// ---------------------------------------------------------------------------
+
+function StudioLanding({
+  companyId,
+  skills,
+  skillsLoading,
+  onSelectSkill,
+  onCreateNew,
+}: {
+  companyId: string;
+  skills: CompanySkillListItem[];
+  skillsLoading: boolean;
+  onSelectSkill: (skillId: string) => void;
+  onCreateNew: () => void;
+}) {
+  // Recency-sorted list, enriched with the last human editor (PAP-13149) — the
+  // source for both landing sections. Kept separate from the alphabetical
+  // switcher list so each cache stays sorted the way its consumer expects.
+  const recentQuery = useQuery({
+    queryKey: queryKeys.companySkills.listRecent(companyId),
+    queryFn: () => companySkillsApi.list(companyId, { sort: "recent", include: ["lastEditor"] }),
+    enabled: Boolean(companyId),
+  });
+  const recentSkills = recentQuery.data ?? [];
+
+  const visited = useMemo(
+    () => orderRecentlyVisitedSkills(recentSkills, getRecentStudioSkillIds()),
+    [recentSkills],
+  );
+  const updated = useMemo(
+    () => orderRecentlyUpdatedSkills(recentSkills, visited.map((skill) => skill.id)),
+    [recentSkills, visited],
+  );
+
+  // No skills at all (or still loading) -> today's empty/loading fallback.
+  if (recentSkills.length === 0) {
+    return (
+      <StudioEmptyState
+        skills={skills}
+        skillsLoading={skillsLoading || recentQuery.isLoading}
+        onSelectSkill={onSelectSkill}
+        onCreateNew={onCreateNew}
+      />
+    );
+  }
+
+  return (
+    <TooltipProvider delayDuration={200}>
+      <div className="flex h-full min-h-0 flex-col">
+        <header className="flex items-center gap-3 border-b border-border px-3 py-2">
+          <SkillSwitcher
+            skill={null}
+            skills={skills}
+            loading={skillsLoading}
+            onSelectSkill={onSelectSkill}
+            emptyLabel="Select skill"
+          />
+          <Button variant="ghost" size="sm" className="ml-auto" onClick={onCreateNew}>
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+            New skill
+          </Button>
+        </header>
+        <div className="min-h-0 flex-1 overflow-auto">
+          <div className="mx-auto w-full max-w-3xl space-y-8 px-4 py-8">
+            {visited.length > 0 ? (
+              <StudioLandingSection
+                title="Recently visited"
+                skills={visited}
+                onSelectSkill={onSelectSkill}
+              />
+            ) : null}
+            <StudioLandingSection
+              title="Recently updated"
+              skills={updated}
+              onSelectSkill={onSelectSkill}
+            />
+          </div>
+        </div>
+      </div>
+    </TooltipProvider>
+  );
+}
+
+function StudioLandingSection({
+  title,
+  skills,
+  onSelectSkill,
+}: {
+  title: string;
+  skills: CompanySkillListItem[];
+  onSelectSkill: (skillId: string) => void;
+}) {
+  if (skills.length === 0) return null;
+  return (
+    <section className="space-y-2">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {title}
+      </h2>
+      <div className="divide-y divide-border overflow-hidden rounded-md border border-border">
+        {skills.map((skill) => (
+          <StudioLandingRow
+            key={skill.id}
+            skill={skill}
+            onSelect={() => onSelectSkill(skill.id)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function StudioLandingRow({
+  skill,
+  onSelect,
+}: {
+  skill: CompanySkillListItem;
+  onSelect: () => void;
+}) {
+  const editor = skillEditorAvatar(skill.lastEditor);
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-accent"
+    >
+      <SkillLandingIcon skill={skill} />
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate text-sm font-medium">{skill.name}</span>
+        {skill.tagline ? (
+          <span className="truncate text-xs text-muted-foreground">{skill.tagline}</span>
+        ) : null}
+      </span>
+      <span className="shrink-0 text-xs text-muted-foreground">
+        updated {relativeTime(skill.updatedAt)}
+      </span>
+      {editor ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Avatar size="xs">
+              {editor.imageUrl ? <AvatarImage src={editor.imageUrl} alt="" /> : null}
+              <AvatarFallback>{editor.initials}</AvatarFallback>
+            </Avatar>
+          </TooltipTrigger>
+          <TooltipContent>{editor.name}</TooltipContent>
+        </Tooltip>
+      ) : (
+        <span className="w-5 shrink-0" aria-hidden="true" />
+      )}
+    </button>
+  );
+}
+
+function SkillLandingIcon({ skill }: { skill: CompanySkillListItem }) {
+  if (skill.iconUrl) {
+    return (
+      <img
+        src={skill.iconUrl}
+        alt=""
+        className="h-9 w-9 shrink-0 rounded-md object-cover"
+      />
+    );
+  }
+  const accent = skillAccentColor(skill.key, skill.color);
+  const letter = (skill.slug || skill.name || "?").trim().charAt(0).toUpperCase();
+  return (
+    <span
+      aria-hidden="true"
+      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-sm font-semibold text-white"
+      style={{ backgroundColor: accent }}
+    >
+      {letter}
+    </span>
   );
 }
 
@@ -548,11 +1138,13 @@ function SkillSwitcher({
   skills,
   loading,
   onSelectSkill,
+  emptyLabel = "Select skill",
 }: {
   skill: CompanySkillDetail | null;
   skills: CompanySkillListItem[];
   loading: boolean;
   onSelectSkill: (skillId: string) => void;
+  emptyLabel?: string;
 }) {
   const groups = useMemo<readonly SearchableSelectGroup<string, SkillSwitcherOption>[]>(() => {
     const options: SkillSwitcherOption[] = withCurrentSkill(skills, skill).map((item) => ({
@@ -572,7 +1164,7 @@ function SkillSwitcher({
       groups={groups}
       loading={loading}
       loadingMessage="Loading skills..."
-      placeholder="Select skill"
+      placeholder={emptyLabel}
       searchPlaceholder="Search skills..."
       emptyMessage="No matching skills."
       onValueChange={(value) => {
@@ -581,7 +1173,7 @@ function SkillSwitcher({
       triggerClassName="h-8 w-64 border-0 bg-transparent px-0 text-base font-semibold shadow-none hover:bg-accent md:w-80"
       contentClassName="w-80"
       contentWidth="auto"
-      renderValue={(option) => option?.label ?? skill?.name ?? "Select skill"}
+      renderValue={(option) => option?.label ?? skill?.name ?? emptyLabel}
       renderOption={(option, { selected }) => (
         <span className="flex min-w-0 flex-col">
           <span className={cn("truncate", selected && "font-medium")}>{option.label}</span>
@@ -1578,6 +2170,11 @@ function SaveInputDialog({
 // Right — agent picker + Run + history + detail
 // ---------------------------------------------------------------------------
 
+type RunTemplateDialogState =
+  | { mode: "create"; source?: CompanySkillTestRunTemplate | null }
+  | { mode: "edit"; source: CompanySkillTestRunTemplate }
+  | null;
+
 function RunsPane({
   companyId,
   skill,
@@ -1610,6 +2207,12 @@ function RunsPane({
   const skillId = skill.id;
   const queryClient = useQueryClient();
   const onError = useMutationErrorToast();
+  const toast = useOptionalToastActions();
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<RunTemplateSelection>(
+    () => loadRunTemplateSelection(companyId),
+  );
+  const [templateDialog, setTemplateDialog] = useState<RunTemplateDialogState>(null);
 
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -1618,6 +2221,42 @@ function RunsPane({
   });
   const agents = agentsQuery.data ?? [];
   const selectedAgent = agents.find((a) => a.id === selectedAgentId) ?? null;
+
+  useEffect(() => {
+    setSelectedTemplateId(loadRunTemplateSelection(companyId));
+  }, [companyId]);
+
+  const updateTemplateSelection = useCallback((selection: RunTemplateSelection) => {
+    setSelectedTemplateId(selection);
+    persistRunTemplateSelection(companyId, selection);
+  }, [companyId]);
+
+  const templatesQuery = useQuery({
+    queryKey: queryKeys.companySkills.testRunTemplates(companyId),
+    queryFn: () => companySkillsApi.testRunTemplates(companyId),
+    enabled: Boolean(companyId),
+  });
+  const templates = templatesQuery.data ?? EMPTY_RUN_TEMPLATES;
+
+  useEffect(() => {
+    if (!templatesQuery.isSuccess) return;
+    const resolution = resolveRunTemplateSelection(selectedTemplateId, templates);
+    if (!resolution.recovered) return;
+    updateTemplateSelection(resolution.selection);
+    toast?.pushToast({
+      tone: "warn",
+      title: "Run template reset",
+      body: "The saved run template is no longer available. Default test template is selected.",
+      dedupeKey: `skill-studio-template-reset:${companyId}`,
+    });
+  }, [
+    companyId,
+    selectedTemplateId,
+    templates,
+    templatesQuery.isSuccess,
+    toast,
+    updateTemplateSelection,
+  ]);
 
   const filterInputId = filterInput?.id ?? null;
   const runsQuery = useQuery({
@@ -1639,14 +2278,94 @@ function RunsPane({
     skillFileCount: skill.fileInventory.length,
     hasUnsavedSkillEdits: skillDirty,
   });
+  const templateGateReason = templatesQuery.isLoading
+    ? "Loading run templates"
+    : templatesQuery.isError
+      ? "Run templates couldn't load"
+      : null;
+
+  const createTemplateMutation = useMutation({
+    mutationFn: (payload: CompanySkillTestRunTemplateCreateRequest) =>
+      companySkillsApi.createTestRunTemplate(companyId, payload),
+    onSuccess: (template) => {
+      setTemplateDialog(null);
+      updateTemplateSelection(template.id);
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.companySkills.testRunTemplates(companyId),
+      });
+      toast?.pushToast({
+        tone: "success",
+        title: "Template saved",
+        body: `${template.name} is ready for Skills Studio runs.`,
+      });
+    },
+    onError: onError("Couldn't save template"),
+  });
+
+  const updateTemplateMutation = useMutation({
+    mutationFn: ({ templateId, payload }: {
+      templateId: string;
+      payload: CompanySkillTestRunTemplateUpdateRequest;
+    }) => companySkillsApi.updateTestRunTemplate(companyId, templateId, payload),
+    onSuccess: (template) => {
+      setTemplateDialog(null);
+      updateTemplateSelection(template.id);
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.companySkills.testRunTemplates(companyId),
+      });
+      toast?.pushToast({
+        tone: "success",
+        title: "Template updated",
+        body: `${template.name} is ready for Skills Studio runs.`,
+      });
+    },
+    onError: onError("Couldn't update template"),
+  });
+
+  const deleteTemplateMutation = useMutation({
+    mutationFn: (templateId: string) => companySkillsApi.deleteTestRunTemplate(companyId, templateId),
+    onSuccess: (template) => {
+      const fallback = resolveRunTemplateSelection(selectedTemplateId, templates.filter((entry) => entry.id !== template.id));
+      if (selectedTemplateId === template.id || fallback.recovered) {
+        updateTemplateSelection(fallback.selection);
+      }
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.companySkills.testRunTemplates(companyId),
+      });
+      toast?.pushToast({
+        tone: "success",
+        title: "Template deleted",
+        body: `${template.name} was removed from Skills Studio runs.`,
+      });
+    },
+    onError: onError("Couldn't delete template"),
+  });
+
+  const selectedTemplate = selectedTemplateId === null
+    ? null
+    : templates.find((template) => template.id === selectedTemplateId) ?? null;
+  const selectedTemplateName = selectedTemplateId === null
+    ? "No template"
+    : selectedTemplate?.name ?? "Default test template";
+  const runDisabledReason = gate.reason ?? templateGateReason;
 
   const createRunMutation = useMutation({
-    mutationFn: () =>
-      companySkillsApi.createTestRun(companyId, skillId, {
+    mutationFn: () => {
+      if (!templatesQuery.isSuccess) {
+        throw new Error(templateGateReason ?? "Run templates are not ready.");
+      }
+      const resolution = resolveRunTemplateSelection(selectedTemplateId, templates);
+      if (resolution.recovered) {
+        updateTemplateSelection(resolution.selection);
+        throw new Error("Selected run template is no longer available. The selection was reset.");
+      }
+      return companySkillsApi.createTestRun(companyId, skillId, buildCreateRunRequest({
         agentId: selectedAgentId!,
         inputId: adHocMode ? null : selectedInput?.id ?? null,
         content: adHocMode ? adHocContent : selectedInput ? null : adHocContent,
-      }),
+        templateId: resolution.selection,
+      }));
+    },
     onSuccess: (run) => {
       queryClient.invalidateQueries({
         queryKey: queryKeys.companySkills.testRuns(companyId, skillId, filterInputId),
@@ -1683,17 +2402,50 @@ function RunsPane({
             <TooltipTrigger asChild>
               {/* span wrapper keeps the tooltip reachable while the button is disabled */}
               <span>
-                <Button size="sm" disabled={gate.disabled || createRunMutation.isPending} onClick={() => createRunMutation.mutate()}>
+                <Button
+                  size="sm"
+                  disabled={gate.disabled || Boolean(templateGateReason) || createRunMutation.isPending}
+                  onClick={() => createRunMutation.mutate()}
+                >
                   <Play className="mr-1.5 h-3.5 w-3.5" /> Run
                 </Button>
               </span>
             </TooltipTrigger>
-            {gate.reason && <TooltipContent side="bottom">{gate.reason}</TooltipContent>}
+            {runDisabledReason && <TooltipContent side="bottom">{runDisabledReason}</TooltipContent>}
           </Tooltip>
         </div>
       }
     >
       <div className="flex min-h-0 flex-1 flex-col">
+        <RunTemplateAdvancedPanel
+          open={advancedOpen}
+          onOpenChange={setAdvancedOpen}
+          templates={templates}
+          templatesLoading={templatesQuery.isLoading}
+          templatesError={templatesQuery.isError}
+          selectedTemplateId={selectedTemplateId}
+          selectedTemplate={selectedTemplate}
+          selectedTemplateName={selectedTemplateName}
+          onSelectTemplate={updateTemplateSelection}
+          onCreateTemplate={() => setTemplateDialog({ mode: "create" })}
+          onEditTemplate={(template) => setTemplateDialog({ mode: "edit", source: template })}
+          onDuplicateTemplate={(template) => setTemplateDialog({ mode: "create", source: template })}
+          onDeleteTemplate={(template) => {
+            if (
+              typeof window !== "undefined"
+              && !window.confirm(`Delete run template "${template.name}"?`)
+            ) {
+              return;
+            }
+            deleteTemplateMutation.mutate(template.id);
+          }}
+          deletingTemplateId={deleteTemplateMutation.variables ?? null}
+          actionPending={
+            createTemplateMutation.isPending
+            || updateTemplateMutation.isPending
+            || deleteTemplateMutation.isPending
+          }
+        />
         {filterInput && (
           <div className="px-3 pt-2">
             <FilterBar
@@ -1722,7 +2474,330 @@ function RunsPane({
           )}
         </div>
       </div>
+      <RunTemplateDialog
+        state={templateDialog}
+        pending={createTemplateMutation.isPending || updateTemplateMutation.isPending}
+        onOpenChange={(open) => {
+          if (!open) setTemplateDialog(null);
+        }}
+        onSubmit={(payload) => {
+          if (templateDialog?.mode === "edit") {
+            updateTemplateMutation.mutate({ templateId: templateDialog.source.id, payload });
+          } else {
+            createTemplateMutation.mutate(payload);
+          }
+        }}
+      />
     </PaneScaffold>
+  );
+}
+
+type RunTemplateOption = SearchableSelectOption<string> & {
+  description: string | null;
+  builtIn: boolean;
+};
+
+function runTemplateOptionValue(selection: RunTemplateSelection) {
+  return selection ?? NO_TEST_RUN_TEMPLATE_STORAGE_VALUE;
+}
+
+function runTemplateSelectionFromOption(value: string): RunTemplateSelection {
+  return value === NO_TEST_RUN_TEMPLATE_STORAGE_VALUE ? null : value;
+}
+
+function RunTemplateAdvancedPanel({
+  open,
+  onOpenChange,
+  templates,
+  templatesLoading,
+  templatesError,
+  selectedTemplateId,
+  selectedTemplate,
+  selectedTemplateName,
+  onSelectTemplate,
+  onCreateTemplate,
+  onEditTemplate,
+  onDuplicateTemplate,
+  onDeleteTemplate,
+  deletingTemplateId,
+  actionPending,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  templates: CompanySkillTestRunTemplate[];
+  templatesLoading: boolean;
+  templatesError: boolean;
+  selectedTemplateId: RunTemplateSelection;
+  selectedTemplate: CompanySkillTestRunTemplate | null;
+  selectedTemplateName: string;
+  onSelectTemplate: (selection: RunTemplateSelection) => void;
+  onCreateTemplate: () => void;
+  onEditTemplate: (template: CompanySkillTestRunTemplate) => void;
+  onDuplicateTemplate: (template: CompanySkillTestRunTemplate) => void;
+  onDeleteTemplate: (template: CompanySkillTestRunTemplate) => void;
+  deletingTemplateId: string | null;
+  actionPending: boolean;
+}) {
+  const templateGroups = useMemo<readonly SearchableSelectGroup<string, RunTemplateOption>[]>(() => {
+    const noTemplateOption: RunTemplateOption = {
+      key: "no-template",
+      value: NO_TEST_RUN_TEMPLATE_STORAGE_VALUE,
+      label: "No template",
+      title: "No template",
+      description: "Run only the input text.",
+      builtIn: true,
+      searchText: "no template plain input",
+    };
+    const toOption = (template: CompanySkillTestRunTemplate): RunTemplateOption => ({
+      key: template.id,
+      value: template.id,
+      label: template.name,
+      title: template.name,
+      description: template.description,
+      builtIn: template.builtIn,
+      searchText: [template.name, template.description ?? "", template.builtIn ? "built in" : "custom"].join(" "),
+    });
+    const builtIn = templates.filter((template) => template.builtIn).map(toOption);
+    const custom = templates.filter((template) => !template.builtIn).map(toOption);
+    return [
+      { id: "built-in", label: "Built in", options: [noTemplateOption, ...builtIn] },
+      ...(custom.length > 0 ? [{ id: "custom", label: "Custom", options: custom }] : []),
+    ];
+  }, [templates]);
+
+  const selectedValue = runTemplateOptionValue(selectedTemplateId);
+  const selectedMissing = selectedTemplateId !== null && !selectedTemplate && !templatesLoading;
+  const canEdit = Boolean(selectedTemplate && !selectedTemplate.builtIn);
+  const canDuplicate = Boolean(selectedTemplate);
+  const canDelete = Boolean(selectedTemplate && !selectedTemplate.builtIn);
+
+  return (
+    <div className="border-b border-border">
+      <button
+        type="button"
+        className="flex min-h-(--sz-32px) w-full items-center gap-2 px-3 py-2 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+        onClick={() => onOpenChange(!open)}
+      >
+        {open ? (
+          <ChevronDown className="h-3.5 w-3.5" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5" />
+        )}
+        <span className="font-semibold uppercase tracking-wide">Advanced</span>
+        <span className="ml-auto truncate">{selectedTemplateName}</span>
+      </button>
+      {open ? (
+        <div className="space-y-3 px-3 pb-3 pt-1">
+          <div className="flex items-end gap-2">
+            <div className="min-w-0 flex-1 space-y-1">
+              <Label>Run template</Label>
+              <SearchableSelect<string, RunTemplateOption>
+                value={selectedValue}
+                groups={templateGroups}
+                loading={templatesLoading}
+                disabled={templatesLoading || templatesError}
+                loadingMessage="Loading templates..."
+                placeholder="Select template"
+                searchPlaceholder="Search templates..."
+                emptyMessage="No templates."
+                contentClassName="w-(--sz-320px)"
+                onValueChange={(value) => onSelectTemplate(runTemplateSelectionFromOption(value))}
+                renderValue={(option) => option?.label ?? selectedTemplateName}
+                renderOption={(option, { selected }) => (
+                  <span className="flex min-w-0 flex-col">
+                    <span className={cn("truncate", selected && "font-medium")}>{option.label}</span>
+                    <span className="truncate text-(length:--text-micro) text-muted-foreground">
+                      {option.description ?? (option.builtIn ? "Built in" : "Custom")}
+                    </span>
+                  </span>
+                )}
+              />
+            </div>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label="Create run template"
+                  disabled={actionPending}
+                  onClick={onCreateTemplate}
+                >
+                  <Plus />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Create run template</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Edit run template"
+                    disabled={!canEdit || actionPending}
+                    onClick={() => selectedTemplate && onEditTemplate(selectedTemplate)}
+                  >
+                    <Pencil />
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>Edit custom template</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Duplicate run template"
+                    disabled={!canDuplicate || actionPending}
+                    onClick={() => selectedTemplate && onDuplicateTemplate(selectedTemplate)}
+                  >
+                    <Copy />
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                {selectedTemplate?.builtIn ? "Duplicate built-in template" : "Duplicate template"}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Delete run template"
+                    className="text-destructive hover:text-destructive"
+                    disabled={!canDelete || actionPending || deletingTemplateId === selectedTemplate?.id}
+                    onClick={() => selectedTemplate && onDeleteTemplate(selectedTemplate)}
+                  >
+                    <Trash2 />
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>Delete custom template</TooltipContent>
+            </Tooltip>
+          </div>
+
+          {templatesError ? (
+            <p className="text-xs text-destructive">Run templates could not load.</p>
+          ) : selectedTemplateId === null ? (
+            <p className="text-xs text-muted-foreground">Runs will use only the input text.</p>
+          ) : selectedMissing ? (
+            <p className="text-xs text-destructive">Selected template is no longer available.</p>
+          ) : selectedTemplate ? (
+            <div className="space-y-2">
+              {selectedTemplate.description ? (
+                <p className="text-xs text-muted-foreground">{selectedTemplate.description}</p>
+              ) : null}
+              <pre className="max-h-(--sz-240px) overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
+                {selectedTemplate.body}
+              </pre>
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">Loading template...</p>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RunTemplateDialog({
+  state,
+  pending,
+  onOpenChange,
+  onSubmit,
+}: {
+  state: RunTemplateDialogState;
+  pending: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSubmit: (payload: CompanySkillTestRunTemplateCreateRequest) => void;
+}) {
+  const source = state?.source ?? null;
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [body, setBody] = useState("");
+
+  useEffect(() => {
+    if (!state) return;
+    setName(state.mode === "edit" ? source?.name ?? "" : source ? `${source.name} copy` : "");
+    setDescription(source?.description ?? "");
+    setBody(source?.body ?? "");
+  }, [source, state]);
+
+  const title = state?.mode === "edit"
+    ? "Edit run template"
+    : source?.builtIn
+      ? "Duplicate built-in template"
+      : "Create run template";
+  const descriptionText = state?.mode === "edit"
+    ? "Update the custom run instructions used by Skills Studio."
+    : "Save reusable run instructions for Skills Studio.";
+
+  return (
+    <Dialog open={Boolean(state)} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{descriptionText}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label htmlFor="run-template-name">Name</Label>
+            <Input
+              id="run-template-name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="Focused smoke"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="run-template-description">Description</Label>
+            <Input
+              id="run-template-description"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="Short instructions for common skill checks"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="run-template-body">Body</Label>
+            <Textarea
+              id="run-template-body"
+              value={body}
+              onChange={(event) => setBody(event.target.value)}
+              className="min-h-(--sz-240px) font-mono text-xs leading-5"
+            />
+            <p className="text-xs text-muted-foreground">
+              Placeholders: {"{{skillName}}"}, {"{{skillKey}}"}, {"{{skillInvocation}}"}, {"{{skillVersion}}"}, {"{{runId}}"}, {"{{issueId}}"}, {"{{outputDocumentKey}}"}.
+            </p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            disabled={!name.trim() || !body.trim() || pending}
+            onClick={() =>
+              onSubmit({
+                name: name.trim(),
+                description: description.trim() || null,
+                body,
+              })
+            }
+          >
+            {pending ? "Saving..." : "Save template"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1892,6 +2967,17 @@ function RunDetailView({
     onError: onError("Couldn't delete run"),
   });
 
+  const detail = detailQuery.data ?? null;
+  const additionalDocuments = useMemo(() => detail ? getRunAdditionalDocuments(detail) : [], [detail]);
+  const rawAttachments = useMemo(() => detail ? getRunRawAttachments(detail) : [], [detail]);
+  const unavailableCopy = useMemo(() => detail ? runHarnessUnavailableCopy(detail) : null, [detail]);
+  const mediaGalleryItems = useMemo<GalleryMediaItem[]>(
+    () => detail ? getRunMediaGalleryItems(detail) : [],
+    [detail],
+  );
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [galleryIndex, setGalleryIndex] = useState(0);
+
   if (detailQuery.isLoading) {
     return (
       <PaneScaffold title="Run" action={<BackButton onBack={onBack} />}>
@@ -1899,7 +2985,6 @@ function RunDetailView({
       </PaneScaffold>
     );
   }
-  const detail = detailQuery.data;
   if (!detail) {
     return (
       <PaneScaffold title="Run" action={<BackButton onBack={onBack} />}>
@@ -1934,6 +3019,7 @@ function RunDetailView({
         {/* snapshot property block */}
         <div className="rounded-md border border-border text-xs">
           <PropRow label="Input" value={detail.inputId ? "saved input" : "ad-hoc paste"} />
+          <PropRow label="Template" value={detail.templateName ?? "No template"} />
           <PropRow label="Skill version" value={`v${detail.skillVersion.revisionNumber}`} />
           <PropRow label="Created" value={relativeTime(detail.createdAt)} />
         </div>
@@ -1950,11 +3036,11 @@ function RunDetailView({
           </Card>
         )}
 
-        {/* Output / draft-at-failure */}
+        {/* Output snapshot / draft-at-failure */}
         {outputMode === "output" || outputMode === "draft" ? (
-          <section>
+          <section className="space-y-2">
             <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              {outputMode === "draft" ? "Draft at failure" : "Output"}
+              {outputMode === "draft" ? "Draft at failure" : "Output snapshot"}
             </h3>
             <div className="rounded-md border border-border p-3">
               <MarkdownBody>{detail.outputBody || "_No output_"}</MarkdownBody>
@@ -1964,6 +3050,42 @@ function RunDetailView({
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Clock className="h-3.5 w-3.5" /> Working… output will appear here.
           </div>
+        ) : null}
+
+        {unavailableCopy ? (
+          <RunHarnessUnavailableNotice copy={unavailableCopy} />
+        ) : null}
+
+        {additionalDocuments.length > 0 ? (
+          <RunDocumentsSection documents={additionalDocuments} />
+        ) : null}
+
+        <IssueOutputSection
+          workProducts={detail.harnessContent.workProducts}
+          onMediaClick={(item) => {
+            const meta = item.metadata;
+            if (!meta) return;
+            const idx = mediaGalleryItems.findIndex((galleryItem) => (
+              galleryItem.contentPath === meta.contentPath ||
+              galleryItem.id === `work-product-${item.id}` ||
+              galleryItem.id === meta.attachmentId
+            ));
+            setGalleryIndex(idx >= 0 ? idx : 0);
+            setGalleryOpen(true);
+          }}
+        />
+
+        {rawAttachments.length > 0 ? (
+          <IssueAttachmentsSection
+            attachments={rawAttachments}
+            onImageClick={(attachment) => {
+              const idx = mediaGalleryItems.findIndex((item) => (
+                item.id === attachment.id || item.contentPath === attachment.contentPath
+              ));
+              setGalleryIndex(idx >= 0 ? idx : 0);
+              setGalleryOpen(true);
+            }}
+          />
         ) : null}
 
         {/* Interactions */}
@@ -1977,20 +3099,6 @@ function RunDetailView({
             })
           }
         />
-
-        {/* Artifacts */}
-        {detail.artifacts.length > 0 && (
-          <section>
-            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Artifacts
-            </h3>
-            <div className="space-y-1 rounded-md border border-border p-1">
-              {detail.artifacts.map((a) => (
-                <EntityRow key={a.id} title={a.title} subtitle={a.summary ?? a.kind} />
-              ))}
-            </div>
-          </section>
-        )}
 
         {/* Actions */}
         <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
@@ -2037,8 +3145,58 @@ function RunDetailView({
             </Tooltip>
           )}
         </div>
+
+        <ImageGalleryModal
+          items={mediaGalleryItems}
+          initialIndex={galleryIndex}
+          open={galleryOpen}
+          onOpenChange={setGalleryOpen}
+        />
       </div>
     </PaneScaffold>
+  );
+}
+
+function RunHarnessUnavailableNotice({
+  copy,
+}: {
+  copy: NonNullable<ReturnType<typeof runHarnessUnavailableCopy>>;
+}) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-border bg-muted/30 p-3 text-xs">
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 space-y-1">
+        <p className="font-medium text-foreground">{copy.title}</p>
+        <p className="text-muted-foreground">{copy.body}</p>
+      </div>
+    </div>
+  );
+}
+
+function RunDocumentsSection({ documents }: { documents: IssueDocument[] }) {
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center gap-2">
+        <FileText className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+        <h3 className="text-sm font-medium text-muted-foreground">Documents</h3>
+        <span className="text-xs text-muted-foreground">{documents.length}</span>
+      </div>
+      <div className="space-y-2">
+        {documents.map((document) => (
+          <article key={document.id} className="rounded-md border border-border p-3">
+            <div className="mb-2 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+              <span className="truncate font-medium text-foreground">
+                {document.title ?? document.key}
+              </span>
+              <span className="ml-auto shrink-0">{relativeTime(document.updatedAt)}</span>
+            </div>
+            <MarkdownBody className="paperclip-edit-in-place-content text-sm leading-7" softBreaks={false}>
+              {document.body}
+            </MarkdownBody>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 

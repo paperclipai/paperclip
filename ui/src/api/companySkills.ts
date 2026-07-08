@@ -51,6 +51,7 @@ export const companySkillsApi = {
     if (query.sort) params.set("sort", query.sort);
     if (query.scope) params.set("scope", query.scope);
     for (const category of query.categories ?? []) params.append("categories[]", category);
+    for (const include of query.include ?? []) params.append("include[]", include);
     const search = params.toString();
     return api.get<CompanySkillListItem[]>(`/companies/${encodeURIComponent(companyId)}/skills${search ? `?${search}` : ""}`);
   },

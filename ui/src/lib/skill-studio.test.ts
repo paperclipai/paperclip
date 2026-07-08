@@ -1,10 +1,22 @@
 import { describe, expect, it } from "vitest";
-import type { CompanySkillTestRunStatus } from "@paperclipai/shared";
+import type {
+  CompanySkillTestRunStatus,
+  CompanySkillTestRunTemplate,
+  IssueAttachment,
+  IssueDocument,
+  IssueWorkProduct,
+} from "@paperclipai/shared";
 import {
   buildReRunRequest,
+  buildCreateRunRequest,
+  DEFAULT_TEST_RUN_TEMPLATE_ID,
   EMPTY_SAVED_INPUT_DRAFT_STATE,
   evaluateRunGate,
   findOutputDocument,
+  findRunOutputDocument,
+  getRunAdditionalDocuments,
+  getRunMediaGalleryItems,
+  getRunRawAttachments,
   INLINE_INTERACTION_KINDS,
   isAgentSelectable,
   isInteractionAnswerable,
@@ -13,9 +25,13 @@ import {
   routeInteraction,
   runBadgeStatus,
   runOutputMode,
+  runHarnessUnavailableCopy,
   runShortId,
+  parseRunTemplateSelection,
+  resolveRunTemplateSelection,
   savedInputDraftDirty,
   selectedSavedInputDraft,
+  serializeRunTemplateSelection,
   shouldPollRun,
   showRunErrorCard,
   syncSavedInputDraftState,
@@ -29,6 +45,102 @@ const ALL_STATUSES: CompanySkillTestRunStatus[] = [
   "failed",
   "cancelled",
 ];
+
+function makeRunDocument(overrides: Partial<IssueDocument> & { id: string; key: string }): IssueDocument {
+  const { id, key, ...documentOverrides } = overrides;
+  return {
+    id,
+    companyId: "company-1",
+    issueId: "issue-1",
+    key,
+    title: overrides.title ?? null,
+    format: "markdown",
+    latestRevisionId: "revision-1",
+    latestRevisionNumber: 1,
+    createdByAgentId: null,
+    createdByUserId: null,
+    updatedByAgentId: null,
+    updatedByUserId: null,
+    lockedAt: null,
+    lockedByAgentId: null,
+    lockedByUserId: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    body: overrides.body ?? "",
+    ...documentOverrides,
+  };
+}
+
+function makeRunAttachment(overrides: Partial<IssueAttachment> & { id: string }): IssueAttachment {
+  const { id, ...attachmentOverrides } = overrides;
+  return {
+    id,
+    companyId: "company-1",
+    issueId: "issue-1",
+    issueCommentId: null,
+    assetId: `asset-${id}`,
+    provider: "local",
+    objectKey: `attachments/${id}`,
+    contentType: overrides.contentType ?? "text/plain",
+    byteSize: overrides.byteSize ?? 512,
+    sha256: "0".repeat(64),
+    originalFilename: overrides.originalFilename ?? `${id}.txt`,
+    createdByAgentId: null,
+    createdByUserId: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    contentPath: overrides.contentPath ?? `/api/attachments/${id}/content`,
+    openPath: overrides.openPath ?? `/api/attachments/${id}/content`,
+    downloadPath: overrides.downloadPath ?? `/api/attachments/${id}/content?download=1`,
+    ...attachmentOverrides,
+  };
+}
+
+function makeArtifactWorkProduct(
+  overrides: Partial<IssueWorkProduct> & {
+    id: string;
+    attachmentId?: string;
+    contentPath?: string;
+    contentType?: string;
+    originalFilename?: string;
+  },
+): IssueWorkProduct {
+  const { id, attachmentId: overrideAttachmentId, contentPath: overrideContentPath, contentType, originalFilename, ...workProductOverrides } = overrides;
+  const attachmentId = overrideAttachmentId ?? `attachment-${id}`;
+  const contentPath = overrideContentPath ?? `/api/attachments/${attachmentId}/content`;
+  return {
+    id,
+    companyId: "company-1",
+    projectId: null,
+    issueId: "issue-1",
+    executionWorkspaceId: null,
+    runtimeServiceId: null,
+    type: "artifact",
+    provider: "paperclip",
+    externalId: null,
+    title: overrides.title ?? `Artifact ${id}`,
+    url: null,
+    status: "active",
+    reviewState: "none",
+    isPrimary: false,
+    healthStatus: "unknown",
+    summary: overrides.summary ?? null,
+    metadata: {
+      attachmentId,
+      contentType: contentType ?? "image/png",
+      byteSize: 1024,
+      contentPath,
+      openPath: contentPath,
+      downloadPath: `${contentPath}?download=1`,
+      originalFilename: originalFilename ?? `${id}.png`,
+    },
+    sourceTrust: null,
+    createdByRunId: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    ...workProductOverrides,
+  };
+}
 
 describe("run-status derivation", () => {
   it("classifies terminal vs non-terminal statuses", () => {
@@ -109,6 +221,106 @@ describe("run-status derivation", () => {
         reason: "Test task expired",
       });
     });
+  });
+});
+
+describe("rich run output helpers", () => {
+  it("separates the output document from additional documents and raw attachments", () => {
+    const outputDocument = makeRunDocument({
+      id: "doc-output",
+      key: "output",
+      title: "Output",
+      body: "## Primary result",
+    });
+    const notesDocument = makeRunDocument({
+      id: "doc-notes",
+      key: "notes",
+      title: "Notes",
+      body: "Follow-up notes",
+    });
+    const promotedAttachmentId = "11111111-1111-4111-8111-111111111111";
+    const promotedAttachment = makeRunAttachment({
+      id: promotedAttachmentId,
+      contentType: "image/png",
+      originalFilename: "output.png",
+    });
+    const rawAttachment = makeRunAttachment({
+      id: "attachment-notes",
+      contentType: "text/markdown",
+      originalFilename: "notes.md",
+    });
+    const workProduct = makeArtifactWorkProduct({
+      id: "wp-output",
+      attachmentId: promotedAttachmentId,
+      contentPath: promotedAttachment.contentPath,
+      originalFilename: "output.png",
+    });
+    const detail = {
+      outputDocumentKey: "output",
+      harnessContent: {
+        available: true,
+        unavailableReason: null,
+        documents: [outputDocument, notesDocument],
+        attachments: [promotedAttachment, rawAttachment],
+        workProducts: [workProduct],
+      },
+    };
+
+    expect(findRunOutputDocument(detail)).toBe(outputDocument);
+    expect(getRunAdditionalDocuments(detail)).toEqual([notesDocument]);
+    expect(getRunRawAttachments(detail)).toEqual([rawAttachment]);
+    expect(getRunMediaGalleryItems(detail).map((item) => item.id)).toEqual([promotedAttachment.id]);
+  });
+
+  it("adds media work products to the gallery when no matching attachment is present", () => {
+    const videoAttachmentId = "22222222-2222-4222-8222-222222222222";
+    const workProduct = makeArtifactWorkProduct({
+      id: "wp-video",
+      attachmentId: videoAttachmentId,
+      contentType: "video/webm",
+      contentPath: `/api/attachments/${videoAttachmentId}/content`,
+      originalFilename: "demo.webm",
+    });
+    const detail = {
+      outputDocumentKey: "output",
+      harnessContent: {
+        available: true,
+        unavailableReason: null,
+        documents: [],
+        attachments: [],
+        workProducts: [workProduct],
+      },
+    };
+
+    expect(getRunMediaGalleryItems(detail)).toEqual([
+      expect.objectContaining({
+        id: "work-product-wp-video",
+        contentPath: `/api/attachments/${videoAttachmentId}/content`,
+        contentType: "video/webm",
+        originalFilename: "demo.webm",
+      }),
+    ]);
+  });
+
+  it("reports an unavailable deleted harness while leaving rich collections quiet", () => {
+    const detail = {
+      outputDocumentKey: "output",
+      harnessContent: {
+        available: false,
+        unavailableReason: "deleted" as const,
+        documents: [],
+        attachments: [],
+        workProducts: [],
+      },
+    };
+
+    expect(runHarnessUnavailableCopy(detail)).toEqual({
+      title: "Test task deleted",
+      body: "Stored run snapshots are still shown. Harness documents, attachments, and work products are no longer available.",
+    });
+    expect(getRunAdditionalDocuments(detail)).toEqual([]);
+    expect(getRunRawAttachments(detail)).toEqual([]);
+    expect(getRunMediaGalleryItems(detail)).toEqual([]);
   });
 });
 
@@ -270,12 +482,20 @@ describe("agent picker + run labels", () => {
         inputId: "input-3",
         inputSnapshot: "snapshotted text",
         skillVersionId: "ver-7",
+        templateId: "template-1",
+        templateName: "Focused smoke",
+        templateBody: "Original {{skillName}}",
       });
       expect(req).toEqual({
         agentId: "agent-9",
         inputId: "input-3",
         content: undefined,
         skillVersionId: "ver-7",
+        templateSnapshot: {
+          templateId: "template-1",
+          templateName: "Focused smoke",
+          templateBody: "Original {{skillName}}",
+        },
       });
     });
 
@@ -285,11 +505,19 @@ describe("agent picker + run labels", () => {
         inputId: null,
         inputSnapshot: "ad-hoc paste body",
         skillVersionId: "ver-2",
+        templateId: null,
+        templateName: null,
+        templateBody: null,
       });
       expect(req.inputId).toBeUndefined();
       expect(req.content).toBe("ad-hoc paste body");
       expect(req.agentId).toBe("agent-1");
       expect(req.skillVersionId).toBe("ver-2");
+      expect(req.templateSnapshot).toEqual({
+        templateId: null,
+        templateName: null,
+        templateBody: null,
+      });
     });
 
     it("always carries the run's agent id so a re-run never posts a null agent", () => {
@@ -298,8 +526,109 @@ describe("agent picker + run labels", () => {
         inputId: null,
         inputSnapshot: "x",
         skillVersionId: "v",
+        templateId: "built-in:default-test-template",
+        templateName: "Default test template",
+        templateBody: "Default",
       });
       expect(req.agentId).toBe("agent-42");
     });
+
+    it("preserves the viewed run's template snapshot instead of live template state", () => {
+      const req = buildReRunRequest({
+        agentId: "agent-42",
+        inputId: null,
+        inputSnapshot: "x",
+        skillVersionId: "v",
+        templateId: "template-old",
+        templateName: "Old template name",
+        templateBody: "Old body {{skillName}}",
+      });
+
+      expect(req.templateSnapshot).toEqual({
+        templateId: "template-old",
+        templateName: "Old template name",
+        templateBody: "Old body {{skillName}}",
+      });
+    });
+  });
+});
+
+describe("advanced run template helpers", () => {
+  const defaultTemplate: CompanySkillTestRunTemplate = {
+    id: DEFAULT_TEST_RUN_TEMPLATE_ID,
+    companyId: "company-1",
+    name: "Default test template",
+    description: "Default",
+    body: "Default {{skillName}}",
+    builtIn: true,
+    createdByAgentId: null,
+    createdByUserId: null,
+    updatedByAgentId: null,
+    updatedByUserId: null,
+    deletedAt: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+  };
+  const customTemplate: CompanySkillTestRunTemplate = {
+    ...defaultTemplate,
+    id: "template-1",
+    name: "Focused smoke",
+    description: null,
+    body: "Custom {{skillName}}",
+    builtIn: false,
+  };
+
+  it("serializes the No template selection distinctly from default", () => {
+    const serialized = serializeRunTemplateSelection(null);
+
+    expect(parseRunTemplateSelection(serialized)).toBeNull();
+    expect(parseRunTemplateSelection(null)).toBe(DEFAULT_TEST_RUN_TEMPLATE_ID);
+    expect(parseRunTemplateSelection("template-1")).toBe("template-1");
+  });
+
+  it("keeps valid server-backed selections and the explicit No template choice", () => {
+    expect(resolveRunTemplateSelection(customTemplate.id, [defaultTemplate, customTemplate])).toEqual({
+      selection: "template-1",
+      template: customTemplate,
+      recovered: false,
+    });
+    expect(resolveRunTemplateSelection(null, [defaultTemplate])).toEqual({
+      selection: null,
+      template: null,
+      recovered: false,
+    });
+  });
+
+  it("recovers stale local selections to the server-backed default template", () => {
+    expect(resolveRunTemplateSelection("deleted-template", [defaultTemplate, customTemplate])).toEqual({
+      selection: DEFAULT_TEST_RUN_TEMPLATE_ID,
+      template: defaultTemplate,
+      recovered: true,
+    });
+  });
+
+  it("builds run-create payloads with the selected template id", () => {
+    expect(
+      buildCreateRunRequest({
+        agentId: "agent-1",
+        inputId: "input-1",
+        content: null,
+        templateId: customTemplate.id,
+      }),
+    ).toEqual({
+      agentId: "agent-1",
+      inputId: "input-1",
+      content: null,
+      templateId: "template-1",
+    });
+
+    expect(
+      buildCreateRunRequest({
+        agentId: "agent-1",
+        inputId: null,
+        content: "ad-hoc",
+        templateId: null,
+      }).templateId,
+    ).toBeNull();
   });
 });

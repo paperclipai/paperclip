@@ -1,10 +1,22 @@
 import type {
+  CompanySkillLastEditor,
+  CompanySkillListItem,
   CompanySkillTestInput,
   CompanySkillTestRun,
   CompanySkillTestRunCreateRequest,
   CompanySkillTestRunDetail,
+  CompanySkillTestRunHarnessContentUnavailableReason,
   CompanySkillTestRunStatus,
+  CompanySkillTestRunTemplate,
+  IssueAttachment,
+  IssueDocument,
 } from "@paperclipai/shared";
+import {
+  getIssueOutputs,
+  getPromotedOutputAttachmentIds,
+  isImageContentType,
+  isVideoLikeOutput,
+} from "./issue-output";
 
 /**
  * Pure logic for the Skill Studio UI (PAP-12962). Kept free of React so the
@@ -18,6 +30,9 @@ export const TERMINAL_RUN_STATUSES: readonly CompanySkillTestRunStatus[] = [
   "failed",
   "cancelled",
 ];
+
+export const DEFAULT_TEST_RUN_TEMPLATE_ID = "built-in:default-test-template";
+export const NO_TEST_RUN_TEMPLATE_STORAGE_VALUE = "__paperclip_no_template__";
 
 export function isTerminalRunStatus(status: CompanySkillTestRunStatus): boolean {
   return TERMINAL_RUN_STATUSES.includes(status);
@@ -260,9 +275,163 @@ export function isRunActive(run: Pick<CompanySkillTestRun, "status">): boolean {
   return !isTerminalRunStatus(run.status);
 }
 
+// ---------------------------------------------------------------------------
+// Advanced run template helpers
+// ---------------------------------------------------------------------------
+
+export type RunTemplateSelection = string | null;
+
+export interface RunTemplateSelectionResolution {
+  selection: RunTemplateSelection;
+  template: CompanySkillTestRunTemplate | null;
+  recovered: boolean;
+}
+
+export function serializeRunTemplateSelection(selection: RunTemplateSelection): string {
+  return selection === null ? NO_TEST_RUN_TEMPLATE_STORAGE_VALUE : selection;
+}
+
+export function parseRunTemplateSelection(value: string | null): RunTemplateSelection {
+  if (value === NO_TEST_RUN_TEMPLATE_STORAGE_VALUE) return null;
+  return value && value.trim() ? value : DEFAULT_TEST_RUN_TEMPLATE_ID;
+}
+
+export function resolveRunTemplateSelection(
+  selection: RunTemplateSelection,
+  templates: readonly CompanySkillTestRunTemplate[],
+): RunTemplateSelectionResolution {
+  if (selection === null) {
+    return { selection: null, template: null, recovered: false };
+  }
+
+  const template = templates.find((candidate) => candidate.id === selection) ?? null;
+  if (template) {
+    return { selection, template, recovered: false };
+  }
+
+  const fallback =
+    templates.find((candidate) => candidate.id === DEFAULT_TEST_RUN_TEMPLATE_ID)
+    ?? templates[0]
+    ?? null;
+
+  return {
+    selection: fallback?.id ?? null,
+    template: fallback,
+    recovered: true,
+  };
+}
+
+export function buildCreateRunRequest(input: {
+  agentId: string;
+  inputId: string | null;
+  content: string | null;
+  templateId: RunTemplateSelection;
+}): CompanySkillTestRunCreateRequest {
+  return {
+    agentId: input.agentId,
+    inputId: input.inputId,
+    content: input.content,
+    templateId: input.templateId,
+  };
+}
+
 /** The output document, if the run detail carries one under its output key. */
 export function findOutputDocument(detail: Pick<CompanySkillTestRunDetail, "documents" | "outputDocumentKey">) {
   return detail.documents.find((doc) => doc.key === detail.outputDocumentKey) ?? null;
+}
+
+type RunRichOutputDetail = Pick<CompanySkillTestRunDetail, "outputDocumentKey" | "harnessContent">;
+
+export interface RunHarnessUnavailableCopy {
+  title: string;
+  body: string;
+}
+
+export interface RunMediaGalleryItem {
+  id: string;
+  contentPath: string;
+  openPath?: string;
+  downloadPath?: string;
+  contentType: string;
+  originalFilename: string | null;
+}
+
+function runHarnessUnavailableTitle(reason: CompanySkillTestRunHarnessContentUnavailableReason | null) {
+  if (reason === "expired") return "Test task expired";
+  if (reason === "deleted") return "Test task deleted";
+  return "Test task unavailable";
+}
+
+export function runHarnessUnavailableCopy(
+  detail: Pick<CompanySkillTestRunDetail, "harnessContent">,
+): RunHarnessUnavailableCopy | null {
+  if (detail.harnessContent.available) return null;
+  return {
+    title: runHarnessUnavailableTitle(detail.harnessContent.unavailableReason),
+    body: "Stored run snapshots are still shown. Harness documents, attachments, and work products are no longer available.",
+  };
+}
+
+export function findRunOutputDocument(detail: RunRichOutputDetail): IssueDocument | null {
+  return detail.harnessContent.documents.find((doc) => doc.key === detail.outputDocumentKey) ?? null;
+}
+
+export function getRunAdditionalDocuments(detail: RunRichOutputDetail): IssueDocument[] {
+  const outputDocument = findRunOutputDocument(detail);
+  return detail.harnessContent.documents.filter((doc) => {
+    if (doc.key === detail.outputDocumentKey) return false;
+    if (outputDocument && doc.id === outputDocument.id) return false;
+    return true;
+  });
+}
+
+export function getRunRawAttachments(detail: RunRichOutputDetail): IssueAttachment[] {
+  const promotedOutputAttachmentIds = getPromotedOutputAttachmentIds(detail.harnessContent.workProducts);
+  return detail.harnessContent.attachments.filter((attachment) => !promotedOutputAttachmentIds.has(attachment.id));
+}
+
+export function getRunMediaGalleryItems(detail: RunRichOutputDetail): RunMediaGalleryItem[] {
+  const items: RunMediaGalleryItem[] = [];
+  const seen = new Set<string>();
+
+  const mark = (attachmentId: string | null | undefined, contentPath: string) => {
+    if (attachmentId) seen.add(`attachment:${attachmentId}`);
+    seen.add(`content:${contentPath}`);
+  };
+  const hasSeen = (attachmentId: string | null | undefined, contentPath: string) => (
+    Boolean(attachmentId && seen.has(`attachment:${attachmentId}`)) ||
+    seen.has(`content:${contentPath}`)
+  );
+
+  for (const attachment of detail.harnessContent.attachments) {
+    if (
+      !isImageContentType(attachment.contentType) &&
+      !isVideoLikeOutput(attachment.contentType, attachment.originalFilename)
+    ) {
+      continue;
+    }
+    items.push(attachment);
+    mark(attachment.id, attachment.contentPath);
+  }
+
+  for (const output of getIssueOutputs(detail.harnessContent.workProducts).items) {
+    const meta = output.metadata;
+    if (!meta) continue;
+    const isMedia = isImageContentType(meta.contentType) ||
+      isVideoLikeOutput(meta.contentType, meta.originalFilename);
+    if (!isMedia || hasSeen(meta.attachmentId, meta.contentPath)) continue;
+    items.push({
+      id: `work-product-${output.id}`,
+      contentPath: meta.contentPath,
+      openPath: meta.openPath,
+      downloadPath: meta.downloadPath,
+      contentType: meta.contentType,
+      originalFilename: meta.originalFilename ?? output.title,
+    });
+    mark(meta.attachmentId, meta.contentPath);
+  }
+
+  return items;
 }
 
 /**
@@ -274,12 +443,113 @@ export function findOutputDocument(detail: Pick<CompanySkillTestRunDetail, "docu
  * from empty picker state (PAP-13001).
  */
 export function buildReRunRequest(
-  detail: Pick<CompanySkillTestRun, "agentId" | "inputId" | "inputSnapshot" | "skillVersionId">,
+  detail: Pick<
+    CompanySkillTestRun,
+    "agentId"
+    | "inputId"
+    | "inputSnapshot"
+    | "skillVersionId"
+    | "templateId"
+    | "templateName"
+    | "templateBody"
+  >,
 ): CompanySkillTestRunCreateRequest {
   return {
     agentId: detail.agentId,
     inputId: detail.inputId ?? undefined,
     content: detail.inputId ? undefined : detail.inputSnapshot,
     skillVersionId: detail.skillVersionId,
+    templateSnapshot: {
+      templateId: detail.templateId,
+      templateName: detail.templateName,
+      templateBody: detail.templateBody,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Studio landing — recently visited + recently updated (PAP-13150)
+// ---------------------------------------------------------------------------
+
+export const RECENT_VISITED_SKILL_LIMIT = 5;
+export const RECENT_UPDATED_SKILL_LIMIT = 10;
+
+/**
+ * Intersect the per-browser recently-visited ids with the fetched skills list,
+ * most-recent-first, capped at `limit`. Stale/foreign ids that no longer match
+ * a live skill drop out automatically (they simply miss the lookup).
+ */
+export function orderRecentlyVisitedSkills(
+  skills: CompanySkillListItem[],
+  recentIds: string[],
+  limit = RECENT_VISITED_SKILL_LIMIT,
+): CompanySkillListItem[] {
+  const byId = new Map(skills.map((skill) => [skill.id, skill]));
+  const ordered: CompanySkillListItem[] = [];
+  const seen = new Set<string>();
+  for (const id of recentIds) {
+    if (seen.has(id)) continue;
+    const skill = byId.get(id);
+    if (!skill) continue;
+    ordered.push(skill);
+    seen.add(id);
+    if (ordered.length >= limit) break;
+  }
+  return ordered;
+}
+
+function updatedAtMs(skill: Pick<CompanySkillListItem, "updatedAt">): number {
+  const value = skill.updatedAt as unknown;
+  const time =
+    value instanceof Date ? value.getTime() : new Date(value as string).getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+/**
+ * Top `limit` skills by `updatedAt` desc, excluding anything already surfaced in
+ * the visited section (dedupe by id). Ties break by name so ordering is stable.
+ */
+export function orderRecentlyUpdatedSkills(
+  skills: CompanySkillListItem[],
+  excludeIds: Iterable<string>,
+  limit = RECENT_UPDATED_SKILL_LIMIT,
+): CompanySkillListItem[] {
+  const excluded = new Set(excludeIds);
+  return skills
+    .filter((skill) => !excluded.has(skill.id))
+    .slice()
+    .sort((a, b) => {
+      const delta = updatedAtMs(b) - updatedAtMs(a);
+      return delta !== 0 ? delta : a.name.localeCompare(b.name);
+    })
+    .slice(0, limit);
+}
+
+export interface SkillEditorAvatar {
+  name: string;
+  imageUrl: string | null;
+  initials: string;
+}
+
+function editorInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
+}
+
+/**
+ * Gate the last-editor avatar to human edits only. Agent edits and
+ * unattributed syncs (`kind !== "user"`, or no editor) render nothing.
+ */
+export function skillEditorAvatar(
+  lastEditor: CompanySkillLastEditor | null | undefined,
+): SkillEditorAvatar | null {
+  if (!lastEditor || lastEditor.kind !== "user") return null;
+  const name = lastEditor.name?.trim() || "Unknown editor";
+  return {
+    name,
+    imageUrl: lastEditor.imageUrl,
+    initials: editorInitials(name),
   };
 }
