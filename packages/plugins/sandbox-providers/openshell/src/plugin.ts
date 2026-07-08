@@ -91,6 +91,12 @@ function wrapCommandWithEnv(
   return ["/bin/sh", "-lc", `${exports}; exec ${command.map(shellQuote).join(" ")}`];
 }
 
+/**
+ * POSIX single-quote escaping. Each embedded single quote is replaced with
+ * the sequence '\'' which closes the current quoted region, appends a
+ * backslash-escaped literal single quote, and reopens a new quoted region.
+ * This is the same pattern used by the K8s provider (pod-exec.ts shQuote).
+ */
 function shellQuote(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }

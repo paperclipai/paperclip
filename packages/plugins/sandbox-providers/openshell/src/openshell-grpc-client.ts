@@ -3,6 +3,7 @@ import * as protoLoader from "@grpc/proto-loader";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { accessSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROTO_RELATIVE = resolve(__dirname, "../proto/openshell.proto");
@@ -28,7 +29,10 @@ export interface ClientOptions {
 }
 
 export function getClient(endpoint: string, opts?: ClientOptions): any {
-  const cacheKey = `${endpoint}:${opts?.useTls ? "tls" : "plain"}`;
+  const caHash = opts?.caCert
+    ? createHash("sha256").update(opts.caCert).digest("hex").slice(0, 12)
+    : "none";
+  const cacheKey = `${endpoint}:${opts?.useTls ? "tls" : "plain"}:${caHash}`;
   const existing = _clients.get(cacheKey);
   if (existing) return existing;
 
