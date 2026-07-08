@@ -317,9 +317,25 @@ describe("Cases list", () => {
     });
 
     const text = container.textContent ?? "";
+    expect(text.indexOf("Type")).toBeGreaterThan(text.indexOf("Title"));
+    expect(text.indexOf("Status")).toBeGreaterThan(text.indexOf("Type"));
     expect(text.indexOf("Parent case")).toBeGreaterThanOrEqual(0);
     expect(text.indexOf("Child case")).toBeGreaterThan(text.indexOf("Parent case"));
     expect(text.indexOf("Sibling case")).toBeGreaterThan(text.indexOf("Child case"));
+    expect(text).not.toContain("1 child");
+
+    const collapseParent = container.querySelector<HTMLButtonElement>('button[aria-label="Collapse Parent case"]');
+    expect(collapseParent).toBeTruthy();
+    expect(collapseParent?.getAttribute("aria-expanded")).toBe("true");
+    act(() => {
+      collapseParent!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Parent case");
+      expect(container.textContent).not.toContain("Child case");
+      expect(container.querySelector<HTMLButtonElement>('button[aria-label="Expand Parent case"]')?.getAttribute("aria-expanded")).toBe("false");
+    });
 
     act(() => root.unmount());
   });

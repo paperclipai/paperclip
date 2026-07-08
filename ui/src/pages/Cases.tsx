@@ -49,7 +49,7 @@ const STATUS_FILTER_OPTIONS: { value: CaseStatus; label: string }[] = [
 const ALL = "__all__";
 const DEFAULT_STATUS_FILTERS: CaseStatus[] = CASE_STATUSES.filter((status) => !TERMINAL_CASE_STATUSES.includes(status));
 const DEFAULT_CASE_COLUMNS: CaseColumn[] = ["id", "title", "status", "updated"];
-const CASE_COLUMN_ORDER: CaseColumn[] = ["id", "key", "title", "status", "updated", "created", "type", "project", "parent"];
+const CASE_COLUMN_ORDER: CaseColumn[] = ["id", "key", "title", "type", "status", "updated", "created", "project", "parent"];
 const CASE_COLUMN_LABELS: Record<CaseColumn, string> = {
   id: "ID",
   key: "Key",
@@ -253,6 +253,8 @@ function CaseTrailingColumns({
   treeDepth = 0,
   childCount = 0,
   treeView = false,
+  treeCollapsed = false,
+  onTreeToggle,
 }: {
   row: CaseSummary;
   columns: CaseColumn[];
@@ -262,6 +264,8 @@ function CaseTrailingColumns({
   treeDepth?: number;
   childCount?: number;
   treeView?: boolean;
+  treeCollapsed?: boolean;
+  onTreeToggle?: (caseId: string) => void;
 }) {
   return (
     <span className="grid min-w-0 flex-1 items-center gap-2" style={{ gridTemplateColumns: caseTrailingGridTemplate(columns) }}>
@@ -303,15 +307,26 @@ function CaseTrailingColumns({
             >
               {treeView ? (
                 <span className="flex w-4 shrink-0 items-center text-muted-foreground">
-                  {treeDepth > 0 ? <span className="h-px w-3 bg-border" /> : childCount > 0 ? <ListTree className="h-3.5 w-3.5" /> : null}
+                  {childCount > 0 ? (
+                    <button
+                      type="button"
+                      className="flex h-4 w-4 items-center justify-center rounded-sm transition-colors hover:bg-accent/50"
+                      aria-label={`${treeCollapsed ? "Expand" : "Collapse"} ${row.title}`}
+                      aria-expanded={!treeCollapsed}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onTreeToggle?.(row.id);
+                      }}
+                    >
+                      <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", treeCollapsed && "-rotate-90")} />
+                    </button>
+                  ) : treeDepth > 0 ? (
+                    <span className="h-px w-3 bg-border" />
+                  ) : null}
                 </span>
               ) : null}
               <span className="min-w-0 truncate text-sm">{row.title}</span>
-              {treeView && childCount > 0 ? (
-                <span className="hidden shrink-0 text-xs text-muted-foreground lg:inline">
-                  {childCount} {childCount === 1 ? "child" : "children"}
-                </span>
-              ) : null}
             </span>
           );
         }
@@ -366,6 +381,8 @@ function CaseListRow({
   treeDepth,
   childCount,
   treeView,
+  treeCollapsed,
+  onTreeToggle,
 }: {
   row: CaseSummary;
   projectName: string | null;
@@ -376,6 +393,8 @@ function CaseListRow({
   treeDepth?: number;
   childCount?: number;
   treeView?: boolean;
+  treeCollapsed?: boolean;
+  onTreeToggle?: (caseId: string) => void;
 }) {
   const caseHref = useCaseHref();
   return (
@@ -426,6 +445,8 @@ function CaseListRow({
             treeDepth={treeDepth}
             childCount={childCount}
             treeView={treeView}
+            treeCollapsed={treeCollapsed}
+            onTreeToggle={onTreeToggle}
           />
         </span>
       ) : null}
@@ -493,6 +514,7 @@ type CaseTreeRow = {
   row: CaseSummary;
   depth: number;
   childCount: number;
+  collapsed: boolean;
 };
 
 function CaseToolbarButton({
@@ -674,6 +696,7 @@ export function Cases() {
 
   const viewStorageKey = getCaseViewStorageKey(selectedCompanyId);
   const [viewState, setViewState] = useState<CaseViewState>(() => loadCaseViewState(viewStorageKey));
+  const [collapsedTreeCaseIds, setCollapsedTreeCaseIds] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Cases" }]);
@@ -819,15 +842,33 @@ export function Cases() {
     const roots = sorted.filter((row) => !row.parentCaseId || !rowById.has(row.parentCaseId));
     const rows: CaseTreeRow[] = [];
     const visited = new Set<string>();
+    const hidden = new Set<string>();
+
+    function markHidden(row: CaseSummary, ancestors: Set<string>) {
+      if (hidden.has(row.id) || ancestors.has(row.id)) return;
+      hidden.add(row.id);
+      const nextAncestors = new Set(ancestors);
+      nextAncestors.add(row.id);
+      for (const child of childrenByParent.get(row.id) ?? []) {
+        markHidden(child, nextAncestors);
+      }
+    }
 
     function walk(row: CaseSummary, depth: number, ancestors: Set<string>) {
-      if (visited.has(row.id)) return;
+      if (visited.has(row.id) || hidden.has(row.id)) return;
       visited.add(row.id);
       const children = childrenByParent.get(row.id) ?? [];
-      rows.push({ row, depth, childCount: children.length });
+      const collapsed = collapsedTreeCaseIds.has(row.id);
+      rows.push({ row, depth, childCount: children.length, collapsed });
       if (ancestors.has(row.id)) return;
       const nextAncestors = new Set(ancestors);
       nextAncestors.add(row.id);
+      if (collapsed) {
+        for (const child of children) {
+          markHidden(child, nextAncestors);
+        }
+        return;
+      }
       for (const child of children) {
         walk(child, depth + 1, nextAncestors);
       }
@@ -841,7 +882,7 @@ export function Cases() {
     }
 
     return rows;
-  }, [sorted]);
+  }, [collapsedTreeCaseIds, sorted]);
 
   const activeFilters: FilterValue[] = [];
   if (viewState.search.trim()) activeFilters.push({ key: "search", label: "Search", value: viewState.search.trim() });
@@ -897,6 +938,14 @@ export function Cases() {
   }
   function resetColumns() {
     updateView({ columns: viewState.treeView ? ensureCaseColumn(DEFAULT_CASE_COLUMNS, "type") : DEFAULT_CASE_COLUMNS });
+  }
+  function toggleTreeRow(caseId: string) {
+    setCollapsedTreeCaseIds((current) => {
+      const next = new Set(current);
+      if (next.has(caseId)) next.delete(caseId);
+      else next.add(caseId);
+      return next;
+    });
   }
   function toggleStringFilter(key: "typeFilters" | "projectFilters", value: string, enabled: boolean) {
     const current = viewState[key];
@@ -1076,7 +1125,7 @@ export function Cases() {
             <div>
               <CaseColumnHeader visibleColumnSet={visibleColumnSet} trailingColumns={trailingColumns} />
               {viewState.treeView ? (
-                treeRows.map(({ row, depth, childCount }) => (
+                treeRows.map(({ row, depth, childCount, collapsed }) => (
                   <CaseListRow
                     key={row.id}
                     row={row}
@@ -1087,6 +1136,8 @@ export function Cases() {
                     onStatusChange={(caseId, status) => patchCase.mutate({ caseId, status })}
                     treeDepth={depth}
                     childCount={childCount}
+                    treeCollapsed={collapsed}
+                    onTreeToggle={toggleTreeRow}
                     treeView
                   />
                 ))
