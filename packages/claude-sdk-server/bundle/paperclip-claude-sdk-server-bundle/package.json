@@ -1,0 +1,17 @@
+{
+  "name": "paperclip-claude-sdk-server-bundle",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "paperclip-claude-sdk-server": "./dist/cli.js"
+  },
+  "scripts": {
+    "start": "node ./dist/cli.js"
+  },
+  "dependencies": {
+    "ws": "^8.19.0"
+  }
+}

@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -14,6 +16,47 @@ const inputClass =
 
 const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.";
+const remoteSdkServerHint =
+  "Optional ws:// or wss:// Paperclip Claude SDK server endpoint. When set, Paperclip uses the remote bridge over WebSocket instead of launching a local claude CLI process.";
+const remoteSdkServerTokenHint =
+  "Optional bearer token sent as Authorization during the Claude SDK server WebSocket handshake. Leave blank to connect without bearer auth.";
+
+function SecretField({
+  label,
+  hint,
+  value,
+  onCommit,
+  placeholder,
+}: {
+  label: string;
+  hint?: string;
+  value: string;
+  onCommit: (value: string) => void;
+  placeholder?: string;
+}) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <Field label={label} hint={hint}>
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setVisible((v) => !v)}
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+        >
+          {visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+        </button>
+        <DraftInput
+          value={value}
+          onCommit={onCommit}
+          immediate
+          type={visible ? "text" : "password"}
+          className={inputClass + " pr-8"}
+          placeholder={placeholder}
+        />
+      </div>
+    </Field>
+  );
+}
 
 export function ClaudeLocalConfigFields({
   mode,
@@ -27,8 +70,73 @@ export function ClaudeLocalConfigFields({
   models,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
+  const configuredHeaders =
+    config.agentSdkServerHeaders &&
+    typeof config.agentSdkServerHeaders === "object" &&
+    !Array.isArray(config.agentSdkServerHeaders)
+      ? (config.agentSdkServerHeaders as Record<string, unknown>)
+      : {};
+  const effectiveHeaders =
+    (eff("adapterConfig", "agentSdkServerHeaders", configuredHeaders) as Record<string, unknown>) ?? {};
+  const effectiveAuthorization =
+    typeof effectiveHeaders.Authorization === "string" ? effectiveHeaders.Authorization : "";
+  const effectiveBearerToken =
+    isCreate
+      ? values!.appServerBearerToken ?? ""
+      : typeof config.agentSdkServerBearerToken === "string"
+        ? eff("adapterConfig", "agentSdkServerBearerToken", String(config.agentSdkServerBearerToken))
+        : effectiveAuthorization.startsWith("Bearer ")
+          ? effectiveAuthorization.slice("Bearer ".length)
+          : "";
+
+  const commitBearerToken = (rawValue: string) => {
+    const nextValue = rawValue.trim();
+    if (isCreate) {
+      set!({ appServerBearerToken: nextValue });
+      return;
+    }
+
+    mark("adapterConfig", "agentSdkServerBearerToken", nextValue || undefined);
+    if (!effectiveAuthorization.startsWith("Bearer ")) return;
+    const nextHeaders: Record<string, unknown> = { ...effectiveHeaders };
+    delete nextHeaders.Authorization;
+    mark(
+      "adapterConfig",
+      "agentSdkServerHeaders",
+      Object.keys(nextHeaders).length > 0 ? nextHeaders : undefined,
+    );
+  };
+
   return (
     <>
+      <Field label="Remote SDK Server URL" hint={remoteSdkServerHint}>
+        <DraftInput
+          value={
+            isCreate
+              ? values!.url
+              : eff(
+                  "adapterConfig",
+                  "agentSdkServerUrl",
+                  String(config.agentSdkServerUrl ?? ""),
+                )
+          }
+          onCommit={(v) =>
+            isCreate
+              ? set!({ url: v })
+              : mark("adapterConfig", "agentSdkServerUrl", v || undefined)
+          }
+          immediate
+          className={inputClass}
+          placeholder="ws://claude-host:4400"
+        />
+      </Field>
+      <SecretField
+        label="Remote SDK Server bearer token"
+        hint={remoteSdkServerTokenHint}
+        value={effectiveBearerToken}
+        onCommit={commitBearerToken}
+        placeholder="Leave blank for no bearer auth"
+      />
       {!hideInstructionsFile && (
         <Field label="Agent instructions file" hint={instructionsFileHint}>
           <div className="flex items-center gap-2">

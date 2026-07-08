@@ -35,11 +35,149 @@ If an agent is already running, new wakeups are merged (coalesced) instead of la
 Common choices:
 
 - `claude_local`: runs your local `claude` CLI
-- `codex_local`: runs your local `codex` CLI
+- `codex_local`: runs either your local `codex` CLI or a remote Codex App Server, depending on config
 - `process`: generic shell command adapter
 - `http`: calls an external HTTP endpoint
 
-For `claude_local` and `codex_local`, Paperclip assumes the CLI is already installed and authenticated on the host machine.
+For `claude_local`, Paperclip assumes the CLI is already installed and authenticated on the host machine.
+
+For `claude_local`, there are two transport modes:
+
+- Local CLI mode: Paperclip launches the local `claude` binary directly on the Paperclip host.
+- Remote SDK bridge mode: if `agentSdkServerUrl` is set in adapter config, Paperclip connects to a Paperclip-defined Claude SDK bridge over WebSocket instead of spawning `claude` locally.
+
+In remote SDK bridge mode, the remote Claude host is responsible for Claude installation/authentication, and the bridge is expected to run Claude locally on its own host and stream stdout/stderr back to Paperclip. This is a Paperclip bridge protocol for self-hosted Claude infrastructure, not an official Anthropic remote-control API.
+
+When `instructionsFilePath` is configured for a remote Claude bridge run, Paperclip reads that file on the Paperclip host and forwards the contents to the bridge. The remote host does not need the same Paperclip-local path to exist.
+
+When Paperclip sends `paperclipWorkspace.cwd` in wake context, treat that as a Paperclip-side workspace hint, not the remote bridge's process cwd. The standalone bridge only changes Claude's working directory when `adapterConfig.cwd` is explicitly set for the Claude agent; otherwise it stays in the bridge host's own local working directory.
+
+What the remote Claude path currently gets:
+
+- full Paperclip API env forwarded into the remote Claude process, including `PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY`, `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, and `PAPERCLIP_RUN_ID`
+- forwarded agent instructions contents when `instructionsFilePath` is configured
+- wake payload, task markdown, session handoff markdown, cwd, and the standard Paperclip heartbeat contract in the prompt
+- Claude session resume ids when the task/session is resumable
+
+That means remote Claude starts with the same issue/task framing local Claude would normally have, and it can call the Paperclip API directly if the remote host can reach `PAPERCLIP_API_URL`.
+
+Remote Claude topology:
+
+```text
+Paperclip server
+  └─ WebSocket control channel ──> Paperclip Claude bridge on remote host
+                                      └─ spawns local `claude`
+                                             └─ HTTP calls back to Paperclip API when it needs to
+                                                checkout/comment/mark done/create interactions
+```
+
+Paperclip can optionally send a bearer token during the SDK bridge WebSocket handshake. If you expose the bridge beyond loopback, prefer `wss://` or an SSH-forwarded loopback listener instead of plaintext `ws://`.
+
+The bridge server currently lives in this repository as `@paperclipai/claude-sdk-server`. It is now a standalone remote package: the remote host does not need the rest of Paperclip's adapter/runtime packages just to satisfy imports. It only needs the bridge package plus the `claude` CLI installed and authenticated locally.
+
+For an in-repo deployment on the remote Claude host, install dependencies, build the bridge package, and then start it on loopback:
+
+```bash
+pnpm install
+pnpm --filter @paperclipai/claude-sdk-server build
+
+node packages/claude-sdk-server/dist/cli.js --listen ws://127.0.0.1:4400
+```
+
+If you want the bridge to require bearer auth, create a token file and start it with `--token-file`:
+
+```bash
+mkdir -p "$HOME/.claude"
+openssl rand -hex 32 > "$HOME/.claude/paperclip-bridge.token"
+chmod 600 "$HOME/.claude/paperclip-bridge.token"
+
+node packages/claude-sdk-server/dist/cli.js \
+  --listen ws://127.0.0.1:4400 \
+  --token-file "$HOME/.claude/paperclip-bridge.token"
+```
+
+The preferred operator pattern is to SSH-forward that loopback listener back to the Paperclip host and point `agentSdkServerUrl` at the forwarded local address. If you do connect directly over the network, Paperclip can send `agentSdkServerBearerToken` as `Authorization: Bearer <token>` during the WebSocket handshake.
+
+Current limitation: the standalone bridge intentionally uses a slimmer local Claude execution path than the full in-process `claude_local` adapter. It preserves remote run control, prompt templates, resume IDs, env injection, and standard Claude CLI flags, but it does not currently materialize Paperclip-managed Claude skill/runtime assets on the remote host.
+
+If you want to ship the remote bridge as a single archive instead of cloning the whole repo on the remote host, build the bridge bundle:
+
+```bash
+pnpm --filter @paperclipai/claude-sdk-server bundle
+```
+
+That creates `packages/claude-sdk-server/bundle/paperclip-claude-sdk-server-bundle.tar.gz`. Copy that archive to the remote host, unpack it, install the one external runtime dependency, and start it:
+
+```bash
+tar -xzf paperclip-claude-sdk-server-bundle.tar.gz
+cd paperclip-claude-sdk-server-bundle
+npm install --omit=dev
+node dist/cli.js --listen ws://127.0.0.1:4400
+```
+
+In that archive flow, the remote host only needs:
+
+- Node.js 20+
+- the local `claude` CLI installed/authenticated
+- network access to install the `ws` npm package, unless you vendor `node_modules` separately
+
+For `codex_local`, there are two transport modes:
+
+- Local CLI mode: Paperclip launches the local `codex` binary directly on the Paperclip host.
+- Remote App Server mode: if `appServerUrl` is set in adapter config, Paperclip connects to a remote Codex App Server over WebSocket instead of spawning `codex` locally.
+
+In remote App Server mode, the remote Codex host is responsible for Codex installation/authentication, and Paperclip currently expects `dangerouslyBypassApprovalsAndSandbox=true` so runs do not block on interactive approval requests that Paperclip cannot yet review remotely.
+
+What the remote Codex path currently gets:
+
+- the same standard Paperclip heartbeat prompt contract as local Codex when no custom `promptTemplate` is set
+- wake payload, task markdown, session handoff markdown, cwd, and agent instructions contents in the prompt
+- full Paperclip env values computed on the Paperclip side, including `PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY`, `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, and `PAPERCLIP_RUN_ID`
+- Codex thread/session resume ids when the task/session is resumable
+
+The crucial difference from remote Claude is that Codex App Server does not currently receive those Paperclip env vars as process env in the remote shell. Paperclip injects a remote-runtime note into the prompt listing those values and telling Codex to export or use them manually before calling the API or running scripts.
+
+Remote Codex topology:
+
+```text
+Paperclip server
+  └─ WebSocket control channel ──> Codex App Server on remote host
+                                      └─ manages Codex thread/turn execution
+                                             └─ if Codex needs Paperclip API access, it uses
+                                                the env values disclosed in the prompt note
+                                                rather than inherited shell env
+```
+
+Paperclip can optionally send a bearer token during the App Server WebSocket handshake, but the preferred deployment pattern is still to forward the Codex App Server management port over SSH so the WebSocket stays encrypted in transit and Paperclip can treat it like a local listener on the Paperclip host.
+
+Paperclip accepts `ws://` and `wss://` App Server URLs, but at this time we are not aware of Codex App Server supporting a native `wss://` listener. If you need encryption in transit today, prefer SSH port forwarding or terminate TLS in front of a local `ws://` App Server listener.
+
+If you do need to test Codex App Server token auth directly, create the capability token yourself and store it in a file that only the Codex host can read:
+
+```bash
+mkdir -p "$HOME/.codex"
+openssl rand -hex 32 > "$HOME/.codex/app-server.token"
+chmod 600 "$HOME/.codex/app-server.token"
+```
+
+Then start Codex App Server on loopback with that token:
+
+```bash
+codex app-server \
+  --listen ws://127.0.0.1:4100 \
+  --ws-auth capability-token \
+  --ws-token-file "$HOME/.codex/app-server.token"
+```
+
+Set `appServerBearerToken` in the agent config if you want Paperclip to send that token as `Authorization: Bearer <token>` during the WebSocket handshake. That path is not the preferred operator setup today; prefer SSH forwarding so Paperclip connects to a forwarded local listener instead of depending on direct token-authenticated remote access.
+
+Remote Claude vs remote Codex today:
+
+- Prompt/task framing parity: both now start with wake payload, task markdown, session handoff, cwd, and the stronger Paperclip default prompt contract.
+- Instructions parity: both now receive agent instructions contents without requiring the same Paperclip-local file path to exist on the remote host.
+- API env parity: remote Claude gets the Paperclip API env directly in the spawned process; remote Codex currently gets the same values only as prompt text, not as remote shell env.
+- Runtime ownership: remote Claude uses a Paperclip-owned bridge that spawns `claude`; remote Codex talks directly to Codex App Server without a Paperclip-owned execution bridge.
+- Operational consequence: remote Claude is currently better suited for agents that must reliably mutate Paperclip state from the remote host. Remote Codex is now much better aligned on issue/task framing than before, but still depends more on Codex correctly using the env values disclosed in the prompt.
 
 ## 3.2 Runtime behavior
 
@@ -59,6 +197,20 @@ For local adapters, set:
 - `timeoutSec` (max runtime per heartbeat)
 - `graceSec` (time before force-kill after timeout/cancel)
 - optional env vars and extra CLI args
+
+For `codex_local`, you can also set:
+
+- `appServerUrl` to switch from local CLI execution to remote Codex App Server execution
+- `appServerBearerToken` to send `Authorization: Bearer <token>` during the remote App Server WebSocket handshake when the listener requires bearer auth
+
+For `claude_local`, you can also set:
+
+- `agentSdkServerUrl` to switch from local CLI execution to remote Claude SDK bridge execution
+- `agentSdkServerBearerToken` to send `Authorization: Bearer <token>` during the remote bridge WebSocket handshake when the listener requires bearer auth
+
+When using `appServerUrl`, prefer an SSH-forwarded local address such as `ws://127.0.0.1:<forwarded-port>` instead of pointing Paperclip at a token-protected external listener.
+
+When using `agentSdkServerUrl`, prefer an SSH-forwarded local address or `wss://` rather than a plaintext remote `ws://` listener.
 
 ## 3.4 Prompt templates
 

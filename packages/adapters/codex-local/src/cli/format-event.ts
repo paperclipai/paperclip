@@ -31,7 +31,7 @@ function errorText(value: unknown): string {
 }
 
 function printItemStarted(item: Record<string, unknown>): boolean {
-  const itemType = asString(item.type);
+  const itemType = asString(item.type) || asString(item.item_type);
   if (itemType === "command_execution") {
     const command = asString(item.command);
     console.log(pc.yellow("tool_call: command_execution"));
@@ -56,9 +56,9 @@ function printItemStarted(item: Record<string, unknown>): boolean {
 }
 
 function printItemCompleted(item: Record<string, unknown>): boolean {
-  const itemType = asString(item.type);
+  const itemType = asString(item.type) || asString(item.item_type);
 
-  if (itemType === "agent_message") {
+  if (itemType === "agent_message" || itemType === "assistant_message") {
     const text = asString(item.text);
     if (text) console.log(pc.green(`assistant: ${text}`));
     return true;
@@ -153,8 +153,8 @@ export function printCodexStreamEvent(raw: string, _debug: boolean): void {
 
   const type = asString(parsed.type);
 
-  if (type === "thread.started") {
-    const threadId = asString(parsed.thread_id);
+  if (type === "thread.started" || type === "session.created") {
+    const threadId = asString(parsed.thread_id) || asString(parsed.session_id) || asString(parsed.sessionId);
     const model = asString(parsed.model);
     const details = [threadId ? `session: ${threadId}` : "", model ? `model: ${model}` : ""].filter(Boolean).join(", ");
     console.log(pc.blue(`Codex thread started${details ? ` (${details})` : ""}`));
