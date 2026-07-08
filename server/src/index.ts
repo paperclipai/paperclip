@@ -53,7 +53,7 @@ import {
   reconcileAdapterAvailability,
 } from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
-import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
+import { buildRuntimeApiCandidateUrls, chooseAgentRuntimeApiUrl, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -704,13 +704,25 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   const runtimeListenHost = config.host;
-  const runtimeApiUrl = choosePrimaryRuntimeApiUrl({
+  // Public-facing URL for browser login, outbound webhooks and callback
+  // candidates. May resolve to an auth-proxied host (e.g. Cloudflare Access).
+  const publicApiUrl = choosePrimaryRuntimeApiUrl({
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     allowedHostnames: config.allowedHostnames,
     bindHost: runtimeListenHost,
     port: listenPort,
   });
-  const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
+  // Agent-facing URL. For co-located (local_trusted) deployments this must be
+  // the loopback/bind origin, never the auth-proxied public host, or the
+  // agent's API calls get 302-redirected to the proxy login flow.
+  const runtimeApiUrl = chooseAgentRuntimeApiUrl({
+    deploymentMode: config.deploymentMode,
+    authPublicBaseUrl: config.authPublicBaseUrl ?? null,
+    allowedHostnames: config.allowedHostnames,
+    bindHost: runtimeListenHost,
+    port: listenPort,
+  });
+  const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || publicApiUrl;
   const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
     preferredApiUrl: configuredApiUrl,
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
