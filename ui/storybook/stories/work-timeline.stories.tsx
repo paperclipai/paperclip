@@ -16,11 +16,37 @@ import sampleJson from "../fixtures/workTimeline.sample.json";
 import humanSampleJson from "../fixtures/workTimeline.human.sample.json";
 
 const COMPANY_ID = "company-storybook";
-const sample = sampleJson as unknown as WorkTimelineResult;
+const STORYBOOK_USER_AVATAR =
+  "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=96&q=80";
+
+function withStorybookTimelineDetails(data: WorkTimelineResult): WorkTimelineResult {
+  return {
+    ...data,
+    actors: data.actors.map((actor) => (
+      actor.type === "user" ? { ...actor, avatar: STORYBOOK_USER_AVATAR } : actor
+    )),
+    spans: data.spans.map((span, index) => {
+      const inputTokens = 42_000 + index * 137;
+      const cachedInputTokens = index % 3 === 0 ? 8_000 : 0;
+      const outputTokens = 5_400 + index * 29;
+      return {
+        ...span,
+        usage: span.usage ?? {
+          inputTokens,
+          cachedInputTokens,
+          outputTokens,
+          totalTokens: inputTokens + cachedInputTokens + outputTokens,
+        },
+      };
+    }),
+  };
+}
+
+const sample = withStorybookTimelineDetails(sampleJson as unknown as WorkTimelineResult);
 // A second real slice (2026-07-02 14:00–16:00Z) captured straight from the live
 // `/timeline` endpoint that DOES carry human events — Dotta's created / commented /
 // approved / delegated actions provide human participation and kickoff context.
-const humanSample = humanSampleJson as unknown as WorkTimelineResult;
+const humanSample = withStorybookTimelineDetails(humanSampleJson as unknown as WorkTimelineResult);
 // The fixture is a real slice of PAP company activity (2026-07-02 14:00–15:50Z);
 // pin "now" to the window end so in-progress runs fade correctly.
 const NOW = new Date("2026-07-02T15:45:00.000Z").getTime();
