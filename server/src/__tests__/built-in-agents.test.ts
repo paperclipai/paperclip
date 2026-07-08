@@ -197,6 +197,17 @@ describeEmbeddedPostgres("built-in agents", () => {
       },
     });
 
+    await expect(builtIns.provision(companyId, "briefs", {
+      budgetMonthlyCents: 7500,
+    })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "built_in_agent_pending_approval",
+        key: "briefs",
+        agentId: result.state.agentId,
+      },
+    });
+
     await db
       .update(agents)
       .set({

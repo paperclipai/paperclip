@@ -239,6 +239,10 @@ function builtInAgentNotConfiguredError(state: BuiltInAgentState) {
   });
 }
 
+function hasProvisionSetupInput(input: BuiltInAgentProvisionInput) {
+  return input.adapterType !== undefined || input.adapterConfig !== undefined || input.budgetMonthlyCents !== undefined;
+}
+
 function rowIsBuiltInAgent(row: typeof agents.$inferSelect, key: string) {
   const marker = readBuiltInAgentMarker(row.metadata);
   return marker?.key === key;
@@ -368,6 +372,13 @@ export function builtInAgentService(db: Db) {
     const existing = await findSingleAgent(companyId, definition);
     if (existing) {
       if (existing.status === "pending_approval") {
+        if (hasProvisionSetupInput(input)) {
+          throw conflict("Built-in agent setup is already pending board approval.", {
+            code: "built_in_agent_pending_approval",
+            key: definition.key,
+            agentId: existing.id,
+          });
+        }
         const approval = await approvalSvc.findOpenHireApprovalForAgent(companyId, existing.id);
         return {
           state: state(definition, existing),
