@@ -28,7 +28,7 @@ describe("adapter-defaults (built-in)", () => {
     expect(() => getAdapterDefaults("nonexistent_local")).toThrow(/unknown adapter type/i);
   });
 
-  it("KNOWN_ADAPTER_TYPES contains all 7 supported adapters", () => {
+  it("KNOWN_ADAPTER_TYPES contains all 6 supported adapters", () => {
     expect(KNOWN_ADAPTER_TYPES).toEqual(
       new Set([
         "claude_local",
@@ -36,7 +36,6 @@ describe("adapter-defaults (built-in)", () => {
         "gemini_local",
         "cursor_local",
         "opencode_local",
-        "acpx_local",
         "pi_local",
       ]),
     );

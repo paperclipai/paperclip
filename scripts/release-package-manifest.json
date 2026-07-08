@@ -5,8 +5,8 @@
     "publishFromCi": true
   },
   {
-    "dir": "packages/adapters/acpx-local",
-    "name": "@paperclipai/adapter-acpx-local",
+    "dir": "packages/acpx-engine",
+    "name": "@paperclipai/acpx-engine",
     "publishFromCi": true
   },
   {

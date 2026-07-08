@@ -4,9 +4,9 @@ import test from "node:test";
 import { buildPublishArgs, parseArgs, resolveTargetPackage } from "./bootstrap-npm-package.mjs";
 
 test("parseArgs recognizes publish and skip-build flags", () => {
-  assert.deepEqual(parseArgs(["@paperclipai/adapter-acpx-local", "--publish", "--skip-build"]), {
+  assert.deepEqual(parseArgs(["@paperclipai/acpx-engine", "--publish", "--skip-build"]), {
     help: false,
-    selector: "@paperclipai/adapter-acpx-local",
+    selector: "@paperclipai/acpx-engine",
     publish: true,
     skipBuild: true,
     otp: null,
@@ -14,9 +14,9 @@ test("parseArgs recognizes publish and skip-build flags", () => {
 });
 
 test("parseArgs accepts an explicit otp value", () => {
-  assert.deepEqual(parseArgs(["packages/adapters/acpx-local", "--publish", "--otp", "123456"]), {
+  assert.deepEqual(parseArgs(["packages/acpx-engine", "--publish", "--otp", "123456"]), {
     help: false,
-    selector: "packages/adapters/acpx-local",
+    selector: "packages/acpx-engine",
     publish: true,
     skipBuild: false,
     otp: "123456",
@@ -24,9 +24,9 @@ test("parseArgs accepts an explicit otp value", () => {
 });
 
 test("parseArgs leaves otp null when omitted", () => {
-  assert.deepEqual(parseArgs(["packages/adapters/acpx-local", "--publish"]), {
+  assert.deepEqual(parseArgs(["packages/acpx-engine", "--publish"]), {
     help: false,
-    selector: "packages/adapters/acpx-local",
+    selector: "packages/acpx-engine",
     publish: true,
     skipBuild: false,
     otp: null,

@@ -20,8 +20,8 @@ function usage() {
       "  node scripts/bootstrap-npm-package.mjs <package-name-or-dir> [--publish --otp <code>] [--skip-build]",
       "",
       "Examples:",
-      "  node scripts/bootstrap-npm-package.mjs @paperclipai/adapter-acpx-local",
-      "  node scripts/bootstrap-npm-package.mjs packages/adapters/acpx-local --publish",
+      "  node scripts/bootstrap-npm-package.mjs @paperclipai/acpx-engine",
+      "  node scripts/bootstrap-npm-package.mjs packages/acpx-engine --publish",
       "",
     ].join("\n"),
   );

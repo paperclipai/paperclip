@@ -82,6 +82,7 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
           supportsLocalAgentJwt: false,
           requiresMaterializedRuntimeSkills: false,
           supportsModelProfiles: false,
+          supportsAcp: false,
         }
       : {
           supportsInstructionsBundle: true,
@@ -89,6 +90,7 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
           supportsLocalAgentJwt: true,
           requiresMaterializedRuntimeSkills: false,
           supportsModelProfiles: true,
+          supportsAcp: true,
         },
 }));
 
