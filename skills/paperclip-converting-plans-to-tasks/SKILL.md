@@ -26,6 +26,18 @@ For the **mechanics** of recording a plan (issue document with key `plan`, comme
 - **Order, then parallelize.** Sequence work by real dependencies, not by personal preference. Independent branches of the graph should start in parallel. Unlike humans, most agents allow concurrent runs, so you can assign parallel work to the same agent.
 - **Enough is enough.** Plans exist to unblock execution, not replace it. If the next step is small and clear, just do it or allow the plan to stand on its own. Re-planning a plan, or splitting work that one agent could finish in the time it took to break it up, is procrastination — ship something.
 
+## The default issue-graph template
+
+Whatever prose format the plan takes, give its execution the shape that survives long, multi-step work — a shape the executor and a resumed run can both follow without re-deriving it:
+
+1. **One epic at the top.** A single parent issue naming the whole initiative and its definition of done. It carries the cross-cutting view; it is not itself a unit of work.
+2. **Children parented to the epic.** Every concrete deliverable is its own issue whose parent is the epic, set at creation — not a bullet in the epic's description, not a comment mention. Parenting is traceability, not execution order.
+3. **One verifiable unit per child.** Scope each child to a single thing you can *prove* done — one file migrated *and* its old copy removed, one document written *and* reviewed, one setting changed *and* confirmed in effect. If "done" needs an "and also," split it. Small verifiable children make every close a real checkpoint and let a resumed run know exactly what remains.
+4. **An explicit blocker chain for real sequencing.** Wire every hard "do B after A" dependency as a blocker on the dependent child — not prose, not parent/child nesting, not phase labels. Independent children carry no blockers and start in parallel. When a blocker finishes, its dependents wake in order, so the graph does the sequencing and no one has to guess what is next.
+5. **Configure before you assign — assign last.** Assignment is a wake trigger: the instant a child has an assignee, its owner can pick it up. So set structure *before* the owner exists. Either create the child with its parent, its blockers, *and* its assignee all in one atomic create, **or**, if you configure across several calls, create it unassigned, set the parent, set the blockers, then set the assignee last. Never assign first and configure after — that wakes the owner onto a half-built, parent-less or blocker-less issue.
+
+The result is an epic whose children each prove one thing, chained in real dependency order, each handed off only once it is fully wired — the structure that stays navigable and recoverable across many work sessions. This templates the issue *graph*, not the plan's prose; keep bringing whatever plan format fits the work.
+
 ## When converting an accepted plan into tasks
 
 Before or while creating tasks, write a compact task matrix with each planned task, owner, initial status, and blockers. Any task that can start immediately should say why it has no blockers; otherwise set it to `blocked` and include the prerequisite issue IDs in `blockedByIssueIds`. Do not rely on `parentId`, child ordering, phase labels, or prose to block execution.
