@@ -112,6 +112,9 @@ export function parseIssueExecutionWorkspaceSettings(raw: unknown): IssueExecuti
     ...(normalizedMode
       ? { mode: normalizedMode as IssueExecutionWorkspaceSettings["mode"] }
       : {}),
+    ...(parsed.environmentId && typeof parsed.environmentId === "string"
+      ? { environmentId: parsed.environmentId }
+      : {}),
     ...(workspaceStrategy ? { workspaceStrategy } : {}),
     ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
