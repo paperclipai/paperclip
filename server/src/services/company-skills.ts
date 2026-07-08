@@ -11,6 +11,7 @@ import {
   companySkillComments,
   companySkillStars,
   companySkillTestInputs,
+  companySkillTestRunTemplates,
   companySkillTestRuns,
   companySkillVersions,
   companySkills,
@@ -67,6 +68,10 @@ import type {
   CompanySkillTestRunCreateRequest,
   CompanySkillTestRunDetail,
   CompanySkillTestRunListQuery,
+  CompanySkillTestRunTemplate,
+  CompanySkillTestRunTemplateCreateRequest,
+  CompanySkillTestRunTemplateSnapshot,
+  CompanySkillTestRunTemplateUpdateRequest,
   CompanySkillTestRunStatus,
   CompanySkillTrustLevel,
   CompanySkillUpdateRequest,
@@ -100,6 +105,7 @@ type CompanySkillRow = typeof companySkills.$inferSelect;
 type CompanySkillVersionRow = typeof companySkillVersions.$inferSelect;
 type CompanySkillCommentRow = typeof companySkillComments.$inferSelect;
 type CompanySkillTestInputRow = typeof companySkillTestInputs.$inferSelect;
+type CompanySkillTestRunTemplateRow = typeof companySkillTestRunTemplates.$inferSelect;
 type CompanySkillTestRunRow = typeof companySkillTestRuns.$inferSelect;
 type CompanySkillListDbRow = Pick<
   CompanySkillRow,
@@ -1483,6 +1489,89 @@ function toCompanySkillTestInput(row: CompanySkillTestInputRow): CompanySkillTes
   };
 }
 
+const BUILT_IN_SKILL_TEST_RUN_TEMPLATE_ID = "built-in:default-test-template";
+const BUILT_IN_SKILL_TEST_RUN_TEMPLATE_DATE = new Date("2026-01-01T00:00:00.000Z");
+const BUILT_IN_SKILL_TEST_RUN_TEMPLATE_BODY = [
+  "You are running a Skills Studio test for `{{skillName}}` (`{{skillKey}}`), skill version v{{skillVersion}}.",
+  "",
+  "Invoke and use the selected skill under test: `{{skillInvocation}}`. Use the pinned skill revision supplied by Paperclip as the source of truth, regardless of any other runtime skills.",
+  "",
+  "This is a test run. Do not make durable changes outside this test task. Do not mutate unrelated issues, push, publish, send external messages, or affect real work.",
+  "",
+  "If the skill would create documents, images, videos, files, or other assets, create test versions in an obviously test-scoped location when applicable, then post the results back to this task as issue documents, attachments, or work products.",
+  "",
+  "Write the final result to issue document `{{outputDocumentKey}}`, then mark this test task done.",
+].join("\n");
+
+function builtInSkillTestRunTemplate(companyId: string): CompanySkillTestRunTemplate {
+  return {
+    id: BUILT_IN_SKILL_TEST_RUN_TEMPLATE_ID,
+    companyId,
+    name: "Default test template",
+    description: "Paperclip's read-only default harness instructions for Skills Studio runs.",
+    body: BUILT_IN_SKILL_TEST_RUN_TEMPLATE_BODY,
+    builtIn: true,
+    createdByAgentId: null,
+    createdByUserId: null,
+    updatedByAgentId: null,
+    updatedByUserId: null,
+    deletedAt: null,
+    createdAt: BUILT_IN_SKILL_TEST_RUN_TEMPLATE_DATE,
+    updatedAt: BUILT_IN_SKILL_TEST_RUN_TEMPLATE_DATE,
+  };
+}
+
+function toCompanySkillTestRunTemplate(row: CompanySkillTestRunTemplateRow): CompanySkillTestRunTemplate {
+  return {
+    ...row,
+    description: row.description ?? null,
+    builtIn: false,
+    createdByAgentId: row.createdByAgentId ?? null,
+    createdByUserId: row.createdByUserId ?? null,
+    updatedByAgentId: row.updatedByAgentId ?? null,
+    updatedByUserId: row.updatedByUserId ?? null,
+    deletedAt: row.deletedAt ?? null,
+  };
+}
+
+const ALLOWED_SKILL_TEST_TEMPLATE_PLACEHOLDERS = new Set([
+  "skillName",
+  "skillKey",
+  "skillInvocation",
+  "skillVersion",
+  "runId",
+  "issueId",
+  "outputDocumentKey",
+]);
+
+function validateSkillTestTemplatePlaceholders(body: string) {
+  const unknown = new Set<string>();
+  const recognized = /\{\{\s*([A-Za-z][A-Za-z0-9]*)\s*\}\}/g;
+  for (const match of body.matchAll(recognized)) {
+    const key = match[1] ?? "";
+    if (!ALLOWED_SKILL_TEST_TEMPLATE_PLACEHOLDERS.has(key)) {
+      unknown.add(key);
+    }
+  }
+  if (body.replace(recognized, "").includes("{{") || body.replace(recognized, "").includes("}}")) {
+    throw unprocessable("Malformed template placeholder. Use explicit placeholders like {{skillName}}.");
+  }
+  if (unknown.size > 0) {
+    throw unprocessable(`Unknown template placeholder${unknown.size === 1 ? "" : "s"}: ${Array.from(unknown).sort().join(", ")}`);
+  }
+}
+
+function renderSkillTestTemplate(body: string, values: Record<string, string>) {
+  validateSkillTestTemplatePlaceholders(body);
+  return body.replace(/\{\{\s*([A-Za-z][A-Za-z0-9]*)\s*\}\}/g, (_match, rawKey: string) => values[rawKey] ?? "");
+}
+
+function buildHarnessIssueDescription(inputSnapshot: string, renderedTemplateBody: string | null) {
+  const trimmedInput = inputSnapshot.trim();
+  const trimmedTemplate = renderedTemplateBody?.trim() ?? "";
+  return trimmedTemplate ? `${trimmedInput}\n\n---\n\n${trimmedTemplate}` : trimmedInput;
+}
+
 function normalizeTestRunStatus(value: string): CompanySkillTestRunStatus {
   return value === "running" || value === "succeeded" || value === "failed" || value === "cancelled"
     ? value
@@ -1507,6 +1596,11 @@ function toCompanySkillTestRun(
     ...row,
     inputId: row.inputId ?? null,
     agentConfigSnapshot: isPlainRecord(row.agentConfigSnapshot) ? row.agentConfigSnapshot : {},
+    templateId: row.templateId ?? null,
+    templateName: row.templateName ?? null,
+    templateBody: row.templateBody ?? null,
+    renderedTemplateBody: row.renderedTemplateBody ?? null,
+    harnessIssueDescription: row.harnessIssueDescription || row.inputSnapshot,
     status: normalizeTestRunStatus(row.status),
     outputDocumentKey: row.outputDocumentKey || "output",
     outputSnapshot: row.outputSnapshot ?? "",
@@ -4889,6 +4983,134 @@ export function companySkillService(db: Db) {
     return row ? toCompanySkillTestInput(row) : null;
   }
 
+  async function listTestRunTemplates(companyId: string): Promise<CompanySkillTestRunTemplate[]> {
+    const rows = await db
+      .select()
+      .from(companySkillTestRunTemplates)
+      .where(and(eq(companySkillTestRunTemplates.companyId, companyId), isNull(companySkillTestRunTemplates.deletedAt)))
+      .orderBy(asc(companySkillTestRunTemplates.name), asc(companySkillTestRunTemplates.createdAt));
+    return [
+      builtInSkillTestRunTemplate(companyId),
+      ...rows.map(toCompanySkillTestRunTemplate),
+    ];
+  }
+
+  async function createTestRunTemplate(
+    companyId: string,
+    input: CompanySkillTestRunTemplateCreateRequest,
+    actor: SkillActor | null = null,
+  ): Promise<CompanySkillTestRunTemplate> {
+    validateSkillTestTemplatePlaceholders(input.body);
+    const row = await db
+      .insert(companySkillTestRunTemplates)
+      .values({
+        companyId,
+        name: input.name.trim(),
+        description: input.description?.trim() || null,
+        body: input.body,
+        createdByAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
+        createdByUserId: actor?.type === "user" ? actor.userId ?? null : null,
+        updatedByAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
+        updatedByUserId: actor?.type === "user" ? actor.userId ?? null : null,
+      })
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!row) throw notFound("Failed to persist test run template");
+    return toCompanySkillTestRunTemplate(row);
+  }
+
+  async function updateTestRunTemplate(
+    companyId: string,
+    templateId: string,
+    input: CompanySkillTestRunTemplateUpdateRequest,
+    actor: SkillActor | null = null,
+  ): Promise<CompanySkillTestRunTemplate | null> {
+    if (templateId === BUILT_IN_SKILL_TEST_RUN_TEMPLATE_ID) {
+      throw unprocessable("Built-in test run templates are read-only.");
+    }
+    if (input.body !== undefined) {
+      validateSkillTestTemplatePlaceholders(input.body);
+    }
+    const patch: Partial<typeof companySkillTestRunTemplates.$inferInsert> = {
+      updatedAt: new Date(),
+      updatedByAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
+      updatedByUserId: actor?.type === "user" ? actor.userId ?? null : null,
+    };
+    if (input.name !== undefined) patch.name = input.name.trim();
+    if (input.description !== undefined) patch.description = input.description?.trim() || null;
+    if (input.body !== undefined) patch.body = input.body;
+    const row = await db
+      .update(companySkillTestRunTemplates)
+      .set(patch)
+      .where(and(
+        eq(companySkillTestRunTemplates.companyId, companyId),
+        eq(companySkillTestRunTemplates.id, templateId),
+        isNull(companySkillTestRunTemplates.deletedAt),
+      ))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    return row ? toCompanySkillTestRunTemplate(row) : null;
+  }
+
+  async function deleteTestRunTemplate(companyId: string, templateId: string): Promise<CompanySkillTestRunTemplate | null> {
+    if (templateId === BUILT_IN_SKILL_TEST_RUN_TEMPLATE_ID) {
+      throw unprocessable("Built-in test run templates are read-only.");
+    }
+    const row = await db
+      .update(companySkillTestRunTemplates)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(and(
+        eq(companySkillTestRunTemplates.companyId, companyId),
+        eq(companySkillTestRunTemplates.id, templateId),
+        isNull(companySkillTestRunTemplates.deletedAt),
+      ))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    return row ? toCompanySkillTestRunTemplate(row) : null;
+  }
+
+  async function resolveTestRunTemplateSnapshot(
+    companyId: string,
+    input: CompanySkillTestRunCreateRequest,
+  ): Promise<CompanySkillTestRunTemplateSnapshot | null> {
+    if (input.templateSnapshot !== undefined) {
+      const snapshot = input.templateSnapshot;
+      if (!snapshot || snapshot.templateId === null) return null;
+      validateSkillTestTemplatePlaceholders(snapshot.templateBody ?? "");
+      return {
+        templateId: snapshot.templateId,
+        templateName: snapshot.templateName,
+        templateBody: snapshot.templateBody,
+      };
+    }
+
+    const templateId = input.templateId === undefined ? BUILT_IN_SKILL_TEST_RUN_TEMPLATE_ID : input.templateId;
+    if (templateId === null) return null;
+    if (templateId === BUILT_IN_SKILL_TEST_RUN_TEMPLATE_ID) {
+      const template = builtInSkillTestRunTemplate(companyId);
+      return {
+        templateId: template.id,
+        templateName: template.name,
+        templateBody: template.body,
+      };
+    }
+    const row = await db
+      .select()
+      .from(companySkillTestRunTemplates)
+      .where(and(
+        eq(companySkillTestRunTemplates.companyId, companyId),
+        eq(companySkillTestRunTemplates.id, templateId),
+        isNull(companySkillTestRunTemplates.deletedAt),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!row) throw notFound("Test run template not found");
+    return {
+      templateId: row.id,
+      templateName: row.name,
+      templateBody: row.body,
+    };
+  }
+
   async function ensureRunSkillVersion(
     companyId: string,
     skill: CompanySkill,
@@ -5013,10 +5235,24 @@ export function companySkillService(db: Db) {
     if (!version) throw notFound("Skill version not found");
     const runId = randomUUID();
     const issueId = randomUUID();
+    const outputDocumentKey = "output";
+    const templateSnapshot = await resolveTestRunTemplateSnapshot(companyId, input);
+    const renderedTemplateBody = templateSnapshot?.templateBody
+      ? renderSkillTestTemplate(templateSnapshot.templateBody, {
+        skillName: skill.name,
+        skillKey: skill.key,
+        skillInvocation: skill.key,
+        skillVersion: String(version.revisionNumber),
+        runId,
+        issueId,
+        outputDocumentKey,
+      }).trim()
+      : null;
+    const harnessIssueDescription = buildHarnessIssueDescription(inputSnapshot, renderedTemplateBody);
     await deps.createHarnessIssue({
       id: issueId,
       title: `Skill test: ${skill.name}`,
-      description: inputSnapshot,
+      description: harnessIssueDescription,
       assigneeAgentId: agent.id,
       harnessKind: "skill_test",
       workMode: "skill_test",
@@ -5057,8 +5293,13 @@ export function companySkillService(db: Db) {
           agentId: agent.id,
           agentConfigSnapshot: snapshotAgentConfig(agent),
           issueId,
+          templateId: templateSnapshot?.templateId ?? null,
+          templateName: templateSnapshot?.templateName ?? null,
+          templateBody: templateSnapshot?.templateBody ?? null,
+          renderedTemplateBody,
+          harnessIssueDescription,
           status: "queued",
-          outputDocumentKey: "output",
+          outputDocumentKey,
         })
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -5442,6 +5683,10 @@ export function companySkillService(db: Db) {
     createTestInput,
     updateTestInput,
     deleteTestInput,
+    listTestRunTemplates,
+    createTestRunTemplate,
+    updateTestRunTemplate,
+    deleteTestRunTemplate,
     createTestRun,
     listTestRuns,
     getTestRunDetail,

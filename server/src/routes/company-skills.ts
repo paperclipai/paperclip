@@ -16,6 +16,8 @@ import {
   companySkillResetSchema,
   companySkillTestInputCreateSchema,
   companySkillTestInputUpdateSchema,
+  companySkillTestRunTemplateCreateSchema,
+  companySkillTestRunTemplateUpdateSchema,
   companySkillTestRunCreateSchema,
   companySkillTestRunListQuerySchema,
   companySkillUpdateSchema,
@@ -325,6 +327,87 @@ export function companySkillRoutes(db: Db) {
       entityType: "company_skill_test_input",
       entityId: result.id,
       details: { skillId, name: result.name },
+    });
+    res.json(result);
+  });
+
+  router.get("/companies/:companyId/skill-test-run-templates", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.listTestRunTemplates(companyId));
+  });
+
+  router.post(
+    "/companies/:companyId/skill-test-run-templates",
+    validate(companySkillTestRunTemplateCreateSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const result = await svc.createTestRunTemplate(companyId, req.body, skillActor(req));
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_test_run_template_created",
+        entityType: "company_skill_test_run_template",
+        entityId: result.id,
+        details: { name: result.name },
+      });
+      res.status(201).json(result);
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/skill-test-run-templates/:templateId",
+    validate(companySkillTestRunTemplateUpdateSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const templateId = req.params.templateId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const result = await svc.updateTestRunTemplate(companyId, templateId, req.body, skillActor(req));
+      if (!result) {
+        res.status(404).json({ error: "Test run template not found" });
+        return;
+      }
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_test_run_template_updated",
+        entityType: "company_skill_test_run_template",
+        entityId: result.id,
+        details: { changedKeys: Object.keys(req.body).sort() },
+      });
+      res.json(result);
+    },
+  );
+
+  router.delete("/companies/:companyId/skill-test-run-templates/:templateId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const templateId = req.params.templateId as string;
+    await assertCanMutateCompanySkills(req, companyId);
+    const result = await svc.deleteTestRunTemplate(companyId, templateId);
+    if (!result) {
+      res.status(404).json({ error: "Test run template not found" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.skill_test_run_template_deleted",
+      entityType: "company_skill_test_run_template",
+      entityId: result.id,
+      details: { name: result.name },
     });
     res.json(result);
   });

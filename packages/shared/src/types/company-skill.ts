@@ -1,3 +1,6 @@
+import type { IssueAttachment, IssueDocument } from "./issue.js";
+import type { IssueWorkProduct } from "./work-product.js";
+
 export type CompanySkillSourceType = "local_path" | "github" | "url" | "catalog" | "skills_sh";
 
 export type CompanySkillTrustLevel = "markdown_only" | "assets" | "scripts_executables";
@@ -401,6 +404,40 @@ export interface CompanySkillTestInputUpdateRequest {
   content?: string;
 }
 
+export interface CompanySkillTestRunTemplate {
+  id: string;
+  companyId: string;
+  name: string;
+  description: string | null;
+  body: string;
+  builtIn: boolean;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  deletedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CompanySkillTestRunTemplateCreateRequest {
+  name: string;
+  description?: string | null;
+  body: string;
+}
+
+export interface CompanySkillTestRunTemplateUpdateRequest {
+  name?: string;
+  description?: string | null;
+  body?: string;
+}
+
+export interface CompanySkillTestRunTemplateSnapshot {
+  templateId: string | null;
+  templateName: string | null;
+  templateBody: string | null;
+}
+
 export interface CompanySkillTestRunCostSummary {
   costCents: number;
   inputTokens: number;
@@ -418,6 +455,11 @@ export interface CompanySkillTestRun {
   agentId: string;
   agentConfigSnapshot: Record<string, unknown>;
   issueId: string;
+  templateId: string | null;
+  templateName: string | null;
+  templateBody: string | null;
+  renderedTemplateBody: string | null;
+  harnessIssueDescription: string;
   status: CompanySkillTestRunStatus;
   outputDocumentKey: string;
   outputSnapshot: string;
@@ -436,6 +478,16 @@ export interface CompanySkillTestRunCreateRequest {
   inputId?: string | null;
   content?: string | null;
   agentId: string;
+  /**
+   * Omitted uses the built-in default template, null means "No template", and
+   * a string selects a built-in or custom template id.
+   */
+  templateId?: string | null;
+  /**
+   * Re-run can provide the viewed run's template body snapshot so the new run
+   * does not silently pick up later edits to the source template.
+   */
+  templateSnapshot?: CompanySkillTestRunTemplateSnapshot | null;
   /**
    * Pin a specific skill version for this run instead of the live head. Used by
    * Re-run to reproduce the viewed run's `skillVersionId` snapshot.
