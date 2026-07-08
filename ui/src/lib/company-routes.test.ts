@@ -36,6 +36,21 @@ describe("company routes", () => {
     expect(toCompanyRelativePath("/PAP/search?q=foo")).toBe("/search?q=foo");
   });
 
+  it("treats workflow and pipeline paths as board routes that need a company prefix", () => {
+    expect(isBoardPathWithoutPrefix("/workflows")).toBe(true);
+    expect(isBoardPathWithoutPrefix("/pipelines")).toBe(true);
+    expect(isBoardPathWithoutPrefix("/review-queue")).toBe(true);
+    expect(isBoardPathWithoutPrefix("/learnings")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/workflows")).toBeNull();
+    expect(applyCompanyPrefix("/workflows", "FUS")).toBe("/FUS/workflows");
+    expect(applyCompanyPrefix("/workflows?view=customer-journey", "FUS")).toBe(
+      "/FUS/workflows?view=customer-journey",
+    );
+    expect(toCompanyRelativePath("/FUS/workflows?view=business-operations")).toBe(
+      "/workflows?view=business-operations",
+    );
+  });
+
   // Regression for PAP-10257: Team Catalog navigation (auto-select + row/file
   // clicks) produces company-relative `/teams-catalog/<key>` paths. Without
   // `teams-catalog` in the board-route allowlist, `extractCompanyPrefixFromPath`

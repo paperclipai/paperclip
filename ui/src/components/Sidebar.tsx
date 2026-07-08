@@ -59,7 +59,6 @@ export function Sidebar() {
   });
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
-  const showPipelines = experimentalSettings?.enablePipelines === true;
   // Streamlined left navigation (top-level Projects link + starred children) is
   // now the standard product sidebar (PAP-12472). The former experimental
   // opt-out was retired; classic per-project collapsible mode is no longer
@@ -178,9 +177,7 @@ export function Sidebar() {
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
-          {showPipelines ? (
-            <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
-          ) : null}
+          <SidebarNavItem to="/workflows" label="Workflows" icon={GitBranch} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
@@ -216,7 +213,7 @@ export function Sidebar() {
         <SidebarSection label="Company">
           <SidebarNavItem to="/org" label="Org" icon={Network} />
           <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
-          <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
+          <SidebarNavItem to="/costs" label="Metrics" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>

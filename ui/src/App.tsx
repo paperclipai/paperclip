@@ -154,6 +154,14 @@ function boardRoutes() {
         element={<PipelinesExperimentalGate><Pipelines /></PipelinesExperimentalGate>}
       />
       <Route
+        path="workflows"
+        element={<Pipelines />}
+      />
+      <Route
+        path="nodeview"
+        element={<PipelinesExperimentalGate><Pipelines /></PipelinesExperimentalGate>}
+      />
+      <Route
         path="pipelines/:pipelineId"
         element={<PipelinesExperimentalGate><Pipelines /></PipelinesExperimentalGate>}
       />
@@ -414,6 +422,8 @@ export function App() {
           <Route path="review-queue" element={<UnprefixedBoardRedirect />} />
           <Route path="learnings" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines" element={<UnprefixedBoardRedirect />} />
+          <Route path="workflows" element={<UnprefixedBoardRedirect />} />
+          <Route path="nodeview" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId/add" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId/settings" element={<UnprefixedBoardRedirect />} />
