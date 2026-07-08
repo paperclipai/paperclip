@@ -138,6 +138,7 @@ function createRoutine(overrides: Partial<Routine> = {}): Routine {
     priority: "medium",
     status: "active",
     concurrencyPolicy: "coalesce_if_active",
+    assigneeAdapterOverrides: null,
     catchUpPolicy: "skip_missed",
     variables: [],
     latestRevisionId: "revision-2",

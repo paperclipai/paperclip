@@ -178,6 +178,7 @@ function makeRoutine(latestRevisionId: string, latestRevisionNumber: number): Ro
     priority: "medium",
     status: "active",
     concurrencyPolicy: "coalesce_if_active",
+    assigneeAdapterOverrides: null,
     catchUpPolicy: "skip_missed",
     variables: [],
     env: makeSnapshot({

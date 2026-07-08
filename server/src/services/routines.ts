@@ -494,6 +494,7 @@ function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSna
     variables: routine.variables ?? [],
     env: routine.env ?? null,
     responsibleUserId: routine.responsibleUserId ?? null,
+    assigneeAdapterOverrides: routine.assigneeAdapterOverrides ?? null,
   };
 }
 
@@ -1623,6 +1624,12 @@ export function routineService(
             originRunId: createdRun.id,
             originFingerprint: dispatchFingerprint,
             billingCode: issueBillingCode,
+            // Inherit the routine's flag-independent workspace lever so every
+            // dispatched run-issue lands in the intended checkout without per-fire manual patching.
+            // The issues column is loosely typed as Record<string, unknown>; the
+            // routine column keeps the precise IssueAssigneeAdapterOverrides shape.
+            assigneeAdapterOverrides:
+              (input.routine.assigneeAdapterOverrides ?? null) as Record<string, unknown> | null,
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
@@ -1932,6 +1939,7 @@ export function routineService(
             variables,
             env,
             responsibleUserId,
+            assigneeAdapterOverrides: input.assigneeAdapterOverrides ?? null,
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             updatedByAgentId: actor.agentId ?? null,
@@ -2042,6 +2050,9 @@ export function routineService(
           variables: nextVariables,
           env: nextEnv,
           responsibleUserId: locked.responsibleUserId ?? responsibleUserId,
+          assigneeAdapterOverrides: patch.assigneeAdapterOverrides === undefined
+            ? locked.assigneeAdapterOverrides
+            : patch.assigneeAdapterOverrides,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
@@ -2092,6 +2103,7 @@ export function routineService(
             variables: candidate.variables,
             env: candidate.env,
             responsibleUserId: candidate.responsibleUserId,
+            assigneeAdapterOverrides: candidate.assigneeAdapterOverrides,
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
             updatedAt: new Date(),
@@ -2427,6 +2439,7 @@ export function routineService(
             catchUpPolicy: routineSnapshot.catchUpPolicy,
             variables: routineSnapshot.variables,
             env: routineSnapshot.env,
+            assigneeAdapterOverrides: routineSnapshot.assigneeAdapterOverrides ?? null,
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
             updatedAt: now,

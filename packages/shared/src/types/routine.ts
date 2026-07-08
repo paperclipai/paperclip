@@ -28,6 +28,7 @@ export interface RoutineDescriptionDocument {
   createdAt: Date;
   updatedAt: Date;
 }
+import type { IssueAssigneeAdapterOverrides } from "./issue.js";
 
 export interface RoutineProjectSummary {
   id: string;
@@ -84,6 +85,7 @@ export interface Routine {
   originId?: string | null;
   variables: RoutineVariable[];
   env?: RoutineEnvConfig | null;
+  assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
   latestRevisionId: string | null;
   latestRevisionNumber: number;
   createdByAgentId: string | null;
@@ -128,6 +130,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   variables: RoutineVariable[];
   env: RoutineEnvConfig | null;
   responsibleUserId: string | null;
+  assigneeAdapterOverrides?: IssueAssigneeAdapterOverrides | null;
 }
 
 export interface RoutineRevisionSnapshotTriggerV1 {

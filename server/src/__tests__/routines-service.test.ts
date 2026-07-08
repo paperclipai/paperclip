@@ -350,6 +350,44 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(revisions[1]?.snapshot.routine.description).toBe("Run the frog routine");
   });
 
+  it("persists assigneeAdapterOverrides, versions it, and inherits it onto dispatched run-issues", async () => {
+    const { routine, svc } = await seedFixture();
+
+    // Patching ONLY the override must not be swallowed as a no-op. The revision
+    // snapshot has to include assigneeAdapterOverrides, otherwise routineCurrentFieldsMatch
+    // treats an override-only change as unchanged and never persists it.
+    const overrides = { useProjectWorkspace: false };
+    const updated = await svc.update(
+      routine.id,
+      { assigneeAdapterOverrides: overrides, baseRevisionId: routine.latestRevisionId },
+      {},
+    );
+    expect(updated?.assigneeAdapterOverrides).toEqual(overrides);
+    expect(updated?.latestRevisionNumber).toBe(2);
+    expect(updated?.latestRevisionId).not.toBe(routine.latestRevisionId);
+
+    const revisions = await svc.listRevisions(routine.id);
+    expect(revisions[0]?.snapshot.routine.assigneeAdapterOverrides).toEqual(overrides);
+
+    // Re-applying the same override is a genuine no-op (snapshot equality holds).
+    const noOp = await svc.update(
+      routine.id,
+      { assigneeAdapterOverrides: overrides, baseRevisionId: updated?.latestRevisionId },
+      {},
+    );
+    expect(noOp?.latestRevisionId).toBe(updated?.latestRevisionId);
+    expect(noOp?.latestRevisionNumber).toBe(2);
+
+    // Each fire inherits the override onto its run-issue without per-fire patching.
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(run.linkedIssueId).toBeTruthy();
+    const [createdIssue] = await db
+      .select({ assigneeAdapterOverrides: issues.assigneeAdapterOverrides })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!));
+    expect(createdIssue?.assigneeAdapterOverrides).toEqual(overrides);
+  });
+
   it("stores routine env in revisions, syncs routine secret bindings, and stamps runs with the dispatch revision", async () => {
     const { agentId, companyId, projectId, svc } = await seedFixture();
     const secrets = secretService(db);

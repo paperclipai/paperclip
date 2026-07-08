@@ -86,6 +86,7 @@ const routine: RoutineDetailType = {
   priority: "medium",
   status: "active",
   concurrencyPolicy: "coalesce_if_active",
+  assigneeAdapterOverrides: null,
   catchUpPolicy: "skip_missed",
   variables,
   env: { DATABASE_URL: { type: "secret_ref", secretId: "secret-prod-db", version: "latest" } } as never,

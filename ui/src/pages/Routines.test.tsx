@@ -260,6 +260,7 @@ function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
     priority: "medium",
     status: "active",
     concurrencyPolicy: "coalesce_if_active",
+    assigneeAdapterOverrides: null,
     catchUpPolicy: "skip_missed",
     variables: [],
     latestRevisionId: null,

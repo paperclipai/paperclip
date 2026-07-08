@@ -17,7 +17,7 @@ import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
-import type { RoutineEnvConfig, RoutineRevisionSnapshotV1, RoutineVariable } from "@paperclipai/shared";
+import type { IssueAssigneeAdapterOverrides, RoutineEnvConfig, RoutineRevisionSnapshotV1, RoutineVariable } from "@paperclipai/shared";
 
 export const routines = pgTable(
   "routines",
@@ -38,6 +38,9 @@ export const routines = pgTable(
     originId: text("origin_id"),
     variables: jsonb("variables").$type<RoutineVariable[]>().notNull().default([]),
     env: jsonb("env").$type<RoutineEnvConfig>(),
+    // Flag-independent execution-workspace lever inherited by dispatched run-issues
+    // (e.g. useProjectWorkspace=false -> agent-home checkout).
+    assigneeAdapterOverrides: jsonb("assignee_adapter_overrides").$type<IssueAssigneeAdapterOverrides>(),
     latestRevisionId: uuid("latest_revision_id"),
     latestRevisionNumber: integer("latest_revision_number").notNull().default(1),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),

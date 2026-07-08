@@ -50,6 +50,7 @@ function buildRoutineDefaults(declaration: PluginManagedRoutineDeclaration) {
     concurrencyPolicy: declaration.concurrencyPolicy ?? "coalesce_if_active",
     catchUpPolicy: declaration.catchUpPolicy ?? "skip_missed",
     variables: declaration.variables ?? [],
+    assigneeAdapterOverrides: declaration.assigneeAdapterOverrides ?? null,
     triggers: declaration.triggers ?? [],
     issueTemplate: declaration.issueTemplate ?? null,
   };
@@ -371,6 +372,7 @@ export function pluginManagedRoutineService(
       concurrencyPolicy: declaration.concurrencyPolicy ?? "coalesce_if_active",
       catchUpPolicy: declaration.catchUpPolicy ?? "skip_missed",
       variables: declaration.variables ?? [],
+      assigneeAdapterOverrides: declaration.assigneeAdapterOverrides ?? null,
     }, { agentId: null, userId: null });
     await upsertBinding(companyId, declaration, created.id);
     await ensureDefaultTriggers(created.id, declaration);
@@ -431,6 +433,7 @@ export function pluginManagedRoutineService(
       concurrencyPolicy: declaration.concurrencyPolicy ?? "coalesce_if_active",
       catchUpPolicy: declaration.catchUpPolicy ?? "skip_missed",
       variables: declaration.variables ?? [],
+      assigneeAdapterOverrides: declaration.assigneeAdapterOverrides ?? null,
     }, { agentId: null, userId: null });
     if (!updated) throw notFound("Managed routine not found");
     await upsertBinding(companyId, declaration, updated.id);

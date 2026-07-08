@@ -10,6 +10,7 @@ import {
 } from "../constants.js";
 import {
   ISSUE_EXECUTION_WORKSPACE_PREFERENCES,
+  issueAssigneeAdapterOverridesSchema,
   issueExecutionWorkspaceSettingsSchema,
 } from "./issue.js";
 import { envConfigSchema } from "./secret.js";
@@ -72,6 +73,9 @@ export const createRoutineSchema = z.object({
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional().default("skip_missed"),
   variables: z.array(routineVariableSchema).optional().default([]),
   env: envConfigSchema.optional().nullable(),
+  // Inherited by every dispatched run-issue as its own assigneeAdapterOverrides.
+  // Flag-independent (not gated by enableIsolatedWorkspaces).
+  assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
 });
 
 export type CreateRoutine = z.infer<typeof createRoutineSchema>;
@@ -97,6 +101,8 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
   variables: z.array(routineVariableSchema),
   env: envConfigSchema.nullable().default(null),
   responsibleUserId: z.string().nullable().default(null),
+  // Optional for backward compatibility with revisions captured before this field existed.
+  assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.nullable().optional(),
 }).strict();
 
 export const routineRevisionSnapshotTriggerV1Schema = z.object({
