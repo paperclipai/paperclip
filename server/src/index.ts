@@ -55,6 +55,10 @@ import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-sh
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
+import {
+  createRunLogArchiverFromRuntime,
+  resolveRunLogArchiverConfig,
+} from "./services/run-log-archiver.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
@@ -979,7 +983,51 @@ export async function startServer(): Promise<StartedServer> {
       });
     }, backupIntervalMs);
   }
-  
+
+  // Run-log cold-archive sweeper. Decided once at boot: `off`, or storage-
+  // unavailable (auto + non-s3 provider, or forced `s3` mode with no bucket),
+  // logs a single line and never schedules, so hot files simply age out via the
+  // infra janitor backstop.
+  let runLogArchiveTimer: ReturnType<typeof setInterval> | null = null;
+  let runLogArchiveBootTimer: ReturnType<typeof setTimeout> | null = null;
+  {
+    const archiveConfig = resolveRunLogArchiverConfig(config);
+    const archivingActive = archiveConfig.mode !== "off" && archiveConfig.storageEnabled;
+    if (!archivingActive) {
+      logger.info(
+        {
+          mode: archiveConfig.mode,
+          storageProvider: config.storageProvider,
+          storageEnabled: archiveConfig.storageEnabled,
+        },
+        "run-log cold-archive disabled; hot files age out via the infra janitor backstop only",
+      );
+    } else {
+      const archiver = createRunLogArchiverFromRuntime(db as any, config);
+      logger.info(
+        {
+          intervalMs: config.runLogSweepIntervalMs,
+          hotRetentionDays: archiveConfig.hotRetentionDays,
+          companyBudgetBytes: archiveConfig.companyBudgetBytes,
+          itemLimit: archiveConfig.itemLimit,
+        },
+        "run-log cold-archive sweeper enabled",
+      );
+      // Kick a first sweep shortly after boot, then on the sweep interval.
+      runLogArchiveBootTimer = setTimeout(() => {
+        void archiver.runSweep().catch((err) => {
+          logger.error({ err }, "run-log archive boot sweep failed");
+        });
+      }, 30_000);
+      runLogArchiveBootTimer.unref?.();
+      runLogArchiveTimer = setInterval(() => {
+        void archiver.runSweep().catch((err) => {
+          logger.error({ err }, "run-log archive sweep failed");
+        });
+      }, config.runLogSweepIntervalMs);
+    }
+  }
+
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.
@@ -1061,6 +1109,14 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      if (runLogArchiveBootTimer) {
+        clearTimeout(runLogArchiveBootTimer);
+        runLogArchiveBootTimer = null;
+      }
+      if (runLogArchiveTimer) {
+        clearInterval(runLogArchiveTimer);
+        runLogArchiveTimer = null;
+      }
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();

@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs, createReadStream } from "node:fs";
-import { createGunzip } from "node:zlib";
+import { createGunzip, gzipSync } from "node:zlib";
+import { Readable } from "node:stream";
 import os from "node:os";
 import path from "node:path";
 import { createLocalFileRunLogStore, type RunLogHandle } from "../services/run-log-store.ts";
@@ -368,5 +369,92 @@ describe("run-log-store size cap", () => {
     const { handle, raw } = await seedLines(store, 200);
     const res = await store.read(handle, { offset: 0, limitBytes: 10_000_000 });
     expect(res.content).toBe(raw);
+  });
+});
+
+describe("run-log-store s3 (cold) read path", () => {
+  const KEY = "run-logs/company-1/agent-1/run-1.ndjson.gz";
+
+  function s3Store(raw: string) {
+    const gz = gzipSync(Buffer.from(raw, "utf8"));
+    // A fresh stream per getObject call (each paginated read opens its own).
+    const getObject = vi.fn(async ({ objectKey }: { objectKey: string }) => {
+      expect(objectKey).toBe(KEY);
+      return { stream: Readable.from(gz) };
+    });
+    const store = createLocalFileRunLogStore(base, { s3Reader: { getObject } });
+    return { store, getObject };
+  }
+
+  it("full read of an archived object matches the original content", async () => {
+    const { handle, raw } = await seedLines(storeAt(base), 200);
+    const rawBytes = Buffer.byteLength(raw, "utf8");
+    const { store, getObject } = s3Store(raw);
+
+    const s3Handle: RunLogHandle = { store: "s3", logRef: KEY };
+    const full = await store.read(s3Handle, { offset: 0, limitBytes: rawBytes + 1000 });
+    expect(full.content).toBe(raw);
+    expect(full.nextOffset).toBeUndefined();
+    expect(getObject).toHaveBeenCalled();
+    void handle;
+  });
+
+  it("paginated reads reassemble the archived object with correct nextOffset chaining", async () => {
+    const { raw } = await seedLines(storeAt(base), 200);
+    const { store } = s3Store(raw);
+    const s3Handle: RunLogHandle = { store: "s3", logRef: KEY };
+    const paginated = await readAllPaginated(store, s3Handle, 137);
+    expect(paginated).toBe(raw);
+  });
+
+  it("mid-object offset slicing matches uncompressed slicing", async () => {
+    const { raw } = await seedLines(storeAt(base), 200);
+    const rawBytes = Buffer.byteLength(raw, "utf8");
+    const { store } = s3Store(raw);
+    const s3Handle: RunLogHandle = { store: "s3", logRef: KEY };
+
+    const offset = Math.floor(rawBytes / 3);
+    const limit = 500;
+    const mid = await store.read(s3Handle, { offset, limitBytes: limit });
+    const expectedSlice = Buffer.from(raw, "utf8").subarray(offset, offset + limit).toString("utf8");
+    expect(mid.content).toBe(expectedSlice);
+    expect(mid.nextOffset).toBe(offset + Buffer.byteLength(mid.content, "utf8"));
+  });
+
+  it("rejects an s3 handle when no s3 reader is configured", async () => {
+    const store = createLocalFileRunLogStore(base);
+    await expect(store.read({ store: "s3", logRef: KEY }, { offset: 0, limitBytes: 100 })).rejects.toThrow();
+  });
+});
+
+describe("run-log-store gz read-path edges", () => {
+  it("empty finalized (gzipped) file reads back as empty and done", async () => {
+    const store = storeAt(base);
+    // Finalize with zero appends → an empty raw file gets gzipped.
+    const handle = await store.begin({ companyId: COMPANY, agentId: AGENT, runId: RUN });
+    const summary = await store.finalize(handle);
+    expect(summary.compressed).toBe(true);
+    expect(summary.bytes).toBe(0);
+
+    const gzHandle: RunLogHandle = { store: "local_file", logRef: summary.logRef };
+    const res = await store.read(gzHandle, { offset: 0, limitBytes: 10_000 });
+    expect(res.content).toBe("");
+    // Immutable gz: nothing more to read → nextOffset undefined ("done").
+    expect(res.nextOffset).toBeUndefined();
+  });
+
+  it("offset beyond uncompressed EOF yields empty content and undefined nextOffset", async () => {
+    const store = storeAt(base);
+    const { handle, raw } = await seedLines(store, 20);
+    const rawBytes = Buffer.byteLength(raw, "utf8");
+    const summary = await store.finalize(handle);
+    const gzHandle: RunLogHandle = { store: "local_file", logRef: summary.logRef };
+
+    // Read starting past the end of the decompressed stream.
+    const res = await store.read(gzHandle, { offset: rawBytes + 1000, limitBytes: 500 });
+    expect(res.content).toBe("");
+    // Divergence from the raw path (which clamps to size for live-tail polling):
+    // a finalized gz returns undefined to signal "done".
+    expect(res.nextOffset).toBeUndefined();
   });
 });

@@ -47,6 +47,19 @@ maybeRepairLegacyWorktreeConfigAndEnvFiles();
 
 const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
 
+/**
+ * Parse an integer config knob, clamped to `[min, ∞)`. Rejects anything that is
+ * not a finite integer — `Infinity`, `NaN`, and non-integers like `1.5` all
+ * fall back to `def` — so a fat-fingered env value can't produce a nonsensical
+ * sweep interval / budget.
+ */
+function clampIntEnv(raw: string | undefined, def: number, min: number): number {
+  if (raw == null || raw.trim() === "") return def;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed)) return def;
+  return Math.max(min, parsed);
+}
+
 type DatabaseMode = "embedded-postgres" | "postgres";
 
 export interface Config {
@@ -81,6 +94,11 @@ export interface Config {
   storageS3Endpoint: string | undefined;
   storageS3Prefix: string;
   storageS3ForcePathStyle: boolean;
+  runLogArchiveMode: "auto" | "off" | "s3";
+  runLogHotRetentionDays: number;
+  runLogCompanyBudgetBytes: number;
+  runLogSweepIntervalMs: number;
+  runLogSweepItemLimit: number;
   feedbackExportBackendUrl: string | undefined;
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
@@ -148,6 +166,35 @@ export function loadConfig(): Config {
     process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE !== undefined
       ? process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE === "true"
       : (fileStorage?.s3?.forcePathStyle ?? false);
+  // Run-log cold-archive knobs. `auto` archives only when the app-wide storage
+  // provider is object storage (storageProvider === "s3"); `s3` forces the
+  // archive leg onto object storage (using the storageS3* settings) even while
+  // the app's primary storage stays local_disk; `off` disables the sweeper. Hot
+  // files then only age out via the infra janitor backstop. Read here so the
+  // scheduler and archiver share one resolved source of truth.
+  const runLogArchiveModeRaw = process.env.PAPERCLIP_RUN_LOG_ARCHIVE?.trim().toLowerCase();
+  const runLogArchiveMode: "auto" | "off" | "s3" =
+    runLogArchiveModeRaw === "off" ? "off" : runLogArchiveModeRaw === "s3" ? "s3" : "auto";
+  const runLogHotRetentionDays = clampIntEnv(
+    process.env.PAPERCLIP_RUN_LOG_HOT_RETENTION_DAYS,
+    30,
+    1,
+  );
+  const runLogCompanyBudgetBytes = clampIntEnv(
+    process.env.PAPERCLIP_RUN_LOG_COMPANY_BUDGET_BYTES,
+    5 * 1024 * 1024 * 1024,
+    1,
+  );
+  const runLogSweepIntervalMs = clampIntEnv(
+    process.env.PAPERCLIP_RUN_LOG_SWEEP_INTERVAL_MS,
+    60 * 60 * 1000,
+    60_000,
+  );
+  const runLogSweepItemLimit = clampIntEnv(
+    process.env.PAPERCLIP_RUN_LOG_SWEEP_ITEM_LIMIT,
+    200,
+    1,
+  );
   const feedbackExportBackendUrl =
     process.env.PAPERCLIP_FEEDBACK_EXPORT_BACKEND_URL?.trim() ||
     process.env.PAPERCLIP_TELEMETRY_BACKEND_URL?.trim() ||
@@ -327,6 +374,11 @@ export function loadConfig(): Config {
     storageS3Endpoint,
     storageS3Prefix,
     storageS3ForcePathStyle,
+    runLogArchiveMode,
+    runLogHotRetentionDays,
+    runLogCompanyBudgetBytes,
+    runLogSweepIntervalMs,
+    runLogSweepItemLimit,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
