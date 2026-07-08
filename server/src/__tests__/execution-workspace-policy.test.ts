@@ -127,11 +127,22 @@ describe("execution workspace policy helpers", () => {
     ).toBe(false);
   });
 
-  it("defaults pinned isolated issue settings to git_worktree", () => {
+  it("mirrors runtime default (project_primary) when pinned settings omit strategy type", () => {
+    // Mode-only pin without explicit workspaceStrategy.type → same project_primary default as runtime.
     expect(
       resolvePinnedIssueWorkspaceStrategyType({
         mode: "isolated_workspace",
         issueSettings: { mode: "isolated_workspace" },
+      }),
+    ).toBe("project_primary");
+    // Explicit strategy type is always respected.
+    expect(
+      resolvePinnedIssueWorkspaceStrategyType({
+        mode: "isolated_workspace",
+        issueSettings: {
+          mode: "isolated_workspace",
+          workspaceStrategy: { type: "git_worktree" },
+        },
       }),
     ).toBe("git_worktree");
     expect(

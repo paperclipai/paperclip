@@ -72,7 +72,8 @@ export function resolvePinnedIssueWorkspaceStrategyType(input: {
   ) {
     return strategyType;
   }
-  if (input.mode === "isolated_workspace" || input.mode === "operator_branch") return "git_worktree";
+  // When no explicit strategy type is set, mirror the runtime default (project_primary for most
+  // modes; adapter_managed for agent_default). Mode alone never implies git_worktree.
   return input.mode === "agent_default" ? "adapter_managed" : "project_primary";
 }
 
