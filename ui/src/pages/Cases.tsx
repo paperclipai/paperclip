@@ -184,6 +184,17 @@ function ensureCaseColumn(columns: readonly CaseColumn[], column: CaseColumn): C
   return columns.includes(column) ? [...columns] : normalizeCaseColumns([...columns, column]);
 }
 
+function caseMatchesViewFilters(caseRow: CaseSummary, viewState: CaseViewState) {
+  if (caseRow.matchesListFilters === false) return false;
+  if (viewState.typeFilters.length > 0 && !viewState.typeFilters.includes(caseRow.caseType)) return false;
+  if (!viewState.statusFilters.includes(caseRow.status)) return false;
+  if (viewState.projectFilters.length > 0) {
+    const projectKey = caseRow.projectId ?? ALL;
+    if (!viewState.projectFilters.includes(projectKey)) return false;
+  }
+  return true;
+}
+
 function treeTitleIndentClass(depth: number): string {
   if (depth <= 0) return "";
   if (depth === 1) return "pl-4";
@@ -776,8 +787,9 @@ export function Cases() {
   const listFilters = useMemo(() => ({
     labelId: viewState.labelFilter === ALL ? undefined : viewState.labelFilter,
     q: viewState.search.trim() || undefined,
+    includeAncestors: viewState.treeView ? true : undefined,
     limit: 200,
-  }), [viewState.labelFilter, viewState.search]);
+  }), [viewState.labelFilter, viewState.search, viewState.treeView]);
   const casesQuery = useQuery({
     queryKey: [...queryKeys.cases.list(selectedCompanyId ?? ""), listFilters],
     queryFn: () => casesApi.list(selectedCompanyId!, listFilters),
@@ -821,20 +833,11 @@ export function Cases() {
   );
 
   const filtered = useMemo(() => {
-    return allCases.filter((caseRow) => {
-      if (viewState.typeFilters.length > 0 && !viewState.typeFilters.includes(caseRow.caseType)) return false;
-      if (!viewState.statusFilters.includes(caseRow.status)) return false;
-      if (viewState.projectFilters.length > 0) {
-        const projectKey = caseRow.projectId ?? ALL;
-        if (!viewState.projectFilters.includes(projectKey)) return false;
-      }
-      return true;
-    });
-  }, [allCases, viewState.projectFilters, viewState.statusFilters, viewState.typeFilters]);
+    return allCases.filter((caseRow) => caseMatchesViewFilters(caseRow, viewState));
+  }, [allCases, viewState]);
 
-  const sorted = useMemo(() => {
-    const rows = [...filtered];
-    rows.sort((a, b) => {
+  const caseSortCompare = useMemo(() => {
+    return (a: CaseSummary, b: CaseSummary) => {
       let result = 0;
       if (viewState.sortField === "updated") result = Date.parse(a.updatedAt) - Date.parse(b.updatedAt);
       else if (viewState.sortField === "created") result = Date.parse(a.createdAt) - Date.parse(b.createdAt);
@@ -848,9 +851,20 @@ export function Cases() {
         result = aProject.localeCompare(bProject);
       }
       return viewState.sortDir === "desc" ? -result : result;
-    });
+    };
+  }, [projectName, viewState.sortDir, viewState.sortField]);
+
+  const sorted = useMemo(() => {
+    const rows = [...filtered];
+    rows.sort(caseSortCompare);
     return rows;
-  }, [filtered, projectName, viewState.sortDir, viewState.sortField]);
+  }, [caseSortCompare, filtered]);
+
+  const sortedTreeSource = useMemo(() => {
+    const rows = [...allCases];
+    rows.sort(caseSortCompare);
+    return rows;
+  }, [allCases, caseSortCompare]);
 
   const visibleColumnSet = useMemo(() => new Set(viewState.columns), [viewState.columns]);
   const trailingColumns = useMemo(
@@ -878,16 +892,39 @@ export function Cases() {
   }, [sorted, viewState.groupBy, projectName]);
 
   const treeRows = useMemo((): CaseTreeRow[] => {
-    const rowById = new Map(sorted.map((row) => [row.id, row]));
+    const rowById = new Map(sortedTreeSource.map((row) => [row.id, row]));
+    const visibleIds = new Set(filtered.map((row) => row.id));
+    for (const row of filtered) {
+      const seen = new Set<string>([row.id]);
+      let parentCaseId = row.parentCaseId;
+      while (parentCaseId && !seen.has(parentCaseId)) {
+        const parent = rowById.get(parentCaseId);
+        if (!parent) break;
+        visibleIds.add(parent.id);
+        seen.add(parent.id);
+        parentCaseId = parent.parentCaseId;
+      }
+    }
+
     const childrenByParent = new Map<string, CaseSummary[]>();
-    for (const row of sorted) {
-      if (!row.parentCaseId || !rowById.has(row.parentCaseId)) continue;
+    for (const row of sortedTreeSource) {
+      if (
+        !visibleIds.has(row.id)
+        || !row.parentCaseId
+        || !visibleIds.has(row.parentCaseId)
+        || !rowById.has(row.parentCaseId)
+      ) {
+        continue;
+      }
       const children = childrenByParent.get(row.parentCaseId) ?? [];
       children.push(row);
       childrenByParent.set(row.parentCaseId, children);
     }
 
-    const roots = sorted.filter((row) => !row.parentCaseId || !rowById.has(row.parentCaseId));
+    const roots = sortedTreeSource.filter((row) =>
+      visibleIds.has(row.id)
+      && (!row.parentCaseId || !visibleIds.has(row.parentCaseId) || !rowById.has(row.parentCaseId))
+    );
     const rows: CaseTreeRow[] = [];
     const visited = new Set<string>();
     const hidden = new Set<string>();
@@ -925,12 +962,13 @@ export function Cases() {
     for (const root of roots) {
       walk(root, 0, new Set());
     }
-    for (const row of sorted) {
+    for (const row of sortedTreeSource) {
+      if (!visibleIds.has(row.id)) continue;
       walk(row, 0, new Set());
     }
 
     return rows;
-  }, [collapsedTreeCaseIds, sorted]);
+  }, [collapsedTreeCaseIds, filtered, sortedTreeSource]);
 
   const keyboardNavItems = useMemo((): CaseKeyboardNavEntry[] => {
     if (viewState.treeView) {

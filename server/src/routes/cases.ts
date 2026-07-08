@@ -91,6 +91,7 @@ const listCasesQuerySchema = z.object({
   labelId: z.string().uuid().optional(),
   parent: z.string().uuid().optional(),
   q: z.string().trim().min(1).max(200).optional(),
+  includeAncestors: z.enum(["true", "false", "1", "0"]).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional().default(100),
 }).strict();
 
@@ -487,6 +488,46 @@ async function loadCaseDocumentLink(db: CaseRouteDb, input: { companyId: string;
     .then((rows) => rows[0] ?? null);
 }
 
+async function includeCaseAncestors(
+  db: CaseRouteDb,
+  companyId: string,
+  baseRows: Array<typeof cases.$inferSelect>,
+) {
+  const baseIds = new Set(baseRows.map((row) => row.id));
+  const rowsById = new Map(baseRows.map((row) => [row.id, row]));
+  const ancestorRows: Array<typeof cases.$inferSelect> = [];
+  let pending = [...new Set(
+    baseRows
+      .map((row) => row.parentCaseId)
+      .filter((id): id is string => {
+        if (!id) return false;
+        return !rowsById.has(id);
+      }),
+  )];
+
+  while (pending.length > 0) {
+    const ancestors = await db
+      .select()
+      .from(cases)
+      .where(and(eq(cases.companyId, companyId), inArray(cases.id, pending)));
+    const nextPending = new Set<string>();
+    for (const row of ancestors) {
+      if (rowsById.has(row.id)) continue;
+      rowsById.set(row.id, row);
+      ancestorRows.push(row);
+      if (row.parentCaseId && !rowsById.has(row.parentCaseId)) {
+        nextPending.add(row.parentCaseId);
+      }
+    }
+    pending = [...nextPending];
+  }
+
+  return [...baseRows, ...ancestorRows].map((row) => ({
+    ...row,
+    matchesListFilters: baseIds.has(row.id),
+  }));
+}
+
 function caseDocumentResponse(input: { key: string; document: typeof documents.$inferSelect }) {
   return {
     ...input.document,
@@ -671,7 +712,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
       .where(and(...filters))
       .orderBy(desc(cases.updatedAt), desc(cases.createdAt))
       .limit(query.limit);
-    res.json(rows);
+    res.json(parseBooleanQuery(query.includeAncestors) ? await includeCaseAncestors(db, companyId, rows) : rows);
   });
 
   router.get("/cases/:id/documents/:key", async (req, res, next) => {

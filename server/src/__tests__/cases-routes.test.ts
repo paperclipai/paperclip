@@ -828,6 +828,21 @@ describeEmbeddedPostgres("cases routes", () => {
     expect(children.body).toHaveLength(1);
     expect(children.body[0].id).toBe(child.body.id);
 
+    const searchOnly = await boardHttp
+      .get(`/api/companies/${company.id}/cases`)
+      .query({ q: "Child task" })
+      .expect(200);
+    expect(searchOnly.body.map((row: { id: string }) => row.id)).toEqual([child.body.id]);
+
+    const searchWithAncestors = await boardHttp
+      .get(`/api/companies/${company.id}/cases`)
+      .query({ q: "Child task", includeAncestors: "true" })
+      .expect(200);
+    expect(searchWithAncestors.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: child.body.id, matchesListFilters: true }),
+      expect.objectContaining({ id: parent.body.id, matchesListFilters: false }),
+    ]));
+
     const childDetail = await boardHttp.get(`/api/cases/${child.body.id}`).expect(200);
     expect(childDetail.body.parent).toMatchObject({ id: parent.body.id, identifier: parent.body.identifier });
 

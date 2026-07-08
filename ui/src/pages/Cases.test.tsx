@@ -326,6 +326,10 @@ describe("Cases list", () => {
       expect(container.textContent).toContain("brief");
       expect(container.textContent).toContain("asset");
       expect(container.querySelector('button[title="Show flat case list"]')).not.toBeNull();
+      expect(mockCasesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        includeAncestors: true,
+        limit: 200,
+      }));
     });
 
     const text = container.textContent ?? "";
@@ -348,6 +352,54 @@ describe("Cases list", () => {
       expect(container.textContent).not.toContain("Child case");
       expect(container.querySelector<HTMLButtonElement>('button[aria-label="Expand Parent case"]')?.getAttribute("aria-expanded")).toBe("false");
     });
+
+    act(() => root.unmount());
+  });
+
+  it("keeps filtered-out ancestors visible in tree mode when descendants match", async () => {
+    window.localStorage.setItem(
+      "paperclip:cases:company-1:view",
+      JSON.stringify({
+        treeView: true,
+        columns: ["id", "title", "type", "status", "updated"],
+      }),
+    );
+    mockCasesApi.list.mockResolvedValue([
+      createCase({
+        id: "child",
+        identifier: "PAP-C2",
+        title: "Active child",
+        parentCaseId: "parent",
+        status: "in_progress",
+        updatedAt: "2026-07-08T00:00:00.000Z",
+      }),
+      createCase({
+        id: "done-sibling",
+        identifier: "PAP-C3",
+        title: "Done sibling",
+        status: "done",
+        updatedAt: "2026-07-09T00:00:00.000Z",
+      }),
+      createCase({
+        id: "parent",
+        identifier: "PAP-C1",
+        title: "Done parent",
+        status: "done",
+        updatedAt: "2026-07-07T00:00:00.000Z",
+      }),
+    ]);
+
+    const root = renderPage(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Done parent");
+      expect(container.textContent).toContain("Active child");
+      expect(container.textContent).not.toContain("Done sibling");
+    });
+
+    const text = container.textContent ?? "";
+    expect(text.indexOf("Done parent")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("Active child")).toBeGreaterThan(text.indexOf("Done parent"));
 
     act(() => root.unmount());
   });

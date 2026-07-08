@@ -40,6 +40,11 @@ export interface CaseSummary {
   completedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Present only when `includeAncestors` is requested. Ancestor rows included for
+   * tree context are `false`; rows that matched the list query are `true`.
+   */
+  matchesListFilters?: boolean;
 }
 
 export interface CaseDocumentRef {
@@ -209,6 +214,7 @@ export interface ListCasesParams {
   /** Filter to direct children of a parent case id (P4 children tree). */
   parent?: string;
   q?: string;
+  includeAncestors?: boolean;
   limit?: number;
 }
 
@@ -220,6 +226,7 @@ function toQuery(params: ListCasesParams): string {
   if (params.labelId) search.set("labelId", params.labelId);
   if (params.parent) search.set("parent", params.parent);
   if (params.q) search.set("q", params.q);
+  if (params.includeAncestors) search.set("includeAncestors", "true");
   if (params.limit != null) search.set("limit", String(params.limit));
   const qs = search.toString();
   return qs ? `?${qs}` : "";
