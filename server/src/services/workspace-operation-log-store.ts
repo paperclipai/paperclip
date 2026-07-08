@@ -68,10 +68,46 @@ function compressionEnabled(): boolean {
   return normalized !== "0" && normalized !== "false" && normalized !== "no" && normalized !== "off";
 }
 
+const DEFAULT_RUN_LOG_MAX_BYTES = 512 * 1024 * 1024; // 512 MiB
+
+/**
+ * Shares the run-log size cap. `PAPERCLIP_RUN_LOG_MAX_BYTES` overrides;
+ * unset/invalid/<=0 falls back to the 512 MiB default. Read per call so
+ * tests/operators can retune without a restart.
+ */
+function runLogMaxBytes(): number {
+  const raw = process.env.PAPERCLIP_RUN_LOG_MAX_BYTES;
+  if (raw == null) return DEFAULT_RUN_LOG_MAX_BYTES;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_RUN_LOG_MAX_BYTES;
+  return parsed;
+}
+
+const RUN_LOG_TRUNCATION_STREAM = "system" as const;
+
+interface RunLogCapState {
+  writtenBytes: number;
+  truncated: boolean;
+}
+
 function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceOperationLogStore {
+  // logRef -> cap-tracking state. Cleared in finalize(); reseeded from disk
+  // (fs.stat) the first time an unknown logRef is appended to, so a server
+  // restart mid-run doesn't lose the running total.
+  const capState = new Map<string, RunLogCapState>();
+
   async function ensureDir(relativeDir: string) {
     const dir = resolveWithin(basePath, relativeDir);
     await fs.mkdir(dir, { recursive: true });
+  }
+
+  async function getCapState(logRef: string, absPath: string): Promise<RunLogCapState> {
+    const existing = capState.get(logRef);
+    if (existing) return existing;
+    const stat = await fs.stat(absPath).catch(() => null);
+    const seeded: RunLogCapState = { writtenBytes: stat?.size ?? 0, truncated: false };
+    capState.set(logRef, seeded);
+    return seeded;
   }
 
   async function readFileRange(filePath: string, offset: number, limitBytes: number): Promise<WorkspaceOperationLogReadResult> {
@@ -219,15 +255,38 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
     async append(handle, event) {
       if (handle.store !== "local_file") return;
       const absPath = resolveWithin(basePath, handle.logRef);
+      const state = await getCapState(handle.logRef, absPath);
+
+      if (state.truncated) return;
+
       const line = JSON.stringify({
         ts: event.ts,
         stream: event.stream,
         chunk: event.chunk,
       });
-      await fs.appendFile(absPath, `${line}\n`, "utf8");
+      const persisted = `${line}\n`;
+      const persistedBytes = Buffer.byteLength(persisted, "utf8");
+      const capBytes = runLogMaxBytes();
+
+      if (state.writtenBytes + persistedBytes > capBytes) {
+        state.truncated = true;
+        const markerLine = JSON.stringify({
+          ts: event.ts,
+          stream: RUN_LOG_TRUNCATION_STREAM,
+          chunk: `[run-log truncated: size cap ${capBytes} bytes reached; further output dropped]`,
+        });
+        const markerPersisted = `${markerLine}\n`;
+        await fs.appendFile(absPath, markerPersisted, "utf8");
+        state.writtenBytes += Buffer.byteLength(markerPersisted, "utf8");
+        return;
+      }
+
+      await fs.appendFile(absPath, persisted, "utf8");
+      state.writtenBytes += persistedBytes;
     },
 
     async finalize(handle) {
+      capState.delete(handle.logRef);
       if (handle.store !== "local_file") {
         return { bytes: 0, compressed: false, logRef: handle.logRef };
       }
