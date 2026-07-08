@@ -692,7 +692,13 @@ async function writeAgentWrapper(input: {
     `stderr_dir=${shellQuote(input.childStderrDir)}`,
     "if [[ -n \"${PAPERCLIP_RUN_ID:-}\" ]]; then",
     "  mkdir -p \"$stderr_dir\"",
-    "  exec 2> >(tee -a \"$stderr_dir/$PAPERCLIP_RUN_ID.log\" >&2)",
+    // The full, unfiltered child stderr always lands in the log file for
+    // diagnostics. Only the known-benign "nes/close" cleanup RPC line (the
+    // ACP agent sends console.error("Error handling request", ...) when it
+    // has no unstable_closeNes handler, per PAPA acpx#2790) is dropped from
+    // the stream re-emitted on fd 2, since Paperclip's run harness treats
+    // any stderr output as a failed run.
+    "  exec 2> >(tee -a \"$stderr_dir/$PAPERCLIP_RUN_ID.log\" | grep -Ev \"method: 'nes/close'.*-32601\" >&2 || true)",
     "fi",
     `exec ${input.agentCommandShell} "$@"`,
     "",
