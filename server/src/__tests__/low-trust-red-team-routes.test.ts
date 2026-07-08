@@ -73,6 +73,7 @@ async function deleteHeartbeatRunsAndWakeupsAfterActivityLogDrains(db: Db) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     await db.delete(activityLog);
     try {
+      await db.delete(heartbeatRunEvents);
       await db.delete(heartbeatRuns);
       await db.delete(agentWakeupRequests);
       return;
