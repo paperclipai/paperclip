@@ -1449,7 +1449,7 @@ function SkillPane({
             )}
           </div>
         </div>
-        {isMarkdown && markdownBlock ? (
+        {isMarkdown && markdownBlock?.hasFrontmatter ? (
           <FrontmatterPanel
             key={`fm:${selectedFile}`}
             frontmatterText={markdownBlock.frontmatterText}

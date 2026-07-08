@@ -237,7 +237,7 @@ export function FrontmatterPanel({
   const [mode, setMode] = useState<FrontmatterMode>(
     hasFrontmatter && initialAnalysis.canRoundTrip ? "fields" : "yaml",
   );
-  const [open, setOpen] = useState(isSkillFile);
+  const [open, setOpen] = useState(false);
 
   const analysis = useMemo(() => analyzeFrontmatterBlock(yamlText), [yamlText]);
   const canUseFields = present && analysis.canRoundTrip;

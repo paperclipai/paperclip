@@ -40,6 +40,11 @@ function findButtonByText(container: HTMLElement, text: string): HTMLButtonEleme
   );
 }
 
+function expandPanel(container: HTMLElement) {
+  const toggle = container.querySelector<HTMLButtonElement>('button[aria-controls="frontmatter-panel-body"]');
+  click(toggle);
+}
+
 describe("FrontmatterPanel", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -80,7 +85,11 @@ describe("FrontmatterPanel", () => {
       onChange,
     });
     expect(onChange).not.toHaveBeenCalled();
-    // The Fields tab is available for this round-trippable block.
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-controls="frontmatter-panel-body"]');
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector("#fm-name")).toBeNull();
+    expandPanel(container);
+    // The Fields tab is available for this round-trippable block after expansion.
     expect(container.querySelector<HTMLInputElement>("#fm-name")?.value).toBe("reflection-coach");
   });
 
@@ -91,6 +100,7 @@ describe("FrontmatterPanel", () => {
       hasFrontmatter: true,
       onChange,
     });
+    expandPanel(container);
     const nameInput = container.querySelector<HTMLInputElement>("#fm-name")!;
     setValue(nameInput, "new-coach");
     const last = onChange.mock.calls.at(-1)![0] as FrontmatterPanelChange;
@@ -105,6 +115,7 @@ describe("FrontmatterPanel", () => {
       hasFrontmatter: true,
       onChange,
     });
+    expandPanel(container);
     const chipInput = container.querySelector<HTMLInputElement>('input[aria-label="Add tool"]')!;
     setValue(chipInput, "Grep");
     flushUi(() => {
@@ -123,6 +134,7 @@ describe("FrontmatterPanel", () => {
       hasFrontmatter: true,
       onChange,
     });
+    expandPanel(container);
     const valueInput = container.querySelector<HTMLInputElement>('input[aria-label="Value for author"]')!;
     setValue(valueInput, "Anthropic");
     const last = onChange.mock.calls.at(-1)![0] as FrontmatterPanelChange;
@@ -134,6 +146,7 @@ describe("FrontmatterPanel", () => {
     const onChange = vi.fn();
     const raw = "name: coach # keep me\ndescription: A coach";
     render({ frontmatterText: raw, hasFrontmatter: true, onChange });
+    expandPanel(container);
 
     // Fields tab is disabled; the YAML textarea is shown instead.
     const fieldsTab = findButtonByText(container, "Fields");
@@ -163,6 +176,7 @@ describe("FrontmatterPanel", () => {
       frontmatterText: "name: coach\ndescription: x\nallowed-tools: Read",
       hasFrontmatter: true,
     });
+    expandPanel(container);
     expect(container.textContent).toContain("Expected a list");
   });
 
@@ -190,6 +204,7 @@ describe("FrontmatterPanel", () => {
       hasFrontmatter: true,
       readOnly: true,
     });
+    expandPanel(container);
     const nameInput = container.querySelector<HTMLInputElement>("#fm-name");
     expect(nameInput?.readOnly).toBe(true);
     // No chip remove buttons, no add-tool input.

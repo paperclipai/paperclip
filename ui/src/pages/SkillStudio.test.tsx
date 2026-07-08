@@ -25,6 +25,33 @@ const mockCompanySkillsApi = vi.hoisted(() => ({
   list: vi.fn(),
   detail: vi.fn(),
   create: vi.fn(),
+  file: vi.fn(),
+  updateFile: vi.fn(),
+  deleteFile: vi.fn(),
+  testInputs: vi.fn(),
+  updateTestInput: vi.fn(),
+  deleteTestInput: vi.fn(),
+  createTestInput: vi.fn(),
+  testRunTemplates: vi.fn(),
+  testRuns: vi.fn(),
+  createTestRunTemplate: vi.fn(),
+  updateTestRunTemplate: vi.fn(),
+  deleteTestRunTemplate: vi.fn(),
+  createTestRun: vi.fn(),
+  testRunDetail: vi.fn(),
+  cancelTestRun: vi.fn(),
+  deleteTestRun: vi.fn(),
+  versions: vi.fn(),
+  createVersion: vi.fn(),
+}));
+const mockAgentsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+const mockIssuesApi = vi.hoisted(() => ({
+  listInteractions: vi.fn(),
+  acceptInteraction: vi.fn(),
+  respondToInteraction: vi.fn(),
+  rejectInteraction: vi.fn(),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -49,6 +76,14 @@ vi.mock("@/api/companySkills", () => ({
   companySkillsApi: mockCompanySkillsApi,
 }));
 
+vi.mock("@/api/agents", () => ({
+  agentsApi: mockAgentsApi,
+}));
+
+vi.mock("@/api/issues", () => ({
+  issuesApi: mockIssuesApi,
+}));
+
 vi.mock("@/components/SearchableSelect", () => ({
   SearchableSelect: ({
     placeholder,
@@ -65,6 +100,12 @@ vi.mock("@/components/MarkdownEditor", () => ({
 
 vi.mock("@/components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+}));
+
+vi.mock("@/components/ui/resizable-panels", () => ({
+  ResizablePanelGroup: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  ResizablePanel: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  ResizableHandle: () => <div />,
 }));
 
 vi.mock("./CompanySkills", () => ({
@@ -204,6 +245,41 @@ beforeEach(() => {
     name: "Code Review",
     forkedFromSkillId: null,
   });
+  mockCompanySkillsApi.file.mockResolvedValue({
+    path: "SKILL.md",
+    content: "---\nname: Demo Skill\ndescription: Existing\n---\n\n# Demo Skill\n",
+    markdown: true,
+    editable: true,
+    editableReason: null,
+  });
+  mockCompanySkillsApi.updateFile.mockResolvedValue({
+    path: "SKILL.md",
+    content: "---\nname: Demo Skill\ndescription: Existing\n---\n\n# Demo Skill\n",
+    markdown: true,
+    editable: true,
+    editableReason: null,
+  });
+  mockCompanySkillsApi.deleteFile.mockResolvedValue({ deletedPaths: [] });
+  mockCompanySkillsApi.testInputs.mockResolvedValue([]);
+  mockCompanySkillsApi.updateTestInput.mockResolvedValue({ id: "input-1", name: "input.md", content: "" });
+  mockCompanySkillsApi.deleteTestInput.mockResolvedValue({ id: "input-1" });
+  mockCompanySkillsApi.createTestInput.mockResolvedValue({ id: "input-1", name: "input.md", content: "" });
+  mockCompanySkillsApi.testRunTemplates.mockResolvedValue([]);
+  mockCompanySkillsApi.testRuns.mockResolvedValue([]);
+  mockCompanySkillsApi.createTestRunTemplate.mockResolvedValue({ id: "template-1", name: "Template" });
+  mockCompanySkillsApi.updateTestRunTemplate.mockResolvedValue({ id: "template-1", name: "Template" });
+  mockCompanySkillsApi.deleteTestRunTemplate.mockResolvedValue({ id: "template-1", name: "Template" });
+  mockCompanySkillsApi.createTestRun.mockResolvedValue({ id: "run-1", status: "queued" });
+  mockCompanySkillsApi.testRunDetail.mockResolvedValue(null);
+  mockCompanySkillsApi.cancelTestRun.mockResolvedValue({ id: "run-1", status: "cancelled" });
+  mockCompanySkillsApi.deleteTestRun.mockResolvedValue({ id: "run-1" });
+  mockCompanySkillsApi.versions.mockResolvedValue([]);
+  mockCompanySkillsApi.createVersion.mockResolvedValue({ id: "version-1" });
+  mockAgentsApi.list.mockResolvedValue([]);
+  mockIssuesApi.listInteractions.mockResolvedValue([]);
+  mockIssuesApi.acceptInteraction.mockResolvedValue({});
+  mockIssuesApi.respondToInteraction.mockResolvedValue({});
+  mockIssuesApi.rejectInteraction.mockResolvedValue({});
 });
 
 afterEach(() => {
@@ -414,5 +490,48 @@ describe("SkillStudio landing", () => {
     const node = await renderStudio();
 
     await waitFor(() => expect(node.textContent).toContain("Loading skills..."));
+  });
+});
+
+describe("SkillStudio editor frontmatter", () => {
+  beforeEach(() => {
+    routeState.pathname = "/skills/studio/source-skill";
+    routeState.search = "";
+    routeState.skillId = "source-skill";
+  });
+
+  it("does not show the frontmatter section when the selected markdown file has no frontmatter", async () => {
+    mockCompanySkillsApi.file.mockResolvedValueOnce({
+      path: "SKILL.md",
+      content: "# Demo Skill\n\nNo YAML block here.\n",
+      markdown: true,
+      editable: true,
+      editableReason: null,
+    });
+
+    const node = await renderStudio();
+
+    await waitFor(() => {
+      expect(mockCompanySkillsApi.file).toHaveBeenCalledWith("company-1", "source-skill", "SKILL.md");
+    });
+    await waitFor(() => {
+      const textareas = Array.from(node.querySelectorAll("textarea"));
+      expect(textareas.some((textarea) => textarea.value.includes("No YAML block here."))).toBe(true);
+    });
+
+    expect(node.querySelector('[data-testid="frontmatter-panel"]')).toBeNull();
+    expect(node.textContent).not.toContain("Add frontmatter");
+  });
+
+  it("shows existing frontmatter collapsed by default", async () => {
+    const node = await renderStudio();
+
+    await waitFor(() => {
+      expect(node.querySelector('[data-testid="frontmatter-panel"]')).toBeTruthy();
+    });
+
+    const toggle = node.querySelector<HTMLButtonElement>('button[aria-controls="frontmatter-panel-body"]');
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(node.querySelector("#fm-name")).toBeNull();
   });
 });
