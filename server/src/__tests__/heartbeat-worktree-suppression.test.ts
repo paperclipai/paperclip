@@ -109,29 +109,35 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     return { companyId, agentId, issueId };
   }
 
-  async function waitForTerminalRun(runId: string) {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+  async function waitForCompletedRun(runId: string, agentId: string) {
+    let latestStatus: string | null = null;
+    let latestLastRunId: string | null = null;
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
       const run = await db
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId))
         .then((rows) => rows[0] ?? null);
-      if (run && run.status !== "queued" && run.status !== "running") return run.status;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    return null;
-  }
-
-  async function waitForRuntimeStateLastRun(agentId: string, runId: string) {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
       const state = await db
         .select({ lastRunId: agentRuntimeState.lastRunId })
         .from(agentRuntimeState)
         .where(eq(agentRuntimeState.agentId, agentId))
         .then((rows) => rows[0] ?? null);
-      if (state?.lastRunId === runId) return;
+
+      latestStatus = run?.status ?? null;
+      latestLastRunId = state?.lastRunId ?? null;
+
+      if (run && run.status !== "queued" && run.status !== "running" && state?.lastRunId === runId) {
+        return run.status;
+      }
+
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+
+    throw new Error(
+      `Timed out waiting for heartbeat run ${runId} to finish; latest status=${latestStatus ?? "missing"}, runtime lastRunId=${latestLastRunId ?? "missing"}`,
+    );
   }
 
   it("suppresses new assignment wakes in worktree instances without creating heartbeat runs", async () => {
@@ -215,6 +221,11 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
 
   it("still creates live-plane assignment runs when suppression is not active", async () => {
     const { agentId, issueId } = await insertAgentAndIssue();
+    await db
+      .update(issues)
+      .set({ status: "in_review", updatedAt: new Date() })
+      .where(eq(issues.id, issueId));
+
     const heartbeat = heartbeatService(db, { runtimeEnv: {} });
 
     const run = await heartbeat.wakeup(agentId, {
@@ -222,27 +233,21 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
       triggerDetail: "system",
       reason: "issue_assigned",
       payload: { issueId },
-      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned", skipIssueComment: true },
       requestedByActorType: "system",
       requestedByActorId: "issue_assignment",
     });
 
     expect(run).not.toBeNull();
-    const terminalStatus = await waitForTerminalRun(run!.id);
-    expect(["succeeded", null]).toContain(terminalStatus);
+    const terminalStatus = await waitForCompletedRun(run!.id, agentId);
+    expect(terminalStatus).toBe("succeeded");
 
     const runCount = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(heartbeatRuns)
       .then((rows) => rows[0]?.count ?? 0);
     expect(runCount).toBe(1);
-
-    await db
-      .update(issues)
-      .set({ status: "done", updatedAt: new Date() })
-      .where(eq(issues.id, issueId));
-    await waitForRuntimeStateLastRun(agentId, run!.id);
-  });
+  }, 10_000);
 
   it("recognizes explicit restore-in-progress suppression", () => {
     expect(resolveHeartbeatSchedulingSuppression({

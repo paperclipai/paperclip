@@ -2635,6 +2635,8 @@ export function shouldResetTaskSessionForWake(
 function shouldRequireIssueCommentForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
+  if (contextSnapshot?.skipIssueComment === true) return false;
+
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   return (
     wakeReason === "issue_assigned" ||
