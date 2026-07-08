@@ -167,6 +167,16 @@ function applyStatusSideEffects(
   return patch;
 }
 
+// PostgreSQL text/jsonb columns cannot store NUL (U+0000) bytes and reject them
+// with "invalid byte sequence for encoding UTF8: 0x00". Agent-authored comment
+// bodies occasionally carry a stray NUL (e.g. from a mangled UUID interpolation),
+// which previously surfaced as an HTTP 500 on PATCH/POST when closing an issue with
+// a comment. Strip NULs so the comment persists instead of failing the request.
+function stripNullBytes(input: string): string {
+  if (input.indexOf("\u0000") === -1) return input;
+  return input.split("\u0000").join("");
+}
+
 function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
@@ -7076,7 +7086,7 @@ export function issueService(db: Db) {
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
-      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      const redactedBody = redactCurrentUserText(stripNullBytes(body), currentUserRedactionOptions);
       const authorType = issueCommentAuthorTypeSchema.parse(
         options?.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
       );
