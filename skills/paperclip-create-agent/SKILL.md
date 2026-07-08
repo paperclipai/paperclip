@@ -4,16 +4,6 @@ description: >
   Create new agents in Paperclip with governance-aware hiring. Use when you need
   to inspect adapter configuration options, compare existing agent configs,
   draft a new agent prompt/config, and submit a hire request.
-key: paperclipai/advisory/paperclip-operations/paperclip-create-agent
-recommendedForRoles:
-  - ceo
-  - manager
-  - engineering-manager
-tags:
-  - paperclip
-  - agents
-  - hiring
-  - governance
 ---
 
 # Paperclip Create Agent Skill
