@@ -118,10 +118,23 @@ describe("plugin", () => {
       expect(result.warnings).toBeUndefined();
     });
 
-    it("warns when TLS is explicitly disabled", async () => {
+    it("rejects useTls=false without allowInsecure", async () => {
       const result = await validate({
         driverKey: "openshell",
         config: { gatewayEndpoint: "gw:8080", useTls: false },
+      });
+      expect(result.ok).toBe(false);
+      expect(result.errors![0]).toContain("allowInsecure");
+    });
+
+    it("warns but allows useTls=false with allowInsecure=true", async () => {
+      const result = await validate({
+        driverKey: "openshell",
+        config: {
+          gatewayEndpoint: "gw:8080",
+          useTls: false,
+          allowInsecure: true,
+        },
       });
       expect(result.ok).toBe(true);
       expect(result.warnings).toBeDefined();

@@ -122,11 +122,23 @@ const plugin = definePlugin({
       };
     }
 
+    if (!result.data.useTls && !result.data.allowInsecure) {
+      return {
+        ok: false,
+        errors: [
+          "useTls is false but allowInsecure is not set. " +
+            "Plaintext gRPC carries sandbox lifecycle and command streams. " +
+            "Set allowInsecure=true to acknowledge the risk for trusted in-cluster networks, " +
+            "or set useTls=true (default) for production.",
+        ],
+      };
+    }
+
     const warnings: string[] = [];
     if (!result.data.useTls) {
       warnings.push(
         "gRPC connection uses plaintext (insecure). " +
-          "Set useTls=true for production deployments."
+          "Ensure the gateway is only reachable from trusted networks."
       );
     }
 

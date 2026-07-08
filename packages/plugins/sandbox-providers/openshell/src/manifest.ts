@@ -40,8 +40,16 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "boolean",
             description:
               "Enable TLS for gRPC connections to the gateway. " +
-              "Defaults to true. Set to false only for trusted in-cluster plaintext.",
+              "Defaults to true. Disabling requires allowInsecure=true.",
             default: true,
+          },
+          allowInsecure: {
+            type: "boolean",
+            description:
+              "Acknowledge insecure plaintext gRPC when useTls is false. " +
+              "Must be explicitly set to true alongside useTls=false. " +
+              "Intended only for trusted in-cluster networks.",
+            default: false,
           },
           caCert: {
             type: "string",
