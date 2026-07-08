@@ -116,7 +116,15 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
     const existing = capState.get(logRef);
     if (existing) return existing;
     const stat = await fs.stat(absPath).catch(() => null);
-    const seeded: RunLogCapState = { writtenBytes: stat?.size ?? 0, truncated: false };
+    const writtenBytes = stat?.size ?? 0;
+    // Restart seeding: a run already at/over the cap had its truncation marker
+    // written by the previous instance (or the file is already over cap). Seed
+    // `truncated: true` so we silently drop further appends instead of writing a
+    // SECOND marker. Only a live crossing of the cap (below) writes the marker.
+    const seeded: RunLogCapState = {
+      writtenBytes,
+      truncated: writtenBytes >= runLogMaxBytes(),
+    };
     capState.set(logRef, seeded);
     return seeded;
   }

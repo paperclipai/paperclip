@@ -278,14 +278,15 @@ describe("run-log-store size cap", () => {
     expect(truncationMarkers(rawAfter)).toHaveLength(1);
   });
 
-  it("seeds the counter from disk on restart: a file already over the cap triggers truncation on first append", async () => {
+  it("seeds truncated from disk on restart: a file already over the cap drops silently, no second marker", async () => {
     process.env.PAPERCLIP_RUN_LOG_MAX_BYTES = "200";
     const firstInstance = storeAt(base);
     const handle = await firstInstance.begin({ companyId: COMPANY, agentId: AGENT, runId: RUN });
 
     // Manually write past the cap directly to disk, bypassing the store's
     // in-memory tracking entirely (simulates state left behind before a
-    // server restart re-creates the store instance).
+    // server restart re-creates the store instance). The previous instance
+    // already wrote whatever marker it was going to write before the restart.
     const absPath = path.resolve(base, handle.logRef);
     const preexistingLine = JSON.stringify({
       ts: new Date().toISOString(),
@@ -293,9 +294,12 @@ describe("run-log-store size cap", () => {
       chunk: "x".repeat(250),
     });
     await fs.appendFile(absPath, `${preexistingLine}\n`, "utf8");
-    expect((await fs.stat(absPath)).size).toBeGreaterThan(200);
+    const sizeAfterSeed = (await fs.stat(absPath)).size;
+    expect(sizeAfterSeed).toBeGreaterThan(200);
 
-    // New store instance over the same basePath: no in-memory state for this logRef.
+    // New store instance over the same basePath: no in-memory state for this
+    // logRef. Seeding sees size >= cap → truncated, so the append drops
+    // silently WITHOUT writing a second truncation marker.
     const secondInstance = storeAt(base);
     const persisted = await secondInstance.append(handle, {
       stream: "stdout",
@@ -305,17 +309,20 @@ describe("run-log-store size cap", () => {
     expect(persisted).toBe(0);
 
     const raw = await fs.readFile(absPath, "utf8");
-    expect(truncationMarkers(raw)).toHaveLength(1);
+    // No marker written by the new instance (none existed on disk; none added).
+    expect(truncationMarkers(raw)).toHaveLength(0);
+    // Nothing was written at all — the file is byte-for-byte unchanged.
+    expect((await fs.stat(absPath)).size).toBe(sizeAfterSeed);
 
-    // A second append on the same (now-truncated) instance stays a no-op, no extra marker.
+    // A second append stays a silent no-op too.
     const persistedAgain = await secondInstance.append(handle, {
       stream: "stdout",
       chunk: "even more output",
       ts: new Date().toISOString(),
     });
     expect(persistedAgain).toBe(0);
-    const rawAfter = await fs.readFile(absPath, "utf8");
-    expect(truncationMarkers(rawAfter)).toHaveLength(1);
+    expect((await fs.stat(absPath)).size).toBe(sizeAfterSeed);
+    expect(truncationMarkers(await fs.readFile(absPath, "utf8"))).toHaveLength(0);
   });
 
   it("finalize on a truncated log still compresses and returns a correct summary", async () => {
