@@ -35,6 +35,7 @@ import {
   validateBuiltInAgentDefinitions,
 } from "../services/built-in-agents.ts";
 import { readBuiltInAgentMarker, withBuiltInAgentMarker } from "../services/built-in-agent-metadata.ts";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -864,6 +865,174 @@ describeEmbeddedPostgres("built-in agents", () => {
       pendingUpdateIssueId: proposalIssueId,
       pendingUpdateIssueIdentifier: `${issuePrefix(companyId)}-42`,
     });
+  });
+
+  it("gates Reflection Coach proposal mutations until an accepted follow-up apply step", async () => {
+    const companyId = await seedCompany();
+    const agentsSvc = agentService(db);
+    await agentsSvc.create(companyId, {
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const target = await agentsSvc.create(companyId, {
+      name: "Target Coder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const created = await builtInAgentService(db).ensure(companyId, "reflection-coach");
+    const coach = created.agent!;
+    const instructionsSvc = agentInstructionsService();
+    const originalInstructions = "# Target Coder\n\nWork from the assigned issue.\n";
+    const prepared = await instructionsSvc.writeFile(target, "AGENTS.md", originalInstructions);
+    let persistedTarget = (await agentsSvc.update(target.id, { adapterConfig: prepared.adapterConfig }))!;
+
+    const interactionsSvc = issueThreadInteractionService(db);
+    const applyAcceptedProposalFollowUp = async (input: {
+      interactionId: string;
+      nextInstructions: string;
+    }) => {
+      const interaction = await interactionsSvc.getById(input.interactionId);
+      if (interaction?.kind !== "request_confirmation" || interaction.status !== "accepted") {
+        return false;
+      }
+      const written = await instructionsSvc.writeFile(persistedTarget, "AGENTS.md", input.nextInstructions);
+      persistedTarget = (await agentsSvc.update(persistedTarget.id, { adapterConfig: written.adapterConfig }))!;
+      return true;
+    };
+    const readTargetInstructions = async () =>
+      (await instructionsSvc.readFile(persistedTarget, "AGENTS.md")).content;
+
+    const proposalIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: proposalIssueId,
+      companyId,
+      title: "Review Reflection Coach proposal",
+      status: "in_review",
+      priority: "medium",
+      identifier: `${issuePrefix(companyId)}-43`,
+      issueNumber: 43,
+      assigneeUserId: "board-user",
+      createdByAgentId: coach.id,
+    });
+    const acceptedInstructions = `${originalInstructions}\nWhen finishing, name the exact verification command.\n`;
+    const acceptedProposal = await interactionsSvc.create({
+      id: proposalIssueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      title: "Review proposed coaching change",
+      summary: "Accept or reject the proposed instruction diff.",
+      payload: {
+        version: 1,
+        prompt: "Apply this Reflection Coach instruction diff in a follow-up run?",
+        acceptLabel: "Accept",
+        rejectLabel: "Reject",
+        detailsMarkdown: [
+          "```diff",
+          " # Target Coder",
+          "",
+          " Work from the assigned issue.",
+          "+When finishing, name the exact verification command.",
+          "```",
+        ].join("\n"),
+        target: {
+          type: "custom",
+          key: `reflection-coach:agent-instructions:${target.id}`,
+          revisionId: "proposal-v1",
+          label: "Target Coder AGENTS.md diff",
+        },
+      },
+    }, {
+      agentId: coach.id,
+    });
+
+    const accepted = await interactionsSvc.acceptInteraction(
+      { id: proposalIssueId, companyId, goalId: null, projectId: null },
+      acceptedProposal.id,
+      {},
+      { userId: "board-user" },
+    );
+
+    expect(accepted.interaction).toMatchObject({
+      id: acceptedProposal.id,
+      kind: "request_confirmation",
+      status: "accepted",
+    });
+    expect(accepted.continuationIssue).toMatchObject({
+      id: proposalIssueId,
+      assigneeAgentId: coach.id,
+      assigneeUserId: null,
+      status: "todo",
+    });
+    expect(await readTargetInstructions()).toBe(originalInstructions);
+
+    await expect(applyAcceptedProposalFollowUp({
+      interactionId: acceptedProposal.id,
+      nextInstructions: acceptedInstructions,
+    })).resolves.toBe(true);
+    expect(await readTargetInstructions()).toBe(acceptedInstructions);
+
+    const rejectedProposal = await interactionsSvc.create({
+      id: proposalIssueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      idempotencyKey: "reflection-coach:proposal-v2",
+      title: "Review rejected coaching change",
+      summary: "Rejecting this diff must not mutate the target instructions.",
+      payload: {
+        version: 1,
+        prompt: "Apply this rejected Reflection Coach instruction diff?",
+        acceptLabel: "Accept",
+        rejectLabel: "Reject",
+        detailsMarkdown: [
+          "```diff",
+          "+This rejected line must not be applied.",
+          "```",
+        ].join("\n"),
+        target: {
+          type: "custom",
+          key: `reflection-coach:agent-instructions:${target.id}`,
+          revisionId: "proposal-v2",
+          label: "Target Coder AGENTS.md rejected diff",
+        },
+      },
+    }, {
+      agentId: coach.id,
+    });
+
+    const rejected = await interactionsSvc.rejectInteraction(
+      { id: proposalIssueId, companyId },
+      rejectedProposal.id,
+      { reason: "Not the right rule." },
+      { userId: "board-user" },
+    );
+
+    expect(rejected).toMatchObject({
+      id: rejectedProposal.id,
+      kind: "request_confirmation",
+      status: "rejected",
+      result: expect.objectContaining({
+        outcome: "rejected",
+        reason: "Not the right rule.",
+      }),
+    });
+    await expect(applyAcceptedProposalFollowUp({
+      interactionId: rejectedProposal.id,
+      nextInstructions: `${acceptedInstructions}\nThis rejected line must not be applied.\n`,
+    })).resolves.toBe(false);
+    expect(await readTargetInstructions()).toBe(acceptedInstructions);
   });
 
   it("preserves Reflection Coach stock drift until explicit reset", async () => {
