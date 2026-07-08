@@ -67,6 +67,7 @@ import { resolveSkillSummaryText } from "../lib/company-skill-summary";
 import {
   parseSkillRoute,
   skillRoute,
+  skillStudioRoute,
   withRouteSkill,
   resolveSkillRouteToken,
   type CompanySkillRouteSubject,
@@ -2693,7 +2694,7 @@ export function SkillDetailPage({
   }
 
   const skill = detail;
-  const resolvedStudioHref = studioHref ?? `${skillRoute(skill, routeSkills ?? [skill])}/studio`;
+  const resolvedStudioHref = studioHref ?? skillStudioRoute(skill.id);
   const source = sourceMeta(skill.sourceBadge, skill.sourceLabel);
   const SourceIcon = source.icon;
   const body = file?.markdown ? stripFrontmatter(file.content) : file?.content ?? "";
@@ -3466,7 +3467,7 @@ function SkillPane({
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button variant="outline" size="sm" asChild>
-              <Link to={`/skills/${detail.id}/studio`}>
+              <Link to={skillStudioRoute(detail.id)}>
                 <FlaskConical className="mr-1.5 h-3.5 w-3.5" />
                 Open in Studio
               </Link>
@@ -4718,7 +4719,7 @@ export function CompanySkills() {
           updateSettingsPending={updateSkillSettings.isPending}
           onDelete={openDeleteDialog}
           deletePending={deleteSkill.isPending}
-          studioHref={`${routeForSkillId(selectedSkillId)}/studio`}
+          studioHref={skillStudioRoute(selectedSkillId)}
         />
       ) : selectedCatalogRef ? (
         // Catalog / optional / bundled skills open as a regular full page in the

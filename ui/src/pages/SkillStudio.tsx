@@ -46,6 +46,7 @@ import { companySkillsApi } from "@/api/companySkills";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
+import { skillStudioRoute } from "@/lib/company-skill-routes";
 import { cn, formatCents, relativeTime } from "@/lib/utils";
 import {
   ResizableHandle,
@@ -224,7 +225,7 @@ export function SkillStudio() {
       <StudioEmptyState
         skills={skillsQuery.data ?? []}
         skillsLoading={skillsQuery.isLoading}
-        onSelectSkill={(nextSkillId) => navigate(`/skills/${encodeURIComponent(nextSkillId)}/studio`)}
+        onSelectSkill={(nextSkillId) => navigate(skillStudioRoute(nextSkillId))}
       />
     );
   }
@@ -410,7 +411,7 @@ function StudioShell({
           skillDirty={skillDirty}
           skills={skills}
           skillsLoading={skillsLoading}
-          onSelectSkill={(nextSkillId) => navigate(`/skills/${encodeURIComponent(nextSkillId)}/studio`)}
+          onSelectSkill={(nextSkillId) => navigate(skillStudioRoute(nextSkillId))}
           onOpenVersions={() => setVersionSheetOpen(true)}
         />
         {isMobile ? (
