@@ -118,6 +118,17 @@ type RecoveryWakeup = (
   opts?: RecoveryWakeupOptions,
 ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
 
+type ResolvedDependencyWakeBackstopSource =
+  | "issue_graph_liveness.backstop"
+  | "workspace.finalize";
+
+type ResolvedDependencyWakeBackstopOptions = {
+  runId?: string | null;
+  companyId?: string | null;
+  blockerIssueId?: string | null;
+  source?: ResolvedDependencyWakeBackstopSource;
+};
+
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
   "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
@@ -4074,7 +4085,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return { kind: "created" as const, escalationIssueId: escalation.id };
   }
 
-  async function reconcileResolvedDependencyWakeBackstop(opts?: { runId?: string | null }) {
+  async function reconcileResolvedDependencyWakeBackstop(opts?: ResolvedDependencyWakeBackstopOptions) {
     const result = {
       checked: 0,
       healed: 0,
@@ -4089,13 +4100,45 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issueIds: [] as string[],
     };
 
+    const source = opts?.source ?? "issue_graph_liveness.backstop";
+    const requestedByActorId = source === "workspace.finalize"
+      ? "heartbeat_finalize"
+      : "issue_graph_liveness_backstop";
+    const payloadBackstop = source === "workspace.finalize"
+      ? "workspace_finalize_reconciliation"
+      : "issue_graph_liveness_reconciliation";
+    const useCursor = !opts?.blockerIssueId;
+
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
         eq(issues.status, "blocked"),
         isNull(issues.hiddenAt),
         sql`${issues.assigneeAgentId} is not null`,
       ];
+      if (opts?.companyId) filters.push(eq(issues.companyId, opts.companyId));
       if (afterIssueId) filters.push(gt(issues.id, afterIssueId));
+
+      if (opts?.blockerIssueId) {
+        filters.push(
+          eq(issueRelations.companyId, issues.companyId),
+          eq(issueRelations.type, "blocks"),
+          eq(issueRelations.issueId, opts.blockerIssueId),
+          eq(issueRelations.relatedIssueId, issues.id),
+        );
+        return db
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            identifier: issues.identifier,
+            assigneeAgentId: issues.assigneeAgentId,
+            totalCount: sql<number>`count(*) over()::int`,
+          })
+          .from(issueRelations)
+          .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+          .where(and(...filters))
+          .orderBy(asc(issues.id))
+          .limit(RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT);
+      }
 
       return db
         .select({
@@ -4111,8 +4154,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .limit(RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT);
     };
 
-    let candidateRows = await queryCandidates(resolvedDependencyWakeBackstopCandidateCursor);
-    if (candidateRows.length === 0 && resolvedDependencyWakeBackstopCandidateCursor) {
+    let candidateRows = await queryCandidates(useCursor ? resolvedDependencyWakeBackstopCandidateCursor : null);
+    if (useCursor && candidateRows.length === 0 && resolvedDependencyWakeBackstopCandidateCursor) {
       resolvedDependencyWakeBackstopCandidateCursor = null;
       candidateRows = await queryCandidates(null);
     }
@@ -4121,15 +4164,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     result.checked = candidates.length;
     result.candidateLimitSkipped = Math.max(0, totalCandidateCount - candidates.length);
     const lastCandidate = candidates[candidates.length - 1] ?? null;
-    resolvedDependencyWakeBackstopCandidateCursor =
-      result.candidateLimitSkipped > 0 && lastCandidate ? lastCandidate.id : null;
+    if (useCursor) {
+      resolvedDependencyWakeBackstopCandidateCursor =
+        result.candidateLimitSkipped > 0 && lastCandidate ? lastCandidate.id : null;
+    }
     if (result.candidateLimitSkipped > 0) {
       logger.warn(
         {
           processed: candidates.length,
           skipped: result.candidateLimitSkipped,
           limit: RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT,
-          nextCursor: resolvedDependencyWakeBackstopCandidateCursor,
+          nextCursor: useCursor ? resolvedDependencyWakeBackstopCandidateCursor : null,
+          source,
+          blockerIssueId: opts?.blockerIssueId ?? null,
         },
         "issue graph liveness backstop deferred resolved dependency wake candidates past page limit",
       );
@@ -4210,16 +4257,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               issueId: candidate.id,
               resolvedBlockerIssueId,
               blockerIssueIds: readiness.blockerIssueIds,
-              backstop: "issue_graph_liveness_reconciliation",
+              backstop: payloadBackstop,
             },
             idempotencyKey,
             requestedByActorType: "system",
-            requestedByActorId: "issue_graph_liveness_backstop",
+            requestedByActorId,
             contextSnapshot: {
               issueId: candidate.id,
               taskId: candidate.id,
               wakeReason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
-              source: "issue_graph_liveness.backstop",
+              source,
               resolvedBlockerIssueId,
               blockerIssueIds: readiness.blockerIssueIds,
             },
@@ -4245,7 +4292,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             entityType: "issue",
             entityId: candidate.id,
             details: {
-              source: "issue_graph_liveness.backstop",
+              source,
               wakeupRunId: wake.id,
               idempotencyKey,
               resolvedBlockerIssueId,
@@ -4256,7 +4303,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           result.deferredOrFailed += 1;
           result.enqueueFailed += 1;
           logger.warn(
-            { err, issueId: candidate.id, agentId, idempotencyKey },
+            { err, issueId: candidate.id, agentId, idempotencyKey, source },
             "failed to enqueue dependency wake from issue graph liveness backstop",
           );
         }
@@ -4265,7 +4312,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     if (result.healed > 0) {
       logger.warn(
-        { healed: result.healed, issueIds: result.issueIds },
+        { healed: result.healed, issueIds: result.issueIds, source, blockerIssueId: opts?.blockerIssueId ?? null },
         "issue graph liveness backstop healed resolved blocked dependency wakes",
       );
     }
@@ -4322,11 +4369,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       retiredRecoveryIssueIds: obsoleteRecoveryCleanup.retiredIssueIds,
     };
 
-    if (!autoRecoveryEnabled) {
-      result.skippedAutoRecoveryDisabled = findings.length;
-      return result;
-    }
-
     const dependencyWakeBackstop = await reconcileResolvedDependencyWakeBackstop({
       runId: opts?.runId ?? null,
     });
@@ -4341,6 +4383,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     result.dependencyWakeDeferredOrFailed = dependencyWakeBackstop.deferredOrFailed;
     result.dependencyWakeEnqueueFailed = dependencyWakeBackstop.enqueueFailed;
     result.dependencyWakeIssueIds = dependencyWakeBackstop.issueIds;
+
+    if (!autoRecoveryEnabled) {
+      result.skippedAutoRecoveryDisabled = findings.length;
+      return result;
+    }
 
     for (const finding of findings) {
       if (!isLivenessFindingInsideAutoRecoveryLookback(finding, cutoff, updatedAtByIssueKey)) {
@@ -4490,6 +4537,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     reconcileStrandedAssignedIssues,
     sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,
+    reconcileResolvedDependencyWakeBackstop,
     reconcileIssueGraphLiveness,
     readRecoveryTimerIntervalMs,
   };
