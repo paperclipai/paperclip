@@ -83,8 +83,17 @@ export {
   asBoolean,
   asString,
   asStringArray,
+  detectFrontmatterRoundTripIssues,
+  getSkillFrontmatterUnknownKeys,
   isPlainRecord as isFrontmatterPlainRecord,
   parseFrontmatterMarkdown,
+  skillFrontmatterKnownKeys,
+  skillFrontmatterSchema,
+  splitFrontmatterBlock,
+  stringifyFrontmatter,
+  type FrontmatterBlock,
+  type FrontmatterRoundTripIssue,
+  type FrontmatterRoundTripIssueKind,
   type MarkdownDoc,
 } from "./frontmatter.js";
 export {

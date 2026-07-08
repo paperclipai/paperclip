@@ -1,8 +1,66 @@
+import { z } from "zod";
+
 export interface MarkdownDoc {
   frontmatter: Record<string, unknown>;
   body: string;
   hasFrontmatter: boolean;
 }
+
+export interface FrontmatterBlock {
+  frontmatterText: string;
+  body: string;
+  hasFrontmatter: boolean;
+}
+
+export type FrontmatterRoundTripIssueKind =
+  | "anchor"
+  | "alias"
+  | "comment"
+  | "quoted_key"
+  | "tag";
+
+export interface FrontmatterRoundTripIssue {
+  kind: FrontmatterRoundTripIssueKind;
+  line: number;
+  column: number;
+  message: string;
+}
+
+const SKILL_FRONTMATTER_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const SUPPORTED_FRONTMATTER_KEY_RE = /^[A-Za-z0-9_. -]+$/;
+
+type SerializableFrontmatterValue =
+  | null
+  | string
+  | number
+  | boolean
+  | SerializableFrontmatterValue[]
+  | { [key: string]: SerializableFrontmatterValue };
+
+const skillMetadataValueSchema: z.ZodType<unknown> = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number(),
+    z.boolean(),
+    z.null(),
+    z.array(skillMetadataValueSchema),
+    z.record(skillMetadataValueSchema),
+  ])
+);
+
+export const skillFrontmatterSchema = z.object({
+  name: z.string().regex(SKILL_FRONTMATTER_SLUG_RE, "Expected a lowercase URL slug."),
+  description: z.string().min(1),
+  "allowed-tools": z.array(z.string()).optional(),
+  metadata: z.record(skillMetadataValueSchema).optional(),
+}).passthrough();
+
+export const skillFrontmatterKnownKeys = [
+  "name",
+  "description",
+  "allowed-tools",
+  "metadata",
+] as const;
 
 export function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -31,6 +89,106 @@ export function asStringArray(value: unknown): string[] | null {
   return out;
 }
 
+export function splitFrontmatterBlock(raw: string): FrontmatterBlock {
+  if (!raw.startsWith("---\n")) {
+    return { frontmatterText: "", body: raw, hasFrontmatter: false };
+  }
+
+  const closing = raw.indexOf("\n---\n", 3);
+  if (closing < 0) {
+    return { frontmatterText: "", body: raw, hasFrontmatter: false };
+  }
+
+  return {
+    frontmatterText: raw.slice(4, closing),
+    body: raw.slice(closing + 5),
+    hasFrontmatter: true,
+  };
+}
+
+export function stringifyFrontmatter(value: Record<string, unknown>): string {
+  return stringifyYamlRecord(assertSerializableRecord(value), 0).join("\n");
+}
+
+export function getSkillFrontmatterUnknownKeys(value: Record<string, unknown>) {
+  const known = new Set<string>(skillFrontmatterKnownKeys);
+  return Object.keys(value).filter((key) => !known.has(key));
+}
+
+export function detectFrontmatterRoundTripIssues(rawYaml: string): FrontmatterRoundTripIssue[] {
+  const issues: FrontmatterRoundTripIssue[] = [];
+  const lines = rawYaml.split("\n");
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    const contentStart = line.search(/\S/u);
+    if (contentStart < 0) continue;
+
+    const content = line.slice(contentStart);
+    if (content.startsWith("#")) {
+      issues.push({
+        kind: "comment",
+        line: index + 1,
+        column: contentStart + 1,
+        message: "Comments are not preserved by the frontmatter field serializer.",
+      });
+      continue;
+    }
+
+    const inlineComment = findRoundTripPattern(line, /(^|\s)#/u);
+    if (inlineComment >= 0) {
+      issues.push({
+        kind: "comment",
+        line: index + 1,
+        column: inlineComment + 1,
+        message: "Inline comments are not preserved by the frontmatter field serializer.",
+      });
+    }
+
+    const quotedKey = /^\s*(?:-\s*)?(["']).+?\1\s*:/u.exec(line);
+    if (quotedKey) {
+      issues.push({
+        kind: "quoted_key",
+        line: index + 1,
+        column: line.indexOf(quotedKey[1]!) + 1,
+        message: "Quoted YAML keys cannot be round-tripped by the frontmatter parser.",
+      });
+    }
+
+    const anchor = findRoundTripPattern(line, /(^|[\s,[{])&[A-Za-z0-9_-]+/u);
+    if (anchor >= 0) {
+      issues.push({
+        kind: "anchor",
+        line: index + 1,
+        column: anchor + 1,
+        message: "YAML anchors cannot be round-tripped by the frontmatter parser.",
+      });
+    }
+
+    const alias = findRoundTripPattern(line, /(^|[\s,[{])\*[A-Za-z0-9_-]+/u);
+    if (alias >= 0) {
+      issues.push({
+        kind: "alias",
+        line: index + 1,
+        column: alias + 1,
+        message: "YAML aliases cannot be round-tripped by the frontmatter parser.",
+      });
+    }
+
+    const tag = findRoundTripPattern(line, /(^|\s)![A-Za-z!][^\s]*/u);
+    if (tag >= 0) {
+      issues.push({
+        kind: "tag",
+        line: index + 1,
+        column: tag + 1,
+        message: "YAML tags cannot be round-tripped by the frontmatter parser.",
+      });
+    }
+  }
+
+  return issues;
+}
+
 export function parseFrontmatterMarkdown(raw: string): MarkdownDoc {
   const normalized = raw.replace(/\r\n/g, "\n");
   if (!normalized.startsWith("---\n")) {
@@ -49,6 +207,163 @@ export function parseFrontmatterMarkdown(raw: string): MarkdownDoc {
     body,
     hasFrontmatter: true,
   };
+}
+
+function assertSerializableRecord(value: Record<string, unknown>) {
+  const out: Record<string, SerializableFrontmatterValue> = {};
+  for (const [key, entryValue] of Object.entries(value)) {
+    if (entryValue === undefined) continue;
+    out[key] = assertSerializableValue(entryValue);
+  }
+  return out;
+}
+
+function assertSerializableValue(value: unknown): SerializableFrontmatterValue {
+  if (
+    value === null
+    || typeof value === "string"
+    || typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new TypeError("Frontmatter numbers must be finite.");
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value
+      .filter((entry) => entry !== undefined)
+      .map((entry) => assertSerializableValue(entry));
+  }
+  if (isPlainRecord(value)) {
+    return assertSerializableRecord(value);
+  }
+  throw new TypeError(`Unsupported frontmatter value type: ${typeof value}`);
+}
+
+function stringifyYamlRecord(record: Record<string, SerializableFrontmatterValue>, indentLevel: number): string[] {
+  const lines: string[] = [];
+  for (const [key, value] of Object.entries(record)) {
+    assertYamlKey(key);
+    lines.push(...stringifyYamlProperty(key, value, indentLevel));
+  }
+  return lines;
+}
+
+function stringifyYamlProperty(key: string, value: SerializableFrontmatterValue, indentLevel: number): string[] {
+  const indent = " ".repeat(indentLevel);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return [`${indent}${key}: []`];
+    return [`${indent}${key}:`, ...stringifyYamlArray(value, indentLevel + 2)];
+  }
+  if (isSerializableRecord(value)) {
+    const entries = Object.entries(value);
+    if (entries.length === 0) return [`${indent}${key}: {}`];
+    return [`${indent}${key}:`, ...stringifyYamlRecord(value, indentLevel + 2)];
+  }
+  if (typeof value === "string" && value.includes("\n")) {
+    return stringifyBlockScalarProperty(key, value, indentLevel);
+  }
+  return [`${indent}${key}: ${stringifyYamlScalar(value)}`];
+}
+
+function stringifyYamlArray(values: SerializableFrontmatterValue[], indentLevel: number): string[] {
+  const indent = " ".repeat(indentLevel);
+  const lines: string[] = [];
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      if (value.length === 0) {
+        lines.push(`${indent}- []`);
+      } else {
+        lines.push(`${indent}-`);
+        lines.push(...stringifyYamlArray(value, indentLevel + 2));
+      }
+      continue;
+    }
+
+    if (isSerializableRecord(value)) {
+      const entries = Object.entries(value);
+      if (entries.length === 0) {
+        lines.push(`${indent}- {}`);
+      } else {
+        lines.push(`${indent}-`);
+        lines.push(...stringifyYamlRecord(value, indentLevel + 2));
+      }
+      continue;
+    }
+
+    if (typeof value === "string" && value.includes("\n")) {
+      lines.push(...stringifyBlockScalarArrayItem(value, indentLevel));
+      continue;
+    }
+
+    lines.push(`${indent}- ${stringifyYamlScalar(value)}`);
+  }
+  return lines;
+}
+
+function stringifyBlockScalarProperty(key: string, value: string, indentLevel: number) {
+  const indent = " ".repeat(indentLevel);
+  return [
+    `${indent}${key}: ${blockScalarIndicator(value)}`,
+    ...indentBlockScalarValue(value, indentLevel + 2),
+  ];
+}
+
+function stringifyBlockScalarArrayItem(value: string, indentLevel: number) {
+  const indent = " ".repeat(indentLevel);
+  return [
+    `${indent}- ${blockScalarIndicator(value)}`,
+    ...indentBlockScalarValue(value, indentLevel + 2),
+  ];
+}
+
+function blockScalarIndicator(value: string) {
+  if (!value.endsWith("\n")) return "|-";
+  if (value.endsWith("\n\n")) return "|+";
+  return "|";
+}
+
+function indentBlockScalarValue(value: string, indentLevel: number) {
+  const indent = " ".repeat(indentLevel);
+  return value.split("\n").map((line) => `${indent}${line}`);
+}
+
+function stringifyYamlScalar(value: Exclude<SerializableFrontmatterValue, SerializableFrontmatterValue[] | Record<string, SerializableFrontmatterValue>>) {
+  if (value === null) return "null";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") return String(value);
+  if (isPlainYamlScalar(value)) return value;
+  return JSON.stringify(value);
+}
+
+function isPlainYamlScalar(value: string) {
+  if (value.length === 0) return false;
+  if (value.trim() !== value) return false;
+  if (value === "null" || value === "~" || value === "true" || value === "false") return false;
+  if (value === "[]" || value === "{}") return false;
+  if (/^-?\d+(\.\d+)?$/u.test(value)) return false;
+  if (/["'[\]{}#,>&*!|@`]/u.test(value)) return false;
+  if (value.includes(":")) return false;
+  return true;
+}
+
+function assertYamlKey(key: string) {
+  if (!SUPPORTED_FRONTMATTER_KEY_RE.test(key) || key.includes(":")) {
+    throw new TypeError(`Unsupported frontmatter key: ${key}`);
+  }
+}
+
+function isSerializableRecord(value: SerializableFrontmatterValue): value is Record<string, SerializableFrontmatterValue> {
+  return isPlainRecord(value);
+}
+
+function findRoundTripPattern(line: string, pattern: RegExp) {
+  const match = pattern.exec(line);
+  if (!match) return -1;
+  return match.index + (match[1]?.length ?? 0);
 }
 
 function parseYamlFrontmatter(raw: string): Record<string, unknown> {
