@@ -5099,6 +5099,222 @@ export type WikiSourceRow = {
 };
 
 const LOCAL_BROWSE_FILE_LIMIT = 2000;
+const KNOWLEDGE_GRAPH_DEFAULT_LIMIT = 360;
+const KNOWLEDGE_GRAPH_MAX_LIMIT = 800;
+const KNOWLEDGE_GRAPH_PROJECT_LIMIT = 36;
+const KNOWLEDGE_GRAPH_WIKI_PAGE_LIMIT = 280;
+const KNOWLEDGE_GRAPH_SOURCE_LIMIT = 120;
+const KNOWLEDGE_GRAPH_DOCUMENT_LIMIT = 220;
+const KNOWLEDGE_GRAPH_WORK_PRODUCT_LIMIT = 160;
+const KNOWLEDGE_GRAPH_REFERENCE_EDGE_LIMIT = 900;
+
+export type KnowledgeGraphNodeKind =
+  | "company"
+  | "space"
+  | "project"
+  | "wiki_page"
+  | "source"
+  | "issue"
+  | "agent"
+  | "document"
+  | "work_product";
+
+export type KnowledgeGraphEdgeKind =
+  | "contains"
+  | "project_issue"
+  | "wiki_link"
+  | "source_ref"
+  | "assigned_to"
+  | "parent_child"
+  | "blocks"
+  | "mentions"
+  | "documents"
+  | "produces";
+
+export type KnowledgeGraphNode = {
+  id: string;
+  kind: KnowledgeGraphNodeKind;
+  label: string;
+  sublabel: string | null;
+  status: string | null;
+  group: string | null;
+  href: string | null;
+  weight: number;
+  updatedAt: string | null;
+  metadata: Record<string, unknown>;
+};
+
+export type KnowledgeGraphEdge = {
+  id: string;
+  from: string;
+  to: string;
+  kind: KnowledgeGraphEdgeKind;
+  label: string | null;
+  weight: number;
+  metadata: Record<string, unknown>;
+};
+
+export type KnowledgeGraphData = {
+  status: "ok";
+  checkedAt: string;
+  wikiId: string;
+  space: Pick<WikiSpace, "id" | "slug" | "displayName" | "bindingKind" | "projectId">;
+  scope: {
+    kind: "project" | "company";
+    projectId: string | null;
+    projectName: string | null;
+  };
+  nodes: KnowledgeGraphNode[];
+  edges: KnowledgeGraphEdge[];
+  stats: {
+    nodes: number;
+    edges: number;
+    wikiPages: number;
+    issues: number;
+    projects: number;
+    agents: number;
+    documents: number;
+    workProducts: number;
+    references: number;
+  };
+  warnings: string[];
+};
+
+type KnowledgeProjectRow = {
+  id: string;
+  name: string;
+  status: string | null;
+  color: string | null;
+  updated_at: string | null;
+  issue_count: string | number | null;
+};
+
+type KnowledgeIssueRow = {
+  id: string;
+  project_id: string | null;
+  parent_id: string | null;
+  title: string;
+  status: string | null;
+  priority: string | null;
+  identifier: string | null;
+  assignee_agent_id: string | null;
+  updated_at: string | null;
+};
+
+type KnowledgeAgentRow = {
+  id: string;
+  name: string;
+  role: string | null;
+  status: string | null;
+  icon: string | null;
+  updated_at: string | null;
+};
+
+type KnowledgeDocumentRow = {
+  id: string;
+  issue_id: string;
+  key: string;
+  document_id: string | null;
+  updated_at: string | null;
+};
+
+type KnowledgeWorkProductRow = {
+  id: string;
+  issue_id: string;
+  type: string | null;
+  title: string | null;
+  status: string | null;
+  health_status: string | null;
+  updated_at: string | null;
+};
+
+function graphId(kind: KnowledgeGraphNodeKind, id: string): string {
+  return `${kind}:${id}`;
+}
+
+function parseCount(value: string | number | null | undefined): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function truncateLabel(value: string, max = 96): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, max - 1).trimEnd()}…`;
+}
+
+function addGraphNode(nodes: Map<string, KnowledgeGraphNode>, node: KnowledgeGraphNode) {
+  const existing = nodes.get(node.id);
+  if (!existing) {
+    nodes.set(node.id, node);
+    return;
+  }
+  nodes.set(node.id, {
+    ...existing,
+    weight: Math.max(existing.weight, node.weight),
+    metadata: { ...existing.metadata, ...node.metadata },
+  });
+}
+
+function addGraphEdge(
+  edges: Map<string, KnowledgeGraphEdge>,
+  nodes: Map<string, KnowledgeGraphNode>,
+  edge: Omit<KnowledgeGraphEdge, "id"> & { id?: string },
+) {
+  if (!nodes.has(edge.from) || !nodes.has(edge.to) || edge.from === edge.to) return;
+  const id = edge.id ?? `${edge.kind}:${edge.from}->${edge.to}`;
+  const existing = edges.get(id);
+  if (existing) {
+    edges.set(id, { ...existing, weight: Math.max(existing.weight, edge.weight) });
+    return;
+  }
+  edges.set(id, { ...edge, id });
+}
+
+async function safeKnowledgeGraphQuery<T>(
+  ctx: PluginContext,
+  warnings: string[],
+  label: string,
+  query: () => Promise<T[]>,
+): Promise<T[]> {
+  try {
+    return await query();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    ctx.logger.warn("LLM Wiki knowledge graph skipped optional query", { label, error: message });
+    warnings.push(`Skipped ${label}; optional graph details are unavailable.`);
+    return [];
+  }
+}
+
+function sourceRefField(ref: unknown, field: string): string | null {
+  if (!ref || typeof ref !== "object" || Array.isArray(ref)) return null;
+  const value = (ref as Record<string, unknown>)[field];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function publicIssueHref(issue: Pick<KnowledgeIssueRow, "id" | "identifier">): string {
+  return `/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`;
+}
+
+function projectHref(projectId: string): string {
+  return `/projects/${encodeURIComponent(projectId)}/issues`;
+}
+
+function agentHref(agentId: string): string {
+  return `/agents/${encodeURIComponent(agentId)}`;
+}
+
+function knowledgeWikiGroupForPath(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  if (path.startsWith("raw/")) return "raw";
+  if (parts[0] === "wiki" && parts[1]) return parts[1];
+  return parts[0] ?? "wiki";
+}
 
 export type WikiOperationRow = {
   id: string;
@@ -5208,6 +5424,558 @@ export async function listSources(ctx: PluginContext, input: {
       status: row.status,
       createdAt: row.created_at,
     })),
+  };
+}
+
+export async function getKnowledgeGraph(ctx: PluginContext, input: {
+  companyId: string;
+  wikiId?: string | null;
+  spaceSlug?: string | null;
+  limit?: number | null;
+}): Promise<KnowledgeGraphData> {
+  const wikiId = normalizeWikiId(input.wikiId);
+  const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
+  const limit = normalizeLimit(input.limit, KNOWLEDGE_GRAPH_DEFAULT_LIMIT, KNOWLEDGE_GRAPH_MAX_LIMIT);
+  const projectScopeId = space.bindingKind === "project" ? space.projectId : null;
+  const warnings: string[] = [];
+  const nodes = new Map<string, KnowledgeGraphNode>();
+  const edges = new Map<string, KnowledgeGraphEdge>();
+
+  const companyRows = await ctx.db.query<{ id: string; name: string; updated_at: string | null }>(
+    `SELECT id, name, updated_at::text AS updated_at FROM companies WHERE id = $1 LIMIT 1`,
+    [input.companyId],
+  );
+  const company = companyRows[0] ?? { id: input.companyId, name: "Company", updated_at: null };
+  const companyNodeId = graphId("company", input.companyId);
+  const spaceNodeId = graphId("space", space.id);
+
+  addGraphNode(nodes, {
+    id: companyNodeId,
+    kind: "company",
+    label: company.name,
+    sublabel: "Company",
+    status: null,
+    group: "company",
+    href: "/dashboard",
+    weight: 12,
+    updatedAt: company.updated_at,
+    metadata: { companyId: input.companyId },
+  });
+  addGraphNode(nodes, {
+    id: spaceNodeId,
+    kind: "space",
+    label: space.displayName,
+    sublabel: space.slug,
+    status: space.status,
+    group: "wiki",
+    href: space.slug === DEFAULT_SPACE_SLUG ? "/wiki" : `/wiki/spaces/${encodeURIComponent(space.slug)}`,
+    weight: 9,
+    updatedAt: space.updatedAt,
+    metadata: { spaceId: space.id, spaceSlug: space.slug, bindingKind: space.bindingKind, projectId: space.projectId },
+  });
+  addGraphEdge(edges, nodes, {
+    from: companyNodeId,
+    to: spaceNodeId,
+    kind: "contains",
+    label: "wiki space",
+    weight: 2,
+    metadata: {},
+  });
+
+  const projectRows = projectScopeId
+    ? await ctx.db.query<KnowledgeProjectRow>(
+        `SELECT id, name, status, color, updated_at::text AS updated_at, 0::text AS issue_count
+           FROM projects
+          WHERE company_id = $1 AND id = $2
+          LIMIT 1`,
+        [input.companyId, projectScopeId],
+      )
+    : await ctx.db.query<KnowledgeProjectRow>(
+        `SELECT p.id, p.name, p.status, p.color, p.updated_at::text AS updated_at, count(i.id)::text AS issue_count
+           FROM projects p
+           LEFT JOIN issues i ON i.company_id = p.company_id AND i.project_id = p.id AND i.hidden_at IS NULL
+          WHERE p.company_id = $1 AND p.archived_at IS NULL
+          GROUP BY p.id
+          ORDER BY count(i.id) DESC, p.updated_at DESC NULLS LAST
+          LIMIT $2`,
+        [input.companyId, KNOWLEDGE_GRAPH_PROJECT_LIMIT],
+      );
+
+  for (const project of projectRows) {
+    const nodeId = graphId("project", project.id);
+    addGraphNode(nodes, {
+      id: nodeId,
+      kind: "project",
+      label: project.name,
+      sublabel: "Project",
+      status: project.status,
+      group: "projects",
+      href: projectHref(project.id),
+      weight: Math.max(4, Math.min(12, 4 + parseCount(project.issue_count) / 90)),
+      updatedAt: project.updated_at,
+      metadata: { projectId: project.id, color: project.color, issueCount: parseCount(project.issue_count) },
+    });
+    addGraphEdge(edges, nodes, {
+      from: companyNodeId,
+      to: nodeId,
+      kind: "contains",
+      label: "project",
+      weight: 1.4,
+      metadata: {},
+    });
+    if (project.id === projectScopeId) {
+      addGraphEdge(edges, nodes, {
+        from: spaceNodeId,
+        to: nodeId,
+        kind: "contains",
+        label: "project space",
+        weight: 2.4,
+        metadata: {},
+      });
+    }
+  }
+
+  const issueParams: unknown[] = [input.companyId];
+  let issueWhere = "i.company_id = $1 AND i.hidden_at IS NULL";
+  if (projectScopeId) {
+    issueParams.push(projectScopeId);
+    issueWhere += ` AND i.project_id = $${issueParams.length}`;
+  } else if (projectRows.length > 0) {
+    issueParams.push(projectRows.map((project) => project.id));
+    issueWhere += ` AND (i.project_id = ANY($${issueParams.length}::uuid[]) OR i.status IN ('blocked', 'in_progress', 'in_review'))`;
+  }
+  issueParams.push(limit);
+  const issueRows = await ctx.db.query<KnowledgeIssueRow>(
+    `SELECT i.id,
+            i.project_id,
+            i.parent_id,
+            i.title,
+            i.status,
+            i.priority,
+            i.identifier,
+            i.assignee_agent_id,
+            i.updated_at::text AS updated_at
+       FROM issues i
+      WHERE ${issueWhere}
+      ORDER BY CASE i.status
+                 WHEN 'blocked' THEN 0
+                 WHEN 'in_progress' THEN 1
+                 WHEN 'in_review' THEN 2
+                 WHEN 'todo' THEN 3
+                 WHEN 'done' THEN 4
+                 ELSE 5
+               END,
+               i.updated_at DESC NULLS LAST
+      LIMIT $${issueParams.length}`,
+    issueParams,
+  );
+
+  const knownProjectIds = new Set(projectRows.map((project) => project.id));
+  const missingProjectIds = [...new Set(issueRows.map((issue) => issue.project_id).filter((id): id is string => Boolean(id)))]
+    .filter((id) => !knownProjectIds.has(id));
+  if (missingProjectIds.length > 0) {
+    const extraProjects = await ctx.db.query<KnowledgeProjectRow>(
+      `SELECT id, name, status, color, updated_at::text AS updated_at, 0::text AS issue_count
+         FROM projects
+        WHERE company_id = $1 AND id = ANY($2::uuid[])`,
+      [input.companyId, missingProjectIds],
+    );
+    for (const project of extraProjects) {
+      const nodeId = graphId("project", project.id);
+      addGraphNode(nodes, {
+        id: nodeId,
+        kind: "project",
+        label: project.name,
+        sublabel: "Project",
+        status: project.status,
+        group: "projects",
+        href: projectHref(project.id),
+        weight: 4,
+        updatedAt: project.updated_at,
+        metadata: { projectId: project.id, color: project.color },
+      });
+      addGraphEdge(edges, nodes, {
+        from: companyNodeId,
+        to: nodeId,
+        kind: "contains",
+        label: "project",
+        weight: 1.2,
+        metadata: {},
+      });
+    }
+  }
+
+  const issueIds = issueRows.map((issue) => issue.id);
+  for (const issue of issueRows) {
+    const issueNodeId = graphId("issue", issue.id);
+    addGraphNode(nodes, {
+      id: issueNodeId,
+      kind: "issue",
+      label: truncateLabel(issue.title || issue.identifier || issue.id),
+      sublabel: issue.identifier,
+      status: issue.status,
+      group: issue.project_id ?? "issues",
+      href: publicIssueHref(issue),
+      weight: issue.status === "blocked" ? 7 : issue.status === "in_progress" ? 6 : 4.5,
+      updatedAt: issue.updated_at,
+      metadata: {
+        issueId: issue.id,
+        projectId: issue.project_id,
+        parentId: issue.parent_id,
+        priority: issue.priority,
+        identifier: issue.identifier,
+      },
+    });
+    if (issue.project_id) {
+      addGraphEdge(edges, nodes, {
+        from: graphId("project", issue.project_id),
+        to: issueNodeId,
+        kind: "project_issue",
+        label: "issue",
+        weight: 1.3,
+        metadata: {},
+      });
+    } else {
+      addGraphEdge(edges, nodes, {
+        from: companyNodeId,
+        to: issueNodeId,
+        kind: "contains",
+        label: "issue",
+        weight: 0.8,
+        metadata: {},
+      });
+    }
+    if (issue.parent_id) {
+      addGraphEdge(edges, nodes, {
+        from: graphId("issue", issue.parent_id),
+        to: issueNodeId,
+        kind: "parent_child",
+        label: "sub-issue",
+        weight: 1.8,
+        metadata: {},
+      });
+    }
+  }
+
+  const pageRows = await ctx.db.query<{
+    path: string;
+    title: string | null;
+    page_type: string | null;
+    backlinks: unknown;
+    source_refs: unknown;
+    updated_at: string | null;
+  }>(
+    `SELECT path, title, page_type, backlinks, source_refs, updated_at::text AS updated_at
+       FROM ${tableName(ctx.db.namespace, "wiki_pages")}
+      WHERE company_id = $1 AND wiki_id = $2 AND space_id = $3
+      ORDER BY updated_at DESC NULLS LAST, path
+      LIMIT $4`,
+    [input.companyId, wikiId, space.id, KNOWLEDGE_GRAPH_WIKI_PAGE_LIMIT],
+  );
+  const wikiPathSet = new Set(pageRows.map((page) => page.path));
+  for (const page of pageRows) {
+    const nodeId = graphId("wiki_page", page.path);
+    const links = Array.isArray(page.backlinks) ? page.backlinks.filter((link): link is string => typeof link === "string") : [];
+    const sourceRefs = Array.isArray(page.source_refs) ? page.source_refs : [];
+    addGraphNode(nodes, {
+      id: nodeId,
+      kind: "wiki_page",
+      label: page.title ?? page.path.replace(/\.md$/, "").split("/").pop() ?? page.path,
+      sublabel: page.path,
+      status: null,
+      group: page.page_type ?? knowledgeWikiGroupForPath(page.path),
+      href: space.slug === DEFAULT_SPACE_SLUG
+        ? `/wiki/page/${page.path}`
+        : `/wiki/spaces/${encodeURIComponent(space.slug)}/page/${page.path}`,
+      weight: Math.max(3.4, Math.min(8, 3.4 + links.length * 0.35 + sourceRefs.length * 0.45)),
+      updatedAt: page.updated_at,
+      metadata: { path: page.path, pageType: page.page_type, linkCount: links.length, sourceRefCount: sourceRefs.length },
+    });
+    addGraphEdge(edges, nodes, {
+      from: spaceNodeId,
+      to: nodeId,
+      kind: "contains",
+      label: "page",
+      weight: 0.8,
+      metadata: {},
+    });
+    if (projectScopeId && page.path.startsWith("wiki/projects/")) {
+      addGraphEdge(edges, nodes, {
+        from: graphId("project", projectScopeId),
+        to: nodeId,
+        kind: "source_ref",
+        label: "project wiki",
+        weight: 1.1,
+        metadata: {},
+      });
+    }
+    for (const rawLink of links) {
+      const targetPath = normalizeWikiLinkTarget(rawLink);
+      if (!targetPath || !wikiPathSet.has(targetPath)) continue;
+      addGraphEdge(edges, nodes, {
+        from: nodeId,
+        to: graphId("wiki_page", targetPath),
+        kind: "wiki_link",
+        label: "wiki link",
+        weight: 1.4,
+        metadata: { target: rawLink },
+      });
+    }
+    for (const ref of sourceRefs) {
+      const issueId = sourceRefField(ref, "issueId");
+      if (issueId) {
+        addGraphEdge(edges, nodes, {
+          from: nodeId,
+          to: graphId("issue", issueId),
+          kind: "source_ref",
+          label: "source",
+          weight: 2,
+          metadata: {},
+        });
+      }
+      const projectId = sourceRefField(ref, "projectId");
+      if (projectId) {
+        addGraphEdge(edges, nodes, {
+          from: nodeId,
+          to: graphId("project", projectId),
+          kind: "source_ref",
+          label: "source",
+          weight: 1.7,
+          metadata: {},
+        });
+      }
+      const documentId = sourceRefField(ref, "documentId");
+      if (documentId) {
+        addGraphEdge(edges, nodes, {
+          from: nodeId,
+          to: graphId("document", documentId),
+          kind: "source_ref",
+          label: "source",
+          weight: 1.4,
+          metadata: {},
+        });
+      }
+    }
+  }
+
+  const sourceRows = await ctx.db.query<{ raw_path: string; title: string | null; source_type: string; status: string; created_at: string | null }>(
+    `SELECT raw_path, title, source_type, status, created_at::text AS created_at
+       FROM ${tableName(ctx.db.namespace, "wiki_sources")}
+      WHERE company_id = $1 AND wiki_id = $2 AND space_id = $3
+      ORDER BY created_at DESC NULLS LAST
+      LIMIT $4`,
+    [input.companyId, wikiId, space.id, KNOWLEDGE_GRAPH_SOURCE_LIMIT],
+  );
+  for (const source of sourceRows) {
+    const nodeId = graphId("source", source.raw_path);
+    addGraphNode(nodes, {
+      id: nodeId,
+      kind: "source",
+      label: source.title ?? source.raw_path,
+      sublabel: source.raw_path,
+      status: source.status,
+      group: "sources",
+      href: space.slug === DEFAULT_SPACE_SLUG
+        ? `/wiki/page/${source.raw_path}`
+        : `/wiki/spaces/${encodeURIComponent(space.slug)}/page/${source.raw_path}`,
+      weight: 2.8,
+      updatedAt: source.created_at,
+      metadata: { rawPath: source.raw_path, sourceType: source.source_type },
+    });
+    addGraphEdge(edges, nodes, {
+      from: spaceNodeId,
+      to: nodeId,
+      kind: "contains",
+      label: "source",
+      weight: 0.7,
+      metadata: {},
+    });
+  }
+
+  if (issueIds.length > 0) {
+    const assigneeIds = [...new Set(issueRows.map((issue) => issue.assignee_agent_id).filter((id): id is string => Boolean(id)))];
+    if (assigneeIds.length > 0) {
+      const agentRows = await ctx.db.query<KnowledgeAgentRow>(
+        `SELECT id, name, role, status, icon, updated_at::text AS updated_at
+           FROM agents
+          WHERE company_id = $1 AND id = ANY($2::uuid[])`,
+        [input.companyId, assigneeIds],
+      );
+      for (const agent of agentRows) {
+        addGraphNode(nodes, {
+          id: graphId("agent", agent.id),
+          kind: "agent",
+          label: agent.name,
+          sublabel: agent.role,
+          status: agent.status,
+          group: "agents",
+          href: agentHref(agent.id),
+          weight: 4.6,
+          updatedAt: agent.updated_at,
+          metadata: { agentId: agent.id, icon: agent.icon },
+        });
+      }
+      for (const issue of issueRows) {
+        if (!issue.assignee_agent_id) continue;
+        addGraphEdge(edges, nodes, {
+          from: graphId("agent", issue.assignee_agent_id),
+          to: graphId("issue", issue.id),
+          kind: "assigned_to",
+          label: "assignee",
+          weight: 1.5,
+          metadata: {},
+        });
+      }
+    }
+
+    const relationRows = await safeKnowledgeGraphQuery(ctx, warnings, "issue relation edges", () =>
+      ctx.db.query<{ issue_id: string; related_issue_id: string; type: string; created_at: string | null }>(
+        `SELECT issue_id, related_issue_id, type, created_at::text AS created_at
+           FROM issue_relations
+          WHERE company_id = $1
+            AND (issue_id = ANY($2::uuid[]) OR related_issue_id = ANY($2::uuid[]))
+          ORDER BY created_at DESC NULLS LAST
+          LIMIT $3`,
+        [input.companyId, issueIds, KNOWLEDGE_GRAPH_REFERENCE_EDGE_LIMIT],
+      ),
+    );
+    for (const relation of relationRows) {
+      addGraphEdge(edges, nodes, {
+        from: graphId("issue", relation.issue_id),
+        to: graphId("issue", relation.related_issue_id),
+        kind: relation.type === "blocks" ? "blocks" : "mentions",
+        label: relation.type,
+        weight: relation.type === "blocks" ? 2.5 : 1.4,
+        metadata: { createdAt: relation.created_at },
+      });
+    }
+
+    const mentionRows = await safeKnowledgeGraphQuery(ctx, warnings, "issue mention edges", () =>
+      ctx.db.query<{ source_issue_id: string; target_issue_id: string; source_kind: string; count: string }>(
+        `SELECT source_issue_id, target_issue_id, source_kind, count(*)::text AS count
+           FROM issue_reference_mentions
+          WHERE company_id = $1
+            AND (source_issue_id = ANY($2::uuid[]) OR target_issue_id = ANY($2::uuid[]))
+          GROUP BY source_issue_id, target_issue_id, source_kind
+          ORDER BY count(*) DESC
+          LIMIT $3`,
+        [input.companyId, issueIds, KNOWLEDGE_GRAPH_REFERENCE_EDGE_LIMIT],
+      ),
+    );
+    for (const mention of mentionRows) {
+      addGraphEdge(edges, nodes, {
+        from: graphId("issue", mention.source_issue_id),
+        to: graphId("issue", mention.target_issue_id),
+        kind: "mentions",
+        label: mention.source_kind,
+        weight: Math.min(4, 1 + parseCount(mention.count) / 4),
+        metadata: { sourceKind: mention.source_kind, count: parseCount(mention.count) },
+      });
+    }
+
+    const documentRows = await safeKnowledgeGraphQuery(ctx, warnings, "issue document nodes", () =>
+      ctx.db.query<KnowledgeDocumentRow>(
+        `SELECT id, issue_id, key, document_id, updated_at::text AS updated_at
+           FROM issue_documents
+          WHERE company_id = $1 AND issue_id = ANY($2::uuid[])
+          ORDER BY updated_at DESC NULLS LAST
+          LIMIT $3`,
+        [input.companyId, issueIds, KNOWLEDGE_GRAPH_DOCUMENT_LIMIT],
+      ),
+    );
+    for (const doc of documentRows) {
+      const nodeId = graphId("document", doc.id);
+      addGraphNode(nodes, {
+        id: nodeId,
+        kind: "document",
+        label: doc.key,
+        sublabel: "Document",
+        status: null,
+        group: "documents",
+        href: publicIssueHref({ id: doc.issue_id, identifier: null }),
+        weight: 2.4,
+        updatedAt: doc.updated_at,
+        metadata: { issueId: doc.issue_id, documentId: doc.document_id, key: doc.key },
+      });
+      addGraphEdge(edges, nodes, {
+        from: graphId("issue", doc.issue_id),
+        to: nodeId,
+        kind: "documents",
+        label: "document",
+        weight: 1,
+        metadata: {},
+      });
+    }
+
+    const workProductRows = await safeKnowledgeGraphQuery(ctx, warnings, "issue work product nodes", () =>
+      ctx.db.query<KnowledgeWorkProductRow>(
+        `SELECT id, issue_id, type, title, status, health_status, updated_at::text AS updated_at
+           FROM issue_work_products
+          WHERE company_id = $1 AND issue_id = ANY($2::uuid[])
+          ORDER BY updated_at DESC NULLS LAST
+          LIMIT $3`,
+        [input.companyId, issueIds, KNOWLEDGE_GRAPH_WORK_PRODUCT_LIMIT],
+      ),
+    );
+    for (const workProduct of workProductRows) {
+      const nodeId = graphId("work_product", workProduct.id);
+      addGraphNode(nodes, {
+        id: nodeId,
+        kind: "work_product",
+        label: workProduct.title ?? workProduct.type ?? "Work product",
+        sublabel: workProduct.type,
+        status: workProduct.health_status ?? workProduct.status,
+        group: "work-products",
+        href: publicIssueHref({ id: workProduct.issue_id, identifier: null }),
+        weight: 2.8,
+        updatedAt: workProduct.updated_at,
+        metadata: { issueId: workProduct.issue_id, type: workProduct.type },
+      });
+      addGraphEdge(edges, nodes, {
+        from: graphId("issue", workProduct.issue_id),
+        to: nodeId,
+        kind: "produces",
+        label: "work product",
+        weight: 1.1,
+        metadata: {},
+      });
+    }
+  } else {
+    warnings.push("No Paperclip issues matched this graph scope.");
+  }
+
+  const nodeList = [...nodes.values()];
+  const edgeList = [...edges.values()];
+  return {
+    status: "ok",
+    checkedAt: new Date().toISOString(),
+    wikiId,
+    space: {
+      id: space.id,
+      slug: space.slug,
+      displayName: space.displayName,
+      bindingKind: space.bindingKind,
+      projectId: space.projectId,
+    },
+    scope: {
+      kind: projectScopeId ? "project" : "company",
+      projectId: projectScopeId,
+      projectName: projectRows.find((project) => project.id === projectScopeId)?.name ?? null,
+    },
+    nodes: nodeList,
+    edges: edgeList,
+    stats: {
+      nodes: nodeList.length,
+      edges: edgeList.length,
+      wikiPages: nodeList.filter((node) => node.kind === "wiki_page").length,
+      issues: nodeList.filter((node) => node.kind === "issue").length,
+      projects: nodeList.filter((node) => node.kind === "project").length,
+      agents: nodeList.filter((node) => node.kind === "agent").length,
+      documents: nodeList.filter((node) => node.kind === "document").length,
+      workProducts: nodeList.filter((node) => node.kind === "work_product").length,
+      references: edgeList.filter((edge) => edge.kind === "mentions" || edge.kind === "blocks" || edge.kind === "source_ref").length,
+    },
+    warnings,
   };
 }
 

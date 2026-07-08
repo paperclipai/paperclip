@@ -361,6 +361,78 @@ type PagesData = {
   sources: WikiSourceRow[];
 };
 
+type KnowledgeGraphNodeKind =
+  | "company"
+  | "space"
+  | "project"
+  | "wiki_page"
+  | "source"
+  | "issue"
+  | "agent"
+  | "document"
+  | "work_product";
+
+type KnowledgeGraphEdgeKind =
+  | "contains"
+  | "project_issue"
+  | "wiki_link"
+  | "source_ref"
+  | "assigned_to"
+  | "parent_child"
+  | "blocks"
+  | "mentions"
+  | "documents"
+  | "produces";
+
+type KnowledgeGraphNode = {
+  id: string;
+  kind: KnowledgeGraphNodeKind;
+  label: string;
+  sublabel: string | null;
+  status: string | null;
+  group: string | null;
+  href: string | null;
+  weight: number;
+  updatedAt: string | null;
+  metadata: Record<string, unknown>;
+};
+
+type KnowledgeGraphEdge = {
+  id: string;
+  from: string;
+  to: string;
+  kind: KnowledgeGraphEdgeKind;
+  label: string | null;
+  weight: number;
+  metadata: Record<string, unknown>;
+};
+
+type KnowledgeGraphData = {
+  status: "ok";
+  checkedAt: string;
+  wikiId: string;
+  space: Pick<WikiSpace, "id" | "slug" | "displayName" | "bindingKind" | "projectId">;
+  scope: {
+    kind: "project" | "company";
+    projectId: string | null;
+    projectName: string | null;
+  };
+  nodes: KnowledgeGraphNode[];
+  edges: KnowledgeGraphEdge[];
+  stats: {
+    nodes: number;
+    edges: number;
+    wikiPages: number;
+    issues: number;
+    projects: number;
+    agents: number;
+    documents: number;
+    workProducts: number;
+    references: number;
+  };
+  warnings: string[];
+};
+
 type PageContentData = {
   wikiId: string;
   path: string;
@@ -805,6 +877,16 @@ function usePages(companyId: string | null, opts: { includeRaw?: boolean; spaceS
     return next;
   }, [companyId, opts.includeRaw, opts.spaceSlug]);
   return usePluginData<PagesData>("pages", params);
+}
+
+function useKnowledgeGraph(companyId: string | null, opts: { spaceSlug?: string | null; limit?: number } = {}) {
+  const params = useMemo(() => {
+    if (!companyId) return undefined;
+    const next: Record<string, unknown> = { companyId, limit: opts.limit ?? 420 };
+    if (opts.spaceSlug) next.spaceSlug = opts.spaceSlug;
+    return next;
+  }, [companyId, opts.limit, opts.spaceSlug]);
+  return usePluginData<KnowledgeGraphData>("knowledge-graph", params);
 }
 
 function useSpaces(companyId: string | null) {
@@ -1770,250 +1852,506 @@ function isEditableWikiPagePath(path: string): boolean {
     || path.startsWith("wiki/");
 }
 
-type WikiGraphNode = {
-  id: string;
-  label: string;
-  kind: "root" | "group" | "page" | "source";
-  path?: string;
+type KnowledgeGraphLayoutNode = KnowledgeGraphNode & {
   x: number;
   y: number;
-  size: number;
+  radius: number;
   color: string;
 };
 
-type WikiGraphEdge = {
-  from: string;
-  to: string;
-  kind: "group" | "link" | "source";
+type KnowledgeGraphLayout = {
+  nodes: KnowledgeGraphLayoutNode[];
+  edges: KnowledgeGraphEdge[];
+  selectedNode: KnowledgeGraphLayoutNode | null;
+  visibleKindCounts: Partial<Record<KnowledgeGraphNodeKind, number>>;
 };
 
-function wikiGraphGroupForPath(path: string) {
-  const parts = path.split("/").filter(Boolean);
-  if (path.startsWith("raw/")) return "raw";
-  if (parts[0] === "wiki" && parts[1]) return parts[1];
-  return parts[0] ?? "root";
+const GRAPH_FILTER_KINDS: ReadonlyArray<KnowledgeGraphNodeKind> = [
+  "project",
+  "issue",
+  "wiki_page",
+  "agent",
+  "document",
+  "work_product",
+  "source",
+];
+
+const GRAPH_ANCHOR_KINDS: ReadonlySet<KnowledgeGraphNodeKind> = new Set(["company", "space"]);
+
+const graphKindLabels: Record<KnowledgeGraphNodeKind, string> = {
+  company: "Company",
+  space: "Space",
+  project: "Projects",
+  wiki_page: "Wiki",
+  source: "Sources",
+  issue: "Issues",
+  agent: "Agents",
+  document: "Docs",
+  work_product: "Work",
+};
+
+function hashString(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
 }
 
-function wikiGraphNodeColor(group: string, kind: WikiGraphNode["kind"]) {
-  if (kind === "source") return "oklch(0.72 0.12 180)";
-  if (group === "projects") return "oklch(0.68 0.16 250)";
-  if (group === "concepts") return "oklch(0.72 0.16 330)";
-  if (group === "entities") return "oklch(0.72 0.14 145)";
-  if (group === "synthesis") return "oklch(0.74 0.14 70)";
-  if (group === "sources" || group === "raw") return "oklch(0.72 0.13 190)";
+function metadataString(metadata: Record<string, unknown>, key: string): string | null {
+  const value = metadata[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function graphSearchText(node: KnowledgeGraphNode): string {
+  return [
+    node.label,
+    node.sublabel,
+    node.kind,
+    node.status,
+    node.group,
+    metadataString(node.metadata, "identifier"),
+    metadataString(node.metadata, "priority"),
+    metadataString(node.metadata, "pageType"),
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function knowledgeNodeColor(node: Pick<KnowledgeGraphNode, "kind" | "status">): string {
+  if (node.status === "blocked" || node.status === "failed" || node.status === "error") return "oklch(0.65 0.2 25)";
+  if (node.status === "in_progress" || node.status === "running") return "oklch(0.68 0.15 210)";
+  if (node.status === "in_review") return "oklch(0.7 0.17 300)";
+  if (node.status === "done" || node.status === "completed") return "oklch(0.68 0.16 145)";
+  if (node.kind === "company") return "oklch(0.92 0.02 80)";
+  if (node.kind === "space") return "oklch(0.84 0.12 260)";
+  if (node.kind === "project") return "oklch(0.72 0.16 250)";
+  if (node.kind === "issue") return "oklch(0.74 0.11 20)";
+  if (node.kind === "wiki_page") return "oklch(0.74 0.13 320)";
+  if (node.kind === "source") return "oklch(0.73 0.12 180)";
+  if (node.kind === "agent") return "oklch(0.74 0.13 145)";
+  if (node.kind === "document") return "oklch(0.76 0.1 70)";
   return "oklch(0.78 0.05 0)";
 }
 
-function normalizeWikiGraphLinkTarget(target: string): string | null {
-  const parsed = normalizeWikiLinkPagePath(target);
-  return parsed?.path ?? null;
+function knowledgeEdgeColor(kind: KnowledgeGraphEdgeKind): string {
+  if (kind === "blocks") return "oklch(0.67 0.2 25 / 0.66)";
+  if (kind === "mentions") return "oklch(0.78 0.11 250 / 0.42)";
+  if (kind === "wiki_link") return "oklch(0.82 0.16 315 / 0.5)";
+  if (kind === "source_ref") return "oklch(0.78 0.14 180 / 0.5)";
+  if (kind === "assigned_to") return "oklch(0.72 0.13 145 / 0.44)";
+  if (kind === "documents" || kind === "produces") return "oklch(0.78 0.1 70 / 0.34)";
+  return "oklch(0.78 0.05 0 / 0.22)";
 }
 
-function buildWikiGraph(data: PagesData | null | undefined): { nodes: WikiGraphNode[]; edges: WikiGraphEdge[] } {
-  const pages = (data?.pages ?? []).slice(0, 360);
-  const sources = (data?.sources ?? []).slice(0, 140);
-  const groups = [...new Set([
-    ...pages.map((page) => wikiGraphGroupForPath(page.path)),
-    ...sources.map((source) => wikiGraphGroupForPath(source.rawPath)),
-  ])].sort();
-  const groupIndex = new Map(groups.map((group, index) => [group, index]));
-  const groupCounts = new Map<string, number>();
-  const pagePaths = new Set(pages.map((page) => page.path));
-  const nodes: WikiGraphNode[] = [{
-    id: "root",
-    label: "Wiki",
-    kind: "root",
-    x: 50,
-    y: 50,
-    size: 5.4,
-    color: tokens.primary,
-  }];
-  const edges: WikiGraphEdge[] = [];
-  const groupRadius = groups.length > 7 ? 17 : 15;
-  const itemBaseRadius = 24;
+function graphNodeRadius(node: KnowledgeGraphNode): number {
+  const base = node.kind === "company" ? 4.6
+    : node.kind === "space" ? 3.5
+    : node.kind === "project" ? 2.7
+    : node.kind === "issue" ? 1.55
+    : node.kind === "agent" ? 1.65
+    : 1.15;
+  return Math.min(5.4, Math.max(0.85, base + Math.sqrt(Math.max(0, node.weight)) * 0.24));
+}
 
-  groups.forEach((group, index) => {
-    const angle = (Math.PI * 2 * index) / Math.max(1, groups.length) - Math.PI / 2;
-    const x = 50 + Math.cos(angle) * groupRadius;
-    const y = 50 + Math.sin(angle) * groupRadius;
-    nodes.push({
-      id: `group:${group}`,
-      label: group,
-      kind: "group",
-      x,
-      y,
-      size: 3.4,
-      color: wikiGraphNodeColor(group, "group"),
-    });
-    edges.push({ from: "root", to: `group:${group}`, kind: "group" });
-  });
+function angleForIndex(index: number, total: number): number {
+  return (Math.PI * 2 * index) / Math.max(1, total) - Math.PI / 2;
+}
 
-  const addItemNode = (path: string, label: string, kind: "page" | "source", weight: number) => {
-    const group = wikiGraphGroupForPath(path);
-    const index = groupCounts.get(group) ?? 0;
-    groupCounts.set(group, index + 1);
-    const groupAngle = (Math.PI * 2 * (groupIndex.get(group) ?? 0)) / Math.max(1, groups.length) - Math.PI / 2;
-    const goldenAngle = 2.399963229728653;
-    const localRing = itemBaseRadius + Math.sqrt(index) * 1.9;
-    const angle = groupAngle + ((index % 29) - 14) * 0.055 + index * goldenAngle * 0.035;
-    const nodeId = `${kind}:${path}`;
-    nodes.push({
-      id: nodeId,
-      label,
-      kind,
-      path,
-      x: 50 + Math.cos(angle) * localRing,
-      y: 50 + Math.sin(angle) * localRing,
-      size: Math.min(3.4, Math.max(kind === "source" ? 0.85 : 1.05, 1.05 + weight * 0.18)),
-      color: wikiGraphNodeColor(group, kind),
-    });
-    edges.push({ from: `group:${group}`, to: nodeId, kind: kind === "source" ? "source" : "group" });
-  };
+function projectIdForNode(node: KnowledgeGraphNode, issueProjectById: Map<string, string | null>): string | null {
+  const direct = metadataString(node.metadata, "projectId");
+  if (direct) return direct;
+  const issueId = metadataString(node.metadata, "issueId");
+  return issueId ? issueProjectById.get(issueId) ?? null : null;
+}
 
-  for (const page of pages) {
-    addItemNode(page.path, page.title ?? basename(page.path), "page", page.backlinkCount + page.sourceCount);
-  }
-  for (const source of sources) {
-    addItemNode(source.rawPath, source.title ?? basename(source.rawPath), "source", 1);
+function buildKnowledgeGraphLayout(
+  data: KnowledgeGraphData | null | undefined,
+  input: {
+    enabledKinds: ReadonlySet<KnowledgeGraphNodeKind>;
+    query: string;
+    selectedNodeId: string | null;
+  },
+): KnowledgeGraphLayout {
+  if (!data) return { nodes: [], edges: [], selectedNode: null, visibleKindCounts: {} };
+  const normalizedQuery = input.query.trim().toLowerCase();
+  const baseNodeIds = new Set<string>();
+  const matchingIds = new Set<string>();
+  const visibleKindCounts: Partial<Record<KnowledgeGraphNodeKind, number>> = {};
+  const adjacency = new Map<string, Set<string>>();
+
+  for (const edge of data.edges) {
+    if (!adjacency.has(edge.from)) adjacency.set(edge.from, new Set());
+    if (!adjacency.has(edge.to)) adjacency.set(edge.to, new Set());
+    adjacency.get(edge.from)?.add(edge.to);
+    adjacency.get(edge.to)?.add(edge.from);
   }
 
-  const linkEdgeKeys = new Set<string>();
-  for (const page of pages) {
-    for (const link of page.links ?? []) {
-      const target = normalizeWikiGraphLinkTarget(link);
-      if (!target || !pagePaths.has(target) || target === page.path) continue;
-      const key = `${page.path}->${target}`;
-      if (linkEdgeKeys.has(key)) continue;
-      linkEdgeKeys.add(key);
-      edges.push({ from: `page:${page.path}`, to: `page:${target}`, kind: "link" });
+  for (const node of data.nodes) {
+    const kindVisible = GRAPH_ANCHOR_KINDS.has(node.kind) || input.enabledKinds.has(node.kind);
+    if (!kindVisible) continue;
+    if (normalizedQuery && !graphSearchText(node).includes(normalizedQuery)) continue;
+    baseNodeIds.add(node.id);
+    matchingIds.add(node.id);
+  }
+
+  const visibleNodeIds = new Set(baseNodeIds);
+  if (normalizedQuery) {
+    for (const id of baseNodeIds) {
+      for (const neighbor of adjacency.get(id) ?? []) {
+        const neighborNode = data.nodes.find((node) => node.id === neighbor);
+        if (neighborNode && (GRAPH_ANCHOR_KINDS.has(neighborNode.kind) || input.enabledKinds.has(neighborNode.kind))) {
+          visibleNodeIds.add(neighbor);
+        }
+      }
+    }
+    for (const node of data.nodes) {
+      if (GRAPH_ANCHOR_KINDS.has(node.kind)) visibleNodeIds.add(node.id);
     }
   }
 
-  return { nodes, edges };
+  const visibleEdges = data.edges.filter((edge) => visibleNodeIds.has(edge.from) && visibleNodeIds.has(edge.to));
+  for (const edge of visibleEdges) {
+    visibleNodeIds.add(edge.from);
+    visibleNodeIds.add(edge.to);
+  }
+
+  const projectNodes = data.nodes
+    .filter((node) => visibleNodeIds.has(node.id) && node.kind === "project")
+    .sort((a, b) => b.weight - a.weight || a.label.localeCompare(b.label));
+  const projectAngles = new Map<string, number>();
+  projectNodes.forEach((node, index) => {
+    const projectId = metadataString(node.metadata, "projectId") ?? node.id.replace(/^project:/, "");
+    projectAngles.set(projectId, angleForIndex(index, Math.max(1, projectNodes.length)));
+  });
+  const issueProjectById = new Map<string, string | null>();
+  for (const node of data.nodes) {
+    if (node.kind !== "issue") continue;
+    issueProjectById.set(node.id.replace(/^issue:/, ""), metadataString(node.metadata, "projectId"));
+  }
+
+  const kindOffsets: Record<KnowledgeGraphNodeKind, number> = {
+    company: 0,
+    space: -Math.PI / 2,
+    project: 0,
+    wiki_page: Math.PI * 0.82,
+    source: Math.PI * 0.72,
+    issue: 0,
+    agent: Math.PI * 1.18,
+    document: Math.PI * 1.45,
+    work_product: Math.PI * 1.58,
+  };
+  const kindRadii: Record<KnowledgeGraphNodeKind, number> = {
+    company: 0,
+    space: 8,
+    project: 17,
+    issue: 31,
+    wiki_page: 37,
+    source: 41,
+    agent: 24,
+    document: 39,
+    work_product: 43,
+  };
+  const perKindCounts = new Map<KnowledgeGraphNodeKind, number>();
+
+  const layoutNodes = data.nodes
+    .filter((node) => visibleNodeIds.has(node.id))
+    .map((node): KnowledgeGraphLayoutNode => {
+      visibleKindCounts[node.kind] = (visibleKindCounts[node.kind] ?? 0) + 1;
+      const index = perKindCounts.get(node.kind) ?? 0;
+      perKindCounts.set(node.kind, index + 1);
+      const projectId = projectIdForNode(node, issueProjectById);
+      const projectAngle = projectId ? projectAngles.get(projectId) : undefined;
+      const hash = hashString(node.id);
+      const spread = ((hash % 31) - 15) * 0.023;
+      const angle = node.kind === "company"
+        ? 0
+        : node.kind === "space"
+          ? -Math.PI / 2
+          : node.kind === "project"
+            ? projectAngles.get(metadataString(node.metadata, "projectId") ?? node.id.replace(/^project:/, "")) ?? angleForIndex(index, projectNodes.length)
+            : (projectAngle ?? kindOffsets[node.kind]) + spread + (index % 17) * 0.012;
+      const radialJitter = node.kind === "company" ? 0 : ((hash % 100) / 100 - 0.5) * 5.2;
+      const radius = kindRadii[node.kind] + radialJitter;
+      return {
+        ...node,
+        x: 50 + Math.cos(angle) * radius,
+        y: 50 + Math.sin(angle) * radius,
+        radius: graphNodeRadius(node),
+        color: knowledgeNodeColor(node),
+      };
+    });
+
+  const selectedNode = layoutNodes.find((node) => node.id === input.selectedNodeId)
+    ?? layoutNodes.find((node) => matchingIds.has(node.id))
+    ?? layoutNodes.find((node) => node.kind === "project")
+    ?? layoutNodes[0]
+    ?? null;
+
+  return { nodes: layoutNodes, edges: visibleEdges, selectedNode, visibleKindCounts };
 }
 
-function WikiGraphView({
+function graphNodeSubtitle(node: KnowledgeGraphNode | null): string {
+  if (!node) return "";
+  return [graphKindLabels[node.kind], node.sublabel, node.status].filter(Boolean).join(" · ");
+}
+
+function graphOpenLabel(node: KnowledgeGraphNode | null): string {
+  if (!node?.href) return "Open";
+  if (node.kind === "issue") return "Open issue";
+  if (node.kind === "project") return "Open project";
+  if (node.kind === "agent") return "Open agent";
+  if (node.kind === "wiki_page" || node.kind === "source") return "Open page";
+  return "Open";
+}
+
+function GraphStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div style={{
+      minWidth: 92,
+      padding: "8px 10px",
+      borderRadius: 6,
+      border: `1px solid ${tokens.border}`,
+      background: "oklch(0.18 0.01 260)",
+    }}>
+      <div style={{ fontSize: 17, fontWeight: 650, lineHeight: 1.1 }}>{value.toLocaleString()}</div>
+      <Tiny>{label}</Tiny>
+    </div>
+  );
+}
+
+function KnowledgeGraphView({
   data,
   loading,
   error,
-  onOpenPage,
+  onOpenNode,
 }: {
-  data: PagesData | null | undefined;
+  data: KnowledgeGraphData | null | undefined;
   loading: boolean;
   error: { message: string } | null;
-  onOpenPage: (path: string) => void;
+  onOpenNode: (node: KnowledgeGraphNode) => void;
 }) {
-  const graph = useMemo(() => buildWikiGraph(data), [data]);
+  const [query, setQuery] = useState("");
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [enabledKinds, setEnabledKinds] = useState<KnowledgeGraphNodeKind[]>([...GRAPH_FILTER_KINDS]);
+  const isMobile = useIsMobileLayout();
+  const enabledKindSet = useMemo(() => new Set(enabledKinds), [enabledKinds]);
+  const graph = useMemo(
+    () => buildKnowledgeGraphLayout(data, { enabledKinds: enabledKindSet, query, selectedNodeId }),
+    [data, enabledKindSet, query, selectedNodeId],
+  );
   const nodeById = useMemo(() => new Map(graph.nodes.map((node) => [node.id, node])), [graph.nodes]);
+  const selectedNode = graph.selectedNode;
 
-  if (loading && graph.nodes.length <= 1) {
+  useEffect(() => {
+    if (selectedNodeId && graph.nodes.some((node) => node.id === selectedNodeId)) return;
+    setSelectedNodeId(graph.selectedNode?.id ?? null);
+  }, [graph.nodes, graph.selectedNode?.id, selectedNodeId]);
+
+  if (loading && !data) {
     return <div style={{ padding: 28, color: tokens.muted, fontSize: 13 }}>Loading graph...</div>;
   }
   if (error) {
     return <div style={{ padding: 28 }}><Callout tone="danger">Failed to load graph: {error.message}</Callout></div>;
   }
+  if (!data) {
+    return <div style={{ padding: 28, color: tokens.muted, fontSize: 13 }}>No graph data.</div>;
+  }
+
+  const toggleKind = (kind: KnowledgeGraphNodeKind) => {
+    setEnabledKinds((current) => {
+      if (current.includes(kind)) return current.filter((entry) => entry !== kind);
+      return [...current, kind];
+    });
+  };
 
   return (
     <div style={{ padding: 18, display: "grid", gap: 12, minWidth: 0 }}>
-      <Card style={{ background: "oklch(0.16 0.01 260)" }}>
+      <Card style={{ background: "oklch(0.15 0.01 260)" }}>
         <CardHeader
-          title="Graph View"
-          badges={<Badge>{graph.nodes.length - 1} nodes</Badge>}
-          right={<Tiny>Flowing page links with folder clusters.</Tiny>}
+          title={data.scope.kind === "project" && data.scope.projectName ? `${data.scope.projectName} Knowledge Graph` : "Company Knowledge Graph"}
+          badges={<><Badge>{data.stats.nodes.toLocaleString()} nodes</Badge><Badge>{data.stats.edges.toLocaleString()} edges</Badge></>}
+          right={<Tiny>{data.space.displayName} · {data.checkedAt.slice(0, 10)}</Tiny>}
         />
         <CardBody padding={0}>
-          <svg
-            viewBox="0 0 100 100"
-            role="img"
-            aria-label="Wiki graph view"
-            style={{ width: "100%", minHeight: 430, display: "block", background: "radial-gradient(circle at 50% 48%, oklch(0.21 0.035 260), oklch(0.13 0.012 260) 62%, oklch(0.1 0.01 260))" }}
-          >
-            <style>{`
-              .pc-wiki-graph-edge { vector-effect: non-scaling-stroke; }
-              .pc-wiki-graph-link { stroke-dasharray: 0.55 1.05; }
-              @media (prefers-reduced-motion: no-preference) {
-                .pc-wiki-graph-drift { animation: pcWikiGraphDrift 18s ease-in-out infinite alternate; transform-box: fill-box; transform-origin: center; }
-                .pc-wiki-graph-link { animation: pcWikiGraphFlow 11s linear infinite; }
-                .pc-wiki-graph-node { animation: pcWikiGraphGlow 5.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
-              }
-              @keyframes pcWikiGraphDrift { from { transform: rotate(-1.1deg) scale(0.985); } to { transform: rotate(1.1deg) scale(1.01); } }
-              @keyframes pcWikiGraphFlow { to { stroke-dashoffset: -14; } }
-              @keyframes pcWikiGraphGlow { 0%,100% { opacity: 0.76; } 50% { opacity: 1; } }
-            `}</style>
-            <circle cx="50" cy="50" r="39" fill="none" stroke="oklch(0.62 0 0 / 0.18)" strokeDasharray="0.16 1.2" />
-            <circle cx="50" cy="50" r="27" fill="none" stroke="oklch(0.75 0.08 260 / 0.08)" />
-            <g className="pc-wiki-graph-drift">
-              {graph.edges.map((edge) => {
-                const from = nodeById.get(edge.from);
-                const to = nodeById.get(edge.to);
-                if (!from || !to) return null;
-                const stroke = edge.kind === "link"
-                  ? "oklch(0.82 0.14 260 / 0.44)"
-                  : edge.kind === "source"
-                    ? "oklch(0.66 0.11 185 / 0.3)"
-                    : "oklch(0.72 0.08 260 / 0.18)";
-                const strokeWidth = edge.kind === "link" ? 0.13 : edge.to.startsWith("group:") ? 0.18 : 0.08;
-                return (
-                  <line
-                    key={`${edge.from}->${edge.to}`}
-                    className={`pc-wiki-graph-edge${edge.kind === "link" ? " pc-wiki-graph-link" : ""}`}
-                    x1={from.x}
-                    y1={from.y}
-                    x2={to.x}
-                    y2={to.y}
-                    stroke={stroke}
-                    strokeWidth={strokeWidth}
-                  />
-                );
-              })}
-              {graph.nodes.map((node, index) => {
-                const clickable = node.kind === "page" && node.path;
-                return (
-                  <g
-                    key={node.id}
-                    role={clickable ? "button" : undefined}
-                    tabIndex={clickable ? 0 : undefined}
-                    onClick={clickable ? () => onOpenPage(node.path!) : undefined}
-                    onKeyDown={clickable ? (event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        onOpenPage(node.path!);
-                      }
-                    } : undefined}
-                    style={{ cursor: clickable ? "pointer" : "default" }}
-                  >
-                    <title>{node.path ?? node.label}</title>
-                    <circle
-                      className="pc-wiki-graph-node"
-                      cx={node.x}
-                      cy={node.y}
-                      r={node.size}
-                      fill={node.kind === "root" ? "transparent" : node.color}
-                      stroke={node.color}
-                      strokeWidth={node.kind === "root" ? 0.9 : node.kind === "group" ? 0.45 : 0.2}
-                      opacity={node.kind === "source" ? 0.58 : 0.88}
-                      style={{ animationDelay: `${(index % 17) * -0.22}s` }}
-                    />
-                    {node.kind === "root" || node.kind === "group" ? (
-                      <text
-                        x={node.x}
-                        y={node.y + node.size + 2.5}
-                        textAnchor="middle"
-                        fill="oklch(0.92 0 0 / 0.82)"
-                        fontSize={node.kind === "root" ? 2.35 : 1.65}
-                        fontFamily={fontStack}
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "minmax(0, 1fr) minmax(260px, 340px)",
+            minHeight: isMobile ? "auto" : 560,
+          }}>
+            <div style={{ minWidth: 0, borderRight: isMobile ? undefined : `1px solid ${tokens.border}`, borderBottom: isMobile ? `1px solid ${tokens.border}` : undefined }}>
+              <div style={{ padding: 12, display: "grid", gap: 10, borderBottom: `1px solid ${tokens.border}` }}>
+                <TextInput
+                  value={query}
+                  onChange={(event) => setQuery(event.currentTarget.value)}
+                  placeholder="Search nodes"
+                  aria-label="Search knowledge graph nodes"
+                />
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {GRAPH_FILTER_KINDS.map((kind) => {
+                    const selected = enabledKinds.includes(kind);
+                    return (
+                      <button
+                        key={kind}
+                        type="button"
+                        aria-pressed={selected}
+                        onClick={() => toggleKind(kind)}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          padding: "4px 8px",
+                          borderRadius: 6,
+                          border: `1px solid ${selected ? knowledgeNodeColor({ kind, status: null }) : tokens.border}`,
+                          background: selected ? "oklch(0.23 0.02 260)" : "transparent",
+                          color: selected ? tokens.fg : tokens.muted,
+                          fontSize: 11,
+                          fontFamily: fontStack,
+                          cursor: "pointer",
+                        }}
                       >
-                        {node.label.length > 11 ? `${node.label.slice(0, 10)}...` : node.label}
-                      </text>
-                    ) : null}
-                  </g>
-                );
-              })}
-            </g>
-          </svg>
+                        <span style={{ width: 7, height: 7, borderRadius: 999, background: knowledgeNodeColor({ kind, status: null }) }} />
+                        <span>{graphKindLabels[kind]}</span>
+                        <span style={{ color: tokens.muted }}>{graph.visibleKindCounts[kind] ?? 0}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <svg
+                viewBox="0 0 100 100"
+                role="img"
+                aria-label="Company knowledge graph"
+                style={{
+                  width: "100%",
+                  minHeight: isMobile ? 360 : 500,
+                  display: "block",
+                  background: "radial-gradient(circle at 50% 50%, oklch(0.22 0.035 255), oklch(0.13 0.012 260) 64%, oklch(0.09 0.008 260))",
+                }}
+              >
+                <style>{`
+                  .pc-knowledge-edge { vector-effect: non-scaling-stroke; }
+                  .pc-knowledge-animated { stroke-dasharray: 0.55 1.15; }
+                  @media (prefers-reduced-motion: no-preference) {
+                    .pc-knowledge-animated { animation: pcKnowledgeGraphFlow 13s linear infinite; }
+                    .pc-knowledge-node { animation: pcKnowledgeNodePulse 6.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+                  }
+                  @keyframes pcKnowledgeGraphFlow { to { stroke-dashoffset: -18; } }
+                  @keyframes pcKnowledgeNodePulse { 0%,100% { opacity: 0.78; } 50% { opacity: 1; } }
+                `}</style>
+                <circle cx="50" cy="50" r="43" fill="none" stroke="oklch(0.72 0.02 260 / 0.16)" strokeDasharray="0.18 1.1" />
+                <circle cx="50" cy="50" r="30" fill="none" stroke="oklch(0.72 0.02 260 / 0.1)" />
+                <circle cx="50" cy="50" r="17" fill="none" stroke="oklch(0.72 0.02 260 / 0.08)" />
+                {graph.edges.map((edge) => {
+                  const from = nodeById.get(edge.from);
+                  const to = nodeById.get(edge.to);
+                  if (!from || !to) return null;
+                  return (
+                    <line
+                      key={edge.id}
+                      className={`pc-knowledge-edge ${edge.kind === "mentions" || edge.kind === "wiki_link" || edge.kind === "source_ref" ? "pc-knowledge-animated" : ""}`}
+                      x1={from.x}
+                      y1={from.y}
+                      x2={to.x}
+                      y2={to.y}
+                      stroke={knowledgeEdgeColor(edge.kind)}
+                      strokeWidth={Math.min(0.35, Math.max(0.06, edge.weight * 0.06))}
+                    />
+                  );
+                })}
+                {graph.nodes.map((node, index) => {
+                  const selected = node.id === selectedNode?.id;
+                  const labelVisible = selected || node.kind === "company" || node.kind === "space" || node.kind === "project";
+                  return (
+                    <g
+                      key={node.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedNodeId(node.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setSelectedNodeId(node.id);
+                        }
+                      }}
+                      style={{ cursor: "pointer" }}
+                    >
+                      <title>{`${node.label}${node.sublabel ? ` · ${node.sublabel}` : ""}`}</title>
+                      <circle
+                        className="pc-knowledge-node"
+                        cx={node.x}
+                        cy={node.y}
+                        r={selected ? node.radius + 0.7 : node.radius}
+                        fill={node.kind === "company" ? "transparent" : node.color}
+                        stroke={selected ? tokens.primary : node.color}
+                        strokeWidth={selected ? 0.7 : node.kind === "company" ? 0.65 : 0.22}
+                        opacity={selected ? 1 : node.kind === "document" || node.kind === "work_product" ? 0.62 : 0.88}
+                        style={{ animationDelay: `${(index % 23) * -0.18}s` }}
+                      />
+                      {labelVisible ? (
+                        <text
+                          x={node.x}
+                          y={node.y + node.radius + 2.4}
+                          textAnchor="middle"
+                          fill={selected ? tokens.fg : "oklch(0.92 0 0 / 0.82)"}
+                          fontSize={selected ? 1.75 : node.kind === "company" ? 2.2 : 1.35}
+                          fontFamily={fontStack}
+                        >
+                          {node.label.length > 16 ? `${node.label.slice(0, 15)}...` : node.label}
+                        </text>
+                      ) : null}
+                    </g>
+                  );
+                })}
+              </svg>
+            </div>
+            <aside style={{ padding: 14, display: "grid", gap: 12, alignContent: "start", minWidth: 0 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <GraphStat label="Issues" value={data.stats.issues} />
+                <GraphStat label="Wiki" value={data.stats.wikiPages} />
+                <GraphStat label="Projects" value={data.stats.projects} />
+                <GraphStat label="Refs" value={data.stats.references} />
+              </div>
+              {selectedNode ? (
+                <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 999, background: selectedNode.color, flexShrink: 0 }} />
+                    <strong style={{ fontSize: 14, overflowWrap: "anywhere" }}>{selectedNode.label}</strong>
+                  </div>
+                  <Tiny>{graphNodeSubtitle(selectedNode)}</Tiny>
+                  {metadataString(selectedNode.metadata, "priority") ? (
+                    <Badge tone="default" style={{ justifySelf: "start" }}>{metadataString(selectedNode.metadata, "priority")}</Badge>
+                  ) : null}
+                  {selectedNode.href ? (
+                    <Button variant="primary" onClick={() => onOpenNode(selectedNode)}>{graphOpenLabel(selectedNode)}</Button>
+                  ) : null}
+                  <div style={{ display: "grid", gap: 4 }}>
+                    {Object.entries(selectedNode.metadata).slice(0, 8).map(([key, value]) => (
+                      <PropRow
+                        key={key}
+                        label={key}
+                        value={<Mono>{typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : JSON.stringify(value)}</Mono>}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <Tiny>Select a node to inspect it.</Tiny>
+              )}
+              {data.warnings.length > 0 ? (
+                <Callout tone="warn">{data.warnings.slice(0, 3).join(" ")}</Callout>
+              ) : null}
+              <div style={{ display: "grid", gap: 5 }}>
+                <Tiny>Edges</Tiny>
+                {(["blocks", "mentions", "wiki_link", "source_ref", "assigned_to"] as KnowledgeGraphEdgeKind[]).map((kind) => (
+                  <div key={kind} style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                    <span style={{ width: 22, height: 2, background: knowledgeEdgeColor(kind), flexShrink: 0 }} />
+                    <Tiny>{kind.replace(/_/g, " ")}</Tiny>
+                  </div>
+                ))}
+              </div>
+            </aside>
+          </div>
         </CardBody>
       </Card>
-      <Tiny>Click a page node to open it. Animated links come from indexed Markdown links; folder and source edges keep orphan notes visible.</Tiny>
     </div>
   );
 }
@@ -2022,17 +2360,23 @@ function GraphTab({ context }: { context: { companyId: string | null } }) {
   const hostNavigation = useHostNavigation();
   const { pathname } = useHostLocation();
   const activeSpaceSlug = useMemo(() => readActiveSpaceSlugFromLocation(pathname), [pathname]);
-  const pages = usePages(context.companyId, { includeRaw: true, spaceSlug: activeSpaceSlug });
+  const graph = useKnowledgeGraph(context.companyId, { spaceSlug: activeSpaceSlug });
   const isMobile = useIsMobileLayout();
 
   return (
     <div style={{ flex: 1, minWidth: 0, overflow: isMobile ? "visible" : "auto" }}>
-      <WikiGraphView
-        data={pages.data}
-        loading={pages.loading}
-        error={pages.error ?? null}
-        onOpenPage={(path) => {
-          hostNavigation.navigate(buildPageHref(path, activeSpaceSlug), { state: wikiSidebarNavigationState(path) });
+      <KnowledgeGraphView
+        data={graph.data}
+        loading={graph.loading}
+        error={graph.error ?? null}
+        onOpenNode={(node) => {
+          if (!node.href) return;
+          const path = metadataString(node.metadata, "path") ?? metadataString(node.metadata, "rawPath");
+          if ((node.kind === "wiki_page" || node.kind === "source") && path) {
+            hostNavigation.navigate(node.href, { state: wikiSidebarNavigationState(path) });
+            return;
+          }
+          hostNavigation.navigate(node.href);
         }}
       />
     </div>
@@ -3714,6 +4058,7 @@ function BrowseTab({ context }: { context: { companyId: string | null } }) {
   const { pathname, search } = useHostLocation();
   const activeSpaceSlug = useMemo(() => readActiveSpaceSlugFromLocation(pathname), [pathname]);
   const pages = usePages(context.companyId, { includeRaw: true, spaceSlug: activeSpaceSlug });
+  const graph = useKnowledgeGraph(context.companyId, { spaceSlug: activeSpaceSlug });
   const isMobile = useIsMobileLayout();
   const [viewMode, setViewMode] = useState<"page" | "graph">("page");
   const selectedTreePath = readSelectedTreePathFromLocation(pathname, search) ?? firstSelectableTreePath(pages.data);
@@ -3735,13 +4080,19 @@ function BrowseTab({ context }: { context: { companyId: string | null } }) {
         <Button size="sm" variant={viewMode === "graph" ? "primary" : "default"} onClick={() => setViewMode("graph")}>Graph</Button>
       </div>
       {viewMode === "graph" ? (
-        <WikiGraphView
-          data={pages.data}
-          loading={pages.loading}
-          error={pages.error ?? null}
-          onOpenPage={(path) => {
-            setViewMode("page");
-            hostNavigation.navigate(buildPageHref(path, activeSpaceSlug), { state: wikiSidebarNavigationState(path) });
+        <KnowledgeGraphView
+          data={graph.data}
+          loading={graph.loading}
+          error={graph.error ?? null}
+          onOpenNode={(node) => {
+            if (!node.href) return;
+            const path = metadataString(node.metadata, "path") ?? metadataString(node.metadata, "rawPath");
+            if ((node.kind === "wiki_page" || node.kind === "source") && path) {
+              setViewMode("page");
+              hostNavigation.navigate(node.href, { state: wikiSidebarNavigationState(path) });
+              return;
+            }
+            hostNavigation.navigate(node.href);
           }}
         />
       ) : pages.loading && !selected ? (

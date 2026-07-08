@@ -39,6 +39,7 @@ import {
   getDistillationPageProvenance,
   getDistillationAutoApplyRestriction,
   getEventIngestionSettings,
+  getKnowledgeGraph,
   listPaperclipIngestionCandidates,
   getPaperclipIngestionProfile,
   getOverview,
@@ -1196,6 +1197,16 @@ const plugin = definePlugin({
     ctx.data.register("sources", async (params) => {
       const companyId = readCompanyIdFromParams(params);
       return listSources(ctx, { companyId, wikiId: stringField(params.wikiId), spaceSlug: stringField(params.spaceSlug), limit: typeof params.limit === "number" ? params.limit : null });
+    });
+
+    ctx.data.register("knowledge-graph", async (params) => {
+      const companyId = readCompanyIdFromParams(params);
+      return getKnowledgeGraph(ctx, {
+        companyId,
+        wikiId: stringField(params.wikiId),
+        spaceSlug: stringField(params.spaceSlug),
+        limit: typeof params.limit === "number" ? params.limit : null,
+      });
     });
 
     ctx.data.register("page-content", async (params) => {

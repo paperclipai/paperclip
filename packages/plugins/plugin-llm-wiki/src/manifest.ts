@@ -132,7 +132,7 @@ const manifest: PaperclipPluginManifestV1 = {
   database: {
     namespaceSlug: "llm_wiki",
     migrationsDir: "migrations",
-    coreReadTables: ["companies", "issues", "projects", "agents"]
+    coreReadTables: ["companies", "issues", "projects", "agents", "issue_relations", "issue_documents"]
   },
   localFolders: [
     {
