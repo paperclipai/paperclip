@@ -769,6 +769,7 @@ function Tooltip({ tooltip, now }: { tooltip: TooltipState; now: number }) {
   const left = Math.min(tooltip.x + 14, (typeof window !== "undefined" ? window.innerWidth : 1200) - 300);
   return (
     <div
+      // design-allow(card-pattern): floating cursor-follow chart tooltip, not a content card (C5a Run 3)
       className="pointer-events-none fixed z-50 max-w-(--sz-280px) rounded-md border border-foreground bg-card px-2.5 py-2 text-xs shadow-md"
       style={{ left, top: tooltip.y + 14 }}
     >

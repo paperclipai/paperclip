@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, NavLink, useLocation } from "@/lib/router";
+import { Link, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   MoreHorizontal,
@@ -41,6 +41,7 @@ import {
 } from "../lib/agent-order";
 import { AgentIcon } from "./AgentIconPicker";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
+import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarSection, type SidebarSectionRadioChoice } from "./SidebarSection";
 import { StarToggle } from "./StarToggle";
 import { Button } from "@/components/ui/button";
@@ -147,69 +148,44 @@ function SidebarAgentItem({
         ? "Invalid org chain"
       : pauseResumeLabel;
 
-  const link = (
-    <NavLink
+  // C11 (DECISION-SHEET.md): the row itself is a SidebarNavItem, so agent rows
+  // share the nav-row chrome (type, active state, rail tooltip, live dot).
+  const navItem = (
+    <SidebarNavItem
       to={href}
-      state={SIDEBAR_SCROLL_RESET_STATE}
-      onClick={() => {
-        if (isMobile) setSidebarOpen(false);
-      }}
+      label={agent.name}
+      iconNode={<AgentIcon icon={agent.icon} className="shrink-0 h-4 w-4" />}
+      active={isActive}
+      liveCount={runCount}
       className={cn(
-        "flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium transition-colors",
-        // Reserve room for the ⋯ menu, plus the inline unstar star on starred rows.
+        "min-w-0 flex-1",
+        // Reserve room for the hover ⋯ menu; starred rows widen it for the
+        // inline unstar star.
         starred && !isMobile ? "pr-14" : "pr-8",
-        isActive
-          ? "bg-accent text-foreground"
-          : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
       )}
-    >
-      <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
-      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "flex-1 truncate"}>{agent.name}</span>
-      {!rail && hasInvalidOrgChain ? (
-        <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
-      ) : null}
-      {!rail && (agent.pauseReason === "budget" || runCount > 0) && (
-        <span className="ml-auto flex items-center gap-1.5 shrink-0">
-          {agent.pauseReason === "budget" ? (
-            <BudgetSidebarMarker title="Agent paused by budget" />
-          ) : null}
-          {runCount > 0 ? (
-            <span className="relative flex h-2 w-2">
-              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-            </span>
-          ) : null}
-          {runCount > 0 ? (
-            <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">
-              {runCount} live
-            </span>
-          ) : null}
-        </span>
-      )}
-    </NavLink>
+      trailing={
+        hasInvalidOrgChain ? (
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+        ) : undefined
+      }
+      liveAccessory={
+        agent.pauseReason === "budget" ? <BudgetSidebarMarker title="Agent paused by budget" /> : undefined
+      }
+    />
   );
+
+  // Rail: the star/menu overlays are hidden, so render the nav item bare (it
+  // supplies its own rail tooltip) and let it fill the column like every other
+  // rail row.
+  if (rail) return navItem;
 
   return (
     <div className="group/agent relative flex items-center">
-      {rail ? (
-        // Anchor the tooltip to a wrapper, not the NavLink: Radix `asChild` (Slot)
-        // drops React Router's function className, which would strip `flex` off the
-        // <a> and let the in-flow label stack under the icon, growing the row.
-        // Keeping the <a> out of Slot preserves a 1:1 row height with the expanded
-        // state so the icon never moves (PAP-10676).
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="min-w-0 flex-1">{link}</div>
-          </TooltipTrigger>
-          <TooltipContent side="right">{agent.name}</TooltipContent>
-        </Tooltip>
-      ) : (
-        link
-      )}
+      {navItem}
 
-      {!rail && starred && !isMobile && onToggleStar ? (
+      {starred && !isMobile && onToggleStar ? (
         // Desktop: quiet inline unstar, left of the ⋯ menu, revealed on hover/focus.
-        <span className="absolute right-8 top-1/2 -translate-y-1/2">
+        <span className="absolute right-10 top-1/2 -translate-y-1/2">
           <StarToggle
             size="row"
             quiet
@@ -222,14 +198,13 @@ function SidebarAgentItem({
         </span>
       ) : null}
 
-      {!rail && (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
             size="icon-xs"
             className={cn(
-              "absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 transition-opacity data-[state=open]:pointer-events-auto data-[state=open]:opacity-100",
+              "absolute right-3 top-1/2 h-6 w-6 -translate-y-1/2 transition-opacity data-[state=open]:pointer-events-auto data-[state=open]:opacity-100",
               isMobile
                 ? "opacity-100"
                 : "pointer-events-none opacity-0 group-hover/agent:pointer-events-auto group-hover/agent:opacity-100 group-focus-within/agent:pointer-events-auto group-focus-within/agent:opacity-100",
@@ -295,7 +270,6 @@ function SidebarAgentItem({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      )}
     </div>
   );
 }
@@ -572,6 +546,8 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
       {starredAgents.map((agent: Agent) => renderAgentRow(agent, true))}
       {dedupedDisplayedAgents.map((agent: Agent) => renderAgentRow(agent, false))}
       {showSeeAllLink && (() => {
+        // Deliberately NOT a SidebarNavItem: this is a quiet muted affordance
+        // (plain Link) that must not adopt nav-row active-route highlighting.
         const seeAllLink = (
           <Link
             to="/agents/all"
@@ -580,9 +556,9 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
             onClick={() => {
               if (isMobile) setSidebarOpen(false);
             }}
-            className="flex items-center gap-2.5 px-3 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+            className="flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
           >
-            <Users className="shrink-0 h-3.5 w-3.5" />
+            <Users className="shrink-0 h-4 w-4" />
             <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>See all agents</span>
           </Link>
         );

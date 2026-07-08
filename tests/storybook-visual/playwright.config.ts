@@ -33,6 +33,9 @@ export default defineConfig({
     browserName: "chromium",
     viewport: { width: 1200, height: 800 },
     deviceScaleFactor: 1,
+    // JS-driven tickers/timers key off prefers-reduced-motion for
+    // deterministic captures (CSS animations are already disabled).
+    reducedMotion: "reduce",
     baseURL: "http://localhost:6106",
   },
   webServer: {

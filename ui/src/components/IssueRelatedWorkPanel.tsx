@@ -3,6 +3,7 @@ import { IssueReferencePill } from "./IssueReferencePill";
 import { ExternalObjectPill } from "./ExternalObjectPill";
 import type { IssueExternalObjectGroup } from "../hooks/useIssueExternalObjects";
 import { externalObjectToneSeverity } from "../lib/external-objects";
+import { Badge } from "@/components/ui/badge";
 
 type GroupedSource = {
   label: string;
@@ -65,16 +66,16 @@ function Section({
                 ) : null}
                 <div className="flex flex-wrap items-center gap-1.5">
                   {groupedSources.map((group) => (
-                    <span
+                    <Badge variant="outline"
                       key={`${item.issue.id}:${group.label}`}
-                      className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground"
+                      className="border-border bg-muted/40 text-muted-foreground"
                       title={group.sampleMatchedText ?? undefined}
                     >
                       <span>{group.label}</span>
                       {group.count > 1 ? (
                         <span className="tabular-nums text-(length:--text-nano) font-medium opacity-80">×{group.count}</span>
                       ) : null}
-                    </span>
+                    </Badge>
                   ))}
                 </div>
               </li>
@@ -152,12 +153,12 @@ function ExternalObjectsSection({
                 ) : null}
                 <div className="flex flex-wrap items-center gap-1.5">
                   {sourceLabels.map((label) => (
-                    <span
+                    <Badge variant="outline"
                       key={`${object?.id ?? pill.url ?? label}:${label}`}
-                      className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground"
+                      className="border-border bg-muted/40 text-muted-foreground"
                     >
                       <span>{label}</span>
-                    </span>
+                    </Badge>
                   ))}
                 </div>
               </li>

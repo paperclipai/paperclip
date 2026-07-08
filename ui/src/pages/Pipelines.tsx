@@ -35,6 +35,7 @@ import {
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -125,6 +126,7 @@ import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueAc
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { applyLocalQueuedIssueCommentState, isQueuedIssueComment } from "../lib/optimistic-issue-comments";
 import type { IssueChatComment } from "../lib/issue-chat-messages";
+import { Badge } from "@/components/ui/badge";
 
 type PipelineConversationActionableInteraction =
   | SuggestTasksInteraction
@@ -585,16 +587,16 @@ function formatPipelineActivity(value: string | Date | null) {
 function PipelineStatusChip({ archivedAt }: { archivedAt: Date | string | null }) {
   const paused = Boolean(archivedAt);
   return (
-    <span
+    <Badge variant="outline"
       className={cn(
-        "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold",
+        "font-semibold",
         paused
           ? "border-muted-foreground/20 bg-muted text-muted-foreground"
           : "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300",
       )}
     >
       {paused ? "Paused" : "Active"}
-    </span>
+    </Badge>
   );
 }
 
@@ -1234,12 +1236,12 @@ function PipelineCaseCard({
   };
 
   return (
-    <div
+    <Card
       ref={setNodeRef}
       style={style}
       {...attributes}
       {...listeners}
-      className={`rounded-md border bg-card px-3 py-2 text-sm ${
+      className={`block px-3 py-2 text-sm ${
         isDragging && !isOverlay ? "opacity-40" : ""
       } ${isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm"}`}
     >
@@ -1253,26 +1255,26 @@ function PipelineCaseCard({
         <p className="font-medium leading-snug text-foreground">{title}</p>
         <div className="mt-1.5 flex flex-wrap gap-1.5">
           {isWorking ? (
-            <span className="relative inline-flex items-center rounded-full border border-emerald-400/40 bg-emerald-50 px-2 py-0.5 text-(length:--text-nano) font-medium text-emerald-700 dark:border-emerald-300/30 dark:bg-emerald-900/30 dark:text-emerald-300">
+            <Badge variant="outline" className="relative border-emerald-400/40 bg-emerald-50 text-(length:--text-nano) text-emerald-700 dark:border-emerald-300/30 dark:bg-emerald-900/30 dark:text-emerald-300">
               <span className="absolute -left-1 -top-1 h-2 w-2 animate-pulse rounded-full bg-emerald-500"></span>
               Working
-            </span>
+            </Badge>
           ) : null}
           {hasNeedsAttention ? (
-            <span className="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-50 px-2 py-0.5 text-(length:--text-nano) font-medium text-amber-700 dark:border-amber-300/30 dark:bg-amber-900/25 dark:text-amber-300">
+            <Badge variant="outline" className="border-amber-400/40 bg-amber-50 text-(length:--text-nano) text-amber-700 dark:border-amber-300/30 dark:bg-amber-900/25 dark:text-amber-300">
               Needs attention
-            </span>
+            </Badge>
           ) : null}
           {hasChangedNotice ? (
-            <span className="inline-flex items-center rounded-full border border-indigo-400/40 bg-indigo-50 px-2 py-0.5 text-(length:--text-nano) font-medium text-indigo-700 dark:border-indigo-300/30 dark:bg-indigo-900/25 dark:text-indigo-300">
+            <Badge variant="outline" className="border-indigo-400/40 bg-indigo-50 text-(length:--text-nano) text-indigo-700 dark:border-indigo-300/30 dark:bg-indigo-900/25 dark:text-indigo-300">
               This changed
-            </span>
+            </Badge>
           ) : null}
           {liveDownstreamCount > 0 ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/35 bg-emerald-50 px-2 py-0.5 text-(length:--text-nano) font-medium text-emerald-700 dark:border-emerald-300/30 dark:bg-emerald-900/25 dark:text-emerald-300">
+            <Badge variant="outline" className="border-emerald-400/35 bg-emerald-50 text-(length:--text-nano) text-emerald-700 dark:border-emerald-300/30 dark:bg-emerald-900/25 dark:text-emerald-300">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
               {formatLiveDownstream(liveDownstreamCount)}
-            </span>
+            </Badge>
           ) : null}
         </div>
         {childrenSummary != null ? (
@@ -1281,7 +1283,7 @@ function PipelineCaseCard({
           </p>
         ) : null}
       </Link>
-    </div>
+    </Card>
   );
 }
 
@@ -3855,17 +3857,17 @@ function OutputMetaDot() {
 
 function OutputDeliverableTag({ label }: { label: string }) {
   return (
-    <span className="shrink-0 rounded-full border border-green-600 px-1.5 text-(length:--text-nano) font-semibold uppercase text-green-600 dark:border-green-400 dark:text-green-400">
+    <Badge variant="outline" className="border-green-600 px-1.5 text-(length:--text-nano) font-semibold uppercase text-green-600 dark:border-green-400 dark:text-green-400">
       {label}
-    </span>
+    </Badge>
   );
 }
 
 function OutputUnverifiedTag() {
   return (
-    <span className="shrink-0 rounded-full border border-border px-1.5 text-(length:--text-nano) font-semibold uppercase text-muted-foreground">
+    <Badge variant="outline" className="border-border px-1.5 text-(length:--text-nano) font-semibold uppercase text-muted-foreground">
       Unverified
-    </span>
+    </Badge>
   );
 }
 
@@ -4073,9 +4075,9 @@ function ItemOutputsSection({
       title="Item outputs"
       trailing={
         loading ? null : (
-          <span className="rounded-full bg-muted px-2 py-0.5 text-(length:--text-micro) font-medium normal-case tracking-normal text-muted-foreground">
+          <Badge variant="ghost" className="bg-muted text-(length:--text-micro) normal-case tracking-normal text-muted-foreground">
             {items.length}
-          </span>
+          </Badge>
         )
       }
     >
@@ -4561,10 +4563,10 @@ export function buildReviewQueueRows({
 function ReviewQueueStatusChip({ failed }: { failed: boolean }) {
   if (!failed) return null;
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-300">
+    <Badge variant="outline" className="border-amber-200 bg-amber-50 font-semibold text-amber-800 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-300">
       <AlertTriangle className="h-3 w-3" />
       Needs attention
-    </span>
+    </Badge>
   );
 }
 
@@ -4766,9 +4768,9 @@ function ReviewQueueSection({
                 <div className="min-w-0">
                   <div className="flex min-w-0 items-center gap-2">
                     <p className="truncate font-semibold text-foreground">{row.title}</p>
-                    <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-(length:--text-micro) font-semibold text-muted-foreground">
+                    <Badge variant="outline" className="border-border text-(length:--text-micro) font-semibold text-muted-foreground">
                       {row.pipelineName}
-                    </span>
+                    </Badge>
                     <ReviewQueueStatusChip failed={failed} />
                   </div>
                   <p className="truncate text-muted-foreground">{row.prompt}</p>

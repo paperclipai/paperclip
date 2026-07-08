@@ -192,8 +192,11 @@ export function SwipeToArchive({
     >
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 flex items-center justify-end bg-emerald-600 px-4 text-white"
-        style={{ opacity: Math.max(archiveReveal, 0.2) }}
+        // Visible only while actually swiping: the selected row surface is
+        // translucent (matching the task-list hover), so a resting opacity
+        // floor would tint the whole row green and ghost the label through.
+        className="pointer-events-none absolute inset-0 flex items-center justify-end rounded-lg bg-emerald-600 px-4 text-white"
+        style={{ opacity: archiveReveal }}
       >
         <span className="inline-flex items-center gap-2 text-sm font-medium">
           <Archive className="h-4 w-4" />
@@ -204,7 +207,7 @@ export function SwipeToArchive({
         data-inbox-row-surface
         className={cn(
           "relative will-change-transform",
-          selected ? "bg-zinc-100 dark:bg-zinc-800" : "bg-background",
+          selected ? "rounded-lg bg-accent/50" : "bg-background",
         )}
         style={{
           transform: `translate3d(${offsetX}px, 0, 0)`,

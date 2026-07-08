@@ -263,6 +263,7 @@ function CollapsedFeedGroup({
 
   return (
     <div>
+      {/* design-allow(card-pattern): interactive <button> card; Card renders a div and would break button semantics (C5a Run 3) */}
       <button
         type="button"
         onClick={() => setExpanded((e) => !e)}

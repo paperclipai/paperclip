@@ -563,9 +563,9 @@ function CompanyInvitesPreview() {
                     <span className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-medium">{option.label}</span>
                       {option.value === "operator" ? (
-                        <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                        <Badge variant="outline" className="border-border text-muted-foreground">
                           Default
-                        </span>
+                        </Badge>
                       ) : null}
                     </span>
                     <span className="block max-w-2xl text-sm text-muted-foreground">{option.description}</span>
@@ -645,9 +645,9 @@ function CompanyInvitesPreview() {
                 {inviteHistory.map((invite) => (
                   <tr key={invite.id} className="border-b border-border last:border-b-0">
                     <td className="px-5 py-3 align-top">
-                      <span className="inline-flex rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                      <Badge variant="outline" className="border-border text-muted-foreground">
                         {invite.state}
-                      </span>
+                      </Badge>
                     </td>
                     <td className="px-5 py-3 align-top">{invite.humanRole}</td>
                     <td className="px-5 py-3 align-top">

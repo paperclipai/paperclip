@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { isUuidLike, type ProjectWorkspace } from "@paperclipai/shared";
 import { ArrowLeft, Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Tabs } from "@/components/ui/tabs";
 import { ChoosePathButton } from "../components/PathInstructionsModal";
@@ -482,7 +483,7 @@ export function ProjectWorkspaceDetail() {
       {activeTab === "configuration" ? (
       <div className="grid gap-6 lg:grid-cols-(--gtc-53)">
         <div className="space-y-6">
-          <div className="rounded-2xl border border-border bg-card p-5">
+          <Card className="block p-5">
             <p className="max-w-2xl text-sm text-muted-foreground">
               Configure the concrete workspace Paperclip attaches to this project. These values drive per-workspace
               checkout behavior, default runtime services for child execution workspaces, and let you override setup
@@ -659,11 +660,11 @@ export function ProjectWorkspaceDetail() {
               {!errorMessage && runtimeActionMessage ? <p className="text-sm text-muted-foreground">{runtimeActionMessage}</p> : null}
               {!errorMessage && !isDirty ? <p className="text-sm text-muted-foreground">No unsaved changes.</p> : null}
             </div>
-          </div>
+          </Card>
         </div>
 
         <div className="space-y-6">
-          <div className="rounded-2xl border border-border bg-card p-5">
+          <Card className="block p-5">
             <div className="space-y-1">
               <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Workspace facts</div>
               <h2 className="text-lg font-semibold">Current state</h2>
@@ -690,9 +691,9 @@ export function ProjectWorkspaceDetail() {
             </DetailRow>
             <DetailRow label="Default ref">{workspace.defaultRef ?? "None"}</DetailRow>
             <DetailRow label="Updated">{new Date(workspace.updatedAt).toLocaleString()}</DetailRow>
-          </div>
+          </Card>
 
-          <div className="rounded-2xl border border-border bg-card p-5">
+          <Card className="block p-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="space-y-1">
                 <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Workspace commands</div>
@@ -716,7 +717,7 @@ export function ProjectWorkspaceDetail() {
               disabledHint="Project workspaces need a working directory before local commands can run, and services also need runtime config."
               onAction={(request) => controlRuntimeServices.mutate(request)}
             />
-          </div>
+          </Card>
         </div>
       </div>
       ) : null}

@@ -28,6 +28,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { agentUrl } from "@/lib/utils";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 import {
   deriveRecoveryDisplayState,
   type RecoveryDisplayState,
@@ -354,15 +355,15 @@ function DivergenceDiagnosis({
         <span className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
           Divergence diagnosis
         </span>
-        <span
+        <Badge variant="outline"
           data-testid="recovery-ancestry-verdict"
           className={cn(
-            "inline-flex items-center rounded-full border px-2 py-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-label)",
+            "text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-label)",
             badge.className,
           )}
         >
           {badge.label}
-        </span>
+        </Badge>
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
         <BranchFacet
@@ -424,17 +425,17 @@ function BreakGlassOverride({
         align="start"
         sideOffset={6}
         aria-labelledby="recovery-breakglass-title"
-        className="w-96 max-w-[calc(100vw-2rem)] space-y-3 p-3"
+        className="w-96 max-w-(--sz-calc-4) space-y-3 p-3"
       >
         <div className="space-y-1">
           <div
             id="recovery-breakglass-title"
-            className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-red-700 dark:text-red-300"
+            className="flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-red-700 dark:text-red-300"
           >
             <OctagonAlert className="h-3.5 w-3.5" aria-hidden />
             Break-glass reconciliation
           </div>
-          <p className="text-[12px] leading-5 text-muted-foreground">
+          <p className="text-xs leading-5 text-muted-foreground">
             This overrides Paperclip&apos;s safety check and points the recorded workspace at the live
             branch{" "}
             <span className="font-medium text-foreground/80">without an ancestry proof</span>. Confirm
@@ -443,7 +444,7 @@ function BreakGlassOverride({
         </div>
         <dl
           data-testid="recovery-breakglass-restated-divergence"
-          className="space-y-1.5 rounded-md border border-red-400/40 bg-red-500/5 px-2.5 py-2 text-[11px]"
+          className="space-y-1.5 rounded-md border border-red-400/40 bg-red-500/5 px-2.5 py-2 text-(length:--text-micro)"
         >
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0 text-muted-foreground">Recorded · expected</dt>
@@ -465,7 +466,7 @@ function BreakGlassOverride({
           </div>
         </dl>
         <div className="space-y-1">
-          <Label htmlFor="recovery-breakglass-reason" className="text-[11px] text-muted-foreground">
+          <Label htmlFor="recovery-breakglass-reason" className="text-(length:--text-micro) text-muted-foreground">
             Reason <span className="text-red-600 dark:text-red-400">(required — recorded in the audit log)</span>
           </Label>
           <Textarea
@@ -473,7 +474,7 @@ function BreakGlassOverride({
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             placeholder="e.g. Verified the live branch carries only the intended follow-up commits; safe to adopt."
-            className="min-h-20 text-[12px]"
+            className="min-h-20 text-xs"
             data-testid="recovery-breakglass-reason"
             aria-required="true"
           />

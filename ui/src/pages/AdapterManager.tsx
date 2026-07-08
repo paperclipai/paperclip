@@ -546,7 +546,8 @@ export function AdapterManager() {
             </CardContent>
           </Card>
         ) : (
-          <ul className="divide-y rounded-md border bg-card">
+          <Card className="block py-0">
+          <ul className="divide-y">
             {externalAdapters.map((adapter) => {
               const isBuiltinOverride = adapter.overriddenBuiltin;
               const overridePaused = isBuiltinOverride && !!adapter.overridePaused;
@@ -580,6 +581,7 @@ export function AdapterManager() {
               );
             })}
           </ul>
+          </Card>
         )}
       </section>
 
@@ -593,7 +595,8 @@ export function AdapterManager() {
         {builtinAdapters.length === 0 && overriddenBuiltins.length === 0 ? (
           <div className="text-sm text-muted-foreground">No built-in adapters found.</div>
         ) : (
-          <ul className="divide-y rounded-md border bg-card">
+          <Card className="block py-0">
+          <ul className="divide-y">
             {builtinAdapters.map((adapter) => (
               <AdapterRow
                 key={adapter.type}
@@ -630,6 +633,7 @@ export function AdapterManager() {
               />
             ))}
           </ul>
+          </Card>
         )}
       </section>
 

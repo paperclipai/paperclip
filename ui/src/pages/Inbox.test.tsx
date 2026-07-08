@@ -617,7 +617,9 @@ describe("InboxIssueMetaLeading", () => {
     );
     const liveBadge = container.querySelector('span[class*="px-1.5"][class*="bg-blue-500/10"]');
     const liveBadgeLabel = Array.from(container.querySelectorAll("span")).find(
-      (node) => node.textContent === "Live" && node.className.includes("text-"),
+      // The pill chassis is a Badge (itself a span with textContent "Live");
+      // the label is the inner span without the rounded-full chassis class.
+      (node) => node.textContent === "Live" && node.className.includes("text-") && !node.className.includes("rounded-full"),
     );
     const liveDot = container.querySelector('span[class*="bg-blue-500"]');
     const pulseRing = container.querySelector('span[class*="animate-pulse"]');

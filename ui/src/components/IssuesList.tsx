@@ -62,7 +62,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, Columns3, User, Search, CircleSlash2, ChevronsDownUp, PanelTopClose, RotateCcw, ListCollapse } from "lucide-react";
+import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, User, Search, CircleSlash2, ChevronsDownUp, PanelTopClose, RotateCcw, ListCollapse,
+  SquareKanban,
+} from "lucide-react";
 import {
   KanbanBoard,
   KANBAN_BOARD_HIGH_VOLUME_THRESHOLD,
@@ -77,6 +79,7 @@ import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { deriveOriginatingActor, ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
+import { Badge } from "@/components/ui/badge";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
@@ -146,7 +149,7 @@ const defaultViewState: IssueViewState = {
   collapsedGroups: [],
   collapsedParents: [],
   boardCardDensity: "auto",
-  boardColdLaneMode: "auto",
+  boardColdLaneMode: "expanded",
   boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
 };
 
@@ -595,6 +598,9 @@ function SubIssueProgressSummaryStrip({
     </div>
   );
 }
+
+// Mobile-only indent for nested task rows (desktop uses IssueRow treeGuides).
+const MOBILE_TREE_INDENT = ["", "pl-4 sm:pl-0", "pl-8 sm:pl-0", "pl-12 sm:pl-0", "pl-16 sm:pl-0"];
 
 export function IssuesList({
   issues,
@@ -1390,7 +1396,7 @@ export function IssuesList({
           {/* View mode toggle */}
           <div className="flex items-center border border-border rounded-md overflow-hidden mr-1" role="group" aria-label="View mode">
             <button
-              className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              className={`flex h-8 w-8 items-center justify-center transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
               title="List view"
               aria-label="List view"
@@ -1399,13 +1405,13 @@ export function IssuesList({
               <List className="h-3.5 w-3.5" />
             </button>
             <button
-              className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              className={`flex h-8 w-8 items-center justify-center transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
               title="Board view"
               aria-label="Board view"
               aria-pressed={viewState.viewMode === "board"}
             >
-              <Columns3 className="h-3.5 w-3.5" />
+              <SquareKanban className="h-3.5 w-3.5" />
             </button>
           </div>
 
@@ -1488,7 +1494,7 @@ export function IssuesList({
                 className="h-8 w-8 shrink-0"
                 onClick={() => updateView({
                   boardCardDensity: "auto",
-                  boardColdLaneMode: "auto",
+                  boardColdLaneMode: "expanded",
                   boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
                 })}
                 disabled={!boardDensityCustomized}
@@ -1511,6 +1517,7 @@ export function IssuesList({
           <IssueFiltersPopover
             state={viewState}
             onChange={updateView}
+            buttonVariant="outline"
             activeFilterCount={activeFilterCount}
             agents={agents}
             creators={creatorOptions}
@@ -1774,19 +1781,22 @@ export function IssuesList({
                   return (
                     <div
                       key={issue.id}
-                      style={{
-                        ...(depth > 0 ? { paddingLeft: `${depth * 16}px` } : {}),
-                        ...(useDeferredRowRendering
-                          ? {
-                            contentVisibility: "auto",
-                            containIntrinsicSize: "44px",
-                          }
-                          : {}),
-                      }}
+                      // Desktop indentation comes from IssueRow's treeGuides
+                      // (vertical connector slots); mobile keeps a plain
+                      // padding indent (guides are sm-only).
+                      className={depth > 0 ? MOBILE_TREE_INDENT[Math.min(depth, MOBILE_TREE_INDENT.length - 1)] : undefined}
+                      style={useDeferredRowRendering
+                        ? {
+                          contentVisibility: "auto",
+                          containIntrinsicSize: "44px",
+                        }
+                        : undefined}
                     >
                       <IssueRow
                         issue={issue}
                         issueLinkState={issueLinkState}
+                        treeGuides={depth}
+                        hideDivider={hasChildren && isExpanded}
                         checklistStepNumber={checklistStepNumber}
                         checklistCurrentStep={checklistMeta?.currentStepIssueId === issue.id}
                         checklistDependencyChips={checklistDependencyChips}
@@ -1802,29 +1812,29 @@ export function IssuesList({
                             ) : null}
                             {issueBadge ? (
                               issueBadge === "Paused" ? (
-                                <span
-                                  className={cn("ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-(length:--text-nano) font-medium", statusBadge.paused)}
+                                <Badge variant="ghost"
+                                  className={cn("ml-1.5 px-1.5 text-(length:--text-nano)", statusBadge.paused)}
                                   aria-label="Paused"
                                   title="Paused"
                                 >
                                   <CircleSlash2 className="h-3 w-3" />
                                   Paused
-                                </span>
+                                </Badge>
                               ) : (
-                                <span className="ml-1.5 inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300">
+                                <Badge variant="outline" className="ml-1.5 border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) text-amber-700 dark:text-amber-300">
                                   {issueBadge}
-                                </span>
+                                </Badge>
                               )
                             ) : null}
                             {isSuccessfulRunHandoffRequired(issue) ? (
-                              <span
-                                className="ml-1.5 inline-flex items-center gap-1 rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-(length:--text-nano) font-medium text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
+                              <Badge variant="outline"
+                                className="ml-1.5 border-amber-400/45 bg-amber-50/60 px-1.5 text-(length:--text-nano) text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
                                 aria-label="Needs next step"
                                 title="This task needs a next step"
                               >
                                 <CircleDot className="h-3 w-3" />
                                 Needs next step
-                              </span>
+                              </Badge>
                             ) : null}
                           </>
                         )}
@@ -1836,7 +1846,7 @@ export function IssuesList({
                             </button>
                           ) : (
                             <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                              <StatusIcon status={issue.status} size="lg" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                              <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                             </span>
                           )
                         }
@@ -1863,7 +1873,7 @@ export function IssuesList({
                               checklistStepNumber={checklistStepNumber}
                               statusSlot={(
                                 <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                                  <StatusIcon status={issue.status} size="lg" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                                  <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                                 </span>
                               )}
                             />

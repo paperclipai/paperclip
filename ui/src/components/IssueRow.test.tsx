@@ -85,7 +85,7 @@ describe("IssueRow", () => {
     container.remove();
   });
 
-  it("renders the list status glyph at lg (20px)", () => {
+  it("renders the list status glyph at md (16px)", () => {
     const root = createRoot(container);
 
     act(() => {
@@ -95,8 +95,8 @@ describe("IssueRow", () => {
     const glyphs = container.querySelectorAll('svg[viewBox="0 0 24 24"]');
     expect(glyphs.length).toBeGreaterThan(0);
     glyphs.forEach((glyph) => {
-      expect(glyph.getAttribute("width")).toBe("20");
-      expect(glyph.getAttribute("height")).toBe("20");
+      expect(glyph.getAttribute("width")).toBe("16");
+      expect(glyph.getAttribute("height")).toBe("16");
     });
 
     act(() => {

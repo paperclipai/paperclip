@@ -54,13 +54,15 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  /* Monotonic radius ladder, all derived from the single --radius knob
-     (DECISION-SHEET B4): retune the whole app's corner language by editing
-     --radius alone. Replaces the legacy square-brand lg/xl = 0px. */
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
+  /* Multiplicative radius ladder (modern shadcn/Tailwind v4 mapping):
+     sm/md/lg/xl/2xl/3xl/4xl = 0.6/0.8/1.0/1.4/1.8/2.2/2.6 x the single
+     --radius knob (base anchor 0.5rem = 8px; rounded-lg IS the anchor).
+     Replaces the additive +/-px ladder (DECISION-SHEET B4 → Run 3 review):
+     retune the whole app's corner language by editing --radius alone. */
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-xl: calc(var(--radius) * 1.4);
   --font-heading: var(--font-sans);
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
@@ -69,7 +71,7 @@
 
 :root {
   color-scheme: light;
-  --radius: 0.45rem;
+  --radius: 0.5rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -1671,7 +1673,6 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --rad-3: 3px; /* Extracted from ui/src/components/ExternalObjectPill.tsx (ring-[3px]). */
   --rad-4: 4px; /* Extracted from ui/src/components/IssueChatThread.tsx (rounded-br-[4px]). */
   --rad-2: 2px; /* Extracted from ui/src/components/SidebarCompanyMenu.tsx (ring-[2px]). */
-  --rad-8: 8px; /* Extracted from ui/src/components/artifacts/ArtifactCard.test.tsx (rounded-[8px]). */
   --rad-14: 14px; /* Extracted from ui/src/pages/CompanySettings.tsx (rounded-[14px]). */
   --rad-28: 28px; /* Extracted from ui/src/pages/InviteUxLab.tsx (rounded-[28px]). */
   --rad-24: 24px; /* Extracted from ui/src/pages/InviteUxLab.tsx (rounded-[24px]). */

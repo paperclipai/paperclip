@@ -76,6 +76,7 @@ import {
   type IssueTimelineWorkspace,
 } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -647,20 +648,20 @@ function IssueChatFallbackThread({
       </div>
 
       {messages.length === 0 ? (
-        <div className={cn(
-          "text-center text-sm text-muted-foreground",
+        <Card className={cn(
+          "block shadow-none text-center text-sm text-muted-foreground",
           variant === "embedded"
-            ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
-            : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
+            ? "border-dashed border-border/70 bg-background/60 px-4 py-6"
+            : "border-dashed px-6 py-10",
         )}>
           {emptyMessage}
-        </div>
+        </Card>
       ) : (
         <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
           {messages.map((message) => {
             const lines = fallbackTextParts(message);
             return (
-              <div key={message.id} className="rounded-xl border border-border/60 bg-card/70 px-4 py-3">
+              <Card key={message.id} className="block border-border/60 bg-card/70 px-4 py-3">
                 <div className="mb-2 flex items-center gap-2 text-sm">
                   <span className="font-medium text-foreground">{fallbackAuthorLabel(message)}</span>
                   {message.createdAt ? (
@@ -678,7 +679,7 @@ function IssueChatFallbackThread({
                     <p className="text-sm text-muted-foreground">No message content.</p>
                   )}
                 </div>
-              </div>
+              </Card>
             );
           })}
         </div>
@@ -1467,9 +1468,9 @@ function IssueChatUserMessage({
       >
         {queued ? (
           <div className="mb-1.5 flex items-center gap-2">
-            <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+            <Badge variant="outline" className="border-amber-400/60 bg-amber-100/70 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
               {queueBadgeLabel}
-            </span>
+            </Badge>
             {queueTargetRunId && onInterruptQueued ? (
               <Button
                 size="sm"
@@ -1909,15 +1910,15 @@ function IssueChatAssistantMessage({
               {isRunning ? (
                 // Gallery feedback r1: running chip uses the canonical brand blue
                 // (brandChipBadge.blue), not cyan; layout/size classes unchanged.
-                <span
+                <Badge variant="outline"
                   className={cn(
-                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow)",
+                    "text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)",
                     brandChipBadge.blue,
                   )}
                 >
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Running
-                </span>
+                </Badge>
               ) : null}
             </div>
           )}
@@ -4840,14 +4841,14 @@ export function IssueChatThread({
               className={variant === "embedded" ? "space-y-3" : "space-y-4"}
             >
               {messages.length === 0 ? (
-                <div className={cn(
-                  "text-center text-sm text-muted-foreground",
+                <Card className={cn(
+                  "block shadow-none text-center text-sm text-muted-foreground",
                   variant === "embedded"
-                    ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
-                    : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
+                    ? "border-dashed border-border/70 bg-background/60 px-4 py-6"
+                    : "border-dashed px-6 py-10",
                 )}>
                   {resolvedEmptyMessage}
-                </div>
+                </Card>
               ) : messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD ? (
                 <VirtualizedIssueChatThreadList
                   ref={virtualizedThreadRef}

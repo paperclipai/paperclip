@@ -90,6 +90,11 @@ function RotatingReasoningDemo({ intervalMs = 2200 }: { intervalMs?: number }) {
   }>({ key: 0, current: DEMO_REASONING_LINES[0], exiting: null });
 
   useEffect(() => {
+    // Respect reduced motion (also makes the visual suite deterministic —
+    // it captures with reducedMotion: "reduce").
+    if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
     const timer = setInterval(() => {
       setIndex((i) => (i + 1) % DEMO_REASONING_LINES.length);
     }, intervalMs);

@@ -172,6 +172,7 @@ import {
   SlidersHorizontal,
   XCircle,
 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import {
   deriveOriginatingActor,
   getClosedIsolatedExecutionWorkspaceMessage,
@@ -721,13 +722,13 @@ function IssueDetailLoadingState({
                 <span className="text-sm font-mono text-muted-foreground shrink-0">{identifier}</span>
               ) : null}
               {headerSeed.originKind === "routine_execution" && headerSeed.originId ? (
-                <span
-                  className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium text-violet-600 dark:text-violet-400 shrink-0"
+                <Badge variant="outline"
+                  className="border-violet-500/30 bg-violet-500/10 text-(length:--text-nano) text-violet-600 dark:text-violet-400"
                   title={`Routine execution from routine ${headerSeed.originId}`}
                 >
                   <Repeat className="h-3 w-3" />
                   Routine
-                </span>
+                </Badge>
               ) : null}
               {headerSeed.projectId ? (
                 <span className="inline-flex items-center gap-1 text-xs text-muted-foreground rounded px-1 -mx-1 py-0.5 min-w-0">
@@ -4103,13 +4104,13 @@ export function IssueDetail() {
           <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
 
           {hasLiveRuns && (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/10 border border-blue-500/30 px-2 py-0.5 text-(length:--text-nano) font-medium text-blue-600 dark:text-blue-400 shrink-0">
+            <Badge variant="outline" className="gap-1.5 bg-blue-500/10 border-blue-500/30 text-(length:--text-nano) text-blue-600 dark:text-blue-400">
               <span className="relative flex h-1.5 w-1.5">
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-blue-500" />
               </span>
               Live
-            </span>
+            </Badge>
           )}
 
           {issue.originKind === "routine_execution" && issue.originId && (
@@ -4128,48 +4129,48 @@ export function IssueDetail() {
           ) : null}
 
           {issue.originKind === "issue_productivity_review" ? (
-            <span
-              className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300 shrink-0"
+            <Badge variant="outline"
+              className="border-amber-500/40 bg-amber-500/10 text-(length:--text-nano) text-amber-700 dark:text-amber-300"
               title="This task is a productivity review."
             >
               <Eye className="h-3 w-3" />
               Productivity review
-            </span>
+            </Badge>
           ) : null}
 
           {issue.originKind === "task_watchdog" ? (
-            <span
-              className="inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium text-sky-700 dark:text-sky-300 shrink-0"
+            <Badge variant="outline"
+              className="border-sky-500/40 bg-sky-500/10 text-(length:--text-nano) text-sky-700 dark:text-sky-300"
               title="This task is a generated watchdog task. It verifies whether stopped work in the watched task tree is legitimate."
             >
               <ScanEye className="h-3 w-3" />
               Watchdog
-            </span>
+            </Badge>
           ) : null}
 
           {issue.workMode === "ask" || issue.workMode === "planning" ? (() => {
             const workModeMeta = workModeMetaFor(issue.workMode);
             const WorkModeIcon = workModeMeta.icon;
             return (
-              <span
-                className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-nano) font-medium shrink-0", workModeMeta.classes.badge)}
+              <Badge variant="outline"
+                className={cn("text-(length:--text-nano)", workModeMeta.classes.badge)}
                 title={`This task is in ${workModeMeta.label.toLowerCase()}.`}
               >
                 <WorkModeIcon className="h-3 w-3" aria-hidden />
                 {workModeMeta.label}
-              </span>
+              </Badge>
             );
           })() : null}
 
           {hasAssignedBacklogBlocker(issue.blockedBy) ? (
-            <span
+            <Badge variant="outline"
               data-testid="issue-detail-parked-blocker"
-              className="inline-flex items-center gap-1 rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300 shrink-0"
+              className="border-amber-500/60 bg-amber-500/15 text-(length:--text-nano) text-amber-700 dark:text-amber-300"
               title="Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee."
             >
               <Flag className="h-3 w-3" />
               Blocked by parked work
-            </span>
+            </Badge>
           ) : null}
 
           {issue.projectId ? (
@@ -4197,9 +4198,9 @@ export function IssueDetail() {
           {(issue.labels ?? []).length > 0 && (
             <div className="hidden sm:flex items-center gap-1">
               {(issue.labels ?? []).slice(0, 4).map((label) => (
-                <span
+                <Badge variant="outline"
                   key={label.id}
-                  className="inline-flex items-center rounded-full border px-2 py-0.5 text-(length:--text-nano) font-medium"
+                  className="text-(length:--text-nano)"
                   style={{
                     borderColor: label.color,
                     color: pickTextColorForPillBg(label.color, 0.12),
@@ -4207,7 +4208,7 @@ export function IssueDetail() {
                   }}
                 >
                   {label.name}
-                </span>
+                </Badge>
               ))}
               {(issue.labels ?? []).length > 4 && (
                 <span className="text-(length:--text-nano) text-muted-foreground">+{(issue.labels ?? []).length - 4}</span>

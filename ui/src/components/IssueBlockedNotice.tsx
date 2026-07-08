@@ -14,6 +14,7 @@ import { useRetryNowMutation } from "../hooks/useRetryNowMutation";
 import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
 import { RetryErrorBand } from "./IssueScheduledRetryCard";
 import { isAssignedBacklogBlocker } from "../lib/issue-blockers";
+import { Badge } from "@/components/ui/badge";
 import {
   deriveActiveRecoveryDisplayState,
   RECOVERY_CHIP_DEFAULT_TONE,
@@ -27,18 +28,18 @@ function BlockerRecoveryIndicator({ action }: { action: IssueRecoveryAction }) {
   const Icon = tone.icon;
   const label = recoveryChipLabel(state, action.kind);
   return (
-    <span
+    <Badge variant="outline"
       data-testid="issue-blocked-notice-recovery-indicator"
       data-recovery-state={state}
       data-recovery-kind={action.kind}
       role="status"
       aria-label={label}
       title={`${label} — open the source task to act.`}
-      className={`inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-(length:--text-nano) font-medium ${tone.className}`}
+      className={`[&>svg]:size-2.5 gap-0.5 px-1.5 text-(length:--text-nano) ${tone.className}`}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
       {label}
-    </span>
+    </Badge>
   );
 }
 

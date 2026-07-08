@@ -85,6 +85,7 @@ export function IssuePlanDecompositionsSection({
           return (
             <li
               key={record.id}
+              // design-allow(card-pattern): semantic <li> row inside a <ul>; Card renders a div (C5a Run 3)
               className="rounded-md border border-border bg-card/50 p-3 text-sm"
             >
               <div className="flex flex-wrap items-center gap-2">

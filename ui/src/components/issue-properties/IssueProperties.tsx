@@ -74,6 +74,7 @@ import {
 import { PropertyPicker } from "./property-picker";
 import { PropertyChip, PropertyRow, PropertySection } from "./primitives";
 import { ExpandRelationListButton, RemovableIssueReferencePill } from "./relation-controls";
+import { Badge } from "@/components/ui/badge";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: ComponentType<{ className?: string }> }) {
   const [copied, setCopied] = useState(false);
@@ -1235,9 +1236,9 @@ export function IssueProperties({
         </PropertyChip>
       ))}
       {selectedIssueLabels.length > 3 && (
-        <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+        <Badge variant="outline" className="border-border text-muted-foreground">
           +{selectedIssueLabels.length - 3} more
-        </span>
+        </Badge>
       )}
     </div>
   ) : (

@@ -663,9 +663,9 @@ export function DesignGuide() {
               ["on_demand", "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"],
               ["automation", "bg-muted text-muted-foreground"],
             ].map(([label, cls]) => (
-              <span key={label} className={`rounded-full px-1.5 py-0.5 text-(length:--text-nano) font-medium ${cls}`}>
+              <Badge variant="ghost" key={label} className={`px-1.5 text-(length:--text-nano) ${cls}`}>
                 {label}
-              </span>
+              </Badge>
             ))}
           </div>
         </SubSection>
@@ -1442,7 +1442,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title="Navigation Patterns">
         <SubSection title="Sidebar nav items">
-          <div className="w-60 border border-border rounded-md p-3 space-y-0.5 bg-card">
+          <Card className="block w-60 p-3 space-y-0.5">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
               <LayoutDashboard className="h-4 w-4" />
               Dashboard
@@ -1450,9 +1450,9 @@ export function DesignGuide() {
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <CircleDot className="h-4 w-4" />
               Issues
-              <span className="ml-auto text-xs bg-primary text-primary-foreground rounded-full px-1.5 py-0.5">
+              <Badge variant="ghost" className="ml-auto bg-primary text-primary-foreground px-1.5">
                 12
-              </span>
+              </Badge>
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <Bot className="h-4 w-4" />
@@ -1462,7 +1462,7 @@ export function DesignGuide() {
               <Hexagon className="h-4 w-4" />
               Projects
             </div>
-          </div>
+          </Card>
         </SubSection>
 
         <SubSection title="View toggle">

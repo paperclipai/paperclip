@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { ResponsibleUserDenialNotice } from "@/components/ResponsibleUserDenialNotice";
 import { cn } from "@/lib/utils";
+import { Card } from "@/components/ui/card";
 
 /**
  * UX lab for PAP-12462 (P7): run "on behalf of {user}" surfacing + responsible-user
@@ -34,7 +35,7 @@ function BeforeAfter({ label, children }: { label: string; children: ReactNode }
       <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
         {label}
       </div>
-      <div className="rounded-xl border border-border/60 bg-card p-3">{children}</div>
+      <Card className="block border-border/60 p-3">{children}</Card>
     </div>
   );
 }

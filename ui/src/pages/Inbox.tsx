@@ -2344,7 +2344,7 @@ export function Inbox() {
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
-            <div ref={listRef} className="overflow-hidden rounded-xl">
+            <div ref={listRef} className="overflow-hidden">
               {(() => {
                 const renderInboxIssue = ({
                   issue,
@@ -2390,13 +2390,15 @@ export function Inbox() {
                     && blockerAttention?.state === "covered"
                   );
                   const rowStatusIcon = (
-                    <StatusIcon status={issue.status} blockerAttention={blockerAttention} />
+                    <StatusIcon status={issue.status} blockerAttention={blockerAttention} size="md" />
                   );
                   return (
                     <IssueRow
                       key={`issue:${issue.id}`}
                       issue={issue}
                       issueLinkState={issueLinkState}
+                      treeGuides={depth}
+                      hideDivider={hasChildren && isExpanded}
                       externalObjectSummary={externalObjectSummaryByIssueId.get(issue.id) ?? null}
                       selected={selected}
                       className={
@@ -2424,7 +2426,6 @@ export function Inbox() {
                               <span className="hidden w-4 shrink-0 sm:block" />
                             )
                           ) : null}
-                          {depth > 0 ? <span className="hidden w-4 shrink-0 sm:block" /> : null}
                           <InboxIssueMetaLeading
                             issue={issue}
                             isLive={isLive}
@@ -2456,7 +2457,7 @@ export function Inbox() {
                             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                           </button>
                         ) : (
-                          <StatusIcon status={issue.status} blockerAttention={blockerAttention} size="lg" />
+                          <StatusIcon status={issue.status} blockerAttention={blockerAttention} size="md" />
                         )
                       }
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
