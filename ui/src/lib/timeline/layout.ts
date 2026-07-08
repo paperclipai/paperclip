@@ -5,6 +5,7 @@
  * Ports the board-locked "Direction C" logic (PAP-12422): agent/system rows only
  * (humans never get a row), overlapping runs packed into concurrency sub-lanes,
  * a kickoff actor derived per run (shown as an avatar chip — may be a human),
+ * with each kickoff edge assigned to only its closest matching run,
  * and straight agent→agent delegation connectors from a source bar's trailing
  * edge to a target bar's leading edge (dashed for retries / changes-requested).
  *
@@ -178,6 +179,26 @@ function spanEndMs(s: WorkTimelineSpan, nowMs: number): number {
   return raw;
 }
 
+function kickoffEdgeRunDistanceMs(edge: WorkTimelineEdge, span: WorkTimelineSpan): number {
+  return Math.abs(spanStartMs(span) - new Date(edge.at).getTime());
+}
+
+function isClosestRunForKickoffEdge(edge: WorkTimelineEdge, span: WorkTimelineSpan, spans: readonly WorkTimelineSpan[]) {
+  const currentDistance = kickoffEdgeRunDistanceMs(edge, span);
+  for (const other of spans) {
+    if (other.runId === span.runId) continue;
+    if (other.actorId !== edge.toActorId || other.issueId !== edge.issueId) continue;
+    const otherDistance = kickoffEdgeRunDistanceMs(edge, other);
+    if (
+      otherDistance < currentDistance
+      || (otherDistance === currentDistance && other.runId.localeCompare(span.runId) < 0)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Resolve the kickoff actor for a run: the source of the delegation/assignment
  * edge that points at this run's actor on this run's issue, closest at-or-before
@@ -186,6 +207,7 @@ function spanEndMs(s: WorkTimelineSpan, nowMs: number): number {
  */
 function resolveKickoff(
   span: WorkTimelineSpan,
+  spans: readonly WorkTimelineSpan[],
   edges: WorkTimelineEdge[],
   actorById: Map<string, WorkTimelineActor>,
 ): WorkTimelineActor | null {
@@ -200,6 +222,7 @@ function resolveKickoff(
     if (!best || delta < best.delta) best = { edge: e, delta };
   }
   if (!best) return null;
+  if (!isClosestRunForKickoffEdge(best.edge, span, spans)) return null;
   return actorById.get(best.edge.fromActorId) ?? null;
 }
 
@@ -282,7 +305,7 @@ export function computeLayout(result: WorkTimelineResult, opts: LayoutOptions): 
         yc: laneTop + barH / 2,
         height: barH,
         running: isRunningStatus(r.status),
-        kickoff: resolveKickoff(r, result.edges, actorById),
+        kickoff: resolveKickoff(r, result.spans, result.edges, actorById),
       };
       barIndex.set(r.runId, bar);
       return bar;

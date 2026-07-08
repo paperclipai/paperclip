@@ -3,7 +3,7 @@
  *
  * Renders actor rows with concurrency sub-lanes, run bars (no issue IDs on the
  * bar — identity is the thin left colour tab; truncated title shows on hover),
- * human kickoff chips at each bar's leading edge, straight
+ * human kickoff chips at the first matching run's leading edge, straight
  * hover-revealed agent→agent delegation connectors (dashed for retries), an
  * in-progress fade to "now", a hover tooltip, and a full-window mini-map with a
  * draggable brush.
