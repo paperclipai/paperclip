@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, Plus } from "lucide-react";
+import { Check, ChevronDown, Copy, MoreVertical, Plus, SlidersHorizontal } from "lucide-react";
 import { Link, Navigate, useCaseHref, useParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -192,10 +192,16 @@ function CaseSidePanel({
   caseData,
   childCases,
   events,
+  companyId,
+  labelsPending,
+  onLabelIdsChange,
 }: {
   caseData: CaseDetailData;
   childCases: CaseSummary[];
   events: CaseEvent[];
+  companyId: string | null | undefined;
+  labelsPending?: boolean;
+  onLabelIdsChange: (labelIds: string[]) => void;
 }) {
   const bodyDoc = caseData.documents.find((documentRef) => documentRef.key === "body") ?? null;
   const description = caseData.fields.description ?? caseData.fields.Description ?? null;
@@ -241,6 +247,29 @@ function CaseSidePanel({
             </span>
           </PropertyRow>
         ) : null}
+        <PropertyRow label="Labels" wrap>
+          {caseData.labels.length > 0 ? (
+            caseData.labels.map((label) => (
+              <PropertyChip
+                key={label.id}
+                style={{ borderColor: label.color, color: label.color }}
+                className="bg-transparent"
+              >
+                {label.name}
+              </PropertyChip>
+            ))
+          ) : (
+            <span className="text-xs text-muted-foreground">None</span>
+          )}
+          {companyId ? (
+            <CaseLabelsPicker
+              companyId={companyId}
+              selected={caseData.labels}
+              onChange={onLabelIdsChange}
+            />
+          ) : null}
+          {labelsPending ? <span className="text-xs text-muted-foreground">Saving...</span> : null}
+        </PropertyRow>
       </PropertySection>
 
       {genericFields.length > 0 ? (
@@ -304,6 +333,7 @@ export function CaseDetail() {
   const queryClient = useQueryClient();
   const caseHref = useCaseHref();
   const [selectedRevisionDocumentKey, setSelectedRevisionDocumentKey] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const caseQuery = useQuery({
     queryKey: queryKeys.cases.detail(caseIdentifier ?? ""),
@@ -337,6 +367,10 @@ export function CaseDetail() {
     },
   });
 
+  const handleLabelIdsChange = useCallback((labelIds: string[]) => {
+    patchMutation.mutate({ labelIds });
+  }, [patchMutation.mutate]);
+
   useEffect(() => {
     setBreadcrumbs([
       { label: "Cases", href: caseHref() },
@@ -345,11 +379,25 @@ export function CaseDetail() {
   }, [setBreadcrumbs, caseData, caseIdentifier, caseHref]);
 
   const events = useMemo(() => eventsQuery.data ?? [], [eventsQuery.data]);
+  const panelContent = useMemo(() => {
+    if (!caseData) return null;
+    return (
+      <CaseSidePanel
+        caseData={caseData}
+        childCases={children}
+        events={events}
+        companyId={selectedCompanyId}
+        labelsPending={patchMutation.isPending}
+        onLabelIdsChange={handleLabelIdsChange}
+      />
+    );
+  }, [caseData, children, events, selectedCompanyId, patchMutation.isPending, handleLabelIdsChange]);
+
   useEffect(() => {
-    if (!caseData) return;
-    openPanel(<CaseSidePanel caseData={caseData} childCases={children} events={events} />);
+    if (!panelContent) return;
+    openPanel(panelContent);
     return () => closePanel();
-  }, [caseData, children, events, openPanel, closePanel]);
+  }, [panelContent, openPanel, closePanel]);
 
   if (!caseIdentifier) return <Navigate to={caseHref()} replace />;
   if (caseQuery.isLoading) return <PageSkeleton variant="detail" />;
@@ -371,41 +419,72 @@ export function CaseDetail() {
     ? selectedRevisionDocumentKey
     : bodyDoc?.key ?? revisionDocs[0]?.key ?? null;
 
+  function copyCaseToClipboard(currentCase: CaseDetailData) {
+    const markdown = [
+      `# ${currentCase.identifier} ${currentCase.title}`,
+      "",
+      `- Key: ${currentCase.key ?? "none"}`,
+      `- Type: ${currentCase.caseType}`,
+      `- Status: ${STATUS_LABEL[currentCase.status]}`,
+      currentCase.labels.length > 0 ? `- Labels: ${currentCase.labels.map((label) => label.name).join(", ")}` : "- Labels: none",
+    ].join("\n");
+    void navigator.clipboard?.writeText(markdown).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    });
+  }
+
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <header className="space-y-3">
         <div className="flex items-start justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-xs text-muted-foreground">{caseData.identifier}</span>
-            <Badge variant="secondary">{caseData.caseType}</Badge>
+          <div className="min-w-0 space-y-1">
+            {caseData.key ? (
+              <div className="truncate font-mono text-xs text-muted-foreground" title={caseData.key}>
+                {caseData.key}
+              </div>
+            ) : null}
+            <h1 className="text-xl font-bold">{caseData.title}</h1>
           </div>
-          <CaseStatusPicker
-            status={caseData.status}
-            disabled={patchMutation.isPending}
-            onChange={(status) => patchMutation.mutate({ status })}
-          />
+          <div className="flex shrink-0 items-center gap-1">
+            <CaseStatusPicker
+              status={caseData.status}
+              disabled={patchMutation.isPending}
+              onChange={(status) => patchMutation.mutate({ status })}
+            />
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="icon-xs" aria-label="More case actions" title="More case actions">
+                  <MoreVertical className="h-4 w-4" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-48 p-1">
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50"
+                  onClick={() => copyCaseToClipboard(caseData)}
+                >
+                  {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                  Copy as markdown
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50"
+                  onClick={() => {
+                    if (panelContent) openPanel(panelContent);
+                  }}
+                >
+                  <SlidersHorizontal className="h-3 w-3" />
+                  Properties
+                </button>
+              </PopoverContent>
+            </Popover>
+          </div>
         </div>
 
-        <h1 className="text-xl font-bold">{caseData.title}</h1>
-
-        <div className="flex flex-wrap items-center gap-1.5">
-          {caseData.labels.map((label) => (
-            <Badge
-              key={label.id}
-              variant="secondary"
-              style={{ borderColor: label.color, color: label.color }}
-              className="border bg-transparent"
-            >
-              {label.name}
-            </Badge>
-          ))}
-          {selectedCompanyId && (
-            <CaseLabelsPicker
-              companyId={selectedCompanyId}
-              selected={caseData.labels}
-              onChange={(labelIds) => patchMutation.mutate({ labelIds })}
-            />
-          )}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-xs text-muted-foreground">{caseData.identifier}</span>
+          <Badge variant="secondary">{caseData.caseType}</Badge>
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -416,7 +495,6 @@ export function CaseDetail() {
           ) : (
             <span />
           )}
-          {caseData.key && <span className="font-mono">key: {caseData.key}</span>}
         </div>
       </header>
 

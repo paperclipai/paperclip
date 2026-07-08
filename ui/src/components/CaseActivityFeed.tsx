@@ -1,7 +1,17 @@
 import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
-import { Bot, User, Cog } from "lucide-react";
+import { Bot, User, Cog, ChevronDown, ListFilter } from "lucide-react";
 import type { CaseEvent, CaseEventKind } from "@/api/cases";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn, relativeTime } from "@/lib/utils";
 
 const EVENT_LABEL: Record<CaseEventKind, string> = {
@@ -92,41 +102,47 @@ export function CaseActivityFeed({ events }: { events: CaseEvent[] }) {
     });
   }
 
+  const filterLabel = active.size === 0
+    ? "All activity"
+    : active.size === 1
+      ? EVENT_LABEL[[...active][0]!] ?? [...active][0]!
+      : `${active.size} filters`;
+
   if (events.length === 0) {
     return <p className="py-6 text-center text-sm text-muted-foreground">No activity yet.</p>;
   }
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-1.5">
-        <button
-          type="button"
-          onClick={() => setActive(new Set())}
-          className={cn(
-            "rounded-full border px-2.5 py-0.5 text-xs transition-colors",
-            active.size === 0
-              ? "border-primary bg-primary/10 text-foreground"
-              : "border-border text-muted-foreground hover:bg-accent",
-          )}
-        >
-          All
-        </button>
-        {presentKinds.map((kind) => (
-          <button
-            key={kind}
-            type="button"
-            onClick={() => toggle(kind)}
-            aria-pressed={active.has(kind)}
-            className={cn(
-              "rounded-full border px-2.5 py-0.5 text-xs transition-colors",
-              active.has(kind)
-                ? "border-primary bg-primary/10 text-foreground"
-                : "border-border text-muted-foreground hover:bg-accent",
-            )}
-          >
-            {EVENT_LABEL[kind] ?? kind}
-          </button>
-        ))}
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">
+          {filtered.length} of {events.length} events
+        </p>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" className="h-8 gap-1.5">
+              <ListFilter className="h-3.5 w-3.5" />
+              {filterLabel}
+              <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-56">
+            <DropdownMenuLabel>Activity filter</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => setActive(new Set())}>
+              All activity
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            {presentKinds.map((kind) => (
+              <DropdownMenuCheckboxItem
+                key={kind}
+                checked={active.has(kind)}
+                onCheckedChange={() => toggle(kind)}
+              >
+                {EVENT_LABEL[kind] ?? kind}
+              </DropdownMenuCheckboxItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       {filtered.length === 0 ? (
         <p className="py-6 text-center text-sm text-muted-foreground">No events match this filter.</p>
