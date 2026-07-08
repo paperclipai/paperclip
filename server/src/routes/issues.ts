@@ -7189,6 +7189,25 @@ export function issueRoutes(
       return;
     }
 
+    if (
+      req.actor.type === "agent" &&
+      updateFields.previousAssigneeAgentId !== undefined &&
+      updateFields.status !== "done" &&
+      updateFields.status !== "cancelled"
+    ) {
+      res.status(422).json({
+        error:
+          "Agents cannot set previousAssigneeAgentId outside terminal recovery disposition. " +
+          "The previous-assignee audit field is controlled by recovery reassignment machinery.",
+        code: "recovery_previous_assignee_agent_write_forbidden",
+        details: {
+          issueId: existing.id,
+          securityPrinciples: ["Separation of Disposition Authority"],
+        },
+      });
+      return;
+    }
+
     if (interruptRequested) {
       if (!commentBody) {
         res.status(400).json({ error: "Interrupt is only supported when posting a comment" });

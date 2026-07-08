@@ -468,6 +468,25 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
       expect(res.status).toBe(422);
       expect(res.body.code).toBe("recovery_disposition_condition_b_violation");
     });
+
+    it("rejects when an agent tries to preload previousAssigneeAgentId before closing", async () => {
+      mockIssueService.getById.mockResolvedValue(
+        makeRecoveryIssue({ previousAssigneeAgentId: null }),
+      );
+      const app = await createApp(recoveryOwnerActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .set("Content-Type", "application/json")
+        .send({
+          status: "in_progress",
+          previousAssigneeAgentId: originalAgentId,
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe("recovery_previous_assignee_agent_write_forbidden");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
   });
 
   describe("Condition D — measurement-context issues block done", () => {
