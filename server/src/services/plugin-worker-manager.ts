@@ -21,7 +21,9 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
   JSONRPC_VERSION,
@@ -152,6 +154,52 @@ export function formatWorkerFailureMessage(message: string, stderrExcerpt: strin
   if (!excerpt) return message;
   if (message.includes(excerpt)) return message;
   return `${message}\n\nWorker stderr:\n${excerpt}`;
+}
+
+function pathArgToFileUrlIfAbsolute(value: string): string {
+  if (path.isAbsolute(value)) return pathToFileURL(value).href;
+  if (!path.win32.isAbsolute(value)) return value;
+
+  const normalized = value.replace(/\\/g, "/");
+  const driveMatch = /^([A-Za-z]:)(\/.*)$/.exec(normalized);
+  if (!driveMatch) return pathToFileURL(value).href;
+
+  const [, drive, rest] = driveMatch;
+  const encodedRest = rest.split("/").map((part) => encodeURIComponent(part)).join("/");
+  return `file:///${drive}${encodedRest}`;
+}
+
+export function normalizePluginWorkerExecArgv(execArgv: string[] = []): string[] {
+  const normalized: string[] = [];
+
+  for (let index = 0; index < execArgv.length; index++) {
+    const arg = execArgv[index];
+    if (!arg) continue;
+
+    if (arg === "--import" || arg === "--loader" || arg === "--experimental-loader") {
+      normalized.push(arg);
+      const value = execArgv[index + 1];
+      if (value !== undefined) {
+        normalized.push(pathArgToFileUrlIfAbsolute(value));
+        index++;
+      }
+      continue;
+    }
+
+    let matchedInlineModuleFlag = false;
+    for (const flag of ["--import=", "--loader=", "--experimental-loader="]) {
+      if (arg.startsWith(flag)) {
+        normalized.push(`${flag}${pathArgToFileUrlIfAbsolute(arg.slice(flag.length))}`);
+        matchedInlineModuleFlag = true;
+        break;
+      }
+    }
+    if (matchedInlineModuleFlag) continue;
+
+    normalized.push(arg);
+  }
+
+  return normalized;
 }
 
 /**
@@ -727,9 +775,9 @@ export function createPluginWorkerHandle(
       TZ: process.env.TZ ?? "UTC",
     };
 
-    const child = fork(options.entrypointPath, [], {
+    const child = fork(pathToFileURL(options.entrypointPath), [], {
       stdio: ["pipe", "pipe", "pipe", "ipc"],
-      execArgv: options.execArgv ?? [],
+      execArgv: normalizePluginWorkerExecArgv(options.execArgv),
       env: workerEnv,
       // Don't let the child keep the parent alive
       detached: false,

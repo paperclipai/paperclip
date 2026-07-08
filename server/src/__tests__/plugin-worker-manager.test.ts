@@ -1,5 +1,5 @@
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
@@ -13,6 +13,7 @@ import {
   appendStderrExcerpt,
   createPluginWorkerHandle,
   formatWorkerFailureMessage,
+  normalizePluginWorkerExecArgv,
 } from "../services/plugin-worker-manager.js";
 
 const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -36,6 +37,24 @@ const TEST_MANIFEST: PaperclipPluginManifestV1 = {
 };
 
 describe("plugin-worker-manager stderr failure context", () => {
+  it("normalizes path-valued ESM loader exec args to file URLs", () => {
+    expect(normalizePluginWorkerExecArgv([
+      "--import",
+      "C:\\Dev\\paperclip-pr9160\\cli\\node_modules\\tsx\\dist\\loader.mjs",
+      "--experimental-loader=C:\\Tools\\custom loader.mjs",
+      "--loader",
+      "/opt/loaders/loader.mjs",
+      "--inspect",
+    ])).toEqual([
+      "--import",
+      "file:///C:/Dev/paperclip-pr9160/cli/node_modules/tsx/dist/loader.mjs",
+      "--experimental-loader=file:///C:/Tools/custom%20loader.mjs",
+      "--loader",
+      pathToFileURL("/opt/loaders/loader.mjs").href,
+      "--inspect",
+    ]);
+  });
+
   it("appends worker stderr context to failure messages", () => {
     expect(
       formatWorkerFailureMessage(
