@@ -411,6 +411,14 @@ export function createDrizzleRunLogArchiverDb(db: Db): RunLogArchiverDb {
 
   return {
     selectAgeArchivable(cutoff, limit) {
+      // postgres-js binds raw `sql` template parameters without Drizzle's
+      // column-aware serialization (that only applies to typed column values,
+      // e.g. `.set({ updatedAt: now })`). Handing it a bare `Date` here fails
+      // at bind time ("argument must be of type string ... Received an
+      // instance of Date") because postgres-js has no type/OID context to
+      // encode it. Cast an ISO string instead — the same pattern already used
+      // for heartbeatRuns timestamp comparisons in issues.ts.
+      const cutoffIso = cutoff.toISOString();
       return db
         .select(columns)
         .from(heartbeatRuns)
@@ -419,7 +427,7 @@ export function createDrizzleRunLogArchiverDb(db: Db): RunLogArchiverDb {
             eq(heartbeatRuns.logStore, "local_file"),
             isNotNull(heartbeatRuns.logRef),
             inArray(heartbeatRuns.status, [...TERMINAL_STATUSES]),
-            sql`${completedAt} < ${cutoff}`,
+            sql`${completedAt} < ${cutoffIso}::timestamptz`,
           ),
         )
         .orderBy(asc(completedAt))

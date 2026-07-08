@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { gzipSync, gunzipSync } from "node:zlib";
 import {
+  createDrizzleRunLogArchiverDb,
   createNodeRunLogArchiverFs,
   createRunLogArchiver,
   resolveRunLogArchiverConfig,
@@ -16,6 +17,11 @@ import {
 } from "../services/run-log-archiver.ts";
 import { loadConfig } from "../config.ts";
 import { getRunLogArchiveStorageProvider, getStorageProvider } from "../storage/index.ts";
+import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 
 const NOW = new Date("2026-07-08T10:00:00.000Z");
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -583,5 +589,137 @@ describe("forced s3 archive mode (local_disk primary storage)", () => {
     process.env.PAPERCLIP_RUN_LOG_ARCHIVE = "auto";
     delete process.env.PAPERCLIP_STORAGE_PROVIDER;
     expect(getRunLogArchiveStorageProvider()).toBe(getStorageProvider());
+  });
+});
+
+// Regression: production hit `TypeError [ERR_INVALID_ARG_TYPE]: The "string"
+// argument must be of type string or an instance of Buffer or ArrayBuffer.
+// Received an instance of Date` from postgres-js during the age pass. The
+// fake-DB-backed tests above exercise the sweep's control flow but never the
+// real Drizzle/postgres-js adapter, so they can't catch a parameter-binding
+// bug like this — it needs a real Postgres round-trip. `selectAgeArchivable`
+// takes a `Date` cutoff at the port boundary (unchanged), so this also guards
+// against a future edit re-introducing a bare `Date` into a raw `sql` template.
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres run-log-archiver DB adapter tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
+
+describeEmbeddedPostgres("createDrizzleRunLogArchiverDb.selectAgeArchivable (real Postgres)", () => {
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let db: ReturnType<typeof createDb>;
+
+  beforeEach(async () => {
+    database = await startEmbeddedPostgresTestDatabase("paperclip-run-log-archiver-");
+    db = createDb(database.connectionString);
+  });
+
+  afterEach(async () => {
+    await database.cleanup();
+  });
+
+  // One company + agent per test (not per run): `companies.issuePrefix`
+  // defaults to "PAP" and has a unique index, so inserting several companies
+  // in one test via defaults would collide. Multiple runs against a single
+  // agent is also the realistic shape (one agent produces many heartbeat runs).
+  async function seedCompanyAndAgent(): Promise<{ companyId: string; agentId: string }> {
+    const [company] = await db.insert(companies).values({ name: "co-1" }).returning({ id: companies.id });
+    const [agent] = await db
+      .insert(agents)
+      .values({ companyId: company!.id, name: "agent-1" })
+      .returning({ id: agents.id });
+    return { companyId: company!.id, agentId: agent!.id };
+  }
+
+  async function seedRun(over: {
+    id: string;
+    companyId: string;
+    agentId: string;
+    status: string;
+    finishedAt: Date | null;
+    logStore: string | null;
+    logRef: string | null;
+  }) {
+    await db.insert(heartbeatRuns).values({
+      id: over.id,
+      companyId: over.companyId,
+      agentId: over.agentId,
+      status: over.status,
+      finishedAt: over.finishedAt,
+      logStore: over.logStore,
+      logRef: over.logRef,
+    });
+  }
+
+  it("binds a Date cutoff without throwing and returns rows older than it", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const oldRunId = "11111111-1111-1111-1111-111111111111";
+    const freshRunId = "22222222-2222-2222-2222-222222222222";
+    await seedRun({
+      id: oldRunId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      finishedAt: daysAgo(40),
+      logStore: "local_file",
+      logRef: "co/agent/old.ndjson.gz",
+    });
+    await seedRun({
+      id: freshRunId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      finishedAt: daysAgo(2),
+      logStore: "local_file",
+      logRef: "co/agent/fresh.ndjson.gz",
+    });
+
+    const archiverDb = createDrizzleRunLogArchiverDb(db);
+    // A plain `Date` — exactly what runSweep() computes and passes at the port
+    // boundary. Before the fix this threw at bind time inside postgres-js.
+    const cutoff = daysAgo(30);
+    const rows = await archiverDb.selectAgeArchivable(cutoff, 10);
+
+    expect(rows.map((r) => r.id)).toEqual([oldRunId]);
+    expect(rows[0]!.logRef).toBe("co/agent/old.ndjson.gz");
+  });
+
+  it("excludes non-terminal, non-local_file, and null-logRef rows from the age query", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    await seedRun({
+      id: "33333333-3333-3333-3333-333333333333",
+      companyId,
+      agentId,
+      status: "running",
+      finishedAt: null,
+      logStore: "local_file",
+      logRef: "co/agent/running.ndjson.gz",
+    });
+    await seedRun({
+      id: "44444444-4444-4444-4444-444444444444",
+      companyId,
+      agentId,
+      status: "succeeded",
+      finishedAt: daysAgo(40),
+      logStore: "s3",
+      logRef: "co/agent/already-archived.ndjson.gz",
+    });
+    await seedRun({
+      id: "55555555-5555-5555-5555-555555555555",
+      companyId,
+      agentId,
+      status: "succeeded",
+      finishedAt: daysAgo(40),
+      logStore: "local_file",
+      logRef: null,
+    });
+
+    const archiverDb = createDrizzleRunLogArchiverDb(db);
+    const rows = await archiverDb.selectAgeArchivable(daysAgo(30), 10);
+    expect(rows).toEqual([]);
   });
 });
