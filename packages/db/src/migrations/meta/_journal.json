@@ -967,6 +967,13 @@
       "when": 1783555203000,
       "tag": "0139_skill_studio_run_templates",
       "breakpoints": true
+    },
+    {
+      "idx": 140,
+      "version": "7",
+      "when": 1783555300000,
+      "tag": "0140_built_in_managed_resources",
+      "breakpoints": true
     }
   ]
 }
