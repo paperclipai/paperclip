@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { CompanySkillTestRunStatus } from "@paperclipai/shared";
 import {
   buildReRunRequest,
+  EMPTY_SAVED_INPUT_DRAFT_STATE,
   evaluateRunGate,
   findOutputDocument,
   INLINE_INTERACTION_KINDS,
@@ -13,8 +14,11 @@ import {
   runBadgeStatus,
   runOutputMode,
   runShortId,
+  savedInputDraftDirty,
+  selectedSavedInputDraft,
   shouldPollRun,
   showRunErrorCard,
+  syncSavedInputDraftState,
   testTaskLinkState,
 } from "./skill-studio";
 
@@ -160,6 +164,52 @@ describe("disabled-Run matrix", () => {
     expect(
       evaluateRunGate({ hasAgent: false, hasInput: false, skillFileCount: 2 }).reason,
     ).toBe("Pick an agent to run");
+  });
+});
+
+describe("saved input editor draft state", () => {
+  const savedInput = { id: "input-1", content: "existing content" };
+
+  it("populates the editor when a selected input record arrives after initial render", () => {
+    const state = syncSavedInputDraftState(EMPTY_SAVED_INPUT_DRAFT_STATE, savedInput);
+
+    expect(selectedSavedInputDraft(state, savedInput)).toBe("existing content");
+    expect(savedInputDraftDirty(state, savedInput)).toBe(false);
+  });
+
+  it("switches draft state when a different saved input is selected", () => {
+    const first = syncSavedInputDraftState(EMPTY_SAVED_INPUT_DRAFT_STATE, savedInput);
+    const secondInput = { id: "input-2", content: "second body" };
+    const second = syncSavedInputDraftState({ ...first, draft: "local edit" }, secondInput);
+
+    expect(second).toEqual({
+      inputId: "input-2",
+      draft: "second body",
+      baselineContent: "second body",
+    });
+  });
+
+  it("adopts background refetch content while the local draft is clean", () => {
+    const initial = syncSavedInputDraftState(EMPTY_SAVED_INPUT_DRAFT_STATE, savedInput);
+    const updated = syncSavedInputDraftState(initial, {
+      id: "input-1",
+      content: "server update",
+    });
+
+    expect(selectedSavedInputDraft(updated, { id: "input-1", content: "server update" })).toBe("server update");
+    expect(savedInputDraftDirty(updated, { id: "input-1", content: "server update" })).toBe(false);
+  });
+
+  it("preserves a dirty local draft across background refetches", () => {
+    const initial = syncSavedInputDraftState(EMPTY_SAVED_INPUT_DRAFT_STATE, savedInput);
+    const dirty = { ...initial, draft: "local edit" };
+    const afterRefetch = syncSavedInputDraftState(dirty, {
+      id: "input-1",
+      content: "server update",
+    });
+
+    expect(selectedSavedInputDraft(afterRefetch, { id: "input-1", content: "server update" })).toBe("local edit");
+    expect(savedInputDraftDirty(afterRefetch, { id: "input-1", content: "server update" })).toBe(true);
   });
 });
 

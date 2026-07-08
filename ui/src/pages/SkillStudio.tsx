@@ -107,6 +107,7 @@ import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionC
 import { buildLineDiff } from "@/lib/line-diff";
 import {
   buildReRunRequest,
+  EMPTY_SAVED_INPUT_DRAFT_STATE,
   evaluateRunGate,
   isAgentSelectable,
   isInteractionAnswerable,
@@ -115,9 +116,13 @@ import {
   runBadgeStatus,
   runOutputMode,
   runShortId,
+  savedInputDraftDirty,
+  selectedSavedInputDraft,
   shouldPollRun,
   showRunErrorCard,
+  syncSavedInputDraftState,
   testTaskLinkState,
+  type SavedInputDraftState,
 } from "@/lib/skill-studio";
 
 const PANE_STORAGE_KEY = "skillStudio.paneSizes";
@@ -1198,8 +1203,11 @@ function InputPane({
   onSelectAdHoc: () => void;
 }) {
   const queryClient = useQueryClient();
+  const onError = useMutationErrorToast();
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
-  const [savedDraft, setSavedDraft] = useState("");
+  const [savedInputDraft, setSavedInputDraft] = useState<SavedInputDraftState>(
+    EMPTY_SAVED_INPUT_DRAFT_STATE,
+  );
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -1207,15 +1215,22 @@ function InputPane({
 
   // In ad-hoc mode the editor is controlled by the shared shell state; otherwise
   // it edits a local copy of the selected saved input.
+  const savedDraft = selectedSavedInputDraft(savedInputDraft, selectedInput);
   const draft = adHocMode ? adHocContent : savedDraft;
-  const setDraft = adHocMode ? onAdHocChange : setSavedDraft;
+  const setDraft = adHocMode
+    ? onAdHocChange
+    : (value: string) => {
+        setSavedInputDraft((previous) => ({
+          inputId: selectedInput?.id ?? previous.inputId,
+          draft: value,
+          baselineContent: selectedInput?.content ?? previous.baselineContent,
+        }));
+      };
 
   useEffect(() => {
-    if (!adHocMode && selectedInput) {
-      setSavedDraft(selectedInput.content);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedInputId, adHocMode]);
+    if (adHocMode) return;
+    setSavedInputDraft((previous) => syncSavedInputDraftState(previous, selectedInput));
+  }, [adHocMode, selectedInput?.content, selectedInput?.id]);
 
   useEffect(() => {
     if (!loading && inputs.length === 0 && !adHocMode && !selectedInputId) {
@@ -1232,24 +1247,59 @@ function InputPane({
     [inputs],
   );
   const selectedName = selectedInput?.name ?? null;
+  const dirty = !adHocMode && savedInputDraftDirty(savedInputDraft, selectedInput);
+  const canSaveSelectedInput = Boolean(selectedInput && dirty && draft.trim());
+
+  const confirmDiscardDirtyInput = useCallback(() => {
+    if (!dirty) return true;
+    return (
+      typeof window === "undefined"
+      || window.confirm("Discard unsaved changes to this input?")
+    );
+  }, [dirty]);
+
+  const selectSavedInput = useCallback((id: string) => {
+    if (!adHocMode && id === selectedInputId) return;
+    if (!confirmDiscardDirtyInput()) return;
+    onSelectInput(id);
+  }, [adHocMode, confirmDiscardDirtyInput, onSelectInput, selectedInputId]);
+
+  const selectAdHocInput = useCallback(() => {
+    if (!adHocMode && !confirmDiscardDirtyInput()) return;
+    onSelectAdHoc();
+  }, [adHocMode, confirmDiscardDirtyInput, onSelectAdHoc]);
 
   const updateMutation = useMutation({
     mutationFn: (payload: { content: string }) =>
       companySkillsApi.updateTestInput(companyId, skillId, selectedInput!.id, payload),
-    onSuccess: () =>
+    onSuccess: (updated) => {
+      setSavedInputDraft({
+        inputId: updated.id,
+        draft: updated.content,
+        baselineContent: updated.content,
+      });
+      queryClient.setQueryData<CompanySkillTestInput[]>(
+        queryKeys.companySkills.testInputs(companyId, skillId),
+        (current) => current?.map((input) => input.id === updated.id ? updated : input),
+      );
       queryClient.invalidateQueries({
         queryKey: queryKeys.companySkills.testInputs(companyId, skillId),
-      }),
+      });
+    },
+    onError: onError("Couldn't save input"),
   });
   const deleteMutation = useMutation({
     mutationFn: (inputId: string) => companySkillsApi.deleteTestInput(companyId, skillId, inputId),
-    onSuccess: () =>
+    onSuccess: (deleted) => {
+      if (deleted.id === selectedInputId) {
+        onSelectAdHoc();
+      }
       queryClient.invalidateQueries({
         queryKey: queryKeys.companySkills.testInputs(companyId, skillId),
-      }),
+      });
+    },
+    onError: onError("Couldn't delete input"),
   });
-
-  const dirty = selectedInput ? draft !== selectedInput.content : false;
 
   return (
     <PaneScaffold
@@ -1280,7 +1330,7 @@ function InputPane({
         <div className="flex items-center gap-1">
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon-sm" onClick={onSelectAdHoc} aria-label="New input">
+              <Button variant="ghost" size="icon-sm" onClick={selectAdHocInput} aria-label="New input">
                 <Plus className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
@@ -1325,7 +1375,7 @@ function InputPane({
                     }
                     onSelectFile={(name) => {
                       const id = nameToId.get(name);
-                      if (id) onSelectInput(id);
+                      if (id) selectSavedInput(id);
                     }}
                     showCheckboxes={false}
                     renderFileExtra={(node) => {
@@ -1377,17 +1427,37 @@ function InputPane({
               className="min-h-0 flex-1 resize-none border-0 bg-transparent px-3 py-3 text-sm leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0"
             />
           </div>
-          <div className="flex items-center justify-end gap-2 border-t border-border px-3 py-2">
-            {selectedInput && dirty && (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={updateMutation.isPending}
-                onClick={() => updateMutation.mutate({ content: draft })}
-              >
-                Save changes
-              </Button>
-            )}
+          <div className="flex items-center gap-2 border-t border-border px-3 py-2">
+            <div className="mr-auto flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+              <span className="truncate">
+                {selectedInput ? selectedInput.name : adHocMode ? "New input" : "No input selected"}
+              </span>
+              {dirty ? <Badge variant="secondary">Unsaved</Badge> : null}
+            </div>
+            {selectedInput && dirty ? (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={updateMutation.isPending}
+                  onClick={() => setSavedInputDraft({
+                    inputId: selectedInput.id,
+                    draft: selectedInput.content,
+                    baselineContent: selectedInput.content,
+                  })}
+                >
+                  Revert
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!canSaveSelectedInput || updateMutation.isPending}
+                  onClick={() => updateMutation.mutate({ content: draft })}
+                >
+                  {updateMutation.isPending ? "Saving..." : "Save changes"}
+                </Button>
+              </>
+            ) : null}
             <Button
               size="sm"
               disabled={!draft.trim()}
@@ -1442,6 +1512,15 @@ function SaveInputDialog({
   const createMutation = useMutation({
     mutationFn: () => companySkillsApi.createTestInput(companyId, skillId, { name: name.trim(), content }),
     onSuccess: (input) => {
+      queryClient.setQueryData<CompanySkillTestInput[]>(
+        queryKeys.companySkills.testInputs(companyId, skillId),
+        (current) => {
+          const withoutDuplicate = (current ?? []).filter((item) => item.id !== input.id);
+          return [...withoutDuplicate, input].sort((a, b) =>
+            a.name.localeCompare(b.name) || Number(new Date(a.createdAt)) - Number(new Date(b.createdAt)),
+          );
+        },
+      );
       queryClient.invalidateQueries({
         queryKey: queryKeys.companySkills.testInputs(companyId, skillId),
       });
