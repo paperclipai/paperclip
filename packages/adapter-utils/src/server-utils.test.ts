@@ -617,30 +617,60 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
-  it("adds the execution contract to scoped wake prompts", () => {
-    const prompt = renderPaperclipWakePrompt({
-      reason: "issue_assigned",
-      issue: {
-        id: "issue-1",
-        identifier: "PAP-1580",
-        title: "Update prompts",
-        status: "in_progress",
-      },
-      commentWindow: {
-        requestedCount: 0,
-        includedCount: 0,
-        missingCount: 0,
-      },
-      comments: [],
-      fallbackFetchNeeded: false,
-    });
+  const scopedWakePayload = {
+    reason: "issue_assigned",
+    issue: {
+      id: "issue-1",
+      identifier: "PAP-1580",
+      title: "Update prompts",
+      status: "in_progress",
+    },
+    commentWindow: {
+      requestedCount: 0,
+      includedCount: 0,
+      missingCount: 0,
+    },
+    comments: [],
+    fallbackFetchNeeded: false,
+  };
+
+  // The execution contract must appear exactly once in the composed prompt on every path. The
+  // adapter composes `template + wakePrompt` on fresh runs and suppresses the template on
+  // resume-delta runs, so the fresh wake prompt must NOT restate the contract while the
+  // resume-delta wake prompt MUST (it is the only copy the agent gets there).
+  const countContract = (text: string): number =>
+    text.split("Execution contract").length - 1;
+
+  it("does not restate the execution contract on the fresh wake-payload path", () => {
+    const prompt = renderPaperclipWakePrompt(scopedWakePayload);
 
     expect(prompt).toContain("## Paperclip Wake Payload");
+    // The template (composed separately by the adapter) carries the contract on fresh runs.
+    expect(prompt).not.toContain("Execution contract");
+  });
+
+  it("keeps a condensed execution contract on the resume-delta path", () => {
+    const prompt = renderPaperclipWakePrompt(scopedWakePayload, { resumedSession: true });
+
+    expect(prompt).toContain("## Paperclip Resume Delta");
     expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
     expect(prompt).toContain("clear final disposition");
     expect(prompt).toContain("evidence, not valid liveness paths by themselves");
-    expect(prompt).toContain("Use child issues for long or parallel delegated work instead of polling");
-    expect(prompt).toContain("named unblock owner/action");
+    expect(countContract(prompt)).toBe(1);
+  });
+
+  it("yields the execution contract exactly once on both composed paths", () => {
+    // Fresh run: adapter renders the template AND appends the wake prompt.
+    const freshWake = renderPaperclipWakePrompt(scopedWakePayload);
+    const freshComposed = `${DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE}\n${freshWake}`;
+    expect(countContract(freshComposed)).toBe(1);
+
+    // Resume-delta run: adapter suppresses the template and sends only the wake prompt.
+    const resumeWake = renderPaperclipWakePrompt(scopedWakePayload, { resumedSession: true });
+    expect(countContract(resumeWake)).toBe(1);
+
+    // Non-wake fresh run: no wake prompt at all, contract comes solely from the template.
+    expect(countContract(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE)).toBe(1);
   });
 
   it("renders resolved checkbox selections in scoped wake prompts", () => {

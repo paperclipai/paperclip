@@ -1253,6 +1253,9 @@ export function renderPaperclipWakePrompt(
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
         "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
+        // Keep a condensed execution contract on the resume-delta path only: adapters that send this
+        // delta suppress DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE, so this is the sole copy the agent
+        // receives on a resumed session (the fresh wake-payload branch below omits it to avoid a duplicate).
         "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
@@ -1270,8 +1273,11 @@ export function renderPaperclipWakePrompt(
         "Use this inline wake data first before refetching the issue thread.",
         "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
-        "",
+        // No execution-contract paragraph here: on a fresh (non-resumed) run the adapter renders
+        // DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE alongside this wake prompt, and that template already
+        // carries the (fuller, bulleted) contract. Restating it here duplicated it (~400 tokens per
+        // heartbeat). The resume-delta branch above keeps a condensed copy because there the template
+        // is suppressed.
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
         `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
