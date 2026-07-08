@@ -187,10 +187,17 @@ export async function authorizeUpgrade(
       return null;
     }
 
-    await db
-      .update(agentApiKeys)
-      .set({ lastUsedAt: new Date() })
-      .where(eq(agentApiKeys.id, key.id));
+    // Same best-effort rule as the board-key touch below: authentication has
+    // already succeeded, so a transient bookkeeping write failure must not
+    // reject a valid upgrade.
+    try {
+      await db
+        .update(agentApiKeys)
+        .set({ lastUsedAt: new Date() })
+        .where(eq(agentApiKeys.id, key.id));
+    } catch (err) {
+      logger.warn({ err, companyId }, "failed to touch agent api key lastUsedAt on ws upgrade");
+    }
 
     return {
       companyId,

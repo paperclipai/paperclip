@@ -248,3 +248,61 @@ describe("authorizeUpgrade board API keys", () => {
     expect(boardAuth.touchBoardApiKey).toHaveBeenCalledWith("key-5");
   });
 });
+
+describe("authorizeUpgrade agent API keys", () => {
+  const COMPANY_ID = "company-1";
+  const WS_URL = new URL(`http://localhost/api/companies/${COMPANY_ID}/events/ws`);
+
+  // The agent-key select must hit, so this fake resolves the select chain to
+  // the given key row while the update chain either resolves or rejects.
+  function createAgentFakeDb(keyRow: Record<string, unknown>, opts: { updateFails?: boolean } = {}) {
+    const selectChain: Record<string, unknown> = {};
+    for (const method of ["select", "from", "where"]) {
+      selectChain[method] = () => selectChain;
+    }
+    selectChain.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve([keyRow]));
+
+    const updateChain: Record<string, unknown> = {
+      set: () => updateChain,
+      where: () =>
+        opts.updateFails
+          ? Promise.reject(new Error("transient db write failure"))
+          : Promise.resolve([]),
+    };
+
+    return {
+      select: () => selectChain,
+      update: () => updateChain,
+    };
+  }
+
+  function run(db: unknown) {
+    const request = {
+      url: `/api/companies/${COMPANY_ID}/events/ws`,
+      headers: { authorization: "Bearer pcp_agent_valid" },
+    } as unknown as IncomingMessage;
+    return authorizeUpgrade(db as never, request, COMPANY_ID, WS_URL, {
+      deploymentMode: "authenticated",
+    });
+  }
+
+  it("accepts a valid agent key for its own company", async () => {
+    const db = createAgentFakeDb({ id: "akey-1", agentId: "agent-1", companyId: COMPANY_ID });
+
+    const context = await run(db);
+
+    expect(context).toEqual({ companyId: COMPANY_ID, actorType: "agent", actorId: "agent-1" });
+  });
+
+  it("still authorizes when the lastUsedAt bookkeeping write fails", async () => {
+    const db = createAgentFakeDb(
+      { id: "akey-2", agentId: "agent-2", companyId: COMPANY_ID },
+      { updateFails: true },
+    );
+
+    const context = await run(db);
+
+    expect(context).toEqual({ companyId: COMPANY_ID, actorType: "agent", actorId: "agent-2" });
+    expect(logger.warn).toHaveBeenCalled();
+  });
+});
