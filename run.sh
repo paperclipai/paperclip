@@ -138,11 +138,11 @@ install_claude_cli() {
   [[ -z "${ANTHROPIC_API_KEY:-}" ]] && die "ANTHROPIC_API_KEY tidak diset di .env"
   [[ -z "${ANTHROPIC_BASE_URL:-}" ]] && die "ANTHROPIC_BASE_URL tidak diset di .env"
 
-  mkdir -p "$claude_config_dir" || die "Gagal membuat direktori $claude_config_dir"
+  mkdir -p "$claude_config_dir" "$PROJECT_DIR/volumes/claude-config" || die "Gagal membuat direktori config."
 
-  log "Membuat/memperbarui settings.json dari variabel environment..."
+  log "Membuat/memperbarui settings.json ke volume (shared dengan 9Router)..."
 
-  cat > "$claude_settings_file" <<CLAUDE_EOF
+  cat > "$PROJECT_DIR/volumes/claude-config/settings.json" <<CLAUDE_EOF
 {
   "env": {
     "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
@@ -160,8 +160,13 @@ install_claude_cli() {
   "apiKeyHelper": "echo '${ANTHROPIC_API_KEY}'"
 }
 CLAUDE_EOF
+  chmod 600 "$PROJECT_DIR/volumes/claude-config/settings.json"
+
+  # Copy to host home as well (for host-side Claude CLI)
+  cp "$PROJECT_DIR/volumes/claude-config/settings.json" "$claude_settings_file"
   chmod 600 "$claude_settings_file"
-  log "Claude Code CLI berhasil dikonfigurasi di $claude_settings_file"
+
+  log "Claude CLI config siap di volume (9Router: $PROJECT_DIR/volumes/claude-config/settings.json)"
 }
 
 install_9router() {
@@ -256,17 +261,17 @@ install_codex_cli() {
 
   [[ -z "${OPENAI_API_KEY:-}" ]] && die "OPENAI_API_KEY tidak diset di .env"
 
-  mkdir -p "$codex_config_dir" || die "Gagal membuat direktori $codex_config_dir"
+  mkdir -p "$codex_config_dir" "$PROJECT_DIR/volumes/codex-config" || die "Gagal membuat direktori."
 
-  log "Membuat/memperbarui auth.json dari variabel environment..."
-  cat > "$codex_auth_file" <<CODEX_AUTH_EOF
+  log "Membuat/memperbarui auth.json ke volume (shared dengan 9Router)..."
+  cat > "$PROJECT_DIR/volumes/codex-config/auth.json" <<CODEX_AUTH_EOF
 {
   "OPENAI_API_KEY": "${OPENAI_API_KEY}"
 }
 CODEX_AUTH_EOF
 
-  log "Membuat/memperbarui config.toml dari variabel environment..."
-  cat > "$codex_config_file" <<CODEX_CONFIG_EOF
+  log "Membuat/memperbarui config.toml ke volume (shared dengan 9Router)..."
+  cat > "$PROJECT_DIR/volumes/codex-config/config.toml" <<CODEX_CONFIG_EOF
 model_provider = "${CODEX_MODEL_PROVIDER:-openmodel}"
 model = "${CODEX_MODEL:-deepseek-v4-flash}"
 model_reasoning_effort = "${CODEX_MODEL_REASONING_EFFORT:-high}"
@@ -279,7 +284,11 @@ base_url = "${CODEX_OPENMODEL_BASE_URL:-https://api.openmodel.ai/v1}"
 wire_api = "responses"
 CODEX_CONFIG_EOF
 
-  log "OpenAI Codex CLI berhasil dikonfigurasi di $codex_config_dir"
+  # Sync to host home dir as well
+  cp "$PROJECT_DIR/volumes/codex-config/auth.json" "$codex_auth_file" 2>/dev/null || true
+  cp "$PROJECT_DIR/volumes/codex-config/config.toml" "$codex_config_file" 2>/dev/null || true
+
+  log "OpenAI Codex CLI config siap di volume (9Router: $PROJECT_DIR/volumes/codex-config/)"
 }
 
 # ------------------------------------------------------------------
@@ -465,11 +474,47 @@ load_env_file() {
 # ------------------------------------------------------------------
 
 ensure_runtime_dirs() {
-  mkdir -p "$RUNTIME_DIR" "$PROJECT_DIR/volumes/postgres" "$PROJECT_DIR/volumes/paperclip"
+  mkdir -p "$RUNTIME_DIR" "$PROJECT_DIR/volumes/postgres" "$PROJECT_DIR/volumes/paperclip" \
+    "$PROJECT_DIR/volumes/claude-config" "$PROJECT_DIR/volumes/codex-config"
   if [[ ! -w "$PROJECT_DIR/volumes/postgres" || ! -w "$PROJECT_DIR/volumes/paperclip" ]]; then
     run_root chown -R "$(id -u):$(id -g)" "$PROJECT_DIR/volumes"
   fi
   chmod 700 "$PROJECT_DIR/volumes/paperclip" || true
+  chmod 755 "$PROJECT_DIR/volumes/claude-config" "$PROJECT_DIR/volumes/codex-config" || true
+
+  # Seed default configs for Claude & Codex (9Router will override from WebUI)
+  if [[ ! -f "$PROJECT_DIR/volumes/claude-config/settings.json" ]]; then
+    cat > "$PROJECT_DIR/volumes/claude-config/settings.json" <<'CLAUDE_CFG'
+{
+  "env": {},
+  "permissions": { "allow": [], "deny": [] },
+  "theme": "dark",
+  "hasCompletedOnboarding": true
+}
+CLAUDE_CFG
+  fi
+  if [[ ! -f "$PROJECT_DIR/volumes/codex-config/config.toml" ]]; then
+    cat > "$PROJECT_DIR/volumes/codex-config/config.toml" <<'CODEX_CFG'
+model_provider = "openmodel"
+model = "deepseek-v4-flash"
+model_reasoning_effort = "high"
+disable_response_storage = true
+preferred_auth_method = "apikey"
+
+[model_providers.openmodel]
+name = "openmodel"
+base_url = "https://api.openmodel.ai/v1"
+wire_api = "responses"
+CODEX_CFG
+  fi
+  if [[ ! -f "$PROJECT_DIR/volumes/codex-config/auth.json" ]]; then
+    cat > "$PROJECT_DIR/volumes/codex-config/auth.json" <<'CODEX_AUTH'
+{
+  "OPENAI_API_KEY": ""
+}
+CODEX_AUTH
+  fi
+  log "Runtime directories siap (claude-config & codex-config seed)."
 }
 
 ensure_compose_file() {
@@ -525,10 +570,10 @@ services:
       ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL}
       # Bearer token for /v1/models pre-flight check
       ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY}}
-      # Default model must be compatible with OpenModel
-      ANTHROPIC_DEFAULT_OPUS_MODEL: ${ANTHROPIC_DEFAULT_OPUS_MODEL:-deepseek-v4-flash}
-      ANTHROPIC_DEFAULT_SONNET_MODEL: ${ANTHROPIC_DEFAULT_SONNET_MODEL:-deepseek-v4-flash}
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${ANTHROPIC_DEFAULT_HAIKU_MODEL:-deepseek-v4-flash}
+      # Default model — commented out so 9Router can control via volume mount
+      # ANTHROPIC_DEFAULT_OPUS_MODEL:
+      # ANTHROPIC_DEFAULT_SONNET_MODEL:
+      # ANTHROPIC_DEFAULT_HAIKU_MODEL:
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
@@ -542,6 +587,9 @@ services:
       - traefik.http.services.paperclip.loadbalancer.server.port=3100
     volumes:
       - ${PROJECT_DIR}/volumes/paperclip:/paperclip
+      # Mount config dirs so 9Router (host) can override Claude & Codex config inside container
+      - ${PROJECT_DIR}/volumes/claude-config:/home/node/.claude
+      - ${PROJECT_DIR}/volumes/codex-config:/home/node/.codex
     networks:
       - paperclip-private
       - afiacloud-containers
@@ -597,12 +645,11 @@ ensure_repo_updated() {
 # ------------------------------------------------------------------
 
 health_check() {
-  local health_url attempts max_attempts
-  health_url="http://127.0.0.1:${APP_PORT}/api/health"
+  local attempts max_attempts
   attempts=0
   max_attempts="${HEALTHCHECK_RETRIES:-60}"
-  log "Menunggu health check aplikasi di ${health_url}..."
-  until curl -fsS "$health_url" >/dev/null 2>&1; do
+  log "Menunggu health check aplikasi di container (internal port 3100)..."
+  until docker exec "$APP_SERVICE" curl -fsS http://0.0.0.0:3100/api/health >/dev/null 2>&1; do
     attempts=$((attempts + 1))
     if (( attempts >= max_attempts )); then
       compose logs --tail=50 "$APP_SERVICE" "$DB_SERVICE" || true

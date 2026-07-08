@@ -71,3 +71,5 @@ tests/storybook-visual/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+9router.log
+9router.pid
