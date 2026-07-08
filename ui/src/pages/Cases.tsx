@@ -123,12 +123,17 @@ export function Cases() {
     setBreadcrumbs([{ label: "Cases" }]);
   }, [setBreadcrumbs]);
 
-  // Label filtering must happen server-side (labels are not on the list row), so
-  // the query is keyed on the label filter; every other filter is client-side.
-  const labelId = labelFilter === ALL ? undefined : labelFilter;
+  const listFilters = useMemo(() => ({
+    labelId: labelFilter === ALL ? undefined : labelFilter,
+    type: typeFilter === ALL ? undefined : typeFilter,
+    status: statusFilter === "all" ? undefined : statusFilter,
+    projectId: projectFilter === ALL ? undefined : projectFilter,
+    q: search.trim() || undefined,
+    limit: 200,
+  }), [labelFilter, projectFilter, search, statusFilter, typeFilter]);
   const casesQuery = useQuery({
-    queryKey: [...queryKeys.cases.list(selectedCompanyId ?? ""), labelId ?? "all"],
-    queryFn: () => casesApi.list(selectedCompanyId!, { labelId, limit: 200 }),
+    queryKey: [...queryKeys.cases.list(selectedCompanyId ?? ""), listFilters],
+    queryFn: () => casesApi.list(selectedCompanyId!, listFilters),
     enabled: !!selectedCompanyId,
   });
   const projectsQuery = useQuery({
@@ -150,27 +155,17 @@ export function Cases() {
   }, [projectsQuery.data]);
 
   const distinctTypes = useMemo(
-    () => [...new Set(allCases.map((c) => c.caseType))].sort(),
-    [allCases],
+    () => [...new Set([
+      ...allCases.map((c) => c.caseType),
+      ...(typeFilter === ALL ? [] : [typeFilter]),
+    ])].sort(),
+    [allCases, typeFilter],
   );
 
   const activeCount = allCases.filter((c) => !TERMINAL_CASE_STATUSES.includes(c.status)).length;
   const terminalCount = allCases.length - activeCount;
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return allCases.filter((c) => {
-      if (statusFilter === "active" && TERMINAL_CASE_STATUSES.includes(c.status)) return false;
-      if (statusFilter !== "active" && statusFilter !== "all" && c.status !== statusFilter) return false;
-      if (typeFilter !== ALL && c.caseType !== typeFilter) return false;
-      if (projectFilter !== ALL && (c.projectId ?? "") !== projectFilter) return false;
-      if (q) {
-        const haystack = `${c.identifier} ${c.title} ${c.key ?? ""} ${c.summary ?? ""}`.toLowerCase();
-        if (!haystack.includes(q)) return false;
-      }
-      return true;
-    });
-  }, [allCases, search, statusFilter, typeFilter, projectFilter]);
+  const filtered = allCases;
 
   const groups = useMemo(() => {
     const map = new Map<string, CaseSummary[]>();
@@ -221,7 +216,7 @@ export function Cases() {
 
   if (casesQuery.isLoading) return <PageSkeleton variant="list" />;
 
-  const noCasesAtAll = allCases.length === 0 && labelFilter === ALL;
+  const noCasesAtAll = allCases.length === 0 && activeFilters.length === 0;
 
   return (
     <div className="space-y-4">

@@ -240,6 +240,27 @@ describeEmbeddedPostgres("cases routes", () => {
     expect([{ channel: "stable" }, { channel: "canary" }]).toContainEqual(all[0]!.fields);
   });
 
+  it("upserts keyless cases by company and type", async () => {
+    await enableCases();
+    const company = await seedCompany("NUL");
+    const http = request(app(boardActor));
+
+    const first = await http
+      .post(`/api/companies/${company.id}/cases`)
+      .send({ caseType: "release_note", title: "Draft release note" })
+      .expect(201);
+    const second = await http
+      .post(`/api/companies/${company.id}/cases`)
+      .send({ caseType: "release_note", title: "Updated release note" })
+      .expect(200);
+
+    expect(second.body.id).toBe(first.body.id);
+    expect(second.body.key).toBeNull();
+    expect(second.body.title).toBe("Updated release note");
+    const all = await db.select().from(cases);
+    expect(all).toHaveLength(1);
+  });
+
   it("resolves cases by identifier", async () => {
     await enableCases();
     const company = await seedCompany("REF");
@@ -435,19 +456,19 @@ describeEmbeddedPostgres("cases routes", () => {
       .post(`/api/companies/${otherCompany.id}/cases`)
       .send({ caseType: "bug", title: "Wrong company create" })
       .expect(403);
-    await http.get(`/api/cases/${caseRow!.id}`).expect(403);
-    await http.get(`/api/cases/${caseRow!.identifier}`).expect(403);
-    await http.patch(`/api/cases/${caseRow!.id}`).send({ status: "in_progress" }).expect(403);
-    await http.put(`/api/cases/${caseRow!.id}/documents/body`).send({ body: "Body" }).expect(403);
+    await http.get(`/api/cases/${caseRow!.id}`).expect(404);
+    await http.get(`/api/cases/${caseRow!.identifier}`).expect(404);
+    await http.patch(`/api/cases/${caseRow!.id}`).send({ status: "in_progress" }).expect(404);
+    await http.put(`/api/cases/${caseRow!.id}/documents/body`).send({ body: "Body" }).expect(404);
     await http
       .post(`/api/cases/${caseRow!.id}/links`)
       .send({ issueId: otherIssue!.id, role: "reference" })
-      .expect(403);
+      .expect(404);
     await http
       .post(`/api/cases/${caseRow!.id}/attachments`)
       .attach("file", Buffer.from("artifact"), "artifact.txt")
-      .expect(403);
-    await http.get(`/api/cases/${caseRow!.id}/events`).expect(403);
+      .expect(404);
+    await http.get(`/api/cases/${caseRow!.id}/events`).expect(404);
 
     expect(await db.select().from(cases)).toHaveLength(1);
     expect(await db.select().from(caseDocuments)).toHaveLength(0);
@@ -488,6 +509,22 @@ describeEmbeddedPostgres("cases routes", () => {
       .expect(200);
     expect(activeList.body).toHaveLength(1);
     expect(activeList.body[0].id).toBe(created.body.id);
+
+    await db.insert(cases).values(Array.from({ length: 205 }, (_, index) => ({
+      companyId: company.id,
+      caseNumber: 100 + index,
+      identifier: `${company.issuePrefix.toUpperCase()}-C${100 + index}`,
+      caseType: "incident",
+      title: `Filler incident ${index}`,
+      status: "in_progress",
+      updatedAt: new Date(`2030-01-01T00:${String(index % 60).padStart(2, "0")}:00.000Z`),
+    })));
+    const deepFiltered = await http
+      .get(`/api/companies/${company.id}/cases`)
+      .query({ q: "Production", limit: 1 })
+      .expect(200);
+    expect(deepFiltered.body).toHaveLength(1);
+    expect(deepFiltered.body[0].id).toBe(created.body.id);
 
     const detail = await http.get(`/api/cases/${created.body.identifier}`).expect(200);
     expect(detail.body.labels).toHaveLength(1);

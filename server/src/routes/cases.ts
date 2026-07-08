@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -109,8 +109,17 @@ async function assertCasesEnabled(db: Db) {
 }
 
 async function lockCaseUpsertKey(db: CaseRouteDb, input: { companyId: string; caseType: string; key: string | null | undefined }) {
-  if (!input.key) return;
-  const lockKey = `paperclip:case-upsert:${input.companyId}:${input.caseType}:${input.key}`;
+  const lockKey = `paperclip:case-upsert:${input.companyId}:${input.caseType}:${input.key ?? "<null>"}`;
+  await db.execute(sql`select pg_advisory_xact_lock(hashtext(${lockKey}))`);
+}
+
+async function lockCaseDocumentKey(db: CaseRouteDb, input: { companyId: string; caseId: string; key: string }) {
+  const lockKey = `paperclip:case-document:${input.companyId}:${input.caseId}:${input.key}`;
+  await db.execute(sql`select pg_advisory_xact_lock(hashtext(${lockKey}))`);
+}
+
+async function lockCaseLabels(db: CaseRouteDb, input: { companyId: string; caseId: string }) {
+  const lockKey = `paperclip:case-labels:${input.companyId}:${input.caseId}`;
   await db.execute(sql`select pg_advisory_xact_lock(hashtext(${lockKey}))`);
 }
 
@@ -120,16 +129,21 @@ function parseDocumentKey(raw: string | undefined) {
   return parsed.data;
 }
 
-async function loadCaseByIdOrIdentifier(db: CaseRouteDb, idOrIdentifier: string) {
+async function loadCaseByIdOrIdentifier(db: CaseRouteDb, idOrIdentifier: string, companyIds?: string[]) {
+  if (companyIds && companyIds.length === 0) return null;
   const normalizedIdentifier = idOrIdentifier.trim().toUpperCase();
-  const where = isUuidLike(idOrIdentifier)
+  const identityWhere = isUuidLike(idOrIdentifier)
     ? or(eq(cases.id, idOrIdentifier), eq(cases.identifier, normalizedIdentifier))
     : eq(cases.identifier, normalizedIdentifier);
+  const where = companyIds
+    ? and(identityWhere, inArray(cases.companyId, companyIds))
+    : identityWhere;
   return db.select().from(cases).where(where).limit(1).then((rows) => rows[0] ?? null);
 }
 
 async function assertCaseAccess(db: Db, req: Request, idOrIdentifier: string) {
-  const row = await loadCaseByIdOrIdentifier(db, idOrIdentifier);
+  const companyIds = req.actor.type === "agent" ? (req.actor.companyId ? [req.actor.companyId] : []) : undefined;
+  const row = await loadCaseByIdOrIdentifier(db, idOrIdentifier, companyIds);
   if (!row) throw notFound("Case not found");
   assertCompanyAccess(req, row.companyId);
   return row;
@@ -416,16 +430,15 @@ export function caseRoutes(db: Db, storage: StorageService) {
       await assertProjectBelongsToCompany(tx, { companyId, projectId: body.projectId ?? null });
       await assertParentCaseBelongsToCompany(tx, { companyId, parentCaseId: body.parentCaseId ?? null });
       await lockCaseUpsertKey(tx, { companyId, caseType: body.caseType, key: body.key });
+      const keyFilter = body.key ? eq(cases.key, body.key) : isNull(cases.key);
 
       const now = new Date();
-      const existing = body.key
-        ? await tx
-          .select()
-          .from(cases)
-          .where(and(eq(cases.companyId, companyId), eq(cases.caseType, body.caseType), eq(cases.key, body.key)))
-          .limit(1)
-          .then((rows) => rows[0] ?? null)
-        : null;
+      const existing = await tx
+        .select()
+        .from(cases)
+        .where(and(eq(cases.companyId, companyId), eq(cases.caseType, body.caseType), keyFilter))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
 
       if (existing) {
         const status = body.status ?? existing.status;
@@ -537,6 +550,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
     const body = req.body as z.infer<typeof upsertCaseDocumentSchema>;
 
     const result = await db.transaction(async (tx) => {
+      await lockCaseDocumentKey(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
       const existing = await tx
         .select({ link: caseDocuments, document: documents, revision: documentRevisions })
         .from(caseDocuments)
@@ -916,6 +930,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
       }).where(eq(cases.id, caseRow.id)).returning();
 
       if (nextLabelIds) {
+        await lockCaseLabels(tx, { companyId: caseRow.companyId, caseId: caseRow.id });
         const current = await tx
           .select({ labelId: caseLabels.labelId })
           .from(caseLabels)

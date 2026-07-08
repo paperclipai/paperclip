@@ -105,23 +105,49 @@ describe("Cases list", () => {
     container.remove();
   });
 
-  it("hides terminal (done/cancelled) cases by default and shows the hidden hint", async () => {
+  it("requests active cases by default", async () => {
     mockCasesApi.list.mockResolvedValue([
       createCase({ id: "a", identifier: "PAP-C1", title: "Active post", status: "in_progress" }),
-      createCase({ id: "b", identifier: "PAP-C2", title: "Finished post", status: "done" }),
-      createCase({ id: "c", identifier: "PAP-C3", title: "Killed post", status: "cancelled" }),
     ]);
 
     const root = renderPage(container);
 
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Active post");
-      expect(container.textContent).not.toContain("Finished post");
-      expect(container.textContent).not.toContain("Killed post");
-      // active/total count
-      expect(container.textContent).toContain("1 active · 3 total");
-      // terminal-hidden hint
-      expect(container.textContent).toContain("2 done/cancelled cases hidden");
+      expect(container.textContent).toContain("1 active · 1 total");
+      expect(mockCasesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        status: "active",
+        limit: 200,
+      }));
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("sends search filters to the cases API instead of filtering a fetched page locally", async () => {
+    mockCasesApi.list.mockResolvedValue([
+      createCase({ id: "a", identifier: "PAP-C1", title: "Active post", status: "in_progress" }),
+    ]);
+    const root = renderPage(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Active post");
+    });
+
+    const input = container.querySelector<HTMLInputElement>("input[placeholder='Search cases…']");
+    expect(input).toBeTruthy();
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      valueSetter?.call(input, "launch");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockCasesApi.list).toHaveBeenLastCalledWith("company-1", expect.objectContaining({
+        q: "launch",
+        status: "active",
+        limit: 200,
+      }));
     });
 
     act(() => root.unmount());
