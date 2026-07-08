@@ -81,6 +81,11 @@ export interface Config {
   storageS3Endpoint: string | undefined;
   storageS3Prefix: string;
   storageS3ForcePathStyle: boolean;
+  runLogArchiveMode: "auto" | "off";
+  runLogHotRetentionDays: number;
+  runLogCompanyBudgetBytes: number;
+  runLogSweepIntervalMs: number;
+  runLogSweepItemLimit: number;
   feedbackExportBackendUrl: string | undefined;
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
@@ -148,6 +153,28 @@ export function loadConfig(): Config {
     process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE !== undefined
       ? process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE === "true"
       : (fileStorage?.s3?.forcePathStyle ?? false);
+  // Run-log cold-archive knobs. `auto` archives only when object storage is
+  // configured (storageProvider === "s3"); `off` disables the sweeper. Hot
+  // files then only age out via the infra janitor backstop. Read here so the
+  // scheduler and archiver share one resolved source of truth.
+  const runLogArchiveMode: "auto" | "off" =
+    process.env.PAPERCLIP_RUN_LOG_ARCHIVE?.trim().toLowerCase() === "off" ? "off" : "auto";
+  const runLogHotRetentionDays = Math.max(
+    1,
+    Number(process.env.PAPERCLIP_RUN_LOG_HOT_RETENTION_DAYS) || 30,
+  );
+  const runLogCompanyBudgetBytes = Math.max(
+    1,
+    Number(process.env.PAPERCLIP_RUN_LOG_COMPANY_BUDGET_BYTES) || 5 * 1024 * 1024 * 1024,
+  );
+  const runLogSweepIntervalMs = Math.max(
+    60_000,
+    Number(process.env.PAPERCLIP_RUN_LOG_SWEEP_INTERVAL_MS) || 60 * 60 * 1000,
+  );
+  const runLogSweepItemLimit = Math.max(
+    1,
+    Number(process.env.PAPERCLIP_RUN_LOG_SWEEP_ITEM_LIMIT) || 200,
+  );
   const feedbackExportBackendUrl =
     process.env.PAPERCLIP_FEEDBACK_EXPORT_BACKEND_URL?.trim() ||
     process.env.PAPERCLIP_TELEMETRY_BACKEND_URL?.trim() ||
@@ -327,6 +354,11 @@ export function loadConfig(): Config {
     storageS3Endpoint,
     storageS3Prefix,
     storageS3ForcePathStyle,
+    runLogArchiveMode,
+    runLogHotRetentionDays,
+    runLogCompanyBudgetBytes,
+    runLogSweepIntervalMs,
+    runLogSweepItemLimit,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",

@@ -319,13 +319,13 @@ async function readFullRunLog(run: {
   logStore: string | null;
   logRef: string | null;
 }) {
-  if (run.logStore !== "local_file" || !run.logRef) return null;
+  if ((run.logStore !== "local_file" && run.logStore !== "s3") || !run.logRef) return null;
   const store = getRunLogStore();
   let offset = 0;
   let combined = "";
 
   while (true) {
-    const result = await store.read({ store: "local_file", logRef: run.logRef }, {
+    const result = await store.read({ store: run.logStore, logRef: run.logRef }, {
       offset,
       limitBytes: 512_000,
     }).catch(() => null);

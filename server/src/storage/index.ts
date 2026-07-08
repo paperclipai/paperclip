@@ -1,10 +1,12 @@
 import { loadConfig, type Config } from "../config.js";
 import { createStorageProviderFromConfig } from "./provider-registry.js";
 import { createStorageService } from "./service.js";
-import type { StorageService } from "./types.js";
+import type { StorageProvider, StorageService } from "./types.js";
 
 let cachedStorageService: StorageService | null = null;
 let cachedSignature: string | null = null;
+let cachedStorageProvider: StorageProvider | null = null;
+let cachedProviderSignature: string | null = null;
 
 function signatureForConfig(config: Config): string {
   return JSON.stringify({
@@ -32,4 +34,23 @@ export function getStorageService(): StorageService {
   return cachedStorageService;
 }
 
-export type { StorageService, PutFileResult } from "./types.js";
+/**
+ * The raw, non-company-scoped {@link StorageProvider} behind the facade. The
+ * company-scoped {@link StorageService} enforces a `<companyId>/` object-key
+ * prefix, which is the right guard for tenant-facing artifact requests but not
+ * for system-level keys like the run-log archive
+ * (`run-logs/<companyId>/<agentId>/<runId>.ndjson.gz`). System sweepers/readers
+ * use this provider directly; it stays provider-swappable (local_disk ↔ s3) and
+ * never leaks the underlying SDK.
+ */
+export function getStorageProvider(): StorageProvider {
+  const config = loadConfig();
+  const signature = signatureForConfig(config);
+  if (!cachedStorageProvider || cachedProviderSignature !== signature) {
+    cachedStorageProvider = createStorageProviderFromConfig(config);
+    cachedProviderSignature = signature;
+  }
+  return cachedStorageProvider;
+}
+
+export type { StorageProvider, StorageService, PutFileResult } from "./types.js";
