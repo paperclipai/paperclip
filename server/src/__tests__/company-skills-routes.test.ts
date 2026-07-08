@@ -1440,6 +1440,41 @@ describe("company skill mutation permissions", () => {
     }));
   });
 
+  it("does not prune expired harness issues from test run reads", async () => {
+    mockCompanySkillService.listTestRuns.mockResolvedValueOnce([]);
+    mockCompanySkillService.getTestRunDetail.mockResolvedValueOnce({
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      skillId: "skill-1",
+      status: "succeeded",
+      harnessContent: { available: false, unavailableReason: "expired", documents: [], attachments: [], workProducts: [] },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    });
+
+    const listed = await request(app)
+      .get("/api/companies/company-1/skills/skill-1/test-runs");
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+
+    const detail = await request(app)
+      .get("/api/companies/company-1/skills/skill-1/test-runs/22222222-2222-4222-8222-222222222222");
+    expect(detail.status, JSON.stringify(detail.body)).toBe(200);
+
+    expect(mockCompanySkillService.listTestRuns).toHaveBeenCalledWith("company-1", "skill-1", {});
+    expect(mockCompanySkillService.getTestRunDetail).toHaveBeenCalledWith(
+      "company-1",
+      "skill-1",
+      "22222222-2222-4222-8222-222222222222",
+    );
+    expect(mockCompanySkillService.pruneExpiredTestHarnessIssues).not.toHaveBeenCalled();
+  });
+
   it("deletes a terminal test run and hides its harness task", async () => {
     mockIssueService.getById.mockResolvedValueOnce({
       id: "44444444-4444-4444-8444-444444444444",

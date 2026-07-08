@@ -423,7 +423,6 @@ export function companySkillRoutes(db: Db) {
     const query = companySkillTestRunListQuerySchema.parse({
       inputId: firstQueryString(req.query.inputId),
     });
-    await svc.pruneExpiredTestHarnessIssues(companyId);
     res.json(await svc.listTestRuns(companyId, skillId, query));
   });
 
@@ -432,7 +431,6 @@ export function companySkillRoutes(db: Db) {
     const skillId = req.params.skillId as string;
     const runId = req.params.runId as string;
     assertCompanyAccess(req, companyId);
-    await svc.pruneExpiredTestHarnessIssues(companyId);
     const result = await svc.getTestRunDetail(companyId, skillId, runId);
     if (!result) {
       res.status(404).json({ error: "Test run not found" });

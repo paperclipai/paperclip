@@ -375,7 +375,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(stored?.updatedAt.toISOString()).toBe(preservedUpdatedAt.toISOString());
   });
 
-  it("does not retouch local-path imports with legacy null metadata fields", async () => {
+  it("refreshes local-path imports with legacy null metadata fields", async () => {
     const companyId = randomUUID();
     const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-null-metadata-import-skill-"));
     cleanupDirs.add(skillDir);
@@ -418,7 +418,11 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await svc.importFromSource(companyId, skillDir);
     const stored = await svc.getById(companyId, skillId);
 
-    expect(stored?.updatedAt.toISOString()).toBe(preservedUpdatedAt.toISOString());
+    expect(stored?.updatedAt.toISOString()).not.toBe(preservedUpdatedAt.toISOString());
+    expect(stored?.metadata).toMatchObject({ sourceKind: "local_path", skillKey });
+    expect(stored?.metadata).not.toHaveProperty("owner");
+    expect(stored?.metadata).not.toHaveProperty("repo");
+    expect(stored?.metadata).not.toHaveProperty("ref");
   });
 
   it("does not persist audit failures for remote-source skills", async () => {
