@@ -107,7 +107,8 @@ function boardRoutes() {
       <Route path="company/settings/instance/adapters" element={<AdapterManager />} />
       <Route path="company/settings/:settingsRoutePath/*" element={<CompanySettingsPluginPage />} />
       <Route path="skills/studio" element={<SkillStudio />} />
-      <Route path="skills/:skillId/studio" element={<SkillStudio />} />
+      <Route path="skills/studio/:skillId" element={<SkillStudio />} />
+      <Route path="skills/:skillId/studio" element={<LegacySkillStudioRedirect />} />
       <Route path="skills/*" element={<CompanySkills />} />
       <Route path="settings" element={<LegacySettingsRedirect />} />
       <Route path="settings/*" element={<LegacySettingsRedirect />} />
@@ -221,6 +222,33 @@ function boardRoutes() {
 
 function InboxRootRedirect() {
   return <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
+}
+
+function LegacySkillStudioRedirect() {
+  const location = useLocation();
+  const { companies, selectedCompany, loading } = useCompany();
+  const { companyPrefix, skillId } = useParams<{ companyPrefix?: string; skillId?: string }>();
+
+  if (loading) return null;
+
+  const targetCompany =
+    (companyPrefix
+      ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase())
+      : null) ??
+    selectedCompany ??
+    companies[0] ??
+    null;
+
+  if (!targetCompany || !skillId) {
+    return <Navigate to="/skills/studio" replace />;
+  }
+
+  return (
+    <Navigate
+      to={`/${targetCompany.issuePrefix}/skills/studio/${encodeURIComponent(skillId)}${location.search}${location.hash}`}
+      replace
+    />
+  );
 }
 
 function LegacySettingsRedirect() {
@@ -425,7 +453,8 @@ export function App() {
           <Route path="artifacts" element={<UnprefixedBoardRedirect />} />
           <Route path="u/:userSlug" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/studio" element={<UnprefixedBoardRedirect />} />
-          <Route path="skills/:skillId/studio" element={<UnprefixedBoardRedirect />} />
+          <Route path="skills/studio/:skillId" element={<UnprefixedBoardRedirect />} />
+          <Route path="skills/:skillId/studio" element={<LegacySkillStudioRedirect />} />
           <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
