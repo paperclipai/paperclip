@@ -734,6 +734,8 @@ async function buildRuntime(input: {
 }): Promise<AcpxPreparedRuntime> {
   const { runId, agent, config, context, authToken } = input.ctx;
   const workspaceContext = parseObject(context.paperclipWorkspace);
+  const secretsContext = parseObject(context.paperclipSecrets);
+  const secretManifest = Array.isArray(secretsContext.manifest) ? secretsContext.manifest : [];
   const workspaceCwd = asString(workspaceContext.cwd, "");
   const workspaceSource = asString(workspaceContext.source, "");
   const workspaceStrategy = asString(workspaceContext.strategy, "");
@@ -914,6 +916,9 @@ async function buildRuntime(input: {
           defaultMode: paperclipClaudeSettings.defaultMode,
         }
       : null,
+    // Bust the warm-session cache when any resolved secret rotates so the
+    // next spawned heartbeat picks up the new env without a harness restart.
+    secretManifestHash: shortHash(secretManifest),
   });
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
   const sessionKey = `paperclip:${agent.companyId}:${agent.id}:${taskKey}:${fingerprint}`;
