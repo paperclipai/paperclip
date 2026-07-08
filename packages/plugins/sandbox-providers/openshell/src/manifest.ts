@@ -38,8 +38,10 @@ const manifest: PaperclipPluginManifestV1 = {
           },
           useTls: {
             type: "boolean",
-            description: "Enable TLS for gRPC connections to the gateway.",
-            default: false,
+            description:
+              "Enable TLS for gRPC connections to the gateway. " +
+              "Defaults to true. Set to false only for trusted in-cluster plaintext.",
+            default: true,
           },
           caCert: {
             type: "string",

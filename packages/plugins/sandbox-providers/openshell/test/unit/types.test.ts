@@ -14,7 +14,7 @@ describe("openshellProviderConfigSchema", () => {
       expect(result.data.gatewayEndpoint).toBe(
         "openshell.openshell.svc:8080"
       );
-      expect(result.data.useTls).toBe(false);
+      expect(result.data.useTls).toBe(true);
       expect(result.data.gpu).toBe(false);
       expect(result.data.gpuCount).toBe(1);
       expect(result.data.timeoutSeconds).toBe(3600);
@@ -95,7 +95,7 @@ describe("parseOpenShellProviderConfig", () => {
       gatewayEndpoint: "gw:8080",
     });
     expect(config.gatewayEndpoint).toBe("gw:8080");
-    expect(config.useTls).toBe(false);
+    expect(config.useTls).toBe(true);
   });
 
   it("throws on invalid input", () => {

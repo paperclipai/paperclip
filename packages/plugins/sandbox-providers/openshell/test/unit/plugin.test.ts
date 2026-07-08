@@ -34,7 +34,7 @@ describe("plugin", () => {
       expect(result.normalizedConfig).toEqual(
         expect.objectContaining({
           gatewayEndpoint: "openshell.openshell.svc:8080",
-          useTls: false,
+          useTls: true,
           gpu: false,
           timeoutSeconds: 3600,
           workspacePath: "/workspace",
@@ -109,7 +109,16 @@ describe("plugin", () => {
       );
     });
 
-    it("warns when TLS is disabled", async () => {
+    it("does not warn when TLS is enabled (default)", async () => {
+      const result = await validate({
+        driverKey: "openshell",
+        config: { gatewayEndpoint: "gw:8080" },
+      });
+      expect(result.ok).toBe(true);
+      expect(result.warnings).toBeUndefined();
+    });
+
+    it("warns when TLS is explicitly disabled", async () => {
       const result = await validate({
         driverKey: "openshell",
         config: { gatewayEndpoint: "gw:8080", useTls: false },
@@ -117,15 +126,6 @@ describe("plugin", () => {
       expect(result.ok).toBe(true);
       expect(result.warnings).toBeDefined();
       expect(result.warnings!.some((w) => w.includes("plaintext"))).toBe(true);
-    });
-
-    it("does not warn when TLS is enabled", async () => {
-      const result = await validate({
-        driverKey: "openshell",
-        config: { gatewayEndpoint: "gw:8080", useTls: true },
-      });
-      expect(result.ok).toBe(true);
-      expect(result.warnings).toBeUndefined();
     });
 
     it("rejects invalid timeoutSeconds", async () => {

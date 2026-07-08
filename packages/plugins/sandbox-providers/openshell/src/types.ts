@@ -5,7 +5,7 @@ export const openshellProviderConfigSchema = z.object({
     .string()
     .min(1, "gatewayEndpoint is required")
     .describe("OpenShell gateway gRPC endpoint (host:port)"),
-  useTls: z.boolean().default(false),
+  useTls: z.boolean().default(true),
   caCert: z.string().optional(),
   sandboxImage: z
     .string()
