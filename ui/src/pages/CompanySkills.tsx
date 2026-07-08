@@ -2406,6 +2406,17 @@ export function SkillDetailPage({
                     <Pencil className="mr-1.5 h-3.5 w-3.5" /> Edit
                   </Button>
                 )
+              ) : !skill.editable ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={onFork}
+                  title={skill.editableReason ?? "Fork this skill to edit it."}
+                >
+                  <GitFork className="mr-1.5 h-3.5 w-3.5" />
+                  Fork
+                </Button>
               ) : null}
             </div>
           </div>
@@ -2463,7 +2474,19 @@ export function SkillDetailPage({
           </div>
           <div className="min-w-0 border-b border-border py-2">
             <div className="text-xs text-muted-foreground">Mode</div>
-            <div className="mt-1">{skill.editable ? "Editable" : skill.editableReason ?? "Read only"}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              {skill.editable ? (
+                "Editable"
+              ) : (
+                <>
+                  <span>Read only</span>
+                  <Button type="button" variant="outline" size="xs" onClick={onFork}>
+                    <GitFork className="mr-1 h-3 w-3" />
+                    Fork
+                  </Button>
+                </>
+              )}
+            </div>
           </div>
         </section>
       </div>

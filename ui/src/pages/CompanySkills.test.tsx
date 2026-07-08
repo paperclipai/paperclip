@@ -358,7 +358,32 @@ describe("SkillDetailPage versions tab", () => {
 });
 
 describe("SkillDetailPage settings", () => {
-  it("saves category edits with spaces from the settings dialog", async () => {
+  it("shows a direct fork action for read-only skills", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const onFork = vi.fn();
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail: makeDetail(v1, {
+        editable: false,
+        editableReason: "Remote GitHub skills are read-only. Fork or import locally to edit them.",
+        sourceBadge: "github",
+        sourceLabel: "GitHub",
+        sourceType: "github",
+      }),
+      onFork,
+    });
+
+    expect(node.textContent).not.toContain("Fork or import locally");
+
+    const forkButton = buttonsNamed(node, "Fork")[0] as HTMLButtonElement;
+    expect(forkButton).toBeTruthy();
+
+    await click(forkButton);
+
+    expect(onFork).toHaveBeenCalledOnce();
+  });
+
+  it("saves normalized category edits from the settings dialog", async () => {
     const v1 = makeVersion(1, "# Demo Skill");
     const onUpdateSettings = vi.fn();
     const node = await renderSkillDetail([v1], {
