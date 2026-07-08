@@ -100,6 +100,8 @@ export type {
   CompanySkillCreateRequest,
   CompanySkillFileDetail,
   CompanySkillFileUpdateRequest,
+  CompanySkillFileDeleteRequest,
+  CompanySkillFileDeleteResult,
   CompanySkillTestRunStatus,
   CompanySkillTestInput,
   CompanySkillTestInputCreateRequest,

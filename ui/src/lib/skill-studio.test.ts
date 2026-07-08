@@ -136,6 +136,13 @@ describe("disabled-Run matrix", () => {
     });
   });
 
+  it("blocks when skill editor edits are unsaved", () => {
+    expect(evaluateRunGate({ ...ready, hasUnsavedSkillEdits: true })).toEqual({
+      disabled: true,
+      reason: "Save skill edits before running",
+    });
+  });
+
   it("blocks when a run is already in flight", () => {
     expect(evaluateRunGate({ ...ready, runInFlight: true })).toEqual({
       disabled: true,

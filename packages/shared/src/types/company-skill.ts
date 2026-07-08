@@ -365,6 +365,18 @@ export interface CompanySkillFileUpdateRequest {
   content: string;
 }
 
+export interface CompanySkillFileDeleteRequest {
+  path: string;
+  target: "file" | "folder";
+}
+
+export interface CompanySkillFileDeleteResult {
+  skillId: string;
+  path: string;
+  target: "file" | "folder";
+  deletedPaths: string[];
+}
+
 export type CompanySkillTestRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface CompanySkillTestInput {

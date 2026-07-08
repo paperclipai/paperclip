@@ -31,6 +31,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
   createLocalSkill: vi.fn(),
   updateSkill: vi.fn(),
   updateFile: vi.fn(),
+  deleteFile: vi.fn(),
   scanProjectWorkspaces: vi.fn(),
   deleteSkill: vi.fn(),
   auditSkill: vi.fn(),
@@ -360,6 +361,12 @@ describe("company skill mutation permissions", () => {
       language: "markdown",
       markdown: true,
       editable: true,
+    });
+    mockCompanySkillService.deleteFile.mockResolvedValue({
+      skillId: "skill-1",
+      path: "references",
+      target: "folder",
+      deletedPaths: ["references/example.md"],
     });
     mockCompanySkillService.scanProjectWorkspaces.mockResolvedValue({
       scannedProjects: 0,
@@ -970,6 +977,34 @@ describe("company skill mutation permissions", () => {
       action: "company.skill_version_created",
       entityType: "company_skill_version",
       entityId: "version-1",
+    }));
+  });
+
+  it("deletes skill files and logs the mutation", async () => {
+    const app = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
+
+    const res = await request(app)
+      .delete("/api/companies/company-1/skills/skill-1/files")
+      .send({ path: "references", target: "folder" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    expect(mockCompanySkillService.deleteFile).toHaveBeenCalledWith("company-1", "skill-1", {
+      path: "references",
+      target: "folder",
+    }, {
+      type: "user",
+      userId: "user-1",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.skill_file_deleted",
+      entityType: "company_skill",
+      entityId: "skill-1",
+      details: {
+        path: "references",
+        target: "folder",
+        deletedPaths: ["references/example.md"],
+      },
     }));
   });
 

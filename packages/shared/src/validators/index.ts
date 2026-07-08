@@ -136,6 +136,7 @@ export {
   companySkillCreateSchema,
   companySkillFileDetailSchema,
   companySkillFileUpdateSchema,
+  companySkillFileDeleteSchema,
   companySkillTestRunStatusSchema,
   companySkillTestInputSchema,
   companySkillTestInputCreateSchema,

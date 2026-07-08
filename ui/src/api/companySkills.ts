@@ -10,6 +10,8 @@ import type {
   CompanySkillCreateRequest,
   CompanySkillDetail,
   CompanySkillFileDetail,
+  CompanySkillFileDeleteRequest,
+  CompanySkillFileDeleteResult,
   CompanySkillForkRequest,
   CompanySkillImportResult,
   CompanySkillInstallCatalogRequest,
@@ -163,6 +165,11 @@ export const companySkillsApi = {
     api.patch<CompanySkillFileDetail>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/files`,
       { path, content },
+    ),
+  deleteFile: (companyId: string, skillId: string, payload: CompanySkillFileDeleteRequest) =>
+    api.deleteWithBody<CompanySkillFileDeleteResult>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/files`,
+      payload,
     ),
   create: (companyId: string, payload: CompanySkillCreateRequest) =>
     api.post<CompanySkill>(

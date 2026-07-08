@@ -319,6 +319,11 @@ export const companySkillFileUpdateSchema = z.object({
   content: z.string(),
 });
 
+export const companySkillFileDeleteSchema = z.object({
+  path: z.string().min(1),
+  target: z.enum(["file", "folder"]),
+});
+
 export const companySkillTestRunStatusSchema = z.enum(["queued", "running", "succeeded", "failed", "cancelled"]);
 
 export const companySkillTestInputSchema = z.object({
@@ -469,6 +474,7 @@ export type CompanySkillListQuery = z.infer<typeof companySkillListQuerySchema>;
 export type CompanySkillProjectScan = z.infer<typeof companySkillProjectScanRequestSchema>;
 export type CompanySkillCreate = z.infer<typeof companySkillCreateSchema>;
 export type CompanySkillFileUpdate = z.infer<typeof companySkillFileUpdateSchema>;
+export type CompanySkillFileDelete = z.infer<typeof companySkillFileDeleteSchema>;
 export type CompanySkillTestInputCreate = z.infer<typeof companySkillTestInputCreateSchema>;
 export type CompanySkillTestInputUpdate = z.infer<typeof companySkillTestInputUpdateSchema>;
 export type CompanySkillTestRunCreate = z.infer<typeof companySkillTestRunCreateSchema>;

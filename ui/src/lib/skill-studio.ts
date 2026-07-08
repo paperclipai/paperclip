@@ -96,6 +96,8 @@ export interface RunGateInput {
   skillFileCount: number;
   /** A run is already in flight from this surface (optional guard). */
   runInFlight?: boolean;
+  /** The editor has unsaved content that is not yet on disk or in a version. */
+  hasUnsavedSkillEdits?: boolean;
 }
 
 export interface RunGateResult {
@@ -118,6 +120,9 @@ export function evaluateRunGate(input: RunGateInput): RunGateResult {
   }
   if (!input.hasInput) {
     return { disabled: true, reason: "Add or paste input text to run" };
+  }
+  if (input.hasUnsavedSkillEdits) {
+    return { disabled: true, reason: "Save skill edits before running" };
   }
   if (input.runInFlight) {
     return { disabled: true, reason: "A run is already in progress" };

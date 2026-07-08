@@ -38,6 +38,8 @@ import type {
   CompanySkillCreateRequest,
   CompanySkillCompatibility,
   CompanySkillDetail,
+  CompanySkillFileDeleteRequest,
+  CompanySkillFileDeleteResult,
   CompanySkillFileDetail,
   CompanySkillFileInventoryEntry,
   CompanySkillForkPrecheckResult,
@@ -3567,6 +3569,71 @@ export function companySkillService(db: Db) {
     return detail;
   }
 
+  async function deleteFile(
+    companyId: string,
+    skillId: string,
+    input: CompanySkillFileDeleteRequest,
+    actor: SkillActor | null = null,
+  ): Promise<CompanySkillFileDeleteResult> {
+    await ensureSkillInventoryCurrent(companyId);
+    const skill = await getById(companyId, skillId);
+    if (!skill) throw notFound("Skill not found");
+
+    const source = deriveSkillSourceInfo(skill);
+    if (!source.editable || skill.sourceType !== "local_path") {
+      throw unprocessable(source.editableReason ?? "This skill cannot be edited.");
+    }
+
+    const normalizedPath = normalizePortablePath(input.path);
+    if (!normalizedPath) {
+      throw unprocessable("Skill file path is required.");
+    }
+
+    const deletedPaths = input.target === "folder"
+      ? skill.fileInventory
+        .map((entry) => normalizePortablePath(entry.path))
+        .filter((entryPath) => entryPath.startsWith(`${normalizedPath}/`))
+      : skill.fileInventory
+        .map((entry) => normalizePortablePath(entry.path))
+        .filter((entryPath) => entryPath === normalizedPath);
+
+    if (deletedPaths.length === 0) {
+      throw notFound(input.target === "folder" ? "Skill folder not found" : "Skill file not found");
+    }
+    if (deletedPaths.includes("SKILL.md")) {
+      throw unprocessable("SKILL.md cannot be deleted.");
+    }
+
+    const absolutePath = resolveLocalSkillFilePath(skill, normalizedPath);
+    if (!absolutePath) throw notFound("Skill file not found");
+
+    await fs.rm(absolutePath, {
+      recursive: input.target === "folder",
+      force: false,
+    }).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw notFound(input.target === "folder" ? "Skill folder not found" : "Skill file not found");
+      }
+      throw error;
+    });
+
+    await db
+      .update(companySkills)
+      .set({ updatedAt: new Date() })
+      .where(eq(companySkills.id, skill.id));
+
+    await createVersion(companyId, skillId, {
+      label: input.target === "folder" ? `Deleted ${normalizedPath}/` : `Deleted ${normalizedPath}`,
+    }, actor);
+
+    return {
+      skillId: skill.id,
+      path: normalizedPath,
+      target: input.target,
+      deletedPaths,
+    };
+  }
+
   async function installUpdate(companyId: string, skillId: string, options: { force?: boolean } = {}): Promise<CompanySkill | null> {
     await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, skillId);
@@ -5368,6 +5435,7 @@ export function companySkillService(db: Db) {
     readFile,
     updateSkill,
     updateFile,
+    deleteFile,
     createLocalSkill,
     deleteSkill,
     listTestInputs,

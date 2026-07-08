@@ -5,6 +5,7 @@ import {
   companySkillCommentCreateSchema,
   companySkillCommentUpdateSchema,
   companySkillCreateSchema,
+  companySkillFileDeleteSchema,
   companySkillFileUpdateSchema,
   companySkillForkSchema,
   companySkillImportSchema,
@@ -780,6 +781,36 @@ export function companySkillRoutes(db: Db) {
         details: {
           path: result.path,
           markdown: result.markdown,
+        },
+      });
+
+      res.json(result);
+    },
+  );
+
+  router.delete(
+    "/companies/:companyId/skills/:skillId/files",
+    validate(companySkillFileDeleteSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const result = await svc.deleteFile(companyId, skillId, req.body, skillActor(req));
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_file_deleted",
+        entityType: "company_skill",
+        entityId: skillId,
+        details: {
+          path: result.path,
+          target: result.target,
+          deletedPaths: result.deletedPaths,
         },
       });
 

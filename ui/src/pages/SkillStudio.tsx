@@ -8,16 +8,20 @@ import {
   Copy,
   FileCode,
   FilePlus,
+  FolderMinus,
+  FolderPlus,
   FlaskConical,
   History,
   MoreHorizontal,
   Play,
   RotateCcw,
+  Share2,
   Trash2,
 } from "lucide-react";
 import type {
   Agent,
   CompanySkillDetail,
+  CompanySkillListItem,
   CompanySkillTestInput,
   CompanySkillTestRun,
   CompanySkillTestRunDetail,
@@ -27,12 +31,19 @@ import type {
   AskUserQuestionsAnswer,
 } from "@paperclipai/shared";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
+import {
+  SearchableSelect,
+  type SearchableSelectGroup,
+  type SearchableSelectOption,
+} from "@/components/SearchableSelect";
+import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useOptionalToastActions } from "../context/ToastContext";
 import { agentsApi } from "@/api/agents";
 import { companySkillsApi } from "@/api/companySkills";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { cn, formatCents, relativeTime } from "@/lib/utils";
 import {
   ResizableHandle,
@@ -171,6 +182,7 @@ function useIsMobile() {
 export function SkillStudio() {
   const { skillId = "" } = useParams<{ skillId: string }>();
   const { selectedCompanyId } = useCompany();
+  const { setBreadcrumbs } = useBreadcrumbs();
   const companyId = selectedCompanyId ?? "";
 
   const detailQuery = useQuery({
@@ -178,6 +190,16 @@ export function SkillStudio() {
     queryFn: () => companySkillsApi.detail(companyId, skillId),
     enabled: Boolean(companyId && skillId),
   });
+  const skill = detailQuery.data ?? null;
+
+  useEffect(() => {
+    if (!skill) return;
+    setBreadcrumbs([
+      { label: "Skills", href: "/skills" },
+      { label: "Studio", href: "/skills" },
+      { label: skill.name },
+    ]);
+  }, [setBreadcrumbs, skill]);
 
   if (!companyId) {
     return <StudioMessage message="Select a company to open Skill Studio." />;
@@ -194,7 +216,7 @@ export function SkillStudio() {
 
 function StudioMessage({ message }: { message: string }) {
   return (
-    <div className="flex h-full min-h-[60vh] items-center justify-center text-sm text-muted-foreground">
+    <div className="flex h-full min-h-(--sz-60vh) items-center justify-center text-sm text-muted-foreground">
       {message}
     </div>
   );
@@ -208,6 +230,7 @@ function StudioShell({ companyId, skill }: { companyId: string; skill: CompanySk
   const skillId = skill.id;
   const isMobile = useIsMobile();
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   // --- selection / cross-pane state ---
@@ -244,6 +267,12 @@ function StudioShell({ companyId, skill }: { companyId: string; skill: CompanySk
     enabled: Boolean(companyId && skillId),
   });
 
+  const skillsQuery = useQuery({
+    queryKey: queryKeys.companySkills.list(companyId),
+    queryFn: () => companySkillsApi.list(companyId, { sort: "alphabetical" }),
+    enabled: Boolean(companyId),
+  });
+
   const persistLayout = useCallback((layout: Record<string, number>) => {
     const next: PaneLayout = {
       skill: layout.skill ?? layoutRef.current.skill,
@@ -266,7 +295,6 @@ function StudioShell({ companyId, skill }: { companyId: string; skill: CompanySk
       companyId={companyId}
       skill={skill}
       onDirtyChange={setSkillDirty}
-      onOpenVersions={() => setVersionSheetOpen(true)}
     />
   );
   const middlePane = (
@@ -302,7 +330,6 @@ function StudioShell({ companyId, skill }: { companyId: string; skill: CompanySk
       selectedAgentId={selectedAgentId}
       onSelectAgent={setSelectedAgentId}
       skillDirty={skillDirty}
-      onSnapshotted={() => setSkillDirty(false)}
       filterInput={selectedInput}
       onClearFilter={() => setSelectedInputId(null)}
     />
@@ -314,6 +341,9 @@ function StudioShell({ companyId, skill }: { companyId: string; skill: CompanySk
         <StudioHeader
           skill={skill}
           skillDirty={skillDirty}
+          skills={skillsQuery.data ?? []}
+          skillsLoading={skillsQuery.isLoading}
+          onSelectSkill={(nextSkillId) => navigate(`/skills/${encodeURIComponent(nextSkillId)}/studio`)}
           onOpenVersions={() => setVersionSheetOpen(true)}
         />
         {isMobile ? (
@@ -372,36 +402,48 @@ function StudioShell({ companyId, skill }: { companyId: string; skill: CompanySk
 function StudioHeader({
   skill,
   skillDirty,
+  skills,
+  skillsLoading,
+  onSelectSkill,
   onOpenVersions,
 }: {
   skill: CompanySkillDetail;
   skillDirty: boolean;
+  skills: CompanySkillListItem[];
+  skillsLoading: boolean;
+  onSelectSkill: (skillId: string) => void;
   onOpenVersions: () => void;
 }) {
   const version = skill.currentVersion?.revisionNumber ?? null;
-  const synced = skill.sharingScope === "company" || skill.sharingScope === "public_link";
+  const toast = useOptionalToastActions();
+  const copyShareLink = useCallback(() => {
+    const href = typeof window !== "undefined" ? window.location.href : "";
+    void copyTextToClipboard(href)
+      .then(() => toast?.pushToast({ tone: "success", title: "Link copied", body: "Skill Studio link copied to clipboard." }))
+      .catch((error) => toast?.pushToast({
+        tone: "error",
+        title: "Copy failed",
+        body: error instanceof Error ? error.message : "Could not copy the link.",
+      }));
+  }, [toast]);
+
   return (
     <header className="flex items-center gap-3 border-b border-border px-4 py-2.5">
-      <div className="hidden min-w-0 items-center gap-2 text-xs text-muted-foreground md:flex">
-        <Link to="/skills" className="hover:text-foreground">
-          Skills
-        </Link>
-        <ChevronRight className="h-3 w-3 shrink-0" />
-        <span className="truncate text-foreground">{skill.name}</span>
-        <ChevronRight className="h-3 w-3 shrink-0" />
-        <span>Studio</span>
-      </div>
-      <h1 className="min-w-0 truncate text-lg font-semibold">{skill.name}</h1>
+      <SkillSwitcher
+        skill={skill}
+        skills={skills}
+        loading={skillsLoading}
+        onSelectSkill={onSelectSkill}
+      />
       {version !== null && (
         <span className="font-mono text-xs text-muted-foreground">v{version}</span>
       )}
       {skillDirty ? (
-        <Badge variant="secondary">Unversioned changes</Badge>
-      ) : synced ? (
-        <StatusBadge status="active" />
-      ) : (
-        <Badge variant="secondary">Draft</Badge>
-      )}
+        <Badge variant="secondary">Unsaved edits</Badge>
+      ) : null}
+      {!skill.editable ? (
+        <Badge variant="secondary">Read-only</Badge>
+      ) : null}
       <div className="ml-auto flex items-center gap-1">
         <Button variant="ghost" size="sm" onClick={onOpenVersions}>
           <History className="mr-1.5 h-3.5 w-3.5" />
@@ -414,17 +456,76 @@ function StudioHeader({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-52">
-            <DropdownMenuItem onClick={onOpenVersions}>
-              <History className="mr-2 h-4 w-4" /> Version history
-            </DropdownMenuItem>
-            <DropdownMenuItem asChild>
-              <Link to={`/skills/${skill.id}`}>Open in Skills manager</Link>
+            <DropdownMenuItem onClick={copyShareLink}>
+              <Share2 className="mr-2 h-4 w-4" /> Share link
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
     </header>
   );
+}
+
+type SkillSwitcherOption = SearchableSelectOption<string> & {
+  skill: CompanySkillListItem | CompanySkillDetail;
+};
+
+function SkillSwitcher({
+  skill,
+  skills,
+  loading,
+  onSelectSkill,
+}: {
+  skill: CompanySkillDetail;
+  skills: CompanySkillListItem[];
+  loading: boolean;
+  onSelectSkill: (skillId: string) => void;
+}) {
+  const groups = useMemo<readonly SearchableSelectGroup<string, SkillSwitcherOption>[]>(() => {
+    const options: SkillSwitcherOption[] = withCurrentSkill(skills, skill).map((item) => ({
+      key: item.id,
+      value: item.id,
+      label: item.name,
+      title: item.name,
+      searchText: [item.name, item.slug, item.key, item.description ?? ""].join(" "),
+      skill: item,
+    }));
+    return [{ id: "skills", options }];
+  }, [skill, skills]);
+
+  return (
+    <SearchableSelect<string, SkillSwitcherOption>
+      value={skill.id}
+      groups={groups}
+      loading={loading}
+      loadingMessage="Loading skills..."
+      placeholder="Select skill"
+      searchPlaceholder="Search skills..."
+      emptyMessage="No matching skills."
+      onValueChange={(value) => {
+        if (value !== skill.id) onSelectSkill(value);
+      }}
+      triggerClassName="h-8 w-64 border-0 bg-transparent px-1 text-base font-semibold shadow-none hover:bg-accent md:w-80"
+      contentClassName="w-80"
+      contentWidth="auto"
+      renderValue={(option) => option?.label ?? skill.name}
+      renderOption={(option, { selected }) => (
+        <span className="flex min-w-0 flex-col">
+          <span className={cn("truncate", selected && "font-medium")}>{option.label}</span>
+          <span className="truncate text-(length:--text-micro) text-muted-foreground">
+            {option.skill.slug}
+          </span>
+        </span>
+      )}
+    />
+  );
+}
+
+function withCurrentSkill(
+  skills: CompanySkillListItem[],
+  skill: CompanySkillDetail,
+): Array<CompanySkillListItem | CompanySkillDetail> {
+  return skills.some((candidate) => candidate.id === skill.id) ? skills : [skill, ...skills];
 }
 
 // ---------------------------------------------------------------------------
@@ -435,12 +536,10 @@ function SkillPane({
   companyId,
   skill,
   onDirtyChange,
-  onOpenVersions,
 }: {
   companyId: string;
   skill: CompanySkillDetail;
   onDirtyChange: (dirty: boolean) => void;
-  onOpenVersions: () => void;
 }) {
   const skillId = skill.id;
   const queryClient = useQueryClient();
@@ -455,6 +554,8 @@ function SkillPane({
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [draft, setDraft] = useState<string>("");
   const [savedContent, setSavedContent] = useState<string>("");
+  const [createDialog, setCreateDialog] = useState<"file" | "folder" | null>(null);
+  const [deleteFolderOpen, setDeleteFolderOpen] = useState(false);
 
   const nodes: FileTreeNode[] = useMemo(
     () => buildFileTree(Object.fromEntries(paths.map((p) => [p, ""]))),
@@ -475,17 +576,82 @@ function SkillPane({
   }, [fileQuery.data]);
 
   const dirty = draft !== savedContent;
+  const currentFolder = parentFolder(selectedFile);
+  const pathSet = useMemo(() => new Set(paths), [paths]);
+
+  useEffect(() => {
+    onDirtyChange(dirty);
+  }, [dirty, onDirtyChange]);
+
+  const selectFile = useCallback((path: string) => {
+    if (path === selectedFile) return;
+    if (
+      dirty
+      && typeof window !== "undefined"
+      && !window.confirm("Discard unsaved edits and switch files?")
+    ) {
+      return;
+    }
+    setSelectedFile(path);
+  }, [dirty, selectedFile]);
 
   const saveMutation = useMutation({
     mutationFn: () => companySkillsApi.updateFile(companyId, skillId, selectedFile, draft),
     onSuccess: (updated) => {
       setSavedContent(updated.content);
-      onDirtyChange(true); // files now differ from the latest immutable version
       queryClient.invalidateQueries({
         queryKey: queryKeys.companySkills.detail(companyId, skillId),
       });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.companySkills.list(companyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.companySkills.versions(companyId, skillId),
+      });
     },
     onError: onError("Couldn't save file"),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: ({ path, content }: { path: string; content: string }) =>
+      companySkillsApi.updateFile(companyId, skillId, path, content),
+    onSuccess: (created) => {
+      setSelectedFile(created.path);
+      setDraft(created.content);
+      setSavedContent(created.content);
+      setCreateDialog(null);
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.companySkills.detail(companyId, skillId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.companySkills.list(companyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.companySkills.versions(companyId, skillId),
+      });
+    },
+    onError: onError("Couldn't create file"),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (input: { path: string; target: "file" | "folder" }) =>
+      companySkillsApi.deleteFile(companyId, skillId, input),
+    onSuccess: (result) => {
+      const deleted = new Set(result.deletedPaths);
+      const remaining = paths.filter((path) => !deleted.has(path));
+      setSelectedFile(remaining.find((path) => /skill\.md$/i.test(path)) ?? remaining[0] ?? "SKILL.md");
+      setDeleteFolderOpen(false);
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.companySkills.detail(companyId, skillId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.companySkills.list(companyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.companySkills.versions(companyId, skillId),
+      });
+    },
+    onError: onError("Couldn't delete file"),
   });
 
   // Read-only skills (bundled Paperclip, remote GitHub, URL, skills.sh) reject
@@ -495,8 +661,34 @@ function SkillPane({
 
   if (paths.length === 0) {
     return (
-      <PaneScaffold title="Skill">
+      <PaneScaffold
+        title={<SkillPaneTitle skillName={skill.name} folder="root" />}
+        action={
+          <SkillFileActions
+            readOnly={readOnly}
+            selectedFile={selectedFile}
+            currentFolder=""
+            canDeleteFile={false}
+            pending={createMutation.isPending || deleteMutation.isPending || dirty}
+            onAddFile={() => setCreateDialog("file")}
+            onAddFolder={() => setCreateDialog("folder")}
+            onDeleteFile={() => {}}
+            onDeleteFolder={() => setDeleteFolderOpen(true)}
+          />
+        }
+      >
         <EmptyState icon={FileCode} message="This skill has no files yet." />
+        <SkillPathDialog
+          mode={createDialog}
+          open={createDialog !== null}
+          onOpenChange={(open) => {
+            if (!open) setCreateDialog(null);
+          }}
+          currentFolder=""
+          existingPaths={pathSet}
+          pending={createMutation.isPending}
+          onSubmit={(path, content) => createMutation.mutate({ path, content })}
+        />
       </PaneScaffold>
     );
   }
@@ -505,14 +697,28 @@ function SkillPane({
 
   return (
     <PaneScaffold
-      title="Skill"
+      title={<SkillPaneTitle skillName={skill.name} folder={currentFolder || "root"} />}
       action={
-        <Button variant="ghost" size="icon-sm" onClick={onOpenVersions} aria-label="Version history">
-          <History className="h-4 w-4" />
-        </Button>
+        <SkillFileActions
+          readOnly={readOnly}
+          selectedFile={selectedFile}
+          currentFolder={currentFolder}
+          canDeleteFile={selectedFile !== "SKILL.md"}
+          pending={createMutation.isPending || deleteMutation.isPending || dirty}
+          onAddFile={() => setCreateDialog("file")}
+          onAddFolder={() => setCreateDialog("folder")}
+          onDeleteFile={() => deleteMutation.mutate({ path: selectedFile, target: "file" })}
+          onDeleteFolder={() => setDeleteFolderOpen(true)}
+        />
       }
     >
       <div className="flex min-h-0 flex-1 flex-col">
+        {dirty && !readOnly ? (
+          <div className="flex items-start gap-2 border-b border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+            <span>Unsaved edits live only in this Studio session. Save to create the next version before running tests or switching files.</span>
+          </div>
+        ) : null}
         <div className="max-h-56 overflow-auto border-b border-border p-1">
           <FileTree
             nodes={nodes}
@@ -526,7 +732,8 @@ function SkillPane({
                 return next;
               })
             }
-            onSelectFile={setSelectedFile}
+            onSelectFile={selectFile}
+            showCheckboxes={false}
             ariaLabel="Skill files"
           />
         </div>
@@ -575,20 +782,322 @@ function SkillPane({
               onChange={setDraft}
               bordered={false}
               readOnly={readOnly}
-              className="min-h-[320px]"
+              className="min-h-(--sz-320px)"
             />
           ) : (
             <Textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               readOnly={readOnly}
-              className="min-h-[320px] font-mono text-xs"
+              className="min-h-(--sz-320px) font-mono text-xs"
               spellCheck={false}
             />
           )}
         </div>
       </div>
+      <SkillPathDialog
+        mode={createDialog}
+        open={createDialog !== null}
+        onOpenChange={(open) => {
+          if (!open) setCreateDialog(null);
+        }}
+        currentFolder={currentFolder}
+        existingPaths={pathSet}
+        pending={createMutation.isPending}
+        onSubmit={(path, content) => createMutation.mutate({ path, content })}
+      />
+      <DeleteFolderDialog
+        open={deleteFolderOpen}
+        onOpenChange={setDeleteFolderOpen}
+        currentFolder={currentFolder}
+        existingPaths={pathSet}
+        pending={deleteMutation.isPending}
+        onSubmit={(path) => deleteMutation.mutate({ path, target: "folder" })}
+      />
     </PaneScaffold>
+  );
+}
+
+function parentFolder(filePath: string) {
+  const parts = filePath.split("/").filter(Boolean);
+  if (parts.length <= 1) return "";
+  return parts.slice(0, -1).join("/");
+}
+
+function normalizeStudioPath(value: string) {
+  return value
+    .replace(/\\/g, "/")
+    .replace(/^\.\/+/, "")
+    .replace(/^\/+/, "")
+    .split("/")
+    .filter((segment) => segment && segment !== ".")
+    .join("/");
+}
+
+function folderSeedFile(folderPath: string) {
+  return `${folderPath}/README.md`;
+}
+
+function folderSeedContent(folderPath: string) {
+  const label = folderPath.split("/").filter(Boolean).at(-1) ?? "Folder";
+  return `# ${label}\n`;
+}
+
+function SkillPaneTitle({ skillName, folder }: { skillName: string; folder: string }) {
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      <span className="truncate">{skillName}</span>
+      <ChevronRight className="h-3 w-3 shrink-0" />
+      <span className="truncate font-mono normal-case tracking-normal">{folder}</span>
+    </span>
+  );
+}
+
+function SkillFileActions({
+  readOnly,
+  selectedFile,
+  canDeleteFile,
+  pending,
+  onAddFile,
+  onAddFolder,
+  onDeleteFile,
+  onDeleteFolder,
+}: {
+  readOnly: boolean;
+  selectedFile: string;
+  currentFolder: string;
+  canDeleteFile: boolean;
+  pending: boolean;
+  onAddFile: () => void;
+  onAddFolder: () => void;
+  onDeleteFile: () => void;
+  onDeleteFolder: () => void;
+}) {
+  const disabled = readOnly || pending;
+  const deleteDisabled = disabled || !canDeleteFile;
+  return (
+    <div className="flex items-center gap-1">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span>
+            <Button variant="ghost" size="icon-sm" disabled={disabled} onClick={onAddFile} aria-label="Add file">
+              <FilePlus className="h-4 w-4" />
+            </Button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>Add file</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span>
+            <Button variant="ghost" size="icon-sm" disabled={disabled} onClick={onAddFolder} aria-label="Add folder">
+              <FolderPlus className="h-4 w-4" />
+            </Button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>Add folder</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={deleteDisabled}
+              onClick={() => {
+                if (typeof window === "undefined" || window.confirm(`Delete ${selectedFile}?`)) {
+                  onDeleteFile();
+                }
+              }}
+              aria-label="Delete file"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>{canDeleteFile ? "Delete file" : "SKILL.md cannot be deleted"}</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span>
+            <Button variant="ghost" size="icon-sm" disabled={disabled} onClick={onDeleteFolder} aria-label="Delete folder">
+              <FolderMinus className="h-4 w-4" />
+            </Button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>Delete folder</TooltipContent>
+      </Tooltip>
+    </div>
+  );
+}
+
+function SkillPathDialog({
+  mode,
+  open,
+  onOpenChange,
+  currentFolder,
+  existingPaths,
+  pending,
+  onSubmit,
+}: {
+  mode: "file" | "folder" | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  currentFolder: string;
+  existingPaths: Set<string>;
+  pending: boolean;
+  onSubmit: (path: string, content: string) => void;
+}) {
+  const [pathValue, setPathValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || !mode) return;
+    setPathValue(mode === "folder"
+      ? normalizeStudioPath(currentFolder ? `${currentFolder}/new-folder` : "new-folder")
+      : normalizeStudioPath(currentFolder ? `${currentFolder}/new-file.md` : "notes.md"));
+    setError(null);
+  }, [currentFolder, mode, open]);
+
+  const title = mode === "folder" ? "Add folder" : "Add file";
+  const label = mode === "folder" ? "Folder path" : "File path";
+
+  function submit() {
+    if (!mode) return;
+    const normalized = normalizeStudioPath(pathValue);
+    if (!normalized) {
+      setError(`${label} is required.`);
+      return;
+    }
+    if (mode === "file") {
+      if (existingPaths.has(normalized)) {
+        setError("A file already exists at that path.");
+        return;
+      }
+      onSubmit(normalized, "");
+      return;
+    }
+
+    const folderPath = normalized.replace(/\/+$/, "");
+    if ([...existingPaths].some((path) => path.startsWith(`${folderPath}/`))) {
+      setError("A folder already exists at that path.");
+      return;
+    }
+    onSubmit(folderSeedFile(folderPath), folderSeedContent(folderPath));
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>
+            Saved changes create a new version immediately. External sources are not updated until you publish or install an update.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Label htmlFor="skill-path-input">{label}</Label>
+          <Input
+            id="skill-path-input"
+            value={pathValue}
+            onChange={(event) => {
+              setPathValue(event.target.value);
+              setError(null);
+            }}
+            placeholder={mode === "folder" ? "references/examples" : "references/examples.md"}
+          />
+          {mode === "folder" ? (
+            <p className="text-xs text-muted-foreground">A README.md seed file is created so the folder appears in the file tree.</p>
+          ) : null}
+          {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button disabled={pending} onClick={submit}>
+            Create
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DeleteFolderDialog({
+  open,
+  onOpenChange,
+  currentFolder,
+  existingPaths,
+  pending,
+  onSubmit,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  currentFolder: string;
+  existingPaths: Set<string>;
+  pending: boolean;
+  onSubmit: (path: string) => void;
+}) {
+  const [pathValue, setPathValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setPathValue(currentFolder);
+    setError(null);
+  }, [currentFolder, open]);
+
+  function submit() {
+    const normalized = normalizeStudioPath(pathValue).replace(/\/+$/, "");
+    if (!normalized) {
+      setError("Folder path is required.");
+      return;
+    }
+    const matchingFiles = [...existingPaths].filter((path) => path.startsWith(`${normalized}/`));
+    if (matchingFiles.length === 0) {
+      setError("No files exist under that folder.");
+      return;
+    }
+    if (matchingFiles.includes("SKILL.md")) {
+      setError("SKILL.md cannot be deleted.");
+      return;
+    }
+    onSubmit(normalized);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete folder</DialogTitle>
+          <DialogDescription>
+            This removes every skill file under the folder and saves the result as the next version.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Label htmlFor="skill-folder-delete">Folder path</Label>
+          <Input
+            id="skill-folder-delete"
+            value={pathValue}
+            onChange={(event) => {
+              setPathValue(event.target.value);
+              setError(null);
+            }}
+            placeholder="references/examples"
+          />
+          {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button variant="destructive" disabled={pending} onClick={submit}>
+            Delete
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -711,6 +1220,7 @@ function InputPane({
                   const id = nameToId.get(name);
                   if (id) onSelectInput(id);
                 }}
+                showCheckboxes={false}
                 renderFileExtra={(node) => {
                   const id = nameToId.get(node.path);
                   if (!id) return null;
@@ -756,7 +1266,7 @@ function InputPane({
             onChange={setDraft}
             bordered={false}
             placeholder="Paste text — treated as a new-issue description."
-            className="min-h-[220px]"
+            className="min-h-(--sz-220px)"
           />
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-border px-3 py-2">
@@ -856,7 +1366,7 @@ function SaveInputDialog({
               id="input-content"
               value={content}
               onChange={(e) => setContent(e.target.value)}
-              className="min-h-[160px]"
+              className="min-h-(--sz-160px)"
             />
           </div>
         </div>
@@ -892,7 +1402,6 @@ function RunsPane({
   selectedAgentId,
   onSelectAgent,
   skillDirty,
-  onSnapshotted,
   filterInput,
   onClearFilter,
 }: {
@@ -907,14 +1416,12 @@ function RunsPane({
   selectedAgentId: string | null;
   onSelectAgent: (id: string | null) => void;
   skillDirty: boolean;
-  onSnapshotted: () => void;
   filterInput: CompanySkillTestInput | null;
   onClearFilter: () => void;
 }) {
   const skillId = skill.id;
   const queryClient = useQueryClient();
   const onError = useMutationErrorToast();
-  const [snapshotDialogOpen, setSnapshotDialogOpen] = useState(false);
 
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -942,6 +1449,7 @@ function RunsPane({
     hasAgent: Boolean(selectedAgent),
     hasInput,
     skillFileCount: skill.fileInventory.length,
+    hasUnsavedSkillEdits: skillDirty,
   });
 
   const createRunMutation = useMutation({
@@ -959,14 +1467,6 @@ function RunsPane({
     },
     onError: onError("Couldn't start run"),
   });
-
-  const startRun = () => {
-    if (skillDirty) {
-      setSnapshotDialogOpen(true);
-    } else {
-      createRunMutation.mutate();
-    }
-  };
 
   if (selectedRunId) {
     return (
@@ -995,7 +1495,7 @@ function RunsPane({
             <TooltipTrigger asChild>
               {/* span wrapper keeps the tooltip reachable while the button is disabled */}
               <span>
-                <Button size="sm" disabled={gate.disabled || createRunMutation.isPending} onClick={startRun}>
+                <Button size="sm" disabled={gate.disabled || createRunMutation.isPending} onClick={() => createRunMutation.mutate()}>
                   <Play className="mr-1.5 h-3.5 w-3.5" /> Run
                 </Button>
               </span>
@@ -1034,26 +1534,6 @@ function RunsPane({
           )}
         </div>
       </div>
-      <SnapshotRunDialog
-        open={snapshotDialogOpen}
-        onOpenChange={setSnapshotDialogOpen}
-        nextVersion={(skill.currentVersion?.revisionNumber ?? 0) + 1}
-        pending={createRunMutation.isPending}
-        onConfirm={async () => {
-          try {
-            await companySkillsApi.createVersion(companyId, skillId, {});
-          } catch (err) {
-            onError("Couldn't snapshot changes")(err);
-            return;
-          }
-          onSnapshotted();
-          queryClient.invalidateQueries({
-            queryKey: queryKeys.companySkills.detail(companyId, skillId),
-          });
-          setSnapshotDialogOpen(false);
-          createRunMutation.mutate();
-        }}
-      />
     </PaneScaffold>
   );
 }
@@ -1150,42 +1630,6 @@ function AgentPicker({
         </Command>
       </PopoverContent>
     </Popover>
-  );
-}
-
-function SnapshotRunDialog({
-  open,
-  onOpenChange,
-  nextVersion,
-  pending,
-  onConfirm,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  nextVersion: number;
-  pending: boolean;
-  onConfirm: () => void;
-}) {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Snapshot unversioned changes?</DialogTitle>
-          <DialogDescription>
-            Running will save your current edits as <strong>v{nextVersion}</strong> and pin that
-            version to this run. Past runs keep their own snapshots.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button disabled={pending} onClick={onConfirm}>
-            Snapshot &amp; Run
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }
 
@@ -1562,7 +2006,7 @@ function VersionHistorySheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="left" className="w-full sm:max-w-[560px]">
+      <SheetContent side="left" className="w-full sm:max-w-(--sz-560px)">
         <SheetHeader>
           <SheetTitle>Version history</SheetTitle>
         </SheetHeader>
@@ -1643,7 +2087,7 @@ function PaneScaffold({
   action,
   children,
 }: {
-  title: string;
+  title: React.ReactNode;
   action?: React.ReactNode;
   children: React.ReactNode;
 }) {
