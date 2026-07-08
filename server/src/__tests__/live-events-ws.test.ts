@@ -232,4 +232,19 @@ describe("authorizeUpgrade board API keys", () => {
     expect(await run("pcp_board_ghost")).toBeNull();
     expect(boardAuth.touchBoardApiKey).not.toHaveBeenCalled();
   });
+
+  it("still authorizes when the lastUsedAt bookkeeping write fails", async () => {
+    boardAuth.findBoardApiKeyByToken.mockResolvedValue({ id: "key-5", userId: "user-5" });
+    boardAuth.resolveBoardAccess.mockResolvedValue({
+      user: { id: "user-5" },
+      companyIds: [COMPANY_ID],
+      isInstanceAdmin: false,
+    });
+    boardAuth.touchBoardApiKey.mockRejectedValue(new Error("transient db write failure"));
+
+    const context = await run("pcp_board_touch_fails");
+
+    expect(context).toEqual({ companyId: COMPANY_ID, actorType: "board", actorId: "user-5" });
+    expect(boardAuth.touchBoardApiKey).toHaveBeenCalledWith("key-5");
+  });
 });

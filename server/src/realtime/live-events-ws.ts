@@ -222,7 +222,15 @@ export async function authorizeUpgrade(
     return null;
   }
 
-  await boardAuth.touchBoardApiKey(boardKey.id);
+  // Authentication has already succeeded at this point. The lastUsedAt update is
+  // best-effort bookkeeping — a transient write failure must not turn a valid,
+  // authenticated Desk client into a rejected upgrade (the caller maps a thrown
+  // error to a 500 rejection), so swallow and log instead of propagating.
+  try {
+    await boardAuth.touchBoardApiKey(boardKey.id);
+  } catch (err) {
+    logger.warn({ err, companyId }, "failed to touch board api key lastUsedAt on ws upgrade");
+  }
 
   return {
     companyId,
