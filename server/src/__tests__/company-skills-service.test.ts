@@ -4,7 +4,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, companySkills, createDb } from "@paperclipai/db";
+import { agents, authUsers, companies, companySkillVersions, companySkills, createDb } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -41,6 +41,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await db.delete(agents);
     await db.delete(companySkills);
     await db.delete(companies);
+    await db.delete(authUsers);
     await Promise.all(Array.from(cleanupDirs, (dir) => fs.rm(dir, { recursive: true, force: true })));
     cleanupDirs.clear();
   });
@@ -99,6 +100,168 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       attachedAgentCount: 0,
       sourceBadge: "local",
       editable: true,
+    });
+  });
+
+  it("optionally enriches list items with latest version editor identities", async () => {
+    const companyId = randomUUID();
+    const userSkillId = randomUUID();
+    const agentSkillId = randomUUID();
+    const unattributedSkillId = randomUUID();
+    const versionlessSkillId = randomUUID();
+    const agentId = randomUUID();
+    const userId = "board-editor";
+    const now = new Date();
+    async function writeTrackedSkillDir(slug: string, name: string) {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-${slug}-`));
+      cleanupDirs.add(dir);
+      await fs.writeFile(path.join(dir, "SKILL.md"), `---\nname: ${name}\n---\n\n# ${name}\n`, "utf8");
+      return dir;
+    }
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(authUsers).values({
+      id: userId,
+      name: "Ada Lovelace",
+      email: "ada@example.com",
+      emailVerified: true,
+      image: "https://example.com/ada.png",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    });
+    await db.insert(companySkills).values([
+      {
+        id: userSkillId,
+        companyId,
+        key: `company/${companyId}/user-edited-skill`,
+        slug: "user-edited-skill",
+        name: "User Edited Skill",
+        description: null,
+        markdown: "# User Edited Skill",
+        sourceType: "local_path",
+        sourceLocator: await writeTrackedSkillDir("user-edited-skill", "User Edited Skill"),
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      },
+      {
+        id: agentSkillId,
+        companyId,
+        key: `company/${companyId}/agent-edited-skill`,
+        slug: "agent-edited-skill",
+        name: "Agent Edited Skill",
+        description: null,
+        markdown: "# Agent Edited Skill",
+        sourceType: "local_path",
+        sourceLocator: await writeTrackedSkillDir("agent-edited-skill", "Agent Edited Skill"),
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      },
+      {
+        id: unattributedSkillId,
+        companyId,
+        key: `company/${companyId}/unattributed-skill`,
+        slug: "unattributed-skill",
+        name: "Unattributed Skill",
+        description: null,
+        markdown: "# Unattributed Skill",
+        sourceType: "local_path",
+        sourceLocator: await writeTrackedSkillDir("unattributed-skill", "Unattributed Skill"),
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      },
+      {
+        id: versionlessSkillId,
+        companyId,
+        key: `company/${companyId}/versionless-skill`,
+        slug: "versionless-skill",
+        name: "Versionless Skill",
+        description: null,
+        markdown: "# Versionless Skill",
+        sourceType: "local_path",
+        sourceLocator: await writeTrackedSkillDir("versionless-skill", "Versionless Skill"),
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      },
+    ]);
+    await db.insert(companySkillVersions).values([
+      {
+        id: randomUUID(),
+        companyId,
+        companySkillId: userSkillId,
+        revisionNumber: 1,
+        fileInventory: [],
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        companySkillId: userSkillId,
+        revisionNumber: 2,
+        fileInventory: [],
+        authorUserId: userId,
+        createdAt: new Date("2026-01-02T00:00:00.000Z"),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        companySkillId: agentSkillId,
+        revisionNumber: 1,
+        fileInventory: [],
+        authorAgentId: agentId,
+        createdAt: new Date("2026-01-03T00:00:00.000Z"),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        companySkillId: unattributedSkillId,
+        revisionNumber: 1,
+        fileInventory: [],
+        createdAt: new Date("2026-01-04T00:00:00.000Z"),
+      },
+    ]);
+
+    const defaultList = await svc.list(companyId);
+    expect(defaultList.find((skill) => skill.id === userSkillId)).not.toHaveProperty("lastEditor");
+
+    const enriched = await svc.list(companyId, { include: ["lastEditor"] });
+    expect(enriched.find((skill) => skill.id === userSkillId)).toMatchObject({
+      lastEditor: {
+        kind: "user",
+        id: userId,
+        name: "Ada Lovelace",
+        imageUrl: "https://example.com/ada.png",
+      },
+    });
+    expect(enriched.find((skill) => skill.id === agentSkillId)).toMatchObject({
+      lastEditor: {
+        kind: "agent",
+        id: agentId,
+        name: "CodexCoder",
+        imageUrl: null,
+      },
+    });
+    expect(enriched.find((skill) => skill.id === unattributedSkillId)).toMatchObject({
+      lastEditor: null,
+    });
+    expect(enriched.find((skill) => skill.id === versionlessSkillId)).toMatchObject({
+      lastEditor: null,
     });
   });
 

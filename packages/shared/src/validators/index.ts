@@ -104,6 +104,7 @@ export {
   companySkillSourceBadgeSchema,
   companySkillSharingScopeSchema,
   companySkillListSortSchema,
+  companySkillListIncludeSchema,
   companySkillFileInventoryEntrySchema,
   companySkillVersionFileInventoryEntrySchema,
   companySkillSchema,
