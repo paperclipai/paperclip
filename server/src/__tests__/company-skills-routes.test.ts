@@ -74,6 +74,9 @@ const mockCatalogService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackSkillImported = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+const mockReflectionCoachMutationGate = vi.hoisted(() => ({
+  assertAllowed: vi.fn(),
+}));
 
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
@@ -104,6 +107,16 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/skills-catalog.js", () => mockCatalogService);
+
+  vi.doMock("../services/reflection-coach-mutation-gate.js", async () => {
+    const actual = await vi.importActual<typeof import("../services/reflection-coach-mutation-gate.js")>(
+      "../services/reflection-coach-mutation-gate.js",
+    );
+    return {
+      ...actual,
+      reflectionCoachMutationGateService: () => mockReflectionCoachMutationGate,
+    };
+  });
 
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
@@ -141,6 +154,7 @@ describe("company skill mutation permissions", () => {
     vi.doUnmock("../services/agents.js");
     vi.doUnmock("../services/company-skills.js");
     vi.doUnmock("../services/skills-catalog.js");
+    vi.doUnmock("../services/reflection-coach-mutation-gate.js");
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/company-skills.js");
     vi.doUnmock("../routes/authz.js");
@@ -590,6 +604,7 @@ describe("company skill mutation permissions", () => {
     mockLogActivity.mockResolvedValue(undefined);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(false);
+    mockReflectionCoachMutationGate.assertAllowed.mockResolvedValue(false);
   });
 
   it("allows local board operators to mutate company skills", async () => {
@@ -1145,6 +1160,42 @@ describe("company skill mutation permissions", () => {
       "company-1",
       "https://github.com/vercel-labs/agent-browser",
     );
+  });
+
+  it("rejects Reflection Coach skill mutations when the server-side gate is not satisfied", async () => {
+    const { forbidden } = await import("../errors.js");
+    mockAgentService.getById.mockResolvedValue({
+      id: "reflection-coach",
+      companyId: "company-1",
+      permissions: { canCreateSkills: true },
+      metadata: {
+        paperclipBuiltInAgent: {
+          key: "reflection-coach",
+          featureKeys: ["reflection-coach"],
+        },
+      },
+    });
+    mockReflectionCoachMutationGate.assertAllowed.mockRejectedValue(forbidden("gate required", {
+      code: "reflection_coach_mutation_gate_required",
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "reflection-coach",
+      companyId: "company-1",
+      runId: "run-apply",
+    }))
+      .post("/api/companies/company-1/skills")
+      .send({ name: "Reflection Draft", slug: "reflection-draft", markdown: "# Draft" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockReflectionCoachMutationGate.assertAllowed).toHaveBeenCalledWith({
+      companyId: "company-1",
+      actorAgentId: "reflection-coach",
+      actorRunId: "run-apply",
+      targetKeys: ["reflection-coach:company-skill-slug:reflection-draft"],
+    });
+    expect(mockCompanySkillService.createLocalSkill).not.toHaveBeenCalled();
   });
 
   it("allows same-company agents with missing skill creation permission to mutate company skills", async () => {

@@ -100,6 +100,11 @@ import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
 import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
+import {
+  reflectionCoachAgentDescriptionTargetKey,
+  reflectionCoachAgentInstructionsTargetKey,
+  reflectionCoachMutationGateService,
+} from "../services/reflection-coach-mutation-gate.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -1325,12 +1330,40 @@ export function agentRoutes(
 
   async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
-    if (req.actor.type !== "board") {
-      throw forbidden(
-        "Only board-authenticated callers can manage instructions path or bundle configuration",
-      );
+    if (req.actor.type === "board") {
+      await assertBoardCanManageAgentsForCompany(req, targetAgent.companyId);
+      return;
     }
-    await assertBoardCanManageAgentsForCompany(req, targetAgent.companyId);
+
+    const allowedByReflectionCoachGate = await reflectionCoachMutationGateService(db).assertAllowed({
+      companyId: targetAgent.companyId,
+      actorAgentId: req.actor.agentId,
+      actorRunId: req.actor.runId ?? null,
+      targetKeys: [reflectionCoachAgentInstructionsTargetKey(targetAgent.id)],
+    });
+    if (allowedByReflectionCoachGate) return;
+
+    throw forbidden(
+      "Only board-authenticated callers can manage instructions path or bundle configuration",
+    );
+  }
+
+  async function assertReflectionCoachAgentDescriptionMutationGate(
+    req: Request,
+    targetAgent: { id: string; companyId: string },
+  ) {
+    await reflectionCoachMutationGateService(db).assertAllowed({
+      companyId: targetAgent.companyId,
+      actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
+      actorRunId: req.actor.runId ?? null,
+      targetKeys: [reflectionCoachAgentDescriptionTargetKey(targetAgent.id)],
+    });
+  }
+
+  function touchesAgentDescription(patchData: Record<string, unknown>) {
+    return ["name", "role", "title", "capabilities"].some((key) =>
+      Object.prototype.hasOwnProperty.call(patchData, key),
+    );
   }
 
   function assertNoAgentInstructionsConfigMutation(
@@ -2932,6 +2965,9 @@ export function agentRoutes(
           allowedSandboxProviders: allowedSandboxProvidersForAgent(requestedAdapterType),
         },
       );
+    }
+    if (touchesAgentDescription(patchData)) {
+      await assertReflectionCoachAgentDescriptionMutationGate(req, existing);
     }
 
     const actor = getActorInfo(req);
