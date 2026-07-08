@@ -561,6 +561,7 @@ describeEmbeddedPostgres("cases routes", () => {
     }).returning();
     const [issue] = await db.insert(issues).values({
       companyId: company.id,
+      identifier: `${company.issuePrefix.toUpperCase()}-12`,
       title: "Related task",
       status: "todo",
     }).returning();
@@ -608,6 +609,13 @@ describeEmbeddedPostgres("cases routes", () => {
     expect(events.body.map((event: { kind: string }) => event.kind)).toEqual(
       expect.arrayContaining(["created", "label_added", "document_revised", "issue_linked", "attachment_added"]),
     );
+    const linkedEvent = events.body.find((event: { kind: string }) => event.kind === "issue_linked");
+    expect(linkedEvent.issue).toMatchObject({
+      id: issue!.id,
+      identifier: issue!.identifier,
+      title: "Related task",
+      status: "todo",
+    });
   });
 
   it("enriches events and revisions with actor name and run→issue attribution", async () => {

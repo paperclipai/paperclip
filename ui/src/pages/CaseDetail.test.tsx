@@ -93,6 +93,8 @@ function detail(): CaseDetailData {
     status: "in_review",
     fields: {
       slug: "hermes-agent-post",
+      body: "Legacy body field",
+      runbook: "Legacy runbook field",
       word_count: 1850,
       published: true,
       description: "Launch narrative",
@@ -132,6 +134,27 @@ function detail(): CaseDetailData {
           latestBody: "# Draft body\n\nSome content.",
           latestRevisionId: "rev-8",
           latestRevisionNumber: 8,
+          createdByAgentId: null,
+          createdByUserId: null,
+          updatedByAgentId: "agent-1",
+          updatedByUserId: null,
+          lockedAt: null,
+          lockedByAgentId: null,
+          lockedByUserId: null,
+          createdAt: "2026-07-07T00:00:00.000Z",
+          updatedAt: "2026-07-07T00:00:00.000Z",
+        },
+      },
+      {
+        key: "runbook",
+        document: {
+          id: "doc-2",
+          companyId: "company-1",
+          title: "runbook",
+          format: "markdown",
+          latestBody: "# Runbook\n\nSteps.",
+          latestRevisionId: "rev-2",
+          latestRevisionNumber: 2,
           createdByAgentId: null,
           createdByUserId: null,
           updatedByAgentId: "agent-1",
@@ -261,13 +284,16 @@ describe("CaseDetail", () => {
       expect(text).toContain("Fields");
       expect(text).toContain("title");
       expect(text).toContain("Hermes agent launch post");
-      expect(text).toContain("body");
-      expect(text).toContain("Draft body");
       expect(text).toContain("description");
       expect(text).toContain("Launch narrative");
       expect(text).toContain("word_count");
       expect(text).toContain("Linked tasks");
       expect(text).toContain("PAP-12947");
+      expect(text).not.toContain("body");
+      expect(text).not.toContain("Legacy body field");
+      expect(text).not.toContain("runbook");
+      expect(text).not.toContain("Legacy runbook field");
+      expect(text).not.toContain("Documents");
       expect(text).not.toContain("reference");
       expect(text).not.toContain("Activity");
     });
@@ -297,10 +323,12 @@ describe("CaseDetail", () => {
       const text = container.textContent ?? "";
       expect(text).toContain("title");
       expect(text).toContain("Hermes agent launch post");
-      expect(text).toContain("body");
-      expect(text).toContain("# Draft body");
       expect(text).toContain("issue_identifiers");
       expect(container.querySelector('a[data-mention-kind="issue"][href="/issues/PAP-12947"]')).not.toBeNull();
+      expect(text).not.toContain("body");
+      expect(text).not.toContain("Legacy body field");
+      expect(text).not.toContain("runbook");
+      expect(text).not.toContain("Legacy runbook field");
     });
 
     act(() => root.unmount());

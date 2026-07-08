@@ -153,7 +153,7 @@ export interface CaseEvent {
   createdAt: string;
   /** Display name of the acting agent (P4 enrichment), null for user/system. */
   actorAgentName: string | null;
-  /** Issue whose run produced this event, if any (P4 attribution). */
+  /** Issue linked by this event, or the issue whose run produced it. */
   issue: CaseAttributionIssue | null;
 }
 

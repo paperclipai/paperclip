@@ -320,8 +320,33 @@ async function resolveIssuesForRuns(db: CaseRouteDb, companyId: string, runIds: 
       (row) => row.executionRunId === runId || row.checkoutRunId === runId || row.originRunId === runId,
     );
     if (match) {
-      map.set(runId, { id: match.id, identifier: match.identifier ?? "", title: match.title, status: match.status });
+      map.set(runId, { id: match.id, identifier: match.identifier ?? match.id, title: match.title, status: match.status });
     }
+  }
+  return map;
+}
+
+function payloadIssueIdForEvent(kind: string, payload: Record<string, unknown> | null | undefined) {
+  if (kind !== "issue_linked" && kind !== "issue_unlinked") return null;
+  const issueId = payload?.issueId;
+  return typeof issueId === "string" && isUuidLike(issueId) ? issueId : null;
+}
+
+async function resolveIssuesByIds(db: CaseRouteDb, companyId: string, issueIds: (string | null)[]) {
+  const valid = [...new Set(issueIds.filter((id): id is string => !!id && isUuidLike(id)))];
+  const map = new Map<string, { id: string; identifier: string; title: string; status: string }>();
+  if (valid.length === 0) return map;
+  const rows = await db
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      status: issues.status,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, valid)));
+  for (const row of rows) {
+    map.set(row.id, { id: row.id, identifier: row.identifier ?? row.id, title: row.title, status: row.status });
   }
   return map;
 }
@@ -1215,16 +1240,19 @@ export function caseRoutes(db: Db, storage: StorageService) {
       .where(and(eq(caseEvents.companyId, caseRow.companyId), eq(caseEvents.caseId, caseRow.id)))
       .orderBy(desc(caseEvents.createdAt), desc(caseEvents.id))
       .limit(parsed.data.limit);
-    // Enrich each row with its actor's display name and the run→issue
-    // attribution so the activity feed can show "agent X, via ISSUE-123".
-    const [agentNames, issueMap] = await Promise.all([
+    // Enrich each row with its actor's display name, run→issue attribution,
+    // and the linked issue captured in link/unlink payloads.
+    const payloadIssueIds = rows.map((row) => payloadIssueIdForEvent(row.kind, row.payload));
+    const [agentNames, issueMap, payloadIssueMap] = await Promise.all([
       resolveAgentNames(db, rows.map((row) => row.actorAgentId)),
       resolveIssuesForRuns(db, caseRow.companyId, rows.map((row) => row.runId)),
+      resolveIssuesByIds(db, caseRow.companyId, payloadIssueIds),
     ]);
     res.json(rows.map((row) => ({
       ...row,
       actorAgentName: row.actorAgentId ? agentNames.get(row.actorAgentId) ?? null : null,
-      issue: row.runId ? issueMap.get(row.runId) ?? null : null,
+      issue: payloadIssueMap.get(payloadIssueIdForEvent(row.kind, row.payload) ?? "")
+        ?? (row.runId ? issueMap.get(row.runId) ?? null : null),
     })));
   });
 

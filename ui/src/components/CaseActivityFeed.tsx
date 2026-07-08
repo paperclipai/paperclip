@@ -41,6 +41,10 @@ function ActorIcon({ event }: { event: CaseEvent }) {
   return <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />;
 }
 
+function issueRelationLabel(event: CaseEvent): string {
+  return event.kind === "issue_linked" || event.kind === "issue_unlinked" ? "issue" : "via";
+}
+
 /** One event with actor + run→issue attribution (P4 §1). */
 export function CaseEventRow({ event, compact = false }: { event: CaseEvent; compact?: boolean }) {
   const detail =
@@ -60,7 +64,7 @@ export function CaseEventRow({ event, compact = false }: { event: CaseEvent; com
           {event.issue && (
             <>
               <span aria-hidden>·</span>
-              <span>via</span>
+              <span>{issueRelationLabel(event)}</span>
               <Link
                 to={`/issues/${event.issue.identifier}`}
                 className="inline-flex min-w-0 items-center gap-1 text-foreground/80 hover:underline"

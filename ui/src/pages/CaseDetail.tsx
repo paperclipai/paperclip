@@ -62,23 +62,31 @@ function fieldValueByName(fields: Record<string, unknown>, name: string): unknow
   return fields[name] ?? fields[name.charAt(0).toUpperCase() + name.slice(1)];
 }
 
+function caseFieldKeyVariants(key: string): string[] {
+  if (!key) return [key];
+  return [key, key.charAt(0).toUpperCase() + key.slice(1), key.charAt(0).toLowerCase() + key.slice(1)];
+}
+
 function hasFieldValue(value: unknown): boolean {
   return value !== null && value !== undefined && !(typeof value === "string" && value.trim() === "");
 }
 
 function casePropertyRows(caseData: CaseDetailData) {
-  const reservedKeys = new Set(PRIMARY_FIELD_KEYS.flatMap((key) => [key, key.charAt(0).toUpperCase() + key.slice(1)]));
-  const bodyDoc = caseData.documents.find((documentRef) => documentRef.key === "body");
+  const reservedKeys = new Set(PRIMARY_FIELD_KEYS.flatMap((key) => caseFieldKeyVariants(key)));
+  const documentKeys = new Set(caseData.documents.flatMap((documentRef) => caseFieldKeyVariants(documentRef.key)));
   const primary = PRIMARY_FIELD_KEYS.map((key) => {
+    if (caseFieldKeyVariants(key).some((variant) => documentKeys.has(variant))) return null;
     let value: unknown;
     if (key === "title") value = fieldValueByName(caseData.fields, key) ?? caseData.title;
-    else if (key === "body") value = fieldValueByName(caseData.fields, key) ?? bodyDoc?.document.latestBody;
+    else if (key === "body") value = fieldValueByName(caseData.fields, key);
     else value = fieldValueByName(caseData.fields, key);
     return { key, label: key, value };
-  }).filter((row) => hasFieldValue(row.value));
+  }).filter((row): row is { key: typeof PRIMARY_FIELD_KEYS[number]; label: typeof PRIMARY_FIELD_KEYS[number]; value: unknown } =>
+    row !== null && hasFieldValue(row.value)
+  );
 
   const generic = Object.entries(caseData.fields)
-    .filter(([key]) => !reservedKeys.has(key))
+    .filter(([key]) => !reservedKeys.has(key) && !documentKeys.has(key))
     .map(([key, value]) => ({ key, label: key, value }));
 
   return [...primary, ...generic];
@@ -398,20 +406,6 @@ function CasePropertiesContent({
       <PropertySection title={`Children${childCases.length > 0 ? ` ${childCases.length}` : ""}`}>
         <CaseChildrenTree children={childCases} />
       </PropertySection>
-
-      {caseData.documents.length > 0 ? (
-        <PropertySection title="Documents">
-          <div className="space-y-1">
-            {caseData.documents.map((documentRef) => (
-              <CasePropertyRow key={documentRef.key} label={documentRef.key} mode={mode}>
-                <span className="text-xs text-muted-foreground">
-                  rev {documentRef.document.latestRevisionNumber ?? 1}
-                </span>
-              </CasePropertyRow>
-            ))}
-          </div>
-        </PropertySection>
-      ) : null}
 
       {caseData.attachments.length > 0 ? (
         <PropertySection title="Attachments">
