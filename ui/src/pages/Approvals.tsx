@@ -12,6 +12,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { ShieldCheck } from "lucide-react";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { RejectApprovalDialog } from "../components/RejectApprovalDialog";
 
 type StatusFilter = "pending" | "all";
 
@@ -24,6 +25,7 @@ export function Approvals() {
   const pathSegment = location.pathname.split("/").pop() ?? "pending";
   const statusFilter: StatusFilter = pathSegment === "all" ? "all" : "pending";
   const [actionError, setActionError] = useState<string | null>(null);
+  const [rejectTargetId, setRejectTargetId] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Approvals" }]);
@@ -54,9 +56,10 @@ export function Approvals() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: (id: string) => approvalsApi.reject(id),
+    mutationFn: ({ id, reason }: { id: string; reason?: string }) => approvalsApi.reject(id, reason),
     onSuccess: () => {
       setActionError(null);
+      setRejectTargetId(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
@@ -120,7 +123,7 @@ export function Approvals() {
               approval={approval}
               requesterAgent={approval.requestedByAgentId ? (agents ?? []).find((a) => a.id === approval.requestedByAgentId) ?? null : null}
               onApprove={() => approveMutation.mutate(approval.id)}
-              onReject={() => rejectMutation.mutate(approval.id)}
+              onReject={() => setRejectTargetId(approval.id)}
               detailLink={`/approvals/${approval.id}`}
               isPending={approveMutation.isPending || rejectMutation.isPending}
               pendingAction={
@@ -130,6 +133,15 @@ export function Approvals() {
           ))}
         </div>
       )}
+
+      <RejectApprovalDialog
+        open={rejectTargetId !== null}
+        onOpenChange={(open) => !open && setRejectTargetId(null)}
+        isPending={rejectMutation.isPending}
+        onReject={(reason) => {
+          if (rejectTargetId) rejectMutation.mutate({ id: rejectTargetId, reason });
+        }}
+      />
     </div>
   );
 }

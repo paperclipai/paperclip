@@ -24,7 +24,27 @@ interface ApprovalListOptions extends BaseClientOptions {
 
 interface ApprovalDecisionOptions extends BaseClientOptions {
   decisionNote?: string;
+  reason?: string;
   decidedByUserId?: string;
+}
+
+interface ApprovalRejectOptions extends BaseClientOptions {
+  reason?: string;
+  decisionNote?: string;
+  force?: boolean;
+  decidedByUserId?: string;
+}
+
+/**
+ * `--reason` and `--decision-note` are aliases for the same underlying
+ * `decisionNote` field. If both are passed and disagree, `--reason` wins
+ * (it's the preferred name) but we warn so the caller notices.
+ */
+function resolveDecisionNote(reason: string | undefined, decisionNote: string | undefined): string | undefined {
+  if (reason && decisionNote && reason !== decisionNote) {
+    console.warn("Both --reason and --decision-note were given with different values; using --reason.");
+  }
+  return reason ?? decisionNote;
 }
 
 interface ApprovalCreateOptions extends BaseClientOptions {
@@ -141,12 +161,13 @@ export function registerApprovalCommands(program: Command): void {
       .description("Approve an approval request")
       .argument("<approvalId>", "Approval ID")
       .option("--decision-note <text>", "Decision note")
+      .option("--reason <text>", "Alias for --decision-note")
       .option("--decided-by-user-id <id>", "Decision actor user ID")
       .action(async (approvalId: string, opts: ApprovalDecisionOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = resolveApprovalSchema.parse({
-            decisionNote: opts.decisionNote,
+            decisionNote: resolveDecisionNote(opts.reason, opts.decisionNote),
             decidedByUserId: opts.decidedByUserId,
           });
           const updated = await ctx.api.post<Approval>(apiPath`/api/approvals/${approvalId}/approve`, payload);
@@ -160,15 +181,24 @@ export function registerApprovalCommands(program: Command): void {
   addCommonClientOptions(
     approval
       .command("reject")
-      .description("Reject an approval request")
+      .description(
+        "Reject an approval request.\n" +
+          "  Requires --reason so the requesting agent learns why, or an explicit --force to reject without one.",
+      )
       .argument("<approvalId>", "Approval ID")
-      .option("--decision-note <text>", "Decision note")
+      .option("--reason <text>", "Reason recorded on the approval and shown to the requesting agent")
+      .option("--decision-note <text>", "Alias for --reason (kept for backward compatibility)")
+      .option("--force", "Reject without a reason", false)
       .option("--decided-by-user-id <id>", "Decision actor user ID")
-      .action(async (approvalId: string, opts: ApprovalDecisionOptions) => {
+      .action(async (approvalId: string, opts: ApprovalRejectOptions) => {
         try {
+          const decisionNote = resolveDecisionNote(opts.reason, opts.decisionNote);
+          if (!decisionNote && !opts.force) {
+            throw new Error("Refusing reasonless rejection. Pass --reason <text> (or --decision-note) or use --force.");
+          }
           const ctx = resolveCommandContext(opts);
           const payload = resolveApprovalSchema.parse({
-            decisionNote: opts.decisionNote,
+            decisionNote,
             decidedByUserId: opts.decidedByUserId,
           });
           const updated = await ctx.api.post<Approval>(apiPath`/api/approvals/${approvalId}/reject`, payload);
@@ -185,12 +215,13 @@ export function registerApprovalCommands(program: Command): void {
       .description("Request revision for an approval")
       .argument("<approvalId>", "Approval ID")
       .option("--decision-note <text>", "Decision note")
+      .option("--reason <text>", "Alias for --decision-note")
       .option("--decided-by-user-id <id>", "Decision actor user ID")
       .action(async (approvalId: string, opts: ApprovalDecisionOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = requestApprovalRevisionSchema.parse({
-            decisionNote: opts.decisionNote,
+            decisionNote: resolveDecisionNote(opts.reason, opts.decisionNote),
             decidedByUserId: opts.decidedByUserId,
           });
           const updated = await ctx.api.post<Approval>(apiPath`/api/approvals/${approvalId}/request-revision`, payload);
