@@ -10,6 +10,7 @@ import {
   updateAgentInstructionsBundleSchema,
   upsertAgentInstructionsFileSchema,
   createAgentKeySchema,
+  builtInAgentProvisionSchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
   agentSkillSyncSchema,
@@ -1143,6 +1144,50 @@ for (const route of [
 }
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/built-in-agents",
+  tags: ["agents"],
+  summary: "List built-in agent provisioning state",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/built-in-agents/{key}/provision",
+  tags: ["agents"],
+  summary: "Provision a built-in agent",
+  request: {
+    params: z.object({ companyId: z.string(), key: z.string() }),
+    body: jsonBody(builtInAgentProvisionSchema),
+  },
+  responses: {
+    200: r.ok(),
+    202: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/built-in-agents/{key}/reset",
+  tags: ["agents"],
+  summary: "Reset a built-in agent",
+  request: { params: z.object({ companyId: z.string(), key: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
 
 registry.registerPath({
   method: "get",
