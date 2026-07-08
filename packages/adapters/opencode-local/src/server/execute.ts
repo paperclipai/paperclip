@@ -57,6 +57,12 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+// Sourced from enrichment/dispatcher.py:280 — matches re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+// Non-greedy, dotall (s flag), case-sensitive. Exported for unit tests.
+export function stripThinkBlocks(text: string): string {
+  return text.replace(/<think>.*?<\/think>/gs, "").trim();
+}
+
 function firstNonEmptyLine(text: string): string {
   return (
     text
@@ -206,6 +212,75 @@ async function buildOpenCodeSkillsDir(config: Record<string, unknown>): Promise<
   return target;
 }
 
+const ISSUE_TERMINAL_STATUSES = new Set(["done", "cancelled"]);
+const ISSUE_DONE_POLL_INTERVAL_MS = 10_000;
+
+interface IssueDonePoller {
+  signal: Promise<void>;
+  cancel: () => void;
+}
+
+export function resolveIssueDonePollerApiUrl(
+  configuredApiUrl: string | undefined,
+  trustedApiUrl: string | undefined,
+): string | null {
+  if (!configuredApiUrl || !trustedApiUrl) return null;
+
+  try {
+    const configured = new URL(configuredApiUrl);
+    const trusted = new URL(trustedApiUrl);
+    if (configured.origin !== trusted.origin) return null;
+    return trusted.origin;
+  } catch {
+    return null;
+  }
+}
+
+function startIssueDonePoller(
+  apiUrl: string,
+  authToken: string,
+  issueId: string,
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
+): IssueDonePoller {
+  let cancelled = false;
+  let timer: NodeJS.Timeout | null = null;
+
+  const signal = new Promise<void>((resolve) => {
+    const poll = () => {
+      if (cancelled) return;
+      void fetch(`${apiUrl}/api/issues/${encodeURIComponent(issueId)}`, {
+        headers: { authorization: `Bearer ${authToken}` },
+        signal: AbortSignal.timeout(8_000),
+      })
+        .then((res) => (res.ok ? (res.json() as Promise<{ status?: unknown }>) : null))
+        .then((data) => {
+          if (cancelled) return;
+          if (data && typeof data.status === "string" && ISSUE_TERMINAL_STATUSES.has(data.status)) {
+            void onLog("stderr", `[paperclip] Issue ${issueId} set to ${data.status}; terminating opencode process to prevent zombie run\n`).catch(() => {});
+            resolve();
+            return;
+          }
+          if (!cancelled) timer = setTimeout(poll, ISSUE_DONE_POLL_INTERVAL_MS);
+        })
+        .catch(() => {
+          if (!cancelled) timer = setTimeout(poll, ISSUE_DONE_POLL_INTERVAL_MS);
+        });
+    };
+    timer = setTimeout(poll, ISSUE_DONE_POLL_INTERVAL_MS);
+  });
+
+  return {
+    signal,
+    cancel: () => {
+      cancelled = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    },
+  };
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
@@ -254,6 +329,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  const trustedPaperclipApiUrl = env.PAPERCLIP_API_URL;
   env.PAPERCLIP_RUN_ID = runId;
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -581,6 +657,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return args;
     };
 
+    let issuePoller: IssueDonePoller | null = null;
+
     const runAttempt = async (resumeSessionId: string | null) => {
       const args = buildArgs(resumeSessionId);
       if (onMeta) {
@@ -607,6 +685,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onRuntimeProgress: ctx.onRuntimeProgress,
         onLog,
         runLogTail: paperclipBridge?.runLogTail,
+        killSignalPromise: issuePoller?.signal,
       });
       return {
         proc,
@@ -683,10 +762,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
         },
-        summary: attempt.parsed.summary,
+        summary: stripThinkBlocks(attempt.parsed.summary),
         clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
       };
     };
+
+    if (wakeTaskId && authToken) {
+      const issuePollerApiUrl = resolveIssueDonePollerApiUrl(
+        preparedRuntimeConfig.env.PAPERCLIP_API_URL,
+        trustedPaperclipApiUrl,
+      );
+      if (issuePollerApiUrl) {
+        issuePoller = startIssueDonePoller(issuePollerApiUrl, authToken, wakeTaskId, onLog);
+      } else {
+        await onLog(
+          "stderr",
+          "[paperclip] Skipping issue-done poller because PAPERCLIP_API_URL does not match the trusted runtime origin.\n",
+        );
+      }
+    }
 
     try {
       const initial = await runAttempt(sessionId);
@@ -707,6 +801,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       return toResult(initial);
     } finally {
+      issuePoller?.cancel();
       await Promise.all([
         paperclipBridge?.stop(),
         restoreRemoteWorkspace?.(),

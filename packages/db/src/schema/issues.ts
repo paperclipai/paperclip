@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
+  check,
   pgTable,
   uuid,
   text,
@@ -64,6 +65,8 @@ export const issues = pgTable(
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
+    recoveryKind: text("recovery_kind"),
+    previousAssigneeAgentId: uuid("previous_assignee_agent_id").references(() => agents.id),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
@@ -88,6 +91,10 @@ export const issues = pgTable(
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
+    recoveryKindCheck: check(
+      "issues_recovery_kind_check",
+      sql`${table.recoveryKind} IS NULL OR ${table.recoveryKind} IN ('recovery_completion', 'measurement_bar')`,
+    ),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),

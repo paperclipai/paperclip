@@ -2460,6 +2460,8 @@ const issueListSelect = {
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
   sourceTrust: issues.sourceTrust,
+  recoveryKind: issues.recoveryKind,
+  previousAssigneeAgentId: issues.previousAssigneeAgentId,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,

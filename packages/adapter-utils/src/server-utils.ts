@@ -2825,6 +2825,7 @@ export async function runChildProcess(
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
     terminalResultCleanup?: TerminalResultCleanupOptions;
+    killSignalPromise?: Promise<void>;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
   },
@@ -2886,6 +2887,7 @@ export async function runChildProcess(
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
+        let killSignalFired = false;
 
         const clearTerminalCleanupTimers = () => {
           if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
@@ -2928,6 +2930,18 @@ export async function runChildProcess(
             }, Math.max(1, opts.graceSec) * 1000);
           }, graceMs);
         };
+
+        if (opts.killSignalPromise) {
+          void opts.killSignalPromise.then(() => {
+            if (killSignalFired || timedOut || terminalCleanupStarted) return;
+            killSignalFired = true;
+            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            setTimeout(() => {
+              if (!runningProcesses.has(runId)) return;
+              signalRunningProcess({ child, processGroupId }, "SIGKILL");
+            }, Math.max(1, opts.graceSec) * 1000);
+          }).catch(() => { /* ignore poll-side errors */ });
+        }
 
         const timeout =
           opts.timeoutSec > 0
