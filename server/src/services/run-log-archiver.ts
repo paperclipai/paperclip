@@ -4,6 +4,7 @@ import path from "node:path";
 import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { createDb, heartbeatRuns } from "@paperclipai/db";
 import type { Config } from "../config.js";
+import { HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
   prepareRunLogArchiveSource,
@@ -64,6 +65,15 @@ export interface RunLogArchiverDb {
    * must NOT delete the local file.
    */
   markArchivedToS3(runId: string, objectKey: string, now: Date): Promise<number>;
+  /**
+   * Conditionally mark a run's log tier `missing` — ONLY if the row is still
+   * `local_file`. Used when the hot file backing the row is definitively gone
+   * (e.g. purged during an ENOSPC incident): the row would otherwise be
+   * re-selected every sweep and burn the failure budget forever, stalling the
+   * whole sweeper. `logRef` is left intact for forensics. Returns the affected-
+   * row count (0 = another worker already moved it).
+   */
+  markMissing(runId: string, now: Date): Promise<number>;
 }
 
 /** Object-storage port (raw provider, system-scoped keys — not company-prefixed). */
@@ -116,6 +126,8 @@ export interface RunLogSweepResult {
   examined: number;
   ageArchived: number;
   fairnessArchived: number;
+  /** Rows whose hot file was definitively gone → marked `missing` (not a failure). */
+  missing: number;
   failed: number;
 }
 
@@ -145,23 +157,63 @@ export function createRunLogArchiver(deps: RunLogArchiverDeps): RunLogArchiver {
   let sweeping = false;
 
   /**
-   * Archive a single run end-to-end: gzip-if-needed → upload → head-verify →
-   * flip DB tier → delete local. Returns the freed (compressed) byte count, or
-   * 0 if it was skipped/failed. NEVER throws: a single run must not abort the
-   * sweep; a failed run stays `local_file` and is retried next sweep.
+   * Definitively-gone signal: `prepareArchiveSource` throws `notFound`
+   * (HttpError 404) when nothing backs the ref on disk. Anything else
+   * (IO/perms/gzip failure) is transient and must be retried, not marked dead.
    */
-  async function archiveOne(row: HeartbeatRunLogRow): Promise<number> {
-    if (!row.logRef) return 0;
+  function isMissingFileError(err: unknown): boolean {
+    return err instanceof HttpError && err.status === 404;
+  }
+
+  /** Mark a dead row `missing` so it leaves the candidate pool. true = handled. */
+  async function markMissingSafe(row: HeartbeatRunLogRow): Promise<boolean> {
+    try {
+      // 0 or 1 rows both mean the row is no longer our local_file problem.
+      await deps.db.markMissing(row.id, deps.now());
+      return true;
+    } catch (err) {
+      log.warn({ err, runId: row.id }, "run-log archive: failed to mark row 'missing'; will retry");
+      return false;
+    }
+  }
+
+  /**
+   * Archive a single run end-to-end: gzip-if-needed → upload → head-verify →
+   * flip DB tier → delete local. NEVER throws: a single run must not abort the
+   * sweep. Outcomes:
+   *  - `archived`: uploaded + verified + row flipped to s3 (`freed` = bytes)
+   *  - `missing`:  hot file definitively gone → row marked `missing` so it
+   *                leaves the candidate pool; does NOT count as a failure
+   *  - `failed`:   transient problem → row stays `local_file`, retried next sweep
+   */
+  async function archiveOne(
+    row: HeartbeatRunLogRow,
+  ): Promise<{ outcome: "archived" | "missing" | "failed"; freed: number }> {
+    if (!row.logRef) {
+      // A local_file row with no ref can never resolve — mark it missing so it
+      // cannot stall the sweep. (Selection filters these out, but be safe.)
+      return { outcome: (await markMissingSafe(row)) ? "missing" : "failed", freed: 0 };
+    }
 
     let source: RunLogArchiveSource;
     try {
       source = await deps.files.prepareArchiveSource(row.logRef);
     } catch (err) {
+      if (isMissingFileError(err)) {
+        const marked = await markMissingSafe(row);
+        log.warn(
+          { runId: row.id, logRef: row.logRef },
+          marked
+            ? "run-log archive: hot file gone; marked row 'missing' so it leaves the sweep"
+            : "run-log archive: hot file gone but mark failed; will retry next sweep",
+        );
+        return { outcome: marked ? "missing" : "failed", freed: 0 };
+      }
       log.warn(
         { err, runId: row.id, logRef: row.logRef },
-        "run-log archive: local file missing/unresolvable; skipping",
+        "run-log archive: source prepare failed (transient); will retry next sweep",
       );
-      return 0;
+      return { outcome: "failed", freed: 0 };
     }
 
     try {
@@ -190,7 +242,7 @@ export function createRunLogArchiver(deps: RunLogArchiverDeps): RunLogArchiver {
           },
           "run-log archive: upload verification failed; keeping local copy",
         );
-        return 0;
+        return { outcome: "failed", freed: 0 };
       }
 
       // Conditional flip: only if the row is still local_file. If another
@@ -202,20 +254,20 @@ export function createRunLogArchiver(deps: RunLogArchiverDeps): RunLogArchiver {
           { runId: row.id, objectKey: source.objectKey },
           "run-log archive: row already moved by another worker; keeping local copy",
         );
-        return 0;
+        return { outcome: "failed", freed: 0 };
       }
       await deps.files.removeArchivedFile(source.absPath);
       log.info(
         { runId: row.id, companyId: row.companyId, objectKey: source.objectKey, bytes: source.bytes },
         "run-log archived to cold storage",
       );
-      return source.bytes;
+      return { outcome: "archived", freed: source.bytes };
     } catch (err) {
       log.warn(
         { err, runId: row.id, logRef: row.logRef },
         "run-log archive: upload/flip failed; keeping local copy, will retry next sweep",
       );
-      return 0;
+      return { outcome: "failed", freed: 0 };
     }
   }
 
@@ -225,6 +277,7 @@ export function createRunLogArchiver(deps: RunLogArchiverDeps): RunLogArchiver {
       examined: 0,
       ageArchived: 0,
       fairnessArchived: 0,
+      missing: 0,
       failed: 0,
     };
 
@@ -267,11 +320,13 @@ export function createRunLogArchiver(deps: RunLogArchiverDeps): RunLogArchiver {
           for (const row of rows) {
             if (bytes <= deps.config.companyBudgetBytes || budget <= 0 || failureCapReached()) break;
             result.examined += 1;
-            const freed = await archiveOne(row);
-            if (freed > 0) {
-              bytes -= freed;
+            const r = await archiveOne(row);
+            if (r.outcome === "archived") {
+              bytes -= r.freed;
               budget -= 1;
               result.fairnessArchived += 1;
+            } else if (r.outcome === "missing") {
+              result.missing += 1;
             } else {
               result.failed += 1;
             }
@@ -289,10 +344,12 @@ export function createRunLogArchiver(deps: RunLogArchiverDeps): RunLogArchiver {
           for (const row of rows) {
             if (budget <= 0 || failureCapReached()) break;
             result.examined += 1;
-            const freed = await archiveOne(row);
-            if (freed > 0) {
+            const r = await archiveOne(row);
+            if (r.outcome === "archived") {
               budget -= 1;
               result.ageArchived += 1;
+            } else if (r.outcome === "missing") {
+              result.missing += 1;
             } else {
               result.failed += 1;
             }
@@ -309,7 +366,12 @@ export function createRunLogArchiver(deps: RunLogArchiverDeps): RunLogArchiver {
         );
       }
 
-      if (result.ageArchived > 0 || result.fairnessArchived > 0 || result.failed > 0) {
+      if (
+        result.ageArchived > 0 ||
+        result.fairnessArchived > 0 ||
+        result.missing > 0 ||
+        result.failed > 0
+      ) {
         log.info(
           { ...result },
           "run-log archiver sweep complete",
@@ -387,6 +449,17 @@ export function createDrizzleRunLogArchiverDb(db: Db): RunLogArchiverDb {
       const updated = await db
         .update(heartbeatRuns)
         .set({ logStore: "s3", logRef: objectKey, updatedAt: now })
+        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.logStore, "local_file")))
+        .returning({ id: heartbeatRuns.id });
+      return updated.length;
+    },
+
+    async markMissing(runId, now) {
+      // Conditional on the row still being local_file (mirrors markArchivedToS3).
+      // logRef is intentionally left untouched so a purged run is still traceable.
+      const updated = await db
+        .update(heartbeatRuns)
+        .set({ logStore: "missing", updatedAt: now })
         .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.logStore, "local_file")))
         .returning({ id: heartbeatRuns.id });
       return updated.length;

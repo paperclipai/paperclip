@@ -13,9 +13,13 @@ import { getRunLogArchiveStorageProvider } from "../storage/index.js";
  * Storage tier a run-log currently lives in.
  *  - `local_file`: hot copy on the shared volume (may be raw `.ndjson` or `.ndjson.gz`).
  *  - `s3`: cold copy archived to object storage; `logRef` is the full S3 object key.
- * The DB column is the source of truth; the archiver flips it local_file → s3.
+ *  - `missing`: hot copy is gone and was never archived (e.g. purged during an
+ *    ENOSPC incident). Reads 404; the archiver sets this so dead rows leave the
+ *    sweep candidate pool instead of burning the failure budget every sweep.
+ * The DB column is the source of truth; the archiver flips it local_file → s3
+ * (or local_file → missing when the hot file has vanished).
  */
-export type RunLogStoreType = "local_file" | "s3";
+export type RunLogStoreType = "local_file" | "s3" | "missing";
 
 /** Object-key prefix for archived run-logs: `run-logs/<companyId>/<agentId>/<runId>.ndjson.gz`. */
 export const RUN_LOG_S3_KEY_PREFIX = "run-logs";
@@ -541,6 +545,11 @@ export function createLocalFileRunLogStore(
         if (!reader) throw notFound("Run log not found");
         const { stream } = await reader.getObject({ objectKey: handle.logRef });
         return readGunzipRange(stream, offset, limitBytes);
+      }
+
+      if (handle.store === "missing") {
+        // Hot copy is gone and there is no cold archive to fall back to.
+        throw notFound("Run log not found");
       }
 
       if (handle.store !== "local_file") {

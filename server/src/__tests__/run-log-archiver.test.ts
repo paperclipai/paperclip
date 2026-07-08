@@ -86,6 +86,15 @@ function fakeDb(rows: HeartbeatRunLogRow[]): RunLogArchiverDb {
       }
       return 0;
     },
+    async markMissing(runId) {
+      // Conditional on local_file (mirrors markArchivedToS3); logRef untouched.
+      const r = rows.find((x) => x.id === runId);
+      if (r && r.logStore === "local_file") {
+        r.logStore = "missing";
+        return 1;
+      }
+      return 0;
+    },
   };
 }
 
@@ -362,6 +371,71 @@ describe("run-log-archiver failure budgeting (Fix 4)", () => {
     const res = await archiver.runSweep();
     expect(res.failed).toBe(25);
     expect(res.examined).toBe(25);
+  });
+});
+
+describe("run-log-archiver missing-file rows (stall fix)", () => {
+  it("marks a row 'missing' when its hot file is gone, without counting a failure", async () => {
+    // DB row points at a logRef with nothing on disk (purged during ENOSPC).
+    const rows = [
+      makeRow({ id: "gone", logRef: "company-1/agent-1/gone.ndjson.gz", finishedAt: daysAgo(40) }),
+    ];
+    const storage = fakeStorage();
+    const archiver = createRunLogArchiver({
+      db: fakeDb(rows),
+      storage,
+      files: createNodeRunLogArchiverFs(base),
+      config: cfg(),
+      now: () => NOW,
+      log: silentLog,
+    });
+
+    const res = await archiver.runSweep();
+    expect(res.missing).toBe(1);
+    expect(res.failed).toBe(0);
+    expect(res.ageArchived).toBe(0);
+    expect(storage.putObject).not.toHaveBeenCalled();
+    expect(rows[0]!.logStore).toBe("missing");
+
+    // It leaves the candidate pool: a follow-up sweep examines nothing.
+    const res2 = await archiver.runSweep();
+    expect(res2.examined).toBe(0);
+    expect(res2.missing).toBe(0);
+  });
+
+  it("a burst of missing rows never trips the failure cap and still archives a valid run", async () => {
+    const rows: HeartbeatRunLogRow[] = [];
+    // 26 dead rows (> MAX_ARCHIVE_FAILURES_PER_SWEEP=25), all older than the good
+    // one so they are selected first by the oldest-first age query.
+    for (let i = 0; i < 26; i += 1) {
+      rows.push(
+        makeRow({
+          id: `gone-${i}`,
+          logRef: `company-1/agent-1/gone-${i}.ndjson.gz`,
+          finishedAt: daysAgo(60 - i),
+        }),
+      );
+    }
+    // A real, younger (but still past retention) run that MUST archive this sweep.
+    const goodRef = await seedGzLog("company-1", "agent-1", "good", "real payload\n");
+    rows.push(makeRow({ id: "good", logRef: goodRef, finishedAt: daysAgo(31) }));
+
+    const storage = fakeStorage();
+    const archiver = createRunLogArchiver({
+      db: fakeDb(rows),
+      storage,
+      files: createNodeRunLogArchiverFs(base),
+      // High company budget so only the age pass is in play.
+      config: cfg({ companyBudgetBytes: 1024 * 1024 * 1024 }),
+      now: () => NOW,
+      log: silentLog,
+    });
+
+    const res = await archiver.runSweep();
+    expect(res.missing).toBe(26);
+    expect(res.failed).toBe(0);
+    expect(res.ageArchived).toBe(1);
+    expect(rows.find((r) => r.id === "good")!.logStore).toBe("s3");
   });
 });
 
