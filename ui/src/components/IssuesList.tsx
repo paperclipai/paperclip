@@ -3,7 +3,7 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
-import { Link } from "@/lib/router";
+import { Link, useNavigate } from "@/lib/router";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
@@ -16,7 +16,7 @@ import {
 } from "../lib/keyboardShortcuts";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
-import { createIssueDetailPath, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
+import { createIssueDetailPath, rememberIssueDetailLocationState, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
 import {
   buildSubIssueProgressSummary,
   shouldRenderSubIssueProgressSummary,
@@ -635,6 +635,7 @@ export function IssuesList({
   onUpdateIssue,
 }: IssuesListProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const navigate = useNavigate();
   const { keyboardShortcutsEnabled } = useGeneralSettings();
   // Keyboard selection for the list view (mirrors the inbox). Hover moves the
   // selection only after real pointer movement, so keyboard-driven scrolling
@@ -1246,8 +1247,8 @@ export function IssuesList({
     viewState.nestingEnabled,
   ]);
 
-  const listNavStateRef = useRef({ flatNavIssues, selectedNavIssueId, viewMode: viewState.viewMode });
-  listNavStateRef.current = { flatNavIssues, selectedNavIssueId, viewMode: viewState.viewMode };
+  const listNavStateRef = useRef({ flatNavIssues, selectedNavIssueId, viewMode: viewState.viewMode, issueLinkState });
+  listNavStateRef.current = { flatNavIssues, selectedNavIssueId, viewMode: viewState.viewMode, issueLinkState };
 
   const findSelectedNavRowLink = useCallback((issueId: string) => {
     const row = rootRef.current?.querySelector(`[data-issue-row-id="${CSS.escape(issueId)}"]`);
@@ -1285,15 +1286,25 @@ export function IssuesList({
           const direction = e.key === "j" || e.key === "ArrowDown" ? "next" : "previous";
           const nextIndex = getInboxKeyboardSelectionIndex(currentIndex, st.flatNavIssues.length, direction);
           const nextIssue = st.flatNavIssues[nextIndex];
-          if (nextIssue) setSelectedNavIssueId(nextIssue.id);
+          if (!nextIssue) break;
+          setSelectedNavIssueId(nextIssue.id);
+          // The list renders progressively; make sure the selected row is
+          // within the render budget so the band mounts and can scroll into
+          // view (the +1 keeps the next row visible as a scroll cue).
+          setRenderedIssueRowLimit((current) => Math.max(current, nextIndex + 2));
           break;
         }
         case "Enter": {
-          if (currentIndex < 0 || !st.selectedNavIssueId) return;
-          const link = findSelectedNavRowLink(st.selectedNavIssueId);
-          if (!link) return;
+          if (currentIndex < 0) return;
+          const issue = st.flatNavIssues[currentIndex];
+          if (!issue) return;
           e.preventDefault();
-          link.click();
+          // Navigate from the entry data (like the inbox) rather than the DOM
+          // row — the selected row may sit past the mounted render batch.
+          const pathId = issue.identifier ?? issue.id;
+          const detailState = withIssueDetailHeaderSeed(st.issueLinkState, issue);
+          rememberIssueDetailLocationState(pathId, detailState);
+          navigate(createIssueDetailPath(pathId), { state: detailState });
           break;
         }
         default:
@@ -1302,13 +1313,15 @@ export function IssuesList({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [findSelectedNavRowLink, keyboardShortcutsEnabled]);
+  }, [keyboardShortcutsEnabled, navigate]);
 
-  // Keep the keyboard selection visible while navigating.
+  // Keep the keyboard selection visible while navigating. Depends on the
+  // render budget too: a selection past the mounted batch scrolls once its
+  // row mounts.
   useEffect(() => {
     if (!selectedNavIssueId) return;
     findSelectedNavRowLink(selectedNavIssueId)?.scrollIntoView({ block: "nearest" });
-  }, [findSelectedNavRowLink, selectedNavIssueId]);
+  }, [findSelectedNavRowLink, renderedIssueRowLimit, selectedNavIssueId]);
 
   useEffect(() => {
     if (viewState.viewMode !== "list") return;
