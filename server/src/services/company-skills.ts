@@ -1485,14 +1485,29 @@ function normalizeMutableSharingScope(value: unknown): CompanySkillSharingScope 
   throw unprocessable("Invalid skill sharing scope.");
 }
 
-function normalizeCategorySlug(value: unknown) {
+function normalizeCategoryName(value: unknown) {
   if (typeof value !== "string") return null;
-  return normalizeSkillSlug(value);
+  const normalized = value.trim().replace(/\s+/g, " ");
+  return normalized.length > 0 ? normalized : null;
+}
+
+function categoryLookupKey(value: string) {
+  return value.toLocaleLowerCase();
 }
 
 function normalizeCategoryList(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
-  return Array.from(new Set(values.map(normalizeCategorySlug).filter((value): value is string => Boolean(value))));
+  const seen = new Set<string>();
+  const categories: string[] = [];
+  for (const value of values) {
+    const category = normalizeCategoryName(value);
+    if (!category) continue;
+    const key = categoryLookupKey(category);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    categories.push(category);
+  }
+  return categories;
 }
 
 function normalizeStoreText(value: unknown, maxLength = 500) {
@@ -2679,10 +2694,15 @@ export function companySkillService(db: Db) {
       .then((entries) => entries.map((entry) => toCompanySkillListRow(entry as CompanySkillListDbRow)));
     const agentRows = await agents.list(companyId);
     const q = query.q?.trim().toLowerCase() ?? "";
-    const categories = new Set((query.categories ?? []).map(normalizeCategorySlug).filter((value): value is string => Boolean(value)));
+    const categories = new Set(
+      (query.categories ?? [])
+        .map(normalizeCategoryName)
+        .filter((value): value is string => Boolean(value))
+        .map(categoryLookupKey),
+    );
     const filtered = rows.filter((skill) => {
       if (query.scope && skill.sharingScope !== query.scope) return false;
-      if (categories.size > 0 && !skill.categories.some((category) => categories.has(category))) return false;
+      if (categories.size > 0 && !skill.categories.some((category) => categories.has(categoryLookupKey(category)))) return false;
       if (q) {
         const haystack = [
           skill.name,

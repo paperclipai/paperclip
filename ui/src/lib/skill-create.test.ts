@@ -58,9 +58,16 @@ describe("skill create helpers", () => {
   it("normalizes slugs and category drafts", () => {
     expect(normalizeSkillDraftSlug("  My Fancy_SKILL!!  ")).toBe("my-fancy-skill");
     expect(splitCategoryDraft(" Review, memory tools, review, , Agent_QA ")).toEqual([
-      "review",
-      "memory-tools",
-      "agent-qa",
+      "Review",
+      "memory tools",
+      "Agent_QA",
+    ]);
+  });
+
+  it("keeps commas as draft delimiters while allowing spaces inside category names", () => {
+    expect(splitCategoryDraft(" AI Tools, Developer Experience, ai tools,  ")).toEqual([
+      "AI Tools",
+      "Developer Experience",
     ]);
   });
 

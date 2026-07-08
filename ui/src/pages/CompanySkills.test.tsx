@@ -358,7 +358,7 @@ describe("SkillDetailPage versions tab", () => {
 });
 
 describe("SkillDetailPage settings", () => {
-  it("saves normalized category edits from the settings dialog", async () => {
+  it("saves category edits with spaces from the settings dialog", async () => {
     const v1 = makeVersion(1, "# Demo Skill");
     const onUpdateSettings = vi.fn();
     const node = await renderSkillDetail([v1], {
@@ -377,12 +377,12 @@ describe("SkillDetailPage settings", () => {
 
     expect(categoryInput.value).toBe("engineering");
 
-    await inputValue(categoryInput, " Memory, review, memory ,,");
+    await inputValue(categoryInput, " Memory Tools, review, memory tools ,,");
     await click(saveButton);
 
     expect(onUpdateSettings).toHaveBeenCalledWith({
       sharingScope: "company",
-      categories: ["memory", "review"],
+      categories: ["Memory Tools", "review"],
     });
   });
 

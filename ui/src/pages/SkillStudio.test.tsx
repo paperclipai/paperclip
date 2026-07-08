@@ -338,6 +338,26 @@ describe("SkillStudio create mode", () => {
     );
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/skills/studio/created-skill"));
   });
+
+  it("keeps category commas and spaces editable while creating a skill", async () => {
+    const node = await renderStudio();
+
+    await waitFor(() => expect(node.querySelector("#skill-categories")).toBeTruthy());
+    await inputValue(node.querySelector("#skill-name") as HTMLInputElement, "Code Review");
+    await inputValue(node.querySelector("#skill-categories") as HTMLInputElement, "AI Tools, Developer Experience, ");
+
+    expect((node.querySelector("#skill-categories") as HTMLInputElement).value).toBe("AI Tools, Developer Experience, ");
+
+    await click(buttonsNamed(node, "Create skill")[0] as HTMLButtonElement);
+    await waitFor(() => expect(mockCompanySkillsApi.create).toHaveBeenCalled());
+
+    expect(mockCompanySkillsApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        categories: ["AI Tools", "Developer Experience"],
+      }),
+    );
+  });
 });
 
 function makeListItem(

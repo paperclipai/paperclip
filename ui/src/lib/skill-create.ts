@@ -33,12 +33,17 @@ export function normalizeSkillDraftSlug(value: string) {
 }
 
 export function splitCategoryDraft(value: string) {
-  return Array.from(
-    new Set(value
-      .split(",")
-      .map((entry) => normalizeSkillDraftSlug(entry))
-      .filter(Boolean)),
-  );
+  const seen = new Set<string>();
+  const categories: string[] = [];
+  for (const entry of value.split(",")) {
+    const category = entry.trim().replace(/\s+/g, " ");
+    if (!category) continue;
+    const key = category.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    categories.push(category);
+  }
+  return categories;
 }
 
 export function defaultSkillMarkdown(name: string, tagline: string) {
