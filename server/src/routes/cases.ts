@@ -166,6 +166,23 @@ async function loadCaseByIdOrIdentifier(db: CaseRouteDb, idOrIdentifier: string,
   return db.select().from(cases).where(where).limit(1).then((rows) => rows[0] ?? null);
 }
 
+async function loadIssueByIdOrIdentifier(db: CaseRouteDb, idOrIdentifier: string, companyIds?: string[]) {
+  if (companyIds && companyIds.length === 0) return null;
+  const normalizedIdentifier = idOrIdentifier.trim().toUpperCase();
+  const identityWhere = isUuidLike(idOrIdentifier)
+    ? or(eq(issues.id, idOrIdentifier), eq(issues.identifier, normalizedIdentifier))
+    : eq(issues.identifier, normalizedIdentifier);
+  const where = companyIds
+    ? and(identityWhere, inArray(issues.companyId, companyIds))
+    : identityWhere;
+  return db
+    .select({ id: issues.id, companyId: issues.companyId })
+    .from(issues)
+    .where(where)
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+}
+
 function caseLookupCompanyIds(req: Request) {
   if (req.actor.type === "agent") return req.actor.companyId ? [req.actor.companyId] : [];
   if (req.actor.type === "board" && req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
@@ -1354,15 +1371,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
   router.get("/issues/:issueId/cases", async (req, res) => {
     await assertCasesEnabled(db);
     const issueIdOrIdentifier = (req.params.issueId as string).trim();
-    const where = isUuidLike(issueIdOrIdentifier)
-      ? or(eq(issues.id, issueIdOrIdentifier), eq(issues.identifier, issueIdOrIdentifier.toUpperCase()))
-      : eq(issues.identifier, issueIdOrIdentifier.toUpperCase());
-    const issue = await db
-      .select({ id: issues.id, companyId: issues.companyId })
-      .from(issues)
-      .where(where)
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+    const issue = await loadIssueByIdOrIdentifier(db, issueIdOrIdentifier, caseLookupCompanyIds(req));
     if (!issue) throw notFound("Issue not found");
     assertCompanyAccess(req, issue.companyId);
     const rows = await db

@@ -473,6 +473,7 @@ describeEmbeddedPostgres("cases routes", () => {
     const agent = await seedAgent(ownCompany.id);
     const [otherIssue] = await db.insert(issues).values({
       companyId: otherCompany.id,
+      identifier: `${otherCompany.issuePrefix.toUpperCase()}-1`,
       title: "Other company task",
       status: "todo",
     }).returning();
@@ -527,6 +528,8 @@ describeEmbeddedPostgres("cases routes", () => {
       .attach("file", Buffer.from("artifact"), "artifact.txt")
       .expect(404);
     await http.get(`/api/cases/${caseRow!.id}/events`).expect(404);
+    await http.get(`/api/issues/${otherIssue!.id}/cases`).expect(404);
+    await http.get(`/api/issues/${otherIssue!.identifier}/cases`).expect(404);
 
     const limitedBoardActor: Express.Request["actor"] = {
       type: "board",
@@ -541,6 +544,8 @@ describeEmbeddedPostgres("cases routes", () => {
     expect(ownCaseResponse.body.id).toBe(ownCase!.id);
     await limitedBoardHttp.get(`/api/cases/${caseRow!.id}`).expect(404);
     await limitedBoardHttp.get(`/api/cases/${caseRow!.identifier}`).expect(404);
+    await limitedBoardHttp.get(`/api/issues/${otherIssue!.id}/cases`).expect(404);
+    await limitedBoardHttp.get(`/api/issues/${otherIssue!.identifier}/cases`).expect(404);
 
     expect(await db.select().from(cases)).toHaveLength(2);
     expect(await db.select().from(caseDocuments)).toHaveLength(0);
