@@ -1060,6 +1060,31 @@ function stableJsonEqual(left: unknown, right: unknown) {
   return JSON.stringify(stableJsonComparable(left)) === JSON.stringify(stableJsonComparable(right));
 }
 
+function isPaperclipBundledSkillKey(key: string) {
+  return key.startsWith("paperclipai/paperclip/");
+}
+
+function stripDerivedPaperclipBundledMetadata(key: string, metadata: unknown): unknown {
+  if (metadata === null || metadata === undefined) return {};
+  const comparable = stableJsonComparable(metadata);
+  if (!isPlainRecord(comparable)) return comparable;
+
+  const out = { ...comparable };
+  if (out.skillKey === key) delete out.skillKey;
+  if (out.sourceKind === "paperclip_bundled") delete out.sourceKind;
+  delete out.missingSource;
+  return out;
+}
+
+function importedSkillMetadataEqual(existing: CompanySkill, values: ImportedSkillPersistValues) {
+  const incomingMetadata = isPlainRecord(values.metadata) ? values.metadata : null;
+  if (isPaperclipBundledSkillKey(values.key) && asString(incomingMetadata?.sourceKind) === "paperclip_bundled") {
+    return JSON.stringify(stripDerivedPaperclipBundledMetadata(existing.key, existing.metadata))
+      === JSON.stringify(stripDerivedPaperclipBundledMetadata(values.key, values.metadata));
+  }
+  return stableJsonEqual(existing.metadata ?? null, values.metadata);
+}
+
 function stringArraysEqual(left: string[], right: string[]) {
   if (left.length !== right.length) return false;
   return left.every((entry, index) => entry === right[index]);
@@ -1092,7 +1117,7 @@ function importedSkillPersistValuesMatchExisting(
     && stringArraysEqual(existing.categories, normalizeCategoryList(values.categories))
     && existing.sharingScope === values.sharingScope
     && existing.installCount === values.installCount
-    && stableJsonEqual(existing.metadata ?? null, values.metadata);
+    && importedSkillMetadataEqual(existing, values);
 }
 
 function inferLocalSkillInventoryMode(
@@ -2576,6 +2601,7 @@ export function companySkillService(db: Db) {
 
     for (const skill of skills) {
       if (skill.sourceType !== "local_path") continue;
+      if (isPaperclipBundledSkillKey(skill.key) || asString(skill.metadata?.sourceKind) === "paperclip_bundled") continue;
 
       if (!missingIds.has(skill.id)) {
         const metadata = getMissingSourceMarker(skill.metadata)
@@ -2587,7 +2613,7 @@ export function companySkillService(db: Db) {
           : null;
         const nextTrustLevel = nextInventory ? deriveTrustLevel(nextInventory) : skill.trustLevel;
         const inventoryChanged = nextInventory ? !inventoryEntriesEqual(skill.fileInventory, nextInventory) : false;
-        const metadataChanged = JSON.stringify(metadata ?? {}) !== JSON.stringify(skill.metadata ?? {});
+        const metadataChanged = !stableJsonEqual(metadata ?? {}, skill.metadata ?? {});
         if (inventoryChanged || metadataChanged || nextTrustLevel !== skill.trustLevel) {
           await db
             .update(companySkills)
@@ -2608,7 +2634,7 @@ export function companySkillService(db: Db) {
           skill.metadata,
           buildMissingLocalSourceMarker(skill),
         );
-        if (JSON.stringify(metadata) !== JSON.stringify(skill.metadata ?? {})) {
+        if (!stableJsonEqual(metadata, skill.metadata ?? {})) {
           await db
             .update(companySkills)
             .set({ metadata, updatedAt: new Date() })
