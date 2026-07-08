@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildPaperclipEnv } from "../adapters/utils.js";
 
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
+const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
@@ -11,6 +12,12 @@ const ORIGINAL_PORT = process.env.PORT;
 afterEach(() => {
   if (ORIGINAL_PAPERCLIP_RUNTIME_API_URL === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
   else process.env.PAPERCLIP_RUNTIME_API_URL = ORIGINAL_PAPERCLIP_RUNTIME_API_URL;
+
+  if (ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON === undefined) {
+    delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+  } else {
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+  }
 
   if (ORIGINAL_PAPERCLIP_API_URL === undefined) delete process.env.PAPERCLIP_API_URL;
   else process.env.PAPERCLIP_API_URL = ORIGINAL_PAPERCLIP_API_URL;
@@ -38,6 +45,60 @@ describe("buildPaperclipEnv", () => {
     const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
 
     expect(env.PAPERCLIP_API_URL).toBe("http://203.0.113.42:3102");
+  });
+
+  it("prefers a loopback runtime candidate for local adapter execution", () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://stale-tailnet.example.test:3101";
+    process.env.PAPERCLIP_API_URL = "http://stale-tailnet.example.test:3101";
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
+      "http://stale-tailnet.example.test:3101",
+      "http://127.0.0.1:3101",
+      "http://100.103.164.67:3101",
+    ]);
+    process.env.PAPERCLIP_LISTEN_HOST = "0.0.0.0";
+    process.env.PAPERCLIP_LISTEN_PORT = "3101";
+
+    const env = buildPaperclipEnv(
+      { id: "agent-1", companyId: "company-1" },
+      { preferLocalRuntimeUrl: true },
+    );
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3101");
+  });
+
+  it("synthesizes a local runtime URL when no loopback candidate is exported", () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://stale-tailnet.example.test:3101";
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
+      "http://stale-tailnet.example.test:3101",
+      "http://100.103.164.67:3101",
+    ]);
+    process.env.PAPERCLIP_LISTEN_HOST = "0.0.0.0";
+    process.env.PAPERCLIP_LISTEN_PORT = "3101";
+
+    const env = buildPaperclipEnv(
+      { id: "agent-1", companyId: "company-1" },
+      { preferLocalRuntimeUrl: true },
+    );
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3101");
+  });
+
+  it("uses the injected listener host when the runtime is bound to a private address", () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://stale-tailnet.example.test:3101";
+    process.env.PAPERCLIP_API_URL = "http://stale-tailnet.example.test:3101";
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
+      "http://stale-tailnet.example.test:3101",
+      "http://100.103.164.67:3101",
+    ]);
+    process.env.PAPERCLIP_LISTEN_HOST = "100.103.164.67";
+    process.env.PAPERCLIP_LISTEN_PORT = "3101";
+
+    const env = buildPaperclipEnv(
+      { id: "agent-1", companyId: "company-1" },
+      { preferLocalRuntimeUrl: true },
+    );
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://100.103.164.67:3101");
   });
 
   it("falls back to PAPERCLIP_API_URL when no runtime URL is configured", () => {

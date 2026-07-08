@@ -177,6 +177,42 @@ function resolveDefaultPaperclipApiUrl(): string {
   return `http://${runtimeHost}:${runtimePort}`;
 }
 
+function parseRuntimeApiCandidateUrls(rawValue: string | undefined): string[] {
+  if (!rawValue) return [];
+  try {
+    const parsed = JSON.parse(rawValue) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function isLoopbackRuntimeUrl(rawUrl: string): boolean {
+  try {
+    const hostname = new URL(rawUrl).hostname.toLowerCase();
+    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+  } catch {
+    return false;
+  }
+}
+
+function resolveBridgeHostApiUrl(input: { explicitHostApiUrl?: string | null | undefined }): string {
+  const explicit = input.explicitHostApiUrl?.trim();
+  if (explicit) return explicit;
+
+  const localCandidate = parseRuntimeApiCandidateUrls(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON)
+    .find(isLoopbackRuntimeUrl);
+  if (localCandidate) return localCandidate;
+  if (process.env.PAPERCLIP_LISTEN_HOST?.trim() || process.env.PAPERCLIP_LISTEN_PORT?.trim() || process.env.PORT?.trim()) {
+    return resolveDefaultPaperclipApiUrl();
+  }
+  return localCandidate ??
+    process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ??
+    process.env.PAPERCLIP_API_URL?.trim() ??
+    resolveDefaultPaperclipApiUrl();
+}
+
 function isBridgeDebugEnabled(env: NodeJS.ProcessEnv): boolean {
   const value = env.PAPERCLIP_BRIDGE_DEBUG?.trim().toLowerCase();
   return value === "1" || value === "true" || value === "yes";
@@ -1655,11 +1691,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     typeof input.maxBodyBytes === "number" && Number.isFinite(input.maxBodyBytes) && input.maxBodyBytes > 0
       ? Math.trunc(input.maxBodyBytes)
       : DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES;
-  const hostApiUrl =
-    input.hostApiUrl?.trim() ||
-    process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ||
-    process.env.PAPERCLIP_API_URL?.trim() ||
-    resolveDefaultPaperclipApiUrl();
+  const hostApiUrl = resolveBridgeHostApiUrl({ explicitHostApiUrl: input.hostApiUrl });
   const shellCommand = adapterExecutionTargetShellCommand(target);
   const runner = adapterExecutionTargetCommandRunner(target);
   const bridgeTimeoutMs =

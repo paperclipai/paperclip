@@ -1817,7 +1817,30 @@ export function buildInvocationEnvForLogs(
   return redactEnvForLogs(merged);
 }
 
-export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+function parseRuntimeApiCandidateUrls(rawValue: string | undefined): string[] {
+  if (!rawValue?.trim()) return [];
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function isLoopbackRuntimeUrl(rawUrl: string): boolean {
+  try {
+    const hostname = new URL(rawUrl).hostname.toLowerCase();
+    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+  } catch {
+    return false;
+  }
+}
+
+export function buildPaperclipEnv(
+  agent: { id: string; companyId: string },
+  options: { preferLocalRuntimeUrl?: boolean } = {},
+): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -1832,7 +1855,18 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
+  const localRuntimeApiUrl = (() => {
+    if (!options.preferLocalRuntimeUrl) return null;
+    const localCandidate = parseRuntimeApiCandidateUrls(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON)
+      .find(isLoopbackRuntimeUrl);
+    if (localCandidate) return localCandidate;
+    if (process.env.PAPERCLIP_LISTEN_HOST || process.env.PAPERCLIP_LISTEN_PORT) {
+      return `http://${runtimeHost}:${runtimePort}`;
+    }
+    return null;
+  })();
   const apiUrl =
+    localRuntimeApiUrl ??
     process.env.PAPERCLIP_RUNTIME_API_URL ??
     process.env.PAPERCLIP_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
