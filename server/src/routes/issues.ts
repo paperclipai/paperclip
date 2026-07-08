@@ -4820,6 +4820,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const active = await revalidateActiveSourceRecoveryForRead({
       issue,
       trigger: "read_projection",
@@ -5021,6 +5022,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const objects = await externalObjectsSvc.listForIssue(issue.id);
     res.json(objects);
   });
@@ -5033,6 +5035,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const summary = await externalObjectsSvc.getIssueSummary(issue.id);
     res.json(summary);
   });
@@ -5040,7 +5043,23 @@ export function issueRoutes(
   router.post("/companies/:companyId/issues/external-object-summaries", validate(externalObjectSummariesSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const summaries = await externalObjectsSvc.getIssueSummaries(companyId, req.body.issueIds);
+    const requestedIssueIds = [...new Set(req.body.issueIds as string[])];
+    const candidateIssues = requestedIssueIds.length > 0
+      ? await db
+        .select({
+          id: issueRows.id,
+          companyId: issueRows.companyId,
+          projectId: issueRows.projectId,
+          parentId: issueRows.parentId,
+          assigneeAgentId: issueRows.assigneeAgentId,
+          assigneeUserId: issueRows.assigneeUserId,
+          status: issueRows.status,
+        })
+        .from(issueRows)
+        .where(and(eq(issueRows.companyId, companyId), inArray(issueRows.id, requestedIssueIds)))
+      : [];
+    const readableIssueIds = (await filterIssuesForActor(req, candidateIssues)).map((issue) => issue.id);
+    const summaries = await externalObjectsSvc.getIssueSummaries(companyId, readableIssueIds);
     res.json({ summaries: Object.fromEntries(summaries) });
   });
 
@@ -5129,6 +5148,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -5205,6 +5225,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -5555,6 +5576,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -6193,6 +6215,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(id);
     res.json(approvals);
   });
@@ -9640,6 +9663,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const attachments = await svc.listAttachments(issueId);
     res.json(attachments.map(withContentPath));
   });
@@ -9744,6 +9768,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, attachment.companyId);
+    const issue = await svc.getById(attachment.issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     const contentLength = attachment.byteSize;
     const range = parseAttachmentRangeHeader(
