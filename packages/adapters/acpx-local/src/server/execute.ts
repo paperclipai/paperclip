@@ -1005,7 +1005,40 @@ async function applySessionConfigOptions(input: {
   }
 }
 
-async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean): Promise<{
+function renderPaperclipEnvNote(env: Record<string, string>): string {
+  const paperclipKeys = Object.keys(env)
+    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .sort();
+  if (paperclipKeys.length === 0) return "";
+  return [
+    "Paperclip runtime note:",
+    `The following PAPERCLIP_* environment variables are available in this run: ${paperclipKeys.join(", ")}`,
+    "Do not assume these variables are missing without checking your shell environment.",
+  ].join("\n");
+}
+
+function renderApiAccessNote(env: Record<string, string>): string {
+  if (!env.PAPERCLIP_API_URL || !env.PAPERCLIP_API_KEY) return "";
+  const lines = [
+    "Paperclip API access note:",
+    "Use terminal commands with curl to make Paperclip API requests.",
+    "Normalize the base URL before adding API paths:",
+    `  PAPERCLIP_API_BASE="\${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="\${PAPERCLIP_API_BASE%/api}"`,
+    "GET example:",
+    `  curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_BASE/api/agents/me"`,
+  ];
+  if (env.PAPERCLIP_TASK_ID) {
+    lines.push(
+      "Scoped issue comment example:",
+      `  curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Content-Type: application/json" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -d '{"body":"Status update from agent."}' "$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID/comments"`,
+    );
+  } else {
+    lines.push("Use a real issue id from the current context before making issue write requests.");
+  }
+  return lines.join("\n");
+}
+
+async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean, env: Record<string, string>): Promise<{
   prompt: string;
   promptMetrics: Record<string, number>;
   commandNotes: string[];
@@ -1057,12 +1090,16 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
+  const paperclipEnvNote = renderPaperclipEnvNote(env);
+  const apiAccessNote = renderApiAccessNote(env);
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
     wakePrompt,
     sessionHandoffNote,
     taskContextNote,
+    paperclipEnvNote,
+    apiAccessNote,
     renderedPrompt,
   ]);
 
@@ -1076,6 +1113,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
       wakePromptChars: wakePrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
       taskContextChars: taskContextNote.length,
+      runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
       heartbeatPromptChars: renderedPrompt.length,
     },
   };
@@ -1520,7 +1558,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         summary: message,
       };
     }
-    const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession);
+    const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env);
     const runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
     await emitAcpxLog(ctx, {
       type: "acpx.session",
