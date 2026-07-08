@@ -7,14 +7,22 @@ import {
   agents,
   approvals,
   budgetPolicies,
+  builtInManagedResources,
   companies,
+  companySkillVersions,
+  companySkills,
   createDb,
+  principalPermissionGrants,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
+import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { HttpError } from "../errors.ts";
+import { agentInstructionsService } from "../services/agent-instructions.ts";
 import { agentService } from "../services/agents.ts";
 import { approvalService } from "../services/approvals.ts";
 import {
@@ -49,6 +57,12 @@ describeEmbeddedPostgres("built-in agents", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(routineTriggers);
+    await db.delete(routines);
+    await db.delete(builtInManagedResources);
+    await db.delete(companySkillVersions);
+    await db.delete(companySkills);
+    await db.delete(principalPermissionGrants);
     await db.delete(agentConfigRevisions);
     await db.delete(activityLog);
     await db.delete(approvals);
@@ -67,13 +81,14 @@ describeEmbeddedPostgres("built-in agents", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix: issuePrefix(companyId),
+      defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: true,
     });
     return companyId;
   }
 
   it("validates the static registry and rejects invalid definitions", () => {
-    expect(listBuiltInAgentDefinitions().map((definition) => definition.key).sort()).toEqual(["briefs", "learning"]);
+    expect(listBuiltInAgentDefinitions().map((definition) => definition.key).sort()).toEqual(["briefs", "learning", "reflection-coach"]);
     expect(() => validateBuiltInAgentDefinitions([
       {
         key: "briefs",
@@ -393,6 +408,108 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
   });
 
+  it("auto-provisions a paused Reflection Coach bundle with skill sync and a disabled routine", async () => {
+    const companyId = await seedCompany();
+    await agentService(db).create(companyId, {
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4", apiKey: "do-not-copy" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const result = await reconcileBuiltInAgentsOnStartup(db);
+    expect(result.autoEnsured).toBeGreaterThanOrEqual(1);
+
+    const state = await builtInAgentService(db).get(companyId, "reflection-coach");
+    expect(state).toMatchObject({
+      status: "paused",
+      agent: {
+        companyId,
+        name: "Reflection Coach",
+        role: "general",
+        title: "Reflection Coach",
+        icon: "eye",
+        adapterType: "codex_local",
+        permissions: {
+          canCreateAgents: false,
+          canCreateSkills: false,
+        },
+      },
+    });
+    expect(state.agent?.adapterConfig).toMatchObject({
+      instructionsBundleMode: "managed",
+      instructionsEntryFile: "AGENTS.md",
+    });
+    expect(state.agent?.adapterConfig).not.toMatchObject({ model: "gpt-5.4", apiKey: "do-not-copy" });
+    expect(state.resources.map((resource) => [resource.resourceKind, resource.stockStatus])).toEqual([
+      ["instructions", "stock_current"],
+      ["skill", "stock_current"],
+      ["routine", "stock_current"],
+    ]);
+
+    const agentRows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(agentRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
+
+    const [skill] = await db
+      .select()
+      .from(companySkills)
+      .where(eq(companySkills.key, "paperclipai/bundled/paperclip-operations/reflection-coach"));
+    expect(skill).toMatchObject({
+      key: "paperclipai/bundled/paperclip-operations/reflection-coach",
+      slug: "reflection-coach",
+    });
+    expect(readPaperclipSkillSyncPreference(state.agent!.adapterConfig as Record<string, unknown>).desiredSkills).toContain(
+      "paperclipai/bundled/paperclip-operations/reflection-coach",
+    );
+
+    const [routine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    expect(routine).toMatchObject({
+      title: "Review recent agent trajectories for coaching proposals",
+      status: "paused",
+      assigneeAgentId: state.agentId,
+    });
+    const [trigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routine!.id));
+    expect(trigger).toMatchObject({
+      kind: "schedule",
+      enabled: false,
+      cronExpression: "0 9 * * 1",
+      timezone: "UTC",
+    });
+  });
+
+  it("preserves Reflection Coach instruction drift on reconcile and restores it on reset", async () => {
+    const companyId = await seedCompany();
+    const builtIns = builtInAgentService(db);
+    const created = await builtIns.ensure(companyId, "reflection-coach");
+    const instructions = agentInstructionsService();
+
+    await instructions.writeFile(created.agent!, "AGENTS.md", "# Custom Reflection Coach\n\nOperator edit.\n");
+
+    const reconciled = await builtIns.ensure(companyId, "reflection-coach");
+    const drift = reconciled.resources.find((resource) => resource.resourceKind === "instructions");
+    expect(drift).toMatchObject({
+      stockStatus: "operator_modified",
+      updateAvailable: true,
+      resetAvailable: true,
+      changedFiles: ["AGENTS.md"],
+    });
+    await expect(instructions.readFile(reconciled.agent!, "AGENTS.md")).resolves.toMatchObject({
+      content: "# Custom Reflection Coach\n\nOperator edit.\n",
+    });
+
+    const reset = await builtIns.reset(companyId, "reflection-coach");
+    expect(reset.resources.find((resource) => resource.resourceKind === "instructions")).toMatchObject({
+      stockStatus: "stock_current",
+      resetAvailable: false,
+    });
+    const resetFile = await instructions.readFile(reset.agent!, "AGENTS.md");
+    expect(resetFile.content).toContain("Reflection Coach");
+    expect(resetFile.content).not.toContain("Operator edit.");
+  });
+
   it("blocks deleting a built-in agent", async () => {
     const companyId = await seedCompany();
     const state = await builtInAgentService(db).ensure(companyId, "briefs");
@@ -472,7 +589,9 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
 
     const result = await reconcileBuiltInAgentsOnStartup(db);
-    expect(result).toMatchObject({ scanned: 1, reconciled: 1, unknown: 0, duplicates: 0 });
+    expect(result).toMatchObject({ unknown: 0, duplicates: 0 });
+    expect(result.scanned).toBeGreaterThanOrEqual(1);
+    expect(result.reconciled).toBeGreaterThanOrEqual(1);
 
     const [row] = await db.select().from(agents).where(eq(agents.id, agentId));
     expect(row).toMatchObject({
@@ -520,5 +639,109 @@ describeEmbeddedPostgres("built-in agents", () => {
         key: "briefs",
       },
     } satisfies Partial<HttpError>);
+  });
+
+  it("automatically materializes the Reflection Coach bundle without enabling background work", async () => {
+    const companyId = await seedCompany();
+    const root = await agentService(db).create(companyId, {
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const state = await builtInAgentService(db).ensure(companyId, "reflection-coach");
+
+    expect(state.agent).toMatchObject({
+      companyId,
+      name: "Reflection Coach",
+      title: "Reflection Coach",
+      icon: "eye",
+      reportsTo: root.id,
+      adapterType: "codex_local",
+      budgetMonthlyCents: 0,
+    });
+    expect(state.status).toBe("paused");
+    expect(readBuiltInAgentMarker(state.agent?.metadata)).toEqual({
+      key: "reflection-coach",
+      featureKeys: ["reflection-coach"],
+    });
+    expect(state.resources.map((resource) => [resource.resourceKind, resource.stockStatus])).toEqual([
+      ["instructions", "stock_current"],
+      ["skill", "stock_current"],
+      ["routine", "stock_current"],
+    ]);
+
+    const [skill] = await db
+      .select()
+      .from(companySkills)
+      .where(eq(companySkills.key, "paperclipai/bundled/paperclip-operations/reflection-coach"));
+    expect(skill).toMatchObject({
+      key: "paperclipai/bundled/paperclip-operations/reflection-coach",
+      slug: "reflection-coach",
+    });
+    expect(readPaperclipSkillSyncPreference(state.agent!.adapterConfig).desiredSkills).toContain(skill!.key);
+
+    const [routine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    expect(routine).toMatchObject({
+      title: "Review recent agent trajectories for coaching proposals",
+      status: "paused",
+      assigneeAgentId: state.agentId,
+      originKind: "built_in_agent_bundle",
+      originId: "reflection-coach:recent-agent-reflection",
+    });
+    const [trigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routine!.id));
+    expect(trigger).toMatchObject({
+      kind: "schedule",
+      enabled: false,
+      cronExpression: "0 9 * * 1",
+      timezone: "UTC",
+    });
+
+    const grants = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, state.agentId!));
+    expect(grants.map((grant) => grant.permissionKey)).not.toContain("tasks:assign");
+  });
+
+  it("preserves Reflection Coach stock drift until explicit reset", async () => {
+    const companyId = await seedCompany();
+    const created = await builtInAgentService(db).ensure(companyId, "reflection-coach");
+    const agent = created.agent!;
+
+    const instructionsSvc = agentInstructionsService();
+    await instructionsSvc.writeFile(agent, "AGENTS.md", "# Custom Reflection Coach\n\nDo not overwrite me.\n");
+    await db
+      .update(companySkills)
+      .set({ markdown: "---\nname: reflection-coach\n---\n\n# Custom skill\n" })
+      .where(eq(companySkills.companyId, companyId));
+
+    const drifted = await builtInAgentService(db).ensure(companyId, "reflection-coach");
+    expect(drifted.resources.find((resource) => resource.resourceKind === "instructions")).toMatchObject({
+      stockStatus: "operator_modified",
+      resetAvailable: true,
+    });
+    expect(drifted.resources.find((resource) => resource.resourceKind === "skill")).toMatchObject({
+      stockStatus: "operator_modified",
+      resetAvailable: true,
+    });
+    expect((await instructionsSvc.readFile(drifted.agent!, "AGENTS.md")).content).toContain("Do not overwrite me.");
+
+    const reset = await builtInAgentService(db).reset(companyId, "reflection-coach", {
+      resources: ["instructions"],
+    });
+    expect(reset.resources.find((resource) => resource.resourceKind === "instructions")).toMatchObject({
+      stockStatus: "stock_current",
+      resetAvailable: false,
+    });
+    expect(reset.resources.find((resource) => resource.resourceKind === "skill")).toMatchObject({
+      stockStatus: "operator_modified",
+      resetAvailable: true,
+    });
+    expect((await instructionsSvc.readFile(reset.agent!, "AGENTS.md")).content).toContain("built-in Reflection Coach");
   });
 });

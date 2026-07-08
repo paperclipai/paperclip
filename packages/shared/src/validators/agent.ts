@@ -96,6 +96,16 @@ export const builtInAgentProvisionSchema = z.object({
 
 export type BuiltInAgentProvision = z.infer<typeof builtInAgentProvisionSchema>;
 
+export const builtInAgentEmptyMutationSchema = z.object({}).strict().default({});
+
+export type BuiltInAgentEmptyMutation = z.infer<typeof builtInAgentEmptyMutationSchema>;
+
+export const builtInAgentResetSchema = z.object({
+  resources: z.array(z.enum(["agent", "instructions", "skill", "routine"])).optional(),
+}).strict().default({});
+
+export type BuiltInAgentReset = z.infer<typeof builtInAgentResetSchema>;
+
 export const createAgentHireSchema = createAgentSchema.extend({
   sourceIssueId: z.string().uuid().optional().nullable(),
   sourceIssueIds: z.array(z.string().uuid()).optional(),

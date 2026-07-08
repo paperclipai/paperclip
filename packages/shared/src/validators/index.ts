@@ -247,7 +247,9 @@ export {
 
 export {
   createAgentSchema,
+  builtInAgentEmptyMutationSchema,
   builtInAgentProvisionSchema,
+  builtInAgentResetSchema,
   createAgentHireSchema,
   updateAgentSchema,
   agentRuntimeConfigSchema,
@@ -269,6 +271,7 @@ export {
   updateAgentPermissionsSchema,
   type CreateAgent,
   type BuiltInAgentProvision,
+  type BuiltInAgentReset,
   type CreateAgentHire,
   type UpdateAgent,
   type UpdateAgentInstructionsBundle,

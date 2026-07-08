@@ -12,6 +12,8 @@ export {
   reconcileBuiltInAgentsOnStartup,
   validateBuiltInAgentDefinitions,
   type BuiltInAgentDefinition,
+  type BuiltInManagedResourceState,
+  type BuiltInManagedResourceStockStatus,
   type BuiltInAgentState,
   type BuiltInAgentStatus,
 } from "./built-in-agents.js";
