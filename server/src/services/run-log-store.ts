@@ -290,6 +290,21 @@ export function createLocalFileRunLogStore(
   // (fs.stat) the first time an unknown logRef is appended to, so a server
   // restart mid-run doesn't lose the running total.
   const capState = new Map<string, RunLogCapState>();
+  // logRefs whose finalize() has begun. A finalized ref's raw `.ndjson` is
+  // gzipped and unlinked, so a late append() must NOT recreate/write it (that
+  // would strand invisible bytes: read() resolves the `.gz` first). Runtime
+  // services can still emit onLog appends after heartbeat calls finalize()
+  // (heartbeat releases runtime services only after finalizing), so we guard
+  // append() against it here.
+  //
+  // Accepted limitation: this Set lives only in-process. After a server restart
+  // it is empty, so a zombie appender could recreate a raw file for an
+  // already-finalized run. That raw file stays invisible (read() prefers the
+  // .gz) and is bounded by the infra janitor backstop — deliberate.
+  const finalizedRefs = new Set<string>();
+  // Refs we've already warned about appending-after-finalize, so the warn is
+  // emitted once per ref, not once per dropped chunk.
+  const appendAfterFinalizeWarned = new Set<string>();
 
   async function ensureDir(relativeDir: string) {
     const dir = resolveWithin(basePath, relativeDir);
@@ -300,7 +315,15 @@ export function createLocalFileRunLogStore(
     const existing = capState.get(logRef);
     if (existing) return existing;
     const stat = await fs.stat(absPath).catch(() => null);
-    const seeded: RunLogCapState = { writtenBytes: stat?.size ?? 0, truncated: false };
+    const writtenBytes = stat?.size ?? 0;
+    // Restart seeding: a run already at/over the cap had its truncation marker
+    // written by the previous instance (or the file is already over cap). Seed
+    // `truncated: true` so we silently drop further appends instead of writing a
+    // SECOND marker. Only a live crossing of the cap (below) writes the marker.
+    const seeded: RunLogCapState = {
+      writtenBytes,
+      truncated: writtenBytes >= runLogMaxBytes(),
+    };
     capState.set(logRef, seeded);
     return seeded;
   }
@@ -399,6 +422,16 @@ export function createLocalFileRunLogStore(
 
     async append(handle, event) {
       if (handle.store !== "local_file") return 0;
+      if (finalizedRefs.has(handle.logRef)) {
+        if (!appendAfterFinalizeWarned.has(handle.logRef)) {
+          appendAfterFinalizeWarned.add(handle.logRef);
+          logger.warn(
+            { logRef: handle.logRef },
+            "run-log: append after finalize ignored; log is already compressed/sealed",
+          );
+        }
+        return 0;
+      }
       const absPath = resolveWithin(basePath, handle.logRef);
       const state = await getCapState(handle.logRef, absPath);
 
@@ -432,6 +465,9 @@ export function createLocalFileRunLogStore(
     },
 
     async finalize(handle) {
+      // Mark finalized at the START (before gzip/unlink) so any append() racing
+      // the compression is dropped rather than recreating the raw file.
+      finalizedRefs.add(handle.logRef);
       capState.delete(handle.logRef);
       if (handle.store !== "local_file") {
         return { bytes: 0, compressed: false, logRef: handle.logRef };
