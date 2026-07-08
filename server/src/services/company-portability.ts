@@ -3,7 +3,8 @@ import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { Db } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
+import { builtInManagedResources, type Db } from "@paperclipai/db";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityCollisionStrategy,
@@ -77,6 +78,7 @@ import {
   readCatalogStringList,
   readPortableCatalogProvenance,
 } from "./catalog-provenance.js";
+import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import { normalizePortablePath } from "./portable-path.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
@@ -3253,24 +3255,61 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const rootPath = normalizeAgentUrlKey(company.name) ?? "company-package";
     let companyLogoPath: string | null = null;
 
+    const managedResourceRows = typeof (db as { select?: unknown }).select === "function"
+      ? await db
+        .select({
+          resourceKind: builtInManagedResources.resourceKind,
+          resourceId: builtInManagedResources.resourceId,
+        })
+        .from(builtInManagedResources)
+        .where(eq(builtInManagedResources.companyId, companyId))
+      : [];
+    const managedSkillIds = new Set(
+      managedResourceRows
+        .filter((row) => row.resourceKind === "skill")
+        .map((row) => row.resourceId),
+    );
+    const managedRoutineIds = new Set(
+      managedResourceRows
+        .filter((row) => row.resourceKind === "routine")
+        .map((row) => row.resourceId),
+    );
+
     const allAgentRows = include.agents ? await agents.list(companyId, { includeTerminated: true }) : [];
     const liveAgentRows = allAgentRows.filter((agent) => agent.status !== "terminated");
-    const companySkillRows = include.skills || include.agents ? await companySkills.listFull(companyId) : [];
+    const builtInAgentRows = liveAgentRows.filter((agent) => readBuiltInAgentMarker(agent.metadata));
+    const portableAgentRows = liveAgentRows.filter((agent) => !readBuiltInAgentMarker(agent.metadata));
+    const companySkillRowsRaw = include.skills || include.agents ? await companySkills.listFull(companyId) : [];
+    const managedSkillRows = companySkillRowsRaw.filter((skill) => managedSkillIds.has(skill.id));
+    const companySkillRows = companySkillRowsRaw.filter((skill) => !managedSkillIds.has(skill.id));
     if (include.agents) {
       const skipped = allAgentRows.length - liveAgentRows.length;
       if (skipped > 0) {
         warnings.push(`Skipped ${skipped} terminated agent${skipped === 1 ? "" : "s"} from export.`);
       }
+      if (builtInAgentRows.length > 0) {
+        warnings.push(`Skipped ${builtInAgentRows.length} built-in managed agent${builtInAgentRows.length === 1 ? "" : "s"} from export.`);
+      }
+    }
+    if (include.skills && managedSkillRows.length > 0) {
+      warnings.push(`Skipped ${managedSkillRows.length} built-in managed skill${managedSkillRows.length === 1 ? "" : "s"} from export.`);
     }
 
     const agentByReference = new Map<string, typeof liveAgentRows[number]>();
-    for (const agent of liveAgentRows) {
-      agentByReference.set(agent.id, agent);
-      agentByReference.set(agent.name, agent);
+    const builtInAgentByReference = new Map<string, typeof liveAgentRows[number]>();
+    const addAgentReferences = (map: Map<string, typeof liveAgentRows[number]>, agent: typeof liveAgentRows[number]) => {
+      map.set(agent.id, agent);
+      map.set(agent.name, agent);
       const normalizedName = normalizeAgentUrlKey(agent.name);
       if (normalizedName) {
-        agentByReference.set(normalizedName, agent);
+        map.set(normalizedName, agent);
       }
+    };
+    for (const agent of portableAgentRows) {
+      addAgentReferences(agentByReference, agent);
+    }
+    for (const agent of builtInAgentRows) {
+      addAgentReferences(builtInAgentByReference, agent);
     }
 
     const selectedAgents = new Map<string, typeof liveAgentRows[number]>();
@@ -3280,6 +3319,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const normalized = normalizeAgentUrlKey(trimmed) ?? trimmed;
       const match = agentByReference.get(trimmed) ?? agentByReference.get(normalized);
       if (!match) {
+        const builtInMatch = builtInAgentByReference.get(trimmed) ?? builtInAgentByReference.get(normalized);
+        if (builtInMatch) {
+          warnings.push(`Agent selector "${selector}" is a built-in managed agent and was skipped.`);
+          continue;
+        }
         warnings.push(`Agent selector "${selector}" was not found and was skipped.`);
         continue;
       }
@@ -3287,7 +3331,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     if (include.agents && selectedAgents.size === 0) {
-      for (const agent of liveAgentRows) {
+      for (const agent of portableAgentRows) {
         selectedAgents.set(agent.id, agent);
       }
     }
@@ -3308,7 +3352,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const routinesSvc = routineService(db);
     const allProjectsRaw = include.projects || include.issues ? await projectsSvc.list(companyId) : [];
     const allProjects = allProjectsRaw.filter((project) => !project.archivedAt);
-    const allRoutines = include.issues ? await routinesSvc.list(companyId) : [];
+    const allRoutinesRaw = include.issues ? await routinesSvc.list(companyId) : [];
+    const builtInRoutineRows = allRoutinesRaw.filter((routine) =>
+      managedRoutineIds.has(routine.id) || routine.originKind === "built_in_agent_bundle"
+    );
+    const allRoutines = allRoutinesRaw.filter((routine) =>
+      !managedRoutineIds.has(routine.id) && routine.originKind !== "built_in_agent_bundle"
+    );
+    if (include.issues && builtInRoutineRows.length > 0) {
+      warnings.push(`Skipped ${builtInRoutineRows.length} built-in managed routine${builtInRoutineRows.length === 1 ? "" : "s"} from export.`);
+    }
     const projectById = new Map(allProjects.map((project) => [project.id, project]));
     const projectByReference = new Map<string, typeof allProjects[number]>();
     for (const project of allProjects) {
@@ -3330,6 +3383,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const selectedIssues = new Map<string, Awaited<ReturnType<typeof issuesSvc.getById>>>();
     const selectedRoutines = new Map<string, typeof allRoutines[number]>();
     const routineById = new Map(allRoutines.map((routine) => [routine.id, routine]));
+    const builtInRoutineById = new Map(builtInRoutineRows.map((routine) => [routine.id, routine]));
     const resolveIssueBySelector = async (selector: string) => {
       const trimmed = selector.trim();
       if (!trimmed) return null;
@@ -3340,6 +3394,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     for (const selector of input.issues ?? []) {
       const issue = await resolveIssueBySelector(selector);
       if (!issue || issue.companyId !== companyId) {
+        if (builtInRoutineById.has(selector.trim())) {
+          warnings.push(`Routine selector "${selector}" is a built-in managed routine and was skipped.`);
+          continue;
+        }
         const routine = routineById.get(selector.trim());
         if (routine) {
           selectedRoutines.set(routine.id, routine);
