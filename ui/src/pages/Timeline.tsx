@@ -82,13 +82,15 @@ function spanStartMs(span: WorkTimelineResult["spans"][number]) {
   return new Date(span.start).getTime();
 }
 
-function spanEndMs(span: WorkTimelineResult["spans"][number], nowMs: number) {
-  return span.end ? new Date(span.end).getTime() : nowMs;
+function spanEndMs(span: WorkTimelineResult["spans"][number], fallbackEndMs: number) {
+  return span.end ? new Date(span.end).getTime() : fallbackEndMs;
 }
 
-function timelineSummary(data: WorkTimelineResult, nowMs = Date.now()) {
+function timelineSummary(data: WorkTimelineResult) {
   const actorById = new Map(data.actors.map((actor) => [actor.id, actor]));
   const activeAgentIds = new Set<string>();
+  const windowFromMs = new Date(data.window.from).getTime();
+  const windowToMs = new Date(data.window.to).getTime();
   let activeMs = 0;
   let totalTokens = 0;
 
@@ -96,7 +98,9 @@ function timelineSummary(data: WorkTimelineResult, nowMs = Date.now()) {
     if (actorById.get(span.actorId)?.type === "agent") {
       activeAgentIds.add(span.actorId);
     }
-    activeMs += Math.max(0, spanEndMs(span, nowMs) - spanStartMs(span));
+    const startMs = Math.max(spanStartMs(span), windowFromMs);
+    const endMs = Math.min(spanEndMs(span, windowToMs), windowToMs);
+    activeMs += Math.max(0, endMs - startMs);
     totalTokens += span.usage?.totalTokens ?? 0;
   }
 

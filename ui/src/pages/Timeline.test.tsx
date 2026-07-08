@@ -203,6 +203,37 @@ describe("Timeline", () => {
     expect(footer).not.toBeUndefined();
   });
 
+  it("clamps open run summary time to the returned timeline window", async () => {
+    mockWorkTimelineApi.get.mockResolvedValue({
+      ...populatedTimeline,
+      spans: [
+        {
+          ...populatedTimeline.spans[0],
+          start: "2026-07-02T00:00:00.000Z",
+          end: null,
+        },
+      ],
+      window: {
+        from: "2026-07-02T00:00:00.000Z",
+        to: "2026-07-02T02:00:00.000Z",
+        capped: false,
+      },
+    });
+    root = createRoot(container);
+
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <Timeline />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Run time");
+    expect(container.textContent).toContain("2h 0m");
+  });
+
   it("requests the company timeline without a user lens parameter", async () => {
     root = createRoot(container);
 
