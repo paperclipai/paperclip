@@ -499,9 +499,26 @@ export interface CompanySkillTestRunListQuery {
   inputId?: string;
 }
 
+export type CompanySkillTestRunHarnessContentUnavailableReason = "expired" | "deleted" | "missing";
+
+/**
+ * Rich renderable content hydrated from the run's own hidden harness issue.
+ * When the harness issue has expired or been deleted, `available` is false and
+ * the collections are empty; stored run snapshots (input/output/template)
+ * remain usable on the run itself.
+ */
+export interface CompanySkillTestRunHarnessContent {
+  available: boolean;
+  unavailableReason: CompanySkillTestRunHarnessContentUnavailableReason | null;
+  documents: IssueDocument[];
+  attachments: IssueAttachment[];
+  workProducts: IssueWorkProduct[];
+}
+
 export interface CompanySkillTestRunDetail extends CompanySkillTestRun {
   skillVersion: CompanySkillVersion;
   outputBody: string;
+  harnessContent: CompanySkillTestRunHarnessContent;
   harnessIssue: {
     id: string;
     identifier: string | null;

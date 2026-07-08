@@ -496,6 +496,8 @@ export type {
   CompanySkillTestRun,
   CompanySkillTestRunCreateRequest,
   CompanySkillTestRunListQuery,
+  CompanySkillTestRunHarnessContentUnavailableReason,
+  CompanySkillTestRunHarnessContent,
   CompanySkillTestRunDetail,
   CatalogSkillKind,
   CatalogSkillFileKind,

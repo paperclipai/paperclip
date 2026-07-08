@@ -67,6 +67,7 @@ import type {
   CompanySkillTestRun,
   CompanySkillTestRunCreateRequest,
   CompanySkillTestRunDetail,
+  CompanySkillTestRunHarnessContent,
   CompanySkillTestRunListQuery,
   CompanySkillTestRunTemplate,
   CompanySkillTestRunTemplateCreateRequest,
@@ -81,12 +82,16 @@ import type {
   CompanySkillVersion,
   CompanySkillVersionCreateRequest,
   CompanySkillVersionFileInventoryEntry,
+  IssueAttachment,
+  IssueDocument,
 } from "@paperclipai/shared";
 import { isUuidLike, normalizeAgentUrlKey, parseFrontmatterMarkdown } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
+import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
+import { toIssueWorkProduct } from "./work-products.js";
 import { projectService } from "./projects.js";
 import { normalizePortablePath } from "./portable-path.js";
 import {
@@ -5344,9 +5349,10 @@ export function companySkillService(db: Db) {
     if (!row) return null;
     const [run] = await hydrateTestRuns(companyId, [row]);
     if (!run) return null;
-    const [version, issue, docRows, interactionRows, attachmentRows, workProductRows] = await Promise.all([
+    const harnessIssueGone = Boolean(row.harnessIssueDeletedAt);
+    const [version, issue, documentRows, interactionRows, attachmentRows, workProductRows] = await Promise.all([
       getVersion(companyId, skillId, row.skillVersionId),
-      row.harnessIssueDeletedAt
+      harnessIssueGone
         ? Promise.resolve(null)
         : db
           .select({
@@ -5359,20 +5365,15 @@ export function companySkillService(db: Db) {
           .from(issues)
           .where(and(eq(issues.companyId, companyId), eq(issues.id, row.issueId)))
           .then((rows) => rows[0] ?? null),
-      row.harnessIssueDeletedAt
+      harnessIssueGone
         ? Promise.resolve([])
         : db
-          .select({
-            key: issueDocuments.key,
-            title: documents.title,
-            updatedAt: documents.updatedAt,
-            body: documents.latestBody,
-          })
+          .select(issueDocumentSelect)
           .from(issueDocuments)
           .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
           .where(and(eq(issueDocuments.companyId, companyId), eq(issueDocuments.issueId, row.issueId)))
           .orderBy(asc(issueDocuments.key)),
-      row.harnessIssueDeletedAt
+      harnessIssueGone
         ? Promise.resolve([])
         : db
           .select({
@@ -5386,36 +5387,74 @@ export function companySkillService(db: Db) {
           .from(issueThreadInteractions)
           .where(and(eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, row.issueId)))
           .orderBy(desc(issueThreadInteractions.createdAt)),
-      row.harnessIssueDeletedAt
+      harnessIssueGone
         ? Promise.resolve([])
         : db
           .select({
             id: issueAttachments.id,
+            companyId: issueAttachments.companyId,
+            issueId: issueAttachments.issueId,
+            issueCommentId: issueAttachments.issueCommentId,
+            assetId: issueAttachments.assetId,
+            provider: assets.provider,
+            objectKey: assets.objectKey,
+            contentType: assets.contentType,
+            byteSize: assets.byteSize,
+            sha256: assets.sha256,
             originalFilename: assets.originalFilename,
+            createdByAgentId: assets.createdByAgentId,
+            createdByUserId: assets.createdByUserId,
             createdAt: issueAttachments.createdAt,
+            updatedAt: issueAttachments.updatedAt,
           })
           .from(issueAttachments)
           .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
           .where(and(eq(issueAttachments.companyId, companyId), eq(issueAttachments.issueId, row.issueId)))
           .orderBy(desc(issueAttachments.createdAt)),
-      row.harnessIssueDeletedAt
+      harnessIssueGone
         ? Promise.resolve([])
         : db
-          .select({
-            id: issueWorkProducts.id,
-            title: issueWorkProducts.title,
-            summary: issueWorkProducts.summary,
-            createdAt: issueWorkProducts.createdAt,
-          })
+          .select()
           .from(issueWorkProducts)
           .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.issueId, row.issueId)))
-          .orderBy(desc(issueWorkProducts.createdAt)),
+          .orderBy(desc(issueWorkProducts.isPrimary), desc(issueWorkProducts.updatedAt)),
     ]);
     if (!version) throw notFound("Skill version not found");
+    const harnessAvailable = !harnessIssueGone && issue !== null;
+    const harnessDocuments: IssueDocument[] = harnessAvailable
+      ? documentRows.map((doc) => ({
+        ...mapIssueDocumentRow(doc, false),
+        format: doc.format as IssueDocument["format"],
+        body: doc.latestBody,
+      }))
+      : [];
+    const harnessAttachments: IssueAttachment[] = harnessAvailable
+      ? attachmentRows.map((attachment) => ({
+        ...attachment,
+        contentPath: `/api/attachments/${attachment.id}/content`,
+        openPath: `/api/attachments/${attachment.id}/content`,
+        downloadPath: `/api/attachments/${attachment.id}/content?download=1`,
+      }))
+      : [];
+    const harnessWorkProducts = harnessAvailable ? workProductRows.map(toIssueWorkProduct) : [];
+    const harnessContent: CompanySkillTestRunHarnessContent = {
+      available: harnessAvailable,
+      unavailableReason: harnessAvailable
+        ? null
+        : harnessIssueGone
+          ? (row.harnessIssueExpiresAt && row.harnessIssueDeletedAt && row.harnessIssueExpiresAt <= row.harnessIssueDeletedAt
+            ? "expired"
+            : "deleted")
+          : "missing",
+      documents: harnessDocuments,
+      attachments: harnessAttachments,
+      workProducts: harnessWorkProducts,
+    };
     return {
       ...run,
       skillVersion: version,
       outputBody: run.outputSnapshot,
+      harnessContent,
       harnessIssue: issue ? {
         id: issue.id,
         identifier: issue.identifier ?? null,
@@ -5423,7 +5462,7 @@ export function companySkillService(db: Db) {
         status: issue.status,
         hiddenAt: issue.hiddenAt ?? null,
       } : null,
-      documents: docRows.map((doc) => ({
+      documents: harnessDocuments.map((doc) => ({
         key: doc.key,
         title: doc.title ?? null,
         updatedAt: doc.updatedAt,
@@ -5438,14 +5477,14 @@ export function companySkillService(db: Db) {
         updatedAt: interaction.updatedAt,
       })),
       artifacts: [
-        ...attachmentRows.map((attachment) => ({
+        ...harnessAttachments.map((attachment) => ({
           id: attachment.id,
           kind: "attachment" as const,
           title: attachment.originalFilename ?? "Attachment",
           summary: null,
           createdAt: attachment.createdAt,
         })),
-        ...workProductRows.map((product) => ({
+        ...harnessWorkProducts.map((product) => ({
           id: product.id,
           kind: "work_product" as const,
           title: product.title,

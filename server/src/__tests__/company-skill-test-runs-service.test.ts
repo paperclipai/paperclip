@@ -6,13 +6,16 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  assets,
   companies,
   companySkillTestRunTemplates,
   companySkillTestRuns,
   companySkills,
   createDb,
   documents,
+  issueAttachments,
   issueDocuments,
+  issueWorkProducts,
   issues,
 } from "@paperclipai/db";
 import {
@@ -43,6 +46,9 @@ describeEmbeddedPostgres("companySkillService skill test runs", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueAttachments);
+    await db.delete(issueWorkProducts);
+    await db.delete(assets);
     await db.delete(issueDocuments);
     await db.delete(documents);
     await db.delete(companySkillTestRuns);
@@ -457,5 +463,180 @@ describeEmbeddedPostgres("companySkillService skill test runs", () => {
     expect(detail?.taskExpired).toBe(true);
     expect(detail?.harnessIssue).toBeNull();
     expect(detail?.outputSnapshot).toBe("## Result\n\nThe skill responded.");
+    expect(detail?.outputBody).toBe("## Result\n\nThe skill responded.");
+    expect(detail?.harnessContent).toEqual({
+      available: false,
+      unavailableReason: "expired",
+      documents: [],
+      attachments: [],
+      workProducts: [],
+    });
+  });
+
+  it("hydrates rich documents, attachments, and work products scoped to the run's harness issue", async () => {
+    const { companyId, skillId, agentId } = await seedSkillAndAgent();
+    const run = await svc.createTestRun(
+      companyId,
+      skillId,
+      { content: "produce rich output", agentId },
+      { type: "user", userId: "local-board" },
+      runDeps(companyId),
+    );
+    // Sibling run in the same company whose content must not leak into `run`'s detail.
+    const otherRun = await svc.createTestRun(
+      companyId,
+      skillId,
+      { content: "unrelated run", agentId },
+      { type: "user", userId: "local-board" },
+      runDeps(companyId),
+    );
+
+    async function seedIssueContent(issueId: string, marker: string) {
+      const documentId = randomUUID();
+      await db.insert(documents).values({
+        id: documentId,
+        companyId,
+        title: `Output ${marker}`,
+        format: "markdown",
+        latestBody: `## Result ${marker}`,
+        createdByAgentId: agentId,
+        updatedByAgentId: agentId,
+      });
+      await db.insert(issueDocuments).values({ companyId, issueId, documentId, key: "output" });
+      const assetId = randomUUID();
+      await db.insert(assets).values({
+        id: assetId,
+        companyId,
+        provider: "local",
+        objectKey: `skill-tests/${marker}.png`,
+        contentType: "image/png",
+        byteSize: 2048,
+        sha256: marker.repeat(8).slice(0, 64).padEnd(64, "0"),
+        originalFilename: `${marker}.png`,
+        createdByAgentId: agentId,
+      });
+      const attachmentId = randomUUID();
+      await db.insert(issueAttachments).values({ id: attachmentId, companyId, issueId, assetId });
+      const workProductId = randomUUID();
+      await db.insert(issueWorkProducts).values({
+        id: workProductId,
+        companyId,
+        issueId,
+        type: "artifact",
+        provider: "paperclip",
+        title: `Artifact ${marker}`,
+        status: "active",
+        summary: `Generated ${marker}`,
+        metadata: {
+          attachmentId,
+          contentType: "image/png",
+          byteSize: 2048,
+          contentPath: `/api/attachments/${attachmentId}/content`,
+          originalFilename: `${marker}.png`,
+        },
+      });
+      return { documentId, attachmentId, workProductId };
+    }
+
+    const mine = await seedIssueContent(run.issueId, "mine");
+    await seedIssueContent(otherRun.issueId, "other");
+
+    const detail = await svc.getTestRunDetail(companyId, skillId, run.id);
+    expect(detail).not.toBeNull();
+    expect(detail?.harnessContent.available).toBe(true);
+    expect(detail?.harnessContent.unavailableReason).toBeNull();
+
+    expect(detail?.harnessContent.documents).toHaveLength(1);
+    const doc = detail!.harnessContent.documents[0]!;
+    expect(doc).toEqual(expect.objectContaining({
+      id: mine.documentId,
+      companyId,
+      issueId: run.issueId,
+      key: "output",
+      title: "Output mine",
+      format: "markdown",
+      body: "## Result mine",
+      createdByAgentId: agentId,
+    }));
+    expect(typeof doc.latestRevisionNumber).toBe("number");
+    expect(doc.createdAt).toBeInstanceOf(Date);
+    expect(doc.updatedAt).toBeInstanceOf(Date);
+    expect("sourceTrust" in doc).toBe(true);
+
+    expect(detail?.harnessContent.attachments).toHaveLength(1);
+    const attachment = detail!.harnessContent.attachments[0]!;
+    expect(attachment).toEqual(expect.objectContaining({
+      id: mine.attachmentId,
+      companyId,
+      issueId: run.issueId,
+      contentType: "image/png",
+      byteSize: 2048,
+      originalFilename: "mine.png",
+      contentPath: `/api/attachments/${mine.attachmentId}/content`,
+      openPath: `/api/attachments/${mine.attachmentId}/content`,
+      downloadPath: `/api/attachments/${mine.attachmentId}/content?download=1`,
+    }));
+
+    expect(detail?.harnessContent.workProducts).toHaveLength(1);
+    const workProduct = detail!.harnessContent.workProducts[0]!;
+    expect(workProduct).toEqual(expect.objectContaining({
+      id: mine.workProductId,
+      companyId,
+      issueId: run.issueId,
+      type: "artifact",
+      provider: "paperclip",
+      title: "Artifact mine",
+      summary: "Generated mine",
+    }));
+    expect(workProduct.metadata).toEqual(expect.objectContaining({
+      attachmentId: mine.attachmentId,
+      contentType: "image/png",
+      byteSize: 2048,
+      originalFilename: "mine.png",
+    }));
+
+    // Compatibility summaries stay in sync with the rich collections.
+    expect(detail?.documents).toEqual([
+      expect.objectContaining({ key: "output", title: "Output mine", body: "## Result mine" }),
+    ]);
+    expect(detail?.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: mine.attachmentId, kind: "attachment", title: "mine.png" }),
+      expect.objectContaining({ id: mine.workProductId, kind: "work_product", title: "Artifact mine" }),
+    ]));
+    expect(detail?.artifacts).toHaveLength(2);
+  });
+
+  it("keeps hydration company-scoped and reports a deleted harness issue", async () => {
+    const first = await seedSkillAndAgent();
+    const second = await seedSkillAndAgent();
+    const run = await svc.createTestRun(
+      first.companyId,
+      first.skillId,
+      { content: "scoped run", agentId: first.agentId },
+      { type: "user", userId: "local-board" },
+      runDeps(first.companyId),
+    );
+
+    // Cross-company access never resolves another company's run.
+    expect(await svc.getTestRunDetail(second.companyId, first.skillId, run.id)).toBeNull();
+    expect(await svc.getTestRunDetail(second.companyId, second.skillId, run.id)).toBeNull();
+
+    // Harness issue marked deleted outside the retention path -> clear "deleted"
+    // state, while stored run snapshots stay usable.
+    await db
+      .update(companySkillTestRuns)
+      .set({ harnessIssueDeletedAt: new Date() })
+      .where(eq(companySkillTestRuns.id, run.id));
+    const detail = await svc.getTestRunDetail(first.companyId, first.skillId, run.id);
+    expect(detail).not.toBeNull();
+    expect(detail?.harnessIssue).toBeNull();
+    expect(detail?.inputSnapshot).toBe("scoped run");
+    expect(detail?.harnessContent).toEqual({
+      available: false,
+      unavailableReason: "deleted",
+      documents: [],
+      attachments: [],
+      workProducts: [],
+    });
   });
 });
