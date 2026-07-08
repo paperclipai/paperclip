@@ -1,8 +1,7 @@
-import type { ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Check } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { Link, useCaseHref } from "@/lib/router";
 import { copyTextToClipboard } from "@/lib/clipboard";
@@ -81,24 +80,40 @@ function CopyableCompactValue({
   className?: string;
 }) {
   const text = stringifyCopyValue(value);
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+
+  const handleCopy = useCallback(() => {
+    void copyTextToClipboard(text).then(() => {
+      setCopied(true);
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1500);
+    });
+  }, [text]);
+
   return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className={cn("min-w-0 max-w-full truncate text-left", className)}
-            title={text}
-            onClick={() => void copyTextToClipboard(text)}
-          >
-            {children}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent className="max-w-(--sz-360px) whitespace-pre-wrap break-words">
-          {text}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <span className="relative inline-flex min-w-0 max-w-full">
+      <button
+        type="button"
+        className={cn("min-w-0 max-w-full cursor-copy truncate text-left transition-colors hover:text-foreground", className)}
+        title={text}
+        onClick={handleCopy}
+      >
+        {children}
+      </button>
+      {copied ? (
+        <span
+          role="status"
+          aria-live="polite"
+          className="pointer-events-none absolute bottom-full left-1/2 mb-1.5 inline-flex -translate-x-1/2 items-center gap-1 rounded-md bg-foreground px-2 py-1 text-xs whitespace-nowrap text-background"
+        >
+          <Check className="h-3 w-3 shrink-0" />
+          Copied
+        </span>
+      ) : null}
+    </span>
   );
 }
 

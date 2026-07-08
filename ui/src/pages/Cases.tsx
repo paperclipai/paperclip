@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
+import { CaseIdentifierKey } from "@/components/CaseIdentifierKey";
 import { cn, relativeTime } from "@/lib/utils";
 
 type GroupBy = "type" | "project" | "status";
@@ -49,7 +50,7 @@ const DEFAULT_STATUS_FILTERS: CaseStatus[] = CASE_STATUSES.filter((status) => !T
 const DEFAULT_CASE_COLUMNS: CaseColumn[] = ["id", "title", "status", "updated"];
 const CASE_COLUMN_ORDER: CaseColumn[] = ["id", "title", "status", "updated", "created", "type", "project", "parent"];
 const CASE_COLUMN_LABELS: Record<CaseColumn, string> = {
-  id: "ID",
+  id: "ID / Key",
   title: "Title",
   status: "Status",
   updated: "Updated",
@@ -150,7 +151,7 @@ function caseTrailingGridTemplate(columns: CaseColumn[]): string {
   return columns
     .map((column) => {
       if (column === "title") return "minmax(12rem, 1fr)";
-      if (column === "id") return "minmax(4.5rem, 6rem)";
+      if (column === "id") return "minmax(9rem, 14rem)";
       if (column === "status") return "minmax(6rem, 7rem)";
       if (column === "type") return "minmax(5rem, 8rem)";
       if (column === "project") return "minmax(5rem, 8rem)";
@@ -239,7 +240,14 @@ function CaseTrailingColumns({
     <span className="grid min-w-0 flex-1 items-center gap-2" style={{ gridTemplateColumns: caseTrailingGridTemplate(columns) }}>
       {columns.map((column) => {
         if (column === "id") {
-          return <span key={column} className="min-w-0 truncate font-mono text-xs text-muted-foreground">{row.identifier}</span>;
+          return (
+            <CaseIdentifierKey
+              key={column}
+              identifier={row.identifier}
+              caseKey={row.key}
+              stopPropagation
+            />
+          );
         }
         if (column === "title") {
           return <span key={column} className="min-w-0 truncate text-sm">{row.title}</span>;
@@ -319,7 +327,12 @@ function CaseListRow({
             />
           ) : null}
           {visibleColumnSet.has("id") ? (
-            <span className="shrink-0 font-mono text-xs text-muted-foreground">{row.identifier}</span>
+            <CaseIdentifierKey
+              identifier={row.identifier}
+              caseKey={row.key}
+              className="shrink-0"
+              stopPropagation
+            />
           ) : null}
           <span className="text-xs text-muted-foreground sm:hidden">{relativeTime(row.updatedAt)}</span>
         </span>

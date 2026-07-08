@@ -279,6 +279,34 @@ describe("CaseDetail", () => {
 
     await waitForAssertion(() => {
       expect(mockCopyTextToClipboard).toHaveBeenCalledWith("PAP-C7");
+      expect(caseIdButton!.parentElement?.textContent).toContain("Copied");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("keeps the case identifier and key in one copyable header group", async () => {
+    const root = renderPage(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("v2026.707/hermes-agent-post");
+    });
+
+    const identityGroup = container.querySelector('[data-case-identity-group="true"]');
+    expect(identityGroup).not.toBeNull();
+    expect(identityGroup?.className).toContain("whitespace-nowrap");
+
+    const keyButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent === "v2026.707/hermes-agent-post"
+    );
+    expect(keyButton).toBeTruthy();
+    act(() => {
+      keyButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockCopyTextToClipboard).toHaveBeenCalledWith("v2026.707/hermes-agent-post");
+      expect(keyButton!.parentElement?.textContent).toContain("Copied");
     });
 
     act(() => root.unmount());
@@ -352,6 +380,7 @@ describe("CaseDetail", () => {
     await waitForAssertion(() => {
       const text = panelContainer.textContent ?? "";
       expect(text).toContain("Fields");
+      expect(text).toContain("v2026.707/hermes-agent-post");
       expect(text).toContain("title");
       expect(text).toContain("Hermes agent launch post");
       expect(text).toContain("description");
@@ -366,6 +395,32 @@ describe("CaseDetail", () => {
       expect(text).not.toContain("Documents");
       expect(text).not.toContain("reference");
       expect(text).not.toContain("Activity");
+    });
+
+    const keyValue = Array.from(panelContainer.querySelectorAll("button")).find((button) =>
+      button.textContent === "v2026.707/hermes-agent-post"
+    );
+    expect(keyValue).toBeTruthy();
+    act(() => {
+      keyValue!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockCopyTextToClipboard).toHaveBeenCalledWith("v2026.707/hermes-agent-post");
+      expect(keyValue!.parentElement?.textContent).toContain("Copied");
+    });
+
+    const titleValue = Array.from(panelContainer.querySelectorAll("button")).find((button) =>
+      button.textContent === "Hermes agent launch post"
+    );
+    expect(titleValue).toBeTruthy();
+    act(() => {
+      titleValue!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockCopyTextToClipboard).toHaveBeenCalledWith("Hermes agent launch post");
+      expect(titleValue!.parentElement?.textContent).toContain("Copied");
     });
 
     act(() => panelRoot.unmount());

@@ -64,13 +64,14 @@ describe("CaseChildrenTree", () => {
     act(() => root.unmount());
   });
 
-  it("renders each child with identifier, type and status chips linking to detail", () => {
+  it("renders each child with identifier, key, type and status chips linking to detail", () => {
     const root = render([
-      child({ identifier: "PAP-C8", caseType: "blog_post", status: "in_review", title: "Post" }),
+      child({ identifier: "PAP-C8", key: "launch/post", caseType: "blog_post", status: "in_review", title: "Post" }),
       child({ identifier: "PAP-C9", caseType: "image", status: "done", title: "Hero image" }),
     ]);
     const text = container.textContent ?? "";
     expect(text).toContain("PAP-C8");
+    expect(text).toContain("launch/post");
     expect(text).toContain("blog_post");
     // StatusBadge renders the status with underscores as spaces.
     expect(text).toContain("in review");
@@ -78,6 +79,7 @@ describe("CaseChildrenTree", () => {
     expect(container.querySelector('a[href="/PAP/cases/PAP-C8"]')).not.toBeNull();
     expect(container.querySelector('a[href="/PAP/cases/PAP-C9"]')).not.toBeNull();
     expect(container.querySelector('a[href="/PAP/cases/PAP-C8"]')?.className).not.toContain("border");
+    expect(container.querySelector('[data-case-identity-group="true"]')?.className).toContain("whitespace-nowrap");
     act(() => root.unmount());
   });
 

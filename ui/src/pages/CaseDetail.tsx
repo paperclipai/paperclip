@@ -35,6 +35,7 @@ import { CaseAttachmentsGallery } from "@/components/CaseAttachmentsGallery";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { PropertyChip, PropertyRow, PropertySection } from "@/components/issue-properties";
 import { IssueDocumentsSection } from "@/components/IssueDocumentsSection";
+import { CaseCopyableToken, CaseIdentifierKey } from "@/components/CaseIdentifierKey";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 
@@ -353,16 +354,12 @@ function CasePropertiesContent({
         </CasePropertyRow>
         {caseData.key ? (
           <CasePropertyRow label="Key" mode={mode}>
-            <span
-              className={cn(
-                "min-w-0 font-mono text-xs text-muted-foreground",
-                !isFull && "truncate",
-                isFull && "break-all",
-              )}
-              title={caseData.key}
-            >
-              {caseData.key}
-            </span>
+            <CaseCopyableToken
+              value={caseData.key}
+              label="case key"
+              className="font-mono text-xs text-muted-foreground"
+              truncate={!isFull}
+            />
           </CasePropertyRow>
         ) : null}
         <CasePropertyRow label="Labels" wrap mode={mode}>
@@ -456,7 +453,6 @@ export function CaseDetail() {
   const queryClient = useQueryClient();
   const caseHref = useCaseHref();
   const [copied, setCopied] = useState(false);
-  const [copiedIdentifier, setCopiedIdentifier] = useState(false);
 
   const caseQuery = useQuery({
     queryKey: queryKeys.cases.detail(caseIdentifier ?? ""),
@@ -617,33 +613,12 @@ export function CaseDetail() {
     });
   }
 
-  function copyCaseIdentifier(currentCase: CaseDetailData) {
-    void copyTextToClipboard(currentCase.identifier).then(() => {
-      setCopiedIdentifier(true);
-      window.setTimeout(() => setCopiedIdentifier(false), 1500);
-    });
-  }
-
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <header className="space-y-3">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 space-y-1">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <button
-                type="button"
-                className="shrink-0 font-mono text-xs text-muted-foreground hover:text-foreground"
-                title={copiedIdentifier ? "Copied case ID" : "Copy case ID"}
-                onClick={() => copyCaseIdentifier(caseData)}
-              >
-                {caseData.identifier}
-              </button>
-              {caseData.key ? (
-                <span className="min-w-0 truncate font-mono text-xs text-muted-foreground" title={caseData.key}>
-                  {caseData.key}
-                </span>
-              ) : null}
-            </div>
+            <CaseIdentifierKey identifier={caseData.identifier} caseKey={caseData.key} />
             <h1 className="text-xl font-bold">{caseData.title}</h1>
           </div>
           <div className="flex shrink-0 items-center gap-1">

@@ -16,6 +16,7 @@ const companyState = vi.hoisted(() => ({ selectedCompanyId: "company-1" }));
 const mockCasesApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockProjectsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockIssuesApi = vi.hoisted(() => ({ listLabels: vi.fn() }));
+const mockCopyTextToClipboard = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => companyState }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }) }));
@@ -25,6 +26,7 @@ vi.mock("@/api/cases", async (importOriginal) => ({
 }));
 vi.mock("@/api/projects", () => ({ projectsApi: mockProjectsApi }));
 vi.mock("@/api/issues", () => ({ issuesApi: mockIssuesApi }));
+vi.mock("@/lib/clipboard", () => ({ copyTextToClipboard: mockCopyTextToClipboard }));
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => (
     <a href={to} {...props}>{children}</a>
@@ -101,6 +103,7 @@ describe("Cases list", () => {
     mockCasesApi.list.mockReset();
     mockProjectsApi.list.mockReset().mockResolvedValue([]);
     mockIssuesApi.listLabels.mockReset().mockResolvedValue([]);
+    mockCopyTextToClipboard.mockClear();
   });
   afterEach(() => {
     container.remove();
@@ -172,7 +175,7 @@ describe("Cases list", () => {
 
   it("shows default columns in id, title, status, updated order grouped by type", async () => {
     mockCasesApi.list.mockResolvedValue([
-      createCase({ id: "a", identifier: "PAP-C1", title: "Post one", caseType: "blog_post" }),
+      createCase({ id: "a", identifier: "PAP-C1", key: "launch/post-one", title: "Post one", caseType: "blog_post" }),
       createCase({ id: "b", identifier: "PAP-C2", title: "Storm one", caseType: "tweet_storm" }),
     ]);
 
@@ -182,12 +185,13 @@ describe("Cases list", () => {
       expect(container.textContent).toContain("blog_post");
       expect(container.textContent).toContain("tweet_storm");
       expect(container.textContent).toContain("Post one");
+      expect(container.textContent).toContain("launch/post-one");
       expect(container.textContent).toContain("Storm one");
     });
 
     const text = container.textContent ?? "";
-    expect(text.indexOf("ID")).toBeGreaterThanOrEqual(0);
-    expect(text.indexOf("Title")).toBeGreaterThan(text.indexOf("ID"));
+    expect(text.indexOf("ID / Key")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("Title")).toBeGreaterThan(text.indexOf("ID / Key"));
     expect(text.indexOf("Status")).toBeGreaterThan(text.indexOf("Title"));
     expect(text.indexOf("Updated")).toBeGreaterThan(text.indexOf("Status"));
     expect(text).not.toContain("Project");
@@ -196,6 +200,38 @@ describe("Cases list", () => {
     const tweetGroupIndex = text.indexOf("tweet_storm");
     expect(blogGroupIndex).toBeGreaterThanOrEqual(0);
     expect(tweetGroupIndex).toBeGreaterThan(blogGroupIndex);
+
+    act(() => root.unmount());
+  });
+
+  it("copies case list identifiers and keys with feedback without following the row link", async () => {
+    mockCasesApi.list.mockResolvedValue([
+      createCase({ id: "a", identifier: "PAP-C1", key: "launch/post-one", title: "Post one", caseType: "blog_post" }),
+    ]);
+
+    const root = renderPage(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("launch/post-one");
+    });
+
+    const identityGroup = container.querySelector('[data-case-identity-group="true"]');
+    expect(identityGroup?.className).toContain("whitespace-nowrap");
+
+    const keyButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent === "launch/post-one"
+    );
+    expect(keyButton).toBeTruthy();
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    act(() => {
+      keyButton!.dispatchEvent(click);
+    });
+
+    await waitForAssertion(() => {
+      expect(click.defaultPrevented).toBe(true);
+      expect(mockCopyTextToClipboard).toHaveBeenCalledWith("launch/post-one");
+      expect(keyButton!.parentElement?.textContent).toContain("Copied");
+    });
 
     act(() => root.unmount());
   });
