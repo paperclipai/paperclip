@@ -51,7 +51,7 @@ function WorkspaceIcon({ company }: { company: Company }) {
       companyName={company.name}
       logoUrl={company.logoUrl}
       brandColor={company.brandColor}
-      className="size-5 shrink-0 rounded-md text-[11px]"
+      className="size-5 shrink-0 rounded-md text-(length:--text-micro)"
     />
   );
 }
@@ -106,7 +106,7 @@ function SortableCompanyItem({
           type="button"
           ref={setActivatorNodeRef}
           aria-label={`Reorder ${company.name}`}
-          className="inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-ring"
+          className="inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-(length:--rad-2) focus-visible:ring-ring"
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -118,7 +118,7 @@ function SortableCompanyItem({
         </button>
       ) : (
         <>
-          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--text-nano) text-muted-foreground">
             {company.issuePrefix}
           </span>
           {isSelected ? <Check className="size-4 text-muted-foreground" /> : null}
@@ -244,7 +244,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" sideOffset={8} className="w-64 p-1">
         <div className="flex items-center justify-between gap-2 px-2 py-1.5">
-          <DropdownMenuLabel className="p-0 text-[11px] font-semibold uppercase text-muted-foreground">
+          <DropdownMenuLabel className="p-0 text-(length:--text-micro) font-semibold uppercase text-muted-foreground">
             Switch company
           </DropdownMenuLabel>
           <button
@@ -254,7 +254,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               event.stopPropagation();
               setIsEditingOrder((current) => !current);
             }}
-            className="rounded px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="rounded px-1.5 py-0.5 text-(length:--text-micro) font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             {isEditingOrder ? "Done" : "Edit"}
           </button>

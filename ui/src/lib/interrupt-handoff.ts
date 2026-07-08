@@ -42,7 +42,7 @@ export function runStatusClassName(status: string): string {
     case "timed_out":
       return "text-orange-700 dark:text-orange-300";
     case "running":
-      return "text-cyan-700 dark:text-cyan-300";
+      return "text-blue-700 dark:text-blue-300";
     case "queued":
     case "pending":
       return "text-amber-700 dark:text-amber-300";

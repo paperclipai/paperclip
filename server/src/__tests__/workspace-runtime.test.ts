@@ -122,6 +122,78 @@ async function createTempRepo(defaultBranch = "main") {
   return repoRoot;
 }
 
+async function expectPersistedBranchMismatchRejected(input: {
+  repoRoot: string;
+  worktreePath: string;
+  expectedBranch: string;
+  actualBranch: string;
+  issueId: string;
+  executionWorkspaceId: string;
+  expectedAncestryVerdict: "diverged" | "unknown";
+  expectedReason?: string;
+}) {
+  let error: unknown = null;
+  try {
+    await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: input.repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        id: input.executionWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: input.worktreePath,
+        providerRef: input.worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: input.expectedBranch,
+      },
+      issue: {
+        id: input.issueId,
+        identifier: "PAP-459",
+        title: "Reject unsafe forward branch reconciliation",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      enableWorkspaceBranchReconcileForward: true,
+    });
+  } catch (err) {
+    error = err;
+  }
+
+  expect(error).toMatchObject({
+    code: "workspace_validation_failed",
+    resultJson: {
+      workspaceValidation: expect.objectContaining({
+        reason: "git_worktree_branch_incoherence",
+        sourceIssueId: input.issueId,
+        executionWorkspaceId: input.executionWorkspaceId,
+        expectedBranch: input.expectedBranch,
+        actualBranch: input.actualBranch,
+        provenance: expect.objectContaining({
+          ancestryVerdict: input.expectedAncestryVerdict,
+        }),
+        safeRepair: expect.objectContaining({
+          eligible: false,
+          attempted: false,
+          succeeded: false,
+          ...(input.expectedReason ? { reason: input.expectedReason } : {}),
+        }),
+      }),
+    },
+  });
+}
+
 async function createClonedRepoWithRemote() {
   const sourceRepo = await createTempRepo("master");
   const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
@@ -2265,6 +2337,60 @@ describe("realizeExecutionWorkspace", () => {
     );
   }, 15_000);
 
+  it("reattaches a clean forward detached HEAD to the recorded persisted git worktree branch", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-454-reattach-detached-head";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", branchName]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, branchName]);
+    await runGit(worktreePath, ["checkout", "--detach"]);
+    await fs.writeFile(path.join(worktreePath, "detached.txt"), "detached work\n", "utf8");
+    await runGit(worktreePath, ["add", "detached.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Add detached work"]);
+    const detachedHead = await readGit(worktreePath, ["rev-parse", "HEAD"]);
+
+    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        id: "execution-workspace-detached",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName,
+      },
+      issue: {
+        id: "issue-detached",
+        identifier: "PAP-454",
+        title: "Repair detached branch mismatch",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(restored?.branchName).toBe(branchName);
+    expect(restored?.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("moved the recorded branch to that HEAD"),
+    ]));
+    await expect(readGit(worktreePath, ["branch", "--show-current"])).resolves.toBe(branchName);
+    await expect(readGit(worktreePath, ["rev-parse", "HEAD"])).resolves.toBe(detachedHead);
+  }, 15_000);
+
   it("rejects dirty persisted git worktree branch incoherence with bounded recovery evidence", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-455-reject-dirty-branch-mismatch";
@@ -2388,7 +2514,7 @@ describe("realizeExecutionWorkspace", () => {
     });
   }, 15_000);
 
-  it("rejects an existing persisted git worktree when the checked-out branch changed to a different commit", async () => {
+  it("adopts an existing persisted git worktree when the checked-out branch is forward of the recorded branch", async () => {
     const repoRoot = await createTempRepo();
 
     const initial = await realizeExecutionWorkspace({
@@ -2425,85 +2551,44 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(initial.cwd, ["commit", "-m", "Add publish branch work"]);
 
     if (!initial.branchName) throw new Error("expected realized worktree branch name");
-    const expectedHeadSha = await readGit(repoRoot, ["rev-parse", `refs/heads/${initial.branchName}^{commit}`]);
-    const actualHeadSha = await readGit(initial.cwd, ["rev-parse", "HEAD"]);
-    const expectedFingerprint = workspaceBranchIncoherenceFingerprintForTest({
-      sourceIssueId: "issue-3",
-      executionWorkspaceId: "execution-workspace-3",
-      worktreePath: initial.cwd,
-      expectedBranch: initial.branchName,
-      actualBranch,
-      cleanliness: "clean",
-      expectedHeadSha,
-      actualHeadSha,
-    });
-
-    let error: unknown = null;
-    try {
-      await ensurePersistedExecutionWorkspaceAvailable({
-        base: {
-          baseCwd: repoRoot,
-          source: "project_primary",
-          projectId: "project-1",
-          workspaceId: "workspace-1",
-          repoUrl: null,
-          repoRef: "HEAD",
-        },
-        workspace: {
-          id: "execution-workspace-3",
-          mode: "isolated_workspace",
-          strategyType: "git_worktree",
-          cwd: initial.cwd,
-          providerRef: initial.worktreePath,
-          projectId: "project-1",
-          projectWorkspaceId: "workspace-1",
-          repoUrl: null,
-          baseRef: "HEAD",
-          branchName: initial.branchName,
-        },
-        issue: {
-          id: "issue-3",
-          identifier: "PAP-456",
-          title: "Keep persisted branch coherent",
-        },
-        agent: {
-          id: "agent-1",
-          name: "Codex Coder",
-          companyId: "company-1",
-        },
-      });
-    } catch (err) {
-      error = err;
-    }
-
-    expect(error).toMatchObject({
-      code: "workspace_validation_failed",
-      resultJson: {
-        workspaceValidation: expect.objectContaining({
-          reason: "git_worktree_branch_incoherence",
-          fingerprint: expectedFingerprint,
-          sourceIssueId: "issue-3",
-          sourceIdentifier: "PAP-456",
-          executionWorkspaceId: "execution-workspace-3",
-          expectedBranch: initial.branchName,
-          actualBranch,
-          cleanliness: "clean",
-          provenance: expect.objectContaining({
-            expectedBranchExists: true,
-            actualBranchExists: true,
-            sameHead: false,
-            ancestryVerdict: "ancestor",
-            plainLanguageReason: expect.stringContaining("forward of the recorded branch"),
-          }),
-          safeRepair: expect.objectContaining({
-            eligible: false,
-            attempted: false,
-            succeeded: false,
-            reason: "expected branch and current HEAD differ",
-          }),
-        }),
+    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        id: "execution-workspace-3",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: initial.cwd,
+        providerRef: initial.worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: initial.branchName,
+      },
+      issue: {
+        id: "issue-3",
+        identifier: "PAP-456",
+        title: "Keep persisted branch coherent",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
       },
     });
+
+    expect(restored?.branchName).toBe(actualBranch);
+    expect(restored?.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("adopted it for subsequent runs"),
+    ]));
+    await expect(readGit(initial.cwd, ["branch", "--show-current"])).resolves.toBe(actualBranch);
   }, 15_000);
 
   it("classifies persisted git worktree branch incoherence as diverged when the checked-out branch is not forward", async () => {
@@ -2558,6 +2643,7 @@ describe("realizeExecutionWorkspace", () => {
           name: "Codex Coder",
           companyId: "company-1",
         },
+        enableWorkspaceBranchReconcileForward: true,
       });
     } catch (err) {
       error = err;
@@ -2630,6 +2716,7 @@ describe("realizeExecutionWorkspace", () => {
           name: "Codex Coder",
           companyId: "company-1",
         },
+        enableWorkspaceBranchReconcileForward: true,
       });
     } catch (err) {
       error = err;
@@ -2662,6 +2749,93 @@ describe("realizeExecutionWorkspace", () => {
           }),
         }),
       },
+    });
+  }, 15_000);
+
+  it("keeps forward reconciliation fail-closed for same-content rewritten history", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "PAP-459-recorded-content";
+    const actualBranch = "PAP-459-rewritten-content";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+
+    await runGit(repoRoot, ["checkout", "-b", expectedBranch]);
+    await fs.writeFile(path.join(repoRoot, "same-content.txt"), "same content\n", "utf8");
+    await runGit(repoRoot, ["add", "same-content.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Add content on recorded branch"]);
+    await runGit(repoRoot, ["checkout", "main"]);
+
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, "main"]);
+    await fs.writeFile(path.join(worktreePath, "same-content.txt"), "same content\n", "utf8");
+    await runGit(worktreePath, ["add", "same-content.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Add content on rewritten branch"]);
+
+    await expectPersistedBranchMismatchRejected({
+      repoRoot,
+      worktreePath,
+      expectedBranch,
+      actualBranch,
+      issueId: "issue-rewritten-history",
+      executionWorkspaceId: "execution-workspace-rewritten-history",
+      expectedAncestryVerdict: "diverged",
+      expectedReason: "expected branch and current HEAD differ",
+    });
+  }, 15_000);
+
+  it("keeps forward reconciliation fail-closed for an unrelated task branch", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "PAP-459-recorded-task";
+    const actualBranch = "PAP-999-unrelated-task";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+
+    await runGit(repoRoot, ["checkout", "-b", expectedBranch]);
+    await fs.writeFile(path.join(repoRoot, "recorded-task.txt"), "recorded task work\n", "utf8");
+    await runGit(repoRoot, ["add", "recorded-task.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Add recorded task work"]);
+    await runGit(repoRoot, ["checkout", "main"]);
+
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, "main"]);
+    await fs.writeFile(path.join(worktreePath, "unrelated-task.txt"), "unrelated task work\n", "utf8");
+    await runGit(worktreePath, ["add", "unrelated-task.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Add unrelated task work"]);
+
+    await expectPersistedBranchMismatchRejected({
+      repoRoot,
+      worktreePath,
+      expectedBranch,
+      actualBranch,
+      issueId: "issue-unrelated-task",
+      executionWorkspaceId: "execution-workspace-unrelated-task",
+      expectedAncestryVerdict: "diverged",
+      expectedReason: "expected branch and current HEAD differ",
+    });
+  }, 15_000);
+
+  it("keeps forward reconciliation fail-closed when the live branch is behind the recorded branch", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "PAP-459-recorded-ahead";
+    const actualBranch = "PAP-459-live-behind";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch]);
+    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, expectedBranch]);
+
+    await runGit(repoRoot, ["checkout", expectedBranch]);
+    await fs.writeFile(path.join(repoRoot, "recorded-ahead.txt"), "recorded branch moved ahead\n", "utf8");
+    await runGit(repoRoot, ["add", "recorded-ahead.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Move recorded branch ahead"]);
+
+    await expectPersistedBranchMismatchRejected({
+      repoRoot,
+      worktreePath,
+      expectedBranch,
+      actualBranch,
+      issueId: "issue-live-behind",
+      executionWorkspaceId: "execution-workspace-live-behind",
+      expectedAncestryVerdict: "diverged",
+      expectedReason: "expected branch and current HEAD differ",
     });
   }, 15_000);
 

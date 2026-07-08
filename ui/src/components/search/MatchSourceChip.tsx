@@ -4,13 +4,13 @@ export type MatchSourceChipKind = "title" | "identifier" | "comment" | "document
 
 const chipStyles: Record<MatchSourceChipKind, string> = {
   title:
-    "bg-[var(--chip-match-title-bg)] text-[var(--chip-match-title-fg)] border-[var(--chip-match-title-border)]",
+    "bg-(--chip-match-title-bg) text-(--chip-match-title-fg) border-(--chip-match-title-border)",
   identifier:
-    "bg-[var(--chip-match-identifier-bg)] text-[var(--chip-match-identifier-fg)] border-[var(--chip-match-identifier-border)]",
+    "bg-(--chip-match-identifier-bg) text-(--chip-match-identifier-fg) border-(--chip-match-identifier-border)",
   comment:
-    "bg-[var(--chip-match-comment-bg)] text-[var(--chip-match-comment-fg)] border-[var(--chip-match-comment-border)]",
+    "bg-(--chip-match-comment-bg) text-(--chip-match-comment-fg) border-(--chip-match-comment-border)",
   document:
-    "bg-[var(--chip-match-document-bg)] text-[var(--chip-match-document-fg)] border-[var(--chip-match-document-border)]",
+    "bg-(--chip-match-document-bg) text-(--chip-match-document-fg) border-(--chip-match-document-border)",
 };
 
 const chipLabels: Record<MatchSourceChipKind, string> = {
@@ -33,7 +33,7 @@ export function MatchSourceChip({ kind, count, label, className }: MatchSourceCh
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-px text-[11px] font-medium leading-none whitespace-nowrap",
+        "inline-flex items-center gap-1 rounded-full border px-2 py-px text-(length:--text-micro) font-medium leading-none whitespace-nowrap",
         chipStyles[kind],
         className,
       )}

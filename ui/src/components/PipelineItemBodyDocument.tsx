@@ -242,7 +242,7 @@ export function PipelineItemBodyDocument({
     [conversationIssueId, doc?.latestRevisionId, latestBody, onStartConversation, pushToast, saveMutation],
   );
 
-  const bodyContentClassName = "paperclip-edit-in-place-content min-h-[220px] text-[15px] leading-7";
+  const bodyContentClassName = "paperclip-edit-in-place-content min-h-(--sz-220px) text-sm leading-7";
 
   const renderReadOnlyBody = (body: string) => (
     <FoldCurtain className="max-w-3xl">
@@ -268,7 +268,7 @@ export function PipelineItemBodyDocument({
             onChange={setDraftBody}
             placeholder="Write the item body in Markdown…"
             bordered={false}
-            className="min-h-[220px] bg-transparent"
+            className="min-h-(--sz-220px) bg-transparent"
             contentClassName={bodyContentClassName}
             mentions={mentions}
             imageUploadHandler={imageUploadHandler}
@@ -276,7 +276,7 @@ export function PipelineItemBodyDocument({
           />
         </div>
         <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-(length:--text-micro) text-muted-foreground">
             Saving creates rev {(doc?.latestRevisionNumber ?? 0) + 1} · ⌘↵ to save · Esc to cancel
           </span>
           <div className="flex items-center gap-2">
@@ -297,7 +297,7 @@ export function PipelineItemBodyDocument({
         <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="space-y-1">
-              <p className="text-sm font-medium text-amber-200">
+              <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
                 Viewing revision {selectedHistoricalRevision.revisionNumber}
               </p>
               <p className="text-xs text-muted-foreground">
@@ -360,7 +360,7 @@ export function PipelineItemBodyDocument({
         className="relative min-w-0"
         data-testid="pipeline-item-body-unlinked"
       >
-        <div className="relative z-[1]">{renderReadOnlyBody(displayedBody)}</div>
+        <div className="relative z-(--z-1)">{renderReadOnlyBody(displayedBody)}</div>
         <DocumentAnnotationLayer
           containerRef={containerRef}
           markdown={displayedBody}
@@ -415,7 +415,7 @@ export function PipelineItemBodyDocument({
           />
         ) : null}
         actionsSlot={editing ? (
-          <span className="text-[11px] font-medium text-amber-300">● Editing · unsaved</span>
+          <span className="text-(length:--text-micro) font-medium text-amber-700 dark:text-amber-300">● Editing · unsaved</span>
         ) : (
           <Button variant="ghost" size="sm" className="h-auto gap-1.5 px-2 py-1 text-xs" onClick={beginEdit}>
             <FilePenLine className="h-3.5 w-3.5" />

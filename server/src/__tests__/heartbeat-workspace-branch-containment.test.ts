@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -39,6 +39,42 @@ import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 
 const execFileAsync = promisify(execFile);
+
+function stableStringifyForTest(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((entry) => stableStringifyForTest(entry)).join(",")}]`;
+  if (value && typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    return `{${Object.keys(rec).sort().map((key) => `${JSON.stringify(key)}:${stableStringifyForTest(rec[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function fingerprintWorkspaceBranchIncoherenceForTest(input: {
+  sourceIssueId: string | null;
+  executionWorkspaceId: string | null;
+  worktreePath: string;
+  expectedBranch: string;
+  actualBranch: string | null;
+  cleanliness: "clean" | "dirty" | "unknown";
+  expectedHeadSha: string | null;
+  actualHeadSha: string | null;
+}) {
+  const digest = createHash("sha256")
+    .update(stableStringifyForTest({
+      version: 1,
+      reason: "git_worktree_branch_incoherence",
+      sourceIssueId: input.sourceIssueId,
+      executionWorkspaceId: input.executionWorkspaceId,
+      worktreePath: path.resolve(input.worktreePath),
+      expectedBranch: input.expectedBranch,
+      actualBranch: input.actualBranch,
+      cleanliness: input.cleanliness,
+      expectedHeadSha: input.expectedHeadSha,
+      actualHeadSha: input.actualHeadSha,
+    }))
+    .digest("hex");
+  return `workspace_incoherence:v1:sha256:${digest}`;
+}
 
 const adapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -83,6 +119,10 @@ async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
 }
 
+async function readGit(cwd: string, args: string[]) {
+  return (await execFileAsync("git", args, { cwd })).stdout.trim();
+}
+
 async function createGitRepo() {
   const repoRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-branch-containment-repo-"));
   await runGit(repoRoot, ["init"]);
@@ -99,10 +139,17 @@ async function createForwardBranchMismatch(input: {
   worktreePath: string;
   expectedBranch: string;
   actualBranch: string;
+  divergeRecordedBranch?: boolean;
 }) {
   await mkdir(path.dirname(input.worktreePath), { recursive: true });
   await runGit(input.repoRoot, ["branch", input.expectedBranch]);
   await runGit(input.repoRoot, ["worktree", "add", "-b", input.actualBranch, input.worktreePath, input.expectedBranch]);
+  if (input.divergeRecordedBranch) {
+    await runGit(input.repoRoot, ["checkout", input.expectedBranch]);
+    await writeFile(path.join(input.repoRoot, "recorded-branch.txt"), "recorded branch work\n", "utf8");
+    await runGit(input.repoRoot, ["add", "recorded-branch.txt"]);
+    await runGit(input.repoRoot, ["commit", "-m", "Add recorded branch work"]);
+  }
   await writeFile(path.join(input.worktreePath, "actual-branch.txt"), "actual branch work\n", "utf8");
   await runGit(input.worktreePath, ["add", "actual-branch.txt"]);
   await runGit(input.worktreePath, ["commit", "-m", "Add actual branch work"]);
@@ -231,7 +278,12 @@ function readAdapterWorkspace(input: unknown) {
   return { cwd, branchName, executionWorkspaceId };
 }
 
-async function seedBranchContainmentRun(db: Db, repoRoot: string, callSite: BranchContainmentCallSite) {
+async function seedBranchContainmentRun(
+  db: Db,
+  repoRoot: string,
+  callSite: BranchContainmentCallSite,
+  opts: { enableWorkspaceBranchReconcileForward?: boolean } = {},
+) {
   const companyId = randomUUID();
   const projectId = randomUUID();
   const projectWorkspaceId = randomUUID();
@@ -254,6 +306,7 @@ async function seedBranchContainmentRun(db: Db, repoRoot: string, callSite: Bran
 
   await instanceSettingsService(db).updateExperimental({
     enableIsolatedWorkspaces: true,
+    enableWorkspaceBranchReconcileForward: opts.enableWorkspaceBranchReconcileForward === true,
   });
   await db.insert(companies).values({
     id: companyId,
@@ -316,6 +369,7 @@ async function seedBranchContainmentRun(db: Db, repoRoot: string, callSite: Bran
       worktreePath,
       expectedBranch,
       actualBranch,
+      divergeRecordedBranch: opts.enableWorkspaceBranchReconcileForward !== true,
     });
   }
 
@@ -476,6 +530,14 @@ async function seedBranchContainmentRun(db: Db, repoRoot: string, callSite: Bran
     },
   ]);
 
+  await db
+    .update(executionWorkspaces)
+    .set({
+      sourceIssueId,
+      updatedAt: now,
+    })
+    .where(eq(executionWorkspaces.id, sourceExecutionWorkspaceId));
+
   return {
     companyId,
     agentId,
@@ -487,6 +549,7 @@ async function seedBranchContainmentRun(db: Db, repoRoot: string, callSite: Bran
     otherExecutionWorkspaceId,
     expectedBranch,
     actualBranch,
+    worktreePath,
   };
 }
 
@@ -539,12 +602,12 @@ async function expectContainedWorkspaceBranchFailure(input: {
     expectedBranchExists: true,
     actualBranchExists: true,
     sameHead: false,
-    ancestryVerdict: "ancestor",
+    ancestryVerdict: "diverged",
   });
   expect(provenance.expectedHeadSha).toEqual(expect.stringMatching(/^[a-f0-9]{40}$/));
   expect(provenance.actualHeadSha).toEqual(expect.stringMatching(/^[a-f0-9]{40}$/));
   expect(provenance.expectedHeadSha).not.toBe(provenance.actualHeadSha);
-  expect(provenance.plainLanguageReason).toEqual(expect.stringContaining("forward of the recorded branch"));
+  expect(provenance.plainLanguageReason).toEqual(expect.stringContaining("cannot prove a forward-only reconciliation"));
 
   const { issueRows, actionRows, comments } = await waitForContainmentSideEffects({
     db: input.db,
@@ -592,7 +655,7 @@ async function expectContainedWorkspaceBranchFailure(input: {
         provenance: expect.objectContaining({
           expectedHeadSha: provenance.expectedHeadSha,
           actualHeadSha: provenance.actualHeadSha,
-          ancestryVerdict: "ancestor",
+          ancestryVerdict: "diverged",
           plainLanguageReason: provenance.plainLanguageReason,
         }),
       }),
@@ -607,6 +670,166 @@ async function expectContainedWorkspaceBranchFailure(input: {
   expect(comments.filter((comment) => comment.issueId === input.sourceIssueId && comment.body.includes(`Recovery action: \`${action.id}\``))).toHaveLength(1);
   expect(comments.filter((comment) => comment.issueId === input.sameWorkspaceSiblingId)).toHaveLength(0);
   expect(comments.filter((comment) => comment.issueId === input.otherWorkspaceSiblingId)).toHaveLength(0);
+}
+
+async function expectForwardBranchReconciled(input: {
+  db: Db;
+  heartbeat: Heartbeat;
+  runId: string;
+  sourceIssueId: string;
+  sourceExecutionWorkspaceId: string;
+  expectedBranch: string;
+  actualBranch: string;
+  expectedWorktreeStateAfterReconcile: {
+    head: string;
+    status: string;
+  };
+  worktreePath: string;
+  expectsExistingRecordUpdate: boolean;
+  expectedResolvedRecoveryActionFingerprint?: string | null;
+}) {
+  const finishedRun = await waitForRunToFinish(input.heartbeat, input.runId, 10_000);
+  expect(finishedRun).toMatchObject({
+    status: "succeeded",
+    errorCode: null,
+  });
+
+  expect(input.expectedWorktreeStateAfterReconcile.head).toEqual(expect.stringMatching(/^[a-f0-9]{40}$/));
+  await expect(readGit(input.worktreePath, ["rev-parse", "HEAD"])).resolves.toBe(input.expectedWorktreeStateAfterReconcile.head);
+  await expect(readGit(input.worktreePath, ["status", "--porcelain", "--untracked-files=all"])).resolves.toBe(input.expectedWorktreeStateAfterReconcile.status);
+
+  const [sourceIssue] = await input.db
+    .select({
+      status: issues.status,
+      executionWorkspaceId: issues.executionWorkspaceId,
+    })
+    .from(issues)
+    .where(eq(issues.id, input.sourceIssueId));
+  expect(sourceIssue?.status).toBe("done");
+  expect(sourceIssue?.executionWorkspaceId).toEqual(expect.any(String));
+
+  const activeWorkspaceId = sourceIssue?.executionWorkspaceId!;
+  const [activeWorkspace] = await input.db
+    .select({
+      id: executionWorkspaces.id,
+      name: executionWorkspaces.name,
+      branchName: executionWorkspaces.branchName,
+      providerRef: executionWorkspaces.providerRef,
+    })
+    .from(executionWorkspaces)
+    .where(eq(executionWorkspaces.id, activeWorkspaceId));
+  const expectedDurableBranch = input.expectsExistingRecordUpdate ? input.actualBranch : input.expectedBranch;
+  expect(activeWorkspace).toMatchObject({
+    name: expectedDurableBranch,
+    branchName: expectedDurableBranch,
+    providerRef: input.worktreePath,
+  });
+
+  const recoveryRows = await input.db
+    .select()
+    .from(issueRecoveryActions)
+    .where(eq(issueRecoveryActions.sourceIssueId, input.sourceIssueId));
+  if (input.expectedResolvedRecoveryActionFingerprint) {
+    expect(recoveryRows).toEqual([
+      expect.objectContaining({
+        status: "resolved",
+        outcome: "restored",
+        fingerprint: input.expectedResolvedRecoveryActionFingerprint,
+        resolutionNote: expect.stringContaining("Execution workspace branch record reconciled"),
+        resolvedAt: expect.any(Date),
+      }),
+    ]);
+  } else {
+    expect(recoveryRows).toHaveLength(0);
+  }
+
+  const operations = await input.db
+    .select()
+    .from(workspaceOperations)
+    .where(eq(workspaceOperations.heartbeatRunId, input.runId));
+  if (input.expectsExistingRecordUpdate) {
+    expect(operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: "succeeded",
+          metadata: expect.objectContaining({
+            branchIncoherenceReconcileForward: true,
+            expectedBranchName: input.expectedBranch,
+            actualBranchName: input.actualBranch,
+            fingerprint: expect.stringMatching(/^workspace_incoherence:v1:sha256:/),
+          }),
+        }),
+      ]),
+    );
+  }
+
+  if (input.expectsExistingRecordUpdate) {
+    const [updatedWorkspace] = await input.db
+      .select({
+        name: executionWorkspaces.name,
+        branchName: executionWorkspaces.branchName,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, activeWorkspaceId));
+    expect(updatedWorkspace).toMatchObject({
+      name: input.actualBranch,
+      branchName: input.actualBranch,
+    });
+    if (activeWorkspaceId !== input.sourceExecutionWorkspaceId) {
+      const [sourceWorkspace] = await input.db
+        .select({ branchName: executionWorkspaces.branchName })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, input.sourceExecutionWorkspaceId));
+      expect(sourceWorkspace?.branchName).toBe(input.expectedBranch);
+    }
+
+    const comments = await readContainmentComments(input.db, [input.sourceIssueId]);
+    const resolvedRecoveryActionId = recoveryRows.length === 1 ? recoveryRows[0]?.id : null;
+    expect(comments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          authorType: "system",
+          body: expect.stringContaining("Execution workspace branch reconciled."),
+        }),
+      ]),
+    );
+    if (resolvedRecoveryActionId) {
+      expect(comments).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            authorType: "system",
+            body: expect.stringContaining(`Recovery action: \`${resolvedRecoveryActionId}\``),
+          }),
+        ]),
+      );
+    }
+
+    const activities = await input.db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, activeWorkspaceId));
+    expect(activities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          actorType: "system",
+          actorId: "workspace_runtime",
+          action: "execution_workspace.branch_reconciled",
+          details: expect.objectContaining({
+            mode: "forward",
+            fromBranch: input.expectedBranch,
+            toBranch: input.actualBranch,
+            ancestryVerdict: "ancestor",
+          }),
+        }),
+      ]),
+    );
+  } else {
+    const [sourceWorkspace] = await input.db
+      .select({ branchName: executionWorkspaces.branchName })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, input.sourceExecutionWorkspaceId));
+    expect(sourceWorkspace?.branchName).toBe(input.expectedBranch);
+  }
 }
 
 describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
@@ -643,6 +866,9 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     await db.delete(environmentLeases);
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
+    // Heartbeat failure/finalization paths can emit run-linked activity after
+    // the first cleanup pass observes all runs as non-active.
+    await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(issueComments);
     await db.delete(issues);
@@ -666,7 +892,6 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   it.each([
     ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, null],
     ["workspace-runtime persisted restore", "persisted_restore" as const, "source-workspace"],
-    ["heartbeat finalization", "finalize" as const, "runtime-workspace"],
   ])("contains mid-change branch divergence at %s", async (_name, callSite, expectedWorkspaceId) => {
     const repoRoot = await createGitRepo();
     tempRoots.push(repoRoot);
@@ -721,5 +946,114 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       actualBranch: seeded.actualBranch,
     });
     expect(adapterExecute).toHaveBeenCalledTimes(callSite === "finalize" ? 1 : 0);
+  }, 30_000);
+
+  it.each([
+    ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, false],
+    ["workspace-runtime persisted restore", "persisted_restore" as const, false],
+    ["heartbeat finalization", "finalize" as const, false],
+  ])("auto-reconciles forward branch divergence at %s when the flag is enabled", async (_name, callSite, expectsExistingRecordUpdate) => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const seeded = await seedBranchContainmentRun(db, repoRoot, callSite, {
+      enableWorkspaceBranchReconcileForward: true,
+    });
+
+    const expectedWorktreeStateAfterReconcile = {
+      head: callSite === "finalize" ? "" : await readGit(seeded.worktreePath, ["rev-parse", "HEAD"]),
+      status: callSite === "finalize" ? "" : await readGit(seeded.worktreePath, ["status", "--porcelain", "--untracked-files=all"]),
+    };
+    let expectedResolvedRecoveryActionFingerprint: string | null = null;
+    if (callSite === "fresh_realize" && expectsExistingRecordUpdate) {
+      const expectedHeadSha = await readGit(seeded.worktreePath, ["rev-parse", seeded.expectedBranch]);
+      const actualHeadSha = await readGit(seeded.worktreePath, ["rev-parse", seeded.actualBranch]);
+      expectedResolvedRecoveryActionFingerprint = fingerprintWorkspaceBranchIncoherenceForTest({
+        sourceIssueId: seeded.sourceIssueId,
+        executionWorkspaceId: null,
+        worktreePath: seeded.worktreePath,
+        expectedBranch: seeded.expectedBranch,
+        actualBranch: seeded.actualBranch,
+        cleanliness: "clean",
+        expectedHeadSha,
+        actualHeadSha,
+      });
+      const now = new Date("2026-07-07T00:00:01.000Z");
+      await db.insert(issueRecoveryActions).values({
+        id: randomUUID(),
+        companyId: seeded.companyId,
+        sourceIssueId: seeded.sourceIssueId,
+        kind: "workspace_validation",
+        status: "active",
+        ownerType: "agent",
+        ownerAgentId: seeded.agentId,
+        cause: "workspace_validation_failed",
+        fingerprint: expectedResolvedRecoveryActionFingerprint,
+        evidence: {},
+        nextAction: "Retry after fresh worktree branch adoption can be audited.",
+        attemptCount: 1,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    adapterExecute.mockImplementationOnce(async (adapterInput) => {
+      if (callSite === "finalize") {
+        const workspace = readAdapterWorkspace(adapterInput);
+        const actualBranch = `${workspace.branchName.replace(/-recorded$/, "")}-actual`;
+        await db
+          .update(issues)
+          .set({
+            executionWorkspaceId: workspace.executionWorkspaceId,
+            executionWorkspacePreference: "reuse_existing",
+            executionWorkspaceSettings: { mode: "isolated_workspace" },
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, seeded.sameWorkspaceSiblingId));
+        await runGit(workspace.cwd, ["checkout", "-b", actualBranch]);
+        await writeFile(path.join(workspace.cwd, "actual-branch.txt"), "actual branch work\n", "utf8");
+        await runGit(workspace.cwd, ["add", "actual-branch.txt"]);
+        await runGit(workspace.cwd, ["commit", "-m", "Add actual branch work"]);
+        expectedWorktreeStateAfterReconcile.head = await readGit(workspace.cwd, ["rev-parse", "HEAD"]);
+        expectedWorktreeStateAfterReconcile.status = await readGit(workspace.cwd, ["status", "--porcelain", "--untracked-files=all"]);
+      }
+      await db
+        .update(issues)
+        .set({
+          status: "done",
+          completedAt: new Date(),
+          checkoutRunId: null,
+          executionRunId: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, seeded.sourceIssueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: callSite === "finalize"
+          ? "Adapter completed after switching to an unrecorded branch."
+          : "Adapter completed after branch reconciliation.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    await expectForwardBranchReconciled({
+      db,
+      heartbeat,
+      runId: seeded.runId,
+      sourceIssueId: seeded.sourceIssueId,
+      sourceExecutionWorkspaceId: seeded.sourceExecutionWorkspaceId,
+      expectedBranch: seeded.expectedBranch,
+      actualBranch: seeded.actualBranch,
+      expectedWorktreeStateAfterReconcile,
+      worktreePath: seeded.worktreePath,
+      expectsExistingRecordUpdate,
+      expectedResolvedRecoveryActionFingerprint,
+    });
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
   }, 30_000);
 });

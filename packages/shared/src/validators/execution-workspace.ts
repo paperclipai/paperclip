@@ -149,5 +149,19 @@ export const updateExecutionWorkspaceSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 }).strict();
 
+const branchReconcileReasonSchema = z.string().trim().min(1);
+
+export const reconcileExecutionWorkspaceBranchSchema = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("forward"),
+    reason: branchReconcileReasonSchema.optional().nullable(),
+  }).strict(),
+  z.object({
+    mode: z.literal("override"),
+    reason: branchReconcileReasonSchema,
+  }).strict(),
+]);
+
 export type UpdateExecutionWorkspace = z.infer<typeof updateExecutionWorkspaceSchema>;
+export type ReconcileExecutionWorkspaceBranch = z.infer<typeof reconcileExecutionWorkspaceBranchSchema>;
 export type WorkspaceOverviewQuery = z.infer<typeof workspaceOverviewQuerySchema>;

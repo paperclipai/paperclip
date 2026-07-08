@@ -34,7 +34,7 @@ function BlockerRecoveryIndicator({ action }: { action: IssueRecoveryAction }) {
       role="status"
       aria-label={label}
       title={`${label} — open the source task to act.`}
-      className={`inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${tone.className}`}
+      className={`inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-(length:--text-nano) font-medium ${tone.className}`}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
       {label}
@@ -189,7 +189,7 @@ export function IssueBlockedNotice({
         className="inline-flex max-w-full items-center gap-1 rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-xs text-amber-950 transition-colors hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
       >
         <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
-        <span className="max-w-[18rem] truncate font-sans text-[11px] text-amber-800 dark:text-amber-200">
+        <span className="max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro) text-amber-800 dark:text-amber-200">
           {blocker.title}
         </span>
         {recoveryAction ? <BlockerRecoveryIndicator action={recoveryAction} /> : null}
@@ -211,7 +211,7 @@ export function IssueBlockedNotice({
               <p className="font-medium leading-5">This task still needs a next step.</p>
               <p className="leading-5">
                 A run finished successfully, but this task is still open in{" "}
-                <code className="rounded bg-amber-100 px-1 py-0.5 text-[12px] dark:bg-amber-400/15">
+                <code className="rounded bg-amber-100 px-1 py-0.5 text-xs dark:bg-amber-400/15">
                   in_progress
                 </code>{" "}
                 with no clear owner for the next action.

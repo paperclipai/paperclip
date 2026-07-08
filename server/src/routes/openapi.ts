@@ -72,6 +72,7 @@ import {
   // Sidebar
   upsertSidebarOrderPreferenceSchema,
   // Execution workspaces
+  reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
@@ -661,6 +662,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
   "GET /api/companies/{companyId}/user-directory",
+  "POST /api/execution-workspaces/{id}/reconcile-branch",
   "GET /api/board-api-keys",
   "POST /api/board-api-keys",
   "DELETE /api/board-api-keys/{keyId}",
@@ -3622,6 +3624,18 @@ registry.registerPath({
     body: jsonBody(updateExecutionWorkspaceSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/execution-workspaces/{id}/reconcile-branch",
+  tags: ["execution-workspaces"],
+  summary: "Reconcile an execution workspace branch record",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(reconcileExecutionWorkspaceBranchSchema),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 
 registry.registerPath({

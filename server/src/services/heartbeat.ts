@@ -268,7 +268,7 @@ const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
-const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
+const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 export {
@@ -368,6 +368,9 @@ function readHeartbeatRunErrorFamily(
   const persistedFamily = readNonEmptyString(resultJson.errorFamily);
   if (persistedFamily) return persistedFamily;
 
+  if (run.errorCode === "provider_quota") {
+    return "provider_quota";
+  }
   if (run.errorCode === "codex_transient_upstream" || run.errorCode === "claude_transient_upstream") {
     return "transient_upstream";
   }
@@ -397,9 +400,10 @@ function readTransientRetryNotBeforeFromRun(run: Pick<typeof heartbeatRuns.$infe
 function readTransientRecoveryContractFromRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
 ) {
-  return readHeartbeatRunErrorFamily(run) === "transient_upstream"
+  const errorFamily = readHeartbeatRunErrorFamily(run);
+  return errorFamily === "transient_upstream" || errorFamily === "provider_quota"
     ? {
-        errorFamily: "transient_upstream" as const,
+        errorFamily,
         retryNotBefore: readTransientRetryNotBeforeFromRun(run),
       }
     : null;
@@ -421,6 +425,7 @@ function mergeAdapterRecoveryMetadata(input: {
       ? {
           retryNotBefore,
           transientRetryNotBefore: retryNotBefore,
+          ...(errorFamily === "provider_quota" ? { providerQuotaRetryNotBefore: retryNotBefore } : {}),
         }
       : {}),
   };
@@ -1630,8 +1635,8 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   }
 
   const expectedManagedBranchName =
-    readNonEmptyString(input.persistedExecutionWorkspace?.branchName) ??
-    readNonEmptyString(input.executionWorkspace.branchName);
+    readNonEmptyString(input.executionWorkspace.branchName) ??
+    readNonEmptyString(input.persistedExecutionWorkspace?.branchName);
   if (
     input.persistedExecutionWorkspace?.strategyType === "git_worktree" &&
     effectiveCwd &&
@@ -2898,7 +2903,7 @@ export function resolveExecutionWorkspaceReuseProvisioningPolicy(input: {
   };
 }
 
-function createInheritedExecutionWorkspaceReuseFailure(input: {
+function formatInheritedExecutionWorkspaceReuseFailure(input: {
   reason: "inherited_workspace_reuse_failed" | "inherited_workspace_reuse_unavailable";
   issueRef: WorkspaceReuseIssueRef;
   runId: string;
@@ -2918,24 +2923,12 @@ function createInheritedExecutionWorkspaceReuseFailure(input: {
     : "Repair or unarchive the referenced execution workspace, or intentionally clear the issue's reuse_existing workspace binding before retrying.";
   const message = causeMessage
     ? `Issue ${issueLabel} requested inherited execution workspace reuse for ${workspaceLabel}, but the workspace could not be restored because ${causeMessage}.`
-    : `Issue ${issueLabel} requested inherited execution workspace reuse for ${workspaceLabel} but the workspace could not be restored; workspace provisioning cannot replace it because this is an explicit reuse path.`;
+    : `Issue ${issueLabel} requested inherited execution workspace reuse for ${workspaceLabel}, but the workspace could not be restored.`;
 
-  return new WorkspaceValidationFailure(message, {
-    workspaceValidation: {
-      reason: input.reason,
-      issueId: input.issueRef?.id ?? null,
-      issueIdentifier: input.issueRef?.identifier ?? null,
-      executionWorkspaceId: input.executionWorkspaceId ?? null,
-      workspaceConfigFreshnessAction: input.workspaceConfigFreshness.action,
-      workspaceConfigFreshnessReasons: input.workspaceConfigFreshness.reasons,
-      requestedReuseExisting: true,
-      replacementWorkspaceRealized: false,
-      remediation,
-    },
-  });
+  return `${message} ${remediation}`;
 }
 
-export async function provisionExecutionWorkspaceForFreshnessDecision<T>(input: {
+export async function provisionExecutionWorkspaceForFreshnessDecision<T extends { warnings?: string[] }>(input: {
   requestedShouldReuseExisting: boolean;
   existingExecutionWorkspaceId?: string | null;
   issueRef: WorkspaceReuseIssueRef;
@@ -2963,13 +2956,14 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T>(input: 
   }
 
   let restored: T | null = null;
+  let reuseFailure: string | null = null;
   try {
     restored = (await input.restoreExistingWorkspace?.()) ?? null;
   } catch (error) {
     if (isWorkspaceValidationFailure(error)) {
       throw error;
     }
-    throw createInheritedExecutionWorkspaceReuseFailure({
+    reuseFailure = formatInheritedExecutionWorkspaceReuseFailure({
       reason: "inherited_workspace_reuse_failed",
       issueRef: input.issueRef,
       runId: input.runId,
@@ -2980,13 +2974,18 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T>(input: 
   }
 
   if (!restored) {
-    throw createInheritedExecutionWorkspaceReuseFailure({
+    reuseFailure = reuseFailure ?? formatInheritedExecutionWorkspaceReuseFailure({
       reason: "inherited_workspace_reuse_unavailable",
       issueRef: input.issueRef,
       runId: input.runId,
       executionWorkspaceId: input.existingExecutionWorkspaceId,
       workspaceConfigFreshness: input.workspaceConfigFreshness,
     });
+  }
+
+  if (reuseFailure) throw new Error(reuseFailure);
+  if (!restored) {
+    throw new Error("Expected restored execution workspace after reuse fallback handling");
   }
 
   return {
@@ -4719,7 +4718,7 @@ export function normalizeSessionParams(params: Record<string, unknown> | null | 
   return Object.keys(params).length > 0 ? params : null;
 }
 
-type RunSessionOutcome = "succeeded" | "failed" | "cancelled" | "timed_out";
+type RunSessionOutcome = "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out";
 
 const HERMES_ADAPTER_TYPE = "hermes_local";
 const HERMES_SESSION_ID_REGEX = /^(?:\d{8}_\d{6}_[A-Za-z0-9_-]{4,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
@@ -4883,6 +4882,26 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  runtimeEnv?: Record<string, string | undefined>;
+}
+
+function isTruthyRuntimeEnvValue(value: string | undefined) {
+  return value === "true" || value === "1" || value === "yes" || value === "on";
+}
+
+export function resolveHeartbeatSchedulingSuppression(
+  env: Record<string, string | undefined> = process.env,
+): { suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | null } {
+  if (isTruthyRuntimeEnvValue(env.PAPERCLIP_IN_WORKTREE)) {
+    return { suppressed: true, reason: "worktree_instance" };
+  }
+  if (
+    isTruthyRuntimeEnvValue(env.PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS) ||
+    isTruthyRuntimeEnvValue(env.PAPERCLIP_RESTORE_IN_PROGRESS)
+  ) {
+    return { suppressed: true, reason: "database_restore_in_progress" };
+  }
+  return { suppressed: false, reason: null };
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -4890,6 +4909,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
   });
+  const runtimeEnv = options.runtimeEnv ?? process.env;
+  const getSchedulingSuppression = () => resolveHeartbeatSchedulingSuppression(runtimeEnv);
 
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
@@ -7609,6 +7630,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     now: Date,
   ) {
+    const existingRetry = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.retryOfRunId, run.id)))
+      .orderBy(asc(heartbeatRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (existingRetry) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Process-loss retry already exists; skipping duplicate retry enqueue",
+        payload: {
+          retryRunId: existingRetry.id,
+          retryRunStatus: existingRetry.status,
+        },
+      });
+      return existingRetry;
+    }
+
     const invokability = await getAgentInvokability(agent);
     if (!invokability.invokable) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
@@ -7725,6 +7767,104 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     return queued;
+  }
+
+  async function drainRunningRunsForShutdown(signal: "SIGINT" | "SIGTERM", now = new Date()) {
+    const activeRuns = await db
+      .select({
+        run: heartbeatRuns,
+        agent: agents,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(eq(heartbeatRuns.status, "running"));
+
+    const interruptedRunIds: string[] = [];
+    const retryRunIds: string[] = [];
+
+    for (const { run, agent } of activeRuns) {
+      const running = runningProcesses.get(run.id);
+      try {
+        if (running) {
+          await terminateHeartbeatRunProcess({
+            pid: running.child.pid ?? run.processPid,
+            processGroupId: running.processGroupId ?? run.processGroupId,
+            graceMs: Math.max(1, running.graceSec) * 1000,
+          });
+        } else if (run.processPid || run.processGroupId) {
+          await terminateHeartbeatRunProcess({
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+          });
+        }
+      } finally {
+        runningProcesses.delete(run.id);
+      }
+
+      const message = `Interrupted by graceful server shutdown (${signal}); retry queued for restart recovery`;
+      const interruptedStatus = await setRunStatusIfRunning(run.id, "interrupted", {
+        finishedAt: now,
+        error: message,
+        errorCode: "server_shutdown_interrupted",
+        signal,
+        resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
+          resultJson: parseObject(run.resultJson),
+          errorCode: "server_shutdown_interrupted",
+          errorMessage: message,
+        }),
+      });
+      if (!interruptedStatus.updated || !interruptedStatus.run) continue;
+      let interrupted = interruptedStatus.run;
+      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+        finishedAt: now,
+        error: null,
+      });
+      interrupted = await classifyAndPersistRunLiveness(interrupted, parseObject(interrupted.resultJson)) ?? interrupted;
+
+      await releaseEnvironmentLeasesForRun({
+        runId: interrupted.id,
+        companyId: interrupted.companyId,
+        agentId: interrupted.agentId,
+        status: interrupted.status,
+        failureReason: interrupted.error ?? undefined,
+      });
+
+      const retry = await enqueueProcessLossRetry(interrupted, agent, now);
+      if (!retry) {
+        await releaseIssueExecutionAndPromote(interrupted);
+      } else {
+        retryRunIds.push(retry.id);
+      }
+
+      await appendRunEvent(interrupted, await nextRunEventSeq(interrupted.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message,
+        payload: {
+          signal,
+          ...(run.processPid ? { processPid: run.processPid } : {}),
+          ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+          ...(retry ? { retryRunId: retry.id } : {}),
+        },
+      });
+
+      await finalizeAgentStatus(run.agentId, "interrupted", message);
+      interruptedRunIds.push(interrupted.id);
+    }
+
+    if (interruptedRunIds.length > 0) {
+      logger.warn(
+        { signal, interrupted: interruptedRunIds.length, interruptedRunIds, retryRunIds },
+        "interrupted running heartbeat runs for graceful shutdown",
+      );
+    }
+
+    return {
+      interrupted: interruptedRunIds.length,
+      interruptedRunIds,
+      retryRunIds,
+    };
   }
 
   type ScheduledRetryGate =
@@ -8137,7 +8277,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? readTransientRecoveryContractFromRun(run)
         : null;
     const codexTransientFallbackMode =
-      agent.adapterType === "codex_local" && transientRecovery
+      agent.adapterType === "codex_local" && transientRecovery?.errorFamily === "transient_upstream"
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
@@ -8234,6 +8374,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       scheduledRetryAttempt: schedule.attempt,
       scheduledRetryAt: schedule.dueAt.toISOString(),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+      ...(transientRecovery?.errorFamily === "provider_quota" && transientRetryNotBefore
+        ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
+        : {}),
       ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
@@ -8405,6 +8548,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             scheduledRetryAttempt: schedule.attempt,
             scheduledRetryAt: schedule.dueAt.toISOString(),
             ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+            ...(transientRecovery?.errorFamily === "provider_quota" && transientRetryNotBefore
+              ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
+              : {}),
             ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
           }, "normal_model"),
           status: "queued",
@@ -8528,6 +8674,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         baseDelayMs: schedule.baseDelayMs,
         delayMs: schedule.delayMs,
         ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+        ...(transientRecovery?.errorFamily === "provider_quota" && transientRetryNotBefore
+          ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
+          : {}),
         ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
       },
     });
@@ -9396,8 +9545,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function finalizeAgentStatus(
     agentId: string,
-    outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
     failureReason?: string | null,
+    options?: { keepIdleOnFailure?: boolean },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -9412,7 +9562,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const nextStatus =
       runningCount > 0
         ? "running"
-        : outcome === "succeeded" || outcome === "cancelled"
+        : outcome === "succeeded" || outcome === "interrupted" || outcome === "cancelled" || (outcome === "failed" && options?.keepIdleOnFailure)
           ? "idle"
           : "error";
 
@@ -9454,7 +9604,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   function mergeRunStopMetadataForAgent(
     agent: Pick<typeof agents.$inferSelect, "adapterType" | "adapterConfig">,
-    outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
     options?: {
       resultJson?: Record<string, unknown> | null;
       errorCode?: string | null;
@@ -9799,6 +9949,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function resumeQueuedRuns() {
+    if (getSchedulingSuppression().suppressed) return;
+
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
@@ -9925,6 +10077,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
+    if (getSchedulingSuppression().suppressed) return [];
+
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
@@ -10003,6 +10157,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function executeRun(runId: string) {
+    if (getSchedulingSuppression().suppressed) return;
+
     let run = await getRun(runId);
     if (!run) return;
     if (run.status !== "queued" && run.status !== "running") return;
@@ -10751,6 +10907,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         workspaceConfigFreshness,
         restoreExistingWorkspace: reusableExistingExecutionWorkspace
           ? () => ensurePersistedExecutionWorkspaceAvailable({
+              db,
               base: executionWorkspaceBase,
               workspace: {
                 id: reusableExistingExecutionWorkspace.id,
@@ -10778,10 +10935,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 name: agent.name,
                 companyId: agent.companyId,
               },
+              heartbeatRunId: run.id,
+              enableWorkspaceBranchReconcileForward:
+                resolvedInstanceSettings.experimental.enableWorkspaceBranchReconcileForward,
               recorder: workspaceOperationRecorder,
             })
           : null,
         realizeWorkspace: () => realizeExecutionWorkspace({
+          db,
           base: executionWorkspaceBase,
           config: hostExecutionWorkspaceConfig,
           issue: issueRef,
@@ -10790,12 +10951,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             name: agent.name,
             companyId: agent.companyId,
           },
+          heartbeatRunId: run.id,
+          enableWorkspaceBranchReconcileForward:
+            resolvedInstanceSettings.experimental.enableWorkspaceBranchReconcileForward,
           recorder: workspaceOperationRecorder,
         }),
       });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
-    let persistedExecutionWorkspace = null;
+    let persistedExecutionWorkspace: ExecutionWorkspace | null = null;
     const nextExecutionWorkspaceMetadata = mergeExecutionWorkspaceMetadataForPersistence({
       existingMetadata: resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace
         ? reusableExistingExecutionWorkspace?.metadata ?? null
@@ -10811,13 +10975,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       baseRef: executionWorkspace.repoRef,
       baseRefSha: executionWorkspace.baseRefSha ?? null,
     });
+    const pendingForwardBranchReconcile = executionWorkspace.pendingForwardBranchReconcile ?? null;
+    const branchNameForInitialPersistence =
+      pendingForwardBranchReconcile?.recordedBranchName ?? executionWorkspace.branchName;
     try {
       persistedExecutionWorkspace = resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace && reusableExistingExecutionWorkspace
         ? await executionWorkspacesSvc.update(reusableExistingExecutionWorkspace.id, {
             cwd: executionWorkspace.cwd,
             repoUrl: executionWorkspace.repoUrl,
             baseRef: executionWorkspace.repoRef,
-            branchName: executionWorkspace.branchName,
+            branchName: branchNameForInitialPersistence,
             providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
             providerRef: executionWorkspace.worktreePath,
             status: "active",
@@ -10839,12 +11006,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                       ? "adapter_managed"
                       : "shared_workspace",
               strategyType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "project_primary",
-              name: executionWorkspace.branchName ?? issueRef?.identifier ?? `workspace-${agent.id.slice(0, 8)}`,
+              name: branchNameForInitialPersistence ?? issueRef?.identifier ?? `workspace-${agent.id.slice(0, 8)}`,
               status: "active",
               cwd: executionWorkspace.cwd,
               repoUrl: executionWorkspace.repoUrl,
               baseRef: executionWorkspace.repoRef,
-              branchName: executionWorkspace.branchName,
+              branchName: branchNameForInitialPersistence,
               providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
               providerRef: executionWorkspace.worktreePath,
               lastUsedAt: new Date(),
@@ -11540,8 +11707,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             let inspection = branchInspection.inspection;
             const initialManagedGitWorktreeBranch = formatManagedGitWorktreeBranchInspection(inspection);
             if (!inspection.valid && inspection.reasonCode === "branch_mismatch" && inspection.repoRoot) {
+              let repairedExpectedBranchName = inspection.expectedBranchName;
               try {
-                await ensureGitWorktreeBranchCoherent({
+                const coherence = await ensureGitWorktreeBranchCoherent({
+                  db,
                   repoRoot: inspection.repoRoot,
                   worktreePath: inspection.worktreePath,
                   expectedBranchName: inspection.expectedBranchName,
@@ -11552,11 +11721,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                         identifier: issueRef.identifier,
                         title: issueRef.title,
                         workMode: issueRef.workMode,
-                      }
+                    }
                     : null,
                   executionWorkspaceId: branchInspection.workspaceRecord.id,
+                  heartbeatRunId: run.id,
+                  enableWorkspaceBranchReconcileForward:
+                    resolvedInstanceSettings.experimental.enableWorkspaceBranchReconcileForward,
+                  persistForwardReconcile: false,
+                  reconcileOperationPhase: "workspace_finalize",
                   recorder: workspaceOperationRecorder,
                 });
+                if (coherence.branchName && coherence.branchName !== branchInspection.workspaceRecord.branchName) {
+                  repairedExpectedBranchName = coherence.branchName;
+                  executionWorkspace.branchName = coherence.branchName;
+                  executionWorkspace.warnings.push(...coherence.warnings);
+                }
               } catch (repairErr) {
                 const workspaceValidationFailure = isWorkspaceValidationFailure(repairErr) ? repairErr : null;
                 finalizeBranchMetadata = {
@@ -11593,7 +11772,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
               const repairedInspection = await inspectManagedGitWorktreeBranch({
                 worktreePath: inspection.worktreePath,
-                expectedBranchName: inspection.expectedBranchName,
+                expectedBranchName: repairedExpectedBranchName,
                 repoRoot: inspection.repoRoot,
               });
               finalizeBranchRepairMetadata = {
@@ -12104,6 +12283,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         agent.id,
         outcome,
         outcome === "succeeded" ? null : (adapterResult.errorMessage ?? null),
+        {
+          keepIdleOnFailure:
+            outcome === "failed" &&
+            (finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota"),
+        },
       );
     } catch (err) {
       const message = redactCurrentUserText(
@@ -13164,6 +13348,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
     };
+
+    const schedulingSuppression = getSchedulingSuppression();
+    if (schedulingSuppression.suppressed) {
+      await writeSkippedHeartbeatRequest("heartbeat.scheduling_suppressed", {
+        reason: schedulingSuppression.reason,
+      });
+      return null;
+    }
 
     const company = await db
       .select({ status: companies.status })
@@ -14604,6 +14796,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reportRunActivity: clearDetachedRunWarning,
 
     reapOrphanedRuns,
+    drainRunningRunsForShutdown,
 
     promoteDueScheduledRetries,
     retryScheduledRetryNow,
@@ -14645,6 +14838,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
+      if (getSchedulingSuppression().suppressed) {
+        return {
+          checked: 0,
+          enqueued: 0,
+          skipped: 0,
+        };
+      }
+
       const allAgents = await db
         .select({ ...getTableColumns(agents) })
         .from(agents)

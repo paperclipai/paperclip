@@ -41,6 +41,7 @@ import {
 import {
   parseCodexJsonl,
   extractCodexRetryNotBefore,
+  isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
 } from "./parse.js";
@@ -1016,13 +1017,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               errorMessage: fallbackErrorMessage,
             })
           : null;
+      const providerQuota =
+        (attempt.proc.exitCode ?? 0) !== 0 &&
+        isCodexProviderQuotaError({
+          stdout: attempt.proc.stdout,
+          stderr: attempt.proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        });
       const transientUpstream =
         (attempt.proc.exitCode ?? 0) !== 0 &&
+        !providerQuota &&
         isCodexTransientUpstreamError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
           errorMessage: fallbackErrorMessage,
         });
+      const errorFamily = providerQuota ? "provider_quota" : transientUpstream ? "transient_upstream" : null;
 
       return {
         exitCode: attempt.proc.exitCode,
@@ -1033,10 +1043,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ? null
             : fallbackErrorMessage,
         errorCode:
-          transientUpstream
+          providerQuota
+            ? "provider_quota"
+            : transientUpstream
             ? "codex_transient_upstream"
             : null,
-        errorFamily: transientUpstream ? "transient_upstream" : null,
+        errorFamily,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
         usage: attempt.parsed.usage,
         sessionId: resolvedSessionId,
@@ -1050,9 +1062,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
-          ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
+          ...(errorFamily ? { errorFamily } : {}),
           ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
           ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+          ...(providerQuota && transientRetryNotBefore ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
         },
         summary: attempt.parsed.summary,
         clearSession: Boolean((clearSessionOnMissingSession || forceFreshSession) && !resolvedSessionId),

@@ -351,7 +351,7 @@ export function FailedRunInboxRow({
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <StatusBadge status={run.status} />
               {linkedAgentName && issue ? <span>{linkedAgentName}</span> : null}
-              <span className="truncate max-w-[300px]">{displayError}</span>
+              <span className="truncate max-w-(--sz-300px)">{displayError}</span>
               <span>{timeAgo(run.createdAt)}</span>
             </span>
           </span>
@@ -2052,7 +2052,7 @@ export function Inbox() {
                   e.currentTarget.blur();
                 }
               }}
-              className="h-8 w-[220px] pl-8 text-xs"
+              className="h-8 w-(--sz-220px) pl-8 text-xs"
               data-page-search-target="true"
             />
           </div>
@@ -2265,7 +2265,7 @@ export function Inbox() {
             value={allCategoryFilter}
             onValueChange={(value) => updateAllCategoryFilter(value as InboxCategoryFilter)}
           >
-            <SelectTrigger className="h-8 w-[170px] text-xs">
+            <SelectTrigger className="h-8 w-(--sz-170px) text-xs">
               <SelectValue placeholder="Category" />
             </SelectTrigger>
             <SelectContent>
@@ -2283,7 +2283,7 @@ export function Inbox() {
               value={allApprovalFilter}
               onValueChange={(value) => updateAllApprovalFilter(value as InboxApprovalFilter)}
             >
-              <SelectTrigger className="h-8 w-[170px] text-xs">
+              <SelectTrigger className="h-8 w-(--sz-170px) text-xs">
                 <SelectValue placeholder="Approval status" />
               </SelectTrigger>
               <SelectContent>
@@ -2401,7 +2401,7 @@ export function Inbox() {
                       selected={selected}
                       className={
                         isArchiving
-                          ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                          ? "pointer-events-none -translate-x-4 scale-(--s-0_98) opacity-0 transition-all duration-200 ease-out"
                           : "transition-all duration-200 ease-out"
                       }
                       desktopMetaLeading={
@@ -2510,7 +2510,7 @@ export function Inbox() {
                         className="flex items-center gap-3 border-y border-border/70 bg-muted/30 px-4 py-2"
                       >
                         <div className="h-px flex-1 bg-border/80" />
-                        <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        <span className="shrink-0 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
                           {group.searchSection === "archived" ? "Archived" : "Other results"}
                         </span>
                         <div className="h-px flex-1 bg-border/80" />
@@ -2588,7 +2588,7 @@ export function Inbox() {
                       elements.push(
                         <div key={`today-divider-${group.key}-${index}`} className="my-2 flex items-center gap-3 px-4">
                           <div className="flex-1 border-t border-zinc-600" />
-                          <span className="shrink-0 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+                          <span className="shrink-0 text-(length:--text-micro) font-medium uppercase tracking-wider text-zinc-500">
                             Earlier
                           </span>
                         </div>,
@@ -2614,7 +2614,7 @@ export function Inbox() {
                           archiveDisabled={isArchiving}
                           className={
                             isArchiving
-                              ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                              ? "pointer-events-none -translate-x-4 scale-(--s-0_98) opacity-0 transition-all duration-200 ease-out"
                               : "transition-all duration-200 ease-out"
                           }
                         />
@@ -2652,7 +2652,7 @@ export function Inbox() {
                           archiveDisabled={isArchiving}
                           className={
                             isArchiving
-                              ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                              ? "pointer-events-none -translate-x-4 scale-(--s-0_98) opacity-0 transition-all duration-200 ease-out"
                               : "transition-all duration-200 ease-out"
                           }
                         />
@@ -2687,7 +2687,7 @@ export function Inbox() {
                           archiveDisabled={isArchiving}
                           className={
                             isArchiving
-                              ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                              ? "pointer-events-none -translate-x-4 scale-(--s-0_98) opacity-0 transition-all duration-200 ease-out"
                               : "transition-all duration-200 ease-out"
                           }
                         />

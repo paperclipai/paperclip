@@ -268,7 +268,7 @@ function CollapsedFeedGroup({
         onClick={() => setExpanded((e) => !e)}
         data-fc="card"
         className={cn(
-          "group ml-3 mr-3 md:ml-0 my-2 flex w-[calc(100%-1.5rem)] md:w-[calc(100%-0.75rem)] items-center gap-2 rounded-lg border bg-card p-[18px] text-left text-xs transition-[background-color,border-color] duration-150",
+          "group ml-3 mr-3 md:ml-0 my-2 flex w-(--sz-calc-1) md:w-(--sz-calc-2) items-center gap-2 rounded-lg border bg-card p-(--sz-18px) text-left text-xs transition-(--tp-background-color-border-color) duration-150",
           "cursor-pointer hover:bg-accent hover:border-muted-foreground/30",
         )}
       >
@@ -283,9 +283,9 @@ function CollapsedFeedGroup({
             : <Settings className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         }
         <span className="flex-1 min-w-0 truncate">
-          <span data-fc="actor" className="font-medium text-[#959596] group-hover:text-white">{actorName}</span>
-          <span data-fc="verb" className="ml-1 text-[#959596]">made {group.events.length} updates to</span>
-          <span data-fc="title" className="ml-1 text-[#959596] group-hover:text-white">{entityName ?? group.entityId}</span>
+          <span data-fc="actor" className="font-medium text-(--hex-959596) group-hover:text-white">{actorName}</span>
+          <span data-fc="verb" className="ml-1 text-(--hex-959596)">made {group.events.length} updates to</span>
+          <span data-fc="title" className="ml-1 text-(--hex-959596) group-hover:text-white">{entityName ?? group.entityId}</span>
         </span>
         <span data-fc="time" className="text-muted-foreground shrink-0">
           {timeAgo(group.latestEvent.createdAt)}
@@ -470,7 +470,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
         separator = (
           <div className="flex items-center gap-2 px-4 py-1.5" key={`sep-${index}`}>
             <div className="h-px flex-1 bg-border" />
-            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+            <span className="text-(length:--text-nano) font-medium text-muted-foreground uppercase tracking-wider">
               Earlier
             </span>
             <div className="h-px flex-1 bg-border" />
@@ -680,7 +680,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
       >
         {isEmpty ? (
           <div className="flex min-h-0 flex-1 items-center justify-center p-6 h-full">
-            <div className="flex flex-col items-center gap-2 max-w-[16rem]">
+            <div className="flex flex-col items-center gap-2 max-w-(--sz-16rem)">
               {emptyMessage?.showPulse && (
                 <span className="relative flex h-2.5 w-2.5">
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/40" />

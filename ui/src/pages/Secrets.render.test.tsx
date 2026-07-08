@@ -625,7 +625,9 @@ describe("Secrets page layout", () => {
     expect(listContainer?.className).toContain("@container");
     expect(tableView?.className).toContain("@min-[40rem]:block");
     expect(tableView?.className).not.toContain("md:block");
-    expect(tableView?.querySelector("[role='row']")?.className).toContain("minmax(12rem,2.4fr)");
+    // Grid template lives in the token layer: --gtc-54 in ui/src/index.css
+    // carries the original minmax(12rem,2.4fr)... template verbatim.
+    expect(tableView?.querySelector("[role='row']")?.className).toContain("grid-cols-(--gtc-54)");
     expect(cardView?.className).toContain("@min-[40rem]:hidden");
     expect(cardView?.className).not.toContain("md:hidden");
 

@@ -378,3 +378,127 @@ describe("IssueRecoveryActionCard workspace_validation divergence", () => {
     expect(trigger?.disabled).toBe(true);
   });
 });
+
+function setTextareaValue(element: HTMLTextAreaElement | null, value: string) {
+  if (!element) throw new Error("Expected a textarea to exist");
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLTextAreaElement.prototype,
+    "value",
+  )?.set;
+  act(() => {
+    setter?.call(element, value);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+describe("IssueRecoveryActionCard W7 reconcile actions", () => {
+  it("offers 'Reconcile forward & continue' only for an ancestor verdict and calls the handler", () => {
+    const onReconcileForward = vi.fn();
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildWorkspaceValidationAction({ provenance: { ancestryVerdict: "ancestor" } })}
+        onReconcileForward={onReconcileForward}
+      />,
+    );
+    const button = node.querySelector("[data-testid='recovery-action-reconcile-forward']");
+    expect(button).not.toBeNull();
+    click(button);
+    expect(onReconcileForward).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides 'Reconcile forward & continue' when the verdict is not an ancestor", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildWorkspaceValidationAction({ provenance: { ancestryVerdict: "diverged" } })}
+        onReconcileForward={() => {}}
+      />,
+    );
+    expect(node.querySelector("[data-testid='recovery-action-reconcile-forward']")).toBeNull();
+  });
+
+  it("disables reconcile-forward while a reconcile is pending", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildWorkspaceValidationAction({ provenance: { ancestryVerdict: "ancestor" } })}
+        onReconcileForward={() => {}}
+        reconcilePending
+      />,
+    );
+    const button = node.querySelector<HTMLButtonElement>("[data-testid='recovery-action-reconcile-forward']");
+    expect(button?.disabled).toBe(true);
+  });
+
+  it("never renders the break-glass action for a non-permitted operator", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildWorkspaceValidationAction()}
+        onBreakGlassOverride={() => {}}
+        canBreakGlass={false}
+      />,
+    );
+    expect(node.querySelector("[data-testid='recovery-action-breakglass-trigger']")).toBeNull();
+  });
+
+  it("break-glass restates the divergence and gates the override behind a required reason", () => {
+    const onBreakGlassOverride = vi.fn();
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildWorkspaceValidationAction()}
+        onBreakGlassOverride={onBreakGlassOverride}
+        canBreakGlass
+      />,
+    );
+    click(node.querySelector("[data-testid='recovery-action-breakglass-trigger']"));
+
+    // The confirm step restates the divergence: both branches, both short SHAs, and the verdict.
+    const restated = document.body.querySelector("[data-testid='recovery-breakglass-restated-divergence']");
+    const restatedText = restated?.textContent ?? "";
+    expect(restatedText).toContain("PAP-522-recorded");
+    expect(restatedText).toContain("nleach/PAP-1405-live");
+    expect(restatedText).toContain("aaaaaaaaaa");
+    expect(restatedText).toContain("bbbbbbbbbb");
+    expect(restatedText).toContain("Diverged");
+
+    // The override is disabled until a non-empty reason is recorded.
+    const confirm = document.body.querySelector<HTMLButtonElement>(
+      "[data-testid='recovery-action-breakglass-confirm']",
+    );
+    expect(confirm?.disabled).toBe(true);
+    click(confirm);
+    expect(onBreakGlassOverride).not.toHaveBeenCalled();
+
+    // Whitespace-only reason does not enable it.
+    setTextareaValue(
+      document.body.querySelector<HTMLTextAreaElement>("[data-testid='recovery-breakglass-reason']"),
+      "   ",
+    );
+    expect(
+      document.body.querySelector<HTMLButtonElement>("[data-testid='recovery-action-breakglass-confirm']")?.disabled,
+    ).toBe(true);
+
+    // A real reason enables the override and is passed (trimmed) to the handler.
+    setTextareaValue(
+      document.body.querySelector<HTMLTextAreaElement>("[data-testid='recovery-breakglass-reason']"),
+      "  Verified live branch is safe to adopt.  ",
+    );
+    const enabledConfirm = document.body.querySelector<HTMLButtonElement>(
+      "[data-testid='recovery-action-breakglass-confirm']",
+    );
+    expect(enabledConfirm?.disabled).toBe(false);
+    click(enabledConfirm);
+    expect(onBreakGlassOverride).toHaveBeenCalledWith("Verified live branch is safe to adopt.");
+  });
+
+  it("does not offer reconcile actions for non-workspace recovery kinds", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction()}
+        onReconcileForward={() => {}}
+        onBreakGlassOverride={() => {}}
+        canBreakGlass
+      />,
+    );
+    expect(node.querySelector("[data-testid='recovery-action-reconcile-forward']")).toBeNull();
+    expect(node.querySelector("[data-testid='recovery-action-breakglass-trigger']")).toBeNull();
+  });
+});

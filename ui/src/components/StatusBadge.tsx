@@ -67,7 +67,7 @@ export function AgentStatusCapsule({ status }: { status: string }) {
   return (
     <span
       aria-hidden
-      className={cn("status-fill inline-block h-4 w-2 rounded-[4px] shrink-0", motion)}
+      className={cn("status-fill inline-block h-4 w-2 rounded-(--rad-4) shrink-0", motion)}
       style={scStyle(cssVar)}
     />
   );

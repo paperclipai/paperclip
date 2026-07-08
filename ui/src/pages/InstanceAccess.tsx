@@ -110,7 +110,7 @@ export function InstanceAccess() {
         </p>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
+      <div className="grid gap-6 lg:grid-cols-(--gtc-34)">
         <section className="space-y-4 rounded-xl border border-border bg-card p-4">
           <label className="block space-y-2 text-sm">
             <span className="font-medium">Search users</span>

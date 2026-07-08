@@ -1177,7 +1177,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }
           }}
           className={cn(
-            "min-h-[12rem] w-full resize-none bg-transparent px-3 pb-3 pt-2 font-mono text-sm leading-6 outline-none",
+            "min-h-(--sz-12rem) w-full resize-none bg-transparent px-3 pb-3 pt-2 font-mono text-sm leading-6 outline-none",
             contentClassName,
           )}
         />
@@ -1345,7 +1345,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           <div
             data-paperclip-floating-ui=""
             data-testid="mention-autocomplete-menu"
-            className="pointer-events-auto fixed z-[9999] min-w-[180px] max-w-[calc(100vw-16px)] max-h-[208px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+            className="pointer-events-auto fixed z-(--z-9999) min-w-(--sz-180px) max-w-(--sz-calc-15) max-h-(--sz-208px) overflow-y-auto rounded-md border border-border bg-popover shadow-md"
             style={{
               top: mentionMenuPosition.top,
               left: mentionMenuPosition.left,
@@ -1391,7 +1391,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 ) : option.kind === "project" && option.projectId ? (
                   <span
                     className="inline-flex h-2 w-2 rounded-full border border-border/50"
-                    style={{ backgroundColor: option.projectColor ?? "#64748b" }}
+                    style={{ backgroundColor: option.projectColor ?? "var(--project-none)" }}
                   />
                 ) : option.kind === "user" ? (
                   <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -1403,7 +1403,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 )}
                 {option.kind === "issue" && option.issueIdentifier ? (
                   <span className="flex min-w-0 items-baseline gap-1.5">
-                    <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                    <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
                       {option.issueIdentifier}
                     </span>
                     <span className="truncate">{issueMentionTitle(option)}</span>
@@ -1416,27 +1416,27 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   </span>
                 )}
                 {option.kind === "issue" && (
-                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     Task
                   </span>
                 )}
                 {option.kind === "project" && option.projectId && (
-                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     Project
                   </span>
                 )}
                 {option.kind === "user" && (
-                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     User
                   </span>
                 )}
                 {option.kind === "skill" && (
-                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     Skill
                   </span>
                 )}
                 {option.kind === "routine" && (
-                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     Routine
                   </span>
                 )}
