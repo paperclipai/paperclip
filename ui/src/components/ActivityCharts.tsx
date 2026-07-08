@@ -20,10 +20,10 @@ function emptyRunDay(date: string): DashboardRunActivityDay {
 }
 
 const runSegmentColors = {
-  succeeded: "#10b981",
-  recovered: "#f59e0b",
-  failed: "#ef4444",
-  other: "#737373",
+  succeeded: "var(--hex-10b981)",
+  recovered: "var(--hex-f59e0b)",
+  failed: "var(--hex-ef4444)",
+  other: "var(--hex-737373)",
 } as const;
 
 // Compact per-day tooltip that also attributes failures to their error class.

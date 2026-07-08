@@ -188,7 +188,7 @@ describe("SidebarStarredProjects", () => {
 
     await render();
 
-    expect(projectLink(container, "alpha")?.className).toContain("pl-8");
+    expect(projectLink(container, "alpha")?.className).toContain("pl-6");
 
     await act(async () => root?.unmount());
     root = null;
@@ -199,7 +199,7 @@ describe("SidebarStarredProjects", () => {
     await render();
 
     const railProjectLink = projectLink(container, "alpha");
-    expect(railProjectLink?.className).not.toContain("pl-8");
+    expect(railProjectLink?.className).not.toContain("pl-6");
     const nameSpan = Array.from(container.querySelectorAll("span")).find((el) => el.textContent === "Alpha");
     expect(nameSpan?.className).toContain("w-0");
   });
