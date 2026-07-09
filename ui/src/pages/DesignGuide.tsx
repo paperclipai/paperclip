@@ -23,6 +23,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Kbd, modComboLabel, modEnterLabel } from "@/components/ui/kbd";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -564,6 +565,27 @@ export function DesignGuide() {
             <Button disabled>Disabled</Button>
             <Button variant="outline" disabled>Disabled Outline</Button>
           </div>
+        </SubSection>
+
+        <SubSection title="With keyboard shortcut hint (Kbd)">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button size="sm">
+              Send
+              <Kbd>{modEnterLabel()}</Kbd>
+            </Button>
+            <Button size="sm" variant="outline">
+              Save changes
+              <Kbd>{modComboLabel("S")}</Kbd>
+            </Button>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Use <code className="font-mono">Kbd</code> with{" "}
+            <code className="font-mono">modEnterLabel()</code> /{" "}
+            <code className="font-mono">modComboLabel(key)</code> from{" "}
+            <code className="font-mono">@/components/ui/kbd</code> so the hint matches the
+            user&apos;s platform (⌘ on macOS, Ctrl elsewhere). The badge is decorative — set{" "}
+            <code className="font-mono">aria-keyshortcuts</code> on the button.
+          </p>
         </SubSection>
       </Section>
 

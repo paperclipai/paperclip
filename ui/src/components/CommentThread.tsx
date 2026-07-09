@@ -9,6 +9,7 @@ import type {
   IssueComment,
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
+import { Kbd, modEnterLabel } from "@/components/ui/kbd";
 import { Badge } from "@/components/ui/badge";
 import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -1096,8 +1097,15 @@ export function CommentThread({
                 }}
               />
             )}
-            <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
+            <Button
+              size="sm"
+              data-testid="comment-thread-send-button"
+              disabled={!canSubmit}
+              aria-keyshortcuts="Meta+Enter Control+Enter"
+              onClick={handleSubmit}
+            >
               {submitting ? "Posting..." : "Comment"}
+              <Kbd className="hidden sm:inline-flex">{modEnterLabel()}</Kbd>
             </Button>
           </div>
         </div>
