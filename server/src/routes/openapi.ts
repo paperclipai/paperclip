@@ -151,6 +151,19 @@ import {
   remoteSecretImportSchema,
   workspaceFileListQuerySchema,
   workspaceFileResourceQuerySchema,
+  // Clips
+  createClipCreatorProfileSchema,
+  clipSharePreviewSchema,
+  publishClipSchema,
+  clipImportPreviewSchema,
+  clipImportApplySchema,
+  createClipRevisionSchema,
+  updateClipSchema,
+  createClipVoteSchema,
+  createClipReportSchema,
+  createClipCommentSchema,
+  createClipShowcaseSchema,
+  createClipImportTelemetrySchema,
 } from "@paperclipai/shared";
 
 type JsonSchema = Record<string, unknown>;
@@ -640,6 +653,14 @@ const PUBLIC_OPERATIONS = new Set([
   "GET /api/invites/{token}/test-resolution",
   "POST /api/invites/{token}/accept",
   "POST /api/join-requests/{requestId}/claim-api-key",
+  "GET /api/public/clips",
+  "GET /api/public/clips/{slug}",
+  "GET /api/public/clips/{slug}/revisions/{revisionNumber}",
+  "GET /api/public/clips/{slug}/manifest",
+  "GET /api/public/clips/{slug}/revisions/{revisionNumber}/manifest",
+  "GET /api/public/creators/{handle}",
+  "POST /api/public/clips/{slug}/report",
+  "POST /api/public/clips/{slug}/import-telemetry",
 ]);
 
 const BOARD_ONLY_PREFIXES = [
@@ -760,6 +781,14 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/me/user-secrets",
   "POST /api/companies/{companyId}/skills",
   "POST /api/companies/{companyId}/skills/import",
+  "POST /api/companies/{companyId}/clips/profiles",
+  "POST /api/companies/{companyId}/clips/publish",
+  "POST /api/clips/{clipId}/revisions",
+  "POST /api/public/clips/{slug}/votes",
+  "POST /api/public/clips/{slug}/report",
+  "POST /api/public/clips/{slug}/comments",
+  "POST /api/public/clips/{slug}/showcase",
+  "POST /api/public/clips/{slug}/import-telemetry",
   "POST /api/join-requests/{requestId}/claim-api-key",
   "POST /api/admin/users/{userId}/promote-instance-admin",
   "POST /api/plugins/install",
@@ -5262,6 +5291,111 @@ registerCurrentRoute({
   summary: "Update a routine description annotation thread",
   body: updateDocumentAnnotationThreadSchema,
 });
+
+// ─── Clips ──────────────────────────────────────────────────────────────────
+
+const clipPublicBrowseQuerySchema = z.object({
+  q: z.string().optional(),
+  type: z.string().optional(),
+  tag: z.string().optional(),
+  limit: z.string().optional(),
+  offset: z.string().optional(),
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/public/clips",
+  tags: ["clips"],
+  summary: "List public Clips",
+  query: clipPublicBrowseQuerySchema,
+});
+
+for (const route of [
+  ["get", "/api/public/clips/{slug}", "Get a public Clip"],
+  ["get", "/api/public/clips/{slug}/revisions/{revisionNumber}", "Get an approved public Clip revision"],
+  ["get", "/api/public/clips/{slug}/manifest", "Get the approved public Clip manifest"],
+  ["get", "/api/public/clips/{slug}/revisions/{revisionNumber}/manifest", "Get an approved public Clip revision manifest"],
+  ["get", "/api/public/creators/{handle}", "Get a public Clip creator profile"],
+] as const) {
+  registerCurrentRoute({
+    method: route[0],
+    path: route[1],
+    tags: ["clips"],
+    summary: route[2],
+  });
+}
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/clips/profiles",
+  tags: ["clips"],
+  summary: "Create a Clip creator profile",
+  body: createClipCreatorProfileSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/clips/share-preview",
+  tags: ["clips"],
+  summary: "Preview a Clip share payload",
+  body: clipSharePreviewSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/clips/publish",
+  tags: ["clips"],
+  summary: "Publish a Clip",
+  body: publishClipSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/clips/import-preview",
+  tags: ["clips"],
+  summary: "Preview a Clip import",
+  body: clipImportPreviewSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/clips/import",
+  tags: ["clips"],
+  summary: "Import a Clip",
+  body: clipImportApplySchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/clips/{clipId}/revisions",
+  tags: ["clips"],
+  summary: "Create a Clip revision",
+  body: createClipRevisionSchema,
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/clips/{clipId}",
+  tags: ["clips"],
+  summary: "Update Clip metadata",
+  body: updateClipSchema,
+});
+
+for (const route of [
+  ["/api/public/clips/{slug}/votes", "Vote on a public Clip", createClipVoteSchema],
+  ["/api/public/clips/{slug}/report", "Report a public Clip", createClipReportSchema],
+  ["/api/public/clips/{slug}/comments", "Comment on a public Clip", createClipCommentSchema],
+  ["/api/public/clips/{slug}/showcase", "Add a public Clip showcase", createClipShowcaseSchema],
+  ["/api/public/clips/{slug}/import-telemetry", "Record public Clip import telemetry", createClipImportTelemetrySchema],
+] as const) {
+  registerCurrentRoute({
+    method: "post",
+    path: route[0],
+    tags: ["clips"],
+    summary: route[1],
+    body: route[2],
+  });
+}
 
 const pluginLocalFolderRequestSchema = z.object({
   path: z.string().min(1),

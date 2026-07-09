@@ -39,6 +39,12 @@ export const queryKeys = {
       ["team-catalog", "catalog", "file", catalogRef, relativePath] as const,
     installed: (companyId: string) => ["team-catalog", "installed", companyId] as const,
   },
+  clips: {
+    publicList: (params?: { q?: string; type?: string; tag?: string; limit?: number }) =>
+      ["clips", "public", params ?? {}] as const,
+    publicDetail: (slug: string) => ["clips", "public", slug] as const,
+    sharePreview: (companyId: string) => ["clips", companyId, "share-preview"] as const,
+  },
   agents: {
     list: (companyId: string) => ["agents", companyId] as const,
     detail: (id: string) => ["agents", "detail", id] as const,

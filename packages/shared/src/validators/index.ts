@@ -81,6 +81,7 @@ export {
   updateResourceMembershipSchema,
   type UpdateResourceMembership,
 } from "./resource-memberships.js";
+export * from "./clip.js";
 
 export {
   externalObjectStatusCategorySchema,

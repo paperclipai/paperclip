@@ -23,6 +23,8 @@ export const API = {
   goals: `${API_PREFIX}/goals`,
   approvals: `${API_PREFIX}/approvals`,
   secrets: `${API_PREFIX}/secrets`,
+  clips: `${API_PREFIX}/clips`,
+  publicClips: `${API_PREFIX}/public/clips`,
   userSecretDefinitions: `${API_PREFIX}/companies/:companyId/user-secret-definitions`,
   userSecretDefinition: `${API_PREFIX}/companies/:companyId/user-secret-definitions/:definitionId`,
   userSecretDefinitionCoverage: `${API_PREFIX}/companies/:companyId/user-secret-definitions/:definitionId/coverage`,

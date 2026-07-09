@@ -569,6 +569,7 @@ export type {
   UserCompanyAccessResponse,
 } from "./access.js";
 export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
+export * from "./clip.js";
 export type {
   CompanyPortabilityInclude,
   CompanyPortabilityEnvInput,

@@ -99,6 +99,21 @@ export {
   companySkillTestRunTemplates,
   companySkillTestRuns,
 } from "./company_skills.js";
+export {
+  clipCreatorProfiles,
+  clips,
+  clipRevisions,
+  clipDependencies,
+  clipComments,
+  clipVotes,
+  clipShowcasePosts,
+  clipFlags,
+  clipModerationEvents,
+  clipRankingSnapshots,
+  clipImports,
+  clipImportedObjects,
+  clipPublicMetricEvents,
+} from "./clips.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";
