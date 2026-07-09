@@ -422,8 +422,8 @@ describe("environment routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       environmentId: "env-1",
-      canDelete: true,
-      deleteBlockedReasons: [],
+      canDelete: false,
+      deleteBlockedReasons: ["active_runtime_use"],
       staticReferences: {
         isManagedLocal: false,
         isInstanceDefault: false,
