@@ -184,6 +184,24 @@ export const resetAgentSessionSchema = z.object({
 
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
+/**
+ * Schema for the team-scoped agent session reset endpoint:
+ * POST /api/agents/:id/sessions/reset
+ *
+ * Can be called by same-team agents (peers or managers) without CEO/board relay.
+ */
+export const agentSessionResetSchema = z.object({
+  reason: z.string().min(1).max(1000),
+  sessionId: z.string().optional().nullable(),
+  clearIssueLock: z.boolean().optional().default(false),
+  issueId: z.string().uuid().optional().nullable(),
+}).refine(
+  (data) => !data.clearIssueLock || !!data.issueId,
+  { message: "issueId is required when clearIssueLock is true", path: ["issueId"] },
+);
+
+export type AgentSessionReset = z.infer<typeof agentSessionResetSchema>;
+
 export const testAdapterEnvironmentSchema = z.object({
   adapterConfig: adapterConfigSchema.optional().default({}),
   /**
