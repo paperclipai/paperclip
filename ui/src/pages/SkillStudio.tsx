@@ -67,6 +67,12 @@ import {
 } from "@/lib/skill-create";
 import { getRecentStudioSkillIds, trackRecentStudioSkill } from "@/lib/recent-skills";
 import { AgentsUsingSkillBadge } from "@/components/skill-studio/AgentsUsingSkillDialog";
+import { ForkSkillDialog } from "@/components/skill-studio/ForkSkillDialog";
+import {
+  ProjectScanNotice,
+  SkillLineageChip,
+} from "@/components/skill-studio/SkillProvenance";
+import { isProjectScanSkill } from "@/lib/skill-fork";
 import { cn, formatCents, relativeTime } from "@/lib/utils";
 import { SkillCardIcon, type DiscoveryCard } from "./CompanySkills";
 import {
@@ -921,6 +927,7 @@ function StudioShell({
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [skillDirty, setSkillDirty] = useState(false);
   const [versionSheetOpen, setVersionSheetOpen] = useState(false);
+  const [forkDialogOpen, setForkDialogOpen] = useState(false);
 
   const layoutRef = useRef<PaneLayout>(loadPaneLayout());
 
@@ -965,8 +972,10 @@ function StudioShell({
       companyId={companyId}
       skill={skill}
       onDirtyChange={setSkillDirty}
+      onEditACopy={() => setForkDialogOpen(true)}
     />
   );
+  const projectScan = isProjectScanSkill(skill.metadata);
   const middlePane = (
     <InputPane
       companyId={companyId}
@@ -1018,6 +1027,9 @@ function StudioShell({
           onSelectSkill={(nextSkillId) => navigate(skillStudioRoute(nextSkillId))}
           onOpenVersions={() => setVersionSheetOpen(true)}
         />
+        {projectScan ? (
+          <ProjectScanNotice skill={skill} onEditACopy={() => setForkDialogOpen(true)} />
+        ) : null}
         {isMobile ? (
           <MobileTabs skill={leftPane} input={middlePane} runs={rightPane} />
         ) : (
@@ -1062,6 +1074,12 @@ function StudioShell({
           });
         }}
         onFilterRuns={(inputId) => setSelectedInputId(inputId)}
+      />
+      <ForkSkillDialog
+        companyId={companyId}
+        skill={skill}
+        open={forkDialogOpen}
+        onOpenChange={setForkDialogOpen}
       />
     </TooltipProvider>
   );
@@ -1117,6 +1135,12 @@ function StudioHeader({
       ) : null}
       {!skill.editable ? (
         <Badge variant="secondary">Read-only</Badge>
+      ) : null}
+      {skill.forkedFromSkillId ? (
+        <SkillLineageChip
+          companyId={companyId}
+          forkedFromSkillId={skill.forkedFromSkillId}
+        />
       ) : null}
       <AgentsUsingSkillBadge companyId={companyId} skill={skill} />
       <div className="ml-auto flex items-center gap-1">
@@ -1214,10 +1238,12 @@ function SkillPane({
   companyId,
   skill,
   onDirtyChange,
+  onEditACopy,
 }: {
   companyId: string;
   skill: CompanySkillDetail;
   onDirtyChange: (dirty: boolean) => void;
+  onEditACopy: () => void;
 }) {
   const skillId = skill.id;
   const queryClient = useQueryClient();
@@ -1422,18 +1448,22 @@ function SkillPane({
           />
         </div>
         {readOnly && (
-          <div className="flex items-start gap-2 border-b border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          <div className="flex items-start gap-3 border-b border-border bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
-            <div className="min-w-0">
-              <span>
-                {skill.editableReason ?? "This skill is read-only."}
-              </span>{" "}
-              <Link
-                to={skillStudioNewRoute(skill.id)}
-                className="font-medium text-foreground underline underline-offset-2 hover:text-primary"
+            <div className="min-w-0 flex-1">
+              <p>
+                {skill.editableReason ?? "This skill is read-only because it comes from an external source."}
+                {" "}Make an editable copy to change it — the original stays untouched.
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                className="mt-2"
+                onClick={onEditACopy}
               >
-                Fork
-              </Link>
+                <GitFork className="mr-1.5 h-3.5 w-3.5" />
+                Edit a copy
+              </Button>
             </div>
           </div>
         )}

@@ -12,7 +12,9 @@ import type {
   CompanySkillFileDetail,
   CompanySkillFileDeleteRequest,
   CompanySkillFileDeleteResult,
+  CompanySkillForkPrecheckResult,
   CompanySkillForkRequest,
+  CompanySkillForkResult,
   CompanySkillImportResult,
   CompanySkillInstallCatalogRequest,
   CompanySkillInstallCatalogResult,
@@ -154,9 +156,13 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/star`,
     ),
   fork: (companyId: string, skillId: string, payload: CompanySkillForkRequest = {}) =>
-    api.post<CompanySkill>(
+    api.post<CompanySkillForkResult>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/fork`,
       payload,
+    ),
+  forkPrecheck: (companyId: string, skillId: string) =>
+    api.get<CompanySkillForkPrecheckResult>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/fork-precheck`,
     ),
   comments: (companyId: string, skillId: string) =>
     api.get<CompanySkillComment[]>(

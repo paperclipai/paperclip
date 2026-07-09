@@ -13,6 +13,8 @@ export const queryKeys = {
     comments: (companyId: string, skillId: string) => ["company-skills", companyId, skillId, "comments"] as const,
     updateStatus: (companyId: string, skillId: string) =>
       ["company-skills", companyId, skillId, "update-status"] as const,
+    forkPrecheck: (companyId: string, skillId: string) =>
+      ["company-skills", companyId, skillId, "fork-precheck"] as const,
     file: (companyId: string, skillId: string, relativePath: string) =>
       ["company-skills", companyId, skillId, "file", relativePath] as const,
     catalog: (filters: { kind?: string; category?: string; q?: string } = {}) =>
