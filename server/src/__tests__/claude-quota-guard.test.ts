@@ -89,9 +89,16 @@ describe("Claude quota guard", () => {
   it("parses Claude reset times relative to the current window", () => {
     const reset = parseClaudeQuotaResetTime(
       "You've hit your session limit - resets 1:30pm (Asia/Jerusalem)",
-      new Date("2026-07-09T12:00:00+03:00"),
+      new Date("2026-07-09T09:00:00Z"),
     );
     expect(reset?.toISOString()).toBe("2026-07-09T10:30:00.000Z");
+  });
+
+  it("fails closed when reset timezone is not parseable", () => {
+    expect(parseClaudeQuotaResetTime(
+      "You've hit your session limit - resets 1:30pm (Not/AZone)",
+      new Date("2026-07-09T09:00:00Z"),
+    )).toBeNull();
   });
 });
 
@@ -228,6 +235,37 @@ describeEmbeddedPostgres("Claude quota guard dispatch integration", () => {
     });
   });
 
+  it("blocks claude_local wakeups for another company while the circuit is open", async () => {
+    const companyA = await seedClaudeAgent();
+    const companyB = await seedClaudeAgent();
+    await openCircuit(
+      companyA.companyId,
+      companyA.agentId,
+      "You've hit your session limit - resets 1:30pm (Asia/Jerusalem)",
+    );
+
+    const queued = await heartbeatService(db).wakeup(companyB.agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "cross_company_quota_guard",
+      contextSnapshot: { issueId: randomUUID() },
+    });
+
+    expect(queued).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const runs = await db.select().from(heartbeatRuns);
+    expect(runs).toHaveLength(0);
+    const [request] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, companyB.agentId));
+    expect(request).toMatchObject({
+      companyId: companyB.companyId,
+      status: "skipped",
+      reason: CLAUDE_QUOTA_BLOCK_ERROR_CODE,
+    });
+  });
+
   it("test_claude_local_global_concurrency_is_one", async () => {
     const { companyId, agentId } = await seedClaudeAgent();
     const activeRunId = randomUUID();
@@ -281,6 +319,40 @@ describeEmbeddedPostgres("Claude quota guard dispatch integration", () => {
     expect(event?.details).toMatchObject({
       reason: CLAUDE_QUOTA_BLOCK_ERROR_CODE,
       operatorResumeRequired: false,
+    });
+  });
+
+  it("records Asia/Jerusalem reset times independently of host timezone", async () => {
+    const { companyId, agentId } = await seedClaudeAgent();
+
+    const details = await recordClaudeQuotaFailure(db, {
+      adapterType: CLAUDE_LOCAL_ADAPTER_TYPE,
+      companyId,
+      agentId,
+      errorMessage: "You've hit your session limit - resets 1:30pm (Asia/Jerusalem)",
+      observedAt: new Date("2026-07-09T09:00:00Z"),
+    });
+
+    expect(details).toMatchObject({
+      blockedUntil: "2026-07-09T10:30:00.000Z",
+      operatorResumeRequired: false,
+    });
+  });
+
+  it("requires operator resume instead of guessing unknown reset timezones", async () => {
+    const { companyId, agentId } = await seedClaudeAgent();
+
+    const details = await recordClaudeQuotaFailure(db, {
+      adapterType: CLAUDE_LOCAL_ADAPTER_TYPE,
+      companyId,
+      agentId,
+      errorMessage: "You've hit your session limit - resets 1:30pm (Not/AZone)",
+      observedAt: new Date("2026-07-09T09:00:00Z"),
+    });
+
+    expect(details).toMatchObject({
+      blockedUntil: null,
+      operatorResumeRequired: true,
     });
   });
 });

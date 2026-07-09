@@ -43,6 +43,66 @@ function readNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function getTimeZoneParts(date: Date, timeZone: string) {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    });
+    const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
+    const year = Number(parts.year);
+    const month = Number(parts.month);
+    const day = Number(parts.day);
+    const hour = Number(parts.hour);
+    const minute = Number(parts.minute);
+    if (![year, month, day, hour, minute].every(Number.isInteger)) return null;
+    return { year, month, day, hour, minute };
+  } catch {
+    return null;
+  }
+}
+
+function zonedTimeToUtc(input: {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  timeZone: string;
+}) {
+  const guess = Date.UTC(input.year, input.month - 1, input.day, input.hour, input.minute, 0, 0);
+  const rendered = getTimeZoneParts(new Date(guess), input.timeZone);
+  if (!rendered) return null;
+
+  const renderedAsUtc = Date.UTC(
+    rendered.year,
+    rendered.month - 1,
+    rendered.day,
+    rendered.hour,
+    rendered.minute,
+    0,
+    0,
+  );
+  const corrected = new Date(guess - (renderedAsUtc - guess));
+  const verified = getTimeZoneParts(corrected, input.timeZone);
+  if (
+    !verified ||
+    verified.year !== input.year ||
+    verified.month !== input.month ||
+    verified.day !== input.day ||
+    verified.hour !== input.hour ||
+    verified.minute !== input.minute
+  ) {
+    return null;
+  }
+  return corrected;
+}
+
 export function parseClaudeQuotaResetTime(text: string, now = new Date()): Date | null {
   const match = text.match(/resets?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?:\s*\(([^)]+)\))?/i);
   if (!match) return null;
@@ -50,12 +110,41 @@ export function parseClaudeQuotaResetTime(text: string, now = new Date()): Date 
   let hour = Number(match[1]);
   const minute = Number(match[2] ?? "0");
   const ampm = match[3]?.toLowerCase();
+  const timeZone = readString(match[4]);
   if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour > 23 || minute > 59) {
     return null;
   }
   if (ampm === "pm" && hour !== 12) hour += 12;
   if (ampm === "am" && hour === 12) hour = 0;
   if (hour > 23) return null;
+
+  if (timeZone) {
+    const nowParts = getTimeZoneParts(now, timeZone);
+    if (!nowParts) return null;
+    let reset = zonedTimeToUtc({
+      year: nowParts.year,
+      month: nowParts.month,
+      day: nowParts.day,
+      hour,
+      minute,
+      timeZone,
+    });
+    if (!reset) return null;
+    if (reset.getTime() <= now.getTime()) {
+      const nextDay = new Date(Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day + 1, 12, 0, 0, 0));
+      const nextParts = getTimeZoneParts(nextDay, timeZone);
+      if (!nextParts) return null;
+      reset = zonedTimeToUtc({
+        year: nextParts.year,
+        month: nextParts.month,
+        day: nextParts.day,
+        hour,
+        minute,
+        timeZone,
+      });
+    }
+    return reset;
+  }
 
   const reset = new Date(now);
   reset.setHours(hour, minute, 0, 0);
@@ -93,16 +182,12 @@ export function claudeQuotaBlockMessage(block: ClaudeQuotaBlock): string {
   return `Claude-local dispatch is blocked by Claude quota/session circuit breaker${until}`;
 }
 
-async function latestCircuitEvent(db: ClaudeQuotaDb, companyId?: string | null) {
+async function latestCircuitEvent(db: ClaudeQuotaDb, _companyId?: string | null) {
   const actions = [CLAUDE_QUOTA_CIRCUIT_OPENED_ACTION, CLAUDE_QUOTA_CIRCUIT_RESUMED_ACTION];
   const rows = await db
     .select()
     .from(activityLog)
-    .where(
-      companyId
-        ? and(eq(activityLog.companyId, companyId), inArray(activityLog.action, actions))
-        : inArray(activityLog.action, actions),
-    )
+    .where(inArray(activityLog.action, actions))
     .orderBy(desc(activityLog.createdAt))
     .limit(1);
   return rows[0] ?? null;
