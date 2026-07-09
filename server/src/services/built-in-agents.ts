@@ -1308,26 +1308,31 @@ export function builtInAgentService(db: Db) {
     const definition = requireBuiltInAgentDefinition(key);
     await ensureCompany(companyId);
     const existing = await findSingleAgent(companyId, definition);
+    const existingPendingApproval = existing?.status === "pending_approval";
     const preserveExistingAdapter = Boolean(
       existing
+      && !existingPendingApproval
       && input.adapterType === undefined
       && input.adapterConfig === undefined
       && hasCompleteAdapterConfig(existing.adapterType, existing.adapterConfig),
     );
-    const resolvedInput = preserveExistingAdapter
+    const resolvedInput = existingPendingApproval || preserveExistingAdapter
       ? input
       : await defaultProvisionInput(companyId, definition, input);
     if (existing) {
       const patch: Partial<typeof agents.$inferInsert> = {
         metadata: builtInMetadata(definition, existing.metadata),
       };
-      if (resolvedInput.adapterType !== undefined || resolvedInput.adapterConfig !== undefined) {
+      if (
+        !existingPendingApproval
+        && (resolvedInput.adapterType !== undefined || resolvedInput.adapterConfig !== undefined)
+      ) {
         const adapterType = resolvedInput.adapterType ?? existing.adapterType;
         assertAdapterAllowed(definition, adapterType);
         patch.adapterType = adapterType;
         patch.adapterConfig = resolvedInput.adapterConfig ?? existing.adapterConfig;
       }
-      if (resolvedInput.budgetMonthlyCents !== undefined) {
+      if (!existingPendingApproval && resolvedInput.budgetMonthlyCents !== undefined) {
         patch.budgetMonthlyCents = resolvedInput.budgetMonthlyCents;
       }
       const updated = await agentSvc.update(existing.id, patch, {
@@ -1335,6 +1340,9 @@ export function builtInAgentService(db: Db) {
         recordRevision: { source: "built-in-agent:ensure" },
       });
       if (!updated) throw notFound("Built-in agent not found");
+      if (existingPendingApproval) {
+        return state(definition, updated as Agent);
+      }
       await ensureBuiltInAgentDefaultGrants(updated as Agent, definition);
       const resources = await reconcileBundleResources(updated as Agent, definition, "reconcile");
       return state(definition, await agentSvc.getById(existing.id) as Agent, resources);

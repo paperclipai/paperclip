@@ -597,6 +597,22 @@ describeEmbeddedPostgres("built-in agents", () => {
       },
     });
 
+    const pendingReconcile = await reconcileBuiltInAgentsOnStartup(db);
+    expect(pendingReconcile.pendingApprovals).toBe(1);
+    const stillPending = await builtInAgentService(db).get(companyId, "reflection-coach");
+    expect(stillPending).toMatchObject({
+      status: "pending_approval",
+      agent: {
+        adapterConfig: {},
+        status: "pending_approval",
+      },
+    });
+    expect(stillPending.resources.map((resource) => resource.stockStatus)).toEqual([
+      "missing",
+      "missing",
+      "missing",
+    ]);
+
     await approvalService(db).approve(approval.id, "board-user", "Approved Reflection Coach");
     const approvedState = await builtInAgentService(db).get(companyId, "reflection-coach");
     expect(approvedState).toMatchObject({
