@@ -31,6 +31,28 @@ When a heartbeat fires, Paperclip:
 | [Process](/adapters/process) | `process` | Executes arbitrary shell commands |
 | [HTTP](/adapters/http) | `http` | Sends webhooks to external agents |
 
+## Credential ownership for sandbox targets
+
+Local CLI adapters can run on the Paperclip host, SSH targets, or managed
+sandbox targets. The adapter decides which credential home is authoritative
+before the CLI starts:
+
+| Adapter | Credential topology | Which credential file wins on managed sandbox targets |
+|---------|---------------------|-------------------------------------------------------|
+| [`codex_local`](/adapters/codex-local) | Host-owns-auth for Paperclip-managed `CODEX_HOME` | A host-owned `auth.json` is symlinked into the managed `CODEX_HOME` and uploaded to the sandbox. If a per-agent `OPENAI_API_KEY` is configured, Paperclip writes an API-key `auth.json` instead and that file wins. A login baked into the sandbox image is shadowed because Codex runs with Paperclip's uploaded `CODEX_HOME`. |
+| [`claude_local`](/adapters/claude-local) | Snapshot-owns-auth for managed remote Claude config | Paperclip uploads only sanitized settings and skill/runtime assets. When the remote managed config has no Claude credential files, it copies `.credentials.json` or `credentials.json` from the sandbox image's own `$HOME/.claude`, so the image's login wins. |
+
+Worked examples:
+
+- **Codex sandbox with host ChatGPT login:** the host `~/.codex/auth.json`
+  is symlinked into the managed home, then uploaded as the sandbox
+  `CODEX_HOME`. Codex reads that uploaded file and does not use any
+  `auth.json` already present inside the sandbox image.
+- **Claude sandbox with image login:** Paperclip materializes a remote
+  `CLAUDE_CONFIG_DIR`, then fills missing `.credentials.json` /
+  `credentials.json` from the sandbox image's own `$HOME/.claude`. The
+  snapshot's Claude login is the credential source for the run.
+
 ### Hermes local vs gateway
 
 Use `hermes_local` when Paperclip should start the local `hermes` CLI on the
