@@ -576,15 +576,21 @@ export function createHostClientHandlers(
     }
 
     const allowedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
-    if (!allowedCompanyId) return;
 
     if (requested.kind === "all") {
       if (method === "companies.list") return;
+      if (!allowedCompanyId) {
+        throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
+      }
       throw new InvocationScopeDeniedError(
         pluginId,
         method,
         `the current invocation is scoped to company "${allowedCompanyId}"`,
       );
+    }
+
+    if (!allowedCompanyId) {
+      throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
     }
 
     if (requested.companyId !== allowedCompanyId) {
@@ -610,9 +616,21 @@ export function createHostClientHandlers(
     }
 
     const requested = requestedCompanyScope(method, params);
-    if (requested.kind === "single") return requested.companyId;
-
     const scopedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
+    if (requested.kind === "single") {
+      if (!scopedCompanyId) {
+        throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
+      }
+      if (requested.companyId !== scopedCompanyId) {
+        throw new InvocationScopeDeniedError(
+          pluginId,
+          method,
+          `requested company "${requested.companyId}" but the current invocation is scoped to company "${scopedCompanyId}"`,
+        );
+      }
+      return scopedCompanyId;
+    }
+
     if (scopedCompanyId) return scopedCompanyId;
 
     throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
