@@ -1815,8 +1815,31 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("schedules bounded retries for failed accepted interaction continuation wakes", async () => {
-    const { agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
     const interactionId = randomUUID();
+
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: agentId,
+      resolvedByUserId: "responsible-user",
+      resolvedAt: new Date("2026-03-19T00:00:00.000Z"),
+      payload: {
+        version: 1,
+        prompt: "Approve the plan?",
+        target: {
+          type: "issue_document",
+          issueId,
+          key: "plan",
+          revisionId: randomUUID(),
+        },
+      },
+      result: { version: 1, outcome: "accepted" },
+    });
 
     await db
       .update(agentWakeupRequests)
@@ -1925,9 +1948,145 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "in_review",
       executionRunId: retryRun?.id ?? null,
     });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({
+      authorType: "system",
+      createdByRunId: runId,
+      body: "Agent failed to resume after approval: `adapter_failed` — retrying (attempt 1/3)",
+    });
+
+    const interaction = await db
+      .select({ result: issueThreadInteractions.result })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .then((rows) => rows[0] ?? null);
+    expect(interaction?.result).toMatchObject({
+      version: 1,
+      outcome: "accepted",
+      resumeFailure: {
+        status: "retrying",
+        errorCode: "adapter_failed",
+        attempt: 1,
+        maxAttempts: 3,
+        runId,
+        retryRunId: retryRun?.id ?? null,
+      },
+    });
+    mockAdapterExecute.mockClear();
+  });
+
+  it("escalates exhausted plan approval resume failures with a system comment and recovery action", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const interactionId = randomUUID();
+
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: agentId,
+      resolvedByUserId: "responsible-user",
+      resolvedAt: new Date("2026-03-19T00:00:00.000Z"),
+      payload: {
+        version: 1,
+        prompt: "Approve the plan?",
+        target: {
+          type: "issue_document",
+          issueId,
+          key: "plan",
+          revisionId: randomUUID(),
+        },
+      },
+      result: { version: 1, outcome: "accepted" },
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "failed",
+        error: "Failed to start command",
+        errorCode: "adapter_failed",
+        scheduledRetryAttempt: 3,
+        scheduledRetryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+          retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+          mutation: "interaction",
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+        },
+        finishedAt: new Date("2026-03-19T00:10:00.000Z"),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(issues)
+      .set({ status: "in_review", executionRunId: runId })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.scheduleBoundedRetry(runId, {
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: 3,
+    });
+
+    expect(result).toMatchObject({
+      outcome: "retry_exhausted",
+      maxAttempts: 3,
+    });
+
+    const issue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const recoveryAction = await db
+      .select({ id: issueRecoveryActions.id, status: issueRecoveryActions.status, sourceIssueId: issueRecoveryActions.sourceIssueId })
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(recoveryAction).toMatchObject({
+      status: "active",
+      sourceIssueId: issueId,
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({
+      authorType: "system",
+      body: expect.stringContaining("Agent failed to resume after approval: `adapter_failed` — needs attention"),
+    });
+    expect(comments[0]?.body).toContain("Recovery action:");
+
+    const interaction = await db
+      .select({ result: issueThreadInteractions.result })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .then((rows) => rows[0] ?? null);
+    expect(interaction?.result).toMatchObject({
+      version: 1,
+      outcome: "accepted",
+      resumeFailure: {
+        status: "needs_attention",
+        errorCode: "adapter_failed",
+        attempt: 3,
+        maxAttempts: 3,
+        runId,
+        recoveryActionId: recoveryAction?.id ?? null,
+      },
+    });
   });
 
   it("blocks a git-sensitive local adapter before launch when a project-workspace-linked issue is missing its project id", async () => {
+    mockAdapterExecute.mockClear();
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();

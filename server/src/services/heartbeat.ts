@@ -20,6 +20,7 @@ import {
   type IssueExecutionMonitorPolicy,
   type IssueExecutionMonitorRecoveryPolicy,
   type ModelProfileKey,
+  type RequestConfirmationResult,
   type RoutineRevisionSnapshotV1,
   type RunLivenessState,
   type SourceTrustMetadata,
@@ -48,6 +49,7 @@ import {
   issueApprovals,
   issueComments,
   issuePlanDecompositions,
+  issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -5053,6 +5055,225 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   };
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
+
+  function isPlanApprovalConfirmationPayload(payload: unknown) {
+    const target = parseObject(parseObject(payload).target);
+    return readNonEmptyString(target.type) === "issue_document" &&
+      readNonEmptyString(target.key) === "plan";
+  }
+
+  async function getAcceptedPlanApprovalInteractionForRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string | null,
+  ) {
+    const context = parseObject(run.contextSnapshot);
+    const interactionId = readNonEmptyString(context.interactionId);
+    if (!issueId || !interactionId) return null;
+
+    const interaction = await db
+      .select({
+        id: issueThreadInteractions.id,
+        kind: issueThreadInteractions.kind,
+        status: issueThreadInteractions.status,
+        payload: issueThreadInteractions.payload,
+        result: issueThreadInteractions.result,
+      })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, run.companyId),
+          eq(issueThreadInteractions.issueId, issueId),
+          eq(issueThreadInteractions.id, interactionId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+
+    if (!interaction) return null;
+    if (interaction.kind !== "request_confirmation" || interaction.status !== "accepted") return null;
+    return isPlanApprovalConfirmationPayload(interaction.payload) ? interaction : null;
+  }
+
+  function planApprovalResumeFailureErrorCode(run: typeof heartbeatRuns.$inferSelect) {
+    return readNonEmptyString(run.errorCode) ?? "unknown_error";
+  }
+
+  function buildPlanApprovalResumeFailureComment(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    status: "retrying" | "needs_attention";
+    attempt: number;
+    maxAttempts: number;
+  }) {
+    const errorCode = planApprovalResumeFailureErrorCode(input.run);
+    if (input.status === "retrying") {
+      return `Agent failed to resume after approval: \`${errorCode}\` — retrying (attempt ${input.attempt}/${input.maxAttempts})`;
+    }
+    return `Agent failed to resume after approval: \`${errorCode}\` — needs attention`;
+  }
+
+  function buildPlanApprovalResumeFailureResult(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    status: "retrying" | "needs_attention";
+    attempt: number;
+    maxAttempts: number;
+    retryRunId?: string | null;
+    recoveryActionId?: string | null;
+  }): NonNullable<RequestConfirmationResult["resumeFailure"]> {
+    return {
+      status: input.status,
+      errorCode: planApprovalResumeFailureErrorCode(input.run),
+      attempt: input.attempt,
+      maxAttempts: input.maxAttempts,
+      runId: input.run.id,
+      retryRunId: input.retryRunId ?? null,
+      recoveryActionId: input.recoveryActionId ?? null,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  async function updatePlanApprovalInteractionResumeFailure(input: {
+    interaction: NonNullable<Awaited<ReturnType<typeof getAcceptedPlanApprovalInteractionForRun>>>;
+    failure: NonNullable<RequestConfirmationResult["resumeFailure"]>;
+  }) {
+    const result = parseObject(input.interaction.result);
+    const nextResult = {
+      ...result,
+      version: 1 as const,
+      outcome: "accepted" as const,
+      resumeFailure: input.failure,
+    } satisfies RequestConfirmationResult;
+
+    await db
+      .update(issueThreadInteractions)
+      .set({
+        result: nextResult,
+        updatedAt: new Date(),
+      })
+      .where(eq(issueThreadInteractions.id, input.interaction.id));
+  }
+
+  async function addPlanApprovalResumeFailureCommentOnce(input: {
+    issueId: string;
+    run: typeof heartbeatRuns.$inferSelect;
+    body: string;
+  }) {
+    const existing = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, input.run.companyId),
+          eq(issueComments.issueId, input.issueId),
+          or(
+            eq(issueComments.body, input.body),
+            sql`${issueComments.body} like ${`${input.body}\n%`}`,
+          ),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (existing) return null;
+    return issuesSvc.addComment(input.issueId, input.body, { runId: input.run.id }, { authorType: "system" });
+  }
+
+  async function getActiveRecoveryActionId(companyId: string, sourceIssueId: string) {
+    return db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, sourceIssueId),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        ),
+      )
+      .orderBy(desc(issueRecoveryActions.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0]?.id ?? null);
+  }
+
+  async function recordPlanApprovalResumeFailureRetry(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    issueId: string | null;
+    retryRunId: string | null;
+    attempt: number;
+    maxAttempts: number;
+  }) {
+    const interaction = await getAcceptedPlanApprovalInteractionForRun(input.run, input.issueId);
+    if (!interaction || !input.issueId) return null;
+
+    const body = buildPlanApprovalResumeFailureComment({
+      run: input.run,
+      status: "retrying",
+      attempt: input.attempt,
+      maxAttempts: input.maxAttempts,
+    });
+    await addPlanApprovalResumeFailureCommentOnce({
+      issueId: input.issueId,
+      run: input.run,
+      body,
+    });
+    await updatePlanApprovalInteractionResumeFailure({
+      interaction,
+      failure: buildPlanApprovalResumeFailureResult({
+        run: input.run,
+        status: "retrying",
+        attempt: input.attempt,
+        maxAttempts: input.maxAttempts,
+        retryRunId: input.retryRunId,
+      }),
+    });
+    return interaction.id;
+  }
+
+  async function escalatePlanApprovalResumeFailureNeedsAttention(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    issueId: string | null;
+    attempt: number;
+    maxAttempts: number;
+  }) {
+    const interaction = await getAcceptedPlanApprovalInteractionForRun(input.run, input.issueId);
+    if (!interaction || !input.issueId) return null;
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, input.run.companyId), eq(issues.id, input.issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return null;
+    if (issue.status !== "todo" && issue.status !== "in_progress" && issue.status !== "in_review") return null;
+
+    const body = buildPlanApprovalResumeFailureComment({
+      run: input.run,
+      status: "needs_attention",
+      attempt: input.attempt,
+      maxAttempts: input.maxAttempts,
+    });
+    await recovery.escalateStrandedAssignedIssue({
+      issue,
+      previousStatus: issue.status,
+      latestRun: input.run,
+      comment: body,
+    });
+    await addPlanApprovalResumeFailureCommentOnce({
+      issueId: issue.id,
+      run: input.run,
+      body,
+    });
+
+    const recoveryActionId = await getActiveRecoveryActionId(issue.companyId, issue.id);
+    await updatePlanApprovalInteractionResumeFailure({
+      interaction,
+      failure: buildPlanApprovalResumeFailureResult({
+        run: input.run,
+        status: "needs_attention",
+        attempt: input.attempt,
+        maxAttempts: input.maxAttempts,
+        recoveryActionId,
+      }),
+    });
+    return interaction.id;
+  }
+
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
@@ -8545,6 +8766,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
 
     if (!baseSchedule) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
@@ -8558,6 +8781,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           maxAttempts,
         },
       });
+      if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
+        await escalatePlanApprovalResumeFailureNeedsAttention({
+          run,
+          issueId,
+          attempt: Math.min(run.scheduledRetryAttempt ?? maxAttempts, maxAttempts),
+          maxAttempts,
+        }).catch((error) => {
+          logger.warn(
+            { err: error, runId: run.id, issueId },
+            "failed to escalate exhausted plan-approval resume failure",
+          );
+        });
+      }
       return {
         outcome: "retry_exhausted" as const,
         attempt: nextAttempt,
@@ -8568,8 +8804,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON) {
       const invokability = await getAgentInvokability(agent);
       if (!invokability.invokable) {
-        const contextSnapshot = parseObject(run.contextSnapshot);
-        const issueId = readNonEmptyString(contextSnapshot.issueId);
         await appendRunEvent(run, await nextRunEventSeq(run.id), {
           eventType: "lifecycle",
           stream: "system",
@@ -8602,8 +8836,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         : baseSchedule;
 
-    const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
     const requiresIssueGate =
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
@@ -8964,6 +9196,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
 
+    if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
+      await recordPlanApprovalResumeFailureRetry({
+        run,
+        issueId,
+        retryRunId: retryRun.id,
+        attempt: schedule.attempt,
+        maxAttempts: schedule.maxAttempts,
+      }).catch((error) => {
+        logger.warn(
+          { err: error, runId: run.id, issueId, retryRunId: retryRun.id },
+          "failed to record plan-approval resume retry failure",
+        );
+      });
+    }
+
     return {
       outcome: "scheduled" as const,
       run: retryRun,
@@ -8979,7 +9226,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   ) {
     if (!run.wakeupRequestId) return null;
     if (!isResolvedInteractionContinuationWakeContext(run.contextSnapshot)) return null;
-    if (!isRetryableInteractionContinuationInfrastructureFailure(run)) return null;
+    if (!isRetryableInteractionContinuationInfrastructureFailure(run)) {
+      const context = parseObject(run.contextSnapshot);
+      const issueId = readNonEmptyString(context.issueId);
+      await escalatePlanApprovalResumeFailureNeedsAttention({
+        run,
+        issueId,
+        attempt: Math.min(run.scheduledRetryAttempt ?? INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS, INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS),
+        maxAttempts: INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS,
+      }).catch((error) => {
+        logger.warn(
+          { err: error, runId: run.id, issueId },
+          "failed to escalate non-retryable plan-approval resume failure",
+        );
+      });
+      return null;
+    }
 
     return scheduleBoundedRetryForRun(run, agent, {
       retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
