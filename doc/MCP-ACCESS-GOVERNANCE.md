@@ -7,6 +7,7 @@ Operator guide for Paperclip's MCP tool access surface. Audience: board users an
 ## Contents
 
 - [Mental model](#mental-model)
+- [Canonical integration model](#canonical-integration-model)
 - [Quick start](#quick-start)
 - [Paperclip as MCP endpoint vs MCP gateway](#paperclip-as-mcp-endpoint-vs-mcp-gateway)
 - [Managed connections](#managed-connections)
@@ -58,6 +59,15 @@ Plain prose version of the same graph:
 - The **Gateway** is the runtime that an agent calls. It walks profiles + policies, returns a decision, records a **Call Event** in the audit log, and (if needed) opens an **Action Request** for human approval.
 
 If you remember one thing: **profile says *can this agent see the tool*; policy says *is this exact call allowed right now***.
+
+## Canonical integration model
+
+This runbook covers the MCP gateway slice of the broader Apps v2 integration
+model. Before adding a new provider, plugin-provided app, token store, or
+connection UX path, read [Apps, Connections, and Integrations](./connections/README.md).
+That document records the board decision that Apps v2 is canonical, defines the
+shared vocabulary, and links the harvested v1 security threat model and first-30
+connector matrix.
 
 ## Quick start
 
