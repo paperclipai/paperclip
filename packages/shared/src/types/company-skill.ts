@@ -111,6 +111,7 @@ export interface CompanySkillUsageAgent {
 export interface CompanySkillDetail extends CompanySkill {
   attachedAgentCount: number;
   usedByAgents: CompanySkillUsageAgent[];
+  existingForks: CompanySkillForkSummary[];
   editable: boolean;
   editableReason: string | null;
   sourceLabel: string | null;
@@ -180,6 +181,47 @@ export interface CompanySkillForkRequest {
   name?: string | null;
   slug?: string | null;
   sharingScope?: CompanySkillSharingScope;
+  reassignAgentIds?: string[];
+}
+
+export interface CompanySkillOriginalSummary {
+  id: string;
+  name: string;
+  slug: string;
+  sourceType: CompanySkillSourceType;
+  sourceLocator: string | null;
+  sourceRef: string | null;
+}
+
+export interface CompanySkillForkSummary extends CompanySkillOriginalSummary {
+  key: string;
+  forkedFromSkillId: string | null;
+  forkedFromCompanyId: string | null;
+  currentVersionId: string | null;
+  createdByCurrentActor: boolean;
+  diverged: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CompanySkillForkReassignment {
+  agentId: string;
+  previousSkillKey: string;
+  nextSkillKey: string;
+}
+
+export interface CompanySkillForkResult {
+  skill: CompanySkill;
+  original: CompanySkillOriginalSummary;
+  reassignments: CompanySkillForkReassignment[];
+}
+
+export interface CompanySkillForkPrecheckResult {
+  skillId: string;
+  original: CompanySkillOriginalSummary;
+  agentUsageCount: number;
+  usedByAgents: CompanySkillUsageAgent[];
+  existingForks: CompanySkillForkSummary[];
 }
 
 export interface CompanySkillUpdateRequest {

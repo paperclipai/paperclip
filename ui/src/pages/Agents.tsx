@@ -2,7 +2,9 @@ import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
+import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -11,6 +13,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { MembershipAction } from "../components/MembershipAction";
+import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -19,8 +22,9 @@ import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
-import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import {
+  isStarred,
   resourceMembershipState,
   useResourceMembershipMutation,
   useResourceMemberships,
@@ -31,6 +35,24 @@ import { getAdapterLabel } from "../adapters/adapter-display-registry";
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
 type FilterTab = "all" | "active" | "paused" | "error";
+
+interface EnvironmentDescriptor {
+  label: string;
+  detail: string;
+  title: string;
+}
+
+const localEnvironmentDescriptor: EnvironmentDescriptor = {
+  label: "Local",
+  detail: "Paperclip host",
+  title: "Local - Paperclip host",
+};
+
+const loadingEnvironmentDescriptor: EnvironmentDescriptor = {
+  label: "—",
+  detail: "Loading environment",
+  title: "Loading environment",
+};
 
 // Agents in these states never appear in the agents list — `terminated` is
 // hidden like an archived company, and `pending_approval` is a hiring gate that
@@ -56,6 +78,61 @@ function getConfiguredModel(agent: Agent): string | null {
   if (typeof value !== "string") return null;
   const model = value.trim();
   return model.length > 0 ? model : null;
+}
+
+function formatEnvironmentDriver(driver: Environment["driver"]): string {
+  if (driver === "ssh") return "SSH";
+  return driver.charAt(0).toUpperCase() + driver.slice(1);
+}
+
+function getSandboxProviderLabel(
+  environment: Environment,
+  capabilities?: EnvironmentCapabilities | null,
+): string {
+  const provider = typeof environment.config.provider === "string"
+    ? environment.config.provider.trim()
+    : "";
+  if (!provider) return "Sandbox";
+  return capabilities?.sandboxProviders?.[provider]?.displayName ?? provider;
+}
+
+function describeEnvironment(
+  environment: Environment,
+  capabilities?: EnvironmentCapabilities | null,
+): EnvironmentDescriptor {
+  const detail = environment.driver === "sandbox"
+    ? `${getSandboxProviderLabel(environment, capabilities)} sandbox provider`
+    : environment.driver === "local"
+      ? "Paperclip host"
+      : formatEnvironmentDriver(environment.driver);
+
+  return {
+    label: environment.name,
+    detail,
+    title: `${environment.name} - ${detail}`,
+  };
+}
+
+function describeMissingEnvironment(environmentId: string): EnvironmentDescriptor {
+  return {
+    label: "Unknown environment",
+    detail: environmentId.slice(0, 8),
+    title: `Unknown environment - ${environmentId}`,
+  };
+}
+
+function resolveAgentEnvironment(
+  agent: Agent,
+  environmentsById: Map<string, Environment>,
+  instanceDefaultEnvironmentId: string | null,
+  capabilities?: EnvironmentCapabilities | null,
+): EnvironmentDescriptor {
+  const environmentId = agent.defaultEnvironmentId ?? instanceDefaultEnvironmentId;
+  if (!environmentId) return localEnvironmentDescriptor;
+  const environment = environmentsById.get(environmentId);
+  return environment
+    ? describeEnvironment(environment, capabilities)
+    : describeMissingEnvironment(environmentId);
 }
 
 function filterOrgTree(nodes: OrgNode[], tab: FilterTab): OrgNode[] {
@@ -101,6 +178,25 @@ export function Agents() {
     enabled: !!selectedCompanyId && effectiveView === "org",
   });
 
+  const { data: instanceSettings } = useQuery({
+    queryKey: queryKeys.instance.settings,
+    queryFn: () => instanceSettingsApi.get(),
+    enabled: !!selectedCompanyId,
+  });
+  const environmentsEnabled = instanceSettings?.experimental.enableEnvironments === true;
+
+  const { data: environments } = useQuery({
+    queryKey: queryKeys.environments.list(selectedCompanyId!),
+    queryFn: () => environmentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && environmentsEnabled,
+  });
+
+  const { data: environmentCapabilities } = useQuery({
+    queryKey: queryKeys.environments.capabilities(selectedCompanyId!),
+    queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
+    enabled: !!selectedCompanyId && environmentsEnabled,
+  });
+
   const { data: runs } = useQuery({
     queryKey: [...queryKeys.liveRuns(selectedCompanyId!), "agents-page"],
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
@@ -131,6 +227,28 @@ export function Agents() {
     return map;
   }, [agents]);
 
+  const environmentsById = useMemo(() => {
+    const map = new Map<string, Environment>();
+    for (const environment of environments ?? []) map.set(environment.id, environment);
+    return map;
+  }, [environments]);
+
+  const environmentByAgentId = useMemo(() => {
+    const map = new Map<string, EnvironmentDescriptor>();
+    for (const agent of agents ?? []) {
+      map.set(
+        agent.id,
+        resolveAgentEnvironment(
+          agent,
+          environmentsById,
+          instanceSettings?.defaultEnvironmentId ?? null,
+          environmentCapabilities,
+        ),
+      );
+    }
+    return map;
+  }, [agents, environmentsById, environmentCapabilities, instanceSettings?.defaultEnvironmentId]);
+
   useEffect(() => {
     setBreadcrumbs([{ label: "Agents" }]);
   }, [setBreadcrumbs]);
@@ -145,6 +263,128 @@ export function Agents() {
 
   const filtered = filterAgents(agents ?? [], tab);
   const filteredOrg = filterOrgTree(orgTree ?? [], tab);
+  const environmentDataLoading = environmentsEnabled && environments === undefined;
+  const showEnvironmentColumn = environmentsEnabled && (environments === undefined || environments.length > 1);
+  const resolveRenderedEnvironment = (agentId: string) => (
+    environmentDataLoading
+      ? loadingEnvironmentDescriptor
+      : environmentByAgentId.get(agentId) ?? localEnvironmentDescriptor
+  );
+
+  const renderAgentRow = (agent: Agent) => {
+    const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
+    const agentPending =
+      membershipMutation.isPending &&
+      membershipMutation.variables?.resourceType === "agent" &&
+      membershipMutation.variables.resourceId === agent.id;
+    const agentStarPending = agentPending && membershipMutation.variables?.starred !== undefined;
+    const agentJoinLeavePending = agentPending && membershipMutation.variables?.starred === undefined;
+    const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
+    return (
+      <EntityRow
+        key={agent.id}
+        title={agent.name}
+        // Fixed (truncating) title width so the `meta` group starts at a
+        // constant x on every row — that's what makes the model + timestamp
+        // columns line up vertically. Agent names vary in width, so
+        // a content-sized title (`min-w-(--sz-7rem)`) shifted meta's start per row.
+        titleClassName="w-56"
+        subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
+        to={agentUrl(agent)}
+        className={cn(
+          "group",
+          agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
+          resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "text-foreground/55" : "",
+        )}
+        leading={hasInvalidOrgChain ? (
+          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
+        ) : (
+          <AgentStatusCapsule status={agent.status} />
+        )}
+        meta={
+          <div className="hidden xl:flex items-center gap-3">
+            <AgentMetaColumns
+              agent={agent}
+              environment={resolveRenderedEnvironment(agent.id)}
+              showEnvironment={showEnvironmentColumn}
+            />
+          </div>
+        }
+        trailing={
+          <div className="flex items-center gap-3">
+            <span className="sm:hidden">
+              {liveRunByAgent.has(agent.id) ? (
+                <LiveRunIndicator
+                  agentRef={agentRouteRef(agent)}
+                  runId={liveRunByAgent.get(agent.id)!.runId}
+                  liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+                />
+              ) : (
+                <AgentStatusBadge status={agent.status} />
+              )}
+            </span>
+            <div className="hidden sm:flex items-center gap-3">
+              {liveRunByAgent.has(agent.id) && (
+                <LiveRunIndicator
+                  agentRef={agentRouteRef(agent)}
+                  runId={liveRunByAgent.get(agent.id)!.runId}
+                  liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+                />
+              )}
+              <span className="w-20 flex justify-end">
+                <AgentStatusBadge status={agent.status} />
+              </span>
+            </div>
+            {/* Row actions mirror the agent detail page; stop the click
+                from bubbling to the row link so buttons don't navigate. */}
+            <div
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+            >
+              <AgentActionButtons
+                agent={agent}
+                companyId={selectedCompanyId}
+                runLabel="Run Heartbeat"
+                showStatus={false}
+              />
+            </div>
+            <MembershipAction
+              state={resourceMembershipState(membershipsQuery.data, "agent", agent.id)}
+              pending={agentJoinLeavePending}
+              pendingState={agentJoinLeavePending ? membershipMutation.variables?.state ?? null : null}
+              resourceName={agent.name}
+              onJoin={() => membershipMutation.mutate({
+                resourceType: "agent",
+                resourceId: agent.id,
+                resourceName: agent.name,
+                state: "joined",
+              })}
+              onLeave={() => membershipMutation.mutate({
+                resourceType: "agent",
+                resourceId: agent.id,
+                resourceName: agent.name,
+                state: "left",
+              })}
+            />
+            <StarToggle
+              size="row"
+              starred={agentStarred}
+              pending={agentStarPending}
+              resourceName={agent.name}
+              onToggle={(next) => membershipMutation.mutate({
+                resourceType: "agent",
+                resourceId: agent.id,
+                resourceName: agent.name,
+                starred: next,
+              })}
+            />
+          </div>
+        }
+      />
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -164,13 +404,16 @@ export function Agents() {
         <div className="flex items-center gap-2">
           {/* View toggle */}
           {!forceListView && (
-            <div className="flex items-center border border-border">
+            <div className="flex items-center border border-border" role="group" aria-label="View mode">
               <button
                 className={cn(
                   "p-1.5 transition-colors",
                   effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
                 onClick={() => setView("list")}
+                title="List view"
+                aria-label="List view"
+                aria-pressed={effectiveView === "list"}
               >
                 <List className="h-3.5 w-3.5" />
               </button>
@@ -180,6 +423,9 @@ export function Agents() {
                   effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
                 onClick={() => setView("org")}
+                title="Org chart view"
+                aria-label="Org chart view"
+                aria-pressed={effectiveView === "org"}
               >
                 <GitBranch className="h-3.5 w-3.5" />
               </button>
@@ -209,120 +455,20 @@ export function Agents() {
 
       {/* List view */}
       {effectiveView === "list" && filtered.length > 0 && (
-        <div className="border border-border">
-          {filtered.map((agent) => {
-            const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
-            return (
-              <EntityRow
-                key={agent.id}
-                title={agent.name}
-                // Fixed (truncating) title width so the `meta` group starts at a
-                // constant x on every row — that's what makes the model + timestamp
-                // columns line up vertically (PAP-86). Agent names vary in width, so
-                // a content-sized title (`min-w-[7rem]`) shifted meta's start per row.
-                titleClassName="w-56"
-                subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
-                to={agentUrl(agent)}
-                className={cn(
-                  "group",
-                  agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
-                  resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "text-foreground/55" : "",
-                )}
-                leading={hasInvalidOrgChain ? (
-                  <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
-                ) : (
-                  <AgentStatusCapsule status={agent.status} />
-                )}
-                meta={
-                  <div className="hidden xl:flex items-center gap-3">
-                    <AgentMetaColumns agent={agent} />
-                  </div>
-                }
-                trailing={
-                  <div className="flex items-center gap-3">
-                    <span className="sm:hidden">
-                      {liveRunByAgent.has(agent.id) ? (
-                        <LiveRunIndicator
-                          agentRef={agentRouteRef(agent)}
-                          runId={liveRunByAgent.get(agent.id)!.runId}
-                          liveCount={liveRunByAgent.get(agent.id)!.liveCount}
-                        />
-                      ) : (
-                        <AgentStatusBadge status={agent.status} />
-                      )}
-                    </span>
-                    <div className="hidden sm:flex items-center gap-3">
-                      {liveRunByAgent.has(agent.id) && (
-                        <LiveRunIndicator
-                          agentRef={agentRouteRef(agent)}
-                          runId={liveRunByAgent.get(agent.id)!.runId}
-                          liveCount={liveRunByAgent.get(agent.id)!.liveCount}
-                        />
-                      )}
-                      <span className="w-20 flex justify-end">
-                        <AgentStatusBadge status={agent.status} />
-                      </span>
-                    </div>
-                    {/* Row actions mirror the agent detail page; stop the click
-                        from bubbling to the row link so buttons don't navigate. */}
-                    <div
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                      }}
-                    >
-                      <AgentActionButtons
-                        agent={agent}
-                        companyId={selectedCompanyId}
-                        runLabel="Run Heartbeat"
-                        showStatus={false}
-                      />
-                    </div>
-                    <MembershipAction
-                      state={resourceMembershipState(membershipsQuery.data, "agent", agent.id)}
-                      pending={
-                        membershipMutation.isPending &&
-                        membershipMutation.variables?.resourceType === "agent" &&
-                        membershipMutation.variables.resourceId === agent.id
-                      }
-                      pendingState={
-                        membershipMutation.isPending &&
-                        membershipMutation.variables?.resourceType === "agent" &&
-                        membershipMutation.variables.resourceId === agent.id
-                          ? membershipMutation.variables.state
-                          : null
-                      }
-                      resourceName={agent.name}
-                      onJoin={() => membershipMutation.mutate({
-                        resourceType: "agent",
-                        resourceId: agent.id,
-                        resourceName: agent.name,
-                        state: "joined",
-                      })}
-                      onLeave={() => membershipMutation.mutate({
-                        resourceType: "agent",
-                        resourceId: agent.id,
-                        resourceName: agent.name,
-                        state: "left",
-                      })}
-                    />
-                  </div>
-                }
-              />
-            );
-          })}
+        <div>
+          {filtered.map(renderAgentRow)}
         </div>
       )}
 
       {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
+          No agents match the selected status.
         </p>
       )}
 
       {/* Org chart view */}
       {effectiveView === "org" && filteredOrg.length > 0 && (
-        <div className="border border-border py-1">
+        <div className="py-1">
           {filteredOrg.map((node) => (
             <OrgTreeNode
               key={node.id}
@@ -330,6 +476,9 @@ export function Agents() {
               depth={0}
               agentMap={agentMap}
               liveRunByAgent={liveRunByAgent}
+              environmentByAgentId={environmentByAgentId}
+              environmentDataLoading={environmentDataLoading}
+              showEnvironment={showEnvironmentColumn}
               tab={tab}
               memberships={membershipsQuery.data}
               membershipMutation={membershipMutation}
@@ -340,7 +489,7 @@ export function Agents() {
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
+          No agents match the selected status.
         </p>
       )}
 
@@ -358,6 +507,9 @@ function OrgTreeNode({
   depth,
   agentMap,
   liveRunByAgent,
+  environmentByAgentId,
+  environmentDataLoading,
+  showEnvironment,
   tab,
   memberships,
   membershipMutation,
@@ -366,6 +518,9 @@ function OrgTreeNode({
   depth: number;
   agentMap: Map<string, Agent>;
   liveRunByAgent: Map<string, { runId: string; liveCount: number }>;
+  environmentByAgentId: Map<string, EnvironmentDescriptor>;
+  environmentDataLoading: boolean;
+  showEnvironment: boolean;
   tab: FilterTab;
   memberships: ReturnType<typeof useResourceMemberships>["data"];
   membershipMutation: ReturnType<typeof useResourceMembershipMutation>;
@@ -376,13 +531,16 @@ function OrgTreeNode({
   const pending = membershipMutation.isPending &&
     membershipMutation.variables?.resourceType === "agent" &&
     membershipMutation.variables.resourceId === node.id;
+  const starPending = pending && membershipMutation.variables?.starred !== undefined;
+  const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
+  const starred = isStarred(memberships, "agent", node.id);
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
       <Link
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
         className={cn(
-          "group flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit",
+          "group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit",
           agent?.pausedAt && tab !== "paused" && "opacity-50",
           membershipState === "left" && "text-foreground/55",
         )}
@@ -392,7 +550,7 @@ function OrgTreeNode({
         ) : (
           <AgentStatusCapsule status={node.status} />
         )}
-        <div className="flex-1 min-w-[7rem]">
+        <div className="flex-1 min-w-(--sz-7rem)">
           <span className="text-sm font-medium">{node.name}</span>
           <span className="text-xs text-muted-foreground ml-2">
             {roleLabels[node.role] ?? node.role}
@@ -421,7 +579,15 @@ function OrgTreeNode({
             )}
             {agent && (
               <div className="hidden xl:flex items-center gap-3">
-                <AgentMetaColumns agent={agent} />
+                <AgentMetaColumns
+                  agent={agent}
+                  environment={
+                    environmentDataLoading
+                      ? loadingEnvironmentDescriptor
+                      : environmentByAgentId.get(agent.id) ?? localEnvironmentDescriptor
+                  }
+                  showEnvironment={showEnvironment}
+                />
               </div>
             )}
             <span className="w-20 flex justify-end">
@@ -430,8 +596,8 @@ function OrgTreeNode({
           </div>
           <MembershipAction
             state={membershipState}
-            pending={pending}
-            pendingState={pending ? membershipMutation.variables?.state : null}
+            pending={joinLeavePending}
+            pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
             resourceName={node.name}
             onJoin={() => membershipMutation.mutate({
               resourceType: "agent",
@@ -446,10 +612,22 @@ function OrgTreeNode({
               state: "left",
             })}
           />
+          <StarToggle
+            size="row"
+            starred={starred}
+            pending={starPending}
+            resourceName={node.name}
+            onToggle={(next) => membershipMutation.mutate({
+              resourceType: "agent",
+              resourceId: node.id,
+              resourceName: node.name,
+              starred: next,
+            })}
+          />
         </div>
       </Link>
       {node.reports && node.reports.length > 0 && (
-        <div className="border-l border-border/50 ml-4">
+        <div className="border-l border-border ml-4">
           {node.reports.map((child) => (
             <OrgTreeNode
               key={child.id}
@@ -457,6 +635,9 @@ function OrgTreeNode({
               depth={depth + 1}
               agentMap={agentMap}
               liveRunByAgent={liveRunByAgent}
+              environmentByAgentId={environmentByAgentId}
+              environmentDataLoading={environmentDataLoading}
+              showEnvironment={showEnvironment}
               tab={tab}
               memberships={memberships}
               membershipMutation={membershipMutation}
@@ -475,7 +656,15 @@ function OrgTreeNode({
  * heartbeat is single-line (`whitespace-nowrap`) and wide enough for a full
  * date like "Apr 30, 2026".
  */
-function AgentMetaColumns({ agent }: { agent: Agent }) {
+function AgentMetaColumns({
+  agent,
+  environment,
+  showEnvironment,
+}: {
+  agent: Agent;
+  environment: EnvironmentDescriptor;
+  showEnvironment: boolean;
+}) {
   const model = getConfiguredModel(agent);
   const adapterLabel = getAdapterLabel(agent.adapterType);
   return (
@@ -487,10 +676,20 @@ function AgentMetaColumns({ agent }: { agent: Agent }) {
         >
           {model ?? "—"}
         </div>
-        <div className="truncate font-mono text-[11px] text-muted-foreground/70" title={adapterLabel}>
+        <div className="truncate font-mono text-(length:--text-micro) text-muted-foreground/70" title={adapterLabel}>
           {adapterLabel}
         </div>
       </div>
+      {showEnvironment && (
+        <div className="w-44 min-w-0 leading-tight">
+          <div className="truncate text-xs text-muted-foreground" title={environment.title}>
+            {environment.label}
+          </div>
+          <div className="truncate text-(length:--text-micro) text-muted-foreground/70">
+            {environment.detail}
+          </div>
+        </div>
+      )}
       <span className="w-24 whitespace-nowrap text-right text-xs text-muted-foreground">
         {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
       </span>
@@ -517,7 +716,7 @@ function LiveRunIndicator({
         <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
         <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
       </span>
-      <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+      <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">
         Live{liveCount > 1 ? ` (${liveCount})` : ""}
       </span>
     </Link>

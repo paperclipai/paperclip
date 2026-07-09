@@ -1,7 +1,8 @@
-export type HeartbeatRunOutcome = "succeeded" | "failed" | "cancelled" | "timed_out";
+export type HeartbeatRunOutcome = "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out";
 
 export type HeartbeatRunStopReason =
   | "completed"
+  | "interrupted"
   | "timeout"
   | "cancelled"
   | "budget_paused"
@@ -83,6 +84,7 @@ export function inferHeartbeatRunStopReason(input: {
   errorMessage?: string | null;
 }): HeartbeatRunStopReason {
   if (input.outcome === "succeeded") return "completed";
+  if (input.outcome === "interrupted") return "interrupted";
   const maxTurnStopReason = normalizeMaxTurnStopReason(input.errorCode);
   if (maxTurnStopReason) return maxTurnStopReason;
   if (input.outcome === "timed_out") return "timeout";

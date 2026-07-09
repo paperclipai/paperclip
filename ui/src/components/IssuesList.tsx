@@ -3,19 +3,20 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
-import { Link } from "@/lib/router";
+import { Link, useNavigate } from "@/lib/router";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
+import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
 import {
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
 } from "../lib/keyboardShortcuts";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
-import { createIssueDetailPath, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
+import { createIssueDetailPath, rememberIssueDetailLocationState, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
 import {
   buildSubIssueProgressSummary,
   shouldRenderSubIssueProgressSummary,
@@ -61,7 +62,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, Columns3, User, Search, CircleSlash2, ChevronsDownUp, PanelTopClose, RotateCcw, ListCollapse } from "lucide-react";
+import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, User, Search, CircleSlash2, ChevronsDownUp, PanelTopClose, RotateCcw, ListCollapse,
+  SquareKanban,
+} from "lucide-react";
 import {
   KanbanBoard,
   KANBAN_BOARD_HIGH_VOLUME_THRESHOLD,
@@ -71,11 +74,15 @@ import {
   type KanbanColumnPageSize,
 } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
+import { getInboxKeyboardSelectionIndex } from "../lib/inbox";
+import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
+import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
-import { ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
+import { deriveOriginatingActor, ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
+import { Badge } from "@/components/ui/badge";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
@@ -145,7 +152,7 @@ const defaultViewState: IssueViewState = {
   collapsedGroups: [],
   collapsedParents: [],
   boardCardDensity: "auto",
-  boardColdLaneMode: "auto",
+  boardColdLaneMode: "expanded",
   boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
 };
 
@@ -595,6 +602,9 @@ function SubIssueProgressSummaryStrip({
   );
 }
 
+// Mobile-only indent for nested task rows (desktop uses IssueRow treeGuides).
+const MOBILE_TREE_INDENT = ["", "pl-4 sm:pl-0", "pl-8 sm:pl-0", "pl-12 sm:pl-0", "pl-16 sm:pl-0"];
+
 export function IssuesList({
   issues,
   isLoading,
@@ -625,6 +635,24 @@ export function IssuesList({
   onUpdateIssue,
 }: IssuesListProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const navigate = useNavigate();
+  const { keyboardShortcutsEnabled } = useGeneralSettings();
+  // Keyboard selection for the list view (mirrors the inbox). Hover moves the
+  // selection only after real pointer movement, so keyboard-driven scrolling
+  // doesn't hand the selection to whatever row lands under the cursor.
+  const [selectedNavIssueId, setSelectedNavIssueId] = useState<string | null>(null);
+  const pointerMovedSinceKeyNavRef = useRef(true);
+  useEffect(() => {
+    const handlePointerMove = () => {
+      pointerMovedSinceKeyNavRef.current = true;
+    };
+    window.addEventListener("mousemove", handlePointerMove, { passive: true });
+    return () => window.removeEventListener("mousemove", handlePointerMove);
+  }, []);
+  const setNavSelectionFromPointer = useCallback((issueId: string) => {
+    if (!pointerMovedSinceKeyNavRef.current) return;
+    setSelectedNavIssueId(issueId);
+  }, []);
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
   const { data: session } = useQuery({
@@ -642,7 +670,9 @@ export function IssuesList({
     retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const experimentalSettingsLoaded = experimentalSettings !== undefined;
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
+  const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true;
 
   // Scope the storage key per company so folding/view state is independent across companies.
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
@@ -691,6 +721,11 @@ export function IssuesList({
       return next;
     });
   }, [scopedKey]);
+
+  useEffect(() => {
+    if (!experimentalSettingsLoaded || externalObjectsEnabled || viewState.externalObjectStatuses.length === 0) return;
+    updateView({ externalObjectStatuses: [] });
+  }, [experimentalSettingsLoaded, externalObjectsEnabled, updateView, viewState.externalObjectStatuses.length]);
 
   // Prune stale IDs from collapsedParents whenever the issue list changes.
   // Deleted or reassigned issues leave orphan IDs in localStorage; this keeps
@@ -967,32 +1002,58 @@ export function IssuesList({
     [boardIssueQueries, searchWithinLoadedIssues, viewState.viewMode],
   );
 
-  const filtered = useMemo(() => {
+  const sourceIssues = useMemo(() => {
     const useRemoteSearch = normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues;
-    const sourceIssues = boardIssues ?? (useRemoteSearch ? searchedIssues : issues);
-    const searchScopedIssues = normalizedIssueSearch.length > 0 && searchWithinLoadedIssues
+    return boardIssues ?? (useRemoteSearch ? searchedIssues : issues);
+  }, [boardIssues, issues, normalizedIssueSearch, searchedIssues, searchWithinLoadedIssues]);
+
+  const searchScopedIssues = useMemo(
+    () => normalizedIssueSearch.length > 0 && searchWithinLoadedIssues
       ? sourceIssues.filter((issue) => issueMatchesLocalSearch(issue, normalizedIssueSearch))
-      : sourceIssues;
+      : sourceIssues,
+    [normalizedIssueSearch, searchWithinLoadedIssues, sourceIssues],
+  );
+  const hasExternalObjectStatusFilters = viewState.externalObjectStatuses.length > 0;
+  const issueIdsForExternalObjectSummaries = useMemo(
+    () => (viewState.viewMode === "list" || hasExternalObjectStatusFilters
+      ? searchScopedIssues.map((issue) => issue.id)
+      : []),
+    [hasExternalObjectStatusFilters, searchScopedIssues, viewState.viewMode],
+  );
+  const {
+    summaries: externalObjectSummaryByIssueId,
+    isLoading: externalObjectSummariesLoading,
+    isReady: externalObjectSummariesReady,
+  } = useIssueExternalObjectSummaries(
+    selectedCompanyId,
+    issueIdsForExternalObjectSummaries,
+  );
+  const issueFilterContext = useMemo(() => ({
+    ...issueFilterWorkspaceContext,
+    externalObjectSummaryByIssueId,
+    externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
+  }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId, issueFilterWorkspaceContext]);
+  const externalObjectFilterLoading = hasExternalObjectStatusFilters
+    && externalObjectSummariesLoading
+    && !externalObjectSummariesReady;
+
+  const filtered = useMemo(() => {
     const filteredByControls = applyIssueFilters(
       searchScopedIssues,
       viewState,
       currentUserId,
       enableRoutineVisibilityFilter,
       liveIssueIds,
-      issueFilterWorkspaceContext,
+      issueFilterContext,
     );
     return sortIssues(filteredByControls, viewState);
   }, [
-    boardIssues,
-    issues,
-    searchedIssues,
-    searchWithinLoadedIssues,
+    searchScopedIssues,
     viewState,
-    normalizedIssueSearch,
     currentUserId,
     enableRoutineVisibilityFilter,
     liveIssueIds,
-    issueFilterWorkspaceContext,
+    issueFilterContext,
   ]);
 
   const progressSummary = useMemo(
@@ -1158,6 +1219,109 @@ export function IssuesList({
     companyUserLabelMap,
     projectById,
   ]);
+
+  // Flattened visible row order (groups -> tree DFS, skipping collapsed
+  // groups/parents) — must match render order below for keyboard traversal.
+  const flatNavIssues = useMemo(() => {
+    if (viewState.viewMode !== "list") return [] as Issue[];
+    const out: Issue[] = [];
+    for (const group of groupedContent) {
+      if (group.label && viewState.collapsedGroups.includes(group.key)) continue;
+      const { roots, childMap } = viewState.nestingEnabled
+        ? buildIssueTree(group.items)
+        : { roots: group.items, childMap: new Map<string, Issue[]>() };
+      const walk = (issue: Issue) => {
+        out.push(issue);
+        if (!viewState.collapsedParents.includes(issue.id)) {
+          for (const child of childMap.get(issue.id) ?? []) walk(child);
+        }
+      };
+      for (const root of roots) walk(root);
+    }
+    return out;
+  }, [
+    groupedContent,
+    viewState.viewMode,
+    viewState.collapsedGroups,
+    viewState.collapsedParents,
+    viewState.nestingEnabled,
+  ]);
+
+  const listNavStateRef = useRef({ flatNavIssues, selectedNavIssueId, viewMode: viewState.viewMode, issueLinkState });
+  listNavStateRef.current = { flatNavIssues, selectedNavIssueId, viewMode: viewState.viewMode, issueLinkState };
+
+  const findSelectedNavRowLink = useCallback((issueId: string) => {
+    const row = rootRef.current?.querySelector(`[data-issue-row-id="${CSS.escape(issueId)}"]`);
+    const link = row?.querySelector(":scope > [data-inbox-issue-link]");
+    return link instanceof HTMLElement ? link : null;
+  }, []);
+
+  useEffect(() => {
+    if (!keyboardShortcutsEnabled) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      const target = e.target;
+      if (
+        !(target instanceof HTMLElement) ||
+        isKeyboardShortcutTextInputTarget(target) ||
+        hasBlockingShortcutDialog(document) ||
+        e.metaKey ||
+        e.ctrlKey ||
+        e.altKey
+      ) {
+        return;
+      }
+      const st = listNavStateRef.current;
+      if (st.viewMode !== "list" || st.flatNavIssues.length === 0) return;
+      const currentIndex = st.selectedNavIssueId
+        ? st.flatNavIssues.findIndex((issue) => issue.id === st.selectedNavIssueId)
+        : -1;
+      switch (e.key) {
+        case "j":
+        case "ArrowDown":
+        case "k":
+        case "ArrowUp": {
+          e.preventDefault();
+          pointerMovedSinceKeyNavRef.current = false;
+          const direction = e.key === "j" || e.key === "ArrowDown" ? "next" : "previous";
+          const nextIndex = getInboxKeyboardSelectionIndex(currentIndex, st.flatNavIssues.length, direction);
+          const nextIssue = st.flatNavIssues[nextIndex];
+          if (!nextIssue) break;
+          setSelectedNavIssueId(nextIssue.id);
+          // The list renders progressively; make sure the selected row is
+          // within the render budget so the band mounts and can scroll into
+          // view (the +1 keeps the next row visible as a scroll cue).
+          setRenderedIssueRowLimit((current) => Math.max(current, nextIndex + 2));
+          break;
+        }
+        case "Enter": {
+          if (currentIndex < 0) return;
+          const issue = st.flatNavIssues[currentIndex];
+          if (!issue) return;
+          e.preventDefault();
+          // Navigate from the entry data (like the inbox) rather than the DOM
+          // row — the selected row may sit past the mounted render batch.
+          const pathId = issue.identifier ?? issue.id;
+          const detailState = withIssueDetailHeaderSeed(st.issueLinkState, issue);
+          rememberIssueDetailLocationState(pathId, detailState);
+          navigate(createIssueDetailPath(pathId), { state: detailState });
+          break;
+        }
+        default:
+          return;
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [keyboardShortcutsEnabled, navigate]);
+
+  // Keep the keyboard selection visible while navigating. Depends on the
+  // render budget too: a selection past the mounted batch scrolls once its
+  // row mounts.
+  useEffect(() => {
+    if (!selectedNavIssueId) return;
+    findSelectedNavRowLink(selectedNavIssueId)?.scrollIntoView({ block: "nearest" });
+  }, [findSelectedNavRowLink, renderedIssueRowLimit, selectedNavIssueId]);
 
   useEffect(() => {
     if (viewState.viewMode !== "list") return;
@@ -1354,20 +1518,24 @@ export function IssuesList({
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
           {/* View mode toggle */}
-          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1">
+          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1" role="group" aria-label="View mode">
             <button
-              className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              className={`flex h-8 w-8 items-center justify-center transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
               title="List view"
+              aria-label="List view"
+              aria-pressed={viewState.viewMode === "list"}
             >
               <List className="h-3.5 w-3.5" />
             </button>
             <button
-              className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              className={`flex h-8 w-8 items-center justify-center transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
               title="Board view"
+              aria-label="Board view"
+              aria-pressed={viewState.viewMode === "board"}
             >
-              <Columns3 className="h-3.5 w-3.5" />
+              <SquareKanban className="h-3.5 w-3.5" />
             </button>
           </div>
 
@@ -1450,7 +1618,7 @@ export function IssuesList({
                 className="h-8 w-8 shrink-0"
                 onClick={() => updateView({
                   boardCardDensity: "auto",
-                  boardColdLaneMode: "auto",
+                  boardColdLaneMode: "expanded",
                   boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
                 })}
                 disabled={!boardDensityCustomized}
@@ -1473,12 +1641,14 @@ export function IssuesList({
           <IssueFiltersPopover
             state={viewState}
             onChange={updateView}
+            buttonVariant="outline"
             activeFilterCount={activeFilterCount}
             agents={agents}
             creators={creatorOptions}
             projects={projects?.map((project) => ({ id: project.id, name: project.name }))}
             labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
             currentUserId={currentUserId}
+            enableExternalObjectFilters={externalObjectsEnabled}
             enableRoutineVisibilityFilter={enableRoutineVisibilityFilter}
             iconOnly
             workspaces={isolatedWorkspacesEnabled ? workspaceOptions : undefined}
@@ -1541,7 +1711,7 @@ export function IssuesList({
                   {([
                     ["status", "Status"],
                     ["priority", "Priority"],
-                    ["assignee", "Assignee"],
+                    ["assignee", "Responsible"],
                     ["project", "Project"],
                     ["workspace", "Workspace"],
                     ["parent", "Parent Task"],
@@ -1565,7 +1735,7 @@ export function IssuesList({
         </div>
       </div>
 
-      {isLoading && <PageSkeleton variant="issues-list" />}
+      {(isLoading || externalObjectFilterLoading) && <PageSkeleton variant="issues-list" />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {!searchWithinLoadedIssues && normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
@@ -1577,7 +1747,7 @@ export function IssuesList({
           Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} tasks. Refine filters or search to reveal the rest.
         </p>
       )}
-      {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
+      {!isLoading && !externalObjectFilterLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
           message="No tasks match the current filters or search."
@@ -1666,6 +1836,10 @@ export function IssuesList({
                     currentUserId,
                     companyUserLabelMap,
                   ) ?? assigneeUserProfile?.label ?? null;
+                  const originatingActor = deriveOriginatingActor(issue);
+                  const originatingUserId = originatingActor?.kind === "user" ? originatingActor.id : null;
+                  const originatingViaAgentId =
+                    originatingActor?.kind === "user" ? originatingActor.viaAgentId ?? null : null;
                   const toggleCollapse = (e: { preventDefault: () => void; stopPropagation: () => void }) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -1720,7 +1894,7 @@ export function IssuesList({
                         target.scrollIntoView({ behavior: "smooth", block: "nearest" });
                         target.focus?.();
                       }}
-                      className="inline-flex items-center rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-100/80 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
+                      className="inline-flex items-center rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-(length:--text-nano) font-medium text-amber-700 hover:bg-amber-100/80 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
                       title={firstVisibleBlockerTitle}
                       aria-label={firstVisibleBlockerTitle}
                     >
@@ -1731,24 +1905,31 @@ export function IssuesList({
                   return (
                     <div
                       key={issue.id}
-                      style={{
-                        ...(depth > 0 ? { paddingLeft: `${depth * 16}px` } : {}),
-                        ...(useDeferredRowRendering
-                          ? {
-                            contentVisibility: "auto",
-                            containIntrinsicSize: "44px",
-                          }
-                          : {}),
-                      }}
+                      data-issue-row-id={issue.id}
+                      // Desktop indentation comes from IssueRow's treeGuides
+                      // (vertical connector slots); mobile keeps a plain
+                      // padding indent (guides are sm-only).
+                      className={depth > 0 ? MOBILE_TREE_INDENT[Math.min(depth, MOBILE_TREE_INDENT.length - 1)] : undefined}
+                      style={useDeferredRowRendering
+                        ? {
+                          contentVisibility: "auto",
+                          containIntrinsicSize: "44px",
+                        }
+                        : undefined}
                     >
                       <IssueRow
                         issue={issue}
                         issueLinkState={issueLinkState}
+                        selected={selectedNavIssueId === issue.id}
+                        onMouseEnter={() => setNavSelectionFromPointer(issue.id)}
+                        treeGuides={depth}
+                        hideDivider={hasChildren && isExpanded}
                         checklistStepNumber={checklistStepNumber}
                         checklistCurrentStep={checklistMeta?.currentStepIssueId === issue.id}
                         checklistDependencyChips={checklistDependencyChips}
                         checklistRowId={checklistRowId}
                         titleClassName={doneRowTitleClass}
+                        externalObjectSummary={externalObjectSummaryByIssueId.get(issue.id) ?? null}
                         titleSuffix={(
                           <>
                             {hasChildren && !isExpanded ? (
@@ -1758,33 +1939,33 @@ export function IssuesList({
                             ) : null}
                             {issueBadge ? (
                               issueBadge === "Paused" ? (
-                                <span
-                                  className={cn("ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium", statusBadge.paused)}
+                                <Badge variant="ghost"
+                                  className={cn("ml-1.5 px-1.5 text-(length:--text-nano)", statusBadge.paused)}
                                   aria-label="Paused"
                                   title="Paused"
                                 >
                                   <CircleSlash2 className="h-3 w-3" />
                                   Paused
-                                </span>
+                                </Badge>
                               ) : (
-                                <span className="ml-1.5 inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+                                <Badge variant="outline" className="ml-1.5 border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) text-amber-700 dark:text-amber-300">
                                   {issueBadge}
-                                </span>
+                                </Badge>
                               )
                             ) : null}
                             {isSuccessfulRunHandoffRequired(issue) ? (
-                              <span
-                                className="ml-1.5 inline-flex items-center gap-1 rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
+                              <Badge variant="outline"
+                                className="ml-1.5 border-amber-400/45 bg-amber-50/60 px-1.5 text-(length:--text-nano) text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
                                 aria-label="Needs next step"
                                 title="This task needs a next step"
                               >
                                 <CircleDot className="h-3 w-3" />
                                 Needs next step
-                              </span>
+                              </Badge>
                             ) : null}
                           </>
                         )}
-                        className={isMutedIssue ? "opacity-70" : undefined}
+                        className={cn(isMutedIssue && "opacity-70", selectedNavIssueId === issue.id && "bg-accent/50")}
                         mobileLeading={
                           hasChildren ? (
                             <button type="button" data-slot="icon-button" onClick={toggleCollapse}>
@@ -1792,7 +1973,7 @@ export function IssuesList({
                             </button>
                           ) : (
                             <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                              <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                              <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                             </span>
                           )
                         }
@@ -1819,7 +2000,7 @@ export function IssuesList({
                               checklistStepNumber={checklistStepNumber}
                               statusSlot={(
                                 <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                                  <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                                  <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                                 </span>
                               )}
                             />
@@ -1843,6 +2024,10 @@ export function IssuesList({
                               assigneeName={agentName(issue.assigneeAgentId)}
                               assigneeUserName={assigneeUserLabel}
                               assigneeUserAvatarUrl={assigneeUserProfile?.image ?? null}
+                              creatorAgentName={agentName(issue.createdByAgentId)}
+                              creatorUserName={originatingUserId ? (companyUserProfileMap.get(originatingUserId)?.label ?? null) : null}
+                              creatorUserAvatarUrl={originatingUserId ? (companyUserProfileMap.get(originatingUserId)?.image ?? null) : null}
+                              viaAgentName={originatingViaAgentId ? agentName(originatingViaAgentId) : null}
                               currentUserId={currentUserId}
                               parentIdentifier={parentIssue?.identifier ?? null}
                               parentTitle={parentIssue?.title ?? null}
@@ -1860,7 +2045,7 @@ export function IssuesList({
                                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
                                     >
                                       {issue.assigneeAgentId && agentName(issue.assigneeAgentId) ? (
-                                        <Identity name={agentName(issue.assigneeAgentId)!} size="sm" className="min-w-0" />
+                                        <Identity name={agentName(issue.assigneeAgentId)!} size="sm" shape="square" className="min-w-0" />
                                       ) : issue.assigneeUserId ? (
                                         <Identity
                                           name={assigneeUserLabel ?? "User"}
@@ -1886,7 +2071,7 @@ export function IssuesList({
                                   >
                                     <input
                                       className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                                      placeholder="Search assignees..."
+                                      placeholder="Search responsible..."
                                       value={assigneeSearch}
                                       onChange={(e) => setAssigneeSearch(e.target.value)}
                                       autoFocus
@@ -1903,7 +2088,7 @@ export function IssuesList({
                                           assignIssue(issue.id, null, null);
                                         }}
                                       >
-                                        No assignee
+                                        No responsible
                                       </button>
                                       {currentUserId && (
                                         <button

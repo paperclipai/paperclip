@@ -72,6 +72,13 @@ describe("company routes", () => {
     expect(toCompanyRelativePath("/PAP/artifacts")).toBe("/artifacts");
   });
 
+  it("treats /timeline as a board route that needs a company prefix", () => {
+    expect(isBoardPathWithoutPrefix("/timeline")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/timeline")).toBeNull();
+    expect(applyCompanyPrefix("/timeline", "PAP")).toBe("/PAP/timeline");
+    expect(toCompanyRelativePath("/PAP/timeline")).toBe("/timeline");
+  });
+
   it("preserves artifact deep-link anchors when applying the company prefix", () => {
     expect(applyCompanyPrefix("/issues/PAP-10205#work-product-wp-1", "PAP")).toBe(
       "/PAP/issues/PAP-10205#work-product-wp-1",

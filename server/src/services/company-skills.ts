@@ -4,8 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companies, companySkillComments, companySkillStars, companySkillVersions, companySkills } from "@paperclipai/db";
-import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { agents as agentsTable, companies, companySkillComments, companySkillStars, companySkillVersions, companySkills } from "@paperclipai/db";
+import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import type { PaperclipDesiredSkillEntry, PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import type {
   AgentDesiredSkillEntry,
@@ -23,12 +23,17 @@ import type {
   CompanySkillDetail,
   CompanySkillFileDetail,
   CompanySkillFileInventoryEntry,
+  CompanySkillForkPrecheckResult,
   CompanySkillForkRequest,
+  CompanySkillForkResult,
+  CompanySkillForkReassignment,
+  CompanySkillForkSummary,
   CompanySkillImportResult,
   CompanySkillInstallCatalogRequest,
   CompanySkillInstallCatalogResult,
   CompanySkillListQuery,
   CompanySkillListItem,
+  CompanySkillOriginalSummary,
   CompanySkillProjectScanConflict,
   CompanySkillProjectScanRequest,
   CompanySkillProjectScanResult,
@@ -247,6 +252,8 @@ type SkillSourceMeta = {
   originVersion?: string;
   originSnapshotLocator?: string;
   installedHash?: string;
+  forkedByAgentId?: string | null;
+  forkedByUserId?: string | null;
   userModifiedAt?: string | null;
   updateHoldReason?: CompanySkillUpdateHoldReason | null;
   auditVerdict?: CompanySkillAuditVerdict;
@@ -282,6 +289,11 @@ type SkillActor = {
   type: "agent" | "user" | "system";
   agentId?: string | null;
   userId?: string | null;
+};
+
+type PlannedSkillReassignment = {
+  agentId: string;
+  reassignment: CompanySkillForkReassignment;
 };
 
 type RuntimeSkillSourceResolution =
@@ -939,6 +951,38 @@ async function collectLocalSkillInventory(
     .sort((left, right) => left.path.localeCompare(right.path));
 }
 
+function inventoryEntriesEqual(
+  left: CompanySkillFileInventoryEntry[],
+  right: CompanySkillFileInventoryEntry[],
+) {
+  if (left.length !== right.length) return false;
+  const normalize = (entries: CompanySkillFileInventoryEntry[]) =>
+    entries
+      .map((entry) => ({
+        path: normalizePortablePath(entry.path),
+        kind: entry.kind,
+      }))
+      .sort((leftEntry, rightEntry) => leftEntry.path.localeCompare(rightEntry.path));
+  const normalizedLeft = normalize(left);
+  const normalizedRight = normalize(right);
+  return normalizedLeft.every((entry, index) => {
+    const other = normalizedRight[index];
+    return other?.path === entry.path && other.kind === entry.kind;
+  });
+}
+
+function inferLocalSkillInventoryMode(
+  skill: Pick<CompanySkillRow, "sourceLocator" | "metadata">,
+): LocalSkillInventoryMode {
+  const metadata = isPlainRecord(skill.metadata) ? skill.metadata : null;
+  const sourceKind = asString(metadata?.sourceKind);
+  const workspaceCwd = asString(metadata?.workspaceCwd);
+  if (sourceKind === "project_scan" && workspaceCwd && skill.sourceLocator === workspaceCwd) {
+    return "project_root";
+  }
+  return "full";
+}
+
 export async function readLocalSkillImportFromDirectory(
   companyId: string,
   skillDir: string,
@@ -1022,8 +1066,9 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
 
   if (stat.isFile()) {
     const markdown = await fs.readFile(resolvedPath, "utf8");
+    const sourceDir = path.dirname(resolvedPath);
     const parsed = parseFrontmatterMarkdown(markdown);
-    const slug = deriveImportedSkillSlug(parsed.frontmatter, path.basename(path.dirname(resolvedPath)));
+    const slug = deriveImportedSkillSlug(parsed.frontmatter, path.basename(sourceDir));
     const parsedMetadata = isPlainRecord(parsed.frontmatter.metadata) ? parsed.frontmatter.metadata : null;
     const skillKey = readCanonicalSkillKey(parsed.frontmatter, parsedMetadata);
     const metadata = {
@@ -1031,14 +1076,12 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
       ...(parsedMetadata ?? {}),
       sourceKind: "local_path",
     };
-    const inventory: CompanySkillFileInventoryEntry[] = [
-      { path: "SKILL.md", kind: "skill" },
-    ];
+    const inventory = await collectLocalSkillInventory(sourceDir, "project_root");
     return [{
       key: deriveCanonicalSkillKey(companyId, {
         slug,
         sourceType: "local_path",
-        sourceLocator: path.dirname(resolvedPath),
+        sourceLocator: sourceDir,
         metadata,
       }),
       slug,
@@ -1047,7 +1090,7 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
       markdown,
       packageDir: path.dirname(resolvedPath),
       sourceType: "local_path",
-      sourceLocator: path.dirname(resolvedPath),
+      sourceLocator: sourceDir,
       sourceRef: null,
       trustLevel: deriveTrustLevel(inventory),
       compatibility: "compatible",
@@ -1237,6 +1280,18 @@ async function readUrlSkillImports(
   throw unprocessable("Unsupported skill source. Use a local path or URL.");
 }
 
+function normalizeFileInventory(row: { fileInventory: unknown }): CompanySkillFileInventoryEntry[] {
+  return Array.isArray(row.fileInventory)
+    ? row.fileInventory.flatMap((entry) => {
+      if (!isPlainRecord(entry)) return [];
+      return [{
+        path: String(entry.path ?? ""),
+        kind: (String(entry.kind ?? "other") as CompanySkillFileInventoryEntry["kind"]),
+      }];
+    })
+    : [];
+}
+
 function toCompanySkill(row: CompanySkillRow): CompanySkill {
   return {
     ...row,
@@ -1246,15 +1301,7 @@ function toCompanySkill(row: CompanySkillRow): CompanySkill {
     sourceRef: row.sourceRef ?? null,
     trustLevel: row.trustLevel as CompanySkillTrustLevel,
     compatibility: row.compatibility as CompanySkillCompatibility,
-    fileInventory: Array.isArray(row.fileInventory)
-      ? row.fileInventory.flatMap((entry) => {
-        if (!isPlainRecord(entry)) return [];
-        return [{
-          path: String(entry.path ?? ""),
-          kind: (String(entry.kind ?? "other") as CompanySkillFileInventoryEntry["kind"]),
-        }];
-      })
-      : [],
+    fileInventory: normalizeFileInventory(row),
     iconUrl: row.iconUrl ?? null,
     color: row.color ?? null,
     tagline: row.tagline ?? null,
@@ -1282,15 +1329,7 @@ function toCompanySkillListRow(row: CompanySkillListDbRow): CompanySkillListRow 
     sourceRef: row.sourceRef ?? null,
     trustLevel: row.trustLevel as CompanySkillTrustLevel,
     compatibility: row.compatibility as CompanySkillCompatibility,
-    fileInventory: Array.isArray(row.fileInventory)
-      ? row.fileInventory.flatMap((entry) => {
-        if (!isPlainRecord(entry)) return [];
-        return [{
-          path: String(entry.path ?? ""),
-          kind: (String(entry.kind ?? "other") as CompanySkillFileInventoryEntry["kind"]),
-        }];
-      })
-      : [],
+    fileInventory: normalizeFileInventory(row),
     iconUrl: row.iconUrl ?? null,
     color: row.color ?? null,
     tagline: row.tagline ?? null,
@@ -2036,15 +2075,58 @@ function enrichSkill(
   usedByAgents: CompanySkillUsageAgent[] = [],
   currentVersion: CompanySkillVersion | null = null,
   starredByCurrentActor = false,
+  existingForks: CompanySkillForkSummary[] = [],
 ) {
   const source = deriveSkillSourceInfo(skill);
   return {
     ...skill,
     attachedAgentCount,
     usedByAgents,
+    existingForks,
     currentVersion,
     starredByCurrentActor,
     ...source,
+  };
+}
+
+function summarizeOriginalSkill(skill: CompanySkill): CompanySkillOriginalSummary {
+  return {
+    id: skill.id,
+    name: skill.name,
+    slug: skill.slug,
+    sourceType: skill.sourceType,
+    sourceLocator: skill.sourceLocator,
+    sourceRef: skill.sourceRef,
+  };
+}
+
+function forkCreatedByActor(skill: CompanySkill, actor?: SkillActor | null) {
+  const metadata = getSkillMeta(skill);
+  if (actor?.type === "agent" && actor.agentId) {
+    return asString(metadata.forkedByAgentId) === actor.agentId;
+  }
+  if (actor?.type === "user" && actor.userId) {
+    return asString(metadata.forkedByUserId) === actor.userId;
+  }
+  return false;
+}
+
+function summarizeForkSkill(
+  skill: CompanySkill,
+  actor: SkillActor | null | undefined,
+  versionCount: number,
+): CompanySkillForkSummary {
+  const metadata = getSkillMeta(skill);
+  return {
+    ...summarizeOriginalSkill(skill),
+    key: skill.key,
+    forkedFromSkillId: skill.forkedFromSkillId,
+    forkedFromCompanyId: skill.forkedFromCompanyId,
+    currentVersionId: skill.currentVersionId,
+    createdByCurrentActor: forkCreatedByActor(skill, actor),
+    diverged: versionCount > 1 || Boolean(asString(metadata.userModifiedAt)),
+    createdAt: skill.createdAt,
+    updatedAt: skill.updatedAt,
   };
 }
 
@@ -2137,6 +2219,8 @@ export function companySkillService(db: Db) {
         slug: companySkills.slug,
         sourceType: companySkills.sourceType,
         sourceLocator: companySkills.sourceLocator,
+        trustLevel: companySkills.trustLevel,
+        fileInventory: companySkills.fileInventory,
         metadata: companySkills.metadata,
       })
       .from(companySkills)
@@ -2144,6 +2228,8 @@ export function companySkillService(db: Db) {
     const skills = rows.map((row) => ({
       ...row,
       sourceType: row.sourceType as CompanySkillSourceType,
+      trustLevel: row.trustLevel as CompanySkillTrustLevel,
+      fileInventory: normalizeFileInventory(row),
       metadata: isPlainRecord(row.metadata) ? row.metadata : null,
     }));
     const missingIds = new Set(await findMissingLocalSkillIds(skills));
@@ -2152,11 +2238,23 @@ export function companySkillService(db: Db) {
       if (skill.sourceType !== "local_path") continue;
 
       if (!missingIds.has(skill.id)) {
-        if (getMissingSourceMarker(skill.metadata)) {
+        const metadata = getMissingSourceMarker(skill.metadata)
+          ? withoutMissingSourceMarker(skill.metadata)
+          : skill.metadata;
+        const sourceLocator = asString(skill.sourceLocator);
+        const nextInventory = sourceLocator
+          ? await collectLocalSkillInventory(sourceLocator, inferLocalSkillInventoryMode(skill)).catch(() => null)
+          : null;
+        const nextTrustLevel = nextInventory ? deriveTrustLevel(nextInventory) : skill.trustLevel;
+        const inventoryChanged = nextInventory ? !inventoryEntriesEqual(skill.fileInventory, nextInventory) : false;
+        const metadataChanged = JSON.stringify(metadata ?? {}) !== JSON.stringify(skill.metadata ?? {});
+        if (inventoryChanged || metadataChanged || nextTrustLevel !== skill.trustLevel) {
           await db
             .update(companySkills)
             .set({
-              metadata: withoutMissingSourceMarker(skill.metadata),
+              ...(nextInventory ? { fileInventory: serializeFileInventory(nextInventory) } : {}),
+              trustLevel: nextTrustLevel,
+              metadata,
               updatedAt: new Date(),
             })
             .where(eq(companySkills.id, skill.id));
@@ -2452,18 +2550,64 @@ export function companySkillService(db: Db) {
     }));
   }
 
+  async function versionCount(companyId: string, skillId: string) {
+    const [{ value }] = await db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(companySkillVersions)
+      .where(and(eq(companySkillVersions.companyId, companyId), eq(companySkillVersions.companySkillId, skillId)));
+    return Number(value ?? 0);
+  }
+
+  async function existingForkSummaries(
+    companyId: string,
+    sourceSkillId: string,
+    actor?: SkillActor | null,
+  ): Promise<CompanySkillForkSummary[]> {
+    const rows = await db
+      .select(selectCompanySkillColumns())
+      .from(companySkills)
+      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.forkedFromSkillId, sourceSkillId)))
+      .orderBy(desc(companySkills.updatedAt), asc(companySkills.name));
+    const summaries: CompanySkillForkSummary[] = [];
+    for (const row of rows) {
+      const skill = toCompanySkill(row);
+      summaries.push(summarizeForkSkill(skill, actor, await versionCount(companyId, skill.id)));
+    }
+    return summaries;
+  }
+
   async function detail(companyId: string, id: string, actor?: SkillActor | null): Promise<CompanySkillDetail | null> {
     await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, id);
     if (!skill) return null;
     const usedByAgents = await usage(companyId, skill.key);
+    const existingForks = await existingForkSummaries(companyId, skill.id, actor);
     return enrichSkill(
       skill,
       usedByAgents.length,
       usedByAgents,
       await getCurrentVersion(skill),
       await isStarredByActor(companyId, id, actor),
+      existingForks,
     );
+  }
+
+  async function forkPrecheck(
+    companyId: string,
+    skillId: string,
+    actor?: SkillActor | null,
+  ): Promise<CompanySkillForkPrecheckResult | null> {
+    await ensureSkillInventoryCurrent(companyId);
+    const skill = await getById(companyId, skillId);
+    if (!skill) return null;
+    const usedByAgents = await usage(companyId, skill.key);
+    return {
+      skillId: skill.id,
+      original: summarizeOriginalSkill(skill),
+      agentUsageCount: usedByAgents.length,
+      usedByAgents,
+      existingForks: await existingForkSummaries(companyId, skill.id, actor),
+    };
   }
 
   async function collectVersionFileInventory(
@@ -2716,12 +2860,136 @@ export function companySkillService(db: Db) {
     return toCompanySkillComment(row);
   }
 
+  async function planSkillReassignments(
+    companyId: string,
+    source: CompanySkill,
+    forkKey: string,
+    reassignAgentIds: string[] | undefined,
+  ): Promise<PlannedSkillReassignment[]> {
+    const requestedAgentIds = Array.from(new Set(reassignAgentIds ?? []));
+    if (requestedAgentIds.length === 0) return [];
+
+    const skills = await listReferenceTargets(companyId);
+    const agentRows = await agents.list(companyId, { includeTerminated: true });
+    const byId = new Map(agentRows.map((agent) => [agent.id, agent]));
+    const missingAgentIds = requestedAgentIds.filter((agentId) => !byId.has(agentId));
+    if (missingAgentIds.length > 0) {
+      throw notFound(`Agent not found for skill reassignment: ${missingAgentIds.join(", ")}`);
+    }
+
+    return requestedAgentIds.map((agentId) => {
+      const agent = byId.get(agentId)!;
+      if (agent.companyId !== companyId) {
+        throw unprocessable("Cannot reassign a skill for an agent in another company.", { agentId });
+      }
+      const adapterConfig = agent.adapterConfig as Record<string, unknown>;
+      const desiredEntries = resolveDesiredSkillEntries(skills, adapterConfig);
+      const hasSource = desiredEntries.some((entry) => entry.key === source.key);
+      if (!hasSource) {
+        throw unprocessable(`Agent "${agent.name}" does not currently use skill "${source.name}".`, {
+          agentId,
+          skillId: source.id,
+          skillKey: source.key,
+        });
+      }
+      return {
+        agentId,
+        reassignment: {
+          agentId,
+          previousSkillKey: source.key,
+          nextSkillKey: forkKey,
+        },
+      };
+    });
+  }
+
+  async function applySkillReassignments(
+    companyId: string,
+    source: CompanySkill,
+    forkKey: string,
+    planned: PlannedSkillReassignment[],
+  ): Promise<CompanySkillForkReassignment[]> {
+    if (planned.length === 0) return [];
+    const skills = await listReferenceTargets(companyId);
+    await db.transaction(async (tx) => {
+      for (const item of planned) {
+        const row = await tx
+          .select({
+            id: agentsTable.id,
+            name: agentsTable.name,
+            adapterConfig: agentsTable.adapterConfig,
+          })
+          .from(agentsTable)
+          .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.id, item.agentId)))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!row) throw notFound(`Agent not found for skill reassignment: ${item.agentId}`);
+        const adapterConfig = row.adapterConfig as Record<string, unknown>;
+        const desiredEntries = resolveDesiredSkillEntries(skills, adapterConfig);
+        const hasSource = desiredEntries.some((entry) => entry.key === source.key);
+        if (!hasSource) {
+          throw unprocessable(`Agent "${row.name}" does not currently use skill "${source.name}".`, {
+            agentId: item.agentId,
+            skillId: source.id,
+            skillKey: source.key,
+          });
+        }
+        const nextEntries = desiredEntries.map((entry) =>
+          entry.key === source.key
+            ? { key: forkKey, versionId: null }
+            : entry
+        );
+        const updated = await tx
+          .update(agentsTable)
+          .set({
+            adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, nextEntries),
+            updatedAt: new Date(),
+          })
+          .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.id, item.agentId)))
+          .returning({ id: agentsTable.id })
+          .then((rows) => rows[0] ?? null);
+        if (!updated) throw notFound(`Agent not found for skill reassignment: ${item.agentId}`);
+      }
+    });
+    return planned.map((item) => item.reassignment);
+  }
+
+  async function cleanupFailedFork(companyId: string, sourceSkillId: string, forkSkillId: string, forkDir: string) {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(companySkills)
+        .set({ currentVersionId: null, updatedAt: new Date() })
+        .where(and(eq(companySkills.id, forkSkillId), eq(companySkills.companyId, companyId)));
+      await tx
+        .delete(companySkillComments)
+        .where(and(eq(companySkillComments.companyId, companyId), eq(companySkillComments.companySkillId, forkSkillId)));
+      await tx
+        .delete(companySkillStars)
+        .where(and(eq(companySkillStars.companyId, companyId), eq(companySkillStars.companySkillId, forkSkillId)));
+      await tx
+        .delete(companySkillVersions)
+        .where(and(eq(companySkillVersions.companyId, companyId), eq(companySkillVersions.companySkillId, forkSkillId)));
+      await tx
+        .delete(companySkills)
+        .where(and(eq(companySkills.id, forkSkillId), eq(companySkills.companyId, companyId)));
+      await tx
+        .update(companySkills)
+        .set({
+          forkCount: sql`greatest(${companySkills.forkCount} - 1, 0)`,
+          installCount: sql`greatest(${companySkills.installCount} - 1, 0)`,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(companySkills.id, sourceSkillId), eq(companySkills.companyId, companyId)));
+    });
+    await fs.rm(forkDir, { recursive: true, force: true });
+  }
+
   async function forkSkill(
     companyId: string,
     skillId: string,
     input: CompanySkillForkRequest = {},
     actor: SkillActor | null = null,
-  ): Promise<CompanySkill> {
+  ): Promise<CompanySkillForkResult> {
     await ensureSkillInventoryCurrent(companyId);
     const source = await getById(companyId, skillId);
     if (!source) throw notFound("Skill not found");
@@ -2729,6 +2997,8 @@ export function companySkillService(db: Db) {
     const usedSlugs = new Set(existing.map((skill) => normalizeSkillSlug(skill.slug) ?? skill.slug));
     const forkSlug = uniqueSkillSlug(normalizeSkillSlug(input.slug ?? `${source.slug}-fork`) ?? `${source.slug}-fork`, usedSlugs);
     const forkName = input.name?.trim() || `${source.name} Fork`;
+    const forkKey = `company/${companyId}/${forkSlug}`;
+    const plannedReassignments = await planSkillReassignments(companyId, source, forkKey, input.reassignAgentIds);
     const managedRoot = resolveManagedSkillsRoot(companyId);
     const forkDir = path.resolve(managedRoot, forkSlug);
     await fs.rm(forkDir, { recursive: true, force: true });
@@ -2755,7 +3025,7 @@ export function companySkillService(db: Db) {
       forkedByUserId: actor?.type === "user" ? actor.userId ?? null : null,
     };
     const imported = await upsertImportedSkills(companyId, [{
-      key: `company/${companyId}/${forkSlug}`,
+      key: forkKey,
       slug: forkSlug,
       name: asString(parsed.frontmatter.name) ?? forkName,
       description: asString(parsed.frontmatter.description) ?? source.description,
@@ -2793,10 +3063,22 @@ export function companySkillService(db: Db) {
       })
       .where(and(eq(companySkills.id, source.id), eq(companySkills.companyId, companyId)));
     await createVersion(companyId, forked.id, { label: "Initial version" }, actor);
-    return getById(companyId, forked.id).then((skill) => {
+    const persistedFork = await getById(companyId, forked.id).then((skill) => {
       if (!skill) throw notFound("Forked skill not found");
       return skill;
     });
+    let reassignments: CompanySkillForkReassignment[];
+    try {
+      reassignments = await applySkillReassignments(companyId, source, forkKey, plannedReassignments);
+    } catch (error) {
+      await cleanupFailedFork(companyId, source.id, forked.id, forkDir);
+      throw error;
+    }
+    return {
+      skill: persistedFork,
+      original: summarizeOriginalSkill(source),
+      reassignments,
+    };
   }
 
   async function updateStatus(companyId: string, skillId: string): Promise<CompanySkillUpdateStatus | null> {
@@ -4117,11 +4399,9 @@ export function companySkillService(db: Db) {
 
     const out: PaperclipSkillEntry[] = [];
     for (const skill of skills) {
-      const sourceKind = asString(getSkillMeta(skill).sourceKind);
       const sourceResolution = await resolveRuntimeSkillSource(companyId, skill, options);
       if (!sourceResolution) continue;
 
-      const required = sourceKind === "paperclip_bundled";
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
@@ -4130,10 +4410,6 @@ export function companySkillService(db: Db) {
         currentVersionId: skill.currentVersionId,
         sourceStatus: sourceResolution.status,
         missingDetail: sourceResolution.status === "missing" ? sourceResolution.detail : null,
-        required,
-        requiredReason: required
-          ? "Bundled Paperclip skills are always available for local adapters."
-          : null,
       });
     }
 
@@ -4426,6 +4702,7 @@ export function companySkillService(db: Db) {
     },
     categoryCounts,
     detail,
+    forkPrecheck,
     listVersions,
     getVersion,
     createVersion,

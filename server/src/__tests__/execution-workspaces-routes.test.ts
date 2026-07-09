@@ -6,9 +6,11 @@ import { executionWorkspaceRoutes } from "../routes/execution-workspaces.js";
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   list: vi.fn(),
+  listOverview: vi.fn(),
   listSummaries: vi.fn(),
   getById: vi.fn(),
   getCloseReadiness: vi.fn(),
+  reconcileExecutionWorkspaceBranch: vi.fn(),
   update: vi.fn(),
 }));
 
@@ -29,17 +31,17 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
 
-function createApp(companyIds = ["company-1"]) {
+function createApp(actor: Record<string, unknown> = {
+  type: "board",
+  userId: "local-board",
+  companyIds: ["company-1"],
+  source: "session",
+  isInstanceAdmin: false,
+}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds,
-      source: "session",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", executionWorkspaceRoutes({} as any));
@@ -57,6 +59,14 @@ describe.sequential("execution workspace routes", () => {
       explanation: "Allowed by test mock.",
     });
     mockExecutionWorkspaceService.list.mockResolvedValue([]);
+    mockExecutionWorkspaceService.listOverview.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+      hasMore: false,
+      nextOffset: null,
+    });
     mockExecutionWorkspaceService.listSummaries.mockResolvedValue([
       {
         id: "workspace-1",
@@ -66,6 +76,7 @@ describe.sequential("execution workspace routes", () => {
       },
     ]);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch.mockResolvedValue(null);
   });
 
   it("uses summary mode for lightweight workspace lookups", async () => {
@@ -91,4 +102,122 @@ describe.sequential("execution workspace routes", () => {
     expect(mockExecutionWorkspaceService.list).not.toHaveBeenCalled();
   });
 
+  it("delegates bounded workspace overview queries", async () => {
+    const res = await request(createApp())
+      .get("/api/companies/company-1/workspace-overview?status=active,idle&limit=25&offset=10");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      items: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+      hasMore: false,
+      nextOffset: null,
+    });
+    expect(mockExecutionWorkspaceService.listOverview).toHaveBeenCalledWith("company-1", {
+      status: ["active", "idle"],
+      limit: 25,
+      offset: 10,
+    });
+  });
+
+  it("rejects invalid workspace overview pagination", async () => {
+    const res = await request(createApp())
+      .get("/api/companies/company-1/workspace-overview?limit=1000");
+
+    expect(res.status).toBe(422);
+    expect(mockExecutionWorkspaceService.listOverview).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["forward", { mode: "forward" }],
+    ["override", { mode: "override", reason: "operator break-glass" }],
+  ])("rejects agent actors for %s branch reconciliation", async (_mode, body) => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+    });
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_jwt",
+      runId: "run-1",
+    }))
+      .post("/api/execution-workspaces/workspace-1/reconcile-branch")
+      .send(body);
+
+    expect(res.status).toBe(403);
+    expect(mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("logs branch reconciliation activity after the service operation succeeds", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+    });
+    mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        companyId: "company-1",
+        sourceIssueId: "issue-1",
+        branchName: "feature/current",
+      },
+      inspection: {
+        fingerprint: "workspace_incoherence:v1:sha256:test",
+        worktreePath: "/tmp/worktree",
+        repoRoot: "/tmp/repo",
+        fromBranch: "feature/recorded",
+        toBranch: "feature/current",
+        fromSha: "1111111",
+        toSha: "2222222",
+        ancestryVerdict: "ancestor",
+        cleanliness: "clean",
+        statusEntryCount: 0,
+        plainLanguageReason: "forward",
+      },
+      recoveryAction: {
+        id: "recovery-1",
+      },
+      auditCommentId: "comment-1",
+    });
+
+    const res = await request(createApp())
+      .post("/api/execution-workspaces/workspace-1/reconcile-branch")
+      .send({ mode: "forward" });
+
+    expect(res.status).toBe(200);
+    expect(mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch).toHaveBeenCalledWith("workspace-1", {
+      mode: "forward",
+      reason: null,
+      actor: {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "execution_workspace.branch_reconciled",
+      entityType: "execution_workspace",
+      entityId: "workspace-1",
+      details: expect.objectContaining({
+        mode: "forward",
+        fromBranch: "feature/recorded",
+        toBranch: "feature/current",
+        fromSha: "1111111",
+        toSha: "2222222",
+        ancestryVerdict: "ancestor",
+        fingerprint: "workspace_incoherence:v1:sha256:test",
+        sourceIssueId: "issue-1",
+        auditCommentId: "comment-1",
+        recoveryActionId: "recovery-1",
+      }),
+    }));
+  });
 });

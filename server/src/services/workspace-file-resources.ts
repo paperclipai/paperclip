@@ -242,9 +242,8 @@ function listItemFromStat(input: {
   stat: { size: number; mtime: Date };
 }): WorkspaceFileListItem | null {
   const contentType = contentTypeForPath(input.relativePath);
-  const previewKind = previewKindForKnownContentType(contentType);
-  if (!previewKind || previewKind === "unsupported") return null;
-  if (input.stat.size > previewCapForKind(previewKind)) return null;
+  const previewKind = previewKindForKnownContentType(contentType) ?? "unsupported";
+  const previewable = previewKind !== "unsupported" && input.stat.size <= previewCapForKind(previewKind);
 
   return {
     kind: "file",
@@ -262,8 +261,8 @@ function listItemFromStat(input: {
     modifiedAt: input.stat.mtime.toISOString(),
     previewKind,
     capabilities: {
-      preview: true,
-      download: false,
+      preview: previewable,
+      download: true,
       listChildren: false,
     },
   };
@@ -471,7 +470,7 @@ async function statLocalCandidate(candidate: WorkspaceCandidate, normalized: Nor
       denialReason,
       capabilities: {
         preview: !tooLarge && !unsupported,
-        download: false,
+        download: true,
         listChildren: false,
       },
     },
@@ -1394,10 +1393,59 @@ export function workspaceFileResourceService(db: Db) {
     throw unprocessable("No local-readable workspace is available for this issue", { code: "no_local_workspace" });
   }
 
+  async function prepareDownload(issueId: string, input: {
+    path: string;
+    workspace?: WorkspaceFileSelector | null;
+    projectId?: string | null;
+    workspaceId?: string | null;
+  }, opts: { issue?: IssueRow } = {}): Promise<LocalResolvedFile> {
+    const issue = opts.issue ?? await getIssue(issueId);
+    const selector = input.workspace ?? "auto";
+    const explicitTarget = Boolean(input.projectId || input.workspaceId);
+    const normalized = normalizeWorkspaceRelativePath(input.path);
+    const candidates = await listCandidates(issue, selector, input);
+    if (candidates.length === 0) {
+      throw unprocessable("No workspace is available for this issue", { code: "no_workspace" });
+    }
+
+    let lastNotFound: unknown = null;
+    for (const candidate of candidates) {
+      if (candidate.remote) {
+        if (explicitTarget || selector !== "auto") {
+          throw unprocessable("Remote workspaces cannot be downloaded by the server", { code: "remote_workspace" });
+        }
+        continue;
+      }
+      try {
+        return await statLocalCandidate(candidate, normalized);
+      } catch (error) {
+        if (!explicitTarget && selector === "auto" && isHttpStatus(error, 404)) {
+          lastNotFound = error;
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (lastNotFound && !explicitTarget && selector === "auto") {
+      const discovered = await discoverUniqueProjectWorkspaceMatch(
+        issue,
+        new Set(candidates.map((candidate) => candidate.workspaceId)),
+        async (candidate) => statLocalCandidate(candidate, normalized),
+      );
+      if (discovered.state === "ambiguous") throwAmbiguousWorkspacePath(discovered.count);
+      if (discovered.state === "one") return discovered.value;
+    }
+
+    if (lastNotFound) throw lastNotFound;
+    throw unprocessable("No local-readable workspace is available for this issue", { code: "no_local_workspace" });
+  }
+
   return {
     getIssue,
     list,
     resolve,
     readContent,
+    prepareDownload,
   };
 }

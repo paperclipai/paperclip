@@ -151,7 +151,7 @@ function SearchResultRowImpl({
               alt=""
               loading="lazy"
               decoding="async"
-              className="h-[88px] w-[88px] shrink-0 rounded-md border border-border bg-muted object-cover"
+              className="h-(--sz-88px) w-(--sz-88px) shrink-0 rounded-md border border-border bg-muted object-cover"
             />
           ) : null}
         </div>
@@ -224,7 +224,7 @@ function SearchResultRowImpl({
               alt=""
               loading="lazy"
               decoding="async"
-              className="h-[88px] w-[88px] shrink-0 rounded-md border border-border bg-muted object-cover"
+              className="h-(--sz-88px) w-(--sz-88px) shrink-0 rounded-md border border-border bg-muted object-cover"
             />
           ) : null}
         </div>

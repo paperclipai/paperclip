@@ -48,7 +48,16 @@ export interface AnnotationLayerProps {
    * pending anchor for the keyboard shortcut path.
    */
   captureSelectionRequestId?: number;
+  /**
+   * Text of a comment currently being composed. We keep this segment brightly
+   * highlighted in the document even after the native browser selection is lost
+   * (e.g. once focus moves into the composer textarea).
+   */
+  pendingHighlightText?: string | null;
 }
+
+/** Synthetic thread id used to render the in-progress (pending) comment highlight. */
+const PENDING_HIGHLIGHT_THREAD_ID = "__paperclip-pending-annotation__";
 
 interface HighlightRect {
   threadId: string;
@@ -60,6 +69,8 @@ interface HighlightRect {
   height: number;
   /** True for the last rect of this thread (used to anchor a glyph at the run end). */
   isTail: boolean;
+  /** True when this run should render with the brighter focused/pending treatment. */
+  focused: boolean;
 }
 
 interface ToolbarPosition {
@@ -136,6 +147,24 @@ function elementFromNode(node: Node | null | undefined): HTMLElement | null {
   return parent instanceof HTMLElement ? parent : null;
 }
 
+function selectionTouchesEditableElement(container: HTMLElement, range: Range) {
+  for (const node of [range.startContainer, range.endContainer, range.commonAncestorContainer]) {
+    const element = elementFromNode(node);
+    if (!element || !container.contains(element)) continue;
+    const editableElement = element.closest("input, textarea, select, [contenteditable]");
+    if (!(editableElement instanceof HTMLElement)) continue;
+    if (editableElement.matches("input, textarea, select")) return true;
+    const contentEditableValue = editableElement.getAttribute("contenteditable");
+    if (
+      editableElement.isContentEditable ||
+      (contentEditableValue !== null && contentEditableValue.toLowerCase() !== "false")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function intersectRects(a: DOMRect, b: DOMRect): DOMRect | null {
   const left = Math.max(a.left, b.left);
   const top = Math.max(a.top, b.top);
@@ -203,8 +232,10 @@ export function DocumentAnnotationLayer({
   newCommentDisabledReason = null,
   hideResolved = true,
   captureSelectionRequestId,
+  pendingHighlightText = null,
 }: AnnotationLayerProps) {
   const [highlightRects, setHighlightRects] = useState<HighlightRect[]>([]);
+  const [hoveredThreadId, setHoveredThreadId] = useState<string | null>(null);
   const [toolbarPosition, setToolbarPosition] = useState<ToolbarPosition | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const lastCaptureSelectionRequestIdRef = useRef<number>(0);
@@ -231,19 +262,17 @@ export function DocumentAnnotationLayer({
     const overlayRect = overlay.getBoundingClientRect();
     const next: HighlightRect[] = [];
     const nativeRanges = emptyNativeHighlightRanges();
-    for (const thread of visibleThreads) {
-      if (thread.anchorState === "orphaned") continue;
-      const isFocused = thread.id === focusedThreadId;
-      const isStale = thread.anchorState === "stale";
-      const isResolved = thread.status === "resolved";
-      const nativeKind = nativeHighlightKind({
-        focused: isFocused,
-        stale: isStale,
-        resolved: isResolved,
-      });
+    const pushRunRects = (run: {
+      threadId: string;
+      status: DocumentAnnotationThreadStatus;
+      anchorState: DocumentAnnotationAnchorState;
+      focused: boolean;
+      selectedText: string;
+      nativeKind: NativeHighlightKind;
+    }) => {
       const ranges = rangesForNormalizedSpan({
         container,
-        selectedText: thread.selectedText,
+        selectedText: run.selectedText,
       });
       const startIndex = next.length;
       for (const range of ranges) {
@@ -256,9 +285,10 @@ export function DocumentAnnotationLayer({
           if (!visibleRect) continue;
           rangeIsVisible = true;
           next.push({
-            threadId: thread.id,
-            status: thread.status,
-            anchorState: thread.anchorState,
+            threadId: run.threadId,
+            status: run.status,
+            anchorState: run.anchorState,
+            focused: run.focused,
             top: visibleRect.top - overlayRect.top,
             left: visibleRect.left - overlayRect.left,
             width: visibleRect.width,
@@ -266,15 +296,41 @@ export function DocumentAnnotationLayer({
             isTail: false,
           });
         }
-        if (rangeIsVisible) nativeRanges[nativeKind].push(range);
+        if (rangeIsVisible) nativeRanges[run.nativeKind].push(range);
       }
       if (next.length > startIndex) {
         next[next.length - 1].isTail = true;
       }
+    };
+    for (const thread of visibleThreads) {
+      if (thread.anchorState === "orphaned") continue;
+      const isFocused = thread.id === focusedThreadId;
+      const isStale = thread.anchorState === "stale";
+      const isResolved = thread.status === "resolved";
+      pushRunRects({
+        threadId: thread.id,
+        status: thread.status,
+        anchorState: thread.anchorState,
+        focused: isFocused,
+        selectedText: thread.selectedText,
+        nativeKind: nativeHighlightKind({ focused: isFocused, stale: isStale, resolved: isResolved }),
+      });
+    }
+    // Keep the in-progress (pending) comment selection brightly highlighted so the
+    // segment stays anchored in the document while the composer is open.
+    if (pendingHighlightText && pendingHighlightText.trim().length > 0) {
+      pushRunRects({
+        threadId: PENDING_HIGHLIGHT_THREAD_ID,
+        status: "open",
+        anchorState: "active",
+        focused: true,
+        selectedText: pendingHighlightText,
+        nativeKind: "focused",
+      });
     }
     setNativeHighlightRanges(nativeHighlightInstanceId, nativeRanges);
     setHighlightRects(next);
-  }, [containerRef, focusedThreadId, nativeHighlightInstanceId, visibleThreads]);
+  }, [containerRef, focusedThreadId, nativeHighlightInstanceId, pendingHighlightText, visibleThreads]);
 
   useLayoutEffect(() => {
     computeHighlightRects();
@@ -346,6 +402,7 @@ export function DocumentAnnotationLayer({
     if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
     const range = selection.getRangeAt(0);
     if (!container.contains(range.commonAncestorContainer)) return null;
+    if (selectionTouchesEditableElement(container, range)) return null;
     const containerOffset = getContainerTextOffset(container, range);
     if (!containerOffset) return null;
     const anchor = buildAnchorFromContainerSelection({ markdown, containerOffset });
@@ -398,7 +455,7 @@ export function DocumentAnnotationLayer({
         <div className="paperclip-doc-annotation-visual-layer pointer-events-none absolute inset-0 z-0" aria-hidden="true">
           <div className="relative h-full w-full">
             {highlightRects.map((rect, index) => {
-              const isFocused = rect.threadId === focusedThreadId;
+              const isFocused = rect.focused;
               const isStale = rect.anchorState === "stale";
               const isResolved = rect.status === "resolved";
               return (
@@ -416,7 +473,7 @@ export function DocumentAnnotationLayer({
                       : isStale
                         ? "bg-yellow-200 outline outline-2 outline-dashed outline-offset-0 outline-yellow-700/65 dark:bg-yellow-600 dark:outline-yellow-200/70"
                         : isFocused
-                          ? "bg-yellow-300 outline outline-2 outline-offset-0 outline-yellow-700/85 shadow-[0_0_0_1px_var(--color-background)] dark:bg-yellow-500 dark:outline-yellow-200/85"
+                          ? "bg-yellow-300 outline outline-2 outline-offset-0 outline-yellow-700/85 shadow-(--shadow-extract-6) dark:bg-yellow-500 dark:outline-yellow-200/85"
                           : "bg-yellow-200 dark:bg-yellow-600",
                   )}
                   style={{
@@ -432,12 +489,14 @@ export function DocumentAnnotationLayer({
         </div>
       ) : null}
       <div
-        className="paperclip-doc-annotation-layer pointer-events-none absolute inset-0 z-[2]"
+        className="paperclip-doc-annotation-layer pointer-events-none absolute inset-0 z-(--z-2)"
         aria-hidden="true"
       >
         <div ref={overlayRef} className="relative h-full w-full">
           {highlightRects.map((rect, index) => {
-            const isFocused = rect.threadId === focusedThreadId;
+            if (rect.threadId === PENDING_HIGHLIGHT_THREAD_ID) return null;
+            const isFocused = rect.focused;
+            const isHovered = rect.threadId === hoveredThreadId;
             return (
               <button
                 key={`${rect.threadId}-${index}`}
@@ -446,9 +505,12 @@ export function DocumentAnnotationLayer({
                 data-anchor-state={rect.anchorState}
                 data-status={rect.status}
                 data-focused={isFocused || undefined}
+                data-hovered={isHovered || undefined}
                 aria-label="Open annotation thread"
                 className={cn(
-                  "paperclip-doc-annotation-hit-target pointer-events-auto absolute cursor-pointer rounded-none bg-transparent",
+                  "paperclip-doc-annotation-hit-target pointer-events-auto absolute cursor-pointer rounded-none bg-transparent transition-colors",
+                  // Tint the run on hover so it's obvious which highlight you're over.
+                  isHovered && "bg-amber-400/40 dark:bg-amber-300/30",
                   isFocused && "ring-1 ring-transparent",
                 )}
                 style={{
@@ -457,6 +519,10 @@ export function DocumentAnnotationLayer({
                   width: rect.width,
                   height: rect.height,
                 }}
+                onMouseEnter={() => setHoveredThreadId(rect.threadId)}
+                onMouseLeave={() =>
+                  setHoveredThreadId((current) => (current === rect.threadId ? null : current))
+                }
                 onMouseDown={(event) => {
                   event.preventDefault();
                   onThreadFocus(rect.threadId);

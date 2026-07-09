@@ -212,6 +212,175 @@ export interface IssueRelationIssueSummary {
   activeRecoveryAction?: IssueRecoveryAction | null;
 }
 
+export type IssueBlockerDiagnosticFlag =
+  | "done_but_blocking"
+  | "cancelled_blocker_in_set"
+  | "workspace_finalize_pending";
+
+export interface IssueBlockerDiagnosticIssueSummary {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+}
+
+export interface IssueBlockerDiagnosticNode extends IssueBlockerDiagnosticIssueSummary {
+  isUnresolved: boolean;
+  isDependencyReady: boolean;
+  isPendingFinalize: boolean;
+  flags: IssueBlockerDiagnosticFlag[];
+}
+
+export interface IssueBlockerDiagnosticsReadiness {
+  allBlockersDone: boolean;
+  isDependencyReady: boolean;
+  unresolvedBlockerCount: number;
+  pendingFinalizeBlockerCount: number;
+}
+
+export interface IssueBlockerDiagnosticsResponse {
+  issue: IssueBlockerDiagnosticIssueSummary;
+  diagnosis: string | null;
+  readiness: IssueBlockerDiagnosticsReadiness | null;
+  blockers: IssueBlockerDiagnosticNode[];
+  omittedUnauthorizedBlockerCount: number | null;
+  truncated: boolean;
+  caps: {
+    maxBlockers: number;
+  };
+}
+
+export type IssueWakeDiagnosticWakeFailureClass = "failed" | "cancelled" | "skipped";
+
+export interface IssueWakeDiagnosticWakeRequest {
+  kind: "wake_request";
+  agentId: string | null;
+  source: string;
+  reason: string | null;
+  status: string;
+  coalescedCount: number;
+  runId: string | null;
+  requestedAt: string;
+  claimedAt: string | null;
+  finishedAt: string | null;
+  failureClass: IssueWakeDiagnosticWakeFailureClass | null;
+}
+
+export interface IssueWakeDiagnosticActivityRecord {
+  kind: "activity";
+  action: string;
+  entityType: string;
+  agentId: string | null;
+  runId: string | null;
+  createdAt: string;
+  source: string | null;
+  requestedReason: string | null;
+  previousReason: string | null;
+  rootIssueId: string | null;
+  holdId: string | null;
+  summary: string;
+}
+
+export type IssueWakeDiagnosticEvent =
+  | IssueWakeDiagnosticWakeRequest
+  | IssueWakeDiagnosticActivityRecord;
+
+export interface IssueWakeDiagnosticsResponse {
+  issue: IssueBlockerDiagnosticIssueSummary;
+  diagnosis: string | null;
+  likelyReason: string | null;
+  events: IssueWakeDiagnosticEvent[];
+  wakeRequestCount: number;
+  activityRecordCount: number;
+  truncated: boolean;
+  truncatedSections: {
+    wakeRequests: boolean;
+    activityRecords: boolean;
+  };
+  caps: {
+    maxWakeRequests: number;
+    maxActivityRecords: number;
+    lookbackDays: number;
+  };
+}
+
+export interface IssueSubtreeDiagnosticNode {
+  issue: IssueBlockerDiagnosticIssueSummary;
+  parentId: string | null;
+  depth: number;
+  diagnosis: string | null;
+  likelyReason: string | null;
+  blockers: IssueBlockerDiagnosticNode[];
+  blockerReadiness: IssueBlockerDiagnosticsReadiness | null;
+  omittedUnauthorizedBlockerCount: number | null;
+  wakeEvents: IssueWakeDiagnosticEvent[];
+  wakeRequestCount: number;
+  activityRecordCount: number;
+  truncated: boolean;
+  truncatedSections: {
+    blockers: boolean;
+    wakeRequests: boolean;
+    activityRecords: boolean;
+  };
+}
+
+export type IssueSubtreeDiagnosticEdge =
+  | {
+    kind: "parent";
+    fromIssueId: string;
+    toIssueId: string;
+    timestamp: string | null;
+  }
+  | {
+    kind: "blocks";
+    fromIssueId: string;
+    toIssueId: string;
+    timestamp: string | null;
+  }
+  | {
+    kind: "wake_request";
+    issueId: string;
+    agentId: string | null;
+    reason: string | null;
+    status: string;
+    timestamp: string;
+  }
+  | {
+    kind: "activity";
+    issueId: string;
+    action: string;
+    timestamp: string;
+  };
+
+export interface IssueSubtreeDiagnosticsResponse {
+  issue: IssueBlockerDiagnosticIssueSummary;
+  diagnosis: string | null;
+  likelyReason: string | null;
+  nodes: IssueSubtreeDiagnosticNode[];
+  edges: IssueSubtreeDiagnosticEdge[];
+  nodeCount: number;
+  omittedUnauthorizedNodeCount: number | null;
+  truncated: boolean;
+  truncatedSections: {
+    nodes: boolean;
+    depth: boolean;
+    blockers: boolean;
+    wakeRequests: boolean;
+    activityRecords: boolean;
+  };
+  caps: {
+    maxDepth: number;
+    maxNodes: number;
+    maxBlockersPerNode: number;
+    maxWakeRequestsPerNode: number;
+    maxActivityRecordsPerNode: number;
+    lookbackDays: number;
+  };
+}
+
 export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs_attention";
 
 export type IssueBlockerAttentionReason =
@@ -550,6 +719,7 @@ export interface Issue {
   executionLockedAt: Date | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  responsibleUserId: string | null;
   issueNumber: number | null;
   identifier: string | null;
   originKind?: IssueOriginKind;
@@ -585,6 +755,7 @@ export interface Issue {
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   watchdog?: IssueWatchdogSummary | null;
   scheduledRetry?: IssueScheduledRetry | null;
+  liveDescendantCount?: number;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
@@ -603,6 +774,22 @@ export interface Issue {
   updatedAt: Date;
 }
 
+/**
+ * Where a comment's derived (non-stored-author) agent attribution came from,
+ * in descending confidence:
+ * - `run_id`: comment carries a `createdByRunId`/`derivedCreatedByRunId` whose
+ *   run resolves directly to an agent (lossless).
+ * - `run_log_comment_post`: a run log within the comment window contains the
+ *   `comment id: {id}` post marker (lossless: the run recorded posting it).
+ *
+ * Only lossless signals are used. Pure run-window timing overlap is NOT a
+ * source — it cannot distinguish an agent comment from a human board comment
+ * that coincided with a run (Option A).
+ */
+export type IssueCommentDerivedAuthorSource =
+  | "run_id"
+  | "run_log_comment_post";
+
 export interface IssueComment {
   id: string;
   companyId: string;
@@ -613,7 +800,7 @@ export interface IssueComment {
   createdByRunId?: string | null;
   derivedAuthorAgentId?: string | null;
   derivedCreatedByRunId?: string | null;
-  derivedAuthorSource?: "run_log_comment_post" | null;
+  derivedAuthorSource?: IssueCommentDerivedAuthorSource | null;
   body: string;
   presentation: IssueCommentPresentation | null;
   metadata: IssueCommentMetadata | null;
@@ -760,6 +947,7 @@ export interface AskUserQuestionsPayload {
   version: 1;
   title?: string | null;
   submitLabel?: string | null;
+  supersedeOnUserComment?: boolean;
   questions: AskUserQuestionsQuestion[];
 }
 
@@ -774,6 +962,8 @@ export interface AskUserQuestionsResult {
   answers: AskUserQuestionsAnswer[];
   cancelled?: true;
   cancellationReason?: string | null;
+  expirationReason?: "superseded_by_comment";
+  commentId?: string | null;
   summaryMarkdown?: string | null;
 }
 
