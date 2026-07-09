@@ -131,7 +131,10 @@ export function IssueRow({
       onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
       onMouseEnter={onMouseEnter}
       className={cn(
-        "group flex items-start gap-2 rounded-lg py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors sm:items-center sm:py-2 sm:pl-1",
+        // No color transition on the row band: hover/selection must snap
+        // instantly. A fade (transition-colors) leaves a trail of fading bands
+        // when scrubbing the mouse fast across the list.
+        "group flex items-start gap-2 rounded-lg py-2.5 pl-2 pr-3 text-sm no-underline text-inherit sm:items-center sm:py-2 sm:pl-1",
         !hideDivider && "border-b border-border last:border-b-0",
         selected ? "hover:bg-transparent" : "hover:bg-accent/50",
         checklistCurrentStep ? "border-l-2 border-l-primary bg-primary/5 pl-(--sz-calc-11) sm:pl-(--sz-calc-12)" : null,

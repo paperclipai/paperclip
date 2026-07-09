@@ -664,9 +664,18 @@ export function IssuesList({
     window.addEventListener("mousemove", handlePointerMove, { passive: true });
     return () => window.removeEventListener("mousemove", handlePointerMove);
   }, []);
+  // Which entry the cursor is over, tracked WITHOUT React state so scrubbing the
+  // list costs zero re-renders (hover paints via CSS `:hover`). Keyboard nav
+  // reads this to continue from the hovered row. Key-based, so it self-heals if
+  // the entry disappears (findIndex → -1).
+  const hoveredNavKeyRef = useRef<string | null>(null);
   const setNavSelectionFromPointer = useCallback((navKey: string) => {
     if (!pointerMovedSinceKeyNavRef.current) return;
-    setSelectedNavKey(navKey);
+    hoveredNavKeyRef.current = navKey;
+    // Drop any keyboard selection band the moment the mouse takes over, so we
+    // never show two identical highlights at once. React bails when already
+    // null, so continuous hovering triggers no re-render.
+    setSelectedNavKey((prev) => (prev === null ? prev : null));
   }, []);
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
@@ -1326,9 +1335,15 @@ export function IssuesList({
       }
       const st = listNavStateRef.current;
       if (st.viewMode !== "list" || st.flatNavEntries.length === 0) return;
-      const currentIndex = st.selectedNavKey
-        ? st.flatNavEntries.findIndex((entry) => issuesListNavEntryKey(entry) === st.selectedNavKey)
-        : -1;
+      // The row a keystroke acts on: the hovered row when the mouse moved since
+      // the last key nav (so "hover a row → press Arrow/Enter" acts on it),
+      // otherwise the keyboard selection. Hover no longer writes selection
+      // state, so this threads the pointer position into every handler.
+      const indexOfKey = (key: string | null) =>
+        key ? st.flatNavEntries.findIndex((entry) => issuesListNavEntryKey(entry) === key) : -1;
+      const hoveredIndex = indexOfKey(hoveredNavKeyRef.current);
+      const fromHover = pointerMovedSinceKeyNavRef.current && hoveredIndex >= 0;
+      const currentIndex = fromHover ? hoveredIndex : indexOfKey(st.selectedNavKey);
       switch (e.key) {
         case "j":
         case "ArrowDown":
@@ -1358,6 +1373,8 @@ export function IssuesList({
           const collapse = e.key === "ArrowLeft";
           if (entry.type === "group") {
             e.preventDefault();
+            pointerMovedSinceKeyNavRef.current = false;
+            setSelectedNavKey(issuesListNavEntryKey(entry));
             st.updateView({
               collapsedGroups: collapse
                 ? (st.collapsedGroups.includes(entry.key) ? st.collapsedGroups : [...st.collapsedGroups, entry.key])
@@ -1367,6 +1384,8 @@ export function IssuesList({
           }
           if (!entry.hasChildren) return;
           e.preventDefault();
+          pointerMovedSinceKeyNavRef.current = false;
+          setSelectedNavKey(issuesListNavEntryKey(entry));
           st.updateView({
             collapsedParents: collapse
               ? (st.collapsedParents.includes(entry.issue.id) ? st.collapsedParents : [...st.collapsedParents, entry.issue.id])
@@ -1866,7 +1885,7 @@ export function IssuesList({
             {group.label && (
               <div
                 data-issues-group-key={group.key}
-                className={cn("rounded-lg px-3 sm:px-4", selectedNavKey === `group:${group.key}` && "bg-accent/50")}
+                className={cn("rounded-lg px-3 sm:px-4", selectedNavKey === `group:${group.key}` ? "bg-accent/50" : "hover:bg-accent/50")}
                 onClick={() => setSelectedNavKey(`group:${group.key}`)}
                 onMouseEnter={() => setNavSelectionFromPointer(`group:${group.key}`)}
               >
