@@ -325,4 +325,68 @@ describe.sequential("execution workspace routes", () => {
       }),
     }));
   });
+
+  it("wakes a restored in_review agent participant after quarantine_restore", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+    });
+    mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        companyId: "company-1",
+        sourceIssueId: "issue-1",
+        branchName: "feature/recorded",
+      },
+      inspection: {
+        fingerprint: "workspace_incoherence:v1:sha256:dirty",
+        worktreePath: "/tmp/worktree",
+        repoRoot: "/tmp/repo",
+        fromBranch: "feature/recorded",
+        toBranch: "feature/live",
+        fromSha: "1111111",
+        toSha: "2222222",
+        ancestryVerdict: "diverged",
+        cleanliness: "dirty",
+        statusEntryCount: 2,
+        plainLanguageReason: "dirty live branch",
+      },
+      recoveryAction: {
+        id: "recovery-1",
+      },
+      auditCommentId: "comment-1",
+      rescueRef: null,
+      restoredSourceIssue: {
+        id: "issue-1",
+        companyId: "company-1",
+        status: "in_review",
+        assigneeAgentId: "reviewer-agent-1",
+      },
+      sourceIssueStatusChanged: true,
+    });
+
+    const res = await request(createApp())
+      .post("/api/execution-workspaces/workspace-1/reconcile-branch")
+      .send({ mode: "quarantine_restore" });
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({
+        sourceIssueStatus: "in_review",
+      }),
+    }));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith("reviewer-agent-1", expect.objectContaining({
+      reason: "issue_recovery_action_restored",
+      payload: expect.objectContaining({
+        issueId: "issue-1",
+        mutation: "execution_workspace_quarantine_restore",
+      }),
+      contextSnapshot: expect.objectContaining({
+        issueId: "issue-1",
+        wakeReason: "issue_recovery_action_restored",
+        source: "execution_workspace.quarantine_restore",
+      }),
+    }));
+  });
 });

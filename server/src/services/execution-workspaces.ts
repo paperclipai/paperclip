@@ -25,6 +25,11 @@ import type {
 } from "@paperclipai/shared";
 import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import {
+  applyIssueExecutionPolicyTransition,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "./issue-execution-policy.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -110,6 +115,37 @@ function readNullableString(value: unknown): string | null {
 function cloneRecord(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) return null;
   return { ...value };
+}
+
+function assigneeMatchesExecutionPrincipal(input: {
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+}, principal: { type: string; agentId?: string | null; userId?: string | null } | null): boolean {
+  if (!principal) return false;
+  if (principal.type === "agent") {
+    return input.assigneeAgentId === principal.agentId && input.assigneeUserId === null;
+  }
+  if (principal.type === "user") {
+    return input.assigneeAgentId === null && input.assigneeUserId === principal.userId;
+  }
+  return false;
+}
+
+function quarantineRestoreRequestedSourceStatus(input: {
+  status: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  executionState: unknown;
+}): "todo" | undefined {
+  const state = parseIssueExecutionState(input.executionState);
+  if (
+    state?.status === "pending" &&
+    input.status === "in_review" &&
+    assigneeMatchesExecutionPrincipal(input, state.currentParticipant)
+  ) {
+    return undefined;
+  }
+  return "todo";
 }
 
 function readDesiredState(value: unknown): WorkspaceRuntimeDesiredState | null {
@@ -1763,17 +1799,42 @@ export function executionWorkspaceService(db: Db) {
               id: issues.id,
               companyId: issues.companyId,
               status: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+              assigneeUserId: issues.assigneeUserId,
+              executionPolicy: issues.executionPolicy,
+              executionState: issues.executionState,
+              monitorNextCheckAt: issues.monitorNextCheckAt,
+              monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
+              monitorLastTriggeredAt: issues.monitorLastTriggeredAt,
+              monitorAttemptCount: issues.monitorAttemptCount,
+              monitorNotes: issues.monitorNotes,
+              monitorScheduledBy: issues.monitorScheduledBy,
             })
             .from(issues)
             .where(eq(issues.id, lockedWorkspace.sourceIssueId))
             .for("update");
           if (!sourceBefore) throw notFound("Source issue not found");
 
+          const requestedStatus = quarantineRestoreRequestedSourceStatus(sourceBefore);
+          const policy = normalizeIssueExecutionPolicy(sourceBefore.executionPolicy ?? null);
+          const transition = applyIssueExecutionPolicyTransition({
+            issue: sourceBefore,
+            policy,
+            previousPolicy: policy,
+            requestedStatus,
+            requestedAssigneePatch: {},
+            actor: {
+              agentId: input.actor.agentId ?? null,
+              userId: input.actor.actorType === "user" ? input.actor.actorId : null,
+            },
+            commentBody: null,
+          });
           const { issueService } = await import("./issues.js");
           const updatedIssue = await issueService(db).update(
             lockedWorkspace.sourceIssueId,
             {
-              status: "todo",
+              ...(requestedStatus ? { status: requestedStatus } : {}),
+              ...transition.patch,
               actorAgentId: input.actor.agentId ?? null,
               actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
             },

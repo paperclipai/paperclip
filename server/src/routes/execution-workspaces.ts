@@ -551,7 +551,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     });
 
     if (
-      result.restoredSourceIssue?.status === "todo" &&
+      result.restoredSourceIssue &&
+      (result.restoredSourceIssue.status === "todo" || result.restoredSourceIssue.status === "in_review") &&
       result.sourceIssueStatusChanged &&
       result.restoredSourceIssue.assigneeAgentId
     ) {
