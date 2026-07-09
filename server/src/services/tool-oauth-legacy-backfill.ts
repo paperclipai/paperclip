@@ -2,12 +2,14 @@ import { and, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companySecretBindings,
+  companySecretProviderConfigs,
   companySecrets,
   companySecretVersions,
   toolConnections,
 } from "@paperclipai/db";
-import type { McpConnectionCredentialRef, ToolCredentialSecretRef } from "@paperclipai/shared";
+import type { McpConnectionCredentialRef, SecretProvider, ToolCredentialSecretRef } from "@paperclipai/shared";
 import { getSecretProvider } from "../secrets/provider-registry.js";
+import type { SecretProviderVaultRuntimeConfig } from "../secrets/types.js";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -97,6 +99,33 @@ function configPath(kind: OAuthTokenKind): "oauth.access_token" | "oauth.refresh
   return kind === "access_token" ? "oauth.access_token" : "oauth.refresh_token";
 }
 
+async function runtimeProviderConfigForExistingSecret(
+  tx: DbTransaction,
+  secret: typeof companySecrets.$inferSelect,
+): Promise<SecretProviderVaultRuntimeConfig | null> {
+  if (!secret.providerConfigId) return null;
+  const providerConfig = await tx
+    .select()
+    .from(companySecretProviderConfigs)
+    .where(eq(companySecretProviderConfigs.id, secret.providerConfigId))
+    .then((rows) => rows[0] ?? null);
+  if (!providerConfig) {
+    throw new Error("Provider vault not found for existing OAuth token secret " + secret.id);
+  }
+  if (providerConfig.companyId !== secret.companyId || providerConfig.provider !== secret.provider) {
+    throw new Error("Provider vault does not match existing OAuth token secret " + secret.id);
+  }
+  if (providerConfig.status === "disabled" || providerConfig.status === "coming_soon") {
+    throw new Error("Provider vault is not selectable for existing OAuth token secret " + secret.id);
+  }
+  return {
+    id: providerConfig.id,
+    provider: providerConfig.provider as SecretProvider,
+    status: providerConfig.status,
+    config: providerConfig.config ?? {},
+  };
+}
+
 function replaceCredentialSecretRefs(
   current: ToolCredentialSecretRef[],
   replacements: ToolCredentialSecretRef[],
@@ -133,7 +162,6 @@ async function upsertTokenSecret(
 ): Promise<{ ref: ToolCredentialSecretRef; created: boolean }> {
   const key = secretKey(connection.id, token.kind);
   const name = key;
-  const provider = getSecretProvider("local_encrypted");
   const existing = await tx
     .select()
     .from(companySecrets)
@@ -143,16 +171,25 @@ async function upsertTokenSecret(
     ))
     .then((rows) => rows[0] ?? null);
   const nextVersion = existing ? existing.latestVersion + 1 : 1;
-  const prepared = await provider.createVersion({
+  const providerId = (existing?.provider ?? "local_encrypted") as SecretProvider;
+  const provider = getSecretProvider(providerId);
+  const providerConfig = existing ? await runtimeProviderConfigForExistingSecret(tx, existing) : null;
+  const providerWriteContext = {
+    companyId: connection.companyId,
+    secretKey: key,
+    secretName: existing?.name ?? name,
+    version: nextVersion,
+  };
+  const prepared = existing ? await provider.createVersion({
+    value: token.value,
+    externalRef: existing.externalRef ?? null,
+    providerConfig,
+    context: providerWriteContext,
+  }) : await provider.createSecret({
     value: token.value,
     externalRef: null,
     providerConfig: null,
-    context: {
-      companyId: connection.companyId,
-      secretKey: key,
-      secretName: name,
-      version: nextVersion,
-    },
+    context: providerWriteContext,
   });
 
   const now = new Date();
@@ -208,6 +245,8 @@ async function upsertTokenSecret(
       .set({
         status: "active",
         latestVersion: nextVersion,
+        externalRef: prepared.externalRef ?? existing.externalRef,
+        providerConfigId: existing.providerConfigId,
         lastRotatedAt: now,
         updatedAt: now,
       })

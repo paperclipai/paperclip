@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   companies,
   companySecretBindings,
+  companySecretProviderConfigs,
   companySecrets,
   companySecretVersions,
   createDb,
@@ -17,6 +18,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { backfillLegacyToolOAuthTokens } from "../services/tool-oauth-legacy-backfill.js";
 import { secretService } from "../services/secrets.js";
+import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -42,9 +44,11 @@ describeEmbeddedPostgres("tool OAuth legacy backfill", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
     await db.delete(companySecrets);
+    await db.delete(companySecretProviderConfigs);
     await db.delete(toolConnections);
     await db.delete(toolApplications);
     await db.delete(companies);
@@ -162,5 +166,160 @@ describeEmbeddedPostgres("tool OAuth legacy backfill", () => {
       rotatedSecrets: 0,
     });
     await expect(db.select().from(companySecretVersions)).resolves.toHaveLength(2);
+  });
+
+  it("preserves an existing deterministic OAuth secret provider when rotating legacy material", async () => {
+    const company = await createCompany(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `legacy-oauth-aws-${randomUUID()}`,
+      name: `Legacy OAuth AWS ${randomUUID()}`,
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: `Legacy OAuth AWS Connection ${randomUUID()}`,
+      transport: "remote_http",
+      status: "active",
+      enabled: true,
+      config: {
+        url: "https://legacy-aws.example.test/mcp",
+        oauth: {
+          provider: "legacy",
+          access_token: "legacy-access-token",
+        },
+      },
+      transportConfig: {},
+      credentialSecretRefs: [],
+      credentialRefs: [],
+    }).returning();
+
+    const externalRef =
+      `arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/oauth/${connection!.id}`;
+    const createVersionSpy = vi.spyOn(awsSecretsManagerProvider, "createVersion").mockResolvedValue({
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: externalRef,
+        versionId: "aws-version-2",
+        source: "managed",
+      },
+      valueSha256: "value-sha-2",
+      fingerprintSha256: "fingerprint-sha-2",
+      externalRef,
+      providerVersionRef: "aws-version-2",
+    });
+    const secrets = secretService(db);
+    const awsVault = await secrets.createProviderConfig(company.id, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS OAuth vault",
+      config: { region: "us-east-1", namespace: "oauth-test", secretNamePrefix: "paperclip" },
+    });
+    const resolveSpy = vi.spyOn(awsSecretsManagerProvider, "resolveVersion").mockImplementation(async (input) => {
+      expect(input.material).toMatchObject({
+        scheme: "aws_secrets_manager_v1",
+        versionId: "aws-version-2",
+      });
+      expect(input.providerVersionRef).toBe("aws-version-2");
+      expect(input.providerConfig).toEqual(expect.objectContaining({
+        id: awsVault.id,
+        provider: "aws_secrets_manager",
+      }));
+      return "legacy-access-token";
+    });
+    const deterministicKey = `tool-connection/${connection!.id}/oauth/access-token`;
+    const [existingSecret] = await db.insert(companySecrets).values({
+      companyId: company.id,
+      key: deterministicKey,
+      name: `Existing OAuth access ${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      status: "active",
+      managedMode: "paperclip_managed",
+      externalRef,
+      latestVersion: 1,
+      createdByUserId: "test",
+      lastRotatedAt: new Date(),
+    }).returning();
+    await db.insert(companySecretVersions).values({
+      secretId: existingSecret!.id,
+      version: 1,
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: externalRef,
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      providerVersionRef: "aws-version-1",
+      status: "current",
+      createdByUserId: "test",
+    });
+
+    const result = await backfillLegacyToolOAuthTokens(db);
+
+    expect(result).toMatchObject({
+      scannedConnections: 1,
+      migratedConnections: 1,
+      sanitizedConnections: 1,
+      createdSecrets: 0,
+      rotatedSecrets: 1,
+      accessTokensBackfilled: 1,
+      refreshTokensBackfilled: 0,
+    });
+    expect(createVersionSpy).toHaveBeenCalledWith(expect.objectContaining({
+      providerConfig: expect.objectContaining({ id: awsVault.id, provider: "aws_secrets_manager" }),
+      context: expect.objectContaining({
+        companyId: company.id,
+        secretKey: deterministicKey,
+        version: 2,
+      }),
+    }));
+
+    const [updatedConnection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connection!.id));
+    expect(JSON.stringify(updatedConnection!.config)).not.toContain("legacy-access-token");
+    expect(JSON.stringify(updatedConnection!.config)).not.toContain("access_token");
+    const accessRef = updatedConnection!.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token")!;
+    expect(accessRef.secretId).toBe(existingSecret.id);
+
+    const [updatedSecret] = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.id, existingSecret.id));
+    expect(updatedSecret).toMatchObject({
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      latestVersion: 2,
+      externalRef,
+    });
+    const versions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, existingSecret.id));
+    expect(versions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ version: 1, status: "previous" }),
+      expect.objectContaining({
+        version: 2,
+        status: "current",
+        material: expect.objectContaining({
+          scheme: "aws_secrets_manager_v1",
+          versionId: "aws-version-2",
+        }),
+        providerVersionRef: "aws-version-2",
+      }),
+    ]));
+
+    await expect(secrets.resolveSecretValue(company.id, accessRef.secretId, "latest", {
+      consumerType: "tool_connection",
+      consumerId: connection!.id,
+      configPath: "oauth.access_token",
+      actorType: "system",
+    })).resolves.toBe("legacy-access-token");
+    expect(resolveSpy).toHaveBeenCalled();
   });
 });
