@@ -118,7 +118,6 @@ pnpm perf:issue-chat-long-thread
 Useful environment overrides:
 
 - `PAPERCLIP_PERF_BASE_URL` sets the target Paperclip URL (default `http://localhost:3100`)
-- `PAPERCLIP_PERF_COMPANY_PREFIX` switches the route to `/<prefix>/tests/perf/long-thread` and only works against dev builds that register prefixed benchmark routes. Leave it unset for production or staging URLs.
 - `PAPERCLIP_PERF_BEARER_TOKEN` provides an explicit bearer token
 
 Example:
@@ -128,8 +127,6 @@ PAPERCLIP_PERF_BASE_URL=http://localhost:3100 \
 PAPERCLIP_PERF_BEARER_TOKEN=$TOKEN \
 pnpm perf:issue-chat-long-thread
 ```
-
-For dev builds that register prefixed benchmark routes, add `PAPERCLIP_PERF_COMPANY_PREFIX=<prefix>` to target `/<prefix>/tests/perf/long-thread`.
 
 The script writes a JSON payload to stdout, including:
 
