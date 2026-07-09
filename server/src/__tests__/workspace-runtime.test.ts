@@ -4369,7 +4369,7 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
       expectedBranch,
       actualBranch,
       sourceIdentifier: "PAP-455",
-      claimant: "idle",
+      claimant: "none",
     });
     const { recorder, operations } = createWorkspaceOperationRecorderDouble();
 
@@ -4397,15 +4397,13 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
       .select()
       .from(issueComments)
       .where(eq(issueComments.companyId, ids.companyId));
-    expect(comments).toHaveLength(2);
-    expect(comments.map((comment) => comment.issueId).sort()).toEqual(
-      [ids.sourceIssueId, ids.claimant!.issueId].sort(),
-    );
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.issueId).toBe(ids.sourceIssueId);
     expect(comments[0]?.body).toContain(`Rescue branch: \`${rescueBranch}\``);
     expect(comments[0]?.body).toContain(`Rescue commit: \`${rescueCommitSha}\``);
     expect(comments[0]?.body).toContain("Dirty file count: `2`");
     expect(comments[0]?.body).toContain("`untracked.txt`");
-    expect(comments[0]?.body).toContain(`workspace \`${ids.claimant!.workspaceId}\``);
+    expect(comments[0]?.body).toContain("- Claimant: none");
 
     const activityRows = await db
       .select()
@@ -4490,7 +4488,7 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
     await expect(readGit(worktreePath, ["status", "--porcelain", "--untracked-files=all"])).resolves.not.toBe("");
   }, 20_000);
 
-  it("falls back to validation failure when git reports index-lock contention during quarantine", async () => {
+  it("refuses dirty quarantine repair when the live branch has an idle claimant", async () => {
     const expectedBranch = "PAP-457-recorded";
     const actualBranch = "PAP-457-live";
     const { repoRoot, worktreePath } = await createDirtyMismatchRepo({ expectedBranch, actualBranch });
@@ -4500,6 +4498,48 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
       expectedBranch,
       actualBranch,
       sourceIdentifier: "PAP-457",
+      claimant: "idle",
+    });
+
+    await expect(restoreDirtyQuarantine({
+      repoRoot,
+      worktreePath,
+      expectedBranch,
+      actualBranch,
+      ids,
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          cleanliness: "dirty",
+          dirtyPathSample: expect.arrayContaining(["README.md", "untracked.txt"]),
+          contention: expect.objectContaining({
+            claimedByWorkspaceId: ids.claimant!.workspaceId,
+            claimedByIssueIdentifier: ids.claimant!.identifier,
+            activeRun: null,
+          }),
+          safeRepair: expect.objectContaining({
+            eligible: false,
+            succeeded: false,
+            reason: expect.stringContaining("no active run"),
+          }),
+        }),
+      },
+    });
+    await expect(readGit(worktreePath, ["branch", "--show-current"])).resolves.toBe(actualBranch);
+    await expect(readGit(worktreePath, ["status", "--porcelain", "--untracked-files=all"])).resolves.not.toBe("");
+  }, 20_000);
+
+  it("falls back to validation failure when git reports index-lock contention during quarantine", async () => {
+    const expectedBranch = "PAP-458-recorded";
+    const actualBranch = "PAP-458-live";
+    const { repoRoot, worktreePath } = await createDirtyMismatchRepo({ expectedBranch, actualBranch });
+    const ids = await seedDirtyQuarantineRecords({
+      repoRoot,
+      worktreePath,
+      expectedBranch,
+      actualBranch,
+      sourceIdentifier: "PAP-458",
       claimant: "none",
     });
     const lockPath = await readGit(worktreePath, ["rev-parse", "--git-path", "index.lock"]);

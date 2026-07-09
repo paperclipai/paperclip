@@ -972,6 +972,13 @@ function branchIncoherenceValidationFailure(evidence: GitWorktreeBranchIncoheren
   );
 }
 
+function formatDirtyQuarantineContentionRefusal(contention: GitWorktreeBranchContention) {
+  const activeRunText = contention.activeRun
+    ? ` with active run ${contention.activeRun.id}`
+    : " with no active run";
+  return `dirty quarantine repair refused because workspace ${contention.claimedByWorkspaceId} already claims the live branch${activeRunText}`;
+}
+
 function formatDirtyQuarantineFailure(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   if (
@@ -1189,10 +1196,9 @@ async function quarantineDirtyWorktreeBranchIncoherence(input: {
     actualBranchName: input.evidence.actualBranch,
   });
   input.evidence.contention = freshContention;
-  if (freshContention?.activeRun) {
+  if (freshContention) {
     input.evidence.safeRepair.eligible = false;
-    input.evidence.safeRepair.reason =
-      `dirty quarantine repair refused because workspace ${freshContention.claimedByWorkspaceId} has active run ${freshContention.activeRun.id}`;
+    input.evidence.safeRepair.reason = formatDirtyQuarantineContentionRefusal(freshContention);
     throw branchIncoherenceValidationFailure(input.evidence);
   }
 
@@ -1528,9 +1534,9 @@ export async function ensureGitWorktreeBranchCoherent(input: {
       evidence.safeRepair.reason = "dirty quarantine repair requires the recorded branch to exist";
       throw branchIncoherenceValidationFailure(evidence);
     }
-    if (evidence.contention?.activeRun) {
-      evidence.safeRepair.reason =
-        `dirty quarantine repair refused because workspace ${evidence.contention.claimedByWorkspaceId} has active run ${evidence.contention.activeRun.id}`;
+    if (evidence.contention) {
+      evidence.safeRepair.eligible = false;
+      evidence.safeRepair.reason = formatDirtyQuarantineContentionRefusal(evidence.contention);
       throw branchIncoherenceValidationFailure(evidence);
     }
     evidence.safeRepair.eligible = true;
