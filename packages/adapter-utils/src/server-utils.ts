@@ -1128,7 +1128,14 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
 
 function normalizePaperclipWakeExecutionWorkspace(value: unknown): PaperclipWakeExecutionWorkspace | null {
   const workspace = parseObject(value);
-  const branchName = asString(workspace.branchName, "").trim() || null;
+  // The branch name is interpolated into a Markdown inline-code span in the
+  // wake prompt, so strip backticks and control characters to keep a hostile
+  // ref name from breaking out of the span or injecting prompt text.
+  const branchName =
+    asString(workspace.branchName, "")
+      .replace(/[`\u0000-\u001f\u007f]/g, "")
+      .trim()
+      .slice(0, 300) || null;
   if (!branchName) return null;
   return { branchName };
 }
@@ -1175,7 +1182,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
   const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 

@@ -11535,12 +11535,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // a one-time "stay on this branch" hint on non-resumed sessions.
     if (executionWorkspace.branchName) {
       const wakePayloadForWorkspace = parseObject(context[PAPERCLIP_WAKE_PAYLOAD_KEY]);
-      if (Object.keys(wakePayloadForWorkspace).length > 0) {
-        context[PAPERCLIP_WAKE_PAYLOAD_KEY] = {
-          ...wakePayloadForWorkspace,
-          executionWorkspace: { branchName: executionWorkspace.branchName },
-        };
-      }
+      context[PAPERCLIP_WAKE_PAYLOAD_KEY] = {
+        ...wakePayloadForWorkspace,
+        executionWorkspace: { branchName: executionWorkspace.branchName },
+      };
     }
     const runtimeServiceIntents = (() => {
       const runtimeConfig = parseObject(hostExecutionWorkspaceConfig.workspaceRuntime);
