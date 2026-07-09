@@ -1,4 +1,4 @@
-import { Lock } from "lucide-react";
+import { Lock, type LucideIcon } from "lucide-react";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -16,8 +16,13 @@ export interface AgentSkillRowData extends AgentSkillSearchFields {
   icon: SkillIconCard;
   /** One-line resolved summary (tagline → description → key fallback). */
   summary: string | null;
-  /** Small chip label: category or source. */
+  /** Small chip label for the primary category. */
   chip?: string | null;
+  /** Formatted source/provenance text rendered without badge chrome. */
+  sourceMeta?: {
+    icon: LucideIcon;
+    label: string;
+  } | null;
   /** Route to the skill detail page; null makes the row non-navigable. */
   linkTo: string | null;
   /** Read-only metadata (adapter-detected skills). */
@@ -37,8 +42,9 @@ export interface AgentSkillRowProps {
 
 /**
  * Dense presentational row for the agent Skills tab: 32px icon, name (links to
- * the skill detail page), one-line clamped tagline, category/source chip, and a
- * right-aligned toggle (or a lock icon for read-only adapter-detected skills).
+ * the skill detail page), one-line clamped tagline, category chip, source
+ * metadata, and a right-aligned toggle (or a lock icon for read-only
+ * adapter-detected skills).
  */
 export function AgentSkillRow({
   variant,
@@ -49,6 +55,7 @@ export function AgentSkillRow({
   onCheckedChange,
 }: AgentSkillRowProps) {
   const readOnly = variant === "readonly";
+  const SourceIcon = data.sourceMeta?.icon;
 
   const leading = (
     <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -64,6 +71,12 @@ export function AgentSkillRow({
         </div>
         {data.summary ? (
           <p className="mt-0.5 truncate text-xs text-muted-foreground">{data.summary}</p>
+        ) : null}
+        {data.sourceMeta && SourceIcon ? (
+          <p className="mt-0.5 flex min-w-0 items-center gap-1 text-(length:--text-nano) text-muted-foreground/80">
+            <SourceIcon className="h-3 w-3 shrink-0" aria-hidden="true" />
+            <span className="truncate">{data.sourceMeta.label}</span>
+          </p>
         ) : null}
         {readOnly && data.originLabel ? (
           <p className="mt-0.5 truncate text-(length:--text-nano) text-muted-foreground/80">

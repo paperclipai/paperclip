@@ -22,6 +22,7 @@ import {
 } from "../../lib/agent-skills-state";
 import { AgentSkillRow, type AgentSkillRowData } from "./AgentSkillRow";
 import { filterAgentSkills } from "./agent-skill-filter";
+import { buildAgentSkillSourceMeta } from "./agent-skill-source";
 
 const MATERIALIZATION_NOTE =
   "Enabled skills are materialized into the stable Paperclip-managed prompt bundle on the agent's next run.";
@@ -156,7 +157,8 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
           color: skill.color,
         },
         summary: resolveSkillSummaryText(skill, { fallbackKey: true }),
-        chip: skill.categories[0] ?? skill.sourceLabel ?? null,
+        chip: skill.categories[0] ?? null,
+        sourceMeta: buildAgentSkillSourceMeta(skill),
         linkTo: `/skills/${skill.id}`,
         // search haystack (mirrors the store's discoveryMatchesSearch fields)
         slug: skill.slug,
