@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act as reactAct } from "react";
 import type { ComponentProps } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { DocumentRevision, Issue, IssueDocument } from "@paperclipai/shared";
@@ -24,6 +25,24 @@ const mockIssuesApi = vi.hoisted(() => ({
 const markdownEditorMockState = vi.hoisted(() => ({
   emitMountEmptyChange: false,
 }));
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+async function act<T>(callback: () => T | Promise<T>): Promise<T> {
+  if (typeof reactAct === "function") {
+    return await (reactAct(callback) as T | Promise<T>);
+  }
+
+  let result: T | Promise<T> | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  const resolved = await result;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  flushSync(() => {});
+  return resolved as T;
+}
 
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
