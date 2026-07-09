@@ -149,6 +149,16 @@ async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
   return hasWorkspace && hasPackageJson && hasServerDir && hasAdapterUtilsDir;
 }
 
+async function isInsideGitWorkspace(candidate: string): Promise<boolean> {
+  let cursor = path.resolve(candidate);
+  for (;;) {
+    if (await pathExists(path.join(cursor, ".git"))) return true;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) return false;
+    cursor = parent;
+  }
+}
+
 async function isLikelyPaperclipRuntimeSkillPath(
   candidate: string,
   skillName: string,
@@ -522,6 +532,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
     const executionTargetIsSandbox =
       runtimeExecutionTarget?.kind === "remote" && runtimeExecutionTarget.transport === "sandbox";
+    const executionTargetNeedsGitTrustBypass =
+      executionTargetIsSandbox ||
+      (
+        !executionTargetIsRemote &&
+        workspaceSource === "project_primary" &&
+        workspaceStrategy !== "git_worktree" &&
+        workspaceRepoUrl.length === 0 &&
+        workspaceWorktreePath.length === 0 &&
+        !(await isInsideGitWorkspace(effectiveExecutionCwd))
+      );
     const restoreRemoteWorkspace = preparedExecutionTargetRuntime
       ? () => preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line))
       : null;
@@ -792,9 +812,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
       return notes;
     })();
-    if (executionTargetIsSandbox) {
+    if (executionTargetNeedsGitTrustBypass) {
       commandNotes.push(
-        "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
+        executionTargetIsSandbox
+          ? "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces."
+          : "Added --skip-git-repo-check for managed project-primary execution because the workspace is not inside a git checkout.",
       );
     }
     if (preparedRuntimeConfig.notes.length > 0) {
@@ -824,7 +846,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         forceSaferInvocation ? { ...config, fastMode: false } : config,
         {
           resumeSessionId,
-          skipGitRepoCheck: executionTargetIsSandbox,
+          skipGitRepoCheck: executionTargetNeedsGitTrustBypass,
         },
       );
       const args = execArgs.args;

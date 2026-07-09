@@ -84,6 +84,107 @@ describe("codex remote execution", () => {
     }
   });
 
+  it("adds the git trust bypass for local managed project-primary workspaces outside a git checkout", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-managed-nongit-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+
+    await execute({
+      runId: "run-managed-nongit",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "codex",
+        env: {
+          CODEX_HOME: codexHomeDir,
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+          strategy: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    expect(call?.[2]).toEqual([
+      "exec",
+      "--json",
+      "--skip-git-repo-check",
+      "-",
+    ]);
+  });
+
+  it("does not add the git trust bypass for local project-primary workspaces inside a git checkout", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-managed-git-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const nestedWorkspaceDir = path.join(workspaceDir, "nested");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(nestedWorkspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(workspaceDir, ".git"), "gitdir: /tmp/paperclip-fixture.git\n", "utf8");
+    await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+
+    await execute({
+      runId: "run-managed-git",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "codex",
+        env: {
+          CODEX_HOME: codexHomeDir,
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: nestedWorkspaceDir,
+          source: "project_primary",
+          strategy: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    expect(call?.[2]).toEqual([
+      "exec",
+      "--json",
+      "-",
+    ]);
+  });
+
   it("prepares the workspace, syncs CODEX_HOME, and restores workspace changes for remote SSH execution", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-remote-"));
     cleanupDirs.push(rootDir);
