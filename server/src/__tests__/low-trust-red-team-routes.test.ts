@@ -70,30 +70,31 @@ async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 
   throw new Error("Timed out waiting for condition");
 }
 
-function isHeartbeatRunEventFkError(error: unknown) {
+function isHeartbeatCleanupFkError(error: unknown) {
   const message = error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : String(error);
-  return message.includes("heartbeat_run_events_run_id_heartbeat_runs_id_fk");
+  return (
+    message.includes("heartbeat_run_events_run_id_heartbeat_runs_id_fk") ||
+    message.includes("activity_log_run_id_heartbeat_runs_id_fk") ||
+    message.includes("heartbeat_runs_wakeup_request_id_agent_wakeup_requests_id_fk")
+  );
 }
 
 async function deleteHeartbeatRunsAndWakeupsAfterActivityLogDrains(db: Db) {
-  let lastError: unknown = null;
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
     try {
       await db.delete(heartbeatRunEvents);
       await db.delete(heartbeatRuns);
       await db.delete(agentWakeupRequests);
       return;
     } catch (error) {
-      lastError = error;
-      if (!isHeartbeatRunEventFkError(error)) {
+      if (!isHeartbeatCleanupFkError(error) || attempt === 9) {
         throw error;
       }
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
   }
-  throw lastError;
 }
 
 function expectNoCanary(value: unknown, ...markers: string[]) {
