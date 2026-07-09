@@ -430,6 +430,47 @@ describe("claude execute", () => {
     }
   });
 
+  it("classifies Claude context-limit failures as deterministic and clears the session", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-context-limit-"));
+    const resultEvent = {
+      type: "result",
+      subtype: "success",
+      session_id: "claude-session-too-large",
+      is_error: true,
+      result: "Prompt is too long",
+      terminal_reason: "blocking_limit",
+      usage: { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 },
+    };
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: (commandPath) => writeFailingClaudeCommand(commandPath, { resultEvent }),
+    });
+
+    try {
+      const result = await execute({
+        runId: "run-context-limit",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: "claude-session-too-large", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("claude_context_limit");
+      expect(result.errorFamily).toBeNull();
+      expect(result.resultJson).toMatchObject({ stopReason: "context_limit", errorCategory: "context_limit" });
+      expect(result.clearSession).toBe(true);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not normalize unstructured max-turn text into scheduler stop metadata", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-max-turn-text-"));
     const resultEvent = {

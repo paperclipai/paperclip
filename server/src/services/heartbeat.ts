@@ -244,6 +244,10 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+export const CONTEXT_LIMIT_FRESH_SESSION_RETRY_REASON = "context_limit_fresh_session";
+export const CONTEXT_LIMIT_FRESH_SESSION_WAKE_REASON = "context_limit_fresh_session_retry";
+const CONTEXT_LIMIT_FRESH_SESSION_MAX_ATTEMPTS = 1;
+const CONTEXT_LIMIT_FRESH_SESSION_DELAY_MS = 0;
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -290,6 +294,17 @@ function isMaxTurnExhaustionRun(
   return Boolean(
     normalizeMaxTurnStopReason(resultJson.stopReason) ??
       normalizeMaxTurnStopReason(run.errorCode),
+  );
+}
+
+function isContextLimitRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
+) {
+  const resultJson = parseObject(run.resultJson);
+  return (
+    run.errorCode === "claude_context_limit" ||
+    readNonEmptyString(resultJson.stopReason) === "context_limit" ||
+    readNonEmptyString(resultJson.errorCategory) === "context_limit"
   );
 }
 
@@ -5768,10 +5783,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
-    const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const forceFreshSessionRetry = retryReason === CONTEXT_LIMIT_FRESH_SESSION_RETRY_REASON;
+    const sessionBefore = forceFreshSessionRetry
+      ? null
+      : await resolveSessionBeforeForWakeup(agent, taskKey);
+    const retryContextPatch = {
+      ...(opts?.contextPatch ?? {}),
+      ...(forceFreshSessionRetry
+        ? {
+            forceFreshSession: true,
+            freshSessionReason: "context_limit",
+            freshSessionOfRunId: run.id,
+          }
+        : {}),
+    };
     const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint({
       ...contextSnapshot,
-      ...(opts?.contextPatch ?? {}),
+      ...retryContextPatch,
       retryOfRunId: run.id,
       wakeReason,
       retryReason,
@@ -5945,6 +5973,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ...(issueId ? { issueId } : {}),
             retryOfRunId: run.id,
             retryReason,
+            ...retryContextPatch,
             ...(transientRecovery ? { errorFamily: transientRecovery.errorFamily } : {}),
             scheduledRetryAttempt: schedule.attempt,
             scheduledRetryAt: schedule.dueAt.toISOString(),
@@ -9071,6 +9100,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
+        } else if (outcome === "failed" && isContextLimitRun(livenessRun)) {
+          await scheduleBoundedRetryForRun(livenessRun, agent, {
+            delayMs: CONTEXT_LIMIT_FRESH_SESSION_DELAY_MS,
+            retryReason: CONTEXT_LIMIT_FRESH_SESSION_RETRY_REASON,
+            wakeReason: CONTEXT_LIMIT_FRESH_SESSION_WAKE_REASON,
+            maxAttempts: CONTEXT_LIMIT_FRESH_SESSION_MAX_ATTEMPTS,
+          });
         } else if (seamlessFailoverRetry) {
           // The credential hit a usage limit and the agent has another same-type
           // credential to fall back on. Retry IMMEDIATELY (delayMs 0) rather than

@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   budgetPolicies,
   companies,
@@ -20,6 +21,8 @@ import {
 } from "./helpers/embedded-postgres.js";
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
+  CONTEXT_LIMIT_FRESH_SESSION_RETRY_REASON,
+  CONTEXT_LIMIT_FRESH_SESSION_WAKE_REASON,
   MAX_TURN_CONTINUATION_RETRY_REASON,
   MAX_TURN_CONTINUATION_WAKE_REASON,
   heartbeatService,
@@ -50,6 +53,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
     await db.delete(issues);
+    await db.delete(agentTaskSessions);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
@@ -74,9 +78,11 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     resultJson?: Record<string, unknown> | null;
     adapterType?: "codex_local" | "claude_local";
     agentName?: string;
+    issueId?: string;
   }) {
     const adapterType = input.adapterType ?? "codex_local";
     const agentName = input.agentName ?? (adapterType === "claude_local" ? "ClaudeCoder" : "CodexCoder");
+    const issueId = input.issueId ?? randomUUID();
     await db.insert(companies).values({
       id: input.companyId,
       name: "Paperclip",
@@ -122,7 +128,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
           : {}),
       },
       contextSnapshot: {
-        issueId: randomUUID(),
+        issueId,
         wakeReason: "issue_assigned",
       },
       updatedAt: input.now,
@@ -1336,5 +1342,95 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect((wakeupRequest?.payload as Record<string, unknown> | null)?.transientRetryNotBefore).toBe(
       retryNotBefore.toISOString(),
     );
+  });
+
+  it("schedules Claude context-limit retries on a fresh session", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+    const now = new Date("2026-04-22T10:00:00.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      issueId,
+      now,
+      adapterType: "claude_local",
+      errorCode: "claude_context_limit",
+      resultJson: {
+        stopReason: "context_limit",
+        errorCategory: "context_limit",
+      },
+    });
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: "claude_local",
+      taskKey: issueId,
+      sessionParamsJson: {
+        sessionId: "e38e3b92-9e72-48b5-a33d-db6261f36c59",
+        cwd: "/workspace/paperclip",
+      },
+      sessionDisplayId: "e38e3b92-9e72-48b5-a33d-db6261f36c59",
+      lastRunId: runId,
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      retryReason: CONTEXT_LIMIT_FRESH_SESSION_RETRY_REASON,
+      wakeReason: CONTEXT_LIMIT_FRESH_SESSION_WAKE_REASON,
+      maxAttempts: 1,
+      delayMs: 0,
+    });
+
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+    expect(scheduled.attempt).toBe(1);
+    expect(scheduled.maxAttempts).toBe(1);
+    expect(scheduled.dueAt.toISOString()).toBe(now.toISOString());
+
+    const retryRun = await db
+      .select({
+        sessionIdBefore: heartbeatRuns.sessionIdBefore,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(retryRun?.sessionIdBefore).toBeNull();
+    expect(retryRun?.scheduledRetryReason).toBe(CONTEXT_LIMIT_FRESH_SESSION_RETRY_REASON);
+    expect(retryRun?.scheduledRetryAt?.toISOString()).toBe(now.toISOString());
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      issueId,
+      forceFreshSession: true,
+      freshSessionReason: "context_limit",
+      freshSessionOfRunId: runId,
+      wakeReason: CONTEXT_LIMIT_FRESH_SESSION_WAKE_REASON,
+      retryReason: CONTEXT_LIMIT_FRESH_SESSION_RETRY_REASON,
+      scheduledRetryAttempt: 1,
+    });
+
+    const wakeupRequest = await db
+      .select({ reason: agentWakeupRequests.reason, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, retryRun?.wakeupRequestId ?? ""))
+      .then((rows) => rows[0] ?? null);
+
+    expect(wakeupRequest?.reason).toBe(CONTEXT_LIMIT_FRESH_SESSION_WAKE_REASON);
+    expect(wakeupRequest?.payload).toMatchObject({
+      issueId,
+      retryOfRunId: runId,
+      retryReason: CONTEXT_LIMIT_FRESH_SESSION_RETRY_REASON,
+      forceFreshSession: true,
+      freshSessionReason: "context_limit",
+      freshSessionOfRunId: runId,
+      scheduledRetryAttempt: 1,
+    });
   });
 });

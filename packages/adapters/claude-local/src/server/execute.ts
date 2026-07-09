@@ -52,6 +52,7 @@ import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
+  isClaudeContextLimitError,
   isClaudeMaxTurnsResult,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
@@ -847,7 +848,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     if (!parsed) {
       const fallbackErrorMessage = parseFallbackErrorMessage(proc);
+      const contextLimit =
+        !loginMeta.requiresLogin &&
+        isClaudeContextLimitError({
+          parsed: null,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        });
       const transientUpstream =
+        !contextLimit &&
         !loginMeta.requiresLogin &&
         (proc.exitCode ?? 0) !== 0 &&
         isClaudeTransientUpstreamError({
@@ -866,6 +876,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : null;
       const errorCode = loginMeta.requiresLogin
         ? "claude_auth_required"
+        : contextLimit
+        ? "claude_context_limit"
         : transientUpstream
         ? "claude_transient_upstream"
         : null;
@@ -881,6 +893,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
+          ...(contextLimit ? { stopReason: "context_limit", errorCategory: "context_limit" } : {}),
           ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
           ...(transientRetryNotBefore
             ? { retryNotBefore: transientRetryNotBefore.toISOString() }
@@ -889,7 +902,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() }
             : {}),
         },
-        clearSession: Boolean(opts.clearSessionOnMissingSession),
+        clearSession: contextLimit || Boolean(opts.clearSessionOnMissingSession),
       };
     }
 
@@ -928,10 +941,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
+    const clearSessionForContextLimit =
+      failed &&
+      isClaudeContextLimitError({
+        parsed,
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        errorMessage,
+      });
     const transientUpstream =
       failed &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
+      !clearSessionForContextLimit &&
       isClaudeTransientUpstreamError({
         parsed,
         stdout: proc.stdout,
@@ -950,12 +972,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? "claude_auth_required"
       : failed && clearSessionForMaxTurns
       ? "max_turns_exhausted"
+      : clearSessionForContextLimit
+      ? "claude_context_limit"
       : transientUpstream
       ? "claude_transient_upstream"
       : null;
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
+      ...(clearSessionForContextLimit ? { stopReason: "context_limit", errorCategory: "context_limit" } : {}),
       ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
       ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
@@ -993,7 +1018,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       costUsd,
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
-      clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
+      clearSession:
+        clearSessionForMaxTurns ||
+        clearSessionForContextLimit ||
+        Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
     };
   };
 

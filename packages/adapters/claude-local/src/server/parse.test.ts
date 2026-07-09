@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
+  isClaudeContextLimitError,
   isClaudeTransientUpstreamError,
 } from "./parse.js";
 
@@ -91,6 +92,47 @@ describe("isClaudeTransientUpstreamError", () => {
     expect(
       isClaudeTransientUpstreamError({
         errorMessage: "Invalid request_error: Unknown parameter 'foo'.",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not classify context-length failures as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          subtype: "success",
+          is_error: true,
+          result: "Prompt is too long",
+          terminal_reason: "blocking_limit",
+        },
+        stdout: "Claude's response exceeded the 20000 output token maximum.",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isClaudeContextLimitError", () => {
+  it("detects Claude prompt and compaction size failures", () => {
+    expect(
+      isClaudeContextLimitError({
+        parsed: {
+          subtype: "success",
+          is_error: true,
+          result: "Prompt is too long",
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeContextLimitError({
+        stdout: "compact_error: API Error: Claude's response exceeded the 20000 output token maximum.",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not confuse quota limits with context limits", () => {
+    expect(
+      isClaudeContextLimitError({
+        errorMessage: "You're out of extra usage · resets 4pm (America/Chicago)",
       }),
     ).toBe(false);
   });

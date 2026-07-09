@@ -13,6 +13,8 @@ const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+const CLAUDE_CONTEXT_LIMIT_RE =
+  /(?:prompt\s+is\s+too\s+long|context\s+(?:window\s+)?(?:limit|length|too\s+long|exceeded)|maximum\s+context|input\s+tokens?\s+(?:exceed|exceeded|too\s+large)|too\s+many\s+input\s+tokens|response\s+exceeded\s+the\s+\d+\s+output\s+token\s+maximum|output\s+token\s+maximum)/i;
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
@@ -367,6 +369,17 @@ export function extractClaudeRetryNotBefore(
   return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
 }
 
+export function isClaudeContextLimitError(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const haystack = buildClaudeTransientHaystack(input);
+  if (!haystack) return false;
+  return CLAUDE_CONTEXT_LIMIT_RE.test(haystack);
+}
+
 export function isClaudeTransientUpstreamError(input: {
   parsed?: Record<string, unknown> | null;
   stdout?: string | null;
@@ -384,6 +397,7 @@ export function isClaudeTransientUpstreamError(input: {
     stderr: input.stderr ?? "",
   });
   if (loginMeta.requiresLogin) return false;
+  if (isClaudeContextLimitError(input)) return false;
 
   const haystack = buildClaudeTransientHaystack(input);
   if (!haystack) return false;
