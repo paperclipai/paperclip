@@ -434,28 +434,32 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
 
   it("accepts a workspace-linked issue when adapter cwd is a subdirectory inside a git worktree", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-parent-"));
-    const cwd = path.join(root, "nested", "project");
-    await fs.mkdir(cwd, { recursive: true });
-    await execFile("git", ["init"], { cwd: root });
+    try {
+      const cwd = path.join(root, "nested", "project");
+      await fs.mkdir(cwd, { recursive: true });
+      await execFile("git", ["init"], { cwd: root });
 
-    const input = buildWorkspaceValidationInput();
+      const input = buildWorkspaceValidationInput();
 
-    await expect(
-      assertGitSensitiveAdapterWorkspaceValid(
-        buildWorkspaceValidationInput({
-          resolvedWorkspace: buildResolvedWorkspace({ cwd }),
-          executionWorkspace: {
-            ...input.executionWorkspace,
-            baseCwd: cwd,
-            cwd,
-          },
-          persistedExecutionWorkspace: {
-            ...input.persistedExecutionWorkspace!,
-            cwd,
-          },
-        }),
-      ),
-    ).resolves.toBeUndefined();
+      await expect(
+        assertGitSensitiveAdapterWorkspaceValid(
+          buildWorkspaceValidationInput({
+            resolvedWorkspace: buildResolvedWorkspace({ cwd }),
+            executionWorkspace: {
+              ...input.executionWorkspace,
+              baseCwd: cwd,
+              cwd,
+            },
+            persistedExecutionWorkspace: {
+              ...input.persistedExecutionWorkspace!,
+              cwd,
+            },
+          }),
+        ),
+      ).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   it("does not apply the git-sensitive workspace guard to non-local execution targets", async () => {
