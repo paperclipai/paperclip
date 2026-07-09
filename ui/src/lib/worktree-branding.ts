@@ -1,3 +1,5 @@
+import { READABLE_TEXT_LIGHT, READABLE_TEXT_DARK } from "./color-contrast";
+
 export type WorktreeUiBranding = {
   enabled: true;
   name: string;
@@ -46,7 +48,7 @@ function pickReadableTextColor(background: string): string {
     (0.0722 * relativeLuminanceChannel(b));
   const whiteContrast = 1.05 / (luminance + 0.05);
   const blackContrast = (luminance + 0.05) / 0.05;
-  return whiteContrast >= blackContrast ? "#f8fafc" : "#111827";
+  return whiteContrast >= blackContrast ? READABLE_TEXT_LIGHT : READABLE_TEXT_DARK;
 }
 
 export function getWorktreeUiBranding(): WorktreeUiBranding | null {

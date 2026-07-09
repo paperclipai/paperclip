@@ -14,7 +14,7 @@ vi.mock("node:child_process", async () => {
   };
 });
 
-import plugin from "./plugin.js";
+import plugin, { validateSshPrivateKey } from "./plugin.js";
 
 class MockChildProcess extends EventEmitter {
   stdout = new EventEmitter();
@@ -162,6 +162,117 @@ describe("exe.dev sandbox provider plugin", () => {
         "env contains an invalid key: BAD-KEY",
         "strictHostKeyChecking cannot be empty.",
       ],
+    });
+  });
+
+  describe("sshPrivateKey validation", () => {
+    const VALID_OPENSSH = [
+      "-----BEGIN OPENSSH PRIVATE KEY-----",
+      "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gt",
+      "ZWQyNTUxOQAAACBPzMxQp4Y6XCfDV2t6oWmqHkKx0K7C7w7q9F6gQ3jPbgAAAJjJ8jjE",
+      "yfI4xAAAAAtzc2gtZWQyNTUxOQAAACBPzMxQp4Y6XCfDV2t6oWmqHkKx0K7C7w7q9F6g",
+      "Q3jPbgAAAEDqLhB4kV1tw8m4gE9oNCkF2cJv0YnHQ8E5sHU3xKnD5k/MzFCnhjpcJ8NX",
+      "a3qhaaoeQrHQrsLvDur0XqBDeM9uAAAAFXVzZXJAaG9zdAECAwQ=",
+      "-----END OPENSSH PRIVATE KEY-----",
+    ].join("\n");
+    const VALID_RSA_PEM = [
+      "-----BEGIN RSA PRIVATE KEY-----",
+      "MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu",
+      "KUpRKfFLfRYC9AIKjbJTWit+CqvjWYzvQwECAwEAAQJAIJLixBy2qpFoS4DSmoEm",
+      "o3qGy0t6z5tZbcgvflRslzu1HxXLpwYqQq2gMNw9UQAoHs3rDl+EzBjF6trBV5wF",
+      "wQIhANwiwDR7TVlIRk5kbgPMd2dDgY8mAU1cQ8KbWvjVMmKxAiEAxYTUyVjwhfQy",
+      "VJoR7T0n4XdR1n+W8Eth7AEPxnHfaQECIB5cNuqB9F1qC2pSyf6e+UAyl9rmKQXp",
+      "-----END RSA PRIVATE KEY-----",
+    ].join("\n");
+
+    it("accepts a valid OpenSSH PEM block", () => {
+      expect(validateSshPrivateKey(VALID_OPENSSH)).toBeNull();
+    });
+
+    it("accepts a valid PKCS#1 RSA PEM block", () => {
+      expect(validateSshPrivateKey(VALID_RSA_PEM)).toBeNull();
+    });
+
+    it("accepts UUID-like secret reference values from the save-time schema stage", async () => {
+      process.env.EXE_API_KEY = "host-key";
+
+      const result = await plugin.definition.onEnvironmentValidateConfig?.({
+        driverKey: "exe-dev",
+        config: {
+          apiKey: "api-key",
+          sshPrivateKey: "11111111-1111-4111-8111-111111111111",
+        },
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        normalizedConfig: {
+          sshPrivateKey: "11111111-1111-4111-8111-111111111111",
+        },
+      });
+      expect(result?.errors ?? []).toEqual([]);
+    });
+
+    it("treats empty / whitespace-only input as valid (falls back to on-host key)", () => {
+      expect(validateSshPrivateKey("")).toBeNull();
+      expect(validateSshPrivateKey("   \n\n  ")).toBeNull();
+    });
+
+    it("rejects a pasted public key", () => {
+      expect(
+        validateSshPrivateKey("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE+gT9 user@host"),
+      ).toMatch(/looks like a PUBLIC key/);
+    });
+
+    it("rejects a PuTTY PPK file paste", () => {
+      const ppk = [
+        "PuTTY-User-Key-File-3: ssh-ed25519",
+        "Encryption: none",
+        "Comment: imported-openssh-key",
+        "Public-Lines: 2",
+        "AAAAC3NzaC1lZDI1NTE5AAAAIE+gT9zMxQp4Y6XCfDV2t6oWmqHkKx0K7C7w7q9F6g",
+        "Q3jP",
+      ].join("\n");
+      expect(validateSshPrivateKey(ppk)).toMatch(/PuTTY \.ppk/);
+    });
+
+    it("rejects a missing END marker (truncated paste)", () => {
+      const truncated = VALID_OPENSSH.split("\n").slice(0, -1).join("\n");
+      expect(validateSshPrivateKey(truncated)).toMatch(/missing its '-----END/);
+    });
+
+    it("rejects a body with non-base64 characters", () => {
+      const garbled = [
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "this is not base64!!",
+        "-----END OPENSSH PRIVATE KEY-----",
+      ].join("\n");
+      expect(validateSshPrivateKey(garbled)).toMatch(/non-base64/);
+    });
+
+    it("rejects a header/footer label mismatch", () => {
+      const mismatched = [
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "Zm9vYmFy",
+        "-----END RSA PRIVATE KEY-----",
+      ].join("\n");
+      expect(validateSshPrivateKey(mismatched)).toMatch(/header\/footer mismatch/);
+    });
+
+    it("returns the sshPrivateKey error from onEnvironmentValidateConfig on save", async () => {
+      process.env.EXE_API_KEY = "host-key";
+
+      const result = await plugin.definition.onEnvironmentValidateConfig?.({
+        driverKey: "exe-dev",
+        config: {
+          sshPrivateKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE+gT9 user@host",
+        },
+      });
+
+      expect(result?.ok).toBe(false);
+      expect(result?.errors ?? []).toEqual(
+        expect.arrayContaining([expect.stringMatching(/sshPrivateKey looks like a PUBLIC key/)]),
+      );
     });
   });
 
@@ -341,6 +452,38 @@ describe("exe.dev sandbox provider plugin", () => {
       },
     })).rejects.toThrow(
       "the Paperclip host SSH key is not registered with exe.dev",
+    );
+
+    expect(String(fetchMock.mock.calls[1]?.[1]?.body ?? "")).toBe("rm --json 'paperclip-env-run'");
+  });
+
+  it("surfaces invalid SSH key-format guidance during lease acquisition", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        vm_name: "paperclip-env-run",
+        ssh_dest: "paperclip-env-run.exe.xyz",
+        https_url: "https://paperclip-env-run.exe.xyz",
+        status: "running",
+      }), { status: 200 }),
+    );
+    fetchMock.mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    queueSpawnResult({
+      code: 255,
+      stderr: 'Load key "/tmp/paperclip-exe-dev-ssh-abc/id_ed25519": invalid format\n',
+    });
+
+    await expect(plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "exe-dev",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      config: {
+        apiKey: "api-key",
+        sshPrivateKey: "not-actually-a-key",
+        timeoutMs: 300000,
+      },
+    })).rejects.toThrow(
+      "the configured SSH private key isn't an OpenSSH-format private key",
     );
 
     expect(String(fetchMock.mock.calls[1]?.[1]?.body ?? "")).toBe("rm --json 'paperclip-env-run'");

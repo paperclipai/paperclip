@@ -32,26 +32,29 @@ const IDENTIFIER_PATTERN = /^[A-Z]+-\d+$/;
 
 const SCOPE_LABELS: Record<CompanySearchScope, string> = {
   all: "All",
-  issues: "Issues",
+  issues: "Tasks",
   comments: "Comments",
   documents: "Documents",
+  artifacts: "Artifacts",
   agents: "Agents",
   projects: "Projects",
 };
 
-type SubGroupKey = "issues" | "comments" | "documents" | "agents" | "projects";
+type SubGroupKey = "issues" | "comments" | "documents" | "artifacts" | "agents" | "projects";
 
-const SUBGROUP_ORDER: SubGroupKey[] = ["issues", "comments", "documents", "agents", "projects"];
+const SUBGROUP_ORDER: SubGroupKey[] = ["issues", "comments", "documents", "artifacts", "agents", "projects"];
 
 const SUBGROUP_LABELS: Record<SubGroupKey, string> = {
-  issues: "Issues",
+  issues: "Tasks",
   comments: "Comments",
   documents: "Documents",
+  artifacts: "Artifacts",
   agents: "Agents",
   projects: "Projects",
 };
 
 function classifyResult(result: CompanySearchResult): SubGroupKey {
+  if (result.type === "artifact") return "artifacts";
   if (result.type === "agent") return "agents";
   if (result.type === "project") return "projects";
   const matched = new Set(result.matchedFields);
@@ -261,14 +264,14 @@ export function Search() {
     return () => window.removeEventListener("keydown", handler);
   }, [focusInput]);
 
-  const counts = data?.countsByType ?? { issue: 0, agent: 0, project: 0 };
+  const counts = data?.countsByType ?? { issue: 0, artifact: 0, agent: 0, project: 0 };
   const totalResults = data?.results.length ?? 0;
 
   const tabItems = useMemo<PageTabItem[]>(() => {
     function pill(value: number) {
       if (!data) return null;
       return (
-        <Badge variant="outline" className="ml-1.5 px-1.5 py-0 text-[10px] tabular-nums font-normal">
+        <Badge variant="outline" className="ml-1.5 px-1.5 py-0 text-(length:--text-nano) tabular-nums font-normal">
           {value}
         </Badge>
       );
@@ -276,8 +279,9 @@ export function Search() {
     const issuesTotal = counts.issue ?? 0;
     return COMPANY_SEARCH_SCOPES.map((value) => {
       let count: number | null = null;
-      if (value === "all") count = (counts.issue ?? 0) + (counts.agent ?? 0) + (counts.project ?? 0);
+      if (value === "all") count = (counts.issue ?? 0) + (counts.artifact ?? 0) + (counts.agent ?? 0) + (counts.project ?? 0);
       else if (value === "issues") count = issuesTotal;
+      else if (value === "artifacts") count = counts.artifact ?? 0;
       else if (value === "agents") count = counts.agent ?? 0;
       else if (value === "projects") count = counts.project ?? 0;
       return {
@@ -342,7 +346,7 @@ export function Search() {
                 }
               }
             }}
-            placeholder="Search issues, comments, documents, agents, projects…"
+            placeholder="Search tasks, comments, documents, artifacts, agents, projects…"
             aria-label="Search query"
             className="h-10 pl-9 pr-20 text-sm"
           />
@@ -358,7 +362,7 @@ export function Search() {
           ) : null}
           <kbd
             aria-hidden
-            className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+            className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-(length:--text-nano) font-medium text-muted-foreground"
           >
             ⌘K
           </kbd>
@@ -452,12 +456,12 @@ function SearchTabContent({
         <div>
           <h2 className="text-lg font-semibold">Type to search company memory.</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Issues, comments, plan documents, agents, projects — same surface, ranked by relevance.
+            Tasks, comments, plan documents, artifacts, agents, projects — same surface, ranked by relevance.
           </p>
         </div>
         {recentSearches.length > 0 ? (
           <div>
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="mb-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
               Recent searches
             </div>
             <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
@@ -479,7 +483,7 @@ function SearchTabContent({
         <ul className="space-y-1 text-xs text-muted-foreground">
           <li>
             <span className="font-medium text-foreground">Identifier lookup:</span> type{" "}
-            <code className="rounded bg-muted px-1 py-0.5 text-[11px]">PAP-123</code> to jump straight to an issue.
+            <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)">PAP-123</code> to jump straight to a task.
           </li>
           <li>
             <span className="font-medium text-foreground">Quoted phrases:</span> wrap a phrase in quotes to match the
@@ -502,14 +506,14 @@ function SearchTabContent({
         <div className="text-base font-semibold">Couldn’t run that search</div>
         <p className="text-sm text-muted-foreground">
           {status ? `The server returned ${status}.` : "The request failed."} Your input and filters are still here, so
-          you can retry or fall back to the Issues filter.
+          you can retry or fall back to the Tasks filter.
         </p>
         <div className="flex flex-wrap items-center justify-center gap-2">
           <Button onClick={refetch} variant="default" size="sm">
             Retry
           </Button>
           <Button onClick={navigateIssuesFallback} variant="outline" size="sm">
-            Open Issues filter view
+            Open Tasks filter view
           </Button>
         </div>
       </div>
@@ -557,10 +561,10 @@ function SearchTabContent({
           ) : null}
           <Button onClick={openNewIssue} size="sm" variant="default">
             <Plus className="mr-1.5 h-4 w-4" />
-            Create issue from this query
+            Create task from this query
           </Button>
           <Button onClick={navigateIssuesFallback} size="sm" variant="ghost">
-            Open Issues filter view
+            Open Tasks filter view
           </Button>
         </div>
         <ul className="mt-2 space-y-0.5 text-xs text-muted-foreground">
@@ -577,8 +581,8 @@ function SearchTabContent({
   if (!hasResults) return null;
 
   return (
-    <div className="flex w-full max-w-[960px] flex-col px-2 sm:px-4" data-testid="search-results">
-      <div className="flex items-center justify-between py-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+    <div className="flex w-full max-w-(--sz-960px) flex-col px-2 sm:px-4" data-testid="search-results">
+      <div className="flex items-center justify-between py-2 text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
         <span>
           {totalResults === 1 ? "1 result" : `${totalResults} results`} · sorted by relevance
         </span>
@@ -599,7 +603,7 @@ function SearchTabContent({
                     {group.results.length}
                   </span>
                 }
-                className="pt-2 pb-1 text-[11px] tracking-wider text-muted-foreground"
+                className="pt-2 pb-1 text-(length:--text-micro) tracking-wider text-muted-foreground"
               />
               <div className="flex flex-col gap-y-1">
                 {group.results.map((result) => (

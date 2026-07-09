@@ -292,6 +292,62 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("creates request_checkbox_confirmation interactions with checkbox payloads", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "interaction-1", kind: "request_checkbox_confirmation" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipRequestCheckboxConfirmation");
+    await tool.execute({
+      issueId: "PAP-1135",
+      idempotencyKey: "confirmation:PAP-1135:files",
+      title: "Choose files",
+      payload: {
+        version: 1,
+        prompt: "Which files should be included?",
+        detailsMarkdown: "Pick the files to attach.",
+        options: [
+          { id: "file-a", label: "File A", description: "Primary draft" },
+          { id: "file-b", label: "File B" },
+        ],
+        defaultSelectedOptionIds: ["file-a"],
+        minSelected: 1,
+        maxSelected: 2,
+        acceptLabel: "Use selected files",
+        rejectLabel: "Do not attach files",
+        rejectRequiresReason: true,
+        allowDeclineReason: false,
+      },
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-1135/interactions");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      kind: "request_checkbox_confirmation",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: "confirmation:PAP-1135:files",
+      title: "Choose files",
+      payload: {
+        version: 1,
+        prompt: "Which files should be included?",
+        detailsMarkdown: "Pick the files to attach.",
+        options: [
+          { id: "file-a", label: "File A", description: "Primary draft" },
+          { id: "file-b", label: "File B" },
+        ],
+        defaultSelectedOptionIds: ["file-a"],
+        minSelected: 1,
+        maxSelected: 2,
+        acceptLabel: "Use selected files",
+        rejectLabel: "Do not attach files",
+        rejectRequiresReason: true,
+        allowDeclineReason: false,
+      },
+    });
+  });
+
   it("creates approvals with the expected company-scoped payload", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ id: "approval-1" }),

@@ -7,6 +7,15 @@ import type {
 import type {
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentInteractiveSetupSession,
+  PluginEnvironmentStartInteractiveSetupParams,
+  PluginEnvironmentGetInteractiveSetupParams,
+  PluginEnvironmentCaptureTemplateParams,
+  PluginEnvironmentCaptureTemplateResult,
+  PluginEnvironmentCancelInteractiveSetupParams,
+  PluginEnvironmentCancelInteractiveSetupResult,
+  PluginEnvironmentDeleteTemplateParams,
+  PluginEnvironmentDeleteTemplateResult,
   PluginEnvironmentLease,
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentRealizeWorkspaceResult,
@@ -94,6 +103,13 @@ export async function listReadyPluginEnvironmentDrivers(input: {
         displayName: driver.displayName,
         description: driver.description,
         configSchema: driver.configSchema,
+        supportsReusableLeases: driver.supportsReusableLeases,
+        supportsInteractiveSetup: driver.supportsInteractiveSetup,
+        interactiveSetupConnectionTypes: driver.interactiveSetupConnectionTypes,
+        supportsTemplateCapture: driver.supportsTemplateCapture,
+        templateRefKind: driver.templateRefKind,
+        templateConfigBinding: driver.templateConfigBinding,
+        supportsTemplateDelete: driver.supportsTemplateDelete,
       }));
   });
 }
@@ -182,7 +198,7 @@ export async function probePluginEnvironmentDriver(input: {
     companyId: input.companyId,
     environmentId: input.environmentId,
     config: input.config.driverConfig,
-  });
+  }, 120_000);
 
   return {
     ok: result.ok,
@@ -227,7 +243,7 @@ export async function probePluginSandboxProviderDriver(input: {
     companyId: input.companyId,
     environmentId: input.environmentId,
     config: driverConfig,
-  });
+  }, 120_000);
 
   return {
     ok: result.ok,
@@ -326,6 +342,111 @@ export async function executePluginEnvironmentCommand(input: {
       config: input.config.driverConfig,
     }),
   );
+}
+
+export async function startPluginEnvironmentInteractiveSetup(input: {
+  db: Db;
+  workerManager: PluginWorkerManager;
+  config: PluginEnvironmentConfig;
+  params: Omit<PluginEnvironmentStartInteractiveSetupParams, "driverKey" | "config">;
+}): Promise<PluginEnvironmentInteractiveSetupSession> {
+  const { plugin } = await resolvePluginEnvironmentDriver({
+    db: input.db,
+    workerManager: input.workerManager,
+    config: input.config,
+  });
+  return await input.workerManager.call(plugin.id, "environmentStartInteractiveSetup", {
+    ...input.params,
+    driverKey: input.config.driverKey,
+    config: input.config.driverConfig,
+  }, resolvePluginExecuteRpcTimeoutMs({
+    requestedTimeoutMs: undefined,
+    config: input.config.driverConfig,
+  }));
+}
+
+export async function getPluginEnvironmentInteractiveSetup(input: {
+  db: Db;
+  workerManager: PluginWorkerManager;
+  config: PluginEnvironmentConfig;
+  params: Omit<PluginEnvironmentGetInteractiveSetupParams, "driverKey" | "config">;
+}): Promise<PluginEnvironmentInteractiveSetupSession> {
+  const { plugin } = await resolvePluginEnvironmentDriver({
+    db: input.db,
+    workerManager: input.workerManager,
+    config: input.config,
+  });
+  return await input.workerManager.call(plugin.id, "environmentGetInteractiveSetup", {
+    ...input.params,
+    driverKey: input.config.driverKey,
+    config: input.config.driverConfig,
+  }, resolvePluginExecuteRpcTimeoutMs({
+    requestedTimeoutMs: undefined,
+    config: input.config.driverConfig,
+  }));
+}
+
+export async function capturePluginEnvironmentTemplate(input: {
+  db: Db;
+  workerManager: PluginWorkerManager;
+  config: PluginEnvironmentConfig;
+  params: Omit<PluginEnvironmentCaptureTemplateParams, "driverKey" | "config">;
+}): Promise<PluginEnvironmentCaptureTemplateResult> {
+  const { plugin } = await resolvePluginEnvironmentDriver({
+    db: input.db,
+    workerManager: input.workerManager,
+    config: input.config,
+  });
+  return await input.workerManager.call(plugin.id, "environmentCaptureTemplate", {
+    ...input.params,
+    driverKey: input.config.driverKey,
+    config: input.config.driverConfig,
+  }, resolvePluginExecuteRpcTimeoutMs({
+    requestedTimeoutMs: input.params.timeoutMs ?? undefined,
+    config: input.config.driverConfig,
+  }));
+}
+
+export async function cancelPluginEnvironmentInteractiveSetup(input: {
+  db: Db;
+  workerManager: PluginWorkerManager;
+  config: PluginEnvironmentConfig;
+  params: Omit<PluginEnvironmentCancelInteractiveSetupParams, "driverKey" | "config">;
+}): Promise<PluginEnvironmentCancelInteractiveSetupResult> {
+  const { plugin } = await resolvePluginEnvironmentDriver({
+    db: input.db,
+    workerManager: input.workerManager,
+    config: input.config,
+  });
+  return await input.workerManager.call(plugin.id, "environmentCancelInteractiveSetup", {
+    ...input.params,
+    driverKey: input.config.driverKey,
+    config: input.config.driverConfig,
+  }, resolvePluginExecuteRpcTimeoutMs({
+    requestedTimeoutMs: undefined,
+    config: input.config.driverConfig,
+  }));
+}
+
+export async function deletePluginEnvironmentTemplate(input: {
+  db: Db;
+  workerManager: PluginWorkerManager;
+  config: PluginEnvironmentConfig;
+  params: Omit<PluginEnvironmentDeleteTemplateParams, "driverKey" | "config">;
+}): Promise<PluginEnvironmentDeleteTemplateResult> {
+  const { plugin } = await resolvePluginEnvironmentDriver({
+    db: input.db,
+    workerManager: input.workerManager,
+    config: input.config,
+  });
+  return await input.workerManager.call(plugin.id, "environmentDeleteTemplate", {
+    ...input.params,
+    driverKey: input.config.driverKey,
+    config: input.config.driverConfig,
+  }, resolvePluginExecuteRpcTimeoutMs({
+    requestedTimeoutMs: undefined,
+    config: input.config.driverConfig,
+  }));
 }
 
 const RPC_OVERHEAD_BUFFER_MS = 30_000;

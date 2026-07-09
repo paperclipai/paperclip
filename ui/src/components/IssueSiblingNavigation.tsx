@@ -16,7 +16,7 @@ export function IssueSiblingNavigation({ navigation, linkState }: IssueSiblingNa
 
   return (
     <nav
-      aria-label="Sub-issue navigation"
+      aria-label="Sub-task navigation"
       className="mt-4 flex flex-col gap-3 sm:mt-6 sm:grid sm:grid-cols-2"
     >
       {navigation.previous ? (
@@ -47,12 +47,13 @@ function SiblingLink({
 }) {
   const issuePathId = issue.identifier ?? issue.id;
   const label = direction === "previous" ? "Previous" : "Next";
-  const ariaDirection = direction === "previous" ? "Previous sub-issue" : "Next sub-issue";
+  const ariaDirection = direction === "previous" ? "Previous sub-task" : "Next sub-task";
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const Icon = direction === "previous" ? ChevronLeft : ChevronRight;
 
   return (
     <Link
+      // design-allow(card-pattern): navigation <Link> card; Card renders a div and would break anchor semantics (C5a Run 3)
       to={createIssueDetailPath(issuePathId)}
       state={withIssueDetailHeaderSeed(linkState, issue)}
       issuePrefetch={issue}
@@ -60,7 +61,7 @@ function SiblingLink({
       issueQuicklookAlign={direction === "previous" ? "start" : "end"}
       aria-label={`${ariaDirection}: ${identifier} - ${issue.title}`}
       className={cn(
-        "group min-w-0 rounded-lg border border-border bg-card px-3 py-2.5 text-left no-underline transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
+        "group min-w-0 rounded-lg border border-border bg-card px-3 py-2.5 text-left no-underline transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring",
         direction === "next" && "sm:text-right",
         className,
       )}

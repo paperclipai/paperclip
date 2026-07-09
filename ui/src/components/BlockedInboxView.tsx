@@ -6,6 +6,7 @@ import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { applyIssueFilters, type IssueFilterState, type IssueFilterWorkspaceContext } from "../lib/issue-filters";
+import { resolveInboxIssueBlockerAttention } from "../lib/inbox-live-descendants";
 import {
   blockedRowMatchesSearch,
   buildBlockedInboxRows,
@@ -22,6 +23,7 @@ import { IssueRow } from "./IssueRow";
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 
 interface BlockedInboxViewProps {
   companyId: string;
@@ -34,6 +36,7 @@ interface BlockedInboxViewProps {
   issueFilters: IssueFilterState;
   currentUserId: string | null;
   liveIssueIds: ReadonlySet<string>;
+  subtreeLiveCounts: ReadonlyMap<string, number>;
   workspaceFilterContext: IssueFilterWorkspaceContext;
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
@@ -53,6 +56,7 @@ export function BlockedInboxView({
   issueFilters,
   currentUserId,
   liveIssueIds,
+  subtreeLiveCounts,
   workspaceFilterContext,
   showStatusColumn,
   showIdentifierColumn,
@@ -67,12 +71,13 @@ export function BlockedInboxView({
     error,
     refetch,
   } = useQuery({
-    queryKey: queryKeys.issues.listBlockedAttention(companyId),
+    queryKey: [...queryKeys.issues.listBlockedAttention(companyId), "live-descendant-summary"],
     queryFn: () =>
       issuesApi.list(companyId, {
         attention: "blocked",
         includeBlockedInboxAttention: true,
         includeBlockedBy: true,
+        includeLiveDescendantSummary: true,
         limit: BLOCKED_LIST_LIMIT,
       }),
   });
@@ -168,9 +173,9 @@ export function BlockedInboxView({
 
   if (allRows.length === 0) {
     return (
-      <div
+      <Card
         data-testid="blocked-inbox-empty"
-        className="flex flex-col items-center gap-3 rounded-lg border border-border/70 bg-card/40 px-6 py-10 text-center"
+        className="items-center gap-3 border-border/70 bg-card/40 px-6 py-10 text-center"
       >
         <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
           <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
@@ -178,22 +183,22 @@ export function BlockedInboxView({
         <div className="space-y-1">
           <p className="text-sm font-medium text-foreground">No work is stopped.</p>
           <p className="text-xs text-muted-foreground">
-            Issues that need a decision, recovery, or external action will appear here.
+            Tasks that need a decision, recovery, or external action will appear here.
           </p>
         </div>
-      </div>
+      </Card>
     );
   }
 
   if (groups.length === 0) {
     return (
       <div className="space-y-3">
-        <div
+        <Card
           data-testid="blocked-inbox-no-search-results"
-          className="rounded-lg border border-border/70 bg-card/40 px-4 py-6 text-center text-sm text-muted-foreground"
+          className="block border-border/70 bg-card/40 px-4 py-6 text-center text-sm text-muted-foreground"
         >
           No stopped items match your search.
-        </div>
+        </Card>
       </div>
     );
   }
@@ -209,6 +214,8 @@ export function BlockedInboxView({
               issueLinkState={issueLinkState}
               agentNameById={agentNameById}
               userLabelById={userLabelById}
+              liveIssueIds={liveIssueIds}
+              subtreeLiveCounts={subtreeLiveCounts}
               showStatusColumn={showStatusColumn}
               showIdentifierColumn={showIdentifierColumn}
               showUpdatedColumn={showUpdatedColumn}
@@ -236,6 +243,8 @@ export function BlockedInboxView({
                         issueLinkState={issueLinkState}
                         agentNameById={agentNameById}
                         userLabelById={userLabelById}
+                        liveIssueIds={liveIssueIds}
+                        subtreeLiveCounts={subtreeLiveCounts}
                         showStatusColumn={showStatusColumn}
                         showIdentifierColumn={showIdentifierColumn}
                         showUpdatedColumn={showUpdatedColumn}
@@ -257,6 +266,8 @@ interface BlockedInboxRowProps {
   issueLinkState: unknown;
   agentNameById: ReadonlyMap<string, string>;
   userLabelById?: ReadonlyMap<string, string>;
+  liveIssueIds: ReadonlySet<string>;
+  subtreeLiveCounts: ReadonlyMap<string, number>;
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
   showUpdatedColumn: boolean;
@@ -283,17 +294,23 @@ function BlockedInboxRow({
   issueLinkState,
   agentNameById,
   userLabelById,
+  liveIssueIds,
+  subtreeLiveCounts,
   showStatusColumn,
   showIdentifierColumn,
   showUpdatedColumn,
 }: BlockedInboxRowProps) {
   const { label: ownerName, isAgent } = resolveOwnerName(row, agentNameById, userLabelById);
   const stoppedAge = formatStoppedAge(row.attention.stoppedSinceAt);
+  const blockerAttention = resolveInboxIssueBlockerAttention(row.issue, {
+    isLive: liveIssueIds.has(row.issue.id),
+    loadedSubtreeLiveCount: subtreeLiveCounts.get(row.issue.id) ?? 0,
+  });
 
   const desktopTrailing = (
     <span className="flex shrink-0 items-center gap-3 text-xs">
       <span
-        className="hidden w-[10.5rem] shrink-0 justify-start sm:inline-flex"
+        className="hidden w-(--sz-10_5rem) shrink-0 justify-start sm:inline-flex"
         data-testid="blocked-row-reason-column"
       >
         <BlockedReasonChip
@@ -303,7 +320,7 @@ function BlockedInboxRow({
         />
       </span>
       {ownerName ? (
-        <span className="hidden w-[150px] min-w-0 items-center text-muted-foreground sm:inline-flex">
+        <span className="hidden w-(--sz-150px) min-w-0 items-center text-muted-foreground sm:inline-flex">
           <Identity
             name={ownerName}
             size="xs"
@@ -311,10 +328,10 @@ function BlockedInboxRow({
           />
         </span>
       ) : (
-        <span className="hidden w-[150px] shrink-0 sm:inline-flex" aria-hidden="true" />
+        <span className="hidden w-(--sz-150px) shrink-0 sm:inline-flex" aria-hidden="true" />
       )}
       {showUpdatedColumn ? (
-        <span className="hidden w-[5.75rem] text-right text-muted-foreground sm:inline" data-testid="blocked-row-age">
+        <span className="hidden w-(--sz-5_75rem) text-right text-muted-foreground sm:inline" data-testid="blocked-row-age">
           {stoppedAge}
         </span>
       ) : null}
@@ -345,20 +362,21 @@ function BlockedInboxRow({
       desktopMetaLeading={
         <BlockedRowDesktopMeta
           row={row}
+          blockerAttention={blockerAttention}
           showStatusColumn={showStatusColumn}
           showIdentifierColumn={showIdentifierColumn}
         />
       }
       mobileLeading={
         <span className="flex shrink-0 items-center gap-1.5 pt-px">
-          <StatusIcon status={row.issue.status} blockerAttention={row.issue.blockerAttention} />
+          <StatusIcon status={row.issue.status} blockerAttention={blockerAttention} />
         </span>
       }
       titleSuffix={
         <BlockedReasonChip
           reason={row.attention.reason}
           severity={row.attention.severity}
-          className="ml-2 max-w-[12rem] align-middle sm:hidden"
+          className="ml-2 max-w-(--sz-12rem) align-middle sm:hidden"
         />
       }
       mobileMeta={mobileMeta}
@@ -369,17 +387,19 @@ function BlockedInboxRow({
 
 function BlockedRowDesktopMeta({
   row,
+  blockerAttention,
   showStatusColumn,
   showIdentifierColumn,
 }: {
   row: BlockedInboxIssueRow;
+  blockerAttention: Issue["blockerAttention"] | null;
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
 }) {
   const identifier = row.issue.identifier ?? row.issue.id.slice(0, 8);
   return (
     <span className="hidden shrink-0 items-center gap-2 sm:inline-flex">
-      {showStatusColumn ? <StatusIcon status={row.issue.status} blockerAttention={row.issue.blockerAttention} /> : null}
+      {showStatusColumn ? <StatusIcon status={row.issue.status} blockerAttention={blockerAttention} /> : null}
       {showIdentifierColumn ? <span className="font-mono text-xs text-muted-foreground">{identifier}</span> : null}
     </span>
   );
