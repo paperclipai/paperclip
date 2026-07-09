@@ -120,7 +120,7 @@ export function companySkillRoutes(db: Db) {
     return targetKeys;
   }
 
-  async function assertCanMutateCompanySkills(req: Request, companyId: string, targetKeys: string[]) {
+  async function assertCanMutateCompanySkills(req: Request, companyId: string, targetKeys: string[] = []) {
     assertCompanyAccess(req, companyId);
     const decision = await access.decide({
       actor: req.actor,

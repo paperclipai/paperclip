@@ -1259,7 +1259,7 @@ describe("company skill mutation permissions", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockReflectionCoachMutationGate.assertConsented).toHaveBeenCalledWith({
       companyId: "company-1",
-      actorAgentId: "agent-1",
+      actorAgentId: "55555555-5555-4555-8555-555555555555",
       actorRunId: "run-1",
       targetKeys: ["skill-import:https://github.com/vercel-labs/agent-browser"],
     });
