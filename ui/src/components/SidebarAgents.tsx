@@ -59,7 +59,7 @@ import type { Agent } from "@paperclipai/shared";
  * When no agent is running, the sidebar falls back to showing at most this many
  * recently-active agents plus a "See all agents" link (IA Phase 5).
  */
-const RECENT_AGENT_LIMIT = 5;
+const RECENT_AGENT_LIMIT = 3;
 
 const AGENT_SORT_CHOICES: SidebarSectionRadioChoice[] = [
   { value: "top", label: "Top" },
