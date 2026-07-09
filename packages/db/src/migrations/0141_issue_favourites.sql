@@ -8,13 +8,13 @@ CREATE TABLE IF NOT EXISTS "issue_favourites" (
 );
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "issue_favourites" ADD CONSTRAINT "issue_favourites_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE no action ON UPDATE no action;
+ ALTER TABLE "issue_favourites" ADD CONSTRAINT "issue_favourites_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "issue_favourites" ADD CONSTRAINT "issue_favourites_issue_id_issues_id_fk" FOREIGN KEY ("issue_id") REFERENCES "issues"("id") ON DELETE no action ON UPDATE no action;
+ ALTER TABLE "issue_favourites" ADD CONSTRAINT "issue_favourites_issue_id_issues_id_fk" FOREIGN KEY ("issue_id") REFERENCES "issues"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;

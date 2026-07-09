@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { IssueFavourite } from "@paperclipai/shared";
+import type { Issue, IssueFavourite } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FavouriteButton } from "./FavouriteButton";
 
@@ -55,6 +55,16 @@ async function waitForCondition(predicate: () => boolean, attempts = 20) {
 }
 
 function makeFavourite(issueId: string): IssueFavourite {
+  const issue = {
+    id: issueId,
+    companyId: "company-1",
+    title: "Favourite me",
+    identifier: "PAP-1",
+    status: "todo",
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+  } as Issue;
+
   return {
     id: `fav-${issueId}`,
     companyId: "company-1",
@@ -62,6 +72,7 @@ function makeFavourite(issueId: string): IssueFavourite {
     userId: "user-1",
     createdAt: new Date("2026-01-01T00:00:00Z"),
     updatedAt: new Date("2026-01-01T00:00:00Z"),
+    issue,
   };
 }
 
@@ -132,5 +143,31 @@ describe("FavouriteButton", () => {
 
     expect(mockIssueFavouritesApi.remove).toHaveBeenCalledWith("company-1", "issue-1");
     expect(mockIssueFavouritesApi.add).not.toHaveBeenCalled();
+  });
+
+  it("prevents row navigation handlers when toggled inside a clickable row", async () => {
+    mockIssueFavouritesApi.list.mockResolvedValue([]);
+    const rowClick = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <div onClick={rowClick}>
+            <FavouriteButton issueId="issue-1" />
+          </div>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const button = starButton();
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    button.dispatchEvent(event);
+    await flushReact();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(rowClick).not.toHaveBeenCalled();
+    expect(mockIssueFavouritesApi.add).toHaveBeenCalledWith("company-1", "issue-1");
   });
 });

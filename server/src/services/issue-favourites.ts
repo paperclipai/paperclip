@@ -1,15 +1,25 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issueFavourites } from "@paperclipai/db";
+import { issueFavourites, issues } from "@paperclipai/db";
 
 export function issueFavouriteService(db: Db) {
   return {
-    list: async (companyId: string, userId: string) =>
-      db
-        .select()
+    list: async (companyId: string, userId: string) => {
+      const rows = await db
+        .select({ favourite: issueFavourites, issue: issues })
         .from(issueFavourites)
+        .innerJoin(
+          issues,
+          and(
+            eq(issues.id, issueFavourites.issueId),
+            eq(issues.companyId, issueFavourites.companyId),
+          ),
+        )
         .where(and(eq(issueFavourites.companyId, companyId), eq(issueFavourites.userId, userId)))
-        .orderBy(desc(issueFavourites.updatedAt)),
+        .orderBy(desc(issueFavourites.updatedAt));
+
+      return rows.map(({ favourite, issue }) => ({ ...favourite, issue }));
+    },
 
     add: async (companyId: string, userId: string, issueId: string) => {
       const now = new Date();

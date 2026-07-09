@@ -1,3 +1,5 @@
+import type { Issue } from "./issue.js";
+
 export interface IssueFavourite {
   id: string;
   companyId: string;
@@ -5,4 +7,5 @@ export interface IssueFavourite {
   userId: string;
   createdAt: Date;
   updatedAt: Date;
+  issue: Issue;
 }

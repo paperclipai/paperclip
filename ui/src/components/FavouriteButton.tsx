@@ -1,4 +1,5 @@
 import { Star } from "lucide-react";
+import type { MouseEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "../lib/utils";
 import { useIssueFavourites } from "../hooks/useIssueFavourites";
@@ -17,8 +18,15 @@ export function FavouriteButton({ issueId, className }: FavouriteButtonProps) {
   const { isFavourite, toggle, isToggling } = useIssueFavourites();
   const favourited = isFavourite(issueId);
 
+  const handleClick = (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggle(issueId);
+  };
+
   return (
     <Button
+      type="button"
       variant="ghost"
       size="icon-xs"
       className={cn("shrink-0", className)}
@@ -26,7 +34,7 @@ export function FavouriteButton({ issueId, className }: FavouriteButtonProps) {
       aria-label={favourited ? "Remove from favourites" : "Add to favourites"}
       title={favourited ? "Remove from favourites" : "Add to favourites"}
       disabled={isToggling}
-      onClick={() => toggle(issueId)}
+      onClick={handleClick}
     >
       <Star
         className={cn(

@@ -1,12 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { Star, Search as SearchIcon } from "lucide-react";
 import type { Issue } from "@paperclipai/shared";
-import { issuesApi } from "../api/issues";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useIssueFavourites } from "../hooks/useIssueFavourites";
-import { queryKeys } from "../lib/queryKeys";
 import { formatDate } from "../lib/utils";
 import { StatusIcon } from "../components/StatusIcon";
 import { FavouriteButton } from "../components/FavouriteButton";
@@ -14,27 +11,23 @@ import { EntityRow } from "../components/EntityRow";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Input } from "@/components/ui/input";
+import { useNavigate } from "@/lib/router";
 
 export function Favourites() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const navigate = useNavigate();
   const [search, setSearch] = useState("");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Favourites" }]);
   }, [setBreadcrumbs]);
 
-  const { favouriteIds, isLoading: favouritesLoading } = useIssueFavourites(selectedCompanyId);
-
-  const { data: issues, isLoading: issuesLoading } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
+  const { favourites, isLoading: favouritesLoading } = useIssueFavourites(selectedCompanyId);
 
   const favouriteIssues = useMemo(
-    () => (issues ?? []).filter((issue: Issue) => favouriteIds.has(issue.id)),
-    [issues, favouriteIds],
+    () => favourites.map((favourite) => favourite.issue),
+    [favourites],
   );
 
   const filteredIssues = useMemo(() => {
@@ -50,7 +43,7 @@ export function Favourites() {
     return <EmptyState icon={Star} message="Select a company to view your favourite tasks." />;
   }
 
-  if (favouritesLoading || issuesLoading) {
+  if (favouritesLoading) {
     return <PageSkeleton variant="list" />;
   }
 
@@ -85,7 +78,7 @@ export function Favourites() {
               key={issue.id}
               identifier={issue.identifier ?? issue.id.slice(0, 8)}
               title={issue.title}
-              to={`/issues/${issue.identifier ?? issue.id}`}
+              onClick={() => navigate(`/issues/${issue.identifier ?? issue.id}`)}
               leading={<StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />}
               trailing={
                 <span className="flex items-center gap-2">

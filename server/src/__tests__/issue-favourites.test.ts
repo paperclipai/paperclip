@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { companies, createDb, issueFavourites, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -60,6 +61,8 @@ describeEmbeddedPostgres("issue favourites", () => {
     const favourites = await svc.list(companyId, userId);
     expect(favourites).toHaveLength(1);
     expect(favourites[0]?.issueId).toBe(issueId);
+    expect(favourites[0]?.issue.id).toBe(issueId);
+    expect(favourites[0]?.issue.title).toBe("Favourite me");
   });
 
   it("scopes favourites per user", async () => {
@@ -82,5 +85,31 @@ describeEmbeddedPostgres("issue favourites", () => {
 
     const removedAgain = await svc.remove(companyId, userId, issueId);
     expect(removedAgain).toBeNull();
+  });
+
+  it("cascades favourites when the issue is deleted", async () => {
+    const { companyId, issueId } = await seedCompanyWithIssue();
+    const userId = "board-user";
+
+    await svc.add(companyId, userId, issueId);
+    await db.delete(issues).where(eq(issues.id, issueId));
+
+    expect(await svc.list(companyId, userId)).toHaveLength(0);
+  });
+
+  it("does not strand company deletion once its issues are removed", async () => {
+    // `issues.company_id` has no ON DELETE cascade, so a company can only be
+    // deleted after its issues are gone. Deleting the issue cascades the
+    // favourite (via the issue FK); the favourites `company_id` cascade is the
+    // defensive backstop so a favourite can never block company deletion.
+    const { companyId, issueId } = await seedCompanyWithIssue();
+    const userId = "board-user";
+
+    await svc.add(companyId, userId, issueId);
+    await db.delete(issues).where(eq(issues.id, issueId));
+    await db.delete(companies).where(eq(companies.id, companyId));
+
+    expect(await db.select().from(issueFavourites)).toHaveLength(0);
+    expect(await db.select().from(companies)).toHaveLength(0);
   });
 });

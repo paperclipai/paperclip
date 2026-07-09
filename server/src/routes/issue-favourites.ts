@@ -54,7 +54,7 @@ export function issueFavouriteRoutes(db: Db) {
       }
 
       const favourite = await svc.add(companyId, userId, issue.id);
-      res.status(201).json(favourite);
+      res.status(201).json({ ...favourite, issue });
     },
   );
 

@@ -8,8 +8,8 @@ import { queryKeys } from "../lib/queryKeys";
 
 /**
  * Per-user favourite tasks for the selected company. Backed by
- * `/companies/:companyId/issue-favourites`, this exposes the set of favourited
- * issue ids plus an optimistic toggle so the star reacts instantly.
+ * `/companies/:companyId/issue-favourites`, this exposes joined favourite issue
+ * records plus a toggle so the star stays in sync across task surfaces.
  */
 export function useIssueFavourites(companyIdOverride?: string | null) {
   const { selectedCompanyId } = useCompany();
