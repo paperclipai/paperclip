@@ -62,6 +62,7 @@ export type AuthorizationAction =
   | "issue:comment"
   | "issue:mutate"
   | "issue:read"
+  | "issue:force_reassign"
   | "project:read"
   | "runtime:manage"
   | "secrets:read";

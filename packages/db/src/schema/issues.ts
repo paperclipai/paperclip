@@ -65,6 +65,10 @@ export const issues = pgTable(
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
+    assigneeUninvokable: text("assignee_uninvokable").notNull().default("false"),
+    assigneeUninvokableAt: timestamp("assignee_uninvokable_at", { withTimezone: true }),
+    assigneeLivenessStatus: text("assignee_liveness_status").notNull().default("unknown"),
+    version: integer("version").notNull().default(1),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
@@ -145,6 +149,11 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    companyLivenessStatusIdx: index("issues_company_liveness_status_idx").on(
+      table.companyId,
+      table.assigneeLivenessStatus,
+      table.status,
+    ),
     activeStrandedIssueRecoveryIdx: uniqueIndex("issues_active_stranded_issue_recovery_uq")
       .on(table.companyId, table.originKind, table.originId)
       .where(
