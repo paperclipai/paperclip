@@ -149,6 +149,43 @@ describe("materializePaperclipSkill", () => {
     expect(path.resolve(target, referencesLink)).toBe(path.join(source, "references"));
   });
 
+  it("uses the custom linkSkill for per-entry links when attribution is disabled", async () => {
+    const source = await makeSourceSkill();
+    const target = path.join(workspace, "target");
+    const linked: Array<{ source: string; target: string }> = [];
+
+    const result = await materializePaperclipSkill(
+      source,
+      target,
+      { commit: false, pr: true },
+      async (linkSource, linkTarget) => {
+        linked.push({ source: linkSource, target: linkTarget });
+        await fs.symlink(linkSource, linkTarget);
+      },
+    );
+
+    expect(result).toBe("created");
+    expect(linked).toEqual([
+      {
+        source: path.join(source, "references"),
+        target: path.join(target, "references"),
+      },
+    ]);
+  });
+
+  it("preserves the source SKILL.md file mode on the rewritten copy", async () => {
+    const source = await makeSourceSkill();
+    await fs.chmod(path.join(source, "SKILL.md"), 0o600);
+    const target = path.join(workspace, "target");
+
+    const result = await materializePaperclipSkill(source, target, { commit: false, pr: true });
+
+    expect(result).toBe("created");
+    const sourceMode = (await fs.stat(path.join(source, "SKILL.md"))).mode & 0o777;
+    const targetMode = (await fs.stat(path.join(target, "SKILL.md"))).mode & 0o777;
+    expect(targetMode).toBe(sourceMode);
+  });
+
   it("returns 'skipped' on a no-op materialization (idempotent)", async () => {
     const source = await makeSourceSkill();
     const target = path.join(workspace, "target");

@@ -2570,6 +2570,12 @@ export async function ensurePaperclipSkillSymlink(
 
 export interface PaperclipAttributionPreference {
   commit: boolean;
+  /**
+   * Reserved for a future PR-description opt-out. The flag is parsed
+   * (PAPERCLIP_ATTRIBUTION_PR) and propagated to adapter subprocesses so
+   * operators can set it ahead of time, but no code path acts on it yet:
+   * setting `pr: false` currently has no effect.
+   */
   pr: boolean;
 }
 
@@ -2651,6 +2657,8 @@ async function writeMaterializedPaperclipSkillDirectory(
   source: string,
   target: string,
   rewrittenSkillMarkdown: string,
+  linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
+    fs.symlink(linkSource, linkTarget),
 ): Promise<void> {
   await fs.rm(target, { recursive: true, force: true });
   await fs.mkdir(target, { recursive: true });
@@ -2660,9 +2668,11 @@ async function writeMaterializedPaperclipSkillDirectory(
     const sourceEntryPath = path.join(source, entry.name);
     if (entry.name === "SKILL.md") {
       await fs.writeFile(targetEntryPath, rewrittenSkillMarkdown, "utf8");
+      const sourceStat = await fs.stat(sourceEntryPath).catch(() => null);
+      if (sourceStat) await fs.chmod(targetEntryPath, sourceStat.mode);
       continue;
     }
-    await fs.symlink(sourceEntryPath, targetEntryPath);
+    await linkSkill(sourceEntryPath, targetEntryPath);
   }
 }
 
@@ -2685,19 +2695,19 @@ export async function materializePaperclipSkill(
 
   const state = await readMaterializedSkillState(target);
   if (state === "missing") {
-    await writeMaterializedPaperclipSkillDirectory(source, target, rewritten);
+    await writeMaterializedPaperclipSkillDirectory(source, target, rewritten, linkSkill);
     return "created";
   }
   if (state === "directory") {
     if (await isPaperclipSkillMaterializationCurrent(source, target, rewritten)) {
       return "skipped";
     }
-    await writeMaterializedPaperclipSkillDirectory(source, target, rewritten);
+    await writeMaterializedPaperclipSkillDirectory(source, target, rewritten, linkSkill);
     return "repaired";
   }
   if (state === "symlink") {
     await fs.unlink(target);
-    await writeMaterializedPaperclipSkillDirectory(source, target, rewritten);
+    await writeMaterializedPaperclipSkillDirectory(source, target, rewritten, linkSkill);
     return "repaired";
   }
   throw new Error(
