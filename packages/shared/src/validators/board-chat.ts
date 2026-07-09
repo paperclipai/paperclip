@@ -4,7 +4,7 @@ import { multilineTextSchema } from "./text.js";
 export const boardChatMessageSchema = z
   .object({
     companyId: z.string().min(1),
-    message: multilineTextSchema.pipe(z.string().min(1)),
+    message: multilineTextSchema.pipe(z.string().min(1).max(20000)),
     taskId: z.string().min(1).optional(),
   })
   .strict();

@@ -40,11 +40,12 @@ export interface BoardChatComposerProps {
   onSubmit: () => void;
   mentions: MentionOption[];
   disabled?: boolean;
+  submitting?: boolean;
   editorRef?: React.RefObject<MarkdownEditorRef | null>;
   /** Returns contentPath for inline image markdown. */
   onUploadImage?: (file: File) => Promise<string>;
-  /** Attach non-image (or any) file to the standing Board Operations issue. */
-  onAttachFile?: (file: File) => Promise<void>;
+  /** Attach non-image (or any) file; returns contentPath for markdown link. */
+  onAttachFile?: (file: File) => Promise<string>;
   canAttach?: boolean;
 }
 
@@ -54,6 +55,7 @@ export function BoardChatComposer({
   onSubmit,
   mentions,
   disabled = false,
+  submitting = false,
   editorRef,
   onUploadImage,
   onAttachFile,
@@ -103,7 +105,9 @@ export function BoardChatComposer({
             inline: true,
           });
         } else if (onAttachFile) {
-          await onAttachFile(file);
+          const contentPath = await onAttachFile(file);
+          const markdown = `[${file.name}](${contentPath})`;
+          onChange(value ? `${value}\n\n${markdown}` : markdown);
           upsertAttachment({
             id,
             name: file.name,
@@ -177,6 +181,7 @@ export function BoardChatComposer({
   return (
     <div
       data-testid="board-chat-composer"
+      aria-busy={disabled || submitting || attaching ? "true" : undefined}
       className={cn(
         "pointer-events-auto relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
         isDragOver &&
@@ -203,20 +208,22 @@ export function BoardChatComposer({
         </div>
       ) : null}
 
-      <MarkdownEditor
-        ref={editorRef}
-        value={value}
-        onChange={onChange}
-        onSubmit={onSubmit}
-        submitKey="enter"
-        placeholder="Mensagem à sala… use @ para chamar um agente"
-        mentions={mentions}
-        readOnly={disabled}
-        imageUploadHandler={canAttach ? onUploadImage : undefined}
-        fileDropTarget="parent"
-        bordered={false}
-        contentClassName="max-h-[28dvh] overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
-      />
+      <div aria-label="Mensagem à Conference Room">
+        <MarkdownEditor
+          ref={editorRef}
+          value={value}
+          onChange={onChange}
+          onSubmit={onSubmit}
+          submitKey="enter"
+          placeholder="Mensagem à sala… use @ para chamar um agente"
+          mentions={mentions}
+          readOnly={disabled}
+          imageUploadHandler={canAttach ? onUploadImage : undefined}
+          fileDropTarget="parent"
+          bordered={false}
+          contentClassName="max-h-[28dvh] overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
+        />
+      </div>
 
       {attachments.length > 0 ? (
         <div
@@ -298,17 +305,21 @@ export function BoardChatComposer({
             onClick={() => {
               if (canSend) onSubmit();
             }}
-            disabled={!canSend}
+            disabled={!canSend || submitting}
             aria-label="Enviar mensagem"
             title="Enviar mensagem"
             data-testid="board-chat-send"
             className={cn(
-              canSend
+              canSend && !submitting
                 ? "bg-foreground text-background hover:opacity-90"
                 : "bg-accent text-muted-foreground",
             )}
           >
-            <Send className="h-3.5 w-3.5" />
+            {submitting ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+            ) : (
+              <Send className="h-3.5 w-3.5" />
+            )}
           </Button>
         </div>
         <span className="text-[11px] text-muted-foreground">

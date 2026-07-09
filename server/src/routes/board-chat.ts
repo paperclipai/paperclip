@@ -7,7 +7,12 @@ import type { Db } from "@paperclipai/db";
 import { boardChatMessageSchema, type BoardChatMessageResponse } from "@paperclipai/shared";
 import type { DeploymentMode } from "@paperclipai/shared";
 import { instanceSettingsService, issueService } from "../services/index.js";
-import { FanoutNotEnabledError, roomMessageService } from "../services/room-message.js";
+import {
+  FanoutNotEnabledError,
+  TaskCompanyMismatchError,
+  TaskNotFoundError,
+  roomMessageService,
+} from "../services/room-message.js";
 import {
   AgentNotInvokableError,
   roomOrchestratorService,
@@ -57,6 +62,36 @@ export function isConciergeReply(comment: {
 
 /** Max simultaneous `claude` subprocesses across all board-chat requests. */
 const MAX_CONCURRENT_BOARD_CHATS = 3;
+
+/** Rolling 60s in-memory limit: max 3 host_run wakes per (companyId, actorId). */
+const hostRunWakeTimestamps = new Map<string, number[]>();
+
+function hostRunRateLimitKey(companyId: string, actorId: string): string {
+  return `${companyId}:${actorId}`;
+}
+
+function pruneHostRunTimestamps(timestamps: number[], now: number): number[] {
+  const cutoff = now - 60_000;
+  return timestamps.filter((t) => t > cutoff);
+}
+
+function isHostRunRateLimited(companyId: string, actorId: string, now = Date.now()): boolean {
+  const key = hostRunRateLimitKey(companyId, actorId);
+  const timestamps = pruneHostRunTimestamps(hostRunWakeTimestamps.get(key) ?? [], now);
+  return timestamps.length >= 3;
+}
+
+function recordHostRunWake(companyId: string, actorId: string, now = Date.now()): void {
+  const key = hostRunRateLimitKey(companyId, actorId);
+  const timestamps = pruneHostRunTimestamps(hostRunWakeTimestamps.get(key) ?? [], now);
+  timestamps.push(now);
+  hostRunWakeTimestamps.set(key, timestamps);
+}
+
+/** Clears in-memory host_run rate-limit state (tests only). */
+export function resetHostRunRateLimitForTests(): void {
+  hostRunWakeTimestamps.clear();
+}
 
 export function boardChatRoutes(
   db: Db,
@@ -121,6 +156,15 @@ export function boardChatRoutes(
       });
 
       if (result.mode === "adapter_wake_pending" && result.mentionedAgentIds?.[0]) {
+        if (isHostRunRateLimited(companyId, actor.actorId)) {
+          res.setHeader("Retry-After", "60");
+          res.status(429).json({
+            error: "Too many host_run wakes — retry shortly",
+            code: "RATE_LIMITED",
+          });
+          return;
+        }
+
         const host = await roomOrch.wakeHost({
           companyId,
           issueId: result.issueId,
@@ -133,6 +177,8 @@ export function boardChatRoutes(
             id: actor.actorId,
           },
         });
+
+        recordHostRunWake(companyId, actor.actorId);
 
         console.info("[board/chat]", {
           companyId,
@@ -173,6 +219,20 @@ export function boardChatRoutes(
       };
       res.status(200).json(body);
     } catch (err) {
+      if (err instanceof TaskNotFoundError) {
+        res.status(404).json({
+          error: err.message,
+          code: err.code,
+        });
+        return;
+      }
+      if (err instanceof TaskCompanyMismatchError) {
+        res.status(403).json({
+          error: err.message,
+          code: err.code,
+        });
+        return;
+      }
       if (err instanceof FanoutNotEnabledError) {
         res.status(400).json({
           error: err.message,

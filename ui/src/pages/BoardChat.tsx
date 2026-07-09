@@ -18,6 +18,7 @@ import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
 import { goalsApi } from "../api/goals";
 import { heartbeatsApi } from "../api/heartbeats";
+import { activityApi, type RunForIssue } from "../api/activity";
 import { queryKeys } from "../lib/queryKeys";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { Button } from "@/components/ui/button";
@@ -42,7 +43,7 @@ import { usePaperclipIssueRuntime } from "../hooks/usePaperclipIssueRuntime";
 import { cn, formatDateTime, visibleRunCostUsd } from "../lib/utils";
 import type { FeedbackVoteValue, IssueComment } from "@paperclipai/shared";
 import type { BoardChatMessageResponse } from "@paperclipai/shared";
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { BoardChatComposer } from "./board-chat/BoardChatComposer";
 
 /**
@@ -55,10 +56,20 @@ const SPLIT_MIN_PANE_PX = 280;
 /** Chat pane share of width below the divider (agent feed gets the rest). */
 const DEFAULT_CHAT_FRACTION = 2 / 3;
 
+function boardIssueCacheKey(companyId: string) {
+  return `paperclip.boardChat.boardIssueId.${companyId}`;
+}
+
 
 /** Wrapped markdown in bubbles; pre/table scroll horizontally when needed. */
 const BOARD_CHAT_MARKDOWN_CLASS =
   "max-w-full overflow-visible [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto";
+
+/** User bubble markdown — inverted prose for legibility on blue accent. */
+const USER_BUBBLE_MARKDOWN_CLASS = cn(
+  BOARD_CHAT_MARKDOWN_CLASS,
+  "prose-invert text-sm leading-6",
+);
 
 const boardChatBubbleShell =
   "min-w-0 max-w-[85%] break-words px-3 py-2 text-sm overflow-x-auto overflow-y-visible";
@@ -121,6 +132,26 @@ function TypingBubble({ label, elapsedSec }: { label?: string; elapsedSec?: numb
   );
 }
 
+/** Owns the 100ms elapsed timer so parent message list does not re-render on ticks. */
+function TypingBubbleWithTimer({ active, label }: { active: boolean; label?: string }) {
+  const [elapsedSec, setElapsedSec] = useState(0);
+
+  useEffect(() => {
+    if (!active) {
+      setElapsedSec(0);
+      return;
+    }
+    const startedAt = Date.now();
+    const timerId = setInterval(() => {
+      setElapsedSec((Date.now() - startedAt) / 1000);
+    }, 100);
+    return () => clearInterval(timerId);
+  }, [active]);
+
+  if (!active) return null;
+  return <TypingBubble label={label} elapsedSec={elapsedSec} />;
+}
+
 function commentToThreadMessage(comment: IssueComment): ThreadMessage {
   const isUser =
     !comment.authorAgentId && comment.authorUserId !== "board-concierge";
@@ -155,9 +186,14 @@ function commentToThreadMessage(comment: IssueComment): ThreadMessage {
 }
 
 function formatCostPill(costUsd: number | null | undefined): string | null {
-  if (costUsd == null || !Number.isFinite(costUsd)) return "n/d";
+  if (costUsd == null || !Number.isFinite(costUsd)) return null;
   if (costUsd <= 0) return null;
   return `$${costUsd.toFixed(costUsd < 0.01 ? 4 : 2)}`;
+}
+
+function runForIssueToCostLookup(runs: RunForIssue[] | undefined) {
+  if (!runs) return {} as Record<string, RunForIssue>;
+  return Object.fromEntries(runs.map((run) => [run.runId, run]));
 }
 
 export function BoardChat() {
@@ -254,13 +290,11 @@ export function BoardChat() {
   const [hostRunId, setHostRunId] = useState<string | null>(null);
   const [hostAgentId, setHostAgentId] = useState<string | null>(null);
   const [boardIssueId, setBoardIssueId] = useState<string | null>(null);
-  const [elapsedSec, setElapsedSec] = useState(0);
   const [optimisticMessage, setOptimisticMessage] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const hasRestoredScrollRef = useRef(false);
   const composerRef = useRef<MarkdownEditorRef>(null);
-  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   /** True when the user is scrolled away from the bottom AND new content
    *  has arrived they can't see. Drives the floating "jump to latest" chip. */
@@ -271,6 +305,17 @@ export function BoardChat() {
    *  that when a tall new message inflates scrollHeight, we still know the
    *  user's pre-update position and can decide whether to auto-scroll. */
   const wasNearBottomRef = useRef(true);
+
+  const [pageVisible, setPageVisible] = useState(
+    () => document.visibilityState !== "hidden",
+  );
+  useEffect(() => {
+    const onVisibilityChange = () =>
+      setPageVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
 
   const scrollToLatest = useCallback((behavior: ScrollBehavior = "smooth") => {
     messagesEndRef.current?.scrollIntoView({ behavior, block: "end" });
@@ -363,31 +408,42 @@ export function BoardChat() {
     return active?.title ?? null;
   }, [goals]);
 
-  // Find Board Operations via title search (avoids scanning full issue lists).
+  // Load cached Board Operations issue id when company changes (fallback if search misses).
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+    try {
+      const cached = sessionStorage.getItem(boardIssueCacheKey(selectedCompanyId));
+      if (cached) setBoardIssueId(cached);
+    } catch { /* sessionStorage unavailable */ }
+  }, [selectedCompanyId]);
+
+  // Find Board Operations via title search — prefer exact title match.
   const { data: boardOpsIssues } = useQuery({
-    queryKey: queryKeys.issues.search(selectedCompanyId!, "Board Operations", undefined, 20),
+    queryKey: queryKeys.issues.search(selectedCompanyId!, "Board Operations", undefined, 50),
     queryFn: () =>
-      issuesApi.list(selectedCompanyId!, { q: "Board Operations", limit: 20 }),
+      issuesApi.list(selectedCompanyId!, { q: "Board Operations", limit: 50 }),
     enabled: !!selectedCompanyId,
   });
 
   useEffect(() => {
-    if (!boardOpsIssues) {
-      setBoardIssueId(null);
-      return;
-    }
+    if (!selectedCompanyId || !boardOpsIssues) return;
     const boardIssue = boardOpsIssues.find(
       (i) => i.title === "Board Operations" && i.status !== "done" && i.status !== "cancelled",
     );
-    setBoardIssueId(boardIssue?.id ?? null);
-  }, [boardOpsIssues]);
+    if (boardIssue?.id) {
+      setBoardIssueId(boardIssue.id);
+      try {
+        sessionStorage.setItem(boardIssueCacheKey(selectedCompanyId), boardIssue.id);
+      } catch { /* sessionStorage unavailable */ }
+    }
+  }, [boardOpsIssues, selectedCompanyId]);
 
   // Fetch comments for the board issue
   const { data: comments } = useQuery({
     queryKey: queryKeys.issues.comments(boardIssueId ?? ""),
     queryFn: () => issuesApi.listComments(boardIssueId!),
     enabled: !!boardIssueId,
-    refetchInterval: hostRunId ? 2000 : 3000,
+    refetchInterval: pageVisible ? (hostRunId ? 2000 : 30000) : false,
   });
 
   const { data: liveRuns } = useQuery({
@@ -409,44 +465,46 @@ export function BoardChat() {
         hostLiveRun.status === "starting"),
   );
 
-  const sortedComments = (comments ?? [])
-    .slice()
-    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const sortedComments = useMemo(
+    () =>
+      (comments ?? [])
+        .slice()
+        .sort(
+          (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+        ),
+    [comments],
+  );
 
-  const runIdsForCost = useMemo(() => {
-    const ids = new Set<string>();
-    for (const comment of sortedComments) {
-      if (comment.createdByRunId) ids.add(comment.createdByRunId);
-    }
-    if (hostRunId) ids.add(hostRunId);
-    return [...ids].sort();
-  }, [sortedComments, hostRunId]);
+  const userHasReplied = useMemo(
+    () =>
+      sortedComments.some(
+        (c) => !c.authorAgentId && c.authorUserId !== "board-concierge",
+      ),
+    [sortedComments],
+  );
 
-  const { data: runById } = useQuery({
-    queryKey: ["board-chat-run-costs", boardIssueId, runIdsForCost.join(",")],
-    queryFn: async () => {
-      const entries = await Promise.all(
-        runIdsForCost.map(async (runId) => {
-          try {
-            const run = await heartbeatsApi.get(runId);
-            return [runId, run] as const;
-          } catch {
-            return [runId, null] as const;
-          }
-        }),
-      );
-      return Object.fromEntries(entries);
-    },
-    enabled: runIdsForCost.length > 0,
+  const showWelcomeIntro = sortedComments.length === 0 && !userHasReplied;
+
+  const { data: issueRuns } = useQuery({
+    queryKey: queryKeys.issues.runs(boardIssueId ?? ""),
+    queryFn: () => activityApi.runsForIssue(boardIssueId!),
+    enabled: !!boardIssueId,
     staleTime: 8_000,
-    refetchInterval: hostRunId ? 2000 : false,
+    refetchInterval: hostRunId && pageVisible ? 2000 : false,
   });
 
-  const hostRunSnapshot = hostRunId ? runById?.[hostRunId] ?? null : null;
+  const runById = useMemo(() => runForIssueToCostLookup(issueRuns), [issueRuns]);
+
+  const { data: hostRunDetail } = useQuery({
+    queryKey: ["board-chat-host-run", hostRunId],
+    queryFn: () => heartbeatsApi.get(hostRunId!),
+    enabled: !!hostRunId,
+    refetchInterval: hostRunId && pageVisible ? 2000 : false,
+  });
 
   useEffect(() => {
     if (!hostRunId) return;
-    const trackedRun = hostRunSnapshot ?? hostLiveRun;
+    const trackedRun = hostRunDetail ?? hostLiveRun;
     if (!trackedRun) return;
     const terminal = ["succeeded", "failed", "cancelled", "timed_out"].includes(
       trackedRun.status,
@@ -464,12 +522,32 @@ export function BoardChat() {
         queryClient.invalidateQueries({
           queryKey: queryKeys.issues.comments(boardIssueId),
         });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.runs(boardIssueId),
+        });
       }
-      queryClient.invalidateQueries({
-        queryKey: ["board-chat-run-costs", boardIssueId],
-      });
     }
-  }, [hostRunSnapshot, hostLiveRun, hostRunId, boardIssueId, queryClient]);
+  }, [hostRunDetail, hostLiveRun, hostRunId, boardIssueId, queryClient]);
+
+  useEffect(() => {
+    if (!hostRunId || !sending) return;
+    const timeoutId = setTimeout(() => {
+      const trackedRun = hostRunDetail ?? hostLiveRun;
+      if (
+        trackedRun &&
+        ["succeeded", "failed", "cancelled", "timed_out"].includes(trackedRun.status)
+      ) {
+        return;
+      }
+      setHostRunId(null);
+      setSending(false);
+      setStatusText("");
+      setErrorText(
+        "A resposta do agente está demorando. Verifique o status da run no feed de atividades.",
+      );
+    }, 90_000);
+    return () => clearTimeout(timeoutId);
+  }, [hostRunId, sending, hostRunDetail, hostLiveRun]);
 
   const threadMessages = useMemo(
     () => sortedComments.map(commentToThreadMessage),
@@ -549,19 +627,6 @@ export function BoardChat() {
   // the wizard before the user ever sees the chat (PAP-134).
   const { onboardingOpen } = useDialogState();
 
-  // Likewise, don't let the dots window burn while the tab is hidden —
-  // e.g. the user completes the wizard, switches tabs, and comes back.
-  const [pageVisible, setPageVisible] = useState(
-    () => document.visibilityState !== "hidden",
-  );
-  useEffect(() => {
-    const onVisibilityChange = () =>
-      setPageVisible(document.visibilityState !== "hidden");
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () =>
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, []);
-
   // Start the typing → welcome timer only once we have the ingredients
   // needed to render the welcome bubble. This guarantees the animation is
   // visible at the moment the user arrives, even if agent/goal queries
@@ -588,15 +653,11 @@ export function BoardChat() {
   // past the intro — the welcome isn't a "new" event anymore.
   useEffect(() => {
     if (welcomeRevealed && chipsRevealed) return;
-    if (!comments) return;
-    const userHasReplied = comments.some(
-      (c) => !c.authorAgentId && c.authorUserId !== "board-concierge",
-    );
     if (userHasReplied) {
       setWelcomeRevealed(true);
       setChipsRevealed(true);
     }
-  }, [comments, welcomeRevealed, chipsRevealed]);
+  }, [userHasReplied, welcomeRevealed, chipsRevealed]);
 
   // Clear optimistic message once server-persisted comments include it
   useEffect(() => {
@@ -687,26 +748,6 @@ export function BoardChat() {
     };
   }, []);
 
-  // Elapsed timer for thinking state — tick at 100ms so the tenths place
-  // updates smoothly and the wait feels quicker than a whole-second counter.
-  useEffect(() => {
-    if (sending || hostRunActive) {
-      setElapsedSec(0);
-      const startedAt = Date.now();
-      elapsedTimerRef.current = setInterval(() => {
-        setElapsedSec((Date.now() - startedAt) / 1000);
-      }, 100);
-    } else {
-      if (elapsedTimerRef.current) {
-        clearInterval(elapsedTimerRef.current);
-        elapsedTimerRef.current = null;
-      }
-    }
-    return () => {
-      if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
-    };
-  }, [sending, hostRunActive]);
-
   const sendMessage = useCallback(
     async (body: string) => {
       const trimmed = body.trim();
@@ -763,6 +804,9 @@ export function BoardChat() {
 
         if (result.issueId) {
           setBoardIssueId(result.issueId);
+          try {
+            sessionStorage.setItem(boardIssueCacheKey(selectedCompanyId), result.issueId);
+          } catch { /* sessionStorage unavailable */ }
           queryClient.invalidateQueries({
             queryKey: queryKeys.issues.comments(result.issueId),
           });
@@ -771,7 +815,9 @@ export function BoardChat() {
           });
         }
 
-        if (result.mode === "host_run") {
+        if (result.mode === "silent") {
+          setStatusNotice("Mensagem salva na sala. Use @agente para acordar um agente.");
+        } else if (result.mode === "host_run") {
           keepSendingForHostRun = true;
           setHostRunId(result.hostRunId);
           setHostAgentId(result.hostAgentId);
@@ -783,7 +829,7 @@ export function BoardChat() {
             queryKey: queryKeys.issues.liveRuns(result.issueId),
           });
           queryClient.invalidateQueries({
-            queryKey: ["board-chat-run-costs", result.issueId],
+            queryKey: queryKeys.issues.runs(result.issueId),
           });
         }
       } catch (err) {
@@ -832,7 +878,12 @@ export function BoardChat() {
       if (!selectedCompanyId || !boardIssueId) {
         throw new Error("Sala ainda sem issue Board Operations");
       }
-      await issuesApi.uploadAttachment(selectedCompanyId, boardIssueId, file);
+      const attachment = await issuesApi.uploadAttachment(
+        selectedCompanyId,
+        boardIssueId,
+        file,
+      );
+      return attachment.contentPath;
     },
     [selectedCompanyId, boardIssueId],
   );
@@ -900,31 +951,37 @@ export function BoardChat() {
             <div className="flex shrink-0 items-center gap-0.5">
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    className="text-muted-foreground"
-                    aria-label="chat history"
-                  >
-                    <History className="h-4 w-4" />
-                  </Button>
+                  <span className="inline-flex">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      className="text-muted-foreground"
+                      aria-label="Histórico de chat"
+                      disabled
+                    >
+                      <History className="h-4 w-4" />
+                    </Button>
+                  </span>
                 </TooltipTrigger>
-                <TooltipContent side="bottom">chat history</TooltipContent>
+                <TooltipContent side="bottom">Em breve</TooltipContent>
               </Tooltip>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    className="text-muted-foreground"
-                    aria-label="new chat"
-                  >
-                    <MessageSquarePlus className="h-4 w-4" />
-                  </Button>
+                  <span className="inline-flex">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      className="text-muted-foreground"
+                      aria-label="Nova conversa"
+                      disabled
+                    >
+                      <MessageSquarePlus className="h-4 w-4" />
+                    </Button>
+                  </span>
                 </TooltipTrigger>
-                <TooltipContent side="bottom">new chat</TooltipContent>
+                <TooltipContent side="bottom">Em breve</TooltipContent>
               </Tooltip>
             </div>
           </div>
@@ -940,9 +997,11 @@ export function BoardChat() {
               {/* Typing bubble — shown unconditionally until the reveal
                    timer fires, so the animation is guaranteed to be
                    visible even while agent/goal data is still loading. */}
-              {!welcomeRevealed && <TypingBubble label={`${ceoAgent?.name ?? "CEO"} está digitando…`} />}
+              {!welcomeRevealed && showWelcomeIntro ? (
+                <TypingBubble label={`${ceoAgent?.name ?? "CEO"} está digitando…`} />
+              ) : null}
 
-              {welcomeRevealed && ceoAgent && selectedCompany && (() => {
+              {welcomeRevealed && showWelcomeIntro && ceoAgent && selectedCompany && (() => {
                 const ceoName = ceoAgent.name;
                 const companyName = selectedCompany.name;
                 const missionLine = missionText
@@ -951,10 +1010,6 @@ export function BoardChat() {
                 const welcomeBody =
                   `Welcome to **${companyName}**! I'm ${ceoName}, your team lead. I've read through what you shared in the wizard${missionLine}\n\n` +
                   `Here are a few things I can help you put on paper right now. Pick one below and I'll draft it for you using everything you told us.`;
-
-                const userHasReplied = sortedComments.some(
-                  (c) => !c.authorAgentId && c.authorUserId !== "board-concierge",
-                );
 
                 const chips: Array<{ label: string; prompt: string }> = [
                   {
@@ -1021,7 +1076,9 @@ export function BoardChat() {
                           "bg-blue-600 text-white [border-radius:14px_14px_4px_14px]",
                         )}
                       >
-                        {comment.body ?? ""}
+                        <MarkdownBody className={USER_BUBBLE_MARKDOWN_CLASS}>
+                          {comment.body ?? ""}
+                        </MarkdownBody>
                       </div>
                     </div>
                   );
@@ -1100,7 +1157,9 @@ export function BoardChat() {
                       "bg-blue-600 text-white [border-radius:14px_14px_4px_14px]",
                     )}
                   >
-                    {optimisticMessage}
+                    <MarkdownBody className={USER_BUBBLE_MARKDOWN_CLASS}>
+                      {optimisticMessage}
+                    </MarkdownBody>
                   </div>
                 </div>
               )}
@@ -1127,18 +1186,38 @@ export function BoardChat() {
                    alongside the user's optimistic bubble to make the
                    turn-taking feel alive. */}
               {(sending || hostRunActive) && !streamingText ? (
-                <TypingBubble
+                <TypingBubbleWithTimer
+                  active
                   label={
                     hostRunActive || hostRunId
                       ? `${hostAgentName} está respondendo…`
                       : statusText || "Enviando…"
                   }
-                  elapsedSec={elapsedSec}
                 />
               ) : null}
 
+              <div
+                aria-live="polite"
+                aria-atomic="true"
+                className="sr-only"
+                data-testid="board-chat-live-status"
+              >
+                {sending || hostRunActive
+                  ? hostRunActive || hostRunId
+                    ? `${hostAgentName} está respondendo`
+                    : statusText || "Enviando mensagem"
+                  : statusNotice ||
+                    (!boardIssueId
+                      ? "Anexos disponíveis após a sala criar a issue Board Operations"
+                      : "")}
+              </div>
+
               {statusNotice && !sending && !hostRunActive ? (
-                <div className="pl-1 text-xs text-muted-foreground" role="status">
+                <div
+                  className="pl-1 text-xs text-muted-foreground"
+                  role="status"
+                  data-testid="board-chat-status-notice"
+                >
                   {statusNotice}
                 </div>
               ) : null}
@@ -1198,6 +1277,7 @@ export function BoardChat() {
               onSubmit={handleSend}
               mentions={mentionOptions}
               disabled={sending || hostRunActive}
+              submitting={sending || hostRunActive}
               canAttach={Boolean(boardIssueId && selectedCompanyId)}
               onUploadImage={handleUploadImage}
               onAttachFile={handleAttachFile}
@@ -1240,6 +1320,7 @@ export function BoardChat() {
             </Button>
           </SheetTrigger>
           <SheetContent side="bottom" className="h-[70vh] p-0 rounded-t-xl">
+            <SheetTitle className="sr-only">Feed de agentes</SheetTitle>
             <ActivityFeed />
           </SheetContent>
         </Sheet>

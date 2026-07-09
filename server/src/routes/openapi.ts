@@ -2497,7 +2497,8 @@ registry.registerPath({
   method: "post",
   path: "/api/board/chat/stream",
   tags: ["instance"],
-  summary: "Post a Conference Room message (silent-until-@; requires enableConferenceRoomChat)",
+  summary:
+    "Post a Conference Room message (silent-until-@; single @mention returns 202 host_run; requires enableConferenceRoomChat)",
   request: {
     body: jsonBody(boardChatMessageSchema),
   },
@@ -2507,7 +2508,9 @@ registry.registerPath({
     400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
+    404: r.notFound,
     409: r.conflict,
+    429: r.tooManyRequests,
   },
 });
 
