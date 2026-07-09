@@ -556,6 +556,15 @@ describeEmbeddedPostgres("built-in agents", () => {
 
   it("preserves new-agent approval gates during automatic Reflection Coach provisioning", async () => {
     const companyId = await seedCompany({ requireApproval: true });
+    await agentService(db).create(companyId, {
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+    });
     const mutationPolicy = {
       requiresDisplayedDiff: true,
       requiresAcceptedTaskInteraction: true,
