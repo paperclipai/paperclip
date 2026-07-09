@@ -2631,9 +2631,10 @@ export function Inbox() {
                         }}
                       >
                         {/* Left inset aligns the header chevron with the nested
-                            task chevrons: rows sit at pl-1 + the unread column
-                            (w-4 + gap-2) ≈ pl-6 before their chevron. */}
-                        <div className={cn("rounded-lg px-3 sm:pl-6 sm:pr-4", isGroupSelected ? "bg-accent/50" : "hover:bg-accent/50")}>
+                            task chevrons. Read rows no longer reserve a
+                            mark-read column, so inbox rows sit at pl-1 before
+                            their chevron — same as the tasks list. */}
+                        <div className={cn("rounded-lg px-3 sm:pl-0 sm:pr-4", isGroupSelected ? "bg-accent/50" : "hover:bg-accent/50")}>
                         <IssueGroupHeader
                           label={group.label}
                           collapsible

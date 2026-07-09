@@ -183,10 +183,13 @@ export function IssueRow({
                     an opaque base. */}
                 <span className="absolute -inset-y-3 left-8 w-px bg-background">
                   {gapForChevron ? (
-                    <>
-                      <span className="absolute inset-x-0 top-0 bottom-1/2 mb-2.5 bg-border" />
-                      <span className="absolute inset-x-0 top-1/2 bottom-0 mt-2.5 bg-border" />
-                    </>
+                    // Two border segments centering a 14px (h-3.5) transparent
+                    // gap for the row's own chevron.
+                    <span className="absolute inset-0 flex flex-col">
+                      <span className="flex-1 bg-border" />
+                      <span className="h-3.5 shrink-0" />
+                      <span className="flex-1 bg-border" />
+                    </span>
                   ) : (
                     <span className="absolute inset-0 bg-border" />
                   )}
