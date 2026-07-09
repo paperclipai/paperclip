@@ -282,7 +282,7 @@ describe("server adapter registry", () => {
     await expect(listAdapterModelProfiles("opencode_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "openai/gpt-5.1-codex-mini" }),
+        adapterConfig: expect.objectContaining({ model: "openai/gpt-5.1-codex" }),
         source: "adapter_default",
       }),
     ]);

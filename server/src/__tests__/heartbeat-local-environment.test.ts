@@ -106,7 +106,7 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       name: "ProcessAgent",
       role: "engineer",
       status: "error",
-      errorReason: "Configured OpenCode model is unavailable: openai/gpt-5.1-codex-mini.",
+      errorReason: "Configured OpenCode model is unavailable: openai/gpt-5.1-codex.",
       adapterType: "process",
       adapterConfig: {
         command: process.execPath,
