@@ -5,7 +5,7 @@ import {
   type ChangeEvent,
   type DragEvent,
 } from "react";
-import { AlertTriangle, Check, Loader2, Paperclip } from "lucide-react";
+import { AlertTriangle, Check, Loader2, Paperclip, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   MarkdownEditor,
@@ -74,6 +74,8 @@ export function BoardChatComposer({
       return copy;
     });
   }, []);
+
+  const canSend = !disabled && value.trim().length > 0;
 
   const handleFile = useCallback(
     async (file: File) => {
@@ -206,6 +208,7 @@ export function BoardChatComposer({
         value={value}
         onChange={onChange}
         onSubmit={onSubmit}
+        submitKey="enter"
         placeholder="Mensagem à sala… use @ para chamar um agente"
         mentions={mentions}
         readOnly={disabled}
@@ -288,6 +291,25 @@ export function BoardChatComposer({
               Anexos disponíveis após a sala criar a issue Board Operations.
             </span>
           )}
+          <span className="flex-1" />
+          <Button
+            type="button"
+            size="icon-sm"
+            onClick={() => {
+              if (canSend) onSubmit();
+            }}
+            disabled={!canSend}
+            aria-label="Enviar mensagem"
+            title="Enviar mensagem"
+            data-testid="board-chat-send"
+            className={cn(
+              canSend
+                ? "bg-foreground text-background hover:opacity-90"
+                : "bg-accent text-muted-foreground",
+            )}
+          >
+            <Send className="h-3.5 w-3.5" />
+          </Button>
         </div>
         <span className="text-[11px] text-muted-foreground">
           Enter envia · Shift+Enter nova linha · @ menciona agente

@@ -17,6 +17,10 @@ const mockIssuesApi = vi.hoisted(() => ({
 }));
 const mockDialogState = vi.hoisted(() => ({ onboardingOpen: false }));
 const mockFetch = vi.hoisted(() => vi.fn());
+const mockHeartbeatsApi = vi.hoisted(() => ({
+  liveRunsForIssue: vi.fn().mockResolvedValue([]),
+  get: vi.fn().mockResolvedValue(null),
+}));
 
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
@@ -52,16 +56,18 @@ vi.mock("./board-chat/BoardChatComposer", () => ({
         onSubmit,
         canAttach,
         onAttachFile,
+        disabled,
       }: {
         mentions?: Array<{ name: string }>;
         onChange?: (value: string) => void;
         onSubmit?: () => void;
         canAttach?: boolean;
         onAttachFile?: (file: File) => Promise<void>;
+        disabled?: boolean;
       },
       _ref,
     ) => (
-      <div data-testid="markdown-editor">
+      <div data-testid="markdown-editor" data-disabled={disabled ? "true" : "false"}>
         <span data-testid="composer-placeholder">
           Mensagem à sala… use @ para chamar um agente
         </span>
@@ -69,6 +75,7 @@ vi.mock("./board-chat/BoardChatComposer", () => ({
         <button
           type="button"
           data-testid="composer-submit"
+          disabled={disabled}
           onClick={() => {
             onChange?.("hello room");
             queueMicrotask(() => onSubmit?.());
@@ -97,10 +104,7 @@ vi.mock("@assistant-ui/react", () => ({
   AssistantRuntimeProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 vi.mock("../api/heartbeats", () => ({
-  heartbeatsApi: {
-    liveRunsForIssue: vi.fn().mockResolvedValue([]),
-    get: vi.fn().mockResolvedValue(null),
-  },
+  heartbeatsApi: mockHeartbeatsApi,
 }));
 vi.mock("../components/AgentBubbleActionRow", () => ({
   AgentBubbleActionRow: () => null,
@@ -253,5 +257,85 @@ describe("BoardChat mentions composer (P0)", () => {
         expect.any(File),
       );
     });
+  });
+
+  it("re-enables composer after host_run when liveRuns clears and heartbeat returns cancelled", async () => {
+    vi.useFakeTimers();
+
+    mockIssuesApi.list.mockResolvedValue([
+      {
+        id: "issue-board-ops",
+        title: "Board Operations",
+        status: "in_progress",
+        identifier: "PAP-1",
+      },
+    ]);
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        mode: "host_run",
+        issueId: "issue-board-ops",
+        hostRunId: "run-host-1",
+        hostAgentId: "agent-dev",
+      }),
+    });
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([
+      {
+        id: "run-host-1",
+        status: "running",
+        agentId: "agent-dev",
+        issueId: "issue-board-ops",
+      },
+    ]);
+    mockHeartbeatsApi.get.mockImplementation(async (runId: string) => {
+      if (runId === "run-host-1") {
+        return {
+          id: "run-host-1",
+          status: "cancelled",
+          agentId: "agent-dev",
+          issueId: "issue-board-ops",
+          usageJson: null,
+          resultJson: null,
+        };
+      }
+      return null;
+    });
+
+    renderBoardChat();
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="composer-submit"]')).toBeTruthy();
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="composer-submit"]')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => {
+      expect(mockFetch).toHaveBeenCalled();
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="markdown-editor"]')?.getAttribute("data-disabled"),
+      ).toBe("true");
+    });
+
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([]);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="markdown-editor"]')?.getAttribute("data-disabled"),
+      ).toBe("false");
+    });
+
+    vi.useRealTimers();
   });
 });
