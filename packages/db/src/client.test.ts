@@ -5,6 +5,7 @@ import postgres from "postgres";
 import {
   applyPendingMigrations,
   inspectMigrations,
+  resolveDbPoolMax,
 } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -1272,4 +1273,20 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+});
+
+describe("resolveDbPoolMax", () => {
+  it("defaults to 25 when unset or invalid", () => {
+    expect(resolveDbPoolMax(undefined)).toBe(25);
+    expect(resolveDbPoolMax("")).toBe(25);
+    expect(resolveDbPoolMax("abc")).toBe(25);
+    expect(resolveDbPoolMax("0")).toBe(25);
+    expect(resolveDbPoolMax("-4")).toBe(25);
+    expect(resolveDbPoolMax("2.5")).toBe(25);
+  });
+
+  it("uses a positive integer override", () => {
+    expect(resolveDbPoolMax("1")).toBe(1);
+    expect(resolveDbPoolMax("40")).toBe(40);
+  });
 });

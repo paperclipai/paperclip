@@ -16,13 +16,15 @@ import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
-import { boardAuthService } from "../services/board-auth.js";
+import { BOARD_API_KEY_PREFIX, boardAuthService } from "../services/board-auth.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { forbidden, unprocessable } from "../errors.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
+
+export const AGENT_KEY_LAST_USED_REFRESH_MS = 60_000;
 
 function normalizeOptionalString(value: string | null | undefined) {
   return value?.trim() || null;
@@ -225,42 +227,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    const boardKey = await boardAuth.findBoardApiKeyByToken(token);
-    if (boardKey) {
-      const access = await boardAuth.resolveBoardAccess(boardKey.userId);
-      if (access.user) {
-        await boardAuth.touchBoardApiKey(boardKey.id);
-        req.actor = {
-          type: "board",
-          userId: boardKey.userId,
-          userName: access.user?.name ?? null,
-          userEmail: access.user?.email ?? null,
-          companyIds: access.companyIds,
-          memberships: access.memberships,
-          isInstanceAdmin: access.isInstanceAdmin,
-          keyId: boardKey.id,
-          runId: runIdHeader || undefined,
-          source: "board_key",
-        };
-        next();
-        return;
-      }
-    }
-
-    const tokenHash = hashToken(token);
-    const key = await db
-      .select()
-      .from(agentApiKeys)
-      .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)))
-      .then((rows) => rows[0] ?? null);
-
-    if (!key) {
-      const claims = verifyLocalAgentJwt(token);
-      if (!claims) {
-        next();
-        return;
-      }
-
+    // Local-agent JWTs are self-contained and verified synchronously. Checking
+    // them before the key tables keeps the hot agent-heartbeat path off the
+    // database, which otherwise pays two guaranteed-miss key lookups per
+    // request; Paperclip-minted keys carry the "pcp_" prefix and never parse
+    // as JWTs, so no key token can be shadowed by this branch.
+    const claims = verifyLocalAgentJwt(token);
+    if (claims) {
       const agentRecord = await db
         .select()
         .from(agents)
@@ -323,10 +296,53 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    await db
-      .update(agentApiKeys)
-      .set({ lastUsedAt: new Date() })
-      .where(eq(agentApiKeys.id, key.id));
+    // Board keys are only ever minted with the board prefix; skip the lookup
+    // for agent keys and other tokens.
+    const boardKey = token.startsWith(BOARD_API_KEY_PREFIX)
+      ? await boardAuth.findBoardApiKeyByToken(token)
+      : null;
+    if (boardKey) {
+      const access = await boardAuth.resolveBoardAccess(boardKey.userId);
+      if (access.user) {
+        await boardAuth.touchBoardApiKey(boardKey.id);
+        req.actor = {
+          type: "board",
+          userId: boardKey.userId,
+          userName: access.user?.name ?? null,
+          userEmail: access.user?.email ?? null,
+          companyIds: access.companyIds,
+          memberships: access.memberships,
+          isInstanceAdmin: access.isInstanceAdmin,
+          keyId: boardKey.id,
+          runId: runIdHeader || undefined,
+          source: "board_key",
+        };
+        next();
+        return;
+      }
+    }
+
+    const tokenHash = hashToken(token);
+    const key = await db
+      .select()
+      .from(agentApiKeys)
+      .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)))
+      .then((rows) => rows[0] ?? null);
+
+    if (!key) {
+      next();
+      return;
+    }
+
+    // lastUsedAt is informational; refreshing it once per interval instead of
+    // on every request keeps a write off the per-request auth path.
+    const lastUsedAtMs = key.lastUsedAt?.getTime();
+    if (!lastUsedAtMs || Date.now() - lastUsedAtMs >= AGENT_KEY_LAST_USED_REFRESH_MS) {
+      await db
+        .update(agentApiKeys)
+        .set({ lastUsedAt: new Date() })
+        .where(eq(agentApiKeys.id, key.id));
+    }
 
     const agentRecord = await db
       .select()

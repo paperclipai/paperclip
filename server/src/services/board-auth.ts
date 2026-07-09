@@ -26,8 +26,10 @@ export function tokenHashesMatch(left: string, right: string) {
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
+export const BOARD_API_KEY_PREFIX = "pcp_board_";
+
 export function createBoardApiToken() {
-  return `pcp_board_${randomBytes(24).toString("hex")}`;
+  return `${BOARD_API_KEY_PREFIX}${randomBytes(24).toString("hex")}`;
 }
 
 export function createCliAuthSecret() {

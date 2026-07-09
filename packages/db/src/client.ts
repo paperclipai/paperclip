@@ -45,8 +45,20 @@ export type MigrationState =
       reason: "no-migration-journal-empty-db" | "no-migration-journal-non-empty-db" | "pending-migrations";
     };
 
-export function createDb(url: string) {
-  const sql = postgres(url);
+// postgres.js defaults to 10 pooled connections with an unbounded FIFO wait
+// queue. A busy instance (agent heartbeats plus dashboard polling) saturates
+// that in bursts, and every DB-bound request then queues behind the pool for
+// tens of seconds while connectionless routes stay instant.
+const DEFAULT_DB_POOL_MAX = 25;
+
+export function resolveDbPoolMax(raw: string | undefined = process.env.PAPERCLIP_DB_POOL_MAX): number {
+  const parsed = Number(raw);
+  if (Number.isInteger(parsed) && parsed >= 1) return parsed;
+  return DEFAULT_DB_POOL_MAX;
+}
+
+export function createDb(url: string, options?: { max?: number }) {
+  const sql = postgres(url, { max: options?.max ?? resolveDbPoolMax() });
   return drizzlePg(sql, { schema });
 }
 

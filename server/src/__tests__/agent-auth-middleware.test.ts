@@ -32,10 +32,19 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
 
 function createDbState(input: {
   agent: { id: string; companyId: string; status?: string };
-  agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
+  agentKey?: {
+    id: string;
+    agentId: string;
+    companyId: string;
+    keyHash: string;
+    responsibleUserId?: string | null;
+    lastUsedAt?: Date | null;
+  };
   run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null };
 }) {
   const activity: Array<Record<string, unknown>> = [];
+  const selectedTables: unknown[] = [];
+  const updatedTables: unknown[] = [];
   const agentRow = {
     id: input.agent.id,
     companyId: input.agent.companyId,
@@ -48,6 +57,7 @@ function createDbState(input: {
         companyId: input.agentKey.companyId,
         keyHash: input.agentKey.keyHash,
         responsibleUserId: input.agentKey.responsibleUserId ?? null,
+        lastUsedAt: input.agentKey.lastUsedAt ?? null,
         revokedAt: null,
         scopeConfig: null,
       }
@@ -64,16 +74,18 @@ function createDbState(input: {
   const db = {
     select: () =>
       createSelectChain((table) => {
+        selectedTables.push(table);
         if (table === boardApiKeys) return [];
         if (table === agentApiKeys) return keyRow ? [keyRow] : [];
         if (table === agents) return [agentRow];
         if (table === heartbeatRuns) return runRow ? [runRow] : [];
         return [];
       }),
-    update: () => ({
+    update: (table: unknown) => ({
       set() {
         return {
           where() {
+            updatedTables.push(table);
             return Promise.resolve([]);
           },
         };
@@ -87,7 +99,7 @@ function createDbState(input: {
     }),
   } as any;
 
-  return { db, activity };
+  return { db, activity, selectedTables, updatedTables };
 }
 
 function createApp(db: any) {
@@ -348,5 +360,103 @@ describe("agent auth middleware", () => {
       entityId: keyId,
       details: { method: "GET", url: `/companies/${companyId}/protected` },
     });
+  });
+
+  it("authenticates local agent JWTs without querying the key tables", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db, selectedTables } = createDbState({
+      agent: { id: agentId, companyId },
+    });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "agent", agentId, source: "agent_jwt" });
+    expect(selectedTables).not.toContain(boardApiKeys);
+    expect(selectedTables).not.toContain(agentApiKeys);
+  });
+
+  it("skips the board key lookup for non-board bearer tokens", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const token = "pcp_test_agent_key";
+    const { db, selectedTables } = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: {
+        id: randomUUID(),
+        agentId,
+        companyId,
+        keyHash: hashToken(token),
+        responsibleUserId: "user-key",
+      },
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "agent", source: "agent_key" });
+    expect(selectedTables).not.toContain(boardApiKeys);
+  });
+
+  it("still checks the board key table for board-prefixed tokens", async () => {
+    const { db, selectedTables } = createDbState({
+      agent: { id: randomUUID(), companyId: randomUUID() },
+    });
+
+    await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", "Bearer pcp_board_unknown_token");
+
+    expect(selectedTables).toContain(boardApiKeys);
+  });
+
+  it("refreshes agent key lastUsedAt only when the stamp is stale", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const token = "pcp_test_agent_key";
+    const baseKey = {
+      id: randomUUID(),
+      agentId,
+      companyId,
+      keyHash: hashToken(token),
+      responsibleUserId: "user-key",
+    };
+
+    const fresh = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: { ...baseKey, lastUsedAt: new Date() },
+    });
+    const freshRes = await request(createApp(fresh.db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+    expect(freshRes.status).toBe(200);
+    expect(fresh.updatedTables).not.toContain(agentApiKeys);
+
+    const stale = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: { ...baseKey, lastUsedAt: new Date(Date.now() - 5 * 60_000) },
+    });
+    const staleRes = await request(createApp(stale.db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+    expect(staleRes.status).toBe(200);
+    expect(stale.updatedTables).toContain(agentApiKeys);
+
+    const never = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: { ...baseKey, lastUsedAt: null },
+    });
+    const neverRes = await request(createApp(never.db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+    expect(neverRes.status).toBe(200);
+    expect(never.updatedTables).toContain(agentApiKeys);
   });
 });
