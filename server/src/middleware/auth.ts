@@ -304,7 +304,20 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (boardKey) {
       const access = await boardAuth.resolveBoardAccess(boardKey.userId);
       if (access.user) {
-        await boardAuth.touchBoardApiKey(boardKey.id);
+        // Same interval + background treatment as agent key lastUsedAt below:
+        // the column is informational, so keep the write off the auth path.
+        const boardKeyLastUsedAtMs = boardKey.lastUsedAt?.getTime();
+        if (
+          !boardKeyLastUsedAtMs ||
+          Date.now() - boardKeyLastUsedAtMs >= AGENT_KEY_LAST_USED_REFRESH_MS
+        ) {
+          void boardAuth.touchBoardApiKey(boardKey.id).catch((err) => {
+            logger.warn(
+              { err, keyId: boardKey.id },
+              "Failed to refresh board API key lastUsedAt",
+            );
+          });
+        }
         req.actor = {
           type: "board",
           userId: boardKey.userId,
@@ -334,14 +347,20 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    // lastUsedAt is informational; refreshing it once per interval instead of
-    // on every request keeps a write off the per-request auth path.
+    // lastUsedAt is informational; refreshing it once per interval and in the
+    // background keeps the write off the per-request auth path entirely.
     const lastUsedAtMs = key.lastUsedAt?.getTime();
     if (!lastUsedAtMs || Date.now() - lastUsedAtMs >= AGENT_KEY_LAST_USED_REFRESH_MS) {
-      await db
+      void db
         .update(agentApiKeys)
         .set({ lastUsedAt: new Date() })
-        .where(eq(agentApiKeys.id, key.id));
+        .where(eq(agentApiKeys.id, key.id))
+        .catch((err) => {
+          logger.warn(
+            { err, keyId: key.id },
+            "Failed to refresh agent API key lastUsedAt",
+          );
+        });
     }
 
     const agentRecord = await db
