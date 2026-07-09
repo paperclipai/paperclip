@@ -110,6 +110,9 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
+// Co-change notice: parseAuth below mirrors hasUsableAuthPayload in
+// packages/adapters/codex-local/src/server/codex-home.ts. If the auth format
+// changes (new shape, renamed field), update both sites together.
 function buildCodexAuthMergeDecisionScript(): string {
   return String.raw`const fs = require("fs");
 
@@ -224,6 +227,9 @@ NODE
     else
       keep_sandbox=0
     fi
+  else
+    echo "[paperclip] node not found in PATH; cannot evaluate auth-merge decision — aborting sandbox restore" >&2
+    exit 1
   fi
 fi
 

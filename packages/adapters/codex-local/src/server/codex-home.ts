@@ -38,6 +38,9 @@ export async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
 
+// Co-change notice: this function's logic is mirrored by parseAuth in
+// packages/adapter-utils/src/sandbox-managed-runtime.ts (buildCodexAuthMergeDecisionScript).
+// If the auth format changes (new shape, renamed field), update both sites together.
 function hasUsableAuthPayload(authPayload: unknown): boolean {
   if (authPayload === null || typeof authPayload !== "object" || Array.isArray(authPayload)) {
     return false;
