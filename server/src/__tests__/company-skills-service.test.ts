@@ -1057,22 +1057,108 @@ describeEmbeddedPostgres("companySkillService.list", () => {
 
     await expect(svc.resolveRequestedSkillEntries(companyId, [
       "pinned-skill",
-    ])).resolves.toEqual([
-      { key: `company/${companyId}/pinned-skill`, versionId: null },
-    ]);
+    ])).resolves.toEqual({
+      resolved: [{ key: `company/${companyId}/pinned-skill`, versionId: null }],
+      unresolved: [],
+    });
     await expect(svc.resolveRequestedSkillEntries(companyId, [
       { key: "pinned-skill", versionId: null },
-    ])).resolves.toEqual([
-      { key: `company/${companyId}/pinned-skill`, versionId: null },
-    ]);
+    ])).resolves.toEqual({
+      resolved: [{ key: `company/${companyId}/pinned-skill`, versionId: null }],
+      unresolved: [],
+    });
     await expect(svc.resolveRequestedSkillEntries(companyId, [
       { key: "pinned-skill", versionId: version.id },
-    ])).resolves.toEqual([
-      { key: `company/${companyId}/pinned-skill`, versionId: version.id },
-    ]);
+    ])).resolves.toEqual({
+      resolved: [{ key: `company/${companyId}/pinned-skill`, versionId: version.id }],
+      unresolved: [],
+    });
     await expect(svc.resolveRequestedSkillEntries(companyId, [
       { key: "other-skill", versionId: version.id },
     ])).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("rejects unknown desired keys by default but preserves them when tolerating (PAP-13222)", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-tolerant-skill-"));
+    cleanupDirs.add(skillDir);
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "# Real Skill\n", "utf8");
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: `company/${companyId}/real-skill`,
+      slug: "real-skill",
+      name: "Real Skill",
+      description: null,
+      markdown: "# Real Skill",
+      sourceType: "local_path",
+      sourceLocator: skillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+    });
+
+    // Strict (default): a stale/unknown key is a hard 422.
+    await expect(svc.resolveRequestedSkillEntries(companyId, [
+      "real-skill",
+      "stale/removed/skill",
+    ])).rejects.toMatchObject({ status: 422 });
+
+    // Tolerant: the resolvable key resolves, and the stale key is preserved
+    // (not thrown) so callers can keep it visible/removable.
+    await expect(svc.resolveRequestedSkillEntries(
+      companyId,
+      ["real-skill", "stale/removed/skill"],
+      { tolerateUnknownReferences: true },
+    )).resolves.toEqual({
+      resolved: [{ key: `company/${companyId}/real-skill`, versionId: null }],
+      unresolved: ["stale/removed/skill"],
+    });
+
+    // Ambiguity is still fatal even when tolerating unknown references. Two
+    // library skills sharing a slug make a bare-slug reference ambiguous.
+    const otherId = randomUUID();
+    await db.insert(companySkills).values({
+      id: otherId,
+      companyId,
+      key: `company/${companyId}/dup-a`,
+      slug: "dup",
+      name: "Dup A",
+      description: null,
+      markdown: "# Dup A",
+      sourceType: "local_path",
+      sourceLocator: skillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+    });
+    const otherId2 = randomUUID();
+    await db.insert(companySkills).values({
+      id: otherId2,
+      companyId,
+      key: `company/${companyId}/dup-b`,
+      slug: "dup",
+      name: "Dup B",
+      description: null,
+      markdown: "# Dup B",
+      sourceType: "local_path",
+      sourceLocator: skillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+    });
+    await expect(svc.resolveRequestedSkillEntries(
+      companyId,
+      ["dup"],
+      { tolerateUnknownReferences: true },
+    )).rejects.toMatchObject({ status: 422 });
   });
 
   it("preserves missing local-path skills that active agents still desire", async () => {

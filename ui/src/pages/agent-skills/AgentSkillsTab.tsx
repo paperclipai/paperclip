@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, ChevronDown, Loader2, Search, Store, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, ChevronDown, Loader2, Search, Store, X } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 import { agentsApi } from "../../api/agents";
 import { companySkillsApi } from "../../api/companySkills";
@@ -16,8 +16,9 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { PageSkeleton } from "../../components/PageSkeleton";
 import {
   applyAgentSkillSnapshot,
-  arraysEqual,
   isReadOnlyUnmanagedSkillEntry,
+  sameSkillSelection,
+  shouldScheduleSkillAutosave,
 } from "../../lib/agent-skills-state";
 import { AgentSkillRow, type AgentSkillRowData } from "./AgentSkillRow";
 import { filterAgentSkills } from "./agent-skill-filter";
@@ -34,6 +35,9 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
   const lastSavedSkillsRef = useRef<string[]>([]);
   const hasHydratedSkillSnapshotRef = useRef(false);
   const skipNextSkillAutosaveRef = useRef(true);
+  // The exact draft of a save that failed, so we don't re-fire the identical
+  // payload on every `isPending` flip (that was an infinite 422 retry storm).
+  const failedSkillDraftRef = useRef<string[] | null>(null);
 
   const { data: skillSnapshot, isLoading } = useQuery({
     queryKey: queryKeys.agents.skills(agent.id),
@@ -58,6 +62,11 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) }),
       ]);
     },
+    onError: (_error, attemptedDesiredSkills) => {
+      // Remember the payload that failed so the autosave effect stops retrying
+      // it until the user edits the draft again.
+      failedSkillDraftRef.current = attemptedDesiredSkills;
+    },
   });
 
   useEffect(() => {
@@ -66,6 +75,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
     lastSavedSkillsRef.current = [];
     hasHydratedSkillSnapshotRef.current = false;
     skipNextSkillAutosaveRef.current = true;
+    failedSkillDraftRef.current = null;
   }, [agent.id]);
 
   useEffect(() => {
@@ -92,16 +102,30 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
       return;
     }
     if (syncSkills.isPending) return;
-    if (arraysEqual(skillDraft, lastSavedSkillsRef.current)) return;
+    if (
+      !shouldScheduleSkillAutosave({
+        draft: skillDraft,
+        lastSaved: lastSavedSkillsRef.current,
+        failedDraft: failedSkillDraftRef.current,
+      })
+    ) {
+      return;
+    }
 
     const timeout = window.setTimeout(() => {
-      if (!arraysEqual(skillDraft, lastSavedSkillsRef.current)) {
+      if (
+        shouldScheduleSkillAutosave({
+          draft: skillDraft,
+          lastSaved: lastSavedSkillsRef.current,
+          failedDraft: failedSkillDraftRef.current,
+        })
+      ) {
         syncSkills.mutate(skillDraft);
       }
     }, 250);
 
     return () => window.clearTimeout(timeout);
-  }, [skillDraft, skillSnapshot, syncSkills.isPending, syncSkills.mutate]);
+  }, [skillDraft, skillSnapshot, syncSkills.isPending, syncSkills.isError, syncSkills.mutate]);
 
   const companySkillByKey = useMemo(
     () => new Map((companySkills ?? []).map((skill) => [skill.key, skill])),
@@ -209,7 +233,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
     return "Paperclip cannot manage skills for this adapter yet. Manage them in the adapter directly.";
   }, [agent.adapterConfig.agent, agent.adapterType, unsupported]);
 
-  const hasUnsavedChanges = !arraysEqual(skillDraft, lastSavedSkills);
+  const hasUnsavedChanges = !sameSkillSelection(skillDraft, lastSavedSkills);
 
   const toggleSkill = (key: string, next: boolean) => {
     setSkillDraft((current) =>
@@ -253,7 +277,11 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
               </TooltipContent>
             </Tooltip>
           ) : null}
-          <SaveStatusChip pending={syncSkills.isPending} unsaved={hasUnsavedChanges} />
+          <SaveStatusChip
+            pending={syncSkills.isPending}
+            unsaved={hasUnsavedChanges}
+            error={syncSkills.isError && hasUnsavedChanges}
+          />
           <div className="ml-auto flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:items-center">
             <div className="relative w-full sm:w-auto">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -379,12 +407,28 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
   );
 }
 
-function SaveStatusChip({ pending, unsaved }: { pending: boolean; unsaved: boolean }) {
+function SaveStatusChip({
+  pending,
+  unsaved,
+  error,
+}: {
+  pending: boolean;
+  unsaved: boolean;
+  error: boolean;
+}) {
   if (pending) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
         Saving…
+      </span>
+    );
+  }
+  if (error) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs text-destructive">
+        <AlertCircle className="h-3.5 w-3.5" />
+        Couldn’t save
       </span>
     );
   }

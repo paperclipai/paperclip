@@ -1911,15 +1911,30 @@ async function assertVersionMatchesSkill(
   }
 }
 
+export interface ResolvedRequestedSkillEntries {
+  /** References that resolved to a company-library skill. */
+  resolved: PaperclipDesiredSkillEntry[];
+  /**
+   * References that could not be resolved to a company-library skill, returned
+   * in first-seen order. Only populated when `tolerateUnknownReferences` is set;
+   * otherwise unknown references throw. Callers preserve these so stale desired
+   * keys stay visible (and removable) instead of silently 422-ing a whole save.
+   */
+  unresolved: string[];
+}
+
 async function resolveRequestedSkillEntriesOrThrow(
   db: Db,
   companyId: string,
   skills: CompanySkill[],
   requestedSelections: Array<string | AgentDesiredSkillEntry>,
-) {
+  options: { tolerateUnknownReferences?: boolean } = {},
+): Promise<ResolvedRequestedSkillEntries> {
   const missing = new Set<string>();
   const ambiguous = new Set<string>();
   const resolved = new Map<string, PaperclipDesiredSkillEntry>();
+  const unresolved: string[] = [];
+  const seenUnresolved = new Set<string>();
 
   for (const rawSelection of requestedSelections) {
     const selection = normalizeRequestedDesiredSkillSelection(rawSelection);
@@ -1945,9 +1960,20 @@ async function resolveRequestedSkillEntriesOrThrow(
       continue;
     }
 
+    // Unknown / stale reference (no longer in the company library).
+    if (options.tolerateUnknownReferences) {
+      if (!seenUnresolved.has(selection.key)) {
+        seenUnresolved.add(selection.key);
+        unresolved.push(selection.key);
+      }
+      continue;
+    }
     missing.add(selection.key);
   }
 
+  // Ambiguous references are always a hard error — they signal a genuine
+  // conflict the caller must disambiguate. Unknown references are only fatal
+  // when the caller has not opted into tolerating (and preserving) stale keys.
   if (ambiguous.size > 0 || missing.size > 0) {
     const problems: string[] = [];
     if (ambiguous.size > 0) {
@@ -1959,7 +1985,7 @@ async function resolveRequestedSkillEntriesOrThrow(
     throw unprocessable(`Invalid company skill selection (${problems.join("; ")}).`);
   }
 
-  return Array.from(resolved.values());
+  return { resolved: Array.from(resolved.values()), unresolved };
 }
 
 function resolveDesiredSkillKeys(
@@ -5905,9 +5931,13 @@ export function companySkillService(db: Db) {
       const skills = await listFull(companyId);
       return resolveRequestedSkillKeysOrThrow(skills, requestedReferences);
     },
-    resolveRequestedSkillEntries: async (companyId: string, requestedSelections: Array<string | AgentDesiredSkillEntry>) => {
+    resolveRequestedSkillEntries: async (
+      companyId: string,
+      requestedSelections: Array<string | AgentDesiredSkillEntry>,
+      options?: { tolerateUnknownReferences?: boolean },
+    ) => {
       const skills = await listFull(companyId);
-      return resolveRequestedSkillEntriesOrThrow(db, companyId, skills, requestedSelections);
+      return resolveRequestedSkillEntriesOrThrow(db, companyId, skills, requestedSelections, options);
     },
     categoryCounts,
     detail,
