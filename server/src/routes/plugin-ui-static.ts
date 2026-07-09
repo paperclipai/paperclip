@@ -34,6 +34,8 @@ import crypto from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { logger } from "../middleware/logger.js";
+import { assertCompanyAccess } from "./authz.js";
+import { badRequest } from "../errors.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -277,12 +279,22 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
       return;
     }
 
+    const rawCompanyId = req.query.companyId;
+    if (
+      Array.isArray(rawCompanyId) ||
+      (rawCompanyId !== undefined && typeof rawCompanyId !== "string")
+    ) {
+      throw badRequest('"companyId" must be a string when provided');
+    }
+    const companyId = typeof rawCompanyId === "string" ? rawCompanyId.trim() : "";
+    if (companyId) {
+      assertCompanyAccess(req, companyId);
+    }
+
     // Step 2b: Check for devUiUrl in company-scoped plugin config — proxy to
     // local dev server when a plugin author has configured hot-reload.
     // See PLUGIN_SPEC.md §27.2 — Local Development Workflow
     try {
-      const rawCompanyId = req.query.companyId;
-      const companyId = typeof rawCompanyId === "string" ? rawCompanyId.trim() : "";
       const configRow = companyId ? await registry.getConfig(plugin.id, companyId) : null;
       const devUiUrl =
         configRow &&
