@@ -172,10 +172,10 @@ describeEmbeddedPostgres("heartbeat terminal-issue wake guard (#9223)", () => {
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
-      reason: "issue_commented",
-      payload: { issueId, commentId: randomUUID() },
+      reason: "missing_issue_comment",
+      payload: { issueId, retryReason: "missing_issue_comment" },
       requestedByActorType: "system",
-      requestedByActorId: "comment_wake",
+      requestedByActorId: null,
     });
 
     expect(run).toBeNull();
@@ -221,6 +221,49 @@ describeEmbeddedPostgres("heartbeat terminal-issue wake guard (#9223)", () => {
     // The terminal-status guard only suppresses background wakes: the user
     // wake is enqueued normally. The pre-existing claim-time semantics then
     // decide what happens to the queued run.
+    expect(run).not.toBeNull();
+    const request = await findWakeupRequest(agentId);
+    expect(request?.reason).not.toBe("issue.terminal_status");
+  });
+
+  it("allows comment-triggered wakes for a done issue (reopen flow)", async () => {
+    const { agentId, issueId } = await insertAgentWithIssue("done");
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_reopened_via_comment",
+      payload: { issueId, commentId: randomUUID() },
+      requestedByActorType: "system",
+      requestedByActorId: "comment_wake",
+    });
+
+    // Comment-triggered wakes on terminal issues are explicit reopen/follow-up
+    // flows — the claim-time terminal check exempts wakeCommentId, so the
+    // enqueue guard must too.
+    expect(run).not.toBeNull();
+    const request = await findWakeupRequest(agentId);
+    expect(request?.reason).not.toBe("issue.terminal_status");
+  });
+
+  it("allows resume-intent wakes for a cancelled issue", async () => {
+    const { agentId, issueId } = await insertAgentWithIssue("cancelled");
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId: randomUUID() },
+      contextSnapshot: { resumeIntent: true },
+      requestedByActorType: "system",
+      requestedByActorId: "comment_wake",
+    });
+
+    // Resume-intent wakes on terminal issues are explicit follow-up flows —
+    // the claim-time terminal check exempts resumeIntent, so the enqueue
+    // guard must too.
     expect(run).not.toBeNull();
     const request = await findWakeupRequest(agentId);
     expect(request?.reason).not.toBe("issue.terminal_status");
@@ -288,6 +331,28 @@ describeEmbeddedPostgres("heartbeat terminal-issue wake guard (#9223)", () => {
     });
 
     // Mention wakes can legitimately target a non-assignee agent.
+    expect(run).not.toBeNull();
+    const request = await findWakeupRequest(agentId);
+    expect(request?.reason).not.toBe("issue.assignee_mismatch");
+  });
+
+  it("allows execution_changes_requested wakes for a non-assignee agent", async () => {
+    const { agentId, issueId } = await insertAgentWithIssue("in_review", {
+      assignToPrimary: false,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "execution_changes_requested",
+      payload: { issueId },
+      requestedByActorType: "system",
+      requestedByActorId: "execution_policy",
+    });
+
+    // Execution-policy wakes are directed at the agent who did the work,
+    // even if the issue has been reassigned.
     expect(run).not.toBeNull();
     const request = await findWakeupRequest(agentId);
     expect(request?.reason).not.toBe("issue.assignee_mismatch");

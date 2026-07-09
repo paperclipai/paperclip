@@ -13825,6 +13825,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // Interaction-continuation wakes (e.g. request_confirmation responses) can
     // also target a non-assignee agent.
     const isInteractionContinuationWake = hasInteractionContinuationWakeContext(enrichedContextSnapshot);
+    // Execution-policy wakes (review/approval/changes) are directed at the
+    // agent who did the work, even if the issue has since been reassigned.
+    const EXECUTION_POLICY_WAKE_REASONS = new Set([
+      "execution_review_requested",
+      "execution_approval_requested",
+      "execution_changes_requested",
+      "approval_approved",
+    ]);
+    const isExecutionPolicyWake = EXECUTION_POLICY_WAKE_REASONS.has(wakeReason ?? "");
+    // Resume/comment context on a terminal issue means the wake is an explicit
+    // reopen, follow-up, or comment-triggered action — not stale background
+    // noise. The claim-time terminal check (line ~9648) exempts these same
+    // signals, so the enqueue guard must too.
+    const hasResumeIntent =
+      enrichedContextSnapshot.resumeIntent === true ||
+      enrichedContextSnapshot.followUpRequested === true;
+    const hasWakeCommentId = Boolean(wakeCommentId);
 
     // Guard 1 — Terminal-status guard (#7841 / #9223 mechanic 1):
     // Background wakes must not target finished work. Stale wakes for a
@@ -13832,8 +13849,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // after a governor-driven cancellation — make the system busy-loop on
     // work that is already over. Status comes from the canonicalization
     // lookup above — no extra query.
+    //
+    // Exempt wakes that carry resume intent or a comment id — these are
+    // explicit reopen/follow-up/comment flows that the claim-time terminal
+    // check also allows through (line ~9648: `if (!resumeIntent && !wakeCommentId)`).
     if (
       !isUserWake &&
+      !hasResumeIntent &&
+      !hasWakeCommentId &&
       (resolvedIssueStatus === "done" || resolvedIssueStatus === "cancelled")
     ) {
       await writeSkippedRequest("issue.terminal_status", {
@@ -13846,13 +13869,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // Before dispatching a background wake, verify the agent is still the
     // assignee of the issue. If the issue has been reassigned, the old
     // assignee's wake is redundant — the new assignee will be woken by their
-    // own heartbeat schedule or the assignment trigger. Mention and
-    // interaction-continuation wakes are exempt because they can legitimately
-    // target a non-assignee agent.
+    // own heartbeat schedule or the assignment trigger. Mention,
+    // interaction-continuation, and execution-policy wakes are exempt
+    // because they can legitimately target a non-assignee agent (the agent
+    // who did the work, or a mentioned agent).
     if (
       !isUserWake &&
       !isMentionWake &&
       !isInteractionContinuationWake &&
+      !isExecutionPolicyWake &&
       resolvedIssueAssigneeAgentId &&
       resolvedIssueAssigneeAgentId !== agentId
     ) {
