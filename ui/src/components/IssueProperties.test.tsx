@@ -219,6 +219,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     executionWorkspaceId: null,
     executionWorkspacePreference: null,
     executionWorkspaceSettings: null,
+    triggerAt: null,
     startedAt: null,
     completedAt: null,
     cancelledAt: null,
@@ -1294,6 +1295,7 @@ describe("IssueProperties", () => {
     const root = renderProperties(container, {
       issue: createIssue({
         createdAt: new Date(2026, 3, 6, 12, 34),
+        triggerAt: null,
         startedAt: new Date(2026, 3, 6, 12, 35),
         completedAt: new Date(2026, 3, 6, 12, 36),
       }),

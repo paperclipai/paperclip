@@ -132,6 +132,16 @@ The active-lock lifecycle is part of the checkout contract:
 
 Stale-lock recovery is crash recovery, not a retry loop. Paperclip must not clear or adopt locks held by non-terminal runs. After stale cleanup, a checkout `409` should mean a real live owner, status/assignee mismatch, unresolved blocker, or active gate still prevents checkout. Agents must treat that `409` as an ownership conflict and stop rather than retrying the same checkout.
 
+### Trigger date (`triggerAt`)
+
+An issue may carry an optional trigger date that defers agent execution until a future time:
+
+- while `triggerAt` is in the future, the heartbeat scheduler does not treat the issue as timer-actionable and comment wakes do not auto-checkout it for the assignee
+- checkout before the trigger date fails with a `422` naming the scheduled time; agents must not retry until the date has passed
+- once `triggerAt` passes (or is cleared), the issue becomes actionable again with no status change required
+
+The trigger date gates when work starts; it does not change ownership, status, blockers, or any other execution gate. A future `triggerAt` is a valid waiting state for an assigned issue under the liveness contract, equivalent to a scheduled wake.
+
 ### Pre-dispatch configuration validation
 
 Pre-dispatch configuration validation is a distinct gate that runs after ownership and checkout are resolved but before the control plane actually dispatches a run.

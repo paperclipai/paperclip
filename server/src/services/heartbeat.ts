@@ -3727,11 +3727,13 @@ function shouldAutoCheckoutIssueForWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   issueStatus: string | null;
   issueAssigneeAgentId: string | null;
+  issueTriggerAt: Date | null;
   isDependencyReady: boolean;
   agentId: string;
 }) {
   if (input.issueAssigneeAgentId !== input.agentId) return false;
   if (!input.isDependencyReady) return false;
+  if (input.issueTriggerAt && input.issueTriggerAt.getTime() > Date.now()) return false;
 
   const issueStatus = readNonEmptyString(input.issueStatus);
   if (
@@ -5096,6 +5098,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         originKind: issues.originKind,
         originId: issues.originId,
         originRunId: issues.originRunId,
+        triggerAt: issues.triggerAt,
         updatedAt: issues.updatedAt,
       })
       .from(issues)
@@ -9078,6 +9081,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           isNull(issues.assigneeUserId),
           isNull(issues.hiddenAt),
           inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
+          or(isNull(issues.triggerAt), lte(issues.triggerAt, new Date())),
         ),
       )
       .limit(1)
@@ -10238,6 +10242,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         contextSnapshot: context,
         issueStatus: issueContext.status,
         issueAssigneeAgentId: issueContext.assigneeAgentId,
+        issueTriggerAt: issueContext.triggerAt,
         isDependencyReady: issueDependencyReadiness?.isDependencyReady ?? true,
         agentId: agent.id,
       })

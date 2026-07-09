@@ -253,6 +253,7 @@ function makeIntegratedIssue(): Issue {
     executionWorkspaceId: null,
     executionWorkspacePreference: null,
     executionWorkspaceSettings: null,
+    triggerAt: null,
     startedAt: null,
     completedAt: null,
     cancelledAt: null,
