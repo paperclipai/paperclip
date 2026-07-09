@@ -70,6 +70,24 @@ Skip the `Risk and rollback` section only for clearly trivial PRs (typos, docs).
 - For migrations, include a dry-run plan and reversal steps.
 - For performance changes, include a before/after measurement, not adjectives.
 
+## Automated code-review bots
+
+Automated review bots (Greptile, Superagent, Socket, Snyk, and similar) leave
+their verdicts on the PR itself rather than in the required-checks list. Treat
+their signal as part of the merge gate, not commentary:
+
+- Before flipping a PR from draft to ready, resolve every open bot comment on
+  the current head. If the bot exposes a confidence score (Greptile: `x/5`),
+  the exit condition is the top score, not "green enough".
+- If a bot posts new comments after you push, address them in the same run —
+  do not defer to a later heartbeat and do not wait to be asked.
+- If a bot's verdict is genuinely wrong, resolve the thread with a one-sentence
+  rationale on the PR. Silent dismissal reads as "not addressed" to the human
+  reviewer.
+- For long-lived split PRs (child PRs of a larger recovery/split), run this
+  loop on every child before handing the parent back — don't rely on the human
+  to fan out the ask.
+
 ## Replying to review comments
 
 - Reply on every comment, even with just "fixed in <commit-sha>" — silent fixes leave the reviewer guessing.
@@ -80,6 +98,10 @@ Skip the `Risk and rollback` section only for clearly trivial PRs (typos, docs).
 ## Merge checklist
 
 - All required checks green.
+- All automated code-review bots satisfied on the current head SHA (Greptile
+  at top confidence with zero unresolved threads, Superagent security scan
+  cleared, etc.). Bot signals sit outside the required-checks list and must
+  be checked separately.
 - All review comments resolved.
 - PR title/body still accurate (update if scope changed mid-review).
 - Linked issue moves to `in_review` or `done` per project convention.

@@ -450,6 +450,40 @@ PUT /api/issues/{issueId}/documents/plan
 
 If `plan` already exists, fetch the current document first and send its latest `baseRevisionId` when you update it.
 
+## Authorization boundaries — check ownership before mutating another agent's issue
+
+Paperclip evaluates `issue:read`, `issue:comment`, and `issue:mutate`
+separately. Local task-bridge credentials are run-scoped, so access that was
+valid from one checked-out issue may not be valid from another run. A mention
+grant can allow reading and commenting on another agent's issue, but it does
+not grant mutation access. A successful `GET` therefore does not prove that a
+later `PATCH` is authorized.
+
+If a write falls outside the active boundary, the API returns
+`403 Issue is outside this actor's authorization boundary` and drops it. Do
+not retry the same mutation with a different verb or from an unrelated run.
+
+**Before writing to another issue:**
+
+1. Fetch the issue and inspect `assigneeAgentId`, then confirm that the current
+   wake, assignment, mention, linked-issue context, or delegated child task
+   explicitly gives this run the required action. The issue response does not
+   expose an `authorizationBoundary` field, so do not infer mutation access
+   from read access alone.
+2. If the run has read/comment access only, route the requested mutation via:
+   - A comment on your own issue naming the target owner and the desired change.
+   - A child issue assigned to the owner with the mutation encoded as its body.
+   - An `interactions` request on your issue when a human/board approval is
+     the correct escalation.
+
+**Do not** treat the 403 as a signal to retry with a different verb — the
+boundary is real. Retrying wastes the heartbeat and leaves the mutation
+un-owned.
+
+This applies especially to coordinator roles (CTO, plan owners, routine
+owners) that regularly need to clear blockers on issues held by engineers,
+QA, or CloudOps.
+
 ## Key Endpoints (Hot Routes)
 
 | Action                                | Endpoint                                                                                                                        |
