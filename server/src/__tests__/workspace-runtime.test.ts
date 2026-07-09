@@ -3323,7 +3323,7 @@ describe("ensureRuntimeServicesForRun", () => {
                   readiness: {
                     type: "http",
                     urlTemplate: "http://127.0.0.1:{{port}}",
-                    timeoutSec: 1,
+                    timeoutSec: 3,
                     intervalMs: 100,
                   },
                   expose: {

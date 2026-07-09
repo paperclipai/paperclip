@@ -2878,7 +2878,9 @@ async function waitForReadiness(input: {
     serviceName: input.serviceName,
     command: input.command,
   });
-  if (!readinessUrl) return;
+  if (!readinessUrl) {
+    throw new Error(`Readiness check failed: could not resolve health URL for ${input.url}`);
+  }
   const timeoutSec = resolveWorkspaceRuntimeReadinessTimeoutSec(input.service);
   const intervalMs = Math.max(100, asNumber(readiness.intervalMs, 500));
   const deadline = Date.now() + timeoutSec * 1000;
@@ -2931,7 +2933,7 @@ async function isRuntimeServiceUrlHealthy(
 ) {
   if (!url) return true;
   const healthUrl = resolveRuntimeServiceHealthUrl(url, input);
-  if (!healthUrl) return true;
+  if (!healthUrl) return false;
   try {
     const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2_000) });
     return response.ok;
