@@ -4569,6 +4569,46 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
     }
     await expect(readGit(worktreePath, ["branch", "--show-current"])).resolves.toBe(actualBranch);
   }, 20_000);
+
+  it("best-effort restores the recorded branch when the rescue commit fails", async () => {
+    const expectedBranch = "PAP-459-recorded";
+    const actualBranch = "PAP-459-live";
+    const { repoRoot, worktreePath } = await createDirtyMismatchRepo({ expectedBranch, actualBranch });
+    const ids = await seedDirtyQuarantineRecords({
+      repoRoot,
+      worktreePath,
+      expectedBranch,
+      actualBranch,
+      sourceIdentifier: "PAP-459",
+      claimant: "none",
+    });
+    const commonDirRaw = await readGit(worktreePath, ["rev-parse", "--git-common-dir"]);
+    const commonDir = path.isAbsolute(commonDirRaw) ? commonDirRaw : path.resolve(worktreePath, commonDirRaw);
+    const hookPath = path.join(commonDir, "hooks", "commit-msg");
+    await fs.mkdir(path.dirname(hookPath), { recursive: true });
+    await fs.writeFile(hookPath, "#!/bin/sh\necho rescue commit blocked >&2\nexit 1\n", { mode: 0o755 });
+
+    await expect(restoreDirtyQuarantine({
+      repoRoot,
+      worktreePath,
+      expectedBranch,
+      actualBranch,
+      ids,
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          safeRepair: expect.objectContaining({
+            attempted: true,
+            succeeded: false,
+            reason: expect.stringContaining("rescue commit blocked"),
+          }),
+        }),
+      },
+    });
+    await expect(readGit(worktreePath, ["branch", "--show-current"])).resolves.toBe(expectedBranch);
+    await expect(readGit(worktreePath, ["status", "--porcelain", "--untracked-files=all"])).resolves.not.toBe("");
+  }, 20_000);
 });
 
 describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {

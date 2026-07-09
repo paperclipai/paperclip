@@ -1219,6 +1219,8 @@ async function quarantineDirtyWorktreeBranchIncoherence(input: {
     contention: input.evidence.contention,
   };
 
+  let rescueBranchCreated = false;
+  let expectedBranchRestored = false;
   try {
     await assertGitIndexIsUnlocked(input.worktreePath);
     await recordGitOperation(input.recorder, {
@@ -1229,6 +1231,7 @@ async function quarantineDirtyWorktreeBranchIncoherence(input: {
       successMessage: `Created rescue branch ${rescueBranch} for dirty git worktree state at ${input.worktreePath}\n`,
       failureLabel: `git checkout -b ${rescueBranch}`,
     });
+    rescueBranchCreated = true;
     await recordGitOperation(input.recorder, {
       phase: input.phase ?? "worktree_prepare",
       args: ["add", "-A"],
@@ -1269,6 +1272,7 @@ async function quarantineDirtyWorktreeBranchIncoherence(input: {
       successMessage: `Restored recorded branch ${input.expectedBranchName} after dirty workspace rescue ${rescueBranch}\n`,
       failureLabel: `git checkout ${input.expectedBranchName}`,
     });
+    expectedBranchRestored = true;
 
     const repairedBranch = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], input.worktreePath)
       .catch(() => null);
@@ -1324,6 +1328,9 @@ async function quarantineDirtyWorktreeBranchIncoherence(input: {
       ...comments,
     };
   } catch (error) {
+    if (rescueBranchCreated && !expectedBranchRestored) {
+      await runGit(["checkout", input.expectedBranchName], input.worktreePath).catch(() => null);
+    }
     if (error instanceof WorkspaceRuntimeValidationFailure) throw error;
     input.evidence.safeRepair.succeeded = false;
     input.evidence.safeRepair.reason = formatDirtyQuarantineFailure(error);

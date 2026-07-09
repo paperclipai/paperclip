@@ -802,6 +802,110 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(comments[1]?.body).toContain(`- Rescue ref: \`${rescueRef}\``);
   }, 20_000);
 
+  it("quarantine_restore rejects active runtime services before creating a rescue branch", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-quarantine-running-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+
+    await runGit(repoRoot, ["branch", "feature/recorded"]);
+    await runGit(repoRoot, ["worktree", "add", "-b", "feature/live", worktreePath, "feature/recorded"]);
+    await fs.appendFile(path.join(worktreePath, "README.md"), "dirty tracked work\n", "utf8");
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const runtimeServiceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Branch reconcile",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      identifier: "PAP-125",
+      status: "blocked",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "feature/recorded",
+      status: "active",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/recorded",
+      baseRef: "main",
+    });
+    await db.insert(workspaceRuntimeServices).values({
+      id: runtimeServiceId,
+      companyId,
+      projectId,
+      executionWorkspaceId,
+      issueId,
+      scopeType: "execution_workspace",
+      serviceName: "web",
+      status: "running",
+      lifecycle: "shared",
+      command: "pnpm dev",
+      cwd: worktreePath,
+      provider: "local_process",
+      healthStatus: "healthy",
+    });
+
+    await expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+      mode: "quarantine_restore",
+      actor: {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "Execution workspace branch reconciliation requires all runtime services to be stopped",
+      details: {
+        inspection: expect.objectContaining({
+          cleanliness: "dirty",
+          fromBranch: "feature/recorded",
+          toBranch: "feature/live",
+        }),
+        runtimeServices: [
+          {
+            id: runtimeServiceId,
+            serviceName: "web",
+            status: "running",
+          },
+        ],
+      },
+    });
+
+    await expect(readGit(worktreePath, ["branch", "--show-current"])).resolves.toBe("feature/live");
+    await expect(readGit(
+      repoRoot,
+      ["for-each-ref", "--format=%(refname:short)", "refs/heads/paperclip/rescue"],
+    )).resolves.toBeNull();
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  }, 20_000);
+
   it.each(["review", "approval"] as const)(
     "quarantine_restore preserves pending execution-%s semantics on the source issue",
     async (stageType) => {

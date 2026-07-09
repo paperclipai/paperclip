@@ -399,6 +399,16 @@ function assertBranchReconcileWorkspaceIsSafe(input: {
     });
   }
 
+  assertBranchReconcileRuntimeServicesStopped({
+    inspection: input.inspection,
+    runtimeServices: input.runtimeServices,
+  });
+}
+
+function assertBranchReconcileRuntimeServicesStopped(input: {
+  inspection: ExecutionWorkspaceBranchReconcileInspection;
+  runtimeServices: WorkspaceRuntimeService[];
+}) {
   const activeRuntimeServices = input.runtimeServices.filter((service) => service.status !== "stopped");
   if (activeRuntimeServices.length > 0) {
     throw unprocessable("Execution workspace branch reconciliation requires all runtime services to be stopped", {
@@ -1625,12 +1635,27 @@ export function executionWorkspaceService(db: Db) {
 
       const reason = readNullableString(input.reason);
       const rescueRef = input.mode === "quarantine_restore"
-        ? await quarantineRestoreDirtyWorkspaceBranch({
-            db,
-            workspace: existing,
-            inspection,
-            actor: input.actor,
-          })
+        ? await (async () => {
+            const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(
+              db,
+              existing.companyId,
+              [existingRow],
+            );
+            assertBranchReconcileRuntimeServicesStopped({
+              inspection,
+              runtimeServices: (runtimeServicesByWorkspaceId.get(existing.id) ?? []).map(toRuntimeService),
+            });
+            // The git rescue has to happen before the DB transaction because the
+            // transaction may be retried/rolled back, while git side effects cannot.
+            // The preflight runtime-service guard above keeps known local services
+            // from holding files open during the non-transactional git sequence.
+            return quarantineRestoreDirtyWorkspaceBranch({
+              db,
+              workspace: existing,
+              inspection,
+              actor: input.actor,
+            });
+          })()
         : null;
       const now = new Date();
       const allowActiveWorkspace =
