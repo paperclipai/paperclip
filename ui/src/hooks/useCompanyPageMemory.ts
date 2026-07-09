@@ -51,11 +51,12 @@ export function useCompanyPageMemory() {
   const fullPath = location.pathname + location.search;
   useEffect(() => {
     const companyId = rememberedPathOwnerCompanyId;
-    const relativePath = toCompanyRelativePath(fullPath);
+    const ownerPrefix = companies.find((company) => company.id === companyId)?.issuePrefix;
+    const relativePath = toCompanyRelativePath(fullPath, ownerPrefix);
     if (companyId && isRememberableCompanyPath(relativePath)) {
       saveCompanyPath(companyId, relativePath);
     }
-  }, [fullPath, rememberedPathOwnerCompanyId]);
+  }, [companies, fullPath, rememberedPathOwnerCompanyId]);
 
   // Navigate to saved path when company changes
   useEffect(() => {
