@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants } from "@paperclipai/db";
+import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -39,6 +39,7 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     __clearIssueListResponseCacheForTests();
     await db.delete(issues);
     await db.delete(heartbeatRuns);
+    await db.delete(activityLog);
     await db.delete(agents);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
@@ -150,6 +151,7 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     const companyId = randomUUID();
     const ownerAgentId = randomUUID();
     const issueId = randomUUID();
+    const sourceRunId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -190,6 +192,20 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       nextAction: "Choose a valid issue disposition.",
       wakePolicy: { type: "wake_owner" },
     });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.successful_run_handoff_required",
+      entityType: "issue",
+      entityId: issueId,
+      agentId: ownerAgentId,
+      runId: null,
+      details: {
+        sourceRunId,
+        detectedProgressSummary: "Implemented the requested change without choosing a disposition.",
+      },
+    });
 
     const app = createApp(companyId);
     const res = await request(app)
@@ -214,11 +230,16 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
         ownerAgentId,
         kind: "missing_disposition",
       },
+      successfulRunHandoff: {
+        state: "required",
+        required: true,
+        sourceRunId,
+        assigneeAgentId: ownerAgentId,
+      },
     });
     expect(res.body[0]).not.toHaveProperty("workProducts");
     expect(res.body[0]).not.toHaveProperty("project");
     expect(res.body[0]).not.toHaveProperty("goal");
-    expect(res.body[0]).not.toHaveProperty("successfulRunHandoff");
   });
 
   it("returns 304 for unchanged compact issue list ETags", async () => {

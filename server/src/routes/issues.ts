@@ -2059,6 +2059,7 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.lastActivityAt !== undefined ? { lastActivityAt: issue.lastActivityAt } : {}),
     ...(issue.isUnreadForMe !== undefined ? { isUnreadForMe: issue.isUnreadForMe } : {}),
     activeRecoveryAction: issue.activeRecoveryAction ?? null,
+    successfulRunHandoff: issue.successfulRunHandoff ?? null,
   };
 }
 
@@ -4611,7 +4612,10 @@ export function issueRoutes(
           : await filterIssuesForActor(req, rawResult);
         const issueIds = result.map((issue) => issue.id);
         if (compactView) {
-          const recoveryActionByIssue = await recoveryActionsSvc.listActiveForIssues(companyId, issueIds);
+          const [handoffStates, recoveryActionByIssue] = await Promise.all([
+            listSuccessfulRunHandoffStates(db, companyId, issueIds),
+            recoveryActionsSvc.listActiveForIssues(companyId, issueIds),
+          ]);
           const actor = getActorInfo(req);
           await Promise.all(result.map(async (issue) => {
             const activeRecoveryAction = recoveryActionByIssue.get(issue.id) ?? null;
@@ -4629,6 +4633,7 @@ export function issueRoutes(
             toCompactIssue({
               ...issue,
               activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+              successfulRunHandoff: handoffStates.get(issue.id) ?? null,
             }));
           return {
             kind: "compact",

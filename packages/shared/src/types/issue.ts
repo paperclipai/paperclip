@@ -822,6 +822,7 @@ export type CompactIssue = Pick<
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
   activeRecoveryAction: IssueRecoveryAction | null;
+  successfulRunHandoff: SuccessfulRunHandoffState | null;
 };
 
 /**
