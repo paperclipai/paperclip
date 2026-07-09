@@ -2,7 +2,14 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": ".."
+    "rootDir": "..",
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src", "../packages/shared/src", "../packages/plugins/create-paperclip-plugin/src"]
+  "include": [
+    "src",
+    "../packages/shared/src",
+    "../packages/plugins/create-paperclip-plugin/src"
+  ]
 }

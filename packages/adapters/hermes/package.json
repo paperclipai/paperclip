@@ -104,7 +104,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.19.21",
-    "typescript": "^5.7.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.8"
   },
   "engines": {

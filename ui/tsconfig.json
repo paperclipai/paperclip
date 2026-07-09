@@ -11,11 +11,20 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"],
-      "lexical": ["./node_modules/lexical/index.d.ts"]
-    }
+      "@/*": [
+        "./src/*"
+      ],
+      "lexical": [
+        "./node_modules/lexical/index.d.ts"
+      ]
+    },
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src", "storybook"]
+  "include": [
+    "src",
+    "storybook"
+  ]
 }
