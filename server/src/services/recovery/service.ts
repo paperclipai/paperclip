@@ -69,7 +69,11 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
-import { CLAUDE_QUOTA_BLOCK_ERROR_CODE } from "../claude-quota-guard.js";
+import {
+  CLAUDE_LOCAL_ADAPTER_TYPE,
+  CLAUDE_QUOTA_BLOCK_ERROR_CODE,
+  getLatestClaudeQuotaCircuitOpenedAt,
+} from "../claude-quota-guard.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -265,7 +269,6 @@ const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
-const CLAUDE_LOCAL_ADAPTER_TYPE = "claude_local";
 const CLAUDE_AUTOMATIC_RECOVERY_RETRY_BUDGET = 1;
 
 type ContinuationRetryClassification = {
@@ -848,17 +851,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     const agent = await getAgent(input.agentId);
     if (agent?.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE) {
-      const latestQuotaEvent = await db
-        .select({ createdAt: activityLog.createdAt })
-        .from(activityLog)
-        .where(and(
-          eq(activityLog.companyId, agent.companyId),
-          eq(activityLog.action, "claude.quota_circuit_opened"),
-        ))
-        .orderBy(desc(activityLog.createdAt))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      const windowStart = latestQuotaEvent?.createdAt ??
+      const latestQuotaOpenedAt = await getLatestClaudeQuotaCircuitOpenedAt(db);
+      const windowStart = latestQuotaOpenedAt ??
         new Date(Date.now() - 60 * 60 * 1000);
       const priorRetries = await db
         .select({ id: heartbeatRuns.id })

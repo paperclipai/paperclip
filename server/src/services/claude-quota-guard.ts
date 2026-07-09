@@ -193,6 +193,16 @@ async function latestCircuitEvent(db: ClaudeQuotaDb, _companyId?: string | null)
   return rows[0] ?? null;
 }
 
+export async function getLatestClaudeQuotaCircuitOpenedAt(db: ClaudeQuotaDb): Promise<Date | null> {
+  const rows = await db
+    .select({ createdAt: activityLog.createdAt })
+    .from(activityLog)
+    .where(eq(activityLog.action, CLAUDE_QUOTA_CIRCUIT_OPENED_ACTION))
+    .orderBy(desc(activityLog.createdAt))
+    .limit(1);
+  return rows[0]?.createdAt ?? null;
+}
+
 export async function getClaudeQuotaBlock(db: ClaudeQuotaDb, companyId?: string | null, now = new Date()): Promise<ClaudeQuotaBlock> {
   const event = await latestCircuitEvent(db, companyId);
   if (!event || event.action === CLAUDE_QUOTA_CIRCUIT_RESUMED_ACTION) {

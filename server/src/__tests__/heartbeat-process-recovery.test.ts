@@ -652,6 +652,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runSource?: string | null;
     assignToUser?: boolean;
     activePauseHold?: boolean;
+    adapterType?: string;
     livenessState?: "completed" | "advanced" | "plan_only" | "empty_response" | "blocked" | "failed" | "needs_followup" | null;
     runErrorCode?: string | null;
     runError?: string | null;
@@ -679,7 +680,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: input.adapterType ?? "codex_local",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -4527,6 +4528,92 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
+  });
+
+  it("uses a global Claude quota-open event as the recovery retry-budget window across companies", async () => {
+    const quotaCompanyId = randomUUID();
+    const quotaAgentId = randomUUID();
+    const quotaOpenedAt = new Date("2026-03-19T00:10:00.000Z");
+    await db.insert(companies).values({
+      id: quotaCompanyId,
+      name: "Quota Source",
+      issuePrefix: `Q${quotaCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: quotaAgentId,
+      companyId: quotaCompanyId,
+      name: "Claude Source",
+      role: "engineer",
+      status: "idle",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(activityLog).values({
+      companyId: quotaCompanyId,
+      actorType: "system",
+      actorId: "claude_quota_guard",
+      action: "claude.quota_circuit_opened",
+      entityType: "system",
+      entityId: "claude_local",
+      agentId: quotaAgentId,
+      details: {
+        reason: "blocked_by_claude_quota",
+        blockedUntil: null,
+        operatorResumeRequired: true,
+      },
+      createdAt: quotaOpenedAt,
+    });
+
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      adapterType: "claude_local",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "cancelled",
+      retryOfRunId: runId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+      },
+      createdAt: new Date("2026-03-19T00:11:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:11:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    const budgetEvents = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "claude.automatic_recovery_retry_budget_exhausted"),
+      ));
+    expect(budgetEvents).toHaveLength(1);
+    expect(budgetEvents[0]?.details).toMatchObject({
+      state: "degraded_retry_budget_exhausted",
+      adapterType: "claude_local",
+      retryReason: "issue_continuation_needed",
+      windowStart: quotaOpenedAt.toISOString(),
+      maxRetries: 1,
+    });
   });
 
   it("does not continue seeded in-progress work that has no run linkage", async () => {
