@@ -4275,10 +4275,16 @@ export function companySkillService(db: Db) {
     const runtimeRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime__");
     const skillDir = path.resolve(runtimeRoot, buildSkillRuntimeName(skill.key, skill.slug));
     const markerPath = path.resolve(skillDir, ".materialized");
-    const markerStat = await fs.stat(markerPath).catch(() => null);
-    if (markerStat?.isFile()) {
-      const skillUpdatedAt = skill.updatedAt ? new Date(skill.updatedAt).getTime() : 0;
-      if (markerStat.mtimeMs >= skillUpdatedAt) {
+    // The marker records the skill's `updatedAt` (epoch ms) captured at materialization
+    // time. Comparing the recorded value against the skill's current `updatedAt` avoids
+    // relying on filesystem mtime granularity or clock skew between the database and the
+    // host — both of which made reuse non-deterministic (the marker's mtime could be
+    // truncated below `updatedAt` even when nothing changed, forcing a re-fetch).
+    const skillUpdatedAt = skill.updatedAt ? new Date(skill.updatedAt).getTime() : 0;
+    const markerContent = await fs.readFile(markerPath, "utf8").catch(() => null);
+    if (markerContent !== null) {
+      const recordedUpdatedAt = Number.parseInt(markerContent.trim(), 10);
+      if (Number.isFinite(recordedUpdatedAt) && recordedUpdatedAt >= skillUpdatedAt) {
         return skillDir;
       }
     }
@@ -4303,7 +4309,7 @@ export function companySkillService(db: Db) {
       throw unprocessable("Company skill could not be materialized because its stored SKILL.md copy is missing.");
     }
 
-    await fs.writeFile(markerPath, "", "utf8");
+    await fs.writeFile(markerPath, String(skillUpdatedAt), "utf8");
 
     return skillDir;
   }

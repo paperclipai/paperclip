@@ -1190,19 +1190,19 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const skillFilePath = path.join(runtimeDir, "SKILL.md");
     await fs.writeFile(skillFilePath, "SENTINEL — cache reuse\n", "utf8");
 
-    // Second listing: marker is newer than the skill's updatedAt → reuse, no re-fetch.
+    // Second listing: the marker records the same updatedAt as the skill → reuse, no re-fetch.
     const second = await svc.listRuntimeSkillEntries(companyId);
     expect(second.find((candidate) => candidate.key === skillKey)!.source).toBe(runtimeDir);
     await expect(fs.readFile(skillFilePath, "utf8")).resolves.toBe("SENTINEL — cache reuse\n");
 
-    // Bump the skill's updatedAt into the future so the cached marker looks stale.
+    // Bump the skill's updatedAt into the future so the recorded marker value is stale.
     await db
       .update(companySkills)
       .set({ updatedAt: new Date(Date.now() + 60_000) })
       .where(eq(companySkills.id, skillId));
 
-    // Third listing: marker is now older than updatedAt → re-materialize from DB,
-    // overwriting the sentinel with the stored markdown.
+    // Third listing: the recorded updatedAt is now older than the skill's → re-materialize
+    // from DB, overwriting the sentinel with the stored markdown.
     const third = await svc.listRuntimeSkillEntries(companyId);
     expect(third.find((candidate) => candidate.key === skillKey)!.source).toBe(runtimeDir);
     await expect(fs.readFile(skillFilePath, "utf8")).resolves.toBe("# Cache Coach\n\nRecovered from DB.\n");
