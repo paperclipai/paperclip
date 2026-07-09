@@ -17,7 +17,7 @@ import {
   skillChangeTargetKey,
 } from "../services/change-consent-gate.js";
 
-const embeddedPostgresSupport = getEmbeddedPostgresTestSupport();
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("changeConsentGateService", () => {
