@@ -1429,10 +1429,10 @@ function SkillPane({
                 {skill.editableReason ?? "This skill is read-only."}
               </span>{" "}
               <Link
-                to={`/skills/${skill.id}`}
+                to={skillStudioNewRoute(skill.id)}
                 className="font-medium text-foreground underline underline-offset-2 hover:text-primary"
               >
-                Fork or import locally ↗
+                Fork
               </Link>
             </div>
           </div>

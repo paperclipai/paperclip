@@ -555,4 +555,19 @@ describe("SkillStudio editor frontmatter", () => {
     expect(toggle?.getAttribute("aria-expanded")).toBe("false");
     expect(node.querySelector("#fm-name")).toBeNull();
   });
+
+  it("links read-only skills directly to a Studio fork draft", async () => {
+    mockCompanySkillsApi.detail.mockResolvedValueOnce(makeSkill({
+      editable: false,
+      editableReason: "Bundled skill.",
+    }));
+
+    const node = await renderStudio();
+
+    await waitFor(() => expect(node.textContent).toContain("Bundled skill."));
+    const forkLink = Array.from(node.querySelectorAll("a")).find((link) => link.textContent?.trim() === "Fork");
+
+    expect(forkLink?.getAttribute("href")).toBe("/skills/studio/new?forkFrom=source-skill");
+    expect(node.textContent).not.toContain("Fork or import locally");
+  });
 });
