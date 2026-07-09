@@ -2032,6 +2032,7 @@ export function IssuesList({
                         selected={selectedNavKey === `issue:${issue.id}`}
                         onMouseEnter={() => setNavSelectionFromPointer(`issue:${issue.id}`)}
                         treeGuides={depth}
+                        chevronInGuide={depth > 0 && hasChildren}
                         hideDivider={hasChildren && isExpanded}
                         checklistStepNumber={checklistStepNumber}
                         checklistCurrentStep={checklistMeta?.currentStepIssueId === issue.id}
@@ -2092,7 +2093,7 @@ export function IssuesList({
                               <button
                                 type="button"
                                 data-slot="icon-button"
-                                className="hidden w-4 shrink-0 items-center justify-center sm:inline-flex"
+                                className="relative z-10 hidden w-4 shrink-0 items-center justify-center sm:inline-flex"
                                 onClick={toggleCollapse}
                               >
                                 <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />

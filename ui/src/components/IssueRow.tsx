@@ -51,6 +51,12 @@ interface IssueRowProps {
   onMouseEnter?: () => void;
   /** Ancestor levels; renders that many vertical tree-guide slots (desktop). */
   treeGuides?: number;
+  /**
+   * This row has its own collapse chevron sitting in the innermost guide
+   * column (a nested parent). Breaks the guide line there so the chevron is
+   * not crossed out by it.
+   */
+  chevronInGuide?: boolean;
   /** Suppress the row divider (parents with expanded children keep visual attachment to their subtree). */
   hideDivider?: boolean;
 }
@@ -79,11 +85,11 @@ export function IssueRow({
   className,
   onMouseEnter,
   treeGuides = 0,
+  chevronInGuide = false,
   hideDivider = false,
 }: IssueRowProps) {
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
-  const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
   const selectedStatusClass = selected ? "!text-muted-foreground !border-muted-foreground" : undefined;
   const detailState = withIssueDetailHeaderSeed(issueLinkState, issue);
@@ -158,7 +164,12 @@ export function IssueRow({
         ) : null}
         <span className="flex items-center gap-2 self-stretch sm:order-1 sm:shrink-0">
           {treeGuides > 0
-            ? Array.from({ length: treeGuides }, (_, level) => (
+            ? Array.from({ length: treeGuides }, (_, level) => {
+              // The innermost guide lands on THIS row's own chevron column; if
+              // the row has a chevron, break the line around it so it isn't
+              // crossed out.
+              const gapForChevron = chevronInGuide && level === treeGuides - 1;
+              return (
               // Tree guide: occupies the same flex slot as the parent's
               // chevron column so the line lands under the parent's status
               // column; stretched past the row padding so consecutive rows
@@ -171,10 +182,18 @@ export function IssueRow({
                     so overlapping row segments would stack brighter without
                     an opaque base. */}
                 <span className="absolute -inset-y-3 left-8 w-px bg-background">
-                  <span className="absolute inset-0 bg-border" />
+                  {gapForChevron ? (
+                    <>
+                      <span className="absolute inset-x-0 top-0 bottom-1/2 mb-2.5 bg-border" />
+                      <span className="absolute inset-x-0 top-1/2 bottom-0 mt-2.5 bg-border" />
+                    </>
+                  ) : (
+                    <span className="absolute inset-0 bg-border" />
+                  )}
                 </span>
               </span>
-            ))
+              );
+            })
             : null}
           {desktopLeadingSpacer ? (
             <span className="hidden w-3.5 shrink-0 sm:block" />
@@ -237,43 +256,40 @@ export function IssueRow({
           ) : null}
         </span>
       ) : null}
-      {showUnreadSlot ? (
-        <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center self-center">
-          {showUnreadDot ? (
-            <button
-              type="button"
-              data-slot="icon-button"
-              onClick={(event) => {
+      {showUnreadDot ? (
+        // Only unread rows reserve this leading mark-read column; read rows
+        // omit it entirely so their content lines up with the tasks list
+        // (which has no such column). Archive lives on the right now.
+        <span className="order-first inline-flex h-4 w-4 shrink-0 items-center justify-center self-center">
+          <button
+            type="button"
+            data-slot="icon-button"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onMarkRead?.();
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
                 event.stopPropagation();
                 onMarkRead?.();
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onMarkRead?.();
-                }
-              }}
+              }
+            }}
+            className={cn(
+              "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
+              selected ? "hover:bg-muted/80" : "hover:bg-blue-500/20",
+            )}
+            aria-label="Mark as read"
+          >
+            <span
               className={cn(
-                "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
-                selected ? "hover:bg-muted/80" : "hover:bg-blue-500/20",
+                "block h-2 w-2 rounded-full transition-opacity duration-300",
+                selected ? "bg-muted-foreground/70" : "bg-blue-600 dark:bg-blue-400",
+                unreadState === "fading" ? "opacity-0" : "opacity-100",
               )}
-              aria-label="Mark as read"
-            >
-              <span
-                className={cn(
-                  "block h-2 w-2 rounded-full transition-opacity duration-300",
-                  selected ? "bg-muted-foreground/70" : "bg-blue-600 dark:bg-blue-400",
-                  unreadState === "fading" ? "opacity-0" : "opacity-100",
-                )}
-              />
-            </button>
-          ) : (
-            // Archive moved to a right-side "Archive" button (before the
-            // timestamp); this left slot now only carries the unread dot.
-            <span className="inline-flex h-4 w-4" aria-hidden="true" />
-          )}
+            />
+          </button>
         </span>
       ) : null}
     </Link>
