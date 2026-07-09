@@ -39,7 +39,7 @@ Each agent run for the task uses `cwd = <worktree-path>`. Adapters (`claude-loca
 | Coordinator (create) | `git worktree add .paperclip/worktrees/{id} -b task/{id}` from main; record path on the task | — | branch + worktree exist |
 | Worker | Implement task; commit work to `task/{id}` | `task/{id}` | one or more commits made |
 | Reviewer | Review/polish files; commit further to `task/{id}` | `task/{id}` | review pass complete |
-| Architect | Run `cargo check / clippy / test`; commit fixes; `gh pr create --base main --head task/{id}`; record PR URL on the task | `task/{id}` | PR open |
+| Architect | Run `cargo clippy / test`; commit fixes; `gh pr create --base main --head task/{id}`; record PR URL on the task | `task/{id}` | PR open |
 | Human | Review PR; merge (squash-merge default) | `main` | PR merged |
 | Coordinator (cleanup) | On detected merge: `git worktree remove .paperclip/worktrees/{id}`; `git branch -D task/{id}` (remote auto-deleted by GitHub on merge) | — | worktree + branch gone |
 
@@ -59,14 +59,19 @@ Each agent run for the task uses `cwd = <worktree-path>`. Adapters (`claude-loca
 
 ## 3. Open questions
 
-### 3.1 Cargo target directory
+### 3.1 Cargo target directory — RESOLVED: per-worktree `target/` + sccache
 
-Each worktree gets its own `target/` by default — slow because Architect's `cargo check` recompiles per task. Two options:
+Each worktree gets its own `target/` by default — slow because Architect's `cargo clippy` recompiles per task. Two options:
 
 - **(a) Shared via `CARGO_TARGET_DIR=~/.cargo-shared-target`**: fast, but concurrent `cargo` runs need cargo's own lockfile to serialize (it does, but builds wait). Architect runs are infrequent enough that this is mostly a non-issue.
 - **(b) Per-worktree `target/`**: simpler, no concurrency consideration, but every Architect run starts cold.
 
-Recommendation: **(a)**. Architect is rarely concurrent in practice (one Architect by config), and even when it is, cargo's lock just serializes — that's correct behavior.
+Originally resolved as **(a)**, then **reverted to (b)**: the shared `target/` made every
+concurrent `cargo` serialize on `target/.cargo-lock`, capping parallel Architect verifies at
+~1 real builder no matter the agent's `maxConcurrentRuns`. Production today is (b) plus
+`RUSTC_WRAPPER=sccache` (set in `~/.profile`, wrapper configured in `~/.cargo/config.toml`),
+which recovers the cold-start cost content-addressably across worktrees. Do not reintroduce
+`CARGO_TARGET_DIR`.
 
 ### 3.2 Branch naming + cleanup
 
