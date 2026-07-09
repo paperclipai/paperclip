@@ -32,6 +32,7 @@ import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
 } from "./workspace-runtime-read-model.js";
+import { readGitHandoffRefs } from "./git-handoff-refs.js";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
@@ -1130,6 +1131,7 @@ export function executionWorkspaceService(db: Db) {
       const executionWorkspace = toExecutionWorkspace(workspace, runtimeServices);
       const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
       const { git, warnings: gitWarnings } = await inspectGitCloseReadiness(executionWorkspace);
+      const durableGitHandoffRefs = readGitHandoffRefs((workspace.metadata as Record<string, unknown> | null) ?? null);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
       const isSharedWorkspace = executionWorkspace.mode === "shared_workspace";
@@ -1163,6 +1165,17 @@ export function executionWorkspaceService(db: Db) {
 
       if (isSharedWorkspace) {
         warnings.push("This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.");
+      }
+
+      if (durableGitHandoffRefs.length > 0) {
+        const refSummary = durableGitHandoffRefs
+          .map((record) => `${record.shortSha} at ${record.ref}`)
+          .join(", ");
+        blockingReasons.push(
+          durableGitHandoffRefs.length === 1
+            ? `This workspace has a durable Git handoff ref recorded for an unresolved push handoff: ${refSummary}.`
+            : `This workspace has ${durableGitHandoffRefs.length} durable Git handoff refs recorded for unresolved push handoffs: ${refSummary}.`,
+        );
       }
 
       if (runtimeServices.some((service) => service.status !== "stopped")) {

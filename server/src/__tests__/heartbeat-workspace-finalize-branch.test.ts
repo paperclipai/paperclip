@@ -36,6 +36,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { readGitHandoffRefs } from "../services/git-handoff-refs.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -79,6 +80,10 @@ type Heartbeat = ReturnType<typeof heartbeatService>;
 
 async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
+}
+
+async function readGit(cwd: string, args: string[]) {
+  return (await execFileAsync("git", args, { cwd })).stdout.trim();
 }
 
 async function createGitRepo() {
@@ -302,6 +307,107 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     await db.$client.end();
     await tempDb?.cleanup();
   });
+
+  it("preserves finalized HEAD under a durable Git handoff ref when a pending handoff issue exists", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { agentId, companyId, projectId, projectWorkspaceId, issueId } = await seedRunTarget(db, repoRoot);
+    const handoffIssueId = randomUUID();
+    let executionWorkspaceId: string | null = null;
+    let handoffSha: string | null = null;
+
+    adapterExecute.mockImplementationOnce(async (input) => {
+      const workspace = readAdapterWorkspace(input);
+      executionWorkspaceId = workspace.executionWorkspaceId;
+      await writeFile(path.join(workspace.cwd, "handoff.txt"), "local handoff commit\n", "utf8");
+      await runGit(workspace.cwd, ["add", "handoff.txt"]);
+      await runGit(workspace.cwd, ["commit", "-m", "Add local handoff commit"]);
+      handoffSha = await readGit(workspace.cwd, ["rev-parse", "HEAD"]);
+      await db.insert(issues).values({
+        id: handoffIssueId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        parentId: issueId,
+        title: "Push local handoff commit",
+        description: [
+          "## Git handoff block",
+          "- Repo: paperclipai/paperclip",
+          `- Branch HEAD at submit: ${handoffSha}`,
+          "- Requested GitHub operation: push branch",
+        ].join("\n"),
+        status: "todo",
+        workMode: "standard",
+        priority: "high",
+        assigneeAgentId: agentId,
+        identifier: `PAP-${handoffIssueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        executionWorkspaceId: workspace.executionWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: {
+          mode: "isolated_workspace",
+        },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: "Adapter completed after creating a Git handoff issue.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await wakeIssue(heartbeat, agentId, issueId);
+    expect(run).not.toBeNull();
+
+    const finishedRun = await waitForRunToFinish(heartbeat, run!.id);
+    expect(finishedRun).toMatchObject({
+      status: "succeeded",
+      errorCode: null,
+      error: null,
+    });
+    await waitForRuntimeStateLastRun(db, agentId, run!.id);
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+    expect(handoffSha).toMatch(/^[0-9a-f]{40}$/);
+
+    const workspace = await db
+      .select({ metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId!))
+      .then((rows) => rows[0] ?? null);
+    const refs = readGitHandoffRefs(workspace?.metadata as Record<string, unknown> | null);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({
+      sha: handoffSha,
+      issueId,
+      issueIdentifier: expect.any(String),
+      executionWorkspaceId,
+      runId: run!.id,
+      relatedIssueIds: expect.arrayContaining([handoffIssueId]),
+      signalKinds: expect.arrayContaining(["issue_handoff_block"]),
+    });
+    await expect(readGit(repoRoot, ["rev-parse", "--verify", `${refs[0]!.ref}^{commit}`]))
+      .resolves.toBe(handoffSha);
+
+    const finalizeOps = await listFinalizeOperations(db, run!.id);
+    expect(finalizeOps).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        phase: "workspace_finalize",
+        status: "succeeded",
+        metadata: expect.objectContaining({
+          durableGitHandoffRef: expect.objectContaining({
+            ref: refs[0]!.ref,
+            sha: handoffSha,
+            relatedIssueIds: expect.arrayContaining([handoffIssueId]),
+          }),
+        }),
+      }),
+    ]));
+  }, 20_000);
 
   it("repairs clean unrecorded branch drift before recording workspace finalization", async () => {
     const repoRoot = await createGitRepo();

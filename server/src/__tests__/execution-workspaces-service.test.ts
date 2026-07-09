@@ -27,6 +27,7 @@ import {
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
 } from "../services/execution-workspaces.ts";
+import { buildGitHandoffRefName } from "../services/git-handoff-refs.ts";
 import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
@@ -315,6 +316,79 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "This workspace is still linked to an open issue. Archiving it will detach this shared workspace session from those issues, but keep the underlying project workspace available.",
       "This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.",
     ]));
+  });
+
+  it("blocks closing an isolated workspace while durable Git handoff refs are recorded", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const durableRef = buildGitHandoffRefName({ issueId, runId, sha });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspaces",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: null,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "PAP-1942",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: "/tmp/paperclip-handoff-workspace",
+      providerRef: "/tmp/paperclip-handoff-workspace",
+      branchName: "PAP-1942",
+      baseRef: "main",
+      metadata: {
+        createdByRuntime: true,
+        gitHandoffRefs: [{
+          version: 1,
+          ref: durableRef,
+          sha,
+          shortSha: sha.slice(0, 12),
+          issueId,
+          issueIdentifier: "PAP-1942",
+          executionWorkspaceId,
+          runId,
+          branchName: "PAP-1942",
+          baseRef: "main",
+          relatedIssueIds: [issueId],
+          workProductIds: [],
+          signalKinds: ["issue_handoff_block"],
+          status: "pending",
+          createdAt: new Date().toISOString(),
+        }],
+      },
+    });
+
+    const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+    expect(readiness).toMatchObject({
+      workspaceId: executionWorkspaceId,
+      state: "blocked",
+      isDestructiveCloseAllowed: false,
+    });
+    expect(readiness?.blockingReasons).toEqual([
+      expect.stringContaining("durable Git handoff ref"),
+    ]);
+    expect(readiness?.blockingReasons[0]).toContain(durableRef);
   });
 
   it("clears matching environment selections transactionally without touching other workspaces", async () => {

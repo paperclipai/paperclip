@@ -32,6 +32,11 @@ import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { executionWorkspaceService, readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import {
+  buildGitHandoffRefName,
+  readGitHandoffRefs,
+  type GitHandoffRefMetadata,
+} from "./git-handoff-refs.js";
 
 export function resolveShell(): string {
   const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
@@ -1747,7 +1752,7 @@ async function runWorkspaceCommand(input: {
 async function recordGitOperation(
   recorder: WorkspaceOperationRecorder | null | undefined,
   input: {
-    phase: "worktree_prepare" | "worktree_cleanup";
+    phase: "worktree_prepare" | "worktree_cleanup" | "workspace_finalize";
     args: string[];
     cwd: string;
     metadata?: Record<string, unknown> | null;
@@ -1804,6 +1809,235 @@ async function recordGitOperation(
     );
   }
   return stdout.trim();
+}
+
+async function resolveGitHandoffRef(input: {
+  repoRoot: string;
+  record: GitHandoffRefMetadata;
+}): Promise<string | null> {
+  const resolved = await runGit(["rev-parse", "--verify", `${input.record.ref}^{commit}`], input.repoRoot)
+    .catch(() => null);
+  if (!resolved) return null;
+  if (resolved.toLowerCase() !== input.record.sha.toLowerCase()) {
+    throw new WorkspaceRuntimeValidationFailure(
+      `Durable Git handoff ref ${input.record.ref} resolves to ${resolved}, but expected ${input.record.sha}.`,
+      {
+        workspaceValidation: {
+          reason: "git_handoff_ref_mismatch",
+          durableRef: input.record.ref,
+          expectedSha: input.record.sha,
+          actualSha: resolved,
+          executionWorkspaceId: input.record.executionWorkspaceId,
+          issueId: input.record.issueId,
+          issueIdentifier: input.record.issueIdentifier,
+          runId: input.record.runId,
+        },
+      },
+    );
+  }
+  return resolved;
+}
+
+export async function preserveGitHandoffHeadRef(input: {
+  worktreePath: string;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  executionWorkspaceId: string | null;
+  runId: string | null;
+  branchName: string | null;
+  baseRef: string | null;
+  relatedIssueIds: string[];
+  workProductIds: string[];
+  signalKinds: string[];
+  recorder?: WorkspaceOperationRecorder | null;
+}): Promise<GitHandoffRefMetadata> {
+  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.worktreePath)
+    .catch((error) => {
+      throw new WorkspaceRuntimeValidationFailure(
+        `Cannot preserve Git handoff SHA because "${input.worktreePath}" is not inside a usable git repository: ${error instanceof Error ? error.message : String(error)}`,
+        {
+          workspaceValidation: {
+            reason: "git_handoff_ref_repo_unavailable",
+            worktreePath: input.worktreePath,
+            executionWorkspaceId: input.executionWorkspaceId,
+            issueId: input.issueId,
+            issueIdentifier: input.issueIdentifier,
+            runId: input.runId,
+          },
+        },
+      );
+    });
+  const sha = await runGit(["rev-parse", "--verify", "HEAD^{commit}"], input.worktreePath)
+    .catch((error) => {
+      throw new WorkspaceRuntimeValidationFailure(
+        `Cannot preserve Git handoff SHA because HEAD in "${input.worktreePath}" is not a commit: ${error instanceof Error ? error.message : String(error)}`,
+        {
+          workspaceValidation: {
+            reason: "git_handoff_head_unavailable",
+            worktreePath: input.worktreePath,
+            repoRoot,
+            executionWorkspaceId: input.executionWorkspaceId,
+            issueId: input.issueId,
+            issueIdentifier: input.issueIdentifier,
+            runId: input.runId,
+          },
+        },
+      );
+    });
+  const ref = buildGitHandoffRefName({
+    issueId: input.issueId,
+    runId: input.runId,
+    sha,
+  });
+
+  await recordGitOperation(input.recorder, {
+    phase: "workspace_finalize",
+    args: ["update-ref", ref, sha],
+    cwd: repoRoot,
+    metadata: {
+      repoRoot,
+      worktreePath: input.worktreePath,
+      durableGitHandoffRef: true,
+      ref,
+      sha,
+      executionWorkspaceId: input.executionWorkspaceId,
+      issueId: input.issueId,
+      issueIdentifier: input.issueIdentifier,
+      runId: input.runId,
+      branchName: input.branchName,
+      signalKinds: input.signalKinds,
+      relatedIssueIds: input.relatedIssueIds,
+      workProductIds: input.workProductIds,
+    },
+    successMessage: `Preserved Git handoff commit ${sha} at ${ref}\n`,
+    failureLabel: `git update-ref ${ref}`,
+  }).catch((error) => {
+    throw new WorkspaceRuntimeValidationFailure(
+      `Cannot preserve Git handoff SHA ${sha} at ${ref}: ${error instanceof Error ? error.message : String(error)}`,
+      {
+        workspaceValidation: {
+          reason: "git_handoff_ref_update_failed",
+          worktreePath: input.worktreePath,
+          repoRoot,
+          durableRef: ref,
+          sha,
+          executionWorkspaceId: input.executionWorkspaceId,
+          issueId: input.issueId,
+          issueIdentifier: input.issueIdentifier,
+          runId: input.runId,
+        },
+      },
+    );
+  });
+
+  const record: GitHandoffRefMetadata = {
+    version: 1,
+    ref,
+    sha,
+    shortSha: sha.slice(0, 12),
+    issueId: input.issueId,
+    issueIdentifier: input.issueIdentifier,
+    executionWorkspaceId: input.executionWorkspaceId,
+    runId: input.runId,
+    branchName: input.branchName,
+    baseRef: input.baseRef,
+    relatedIssueIds: [...new Set(input.relatedIssueIds)],
+    workProductIds: [...new Set(input.workProductIds)],
+    signalKinds: [...new Set(input.signalKinds)],
+    status: "pending",
+    createdAt: new Date().toISOString(),
+  };
+
+  await resolveGitHandoffRef({ repoRoot, record });
+  return record;
+}
+
+async function restoreBranchFromGitHandoffRef(input: {
+  repoRoot: string;
+  worktreePath: string;
+  branchName: string;
+  metadata: Record<string, unknown> | null | undefined;
+  executionWorkspaceId: string | null;
+  issue: ExecutionWorkspaceIssueRef | null;
+  recorder?: WorkspaceOperationRecorder | null;
+}): Promise<{ restored: boolean; record: GitHandoffRefMetadata | null }> {
+  const allRecords = readGitHandoffRefs(input.metadata);
+  const candidates = allRecords.filter((record) => !record.branchName || record.branchName === input.branchName);
+  if (candidates.length === 0) {
+    if (allRecords.length > 0) {
+      throw new WorkspaceRuntimeValidationFailure(
+        `Execution workspace "${input.worktreePath}" has durable Git handoff refs, but none match recorded branch "${input.branchName}".`,
+        {
+          workspaceValidation: {
+            reason: "git_handoff_ref_branch_mismatch",
+            repoRoot: input.repoRoot,
+            worktreePath: input.worktreePath,
+            branchName: input.branchName,
+            executionWorkspaceId: input.executionWorkspaceId,
+            issueId: input.issue?.id ?? null,
+            issueIdentifier: input.issue?.identifier ?? null,
+            durableRefs: allRecords.map((record) => ({
+              ref: record.ref,
+              sha: record.sha,
+              branchName: record.branchName,
+              issueId: record.issueId,
+              runId: record.runId,
+            })),
+          },
+        },
+      );
+    }
+    return { restored: false, record: null };
+  }
+
+  const missingRefs: string[] = [];
+  for (const candidate of candidates) {
+    const resolved = await resolveGitHandoffRef({ repoRoot: input.repoRoot, record: candidate });
+    if (!resolved) {
+      missingRefs.push(candidate.ref);
+      continue;
+    }
+    await recordGitOperation(input.recorder, {
+      phase: "worktree_prepare",
+      args: ["branch", "--force", input.branchName, candidate.ref],
+      cwd: input.repoRoot,
+      metadata: {
+        repoRoot: input.repoRoot,
+        worktreePath: input.worktreePath,
+        branchName: input.branchName,
+        durableGitHandoffRefRestore: true,
+        ref: candidate.ref,
+        sha: candidate.sha,
+        executionWorkspaceId: input.executionWorkspaceId,
+        sourceIssueId: input.issue?.id ?? candidate.issueId,
+        sourceIdentifier: input.issue?.identifier ?? candidate.issueIdentifier,
+      },
+      successMessage: `Restored branch ${input.branchName} from durable Git handoff ref ${candidate.ref}\n`,
+      failureLabel: `git branch --force ${input.branchName} ${candidate.ref}`,
+    });
+    return { restored: true, record: candidate };
+  }
+
+  throw new WorkspaceRuntimeValidationFailure(
+    `Execution workspace "${input.worktreePath}" has pending durable Git handoff refs, but none of them are present in the repository: ${missingRefs.join(", ")}.`,
+    {
+      workspaceValidation: {
+        reason: "git_handoff_ref_missing",
+        repoRoot: input.repoRoot,
+        worktreePath: input.worktreePath,
+        branchName: input.branchName,
+        executionWorkspaceId: input.executionWorkspaceId,
+        issueId: input.issue?.id ?? null,
+        issueIdentifier: input.issue?.identifier ?? null,
+        durableRefs: candidates.map((candidate) => ({
+          ref: candidate.ref,
+          sha: candidate.sha,
+          issueId: candidate.issueId,
+          runId: candidate.runId,
+        })),
+      },
+    },
+  );
 }
 
 async function recordWorkspaceCommandOperation(
@@ -2396,25 +2630,53 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     ) {
       throw error;
     }
-    const baseRef = input.workspace.baseRef ?? await detectDefaultBranch(repoRoot) ?? "HEAD";
-    const recreatedBaseRefSha = await resolveBaseRefSha(repoRoot, baseRef);
-    await recordGitOperation(input.recorder, {
-      phase: "worktree_prepare",
-      args: ["worktree", "add", "-b", branchName, worktreePath, baseRef],
-      cwd: repoRoot,
-      metadata: {
-        repoRoot,
-        worktreePath,
-        branchName,
-        baseRef,
-        baseRefSha: recreatedBaseRefSha,
-        created: true,
-        restored: true,
-      },
-      successMessage: `Recreated missing git worktree at ${worktreePath}\n`,
-      failureLabel: `git worktree add ${worktreePath}`,
+    const handoffRestore = await restoreBranchFromGitHandoffRef({
+      repoRoot,
+      worktreePath,
+      branchName,
+      metadata: input.workspace.metadata,
+      executionWorkspaceId: input.workspace.id ?? null,
+      issue: input.issue,
+      recorder: input.recorder ?? null,
     });
-    created = true;
+    if (handoffRestore.restored) {
+      await recordGitOperation(input.recorder, {
+        phase: "worktree_prepare",
+        args: ["worktree", "add", worktreePath, branchName],
+        cwd: repoRoot,
+        metadata: {
+          repoRoot,
+          worktreePath,
+          branchName,
+          restoredFromDurableGitHandoffRef: true,
+          durableRef: handoffRestore.record?.ref ?? null,
+          sha: handoffRestore.record?.sha ?? null,
+          executionWorkspaceId: input.workspace.id ?? null,
+        },
+        successMessage: `Reattached missing git worktree at ${worktreePath} from durable Git handoff ref\n`,
+        failureLabel: `git worktree add ${worktreePath}`,
+      });
+    } else {
+      const baseRef = input.workspace.baseRef ?? await detectDefaultBranch(repoRoot) ?? "HEAD";
+      const recreatedBaseRefSha = await resolveBaseRefSha(repoRoot, baseRef);
+      await recordGitOperation(input.recorder, {
+        phase: "worktree_prepare",
+        args: ["worktree", "add", "-b", branchName, worktreePath, baseRef],
+        cwd: repoRoot,
+        metadata: {
+          repoRoot,
+          worktreePath,
+          branchName,
+          baseRef,
+          baseRefSha: recreatedBaseRefSha,
+          created: true,
+          restored: true,
+        },
+        successMessage: `Recreated missing git worktree at ${worktreePath}\n`,
+        failureLabel: `git worktree add ${worktreePath}`,
+      });
+      created = true;
+    }
   }
 
   const baseDrift = await inspectExecutionWorkspaceBaseDrift({
@@ -2489,6 +2751,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     projectWorkspaceCwd: input.projectWorkspace?.cwd ?? null,
   });
   const createdByRuntime = input.workspace.metadata?.createdByRuntime === true;
+  const durableGitHandoffRefs = readGitHandoffRefs(input.workspace.metadata);
   const cleanupCommands = [
     input.cleanupCommand ?? null,
     input.projectWorkspace?.cleanupCommand ?? null,
@@ -2524,51 +2787,63 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   }
 
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
-    const worktreeExists = await directoryExists(workspacePath);
-    if (worktreeExists) {
-      if (!repoRoot) {
-        warnings.push(`Could not resolve git repo root for "${workspacePath}".`);
-      } else {
-        try {
-          await recordGitOperation(input.recorder, {
-            phase: "worktree_cleanup",
-            args: ["worktree", "remove", "--force", workspacePath],
-            cwd: repoRoot,
-            metadata: {
-              workspaceId: input.workspace.id,
-              workspacePath,
-              branchName: input.workspace.branchName,
-              cleanupAction: "worktree_remove",
-            },
-            successMessage: `Removed git worktree ${workspacePath}\n`,
-            failureLabel: `git worktree remove ${workspacePath}`,
-          });
-        } catch (err) {
-          warnings.push(err instanceof Error ? err.message : String(err));
+    if (durableGitHandoffRefs.length > 0) {
+      const refList = durableGitHandoffRefs.map((record) => `${record.ref} (${record.shortSha})`).join(", ");
+      warnings.push(
+        `Skipped removing git worktree "${workspacePath}" because durable Git handoff refs are still recorded: ${refList}.`,
+      );
+      if (createdByRuntime && input.workspace.branchName) {
+        warnings.push(
+          `Skipped deleting branch "${input.workspace.branchName}" because durable Git handoff refs are still recorded: ${refList}.`,
+        );
+      }
+    } else {
+      const worktreeExists = await directoryExists(workspacePath);
+      if (worktreeExists) {
+        if (!repoRoot) {
+          warnings.push(`Could not resolve git repo root for "${workspacePath}".`);
+        } else {
+          try {
+            await recordGitOperation(input.recorder, {
+              phase: "worktree_cleanup",
+              args: ["worktree", "remove", "--force", workspacePath],
+              cwd: repoRoot,
+              metadata: {
+                workspaceId: input.workspace.id,
+                workspacePath,
+                branchName: input.workspace.branchName,
+                cleanupAction: "worktree_remove",
+              },
+              successMessage: `Removed git worktree ${workspacePath}\n`,
+              failureLabel: `git worktree remove ${workspacePath}`,
+            });
+          } catch (err) {
+            warnings.push(err instanceof Error ? err.message : String(err));
+          }
         }
       }
-    }
-    if (createdByRuntime && input.workspace.branchName) {
-      if (!repoRoot) {
-        warnings.push(`Could not resolve git repo root to delete branch "${input.workspace.branchName}".`);
-      } else {
-        try {
-          await recordGitOperation(input.recorder, {
-            phase: "worktree_cleanup",
-            args: ["branch", "-d", input.workspace.branchName],
-            cwd: repoRoot,
-            metadata: {
-              workspaceId: input.workspace.id,
-              workspacePath,
-              branchName: input.workspace.branchName,
-              cleanupAction: "branch_delete",
-            },
-            successMessage: `Deleted branch ${input.workspace.branchName}\n`,
-            failureLabel: `git branch -d ${input.workspace.branchName}`,
-          });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          warnings.push(`Skipped deleting branch "${input.workspace.branchName}": ${message}`);
+      if (createdByRuntime && input.workspace.branchName) {
+        if (!repoRoot) {
+          warnings.push(`Could not resolve git repo root to delete branch "${input.workspace.branchName}".`);
+        } else {
+          try {
+            await recordGitOperation(input.recorder, {
+              phase: "worktree_cleanup",
+              args: ["branch", "-d", input.workspace.branchName],
+              cwd: repoRoot,
+              metadata: {
+                workspaceId: input.workspace.id,
+                workspacePath,
+                branchName: input.workspace.branchName,
+                cleanupAction: "branch_delete",
+              },
+              successMessage: `Deleted branch ${input.workspace.branchName}\n`,
+              failureLabel: `git branch -d ${input.workspace.branchName}`,
+            });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            warnings.push(`Skipped deleting branch "${input.workspace.branchName}": ${message}`);
+          }
         }
       }
     }
