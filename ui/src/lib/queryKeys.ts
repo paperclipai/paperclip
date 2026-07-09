@@ -45,6 +45,9 @@ export const queryKeys = {
     detectModel: (companyId: string, adapterType: string) =>
       ["agents", companyId, "detect-model", adapterType] as const,
   },
+  briefs: {
+    overview: (companyId: string) => ["briefs", companyId, "overview"] as const,
+  },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
     mentionPool: (companyId: string) => ["issues", companyId, "mention-pool"] as const,

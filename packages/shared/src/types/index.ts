@@ -166,6 +166,12 @@ export type {
   AdapterEnvironmentTestResult,
 } from "./agent.js";
 export type {
+  BriefsOverview,
+  BriefsOverviewAgent,
+  BriefsOverviewSummaryItem,
+  BriefsOverviewWarning,
+} from "./briefs.js";
+export type {
   AgentEligibilityAgent,
   AgentEligibilityLifecycleReason,
   AgentInvalidOrgChainAncestor,

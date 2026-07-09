@@ -957,6 +957,10 @@ export type {
   PluginWebhookDeliveryRecord,
   QuotaWindow,
   ProviderQuotaResult,
+  BriefsOverview,
+  BriefsOverviewAgent,
+  BriefsOverviewSummaryItem,
+  BriefsOverviewWarning,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
 export {

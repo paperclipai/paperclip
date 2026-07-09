@@ -5,6 +5,7 @@ import {
   LayoutDashboard,
   DollarSign,
   History,
+  FileText,
   Search,
   SquarePen,
   Network,
@@ -188,6 +189,7 @@ export function Sidebar() {
           {showPipelines ? (
             <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
           ) : null}
+          <SidebarNavItem to="/briefs" label="Briefs" icon={FileText} />
           {showGoalsLink ? (
             <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           ) : goalsLinkPending ? (
