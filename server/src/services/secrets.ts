@@ -23,6 +23,7 @@ import type {
   RemoteSecretImportRowResult,
   SecretProviderConfigDiscoveryPreviewResult,
   SecretBindingTargetType,
+  SecretProjectionClass,
   SecretProvider,
   SecretProviderConfigHealthResponse,
   SecretProviderConfigHealthStatus,
@@ -30,6 +31,7 @@ import type {
   SecretVersionSelector,
 } from "@paperclipai/shared";
 import {
+  CLASS3_STATIC_LEASE_ALLOWLIST,
   createSecretProviderConfigSchema,
   deriveProjectUrlKey,
   envBindingSchema,
@@ -216,7 +218,13 @@ async function cleanupPreparedProviderWrite(input: {
 
 type CanonicalEnvBinding =
   | { type: "plain"; value: string }
-  | { type: "secret_ref"; secretId: string; version: number | "latest" };
+  | {
+      type: "secret_ref";
+      secretId: string;
+      version: number | "latest";
+      projectionClass: SecretProjectionClass;
+      projectionAllowlistKey: string | null;
+    };
 
 type SecretConsumerContext = {
   consumerType: SecretBindingTargetType;
@@ -307,7 +315,39 @@ function canonicalizeBinding(binding: EnvBinding): CanonicalEnvBinding {
     type: "secret_ref",
     secretId: binding.secretId,
     version: binding.version ?? "latest",
+    projectionClass: binding.projectionClass ?? "unclassified",
+    projectionAllowlistKey: binding.projectionAllowlistKey ?? null,
   };
+}
+
+function assertClass3StaticLeaseAllowed(input: {
+  targetType: SecretBindingTargetType;
+  configPath: string;
+  projectionClass?: string | null;
+  projectionAllowlistKey?: string | null;
+}) {
+  const projectionClass = input.projectionClass ?? "unclassified";
+  if (projectionClass !== "class_3_static_lease") return;
+  if (!input.projectionAllowlistKey?.trim()) {
+    throw unprocessable("Class-3 static lease bindings require an allowlist key", {
+      code: "class_3_static_lease_allowlist_required",
+      targetType: input.targetType,
+      configPath: input.configPath,
+    });
+  }
+  const allowed = CLASS3_STATIC_LEASE_ALLOWLIST.some((entry) =>
+    entry.key === input.projectionAllowlistKey
+    && entry.targetType === input.targetType
+    && entry.configPath === input.configPath
+  );
+  if (!allowed) {
+    throw unprocessable("Class-3 static lease binding is outside the approved allowlist", {
+      code: "class_3_static_lease_not_allowed",
+      allowlistKey: input.projectionAllowlistKey,
+      targetType: input.targetType,
+      configPath: input.configPath,
+    });
+  }
 }
 
 function defaultProviderConfigStatus(provider: SecretProvider): SecretProviderConfigStatus {
@@ -455,6 +495,12 @@ export function secretService(db: Db) {
         { code: "binding_not_allowed" },
       );
     }
+    assertClass3StaticLeaseAllowed({
+      targetType: binding.targetType as SecretBindingTargetType,
+      configPath: binding.configPath,
+      projectionClass: binding.projectionClass,
+      projectionAllowlistKey: binding.projectionAllowlistKey,
+    });
     return binding;
   }
 
@@ -2354,8 +2400,16 @@ export function secretService(db: Db) {
       versionSelector?: SecretVersionSelector;
       required?: boolean;
       label?: string | null;
+      projectionClass?: SecretProjectionClass;
+      projectionAllowlistKey?: string | null;
     }) => {
       await assertSecretInCompany(input.companyId, input.secretId);
+      assertClass3StaticLeaseAllowed({
+        targetType: input.targetType,
+        configPath: input.configPath,
+        projectionClass: input.projectionClass,
+        projectionAllowlistKey: input.projectionAllowlistKey,
+      });
       const existing = await db
         .select()
         .from(companySecretBindings)
@@ -2380,6 +2434,8 @@ export function secretService(db: Db) {
           versionSelector: String(input.versionSelector ?? "latest"),
           required: input.required ?? true,
           label: input.label ?? null,
+          projectionClass: input.projectionClass ?? "unclassified",
+          projectionAllowlistKey: input.projectionAllowlistKey ?? null,
         })
         .returning()
         .then((rows) => rows[0]);
@@ -2394,6 +2450,8 @@ export function secretService(db: Db) {
         versionSelector?: SecretVersionSelector;
         required?: boolean;
         label?: string | null;
+        projectionClass?: SecretProjectionClass;
+        projectionAllowlistKey?: string | null;
       }>,
       options?: { replaceAll?: boolean },
     ) => {
@@ -2403,15 +2461,27 @@ export function secretService(db: Db) {
         versionSelector: SecretVersionSelector;
         required: boolean;
         label: string | null;
+        projectionClass: SecretProjectionClass;
+        projectionAllowlistKey: string | null;
       }> = [];
       for (const ref of refs) {
         await assertSecretInCompany(companyId, ref.secretId);
+        const projectionClass = ref.projectionClass ?? "unclassified";
+        const projectionAllowlistKey = ref.projectionAllowlistKey ?? null;
+        assertClass3StaticLeaseAllowed({
+          targetType: target.targetType,
+          configPath: ref.configPath,
+          projectionClass,
+          projectionAllowlistKey,
+        });
         normalizedRefs.push({
           secretId: ref.secretId,
           configPath: ref.configPath,
           versionSelector: ref.versionSelector ?? "latest",
           required: ref.required ?? true,
           label: ref.label ?? null,
+          projectionClass,
+          projectionAllowlistKey,
         });
       }
 
@@ -2466,6 +2536,8 @@ export function secretService(db: Db) {
             versionSelector: String(ref.versionSelector),
             required: ref.required,
             label: ref.label,
+            projectionClass: ref.projectionClass,
+            projectionAllowlistKey: ref.projectionAllowlistKey,
           })),
         );
       });
@@ -2497,6 +2569,8 @@ export function secretService(db: Db) {
         secretId: string;
         configPath: string;
         versionSelector: SecretVersionSelector;
+        projectionClass: SecretProjectionClass;
+        projectionAllowlistKey: string | null;
       }> = [];
       const pathPrefix = target.pathPrefix ?? "env";
       const bindingDb = options?.db ?? db;
@@ -2506,10 +2580,19 @@ export function secretService(db: Db) {
         const binding = canonicalizeBinding(parsed.data as EnvBinding);
         if (binding.type !== "secret_ref") continue;
         await assertSecretInCompany(companyId, binding.secretId, bindingDb);
+        const configPath = `${pathPrefix}.${key}`;
+        assertClass3StaticLeaseAllowed({
+          targetType: target.targetType,
+          configPath,
+          projectionClass: binding.projectionClass,
+          projectionAllowlistKey: binding.projectionAllowlistKey,
+        });
         refs.push({
           secretId: binding.secretId,
-          configPath: `${pathPrefix}.${key}`,
+          configPath,
           versionSelector: binding.version,
+          projectionClass: binding.projectionClass,
+          projectionAllowlistKey: binding.projectionAllowlistKey,
         });
       }
 
@@ -2534,6 +2617,8 @@ export function secretService(db: Db) {
             configPath: ref.configPath,
             versionSelector: String(ref.versionSelector),
             required: true,
+            projectionClass: ref.projectionClass,
+            projectionAllowlistKey: ref.projectionAllowlistKey,
           })),
         );
       };

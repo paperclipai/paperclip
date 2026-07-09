@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   SECRET_BINDING_TARGET_TYPES,
   SECRET_MANAGED_MODES,
+  SECRET_PROJECTION_CLASSES,
   SECRET_PROVIDER_CONFIG_STATUSES,
   SECRET_PROVIDERS,
   SECRET_STATUSES,
@@ -16,6 +17,8 @@ export const envBindingSecretRefSchema = z.object({
   type: z.literal("secret_ref"),
   secretId: z.string().uuid(),
   version: z.union([z.literal("latest"), z.number().int().positive()]).optional(),
+  projectionClass: z.enum(SECRET_PROJECTION_CLASSES).optional(),
+  projectionAllowlistKey: z.string().trim().min(1).max(160).optional().nullable(),
 });
 
 // Backward-compatible union that accepts legacy inline values.
@@ -99,6 +102,8 @@ export const createSecretBindingSchema = secretBindingTargetSchema.extend({
   versionSelector: z.union([z.literal("latest"), z.number().int().positive()]).default("latest"),
   required: z.boolean().default(true),
   label: z.string().optional().nullable(),
+  projectionClass: z.enum(SECRET_PROJECTION_CLASSES).optional(),
+  projectionAllowlistKey: z.string().trim().min(1).max(160).optional().nullable(),
 });
 
 export type CreateSecretBinding = z.infer<typeof createSecretBindingSchema>;

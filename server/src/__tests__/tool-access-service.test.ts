@@ -1919,6 +1919,96 @@ describeEmbeddedPostgres("tool access service", () => {
     ]);
   });
 
+  it("stores approved class-3 credential refs on thin tool connections", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const [secret] = await db.insert(companySecrets).values({
+      companyId: company.id,
+      key: `discord.bot_token.${randomUUID()}`,
+      name: `Discord bot token ${randomUUID()}`,
+      provider: "local_encrypted",
+    }).returning();
+
+    const connection = await service.createConnection(company.id, {
+      applicationName: "Discord",
+      name: "Discord bot token",
+      transport: "remote_http",
+      config: { url: "https://discord.example.test/mcp" },
+      enabled: false,
+      status: "draft",
+      credentialSecretRefs: [{
+        secretId: secret!.id,
+        versionSelector: "latest",
+        configPath: "credentials.bot_token",
+        label: "Discord bot token",
+        projectionClass: "class_3_static_lease",
+        projectionAllowlistKey: "discord.bot_token",
+      }],
+    });
+
+    expect(connection.credentialSecretRefs).toEqual([
+      expect.objectContaining({
+        secretId: secret!.id,
+        configPath: "credentials.bot_token",
+        projectionClass: "class_3_static_lease",
+        projectionAllowlistKey: "discord.bot_token",
+      }),
+    ]);
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(and(eq(companySecretBindings.companyId, company.id), eq(companySecretBindings.targetId, connection.id)));
+    expect(bindings).toEqual([
+      expect.objectContaining({
+        secretId: secret!.id,
+        targetType: "tool_connection",
+        configPath: "credentials.bot_token",
+        projectionClass: "class_3_static_lease",
+        projectionAllowlistKey: "discord.bot_token",
+      }),
+    ]);
+  });
+
+  it("rejects class-3 tool connection refs outside the enumerated allowlist", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `blocked-${randomUUID()}`,
+      name: `Blocked App ${randomUUID()}`,
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [secret] = await db.insert(companySecrets).values({
+      companyId: company.id,
+      key: `github.token.${randomUUID()}`,
+      name: `GitHub token ${randomUUID()}`,
+      provider: "local_encrypted",
+    }).returning();
+
+    await expect(service.createConnection(company.id, {
+      applicationId: application!.id,
+      name: "Blocked class-3 token",
+      transport: "remote_http",
+      config: { url: "https://blocked.example.test/mcp" },
+      enabled: false,
+      status: "draft",
+      credentialSecretRefs: [{
+        secretId: secret!.id,
+        versionSelector: "latest",
+        configPath: "credentials.bot_token",
+        label: "GitHub token",
+        projectionClass: "class_3_static_lease",
+        projectionAllowlistKey: "github.token",
+      }],
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "class_3_static_lease_not_allowed" },
+    });
+    await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
+    await expect(db.select().from(companySecretBindings)).resolves.toHaveLength(0);
+  });
+
   it("rejects Google Sheets gallery connects that claim a spreadsheet bound to another company", async () => {
     const companyA = await createCompany(db);
     const companyB = await createCompany(db);

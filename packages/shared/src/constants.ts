@@ -646,6 +646,55 @@ export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[numbe
 export const SECRET_ACCESS_OUTCOMES = ["success", "failure"] as const;
 export type SecretAccessOutcome = (typeof SECRET_ACCESS_OUTCOMES)[number];
 
+export const SECRET_PROJECTION_CLASSES = ["unclassified", "class_3_static_lease"] as const;
+export type SecretProjectionClass = (typeof SECRET_PROJECTION_CLASSES)[number];
+
+export const CLASS3_STATIC_LEASE_ALLOWLIST = [
+  {
+    key: "slack.bot_token",
+    label: "Slack bot token",
+    targetType: "agent",
+    configPath: "env.SLACK_BOT_TOKEN",
+    envKey: "SLACK_BOT_TOKEN",
+  },
+  {
+    key: "slack.bot_token",
+    label: "Slack bot token",
+    targetType: "routine",
+    configPath: "env.SLACK_BOT_TOKEN",
+    envKey: "SLACK_BOT_TOKEN",
+  },
+  {
+    key: "slack.bot_token",
+    label: "Slack bot token governance connection",
+    targetType: "tool_connection",
+    configPath: "credentials.bot_token",
+    envKey: "SLACK_BOT_TOKEN",
+  },
+  {
+    key: "discord.bot_token",
+    label: "Discord bot token",
+    targetType: "agent",
+    configPath: "env.DISCORD_BOT_TOKEN",
+    envKey: "DISCORD_BOT_TOKEN",
+  },
+  {
+    key: "discord.bot_token",
+    label: "Discord bot token",
+    targetType: "routine",
+    configPath: "env.DISCORD_BOT_TOKEN",
+    envKey: "DISCORD_BOT_TOKEN",
+  },
+  {
+    key: "discord.bot_token",
+    label: "Discord bot token governance connection",
+    targetType: "tool_connection",
+    configPath: "credentials.bot_token",
+    envKey: "DISCORD_BOT_TOKEN",
+  },
+] as const;
+export type Class3StaticLeaseAllowlistKey = (typeof CLASS3_STATIC_LEASE_ALLOWLIST)[number]["key"];
+
 export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
 

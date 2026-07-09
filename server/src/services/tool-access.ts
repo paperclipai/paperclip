@@ -95,7 +95,7 @@ import type {
   UpdateToolProfileWithEntries,
   UnbindToolProfileBinding,
 } from "@paperclipai/shared";
-import { getToolAppGalleryEntry, isToolConnectionAttentionHealth } from "@paperclipai/shared";
+import { CLASS3_STATIC_LEASE_ALLOWLIST, getToolAppGalleryEntry, isToolConnectionAttentionHealth } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
@@ -537,6 +537,35 @@ function toApplication(row: typeof toolApplications.$inferSelect): ToolApplicati
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+function assertClass3ToolCredentialRefAllowed(ref: {
+  configPath?: string | null;
+  projectionClass?: string | null;
+  projectionAllowlistKey?: string | null;
+}) {
+  const projectionClass = ref.projectionClass ?? "unclassified";
+  if (projectionClass !== "class_3_static_lease") return;
+  if (!ref.configPath?.trim() || !ref.projectionAllowlistKey?.trim()) {
+    throw unprocessable("Class-3 static lease tool credentials require an allowlist key and config path", {
+      code: "class_3_static_lease_allowlist_required",
+      targetType: "tool_connection",
+      configPath: ref.configPath ?? null,
+    });
+  }
+  const allowed = CLASS3_STATIC_LEASE_ALLOWLIST.some((entry) =>
+    entry.key === ref.projectionAllowlistKey
+    && entry.targetType === "tool_connection"
+    && entry.configPath === ref.configPath
+  );
+  if (!allowed) {
+    throw unprocessable("Class-3 static lease tool credential is outside the approved allowlist", {
+      code: "class_3_static_lease_not_allowed",
+      allowlistKey: ref.projectionAllowlistKey,
+      targetType: "tool_connection",
+      configPath: ref.configPath,
+    });
+  }
 }
 
 function toConnection(row: typeof toolConnections.$inferSelect): ToolConnection {
@@ -1648,8 +1677,16 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     if (!row) throw unprocessable("Tool application plugin was not found");
   }
 
-  async function assertSecretRefs(companyId: string, refs: Array<{ secretId: string }>) {
+  async function assertSecretRefs(companyId: string, refs: Array<{
+    secretId: string;
+    configPath?: string | null;
+    projectionClass?: string | null;
+    projectionAllowlistKey?: string | null;
+  }>) {
     if (refs.length === 0) return;
+    for (const ref of refs) {
+      assertClass3ToolCredentialRefAllowed(ref);
+    }
     const secretIds = [...new Set(refs.map((ref) => ref.secretId))];
     for (const secretId of secretIds) {
       const [secret] = await db
@@ -1957,10 +1994,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       ...connection.credentialRefs.map((ref) => ({
         secretId: ref.secretId,
         configPath: `credentials.${ref.name}`,
+        projectionClass: "unclassified",
+        projectionAllowlistKey: null,
       })),
       ...connection.credentialSecretRefs.map((ref) => ({
         secretId: ref.secretId,
         configPath: ref.configPath,
+        projectionClass: ref.projectionClass ?? "unclassified",
+        projectionAllowlistKey: ref.projectionAllowlistKey ?? null,
       })),
     ];
     if (bindings.length === 0) return;
@@ -1970,6 +2011,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       targetType: "tool_connection" as const,
       targetId: connection.id,
       configPath: ref.configPath,
+      projectionClass: ref.projectionClass,
+      projectionAllowlistKey: ref.projectionAllowlistKey,
     })));
   }
 

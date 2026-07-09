@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  SECRET_PROJECTION_CLASSES,
   TOOL_ACTION_REQUEST_STATUSES,
   TOOL_APPLICATION_STATUSES,
   TOOL_APPLICATION_TYPES,
@@ -89,6 +90,8 @@ export const toolCredentialSecretRefSchema = z.object({
   configPath: z.string().trim().min(1).max(200),
   required: z.boolean().optional(),
   label: z.string().trim().max(120).optional().nullable(),
+  projectionClass: z.enum(SECRET_PROJECTION_CLASSES).optional(),
+  projectionAllowlistKey: z.string().trim().min(1).max(160).optional().nullable(),
 });
 
 export const mcpConnectionCredentialRefSchema = z.object({

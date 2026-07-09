@@ -1,4 +1,5 @@
 import type {
+  SecretProjectionClass,
   ToolActionRequestStatus,
   ToolApplicationStatus,
   ToolApplicationType,
@@ -30,6 +31,7 @@ import type {
 } from "../constants.js";
 
 export type {
+  SecretProjectionClass,
   ToolActionRequestStatus,
   ToolApplicationStatus,
   ToolApplicationType,
@@ -80,6 +82,8 @@ export interface ToolCredentialSecretRef {
   configPath: string;
   required?: boolean;
   label?: string | null;
+  projectionClass?: SecretProjectionClass;
+  projectionAllowlistKey?: string | null;
 }
 
 export interface ToolRedactedValueSummary {

@@ -5,6 +5,7 @@ import type {
   SecretProvider,
   SecretProviderConfigHealthStatus,
   SecretProviderConfigStatus,
+  SecretProjectionClass,
   SecretStatus,
   SecretVersionStatus,
 } from "../constants.js";
@@ -16,6 +17,7 @@ export type {
   SecretProvider,
   SecretProviderConfigHealthStatus,
   SecretProviderConfigStatus,
+  SecretProjectionClass,
   SecretStatus,
   SecretVersionStatus,
 };
@@ -31,6 +33,8 @@ export interface EnvSecretRefBinding {
   type: "secret_ref";
   secretId: string;
   version?: SecretVersionSelector;
+  projectionClass?: SecretProjectionClass;
+  projectionAllowlistKey?: string | null;
 }
 
 // Backward-compatible: legacy plaintext string values are still accepted.
@@ -197,6 +201,8 @@ export interface CompanySecretBinding {
   versionSelector: SecretVersionSelector;
   required: boolean;
   label: string | null;
+  projectionClass: SecretProjectionClass;
+  projectionAllowlistKey: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
