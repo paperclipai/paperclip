@@ -134,7 +134,7 @@ export function preserveReadableStreamingRetraction(previousText: string, nextTe
   }
 
   const overlapLength = longestSuffixPrefixOverlap(previousText, nextText);
-  if (overlapLength > 0 && overlapLength < previousText.length) {
+  if (overlapLength >= 8 && overlapLength < previousText.length) {
     const removedPrefix = previousText.slice(0, previousText.length - overlapLength);
     if (isQuietStreamingRemovalBoundary(removedPrefix)) {
       return nextText;
@@ -164,7 +164,7 @@ function revealCompleteStreamingWords(previousText: string, nextText: string) {
   if (!addedText) return nextText;
 
   const boundaryIndex = lastReadableWordBoundary(addedText);
-  if (boundaryIndex === -1) return previousText;
+  if (boundaryIndex === -1) return nextText;
   return previousText + addedText.slice(0, boundaryIndex + 1);
 }
 

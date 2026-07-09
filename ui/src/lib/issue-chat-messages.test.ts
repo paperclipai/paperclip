@@ -1130,6 +1130,10 @@ describe("stabilizeThreadMessages", () => {
       "Writing ",
       "Writing the plan.",
     )).toBe("Writing the plan.");
+    expect(preserveReadableStreamingRetraction(
+      "Writing ",
+      "Writing draft",
+    )).toBe("Writing draft");
   });
 
   it("holds sliding-window removals until an older paragraph or group boundary drops", () => {
@@ -1145,6 +1149,10 @@ describe("stabilizeThreadMessages", () => {
       "Paragraph one.\n\nParagraph two is visible",
       "Paragraph two is visible now ",
     )).toBe("Paragraph two is visible now ");
+    expect(preserveReadableStreamingRetraction(
+      "The answer is 42",
+      "42 is the answer",
+    )).toBe("42 is the answer");
   });
 
   it("keeps live streamed retractions readable until a whole line disappears", () => {
