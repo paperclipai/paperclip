@@ -143,7 +143,7 @@ export function IssueRow({
         "group flex items-start gap-2 rounded-lg py-2.5 pl-2 pr-3 text-sm no-underline text-inherit sm:items-center sm:py-2 sm:pl-1",
         !hideDivider && "border-b border-border last:border-b-0",
         selected ? "hover:bg-transparent" : "hover:bg-accent/50",
-        checklistCurrentStep ? "border-l-2 border-l-primary bg-primary/5 pl-(--sz-calc-11) sm:pl-(--sz-calc-12)" : null,
+        checklistCurrentStep ? "bg-primary/5" : null,
         className,
       )}
     >
