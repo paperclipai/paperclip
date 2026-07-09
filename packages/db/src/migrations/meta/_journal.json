@@ -974,6 +974,13 @@
       "when": 1783555300000,
       "tag": "0140_built_in_managed_resources",
       "breakpoints": true
+    },
+    {
+      "idx": 141,
+      "version": "7",
+      "when": 1783555300100,
+      "tag": "0141_company_search_sort_indexes",
+      "breakpoints": true
     }
   ]
 }
