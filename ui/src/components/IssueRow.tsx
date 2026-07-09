@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Eye, Flag, X } from "lucide-react";
+import { Archive, Eye, Flag } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -164,10 +164,13 @@ export function IssueRow({
               // column; stretched past the row padding so consecutive rows
               // read as one continuous line.
               <span key={`guide-${level}`} aria-hidden="true" className="relative hidden w-4 shrink-0 self-stretch sm:block">
-                {/* bg-background underlay: dark-mode --border is translucent,
+                {/* The connector drops from under the ancestor's STATUS icon,
+                    not its chevron: the status column sits one level (w-4 slot
+                    + gap-2 = 2rem) right of this guide slot's left edge.
+                    bg-background underlay: dark-mode --border is translucent,
                     so overlapping row segments would stack brighter without
                     an opaque base. */}
-                <span className="absolute -inset-y-3 left-1/2 w-px bg-background">
+                <span className="absolute -inset-y-3 left-8 w-px bg-background">
                   <span className="absolute inset-0 bg-border" />
                 </span>
               </span>
@@ -200,8 +203,31 @@ export function IssueRow({
           ) : null}
         </span>
       </span>
-      {(desktopTrailing || trailingMeta || externalObjectSummary) ? (
+      {(onArchive || desktopTrailing || trailingMeta || externalObjectSummary) ? (
         <span className="ml-auto hidden shrink-0 items-center gap-2 sm:order-3 sm:flex sm:gap-3">
+          {onArchive ? (
+            <button
+              type="button"
+              data-slot="icon-button"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onArchive();
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                event.stopPropagation();
+                onArchive();
+              }}
+              disabled={archiveDisabled}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+              aria-label="Archive"
+            >
+              <Archive className="h-3.5 w-3.5" />
+              Archive
+            </button>
+          ) : null}
           {externalObjectSummary ? (
             <ExternalObjectStatusSummary summary={externalObjectSummary} compact />
           ) : null}
@@ -243,28 +269,9 @@ export function IssueRow({
                 )}
               />
             </button>
-          ) : onArchive ? (
-            <button
-              type="button"
-              data-slot="icon-button"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onArchive();
-              }}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter" && event.key !== " ") return;
-                event.preventDefault();
-                event.stopPropagation();
-                onArchive();
-              }}
-              disabled={archiveDisabled}
-              className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-              aria-label="Dismiss from inbox"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
           ) : (
+            // Archive moved to a right-side "Archive" button (before the
+            // timestamp); this left slot now only carries the unread dot.
             <span className="inline-flex h-4 w-4" aria-hidden="true" />
           )}
         </span>

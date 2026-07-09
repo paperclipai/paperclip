@@ -2630,7 +2630,10 @@ export function Inbox() {
                           if (groupNavIdx >= 0) setSelectedIndexFromPointer(groupNavIdx);
                         }}
                       >
-                        <div className={cn("rounded-lg px-3 sm:px-4", isGroupSelected ? "bg-accent/50" : "hover:bg-accent/50")}>
+                        {/* Left inset aligns the header chevron with the nested
+                            task chevrons: rows sit at pl-1 + the unread column
+                            (w-4 + gap-2) ≈ pl-6 before their chevron. */}
+                        <div className={cn("rounded-lg px-3 sm:pl-6 sm:pr-4", isGroupSelected ? "bg-accent/50" : "hover:bg-accent/50")}>
                         <IssueGroupHeader
                           label={group.label}
                           collapsible

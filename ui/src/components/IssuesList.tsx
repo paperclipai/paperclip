@@ -1883,9 +1883,12 @@ export function IssuesList({
             }}
           >
             {group.label && (
+              // Left inset aligns the header chevron with the nested task
+              // chevrons: tasks-list rows sit at pl-1 before their chevron
+              // (no unread column), so the band adds no extra left inset.
               <div
                 data-issues-group-key={group.key}
-                className={cn("rounded-lg px-3 sm:px-4", selectedNavKey === `group:${group.key}` ? "bg-accent/50" : "hover:bg-accent/50")}
+                className={cn("rounded-lg px-3 sm:pl-0 sm:pr-4", selectedNavKey === `group:${group.key}` ? "bg-accent/50" : "hover:bg-accent/50")}
                 onClick={() => setSelectedNavKey(`group:${group.key}`)}
                 onMouseEnter={() => setNavSelectionFromPointer(`group:${group.key}`)}
               >
@@ -2089,13 +2092,13 @@ export function IssuesList({
                               <button
                                 type="button"
                                 data-slot="icon-button"
-                                className="hidden shrink-0 items-center sm:inline-flex"
+                                className="hidden w-4 shrink-0 items-center justify-center sm:inline-flex"
                                 onClick={toggleCollapse}
                               >
                                 <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                               </button>
                             ) : (
-                              <span className="hidden w-3.5 shrink-0 sm:block" />
+                              <span className="hidden w-4 shrink-0 sm:block" />
                             )}
                             <InboxIssueMetaLeading
                               issue={issue}
