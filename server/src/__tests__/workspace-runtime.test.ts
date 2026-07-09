@@ -4530,7 +4530,7 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
     await expect(readGit(worktreePath, ["status", "--porcelain", "--untracked-files=all"])).resolves.not.toBe("");
   }, 20_000);
 
-  it("falls back to validation failure when git reports index-lock contention during quarantine", async () => {
+  it("refuses dirty quarantine repair while the execution workspace has an active runtime service", async () => {
     const expectedBranch = "PAP-458-recorded";
     const actualBranch = "PAP-458-live";
     const { repoRoot, worktreePath } = await createDirtyMismatchRepo({ expectedBranch, actualBranch });
@@ -4540,6 +4540,76 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
       expectedBranch,
       actualBranch,
       sourceIdentifier: "PAP-458",
+      claimant: "none",
+    });
+    const runtimeServiceId = randomUUID();
+    await db.insert(workspaceRuntimeServices).values({
+      id: runtimeServiceId,
+      companyId: ids.companyId,
+      projectId: ids.projectId,
+      projectWorkspaceId: ids.projectWorkspaceId,
+      executionWorkspaceId: ids.sourceWorkspaceId,
+      issueId: ids.sourceIssueId,
+      scopeType: "execution_workspace",
+      scopeId: ids.sourceWorkspaceId,
+      serviceName: "paperclip-dev",
+      status: "running",
+      lifecycle: "shared",
+      reuseKey: `execution_workspace:${ids.sourceWorkspaceId}:paperclip-dev`,
+      command: "pnpm dev",
+      cwd: worktreePath,
+      port: 49195,
+      url: "http://127.0.0.1:49195",
+      provider: "local_process",
+      providerRef: "999999",
+      ownerAgentId: ids.agentId,
+      startedByRunId: ids.runId,
+      lastUsedAt: new Date(),
+      startedAt: new Date(),
+      stoppedAt: null,
+      stopPolicy: { type: "manual" },
+      healthStatus: "healthy",
+    });
+
+    await expect(restoreDirtyQuarantine({
+      repoRoot,
+      worktreePath,
+      expectedBranch,
+      actualBranch,
+      ids,
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          cleanliness: "dirty",
+          safeRepair: expect.objectContaining({
+            eligible: false,
+            attempted: false,
+            succeeded: false,
+            reason: expect.stringContaining("runtime service"),
+          }),
+        }),
+      },
+    });
+    await expect(readGit(worktreePath, ["branch", "--show-current"])).resolves.toBe(actualBranch);
+    await expect(readGit(worktreePath, ["status", "--porcelain", "--untracked-files=all"])).resolves.not.toBe("");
+    await expect(readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname:short)",
+      "refs/heads/paperclip/rescue",
+    ])).resolves.toBe("");
+  }, 20_000);
+
+  it("falls back to validation failure when git reports index-lock contention during quarantine", async () => {
+    const expectedBranch = "PAP-459-recorded";
+    const actualBranch = "PAP-459-live";
+    const { repoRoot, worktreePath } = await createDirtyMismatchRepo({ expectedBranch, actualBranch });
+    const ids = await seedDirtyQuarantineRecords({
+      repoRoot,
+      worktreePath,
+      expectedBranch,
+      actualBranch,
+      sourceIdentifier: "PAP-459",
       claimant: "none",
     });
     const lockPath = await readGit(worktreePath, ["rev-parse", "--git-path", "index.lock"]);
@@ -4571,15 +4641,15 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
   }, 20_000);
 
   it("best-effort restores the recorded branch when the rescue commit fails", async () => {
-    const expectedBranch = "PAP-459-recorded";
-    const actualBranch = "PAP-459-live";
+    const expectedBranch = "PAP-460-recorded";
+    const actualBranch = "PAP-460-live";
     const { repoRoot, worktreePath } = await createDirtyMismatchRepo({ expectedBranch, actualBranch });
     const ids = await seedDirtyQuarantineRecords({
       repoRoot,
       worktreePath,
       expectedBranch,
       actualBranch,
-      sourceIdentifier: "PAP-459",
+      sourceIdentifier: "PAP-460",
       claimant: "none",
     });
     const commonDirRaw = await readGit(worktreePath, ["rev-parse", "--git-common-dir"]);

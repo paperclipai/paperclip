@@ -16,7 +16,7 @@ import {
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import {
@@ -748,6 +748,78 @@ async function findGitWorktreeBranchContention(input: {
     liveBranchName: input.actualBranchName,
     excludingExecutionWorkspaceId: input.executionWorkspaceId,
   });
+}
+
+function executionWorkspaceUsesInheritedProjectRuntimeServices(
+  row: typeof executionWorkspaces.$inferSelect,
+) {
+  if (row.mode !== "shared_workspace" || !row.projectWorkspaceId) return false;
+  return !readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null)?.workspaceRuntime;
+}
+
+async function findActiveRuntimeServiceBlockingDirtyQuarantine(input: {
+  db: Db;
+  workspace: typeof executionWorkspaces.$inferSelect;
+}) {
+  const inheritedProjectWorkspaceId = executionWorkspaceUsesInheritedProjectRuntimeServices(input.workspace)
+    ? input.workspace.projectWorkspaceId
+    : null;
+  const serviceScopeCondition = inheritedProjectWorkspaceId
+    ? and(
+        eq(workspaceRuntimeServices.companyId, input.workspace.companyId),
+        eq(workspaceRuntimeServices.projectWorkspaceId, inheritedProjectWorkspaceId),
+        eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+      )
+    : and(
+        eq(workspaceRuntimeServices.companyId, input.workspace.companyId),
+        eq(workspaceRuntimeServices.executionWorkspaceId, input.workspace.id),
+      );
+
+  const [service] = await input.db
+    .select({
+      id: workspaceRuntimeServices.id,
+      serviceName: workspaceRuntimeServices.serviceName,
+      status: workspaceRuntimeServices.status,
+      scopeType: workspaceRuntimeServices.scopeType,
+    })
+    .from(workspaceRuntimeServices)
+    .where(and(serviceScopeCondition, ne(workspaceRuntimeServices.status, "stopped")))
+    .orderBy(desc(workspaceRuntimeServices.updatedAt), desc(workspaceRuntimeServices.createdAt))
+    .limit(1);
+  return service ?? null;
+}
+
+async function assertDirtyQuarantineRuntimeServicesStopped(input: {
+  db: Db;
+  executionWorkspaceId: string | null;
+  evidence: GitWorktreeBranchIncoherenceEvidence;
+}) {
+  if (!input.executionWorkspaceId) {
+    input.evidence.safeRepair.eligible = false;
+    input.evidence.safeRepair.reason = "dirty quarantine repair requires an execution workspace id for runtime-service checks";
+    throw branchIncoherenceValidationFailure(input.evidence);
+  }
+
+  const [workspace] = await input.db
+    .select()
+    .from(executionWorkspaces)
+    .where(eq(executionWorkspaces.id, input.executionWorkspaceId));
+  if (!workspace) {
+    input.evidence.safeRepair.eligible = false;
+    input.evidence.safeRepair.reason = "dirty quarantine repair requires a persisted execution workspace for runtime-service checks";
+    throw branchIncoherenceValidationFailure(input.evidence);
+  }
+
+  const activeService = await findActiveRuntimeServiceBlockingDirtyQuarantine({
+    db: input.db,
+    workspace,
+  });
+  if (!activeService) return;
+
+  input.evidence.safeRepair.eligible = false;
+  input.evidence.safeRepair.reason =
+    `dirty quarantine repair requires runtime service "${activeService.serviceName}" (${activeService.id}) to be stopped; current status is ${activeService.status}`;
+  throw branchIncoherenceValidationFailure(input.evidence);
 }
 
 async function assertGitIndexIsUnlocked(worktreePath: string) {
@@ -1546,6 +1618,11 @@ export async function ensureGitWorktreeBranchCoherent(input: {
       evidence.safeRepair.reason = formatDirtyQuarantineContentionRefusal(evidence.contention);
       throw branchIncoherenceValidationFailure(evidence);
     }
+    await assertDirtyQuarantineRuntimeServicesStopped({
+      db: input.db,
+      executionWorkspaceId: input.executionWorkspaceId ?? null,
+      evidence,
+    });
     evidence.safeRepair.eligible = true;
     evidence.safeRepair.attempted = true;
     evidence.safeRepair.reason = "dirty worktree can be quarantined on a rescue branch before restoring the recorded branch";
