@@ -422,6 +422,8 @@ interface IssueChatThreadProps {
   activeRun?: ActiveRunForIssue | null;
   issueId?: string | null;
   blockedBy?: IssueRelationIssueSummary[];
+  /** Company-wide set of issue ids with a live (queued/running) run. */
+  liveIssueIds?: ReadonlySet<string>;
   blockerAttention?: IssueBlockerAttention | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
@@ -4164,6 +4166,7 @@ export function IssueChatThread({
   activeRun = null,
   issueId = null,
   blockedBy = [],
+  liveIssueIds,
   blockerAttention = null,
   successfulRunHandoff = null,
   scheduledRetry = null,
@@ -4931,6 +4934,8 @@ export function IssueChatThread({
                     issueId={issueId}
                     issueStatus={issueStatus}
                     blockers={unresolvedBlockers}
+                    allBlockers={blockedBy}
+                    liveIssueIds={liveIssueIds}
                     blockerAttention={blockerAttention}
                     successfulRunHandoff={recoveryAction ? null : successfulRunHandoff}
                     scheduledRetry={scheduledRetry}

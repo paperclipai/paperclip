@@ -3294,6 +3294,58 @@ describe("ensureRuntimeServicesForRun", () => {
     expect(services).toEqual([]);
   });
 
+  it("requires Paperclip dev runtime services to pass /api/health readiness", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-health-"));
+    const workspace = buildWorkspace(workspaceRoot);
+    const runId = "run-paperclip-health";
+    const serviceCommand =
+      "node -e \"const http=require('node:http'); http.createServer((req,res)=>{ if (req.url==='/api/health') { res.statusCode=503; res.end('database_unreachable'); return; } res.end('ok'); }).listen(Number(process.env.PORT), '127.0.0.1')\"";
+
+    try {
+      await expect(
+        ensureRuntimeServicesForRun({
+          runId,
+          agent: {
+            id: "agent-1",
+            name: "Codex Coder",
+            companyId: "company-1",
+          },
+          issue: null,
+          workspace,
+          config: {
+            workspaceRuntime: {
+              services: [
+                {
+                  name: "paperclip-dev",
+                  command: serviceCommand,
+                  cwd: ".",
+                  port: { type: "auto" },
+                  readiness: {
+                    type: "http",
+                    urlTemplate: "http://127.0.0.1:{{port}}",
+                    timeoutSec: 3,
+                    intervalMs: 100,
+                  },
+                  expose: {
+                    type: "url",
+                    urlTemplate: "http://127.0.0.1:{{port}}",
+                  },
+                  lifecycle: "shared",
+                  stopPolicy: {
+                    type: "manual",
+                  },
+                },
+              ],
+            },
+          },
+          adapterEnv: {},
+        }),
+      ).rejects.toThrow(/Readiness check failed for http:\/\/127\.0\.0\.1:\d+\/api\/health: received HTTP 503/);
+    } finally {
+      await releaseRuntimeServicesForRun(runId);
+    }
+  });
+
   it("reuses shared runtime services across runs and starts a new service after release", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-workspace-"));
     const workspace = buildWorkspace(workspaceRoot);

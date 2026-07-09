@@ -2867,18 +2867,27 @@ export function resolveWorkspaceRuntimeReadinessTimeoutSec(service: Record<strin
 
 async function waitForReadiness(input: {
   service: Record<string, unknown>;
+  serviceName?: string | null;
+  command?: string | null;
   url: string | null;
 }) {
   const readiness = parseObject(input.service.readiness);
   const readinessType = asString(readiness.type, "");
   if (readinessType !== "http" || !input.url) return;
+  const readinessUrl = resolveRuntimeServiceHealthUrl(input.url, {
+    serviceName: input.serviceName,
+    command: input.command,
+  });
+  if (!readinessUrl) {
+    throw new Error(`Readiness check failed: could not resolve health URL for ${input.url}`);
+  }
   const timeoutSec = resolveWorkspaceRuntimeReadinessTimeoutSec(input.service);
   const intervalMs = Math.max(100, asNumber(readiness.intervalMs, 500));
   const deadline = Date.now() + timeoutSec * 1000;
   let lastError = "service did not become ready";
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(input.url);
+      const response = await fetch(readinessUrl);
       if (response.ok) return;
       lastError = `received HTTP ${response.status}`;
     } catch (err) {
@@ -2886,7 +2895,7 @@ async function waitForReadiness(input: {
     }
     await delay(intervalMs);
   }
-  throw new Error(`Readiness check failed for ${input.url}: ${lastError}`);
+  throw new Error(`Readiness check failed for ${readinessUrl}: ${lastError}`);
 }
 
 function isPaperclipDevRuntimeService(input: { serviceName?: string | null; command?: string | null }) {
@@ -2924,7 +2933,7 @@ async function isRuntimeServiceUrlHealthy(
 ) {
   if (!url) return true;
   const healthUrl = resolveRuntimeServiceHealthUrl(url, input);
-  if (!healthUrl) return true;
+  if (!healthUrl) return false;
   try {
     const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2_000) });
     return response.ok;
@@ -3294,7 +3303,7 @@ async function startLocalRuntimeService(input: {
 
   try {
     await Promise.race([
-      waitForReadiness({ service: input.service, url }),
+      waitForReadiness({ service: input.service, serviceName, command, url }),
       spawnErrorPromise,
     ]);
   } catch (err) {

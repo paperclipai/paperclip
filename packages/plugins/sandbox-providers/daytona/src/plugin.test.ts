@@ -1031,7 +1031,7 @@ describe("Daytona sandbox provider plugin", () => {
     expect(command).toMatch(/\/etc\/profile/);
     expect(command).toMatch(/"\$HOME\/\.profile"/);
     expect(command).toMatch(/cd '\/workspace'/);
-    expect(command).toMatch(/&& env FOO='bar' 'printf' 'hello'$/);
+    expect(command).toMatch(/&& env GIT_TERMINAL_PROMPT='0' GCM_INTERACTIVE='Never' GIT_ASKPASS='echo' SSH_ASKPASS='echo' SSH_ASKPASS_REQUIRE='force' FOO='bar' 'printf' 'hello'$/);
     expect(command).not.toMatch(/(?:^|&& )exec /);
     // cwd/env are baked into the login-shell command itself; we pass undefined
     // to the SDK so it doesn't run the cd before profile sourcing.
@@ -1075,7 +1075,7 @@ describe("Daytona sandbox provider plugin", () => {
     const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
     expect(command).toMatch(/\/etc\/profile/);
     expect(command).toMatch(/cd '\/workspace'/);
-    expect(command).toMatch(/&& 'cat' < '\/tmp\/paperclip-stdin-/);
+    expect(command).toMatch(/env .* 'cat' < '\/tmp\/paperclip-stdin-/);
     expect(command).not.toMatch(/(?:^|&& )exec /);
     expect(sandbox.fs.deleteFile).toHaveBeenCalledWith(expect.stringMatching(/^\/tmp\/paperclip-stdin-/));
     expect(result).toMatchObject({
@@ -1133,6 +1133,54 @@ describe("Daytona sandbox provider plugin", () => {
       stdout: "",
       stderr: "command timed out\n",
     });
+  });
+
+  it("injects noninteractive git credential defaults for every one-shot command", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: { providerLeaseId: "sandbox-123", metadata: {} },
+      command: "git",
+      args: ["status"],
+      timeoutMs: 5000,
+    });
+
+    const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
+    expect(command).toContain("GIT_TERMINAL_PROMPT='0'");
+    expect(command).toContain("GCM_INTERACTIVE='Never'");
+    expect(command).toContain("GIT_ASKPASS='echo'");
+    expect(command).toContain("SSH_ASKPASS='echo'");
+    expect(command).toContain("SSH_ASKPASS_REQUIRE='force'");
+  });
+
+  it("caps git network commands at 120 s and returns an actionable message on timeout", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    sandbox.process.executeCommand.mockRejectedValue(new MockDaytonaTimeoutError("timed out"));
+    mockGet.mockResolvedValue(sandbox);
+
+    const result = await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: { providerLeaseId: "sandbox-123", metadata: {} },
+      command: "git",
+      args: ["push", "origin", "HEAD"],
+      cwd: "/workspace",
+      timeoutMs: 300000,
+    });
+
+    const [, , , timeoutArg] = sandbox.process.executeCommand.mock.calls[0] as [string, unknown, unknown, number];
+    expect(timeoutArg).toBe(120);
+    expect(result).toMatchObject({ exitCode: null, timedOut: true });
+    expect(result?.stderr).toMatch(/unreachable|credentials/i);
   });
 });
 
