@@ -5886,7 +5886,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       throw conflict("Issue has no scheduled monitor");
     }
     if (issue.assigneeUserId) {
-      throw conflict("Issue monitor requires an agent assignee");
+      throw conflict("Issue monitor cannot be dispatched while the issue is assigned to a user");
     }
     if (!["in_progress", "in_review"].includes(issue.status)) {
       throw conflict("Issue monitor can only run while the issue is in progress or in review");

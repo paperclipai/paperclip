@@ -272,7 +272,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   });
 
   it("falls back to a board breadcrumb when an assignee-scheduled monitor fires with no agent assignee", async () => {
-    const { issueId, agentId } = await seedFixture({ unassigned: true, issueStatus: "in_review" });
+    const { issueId } = await seedFixture({ unassigned: true, issueStatus: "in_review" });
     const heartbeat = heartbeatService(db);
     const tickAt = new Date("2026-04-11T12:31:00.000Z");
 
@@ -290,10 +290,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       attemptCount: 1,
     });
 
-    const wakeups = await db
-      .select()
-      .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.agentId, agentId));
+    const wakeups = await db.select().from(agentWakeupRequests);
     expect(wakeups).toHaveLength(0);
 
     const comments = await db
