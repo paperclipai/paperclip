@@ -199,7 +199,8 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it("does not submit non-model adapters that need command or endpoint fields", async () => {
+  it("provisions non-model adapters so command fields can be completed later", async () => {
+    provisionMock.mockResolvedValue({ ...makeState(), status: "needs_setup", agentId: "a1" });
     await renderModal(makeState({
       definition: {
         ...makeState().definition,
@@ -207,16 +208,22 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
       },
     }));
 
-    expect(document.body.textContent).toContain("can only complete model-based adapters");
-    const submit = findButton("Configure");
+    expect(document.body.textContent).toContain("needs command or endpoint fields");
+    expect(document.body.querySelector('[data-testid="model-input"]')).toBeNull();
+    const submit = findButton("Provision");
     expect(submit).toBeTruthy();
-    expect(submit!.disabled).toBe(true);
+    expect(submit!.disabled).toBe(false);
     flushSync(() => {
       submit!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
-    expect(provisionMock).not.toHaveBeenCalled();
+    expect(provisionMock).toHaveBeenCalledWith("c1", "briefs", {
+      adapterType: "process",
+      adapterConfig: {},
+    });
+    expect(onConfigured).toHaveBeenCalled();
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
   it("surfaces provision errors inline instead of closing", async () => {

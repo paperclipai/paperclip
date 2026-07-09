@@ -79,28 +79,34 @@ export function ConfigureBuiltInAgentModal({
   });
   const [error, setError] = useState<string | null>(null);
 
-  // Restrict adapter choices to the registry's allow-list.
+  // Restrict adapter choices to the registry's allow-list. Non-model adapters
+  // are still selectable: provisioning creates the row, then full agent config
+  // collects command/endpoint fields while the built-in remains `needs_setup`.
   const disabledTypes = useMemo(() => {
     const allowed = new Set(definition.allowedAdapterTypes ?? []);
     return new Set(
       listAdapterOptions()
         .map((option) => option.value)
-        .filter((value) => (allowed.size > 0 && !allowed.has(value)) || !isModelBasedAdapter(value)),
+        .filter((value) => allowed.size > 0 && !allowed.has(value)),
     );
   }, [definition.allowedAdapterTypes]);
+
+  const setupSupportedInModal = isModelBasedAdapter(adapterType);
 
   const { data: fetchedModels } = useQuery({
     queryKey: queryKeys.agents.adapterModels(companyId, adapterType, null),
     queryFn: () => agentsApi.adapterModels(companyId, adapterType, {}),
-    enabled: open && Boolean(companyId),
+    enabled: open && Boolean(companyId) && setupSupportedInModal,
   });
   const models = fetchedModels ?? [];
 
-  const setupSupportedInModal = isModelBasedAdapter(adapterType);
   const modelRequired = setupSupportedInModal;
   const budgetMonthlyCents = parseBudgetMonthlyCents(budgetDollars);
   const budgetValid = !budgetDollars.trim() || budgetMonthlyCents !== undefined;
-  const canSubmit = setupSupportedInModal && (!modelRequired || model.trim().length > 0) && budgetValid;
+  const canSubmit = budgetValid && (setupSupportedInModal ? !modelRequired || model.trim().length > 0 : true);
+  const submitLabel = setupSupportedInModal
+    ? `Configure & enable ${definition.displayName}`
+    : `Provision ${definition.displayName}`;
 
   const provision = useMutation({
     mutationFn: async () => {
@@ -170,9 +176,8 @@ export function ConfigureBuiltInAgentModal({
 
           {!setupSupportedInModal && (
             <InlineBanner tone="warning" compact>
-              This setup dialog can only complete model-based adapters. Choose a model-based
-              adapter here, or configure command and endpoint adapters from the full agent
-              configuration after provisioning.
+              This adapter needs command or endpoint fields before it can run. Provision the
+              built-in row now, then finish those fields from the full agent configuration.
             </InlineBanner>
           )}
 
@@ -215,7 +220,7 @@ export function ConfigureBuiltInAgentModal({
             }}
             disabled={!canSubmit || provision.isPending}
           >
-            {provision.isPending ? "Configuring…" : `Configure & enable ${definition.displayName}`}
+            {provision.isPending ? "Configuring…" : submitLabel}
           </Button>
         </DialogFooter>
       </DialogContent>
