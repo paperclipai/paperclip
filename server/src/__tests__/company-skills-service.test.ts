@@ -1142,6 +1142,72 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     );
   });
 
+  it("reuses the materialized runtime cache on repeat listing and re-materializes after the skill changes", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const skillKey = `company/${companyId}/cache-coach`;
+    const missingSkillDir = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-cache-skill-")), "gone");
+    cleanupDirs.add(path.dirname(missingSkillDir));
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: skillKey,
+      slug: "cache-coach",
+      name: "Cache Coach",
+      description: null,
+      markdown: "# Cache Coach\n\nRecovered from DB.\n",
+      sourceType: "local_path",
+      sourceLocator: missingSkillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "local_path" },
+    });
+    await db.insert(agents).values({
+      id: randomUUID(),
+      companyId,
+      name: "Runner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: { paperclipSkillSync: { desiredSkills: [skillKey] } },
+    });
+
+    // First listing materializes the skill and writes the .materialized marker.
+    const first = await svc.listRuntimeSkillEntries(companyId);
+    const runtimeDir = first.find((candidate) => candidate.key === skillKey)!.source;
+    await expect(fs.stat(path.join(runtimeDir, ".materialized"))).resolves.toBeTruthy();
+
+    // A sentinel edit lets us detect whether the second listing re-materializes
+    // (which would overwrite it) or reuses the cache (which leaves it intact).
+    const skillFilePath = path.join(runtimeDir, "SKILL.md");
+    await fs.writeFile(skillFilePath, "SENTINEL — cache reuse\n", "utf8");
+
+    // Second listing: marker is newer than the skill's updatedAt → reuse, no re-fetch.
+    const second = await svc.listRuntimeSkillEntries(companyId);
+    expect(second.find((candidate) => candidate.key === skillKey)!.source).toBe(runtimeDir);
+    await expect(fs.readFile(skillFilePath, "utf8")).resolves.toBe("SENTINEL — cache reuse\n");
+
+    // Bump the skill's updatedAt into the future so the cached marker looks stale.
+    await db
+      .update(companySkills)
+      .set({ updatedAt: new Date(Date.now() + 60_000) })
+      .where(eq(companySkills.id, skillId));
+
+    // Third listing: marker is now older than updatedAt → re-materialize from DB,
+    // overwriting the sentinel with the stored markdown.
+    const third = await svc.listRuntimeSkillEntries(companyId);
+    expect(third.find((candidate) => candidate.key === skillKey)!.source).toBe(runtimeDir);
+    await expect(fs.readFile(skillFilePath, "utf8")).resolves.toBe("# Cache Coach\n\nRecovered from DB.\n");
+  });
+
   it("falls back to stored markdown when reading SKILL.md from a missing local source", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();

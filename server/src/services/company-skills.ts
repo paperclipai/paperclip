@@ -915,11 +915,11 @@ async function walkLocalFiles(
   root: string,
   current: string,
   out: string[],
-  options: { maxDepth?: number; maxFiles?: number; visited?: Set<bigint> } = {},
+  options: { maxDepth?: number; maxFiles?: number; visited?: Set<number> } = {},
 ) {
   const maxDepth = options.maxDepth ?? 10;
   const maxFiles = options.maxFiles ?? 5000;
-  const visited = options.visited ?? new Set<bigint>();
+  const visited = options.visited ?? new Set<number>();
 
   if (maxDepth <= 0 || out.length >= maxFiles) return;
 
