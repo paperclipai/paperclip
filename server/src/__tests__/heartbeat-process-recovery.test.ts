@@ -2085,7 +2085,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  // PAP-13314 P5 · Scenario 4: `process_lost` before the agent started is retried like
+  // Scenario 4: `process_lost` before the agent started is retried like
   // other infrastructure failures. Distinct from the pid-based process-loss retry
   // ("queues exactly one retry when the recorded local pid is dead"): here no pid was ever
   // recorded (the process died before producing output), so the reaper falls through to the
@@ -4067,7 +4067,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  // PAP-13314 P5 · Scenario 5: enqueue-failure at accept time is no longer a silent permanent
+  // Scenario 5: enqueue-failure at accept time is no longer a silent permanent
   // stall. When the accept-time continuation wake is dropped (routes/issues.ts fire-and-forget
   // enqueue swallowed the error), the issue is left in_review with an accepted interaction but
   // *no* wake request and *no* run at all. Pre-P1 the recovery sweep skipped in_review issues
@@ -4164,7 +4164,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect((wakeup?.payload as Record<string, unknown> | null)?.issueId).toBe(issueId);
   });
 
-  // PAP-13314 P5 · Scenario 3 (restart durability): a bounded continuation retry scheduled
+  // Scenario 3 (restart durability): a bounded continuation retry scheduled
   // before a server restart survives it. Promotion is DB-driven (scheduled_retry rows +
   // promoteDueScheduledRetries), not an in-memory setTimeout — so a brand-new heartbeat
   // service instance with empty in-memory state still promotes the due retry.
