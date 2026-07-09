@@ -86,6 +86,21 @@ import { Badge } from "@/components/ui/badge";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
+type IssuesListNavEntry =
+  | { type: "group"; key: string; collapsed: boolean }
+  | { type: "issue"; issue: Issue; hasChildren: boolean; expanded: boolean; budgetOrdinal: number };
+
+function issuesListNavEntryKey(entry: IssuesListNavEntry): string {
+  return entry.type === "group" ? `group:${entry.key}` : `issue:${entry.issue.id}`;
+}
+
+// CSS.escape is missing in some non-browser environments (jsdom tests).
+function escapeAttrValue(value: string): string {
+  return typeof CSS !== "undefined" && typeof CSS.escape === "function"
+    ? CSS.escape(value)
+    : value.replace(/["\\]/g, "\\$&");
+}
+
 const INITIAL_ISSUE_ROW_RENDER_LIMIT = 100;
 const ISSUE_ROW_RENDER_BATCH_SIZE = 150;
 const ISSUE_SCROLL_LOAD_THRESHOLD_PX = 320;
@@ -640,7 +655,7 @@ export function IssuesList({
   // Keyboard selection for the list view (mirrors the inbox). Hover moves the
   // selection only after real pointer movement, so keyboard-driven scrolling
   // doesn't hand the selection to whatever row lands under the cursor.
-  const [selectedNavIssueId, setSelectedNavIssueId] = useState<string | null>(null);
+  const [selectedNavKey, setSelectedNavKey] = useState<string | null>(null);
   const pointerMovedSinceKeyNavRef = useRef(true);
   useEffect(() => {
     const handlePointerMove = () => {
@@ -649,9 +664,9 @@ export function IssuesList({
     window.addEventListener("mousemove", handlePointerMove, { passive: true });
     return () => window.removeEventListener("mousemove", handlePointerMove);
   }, []);
-  const setNavSelectionFromPointer = useCallback((issueId: string) => {
+  const setNavSelectionFromPointer = useCallback((navKey: string) => {
     if (!pointerMovedSinceKeyNavRef.current) return;
-    setSelectedNavIssueId(issueId);
+    setSelectedNavKey(navKey);
   }, []);
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
@@ -1220,21 +1235,35 @@ export function IssuesList({
     projectById,
   ]);
 
-  // Flattened visible row order (groups -> tree DFS, skipping collapsed
-  // groups/parents) — must match render order below for keyboard traversal.
-  const flatNavIssues = useMemo(() => {
-    if (viewState.viewMode !== "list") return [] as Issue[];
-    const out: Issue[] = [];
+  // Flattened visible order (group headers, then tree DFS per group —
+  // collapsed groups keep their header entry but skip their rows) — must
+  // match render order below for keyboard traversal. `budgetOrdinal` counts
+  // rows the way the progressive renderer consumes its budget (collapsed
+  // groups still consume rows; collapsed parents' subtrees do not).
+  const flatNavEntries = useMemo(() => {
+    if (viewState.viewMode !== "list") return [] as IssuesListNavEntry[];
+    const out: IssuesListNavEntry[] = [];
+    let budgetCount = 0;
     for (const group of groupedContent) {
-      if (group.label && viewState.collapsedGroups.includes(group.key)) continue;
+      const collapsed = Boolean(group.label) && viewState.collapsedGroups.includes(group.key);
+      if (group.label) out.push({ type: "group", key: group.key, collapsed });
       const { roots, childMap } = viewState.nestingEnabled
         ? buildIssueTree(group.items)
         : { roots: group.items, childMap: new Map<string, Issue[]>() };
       const walk = (issue: Issue) => {
-        out.push(issue);
-        if (!viewState.collapsedParents.includes(issue.id)) {
-          for (const child of childMap.get(issue.id) ?? []) walk(child);
+        budgetCount += 1;
+        const children = childMap.get(issue.id) ?? [];
+        const expanded = !viewState.collapsedParents.includes(issue.id);
+        if (!collapsed) {
+          out.push({
+            type: "issue",
+            issue,
+            hasChildren: children.length > 0,
+            expanded,
+            budgetOrdinal: budgetCount,
+          });
         }
+        if (expanded) for (const child of children) walk(child);
       };
       for (const root of roots) walk(root);
     }
@@ -1247,11 +1276,35 @@ export function IssuesList({
     viewState.nestingEnabled,
   ]);
 
-  const listNavStateRef = useRef({ flatNavIssues, selectedNavIssueId, viewMode: viewState.viewMode, issueLinkState });
-  listNavStateRef.current = { flatNavIssues, selectedNavIssueId, viewMode: viewState.viewMode, issueLinkState };
+  const listNavStateRef = useRef({
+    flatNavEntries,
+    selectedNavKey,
+    viewMode: viewState.viewMode,
+    issueLinkState,
+    collapsedGroups: viewState.collapsedGroups,
+    collapsedParents: viewState.collapsedParents,
+    updateView,
+  });
+  listNavStateRef.current = {
+    flatNavEntries,
+    selectedNavKey,
+    viewMode: viewState.viewMode,
+    issueLinkState,
+    collapsedGroups: viewState.collapsedGroups,
+    collapsedParents: viewState.collapsedParents,
+    updateView,
+  };
 
-  const findSelectedNavRowLink = useCallback((issueId: string) => {
-    const row = rootRef.current?.querySelector(`[data-issue-row-id="${CSS.escape(issueId)}"]`);
+  const findSelectedNavElement = useCallback((navKey: string) => {
+    if (navKey.startsWith("group:")) {
+      const header = rootRef.current?.querySelector(
+        `[data-issues-group-key="${escapeAttrValue(navKey.slice("group:".length))}"]`,
+      );
+      return header instanceof HTMLElement ? header : null;
+    }
+    const row = rootRef.current?.querySelector(
+      `[data-issue-row-id="${escapeAttrValue(navKey.slice("issue:".length))}"]`,
+    );
     const link = row?.querySelector(":scope > [data-inbox-issue-link]");
     return link instanceof HTMLElement ? link : null;
   }, []);
@@ -1272,9 +1325,9 @@ export function IssuesList({
         return;
       }
       const st = listNavStateRef.current;
-      if (st.viewMode !== "list" || st.flatNavIssues.length === 0) return;
-      const currentIndex = st.selectedNavIssueId
-        ? st.flatNavIssues.findIndex((issue) => issue.id === st.selectedNavIssueId)
+      if (st.viewMode !== "list" || st.flatNavEntries.length === 0) return;
+      const currentIndex = st.selectedNavKey
+        ? st.flatNavEntries.findIndex((entry) => issuesListNavEntryKey(entry) === st.selectedNavKey)
         : -1;
       switch (e.key) {
         case "j":
@@ -1284,23 +1337,50 @@ export function IssuesList({
           e.preventDefault();
           pointerMovedSinceKeyNavRef.current = false;
           const direction = e.key === "j" || e.key === "ArrowDown" ? "next" : "previous";
-          const nextIndex = getInboxKeyboardSelectionIndex(currentIndex, st.flatNavIssues.length, direction);
-          const nextIssue = st.flatNavIssues[nextIndex];
-          if (!nextIssue) break;
-          setSelectedNavIssueId(nextIssue.id);
+          const nextIndex = getInboxKeyboardSelectionIndex(currentIndex, st.flatNavEntries.length, direction);
+          const nextEntry = st.flatNavEntries[nextIndex];
+          if (!nextEntry) break;
+          setSelectedNavKey(issuesListNavEntryKey(nextEntry));
           // The list renders progressively; make sure the selected row is
           // within the render budget so the band mounts and can scroll into
           // view (the +1 keeps the next row visible as a scroll cue).
-          setRenderedIssueRowLimit((current) => Math.max(current, nextIndex + 2));
+          if (nextEntry.type === "issue") {
+            setRenderedIssueRowLimit((current) => Math.max(current, nextEntry.budgetOrdinal + 1));
+          }
+          break;
+        }
+        case "ArrowLeft":
+        case "ArrowRight": {
+          // Groups and parent tasks collapse/expand with the same keys as the
+          // inbox.
+          const entry = st.flatNavEntries[currentIndex];
+          if (!entry) return;
+          const collapse = e.key === "ArrowLeft";
+          if (entry.type === "group") {
+            e.preventDefault();
+            st.updateView({
+              collapsedGroups: collapse
+                ? (st.collapsedGroups.includes(entry.key) ? st.collapsedGroups : [...st.collapsedGroups, entry.key])
+                : st.collapsedGroups.filter((k) => k !== entry.key),
+            });
+            break;
+          }
+          if (!entry.hasChildren) return;
+          e.preventDefault();
+          st.updateView({
+            collapsedParents: collapse
+              ? (st.collapsedParents.includes(entry.issue.id) ? st.collapsedParents : [...st.collapsedParents, entry.issue.id])
+              : st.collapsedParents.filter((id) => id !== entry.issue.id),
+          });
           break;
         }
         case "Enter": {
-          if (currentIndex < 0) return;
-          const issue = st.flatNavIssues[currentIndex];
-          if (!issue) return;
+          const entry = st.flatNavEntries[currentIndex];
+          if (!entry || entry.type !== "issue") return;
           e.preventDefault();
           // Navigate from the entry data (like the inbox) rather than the DOM
           // row — the selected row may sit past the mounted render batch.
+          const issue = entry.issue;
           const pathId = issue.identifier ?? issue.id;
           const detailState = withIssueDetailHeaderSeed(st.issueLinkState, issue);
           rememberIssueDetailLocationState(pathId, detailState);
@@ -1319,9 +1399,9 @@ export function IssuesList({
   // render budget too: a selection past the mounted batch scrolls once its
   // row mounts.
   useEffect(() => {
-    if (!selectedNavIssueId) return;
-    findSelectedNavRowLink(selectedNavIssueId)?.scrollIntoView({ block: "nearest" });
-  }, [findSelectedNavRowLink, renderedIssueRowLimit, selectedNavIssueId]);
+    if (!selectedNavKey) return;
+    findSelectedNavElement(selectedNavKey)?.scrollIntoView({ block: "nearest" });
+  }, [findSelectedNavElement, renderedIssueRowLimit, selectedNavKey]);
 
   useEffect(() => {
     if (viewState.viewMode !== "list") return;
@@ -1784,6 +1864,12 @@ export function IssuesList({
             }}
           >
             {group.label && (
+              <div
+                data-issues-group-key={group.key}
+                className={cn("rounded-lg", selectedNavKey === `group:${group.key}` && "bg-accent/50")}
+                onClick={() => setSelectedNavKey(`group:${group.key}`)}
+                onMouseEnter={() => setNavSelectionFromPointer(`group:${group.key}`)}
+              >
               <IssueGroupHeader
                 label={group.label}
                 collapsible
@@ -1808,6 +1894,7 @@ export function IssuesList({
                   </Button>
                 )}
               />
+              </div>
             )}
             <CollapsibleContent>
               {(() => {
@@ -1920,8 +2007,8 @@ export function IssuesList({
                       <IssueRow
                         issue={issue}
                         issueLinkState={issueLinkState}
-                        selected={selectedNavIssueId === issue.id}
-                        onMouseEnter={() => setNavSelectionFromPointer(issue.id)}
+                        selected={selectedNavKey === `issue:${issue.id}`}
+                        onMouseEnter={() => setNavSelectionFromPointer(`issue:${issue.id}`)}
                         treeGuides={depth}
                         hideDivider={hasChildren && isExpanded}
                         checklistStepNumber={checklistStepNumber}
@@ -1965,7 +2052,7 @@ export function IssuesList({
                             ) : null}
                           </>
                         )}
-                        className={cn(isMutedIssue && "opacity-70", selectedNavIssueId === issue.id && "bg-accent/50")}
+                        className={cn(isMutedIssue && "opacity-70", selectedNavKey === `issue:${issue.id}` && "bg-accent/50 hover:bg-accent/50")}
                         mobileLeading={
                           hasChildren ? (
                             <button type="button" data-slot="icon-button" onClick={toggleCollapse}>
