@@ -41,6 +41,7 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeIdempotencyKey,
   findExistingIssueBlockersResolvedWakeForAnyKey,
+  promoteUnblockedDependentToTodo,
 } from "../issue-dependency-wakeups.js";
 import { parseIssueExecutionState } from "../issue-execution-policy.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
@@ -4089,6 +4090,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const result = {
       checked: 0,
       healed: 0,
+      unassignedPromoted: 0,
       existingWakeSkipped: 0,
       livePathSkipped: 0,
       interactionSkipped: 0,
@@ -4110,10 +4112,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const useCursor = !opts?.blockerIssueId;
 
     const queryCandidates = (afterIssueId: string | null) => {
+      // Unassigned candidates are included: they cannot be woken, but they are
+      // exactly the rows that pin forever, so the backstop promotes them.
       const filters = [
         eq(issues.status, "blocked"),
         isNull(issues.hiddenAt),
-        sql`${issues.assigneeAgentId} is not null`,
       ];
       if (opts?.companyId) filters.push(eq(issues.companyId, opts.companyId));
       if (afterIssueId) filters.push(gt(issues.id, afterIssueId));
@@ -4197,7 +4200,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       for (const candidate of companyCandidates) {
         const agentId = candidate.assigneeAgentId;
-        if (!agentId) continue;
 
         const readiness = readinessMap.get(candidate.id);
         const resolvedBlockerIssueId = readiness?.blockerIssueIds[0] ?? null;
@@ -4208,6 +4210,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           !resolvedBlockerIssueId
         ) {
           result.notReadySkipped += 1;
+          continue;
+        }
+
+        // A wake row requires an agent_id, so an unassigned dependent can never
+        // be woken. Return it to the assignable pool instead — that is the
+        // correct terminal state for an unassigned issue with no open blockers.
+        if (!agentId) {
+          if (await isAutomaticRecoverySuppressedByPauseHold(db, companyId, candidate.id, treeControlSvc)) {
+            result.pauseHoldSkipped += 1;
+            continue;
+          }
+
+          const promoted = await promoteUnblockedDependentToTodo(db, {
+            companyId,
+            dependentIssueId: candidate.id,
+            resolvedBlockerIssueId,
+            blockerIssueIds: readiness.blockerIssueIds,
+            source,
+            actorId: requestedByActorId,
+            runId: opts?.runId ?? null,
+          });
+          if (!promoted) {
+            // Raced with a concurrent assignment or status change; the next
+            // sweep re-evaluates from current state.
+            result.deferredOrFailed += 1;
+            continue;
+          }
+
+          result.healed += 1;
+          result.unassignedPromoted += 1;
+          result.issueIds.push(candidate.id);
           continue;
         }
 
