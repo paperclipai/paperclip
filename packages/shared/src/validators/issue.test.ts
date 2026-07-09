@@ -407,3 +407,66 @@ describe("issue validators", () => {
     expect(parsed.success).toBe(false);
   });
 });
+
+describe("execution policy input strictness", () => {
+  const nextCheckAt = "2026-01-01T00:00:00.000Z";
+
+  it("accepts a well-formed executionPolicy.monitor", () => {
+    const parsed = updateIssueSchema.parse({
+      executionPolicy: {
+        monitor: {
+          nextCheckAt,
+          kind: "external_service",
+          serviceName: "ci",
+          notes: "waiting on pipeline",
+        },
+      },
+    });
+
+    expect(parsed.executionPolicy?.monitor?.nextCheckAt).toBe(nextCheckAt);
+    expect(parsed.executionPolicy?.monitor?.serviceName).toBe("ci");
+  });
+
+  it("rejects unknown executionPolicy.monitor fields instead of stripping them", () => {
+    for (const extra of [{ intervalMinutes: 30 }, { prompt: "re-check the deploy" }]) {
+      const result = updateIssueSchema.safeParse({
+        executionPolicy: { monitor: { nextCheckAt, ...extra } },
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const unrecognized = result.error.issues.find((issue) => issue.code === "unrecognized_keys");
+        expect(unrecognized).toBeDefined();
+        expect((unrecognized as { keys?: string[] })?.keys).toEqual(Object.keys(extra));
+      }
+    }
+  });
+
+  it("rejects unknown executionPolicy fields instead of stripping them", () => {
+    const result = updateIssueSchema.safeParse({
+      executionPolicy: { montior: { nextCheckAt } },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a top-level monitor field and points at executionPolicy.monitor", () => {
+    const result = updateIssueSchema.safeParse({
+      monitor: { nextCheckAt },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((issue) => issue.message.includes("executionPolicy.monitor"))).toBe(true);
+    }
+  });
+
+  it("applies the same strictness to createIssueSchema", () => {
+    const result = createIssueSchema.safeParse({
+      title: "Deploy watch",
+      executionPolicy: { monitor: { nextCheckAt, intervalMinutes: 15 } },
+    });
+
+    expect(result.success).toBe(false);
+  });
+});
