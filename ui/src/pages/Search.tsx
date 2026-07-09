@@ -412,6 +412,8 @@ export function Search() {
     handleScopeChange("all");
   }
 
+  const searchDisplayLabel = displayQuery || operatorPills.map((pill) => pill.label).join(" ");
+
   return (
     <div className="flex h-full min-h-0 flex-col" data-page="search">
       <div className="border-b border-border px-4 py-3 sm:px-6">
@@ -491,11 +493,11 @@ export function Search() {
                 hasError={hasError}
                 apiError={apiError}
                 isEmpty={isEmpty}
-                trimmedQuery={trimmedQuery}
+                trimmedQuery={searchDisplayLabel}
                 scope={scope}
                 showAllScope={showAllScope}
                 navigateIssuesFallback={navigateIssuesFallback}
-                openNewIssue={() => openNewIssue({ title: trimmedQuery })}
+                openNewIssue={() => openNewIssue({ title: searchDisplayLabel })}
                 refetch={() => void refetch()}
                 recentSearches={recentSearches}
                 onRecentClick={handleRecentClick}
