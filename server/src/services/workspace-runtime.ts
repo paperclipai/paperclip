@@ -1577,6 +1577,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
   if (
     input.enableWorkspaceBranchReconcileForward === true &&
     evidence.provenance.ancestryVerdict === "ancestor" &&
+    !evidence.provenance.sameHead &&
     evidence.cleanliness === "clean" &&
     currentBranch
   ) {
