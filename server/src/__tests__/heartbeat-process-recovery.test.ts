@@ -2085,6 +2085,135 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  // PAP-13314 P5 · Scenario 4: `process_lost` before the agent started is retried like
+  // other infrastructure failures. Distinct from the pid-based process-loss retry
+  // ("queues exactly one retry when the recorded local pid is dead"): here no pid was ever
+  // recorded (the process died before producing output), so the reaper falls through to the
+  // accepted-interaction infra-retry path. Pre-P1 `process_lost` was not retry-eligible there.
+  it("retries a plan-approval continuation lost as process_lost before agent start as an infrastructure failure", async () => {
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
+    const interactionId = randomUUID();
+
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: agentId,
+      resolvedByUserId: "responsible-user",
+      resolvedAt: new Date("2026-03-19T00:00:00.000Z"),
+      payload: {
+        version: 1,
+        prompt: "Approve the plan?",
+        target: { type: "issue_document", issueId, key: "plan", revisionId: randomUUID() },
+      },
+      result: { version: 1, outcome: "accepted" },
+    });
+
+    // The continuation wake was claimed and a run spawned, but the process was lost before
+    // the agent produced any output — no pid/process-group was ever recorded.
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        source: "automation",
+        reason: "issue_commented",
+        status: "claimed",
+        payload: {
+          issueId,
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+          mutation: "interaction",
+        },
+      })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "running",
+        invocationSource: "automation",
+        processPid: null,
+        processGroupId: null,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_commented",
+          mutation: "interaction",
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+        },
+        startedAt: new Date("2026-03-19T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(failedRun).toMatchObject({ status: "failed", errorCode: "process_lost" });
+    expect(retryRun).toMatchObject({
+      status: "scheduled_retry",
+      retryOfRunId: runId,
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+    });
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      issueId,
+      interactionId,
+      interactionStatus: "accepted",
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      scheduledRetryAttempt: 1,
+    });
+
+    const retryWakeup = await db
+      .select({ reason: agentWakeupRequests.reason, status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.runId, retryRun?.id ?? ""))
+      .then((rows) => rows[0] ?? null);
+    expect(retryWakeup?.reason).toBe(INTERACTION_CONTINUATION_INFRA_WAKE_REASON);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({
+      authorType: "system",
+      body: "Agent failed to resume after approval: `process_lost` — retrying (attempt 1/3)",
+    });
+
+    const interaction = await db
+      .select({ result: issueThreadInteractions.result })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .then((rows) => rows[0] ?? null);
+    expect(interaction?.result).toMatchObject({
+      version: 1,
+      outcome: "accepted",
+      resumeFailure: {
+        status: "retrying",
+        errorCode: "process_lost",
+        attempt: 1,
+        maxAttempts: 3,
+        runId,
+        retryRunId: retryRun?.id ?? null,
+      },
+    });
+    mockAdapterExecute.mockClear();
+  });
+
   it("blocks a git-sensitive local adapter before launch when a project-workspace-linked issue is missing its project id", async () => {
     mockAdapterExecute.mockClear();
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
@@ -3844,6 +3973,186 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       interactionContinuationPolicy: "wake_assignee_on_accept",
       interactionResolvedAt: resolvedAt.toISOString(),
     });
+  });
+
+  // PAP-13314 P5 · Scenario 5: enqueue-failure at accept time is no longer a silent permanent
+  // stall. When the accept-time continuation wake is dropped (routes/issues.ts fire-and-forget
+  // enqueue swallowed the error), the issue is left in_review with an accepted interaction but
+  // *no* wake request and *no* run at all. Pre-P1 the recovery sweep skipped in_review issues
+  // lacking an execution policy, so this limbo persisted forever. The sweep now requeues it.
+  it("recovers a plan approval whose accept-time continuation wake enqueue was silently dropped", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const resolvedAt = new Date("2026-03-19T00:05:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Approved plan whose wake enqueue was dropped",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: agentId,
+      resolvedByUserId: "responsible-user",
+      resolvedAt,
+      updatedAt: resolvedAt,
+      payload: { version: 1, prompt: "Approve the plan?" },
+      result: { outcome: "accepted" },
+    });
+
+    // Precondition of the silent-enqueue-drop bug: the accept produced no wake and no run.
+    const priorWakeups = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    expect(priorWakeups).toHaveLength(0);
+    const priorRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId));
+    expect(priorRuns).toHaveLength(0);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const run = await db
+      .select({ agentId: heartbeatRuns.agentId, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.agentId).toBe(agentId);
+    expect(run?.contextSnapshot).toMatchObject({
+      issueId,
+      interactionId,
+      interactionStatus: "accepted",
+      source: "issue.interaction_continuation_recovery",
+    });
+
+    const wakeup = await db
+      .select({ payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup).not.toBeNull();
+    expect((wakeup?.payload as Record<string, unknown> | null)?.issueId).toBe(issueId);
+  });
+
+  // PAP-13314 P5 · Scenario 3 (restart durability): a bounded continuation retry scheduled
+  // before a server restart survives it. Promotion is DB-driven (scheduled_retry rows +
+  // promoteDueScheduledRetries), not an in-memory setTimeout — so a brand-new heartbeat
+  // service instance with empty in-memory state still promotes the due retry.
+  it("promotes a scheduled plan-approval continuation retry after a simulated server restart", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const interactionId = randomUUID();
+    const now = new Date("2026-03-19T00:10:00.000Z");
+
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: agentId,
+      resolvedByUserId: "responsible-user",
+      resolvedAt: now,
+      payload: {
+        version: 1,
+        prompt: "Approve the plan?",
+        target: { type: "issue_document", issueId, key: "plan", revisionId: randomUUID() },
+      },
+      result: { version: 1, outcome: "accepted" },
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "failed",
+        error: "workspace validation failed before dispatch",
+        errorCode: "workspace_validation_failed",
+        resultJson: {},
+        finishedAt: now,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+          retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+          mutation: "interaction",
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(issues)
+      .set({ status: "in_review", executionRunId: runId })
+      .where(eq(issues.id, issueId));
+
+    // Service instance that scheduled the retry (pre-restart).
+    const preRestart = heartbeatService(db);
+    const scheduled = await preRestart.scheduleBoundedRetry(runId, {
+      now,
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: 3,
+    });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    const beforePromotion = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .then((rows) => rows[0] ?? null);
+    expect(beforePromotion?.status).toBe("scheduled_retry");
+
+    // Simulate a server restart: no in-memory process/timer state carries over.
+    runningProcesses.clear();
+    const restarted = heartbeatService(db);
+    const promotion = await restarted.promoteDueScheduledRetries(scheduled.dueAt);
+    expect(promotion).toEqual({ promoted: 1, runIds: [scheduled.run.id] });
+
+    const promoted = await db
+      .select({ status: heartbeatRuns.status, retryOfRunId: heartbeatRuns.retryOfRunId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .then((rows) => rows[0] ?? null);
+    expect(promoted).toMatchObject({ status: "queued", retryOfRunId: runId });
   });
 
   it("still re-enqueues stranded assigned todo recovery when an old queued wake exists", async () => {
