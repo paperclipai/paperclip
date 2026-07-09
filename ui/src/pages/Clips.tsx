@@ -15,6 +15,7 @@ import {
   Upload,
 } from "lucide-react";
 import type {
+  ClipImportPreviewResult,
   ClipSharePreviewResult,
   ClipType,
   ClipVisibility,
@@ -225,10 +226,10 @@ export function Clips() {
   });
 
   const importMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: (preview: ClipImportPreviewResult) => {
       if (!selectedCompanyId) throw new Error("Select a company first.");
       return clipsApi.importClip(selectedCompanyId, {
-        url: importUrl.trim(),
+        url: preview.source.url,
         collisionStrategy: "rename",
         selectedOptions: { routineTriggers: "review_required" },
       });
@@ -301,7 +302,11 @@ export function Clips() {
             <div className="flex flex-col gap-2 sm:flex-row">
               <Input
                 value={importUrl}
-                onChange={(event) => setImportUrl(event.target.value)}
+                onChange={(event) => {
+                  setImportUrl(event.target.value);
+                  importPreviewMutation.reset();
+                  importMutation.reset();
+                }}
                 placeholder="https://paperclip.ing/clips/support-triage or support-triage"
               />
               <Button
@@ -333,7 +338,7 @@ export function Clips() {
                     Import is blocked if preview errors exist. Recurring and webhook triggers stay disabled until reviewed.
                   </div>
                   <Button
-                    onClick={() => importMutation.mutate()}
+                    onClick={() => importMutation.mutate(activePreview)}
                     disabled={importMutation.isPending || ((asPreviewRecord(activePreview.preview).errors as unknown[] | undefined)?.length ?? 0) > 0}
                   >
                     <Check className="mr-2 h-4 w-4" />

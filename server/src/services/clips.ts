@@ -351,8 +351,6 @@ export function clipService(db: Db) {
   }
 
   async function publish(companyId: string, input: PublishClip) {
-    const existing = await getClipBySlug(input.slug);
-    if (existing) throw conflict("Clip slug already exists");
     const { clip: updated, revision, creatorProfile } = await db.transaction(async (tx) => {
       const creatorProfile = await resolveCreatorProfile(tx, companyId, input);
       const [clip] = await tx
@@ -376,7 +374,9 @@ export function clipService(db: Db) {
           sourceObjectType: input.sourceObjectType ?? null,
           sourceObjectId: input.sourceObjectId ?? null,
         })
+        .onConflictDoNothing({ target: clips.slug })
         .returning();
+      if (!clip) throw conflict("Clip slug already exists");
       const revision = await insertRevision(tx, clip.id, input.revision, 1);
       const visibleRevisionId = clip.status === "published" ? revision.id : null;
       const [updated] = await tx

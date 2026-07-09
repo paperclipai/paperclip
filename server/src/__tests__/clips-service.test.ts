@@ -138,6 +138,32 @@ describeEmbeddedPostgres("clipService", () => {
     expect(detail).not.toHaveProperty("sourceObjectId");
   });
 
+  it("returns a clean conflict when publishing a duplicate slug", async () => {
+    const companyId = await seedCompany();
+    const { clip } = await publishFixture(companyId);
+
+    await expect(svc.publish(companyId, {
+      creatorProfile: {
+        handle: "duplicate-creator-" + companyId.slice(0, 8),
+        displayName: "Duplicate Creator",
+      },
+      slug: clip.slug,
+      type: "agent",
+      title: "Duplicate Slug Agent",
+      summary: "Attempts to reuse an existing slug.",
+      visibility: "public",
+      status: "published",
+      sourceKind: "paperclip_company_object",
+      sourceObjectType: "agent",
+      sourceObjectId: "duplicate-agent-id",
+      revision: {
+        manifestChecksum: "sha256:manifest-duplicate",
+        artifactChecksum: "sha256:artifact-duplicate",
+        manifestPayload: { schema: "paperclip.clip/v1", duplicate: true },
+      },
+    })).rejects.toThrow("Clip slug already exists");
+  });
+
   it("rolls back initial publish when revision dependency insertion fails", async () => {
     const companyId = await seedCompany();
     const slug = "rollback-test-" + companyId.slice(0, 8);
