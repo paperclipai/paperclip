@@ -6,6 +6,11 @@ import { forbidden } from "../errors.js";
 
 export const AGENT_PROFILE_CHANGE_CONSENT_FIELDS = ["name", "role", "title", "capabilities"] as const;
 
+type ConsumedRequestConfirmationResult = RequestConfirmationResult & {
+  consumedAt?: string | null;
+  consumedByRunId?: string | null;
+};
+
 export function agentInstructionsChangeTargetKey(agentId: string) {
   return `agent:${agentId}:instructions`;
 }
@@ -45,6 +50,23 @@ function payloadHasDisplayedDiff(payload: RequestConfirmationPayload) {
   if (!details) return false;
   if (/```diff\b/i.test(details)) return true;
   return /(^|\n)[+-][^\n]+/.test(details);
+}
+
+function requestConfirmationResultConsumed(result: RequestConfirmationResult | null) {
+  const consumed = result as ConsumedRequestConfirmationResult | null;
+  return Boolean(readNonEmptyString(consumed?.consumedByRunId) || readNonEmptyString(consumed?.consumedAt));
+}
+
+function markRequestConfirmationResultConsumed(
+  result: RequestConfirmationResult,
+  actorRunId: string,
+  consumedAt: Date,
+): ConsumedRequestConfirmationResult {
+  return {
+    ...result,
+    consumedAt: consumedAt.toISOString(),
+    consumedByRunId: actorRunId,
+  };
 }
 
 function legacyTargetKeysFor(targetKey: string) {
@@ -146,6 +168,7 @@ export function changeConsentGateService(db: Db) {
         return payload.target?.type === "custom"
           && queryTargetKeys.includes(payload.target.key)
           && result?.outcome === "accepted"
+          && !requestConfirmationResultConsumed(result)
           && payloadHasDisplayedDiff(payload)
           && Boolean(row.sourceRunId)
           && row.sourceRunId !== actorRunId;
@@ -154,7 +177,48 @@ export function changeConsentGateService(db: Db) {
       if (!accepted) {
         throw forbidden(
           "Reflection Coach mutations require an accepted request_confirmation with a displayed diff for this target, "
-            + "created in a previous run.",
+            + "created in a previous run and not already consumed.",
+          {
+            code: "reflection_coach_mutation_gate_required",
+            targetKeys,
+          },
+        );
+      }
+
+      const acceptedResult = accepted.result as RequestConfirmationResult | null;
+      if (!acceptedResult) {
+        throw forbidden(
+          "Reflection Coach mutations require an accepted request_confirmation with a displayed diff for this target, "
+            + "created in a previous run and not already consumed.",
+          {
+            code: "reflection_coach_mutation_gate_required",
+            targetKeys,
+          },
+        );
+      }
+
+      const now = new Date();
+      const [consumed] = await db
+        .update(issueThreadInteractions)
+        .set({
+          result: markRequestConfirmationResultConsumed(acceptedResult, actorRunId, now),
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, accepted.id),
+          eq(issueThreadInteractions.companyId, input.companyId),
+          eq(issueThreadInteractions.createdByAgentId, actorAgentId),
+          eq(issueThreadInteractions.kind, "request_confirmation"),
+          eq(issueThreadInteractions.status, "accepted"),
+          sql`${issueThreadInteractions.result}->>'outcome' = 'accepted'`,
+          sql`coalesce(${issueThreadInteractions.result}->>'consumedByRunId', ${issueThreadInteractions.result}->>'consumedAt') is null`,
+        ))
+        .returning({ id: issueThreadInteractions.id });
+
+      if (!consumed) {
+        throw forbidden(
+          "Reflection Coach mutations require an accepted request_confirmation with a displayed diff for this target, "
+            + "created in a previous run and not already consumed.",
           {
             code: "reflection_coach_mutation_gate_required",
             targetKeys,

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -134,6 +135,50 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
 
   it("allows a previous-run accepted interaction with a displayed diff for the bound target", async () => {
     const { companyId, coachId, sourceRunId, proposalIssueId, targetKey } = await seedGateFixture();
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: proposalIssueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      sourceRunId,
+      createdByAgentId: coachId,
+      payload: {
+        version: 1,
+        prompt: "Apply this Reflection Coach skill diff?",
+        detailsMarkdown: "```diff\n+Tighten the workflow.\n```",
+        target: { type: "custom", key: targetKey, revisionId: "proposal-v1" },
+      },
+      result: { version: 1, outcome: "accepted" },
+      resolvedByUserId: "board-user",
+      resolvedAt: new Date(),
+    });
+    const actorRunId = randomUUID();
+
+    await expect(changeConsentGateService(db).assertConsented({
+      companyId,
+      actorAgentId: coachId,
+      actorRunId,
+      targetKeys: [targetKey],
+    })).resolves.toBe(true);
+
+    const [stored] = await db
+      .select({ result: issueThreadInteractions.result })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId));
+
+    expect(stored?.result).toMatchObject({
+      consumedByRunId: actorRunId,
+      outcome: "accepted",
+      version: 1,
+    });
+    expect((stored?.result as { consumedAt?: unknown } | undefined)?.consumedAt).toEqual(expect.any(String));
+  });
+
+  it("rejects reusing an accepted interaction after it is consumed by a mutation", async () => {
+    const { companyId, coachId, sourceRunId, proposalIssueId, targetKey } = await seedGateFixture();
     await db.insert(issueThreadInteractions).values({
       id: randomUUID(),
       companyId,
@@ -160,6 +205,16 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
       actorRunId: randomUUID(),
       targetKeys: [targetKey],
     })).resolves.toBe(true);
+
+    await expect(changeConsentGateService(db).assertConsented({
+      companyId,
+      actorAgentId: coachId,
+      actorRunId: randomUUID(),
+      targetKeys: [targetKey],
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "reflection_coach_mutation_gate_required" },
+    });
   });
 
   it("allows legacy Reflection Coach target keys for durable accepted interactions", async () => {
