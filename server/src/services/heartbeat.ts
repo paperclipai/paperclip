@@ -196,8 +196,15 @@ import {
   acquireClaudeLocalDispatchSlot,
   blockIfClaudeQuotaOpen,
   claudeQuotaBlockMessage,
+  getLatestClaudeQuotaCircuitOpenedAt,
   recordClaudeQuotaFailure,
 } from "./claude-quota-guard.js";
+import {
+  LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE,
+  MANUAL_SAFE_RUN_CONTEXT_KEY,
+  isClaudeLocalAdapterSetupFailure,
+  isManualSafeRunContextSnapshot,
+} from "./local-adapter-setup-failure.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -427,6 +434,7 @@ function readTransientRetryNotBeforeFromRun(run: Pick<typeof heartbeatRuns.$infe
 function readTransientRecoveryContractFromRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
 ) {
+  if (run.errorCode === CLAUDE_QUOTA_BLOCK_ERROR_CODE) return null;
   const errorFamily = readHeartbeatRunErrorFamily(run);
   return errorFamily === "transient_upstream" || errorFamily === "provider_quota"
     ? {
@@ -2311,6 +2319,42 @@ function didAutomaticRecoveryFail(
   );
 }
 
+function isManualSafeRun(run: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot">) {
+  return isManualSafeRunContextSnapshot(parseObject(run.contextSnapshot));
+}
+
+function isLocalAdapterSetupFailureRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "stdoutExcerpt" | "stderrExcerpt" | "resultJson">,
+  agent: Pick<typeof agents.$inferSelect, "adapterType"> | null | undefined,
+) {
+  return isClaudeLocalAdapterSetupFailure({
+    adapterType: agent?.adapterType ?? null,
+    errorCode: run.errorCode,
+    error: run.error,
+    stdoutExcerpt: run.stdoutExcerpt,
+    stderrExcerpt: run.stderrExcerpt,
+    resultJson: run.resultJson,
+  });
+}
+
+function buildLocalAdapterSetupFailureRecoveryComment(input: {
+  latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
+}) {
+  const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+  return (
+    "Paperclip could not start the local Claude adapter because local session setup failed before Claude launched. " +
+    `Automatic continuation, retry, and recovery wakes are suppressed until an operator repairs the local adapter setup.${failureSummary ?? ""} ` +
+    "Moving the issue to `blocked` so the setup failure is visible for manual repair."
+  );
+}
+
+function shouldSuppressAutomaticFollowOnForRun(input: {
+  run: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot" | "error" | "errorCode" | "stdoutExcerpt" | "stderrExcerpt" | "resultJson">;
+  agent: Pick<typeof agents.$inferSelect, "adapterType"> | null | undefined;
+}) {
+  return isManualSafeRun(input.run) || isLocalAdapterSetupFailureRun(input.run, input.agent);
+}
+
 function isExecutionReviewParticipantRecoveryRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot"> | null,
 ) {
@@ -3936,6 +3980,9 @@ function enrichWakeContextSnapshot(input: {
   if (!readNonEmptyString(contextSnapshot["wakeTriggerDetail"]) && triggerDetail) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
   }
+  if (contextSnapshot[MANUAL_SAFE_RUN_CONTEXT_KEY] !== true && payload?.[MANUAL_SAFE_RUN_CONTEXT_KEY] === true) {
+    contextSnapshot[MANUAL_SAFE_RUN_CONTEXT_KEY] = true;
+  }
   normalizeModelProfileWakeContext({ contextSnapshot, payload });
   normalizeInteractionContinuationWakeContext(contextSnapshot, payload);
 
@@ -5361,6 +5408,81 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     return completedRun;
+  }
+
+  async function guardClaudeLocalDirectQueuedRunCreation(input: {
+    agent: typeof agents.$inferSelect;
+    sourceRun?: typeof heartbeatRuns.$inferSelect | null;
+    issueId?: string | null;
+    taskKey?: string | null;
+    retryReason?: string | null;
+    reason: string;
+    enforceRetryBudget?: boolean;
+  }): Promise<{ allowed: true } | { allowed: false; reason: string; errorCode: typeof CLAUDE_QUOTA_BLOCK_ERROR_CODE }> {
+    if (input.agent.adapterType !== CLAUDE_LOCAL_ADAPTER_TYPE) return { allowed: true };
+
+    const block = await blockIfClaudeQuotaOpen(db, input.agent.companyId);
+    if (block) {
+      const reason = claudeQuotaBlockMessage(block);
+      if (input.sourceRun) {
+        await appendRunEvent(input.sourceRun, await nextRunEventSeq(input.sourceRun.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: reason,
+          payload: {
+            reason: input.reason,
+            errorCode: CLAUDE_QUOTA_BLOCK_ERROR_CODE,
+            blockedUntil: block.blockedUntil?.toISOString() ?? null,
+            operatorResumeRequired: block.operatorResumeRequired,
+          },
+        });
+      }
+      return { allowed: false, reason, errorCode: CLAUDE_QUOTA_BLOCK_ERROR_CODE };
+    }
+
+    if (!input.enforceRetryBudget || !input.retryReason) return { allowed: true };
+
+    const latestQuotaOpenedAt = await getLatestClaudeQuotaCircuitOpenedAt(db);
+    const windowStart = latestQuotaOpenedAt ?? new Date(Date.now() - 60 * 60 * 1000);
+    const taskPredicate = input.issueId
+      ? sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`
+      : input.taskKey
+        ? sql`${heartbeatRuns.contextSnapshot} ->> 'taskKey' = ${input.taskKey}`
+        : sql`true`;
+    const priorRetries = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, input.agent.companyId),
+        eq(heartbeatRuns.agentId, input.agent.id),
+        gte(heartbeatRuns.createdAt, windowStart),
+        taskPredicate,
+        sql`${heartbeatRuns.contextSnapshot} ->> 'retryReason' = ${input.retryReason}`,
+      ))
+      .limit(1);
+
+    if (priorRetries.length === 0) return { allowed: true };
+
+    const reason = `Claude-local direct recovery retry budget exhausted for ${input.retryReason}`;
+    if (input.sourceRun) {
+      await appendRunEvent(input.sourceRun, await nextRunEventSeq(input.sourceRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: reason,
+        payload: {
+          reason: input.reason,
+          retryReason: input.retryReason,
+          issueId: input.issueId ?? null,
+          taskKey: input.taskKey ?? null,
+          windowStart: windowStart.toISOString(),
+          maxRetries: 1,
+          errorCode: CLAUDE_QUOTA_BLOCK_ERROR_CODE,
+        },
+      });
+    }
+    return { allowed: false, reason, errorCode: CLAUDE_QUOTA_BLOCK_ERROR_CODE };
   }
 
   async function releaseEnvironmentLeasesForRun(input: {
@@ -7269,6 +7391,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function handleRunLivenessContinuation(run: typeof heartbeatRuns.$inferSelect) {
     const livenessState = run.livenessState as RunLivenessState | null;
     if (livenessState !== "plan_only" && livenessState !== "empty_response") return;
+    if (isManualSafeRun(run)) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Liveness continuation suppressed because manual safe-run mode allows only one local run",
+      });
+      return;
+    }
 
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId);
@@ -7452,6 +7583,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function handleSuccessfulRunHandoff(run: typeof heartbeatRuns.$inferSelect, agent: typeof agents.$inferSelect) {
     if (run.status !== "succeeded") return;
+    if (isManualSafeRun(run)) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Successful-run handoff suppressed because manual safe-run mode allows only one local run",
+      });
+      return;
+    }
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     if (!issueId) return;
@@ -7922,6 +8062,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       retryReason: "missing_issue_comment",
       missingIssueCommentForRunId: run.id,
     }, "status_only");
+    const preflight = await guardClaudeLocalDirectQueuedRunCreation({
+      agent,
+      sourceRun: run,
+      issueId,
+      taskKey,
+      retryReason: "missing_issue_comment",
+      reason: "missing_issue_comment",
+      enforceRetryBudget: true,
+    });
+    if (!preflight.allowed) return null;
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
     const now = new Date();
 
@@ -8048,6 +8198,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
   ) {
+    if (shouldSuppressAutomaticFollowOnForRun({ run, agent })) {
+      await patchRunIssueCommentStatus(run.id, {
+        issueCommentStatus: "not_applicable",
+        issueCommentSatisfiedByCommentId: null,
+        issueCommentRetryQueuedAt: null,
+      });
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: isManualSafeRun(run)
+          ? "Missing-comment follow-up suppressed because manual safe-run mode allows only one local run"
+          : "Missing-comment follow-up suppressed because local adapter setup failed before Claude launched",
+      });
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) {
@@ -8182,6 +8349,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       wakeReason: "process_lost_retry",
       retryReason: "process_lost",
     }, "normal_model");
+    const preflight = await guardClaudeLocalDirectQueuedRunCreation({
+      agent,
+      sourceRun: run,
+      issueId,
+      taskKey,
+      retryReason: "process_lost",
+      reason: "process_lost_retry",
+      enforceRetryBudget: true,
+    });
+    if (!preflight.allowed) return null;
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
     const queued = await db.transaction(async (tx) => {
@@ -8788,6 +8965,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const maxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
+    if (shouldSuppressAutomaticFollowOnForRun({ run, agent })) {
+      const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: isManualSafeRun(run)
+          ? "Scheduled retry suppressed because manual safe-run mode allows only one local run"
+          : "Scheduled retry suppressed because local adapter setup failed before Claude launched",
+        payload: {
+          retryReason,
+          scheduledRetryAttempt: nextAttempt,
+          maxAttempts,
+        },
+      });
+      return {
+        outcome: "not_scheduled" as const,
+        reason: isManualSafeRun(run)
+          ? "manual_safe_run"
+          : LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE,
+        errorCode: run.errorCode ?? null,
+        issueId,
+      };
+    }
     if (agent.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE) {
       const block = await blockIfClaudeQuotaOpen(db, agent.companyId);
       if (block) {
@@ -12923,7 +13124,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               );
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode(latestRun?.errorCode);
-      const runErrorCode =
+      const adapterRunErrorCode =
         outcome === "timed_out"
           ? "timeout"
           : outcome === "cancelled"
@@ -12931,19 +13132,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : outcome === "failed"
               ? (adapterResult.errorCode ?? recordedResponsibleUserDenialCode ?? "adapter_failed")
               : null;
-      if (agent.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE && outcome !== "succeeded") {
-        await recordClaudeQuotaFailure(db, {
-          adapterType: agent.adapterType,
-          companyId: agent.companyId,
-          agentId: agent.id,
-          runId: run.id,
-          status: outcome === "timed_out" ? "timed_out" : runErrorCode,
-          errorCode: runErrorCode,
-          errorMessage: runErrorMessage,
-          stderrExcerpt,
-          resultJson: adapterResult.resultJson,
-        });
-      }
+      const claudeQuotaFailureDetails =
+        agent.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE && outcome !== "succeeded"
+          ? await recordClaudeQuotaFailure(db, {
+            adapterType: agent.adapterType,
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+            status: outcome === "timed_out" ? "timed_out" : adapterRunErrorCode,
+            errorCode: adapterRunErrorCode,
+            errorMessage: runErrorMessage,
+            stderrExcerpt,
+            resultJson: adapterResult.resultJson,
+          })
+          : null;
+      const runErrorCode = claudeQuotaFailureDetails ? CLAUDE_QUOTA_BLOCK_ERROR_CODE : adapterRunErrorCode;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
@@ -12998,6 +13201,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               resultJson: {
                 ...parseObject(adapterResult.resultJson),
                 configFreshness: configFreshnessResultMetadata,
+                ...(claudeQuotaFailureDetails ? {
+                  stopReason: CLAUDE_QUOTA_BLOCK_ERROR_CODE,
+                  claudeQuotaCircuit: claudeQuotaFailureDetails,
+                } : {}),
               },
               errorFamily: adapterResult.errorFamily ?? null,
               retryNotBefore: adapterResult.retryNotBefore ?? null,
@@ -13573,6 +13780,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ? await resolveSessionBeforeForWakeup(recoveryAgent, taskKey)
       : null;
     const recoveryAgentNameKey = normalizeAgentNameKey(recoveryAgent?.name);
+    const localAdapterSetupFailure = isLocalAdapterSetupFailureRun(run, recoveryAgent);
+    const manualSafeRun = isManualSafeRun(run);
 
     const promotionResult = await db.transaction(async (tx) => {
       // Lock the context issue (if any) AND every issue that still references this run.
@@ -13679,20 +13888,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // Sibling lock cleanup is already done above; only the primary issue carries
       // the recovery surface because the comment is attached to a single issue.
       if (
-        (isWorkspaceValidationFailedRun(run) || isConfigurationIncompleteFailedRun(run)) &&
+        (isWorkspaceValidationFailedRun(run) ||
+          isConfigurationIncompleteFailedRun(run) ||
+          localAdapterSetupFailure) &&
         (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId
       ) {
         const configurationIncomplete = isConfigurationIncompleteFailedRun(run);
+        const adapterSetupFailure = localAdapterSetupFailure;
         return {
           kind: "blocked" as const,
           issue,
           previousStatus: issue.status,
-          comment: configurationIncomplete
+          comment: adapterSetupFailure
+            ? buildLocalAdapterSetupFailureRecoveryComment({ latestRun: run })
+            : configurationIncomplete
             ? buildConfigurationIncompleteRecoveryComment({ latestRun: run })
             : buildWorkspaceValidationRecoveryComment({ latestRun: run }),
-          recoveryCause: configurationIncomplete
+          recoveryCause: adapterSetupFailure
+            ? LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE
+            : configurationIncomplete
             ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
             : WORKSPACE_VALIDATION_RECOVERY_CAUSE,
         };
@@ -13883,6 +14099,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           payload: promotedPayload,
         });
 
+        if (deferredAgent.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE) {
+          const block = await blockIfClaudeQuotaOpen(tx, deferredAgent.companyId);
+          if (block) {
+            const reason = claudeQuotaBlockMessage(block);
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "cancelled",
+                reason: CLAUDE_QUOTA_BLOCK_ERROR_CODE,
+                finishedAt: new Date(),
+                error: reason,
+                updatedAt: new Date(),
+              })
+              .where(eq(agentWakeupRequests.id, deferred.id));
+            return { kind: "released" as const };
+          }
+        }
+
         const sessionBefore =
           readNonEmptyString(promotedContextSnapshot.resumeSessionDisplayId) ??
           await resolveSessionBeforeForWakeup(deferredAgent, promotedTaskKey);
@@ -14027,6 +14261,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         const now = new Date();
+        if (recoveryAgent.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE) {
+          const block = await blockIfClaudeQuotaOpen(tx, recoveryAgent.companyId);
+          if (block) {
+            return {
+              kind: "blocked" as const,
+              issue,
+              previousStatus: issue.status,
+              comment: claudeQuotaBlockMessage(block),
+              recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
+              recoveryOwnerAgentId: currentParticipant.agentId,
+            };
+          }
+          const latestQuotaOpenedAt = await getLatestClaudeQuotaCircuitOpenedAt(tx);
+          const windowStart = latestQuotaOpenedAt ?? new Date(Date.now() - 60 * 60 * 1000);
+          const priorRetries = await tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.companyId, recoveryAgent.companyId),
+              eq(heartbeatRuns.agentId, recoveryAgent.id),
+              gte(heartbeatRuns.createdAt, windowStart),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+              sql`${heartbeatRuns.contextSnapshot} ->> 'retryReason' = ${EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON}`,
+            ))
+            .limit(1);
+          if (priorRetries.length > 0) {
+            return {
+              kind: "blocked" as const,
+              issue,
+              previousStatus: issue.status,
+              comment: `Claude-local direct recovery retry budget exhausted for ${EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON}`,
+              recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
+              recoveryOwnerAgentId: currentParticipant.agentId,
+            };
+          }
+        }
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -14111,7 +14381,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!issueNeedsImmediateRecovery) {
         return { kind: "released" as const };
       }
-      if (options.suppressImmediateRecovery) {
+      if (options.suppressImmediateRecovery || manualSafeRun) {
         return { kind: "released" as const };
       }
 
@@ -14137,14 +14407,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         !recoveryAgent ||
         isWorkspaceValidationFailedRun(run) ||
         isConfigurationIncompleteFailedRun(run) ||
+        localAdapterSetupFailure ||
         didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
       if (shouldBlockImmediately) {
         const workspaceValidationFailure = isWorkspaceValidationFailedRun(run);
         const configurationIncompleteFailure = isConfigurationIncompleteFailedRun(run);
+        const adapterSetupFailure = localAdapterSetupFailure;
         const comment = workspaceValidationFailure
           ? buildWorkspaceValidationRecoveryComment({ latestRun: run })
           : configurationIncompleteFailure
             ? buildConfigurationIncompleteRecoveryComment({ latestRun: run })
+            : adapterSetupFailure
+              ? buildLocalAdapterSetupFailureRecoveryComment({ latestRun: run })
             : buildImmediateExecutionPathRecoveryComment({
                 status: issue.status as "todo" | "in_progress",
                 latestRun: run,
@@ -14158,6 +14432,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
             : configurationIncompleteFailure
               ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+              : adapterSetupFailure
+                ? LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE
               : undefined,
         };
       }
@@ -14175,6 +14451,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         source: recoverySource,
         retryOfRunId: run.id,
       }, "normal_model");
+      if (recoveryAgent.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE) {
+        const block = await blockIfClaudeQuotaOpen(tx, recoveryAgent.companyId);
+        if (block) {
+          return {
+            kind: "blocked" as const,
+            issue,
+            previousStatus: issue.status,
+            comment: claudeQuotaBlockMessage(block),
+          };
+        }
+        const latestQuotaOpenedAt = await getLatestClaudeQuotaCircuitOpenedAt(tx);
+        const windowStart = latestQuotaOpenedAt ?? new Date(Date.now() - 60 * 60 * 1000);
+        const priorRetries = await tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.companyId, recoveryAgent.companyId),
+            eq(heartbeatRuns.agentId, recoveryAgent.id),
+            gte(heartbeatRuns.createdAt, windowStart),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+            sql`${heartbeatRuns.contextSnapshot} ->> 'retryReason' = ${retryReason}`,
+          ))
+          .limit(1);
+        if (priorRetries.length > 0) {
+          return {
+            kind: "blocked" as const,
+            issue,
+            previousStatus: issue.status,
+            comment: `Claude-local direct recovery retry budget exhausted for ${retryReason}`,
+          };
+        }
+      }
       const responsibleUserId = await resolveResponsibleUserIdForRunSeed({
         companyId: issue.companyId,
         contextSnapshot: recoveryContextSnapshot,
@@ -14269,6 +14577,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
             : promotionResult.recoveryCause === CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
               ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+              : promotionResult.recoveryCause === LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE
+                ? LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE
               : promotionResult.recoveryCause === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
                 ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
               : undefined,

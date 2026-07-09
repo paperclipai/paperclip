@@ -154,7 +154,7 @@ describeEmbeddedPostgres("Claude quota guard dispatch integration", () => {
     return { companyId, agentId };
   }
 
-  async function openCircuit(companyId: string, agentId: string, message = "You've hit your session limit - resets 11:30pm") {
+  async function openCircuit(companyId: string, agentId: string, message = "Claude session limit reached") {
     const details = await recordClaudeQuotaFailure(db, {
       adapterType: CLAUDE_LOCAL_ADAPTER_TYPE,
       companyId,
@@ -176,7 +176,7 @@ describeEmbeddedPostgres("Claude quota guard dispatch integration", () => {
     expect(block).toMatchObject({
       blocked: true,
       reason: CLAUDE_QUOTA_BLOCK_ERROR_CODE,
-      operatorResumeRequired: false,
+      operatorResumeRequired: true,
     });
   });
 
@@ -235,14 +235,35 @@ describeEmbeddedPostgres("Claude quota guard dispatch integration", () => {
     });
   });
 
+  it("test_quota_circuit_breaker_blocks_start_of_existing_queued_claude_run", async () => {
+    const { companyId, agentId } = await seedClaudeAgent();
+    await openCircuit(companyId, agentId);
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      contextSnapshot: { taskKey: "queued-before-circuit-check" },
+      responsibleUserId: "responsible-user",
+    });
+
+    await heartbeatService(db).resumeQueuedRuns();
+
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toMatchObject({
+      status: "cancelled",
+      errorCode: CLAUDE_QUOTA_BLOCK_ERROR_CODE,
+    });
+  });
+
   it("blocks claude_local wakeups for another company while the circuit is open", async () => {
     const companyA = await seedClaudeAgent();
     const companyB = await seedClaudeAgent();
-    await openCircuit(
-      companyA.companyId,
-      companyA.agentId,
-      "You've hit your session limit - resets 1:30pm (Asia/Jerusalem)",
-    );
+    await openCircuit(companyA.companyId, companyA.agentId);
 
     const queued = await heartbeatService(db).wakeup(companyB.agentId, {
       source: "automation",

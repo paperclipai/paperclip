@@ -74,6 +74,10 @@ import {
   CLAUDE_QUOTA_BLOCK_ERROR_CODE,
   getLatestClaudeQuotaCircuitOpenedAt,
 } from "../claude-quota-guard.js";
+import {
+  LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE,
+  isClaudeLocalAdapterSetupFailure,
+} from "../local-adapter-setup-failure.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -147,6 +151,7 @@ type StrandedRecoveryCause =
   | "stranded_assigned_issue"
   | "workspace_validation_failed"
   | "configuration_incomplete"
+  | typeof LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE
   | "execution_review_participant_recovery"
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
@@ -168,6 +173,18 @@ function readWorkspaceValidationPayload(latestRun: LatestIssueRun): Record<strin
 function readWorkspaceValidationFingerprint(latestRun: LatestIssueRun): string | null {
   const payload = readWorkspaceValidationPayload(latestRun);
   return readNonEmptyString(payload?.fingerprint);
+}
+
+function isLocalAdapterSetupFailureRun(
+  latestRun: LatestIssueRun,
+  adapterType: string | null | undefined = null,
+) {
+  return isClaudeLocalAdapterSetupFailure({
+    adapterType,
+    errorCode: latestRun?.errorCode ?? null,
+    error: latestRun?.error ?? null,
+    resultJson: latestRun?.resultJson,
+  });
 }
 
 type WatchdogDecisionActor =
@@ -220,6 +237,15 @@ function buildExecutionReviewParticipantUnavailableComment(latestRun: LatestIssu
     `and the review stage has no completed decision or live reviewer run.${failureSummary ?? ""} ` +
     "Moving it to `blocked` with a source-scoped recovery action so the recovery owner can repair the reviewer runtime, " +
     "restore the review stage, or record an intentional manual resolution."
+  );
+}
+
+function buildLocalAdapterSetupFailureComment(latestRun: LatestIssueRun) {
+  const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+  return (
+    "Paperclip could not start the local Claude adapter because local session setup failed before Claude launched. " +
+    `Automatic continuation, retry, and recovery wakes are suppressed until an operator repairs the local adapter setup.${failureSummary ?? ""} ` +
+    "Moving it to `blocked` so the setup failure is visible for manual repair."
   );
 }
 
@@ -278,7 +304,18 @@ type ContinuationRetryClassification = {
   errorCode: string | null;
 };
 
-export function classifyContinuationFailure(latestRun: LatestIssueRun): ContinuationRetryClassification {
+export function classifyContinuationFailure(
+  latestRun: LatestIssueRun,
+  adapterType: string | null | undefined = null,
+): ContinuationRetryClassification {
+  if (isLocalAdapterSetupFailureRun(latestRun, adapterType)) {
+    return {
+      kind: "non_retryable",
+      maxAttempts: 0,
+      baseBackoffMs: 0,
+      errorCode: latestRun?.errorCode ?? LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE,
+    };
+  }
   const errorCode = readNonEmptyString(latestRun?.errorCode);
   if (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode)) {
     return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
@@ -2481,6 +2518,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ? "workspace_validation" as const
       : cause === "configuration_incomplete"
         ? "configuration_validation" as const
+      : cause === LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE
+        ? "configuration_validation" as const
       : "stranded_assigned_issue" as const;
   }
 
@@ -2582,10 +2621,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             : "Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution."
         : recoveryCause === "configuration_incomplete"
           ? "Bind the missing secret(s) named in the run failure to the agent/project/routine env before resuming adapter execution."
+        : recoveryCause === LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE
+          ? "Repair the local Claude adapter setup on this host before resuming adapter execution."
         : recoveryCause === "execution_review_participant_recovery"
           ? "Repair the failed review participant path, restore the source issue to in_review with a live reviewer, or record an intentional manual resolution."
         : "Restore a live execution path, fix the runtime/adapter failure, or record an intentional manual resolution.",
-      wakePolicy: recoveryCause === "workspace_validation_failed" || recoveryCause === "configuration_incomplete"
+      wakePolicy:
+        recoveryCause === "workspace_validation_failed" ||
+        recoveryCause === "configuration_incomplete" ||
+        recoveryCause === LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE
         ? {
           type: "manual_repair_required",
           reason: recoveryCause,
@@ -2617,6 +2661,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     if (input.recoveryCause === "workspace_validation_failed") return;
     if (input.recoveryCause === "configuration_incomplete") return;
+    if (input.recoveryCause === LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE) return;
     if (!input.action.ownerAgentId) return;
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
@@ -2877,7 +2922,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const shouldPostEscalationComment =
       recoveryAction.attemptCount === 1 ||
       input.recoveryCause === "workspace_validation_failed" ||
-      input.recoveryCause === "configuration_incomplete";
+      input.recoveryCause === "configuration_incomplete" ||
+      input.recoveryCause === LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE;
     if (shouldPostEscalationComment) {
       const escalationCommentMarker = `Recovery action: \`${recoveryAction.id}\``;
 
@@ -2933,6 +2979,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             ? "recovery.reconcile_workspace_validation_failed"
           : input.recoveryCause === "configuration_incomplete"
             ? "recovery.reconcile_configuration_incomplete"
+          : input.recoveryCause === LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE
+            ? "recovery.reconcile_local_adapter_setup_failed"
           : input.recoveryCause === "execution_review_participant_recovery"
             ? "recovery.reconcile_execution_review_participant"
           : "recovery.reconcile_stranded_assigned_issue",
@@ -3030,6 +3078,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const agent = await getAgent(agentId);
+      const agentAdapterType = agent?.adapterType ?? null;
       const agentInvokable = agent && agent.companyId === issue.companyId
         ? await isAgentInvokable(agent)
         : false;
@@ -3185,6 +3234,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        if (isLocalAdapterSetupFailureRun(participantLatestRun, agentAdapterType)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_review",
+            latestRun: participantLatestRun,
+            comment: buildLocalAdapterSetupFailureComment(participantLatestRun),
+            recoveryCause: LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE,
+            recoveryOwnerAgentId: participantAgentId,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         if (didAutomaticRecoveryFail(participantLatestRun, EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON)) {
           const updated = await escalateStrandedAssignedIssue({
             issue,
@@ -3260,6 +3327,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
         if (latestRun.status === "succeeded") {
           result.skipped += 1;
+          continue;
+        }
+
+        if (isLocalAdapterSetupFailureRun(latestRun, agentAdapterType)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            comment: buildLocalAdapterSetupFailureComment(latestRun),
+            recoveryCause: LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
           continue;
         }
 
@@ -3393,7 +3477,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       if (isUnsuccessfulTerminalIssueRun(latestRun)) {
-        const classification = classifyContinuationFailure(latestRun);
+        const classification = classifyContinuationFailure(latestRun, agentAdapterType);
 
         if (classification.errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE) {
           const resolved = await resolveContinuationWaitingOnReview(issue);
@@ -3406,14 +3490,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
         if (classification.kind === "non_retryable") {
           const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+          const localAdapterSetupFailure = isLocalAdapterSetupFailureRun(latestRun, agentAdapterType);
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "in_progress",
             latestRun,
-            comment:
-              "Paperclip detected a non-retryable failure on this issue's continuation run " +
-              `(\`${classification.errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +
-              `so it is visible for intervention.${failureSummary ?? ""}`,
+            comment: localAdapterSetupFailure
+              ? buildLocalAdapterSetupFailureComment(latestRun)
+              : "Paperclip detected a non-retryable failure on this issue's continuation run " +
+                `(\`${classification.errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +
+                `so it is visible for intervention.${failureSummary ?? ""}`,
+            recoveryCause: localAdapterSetupFailure ? LOCAL_ADAPTER_SETUP_RECOVERY_CAUSE : undefined,
           });
           if (updated) {
             result.escalated += 1;
