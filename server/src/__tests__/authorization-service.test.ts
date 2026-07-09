@@ -247,6 +247,27 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("falls back to the direct config-read grant decision when a suggest read grant is scoped away", async () => {
+    const company = await createCompany(db, "AgentReadScopedSuggestGrant");
+    const actorAgent = await createAgent(db, company.id);
+    const targetAgent = await createAgent(db, company.id);
+    await grantAgentPermission(db, company.id, actorAgent.id, "agents:suggest-changes", {
+      projectId: randomUUID(),
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+      explanation: "Missing permission: agents:configure.",
+    });
+  });
+
   it("enforces direct or consented suggest grants for agent configuration changes", async () => {
     const company = await createCompany(db, "AgentChangeGrant");
     const directAgent = await createAgent(db, company.id);

@@ -1343,7 +1343,7 @@ export function authorizationService(db: Db) {
         permissionKey: "agents:suggest-changes",
         scope: input.scope,
       });
-      if (suggestDecision.allowed || configureDecision.reason === "deny_missing_grant") {
+      if (suggestDecision.allowed || suggestDecision.reason === "deny_missing_grant") {
         return suggestDecision;
       }
       return configureDecision;
