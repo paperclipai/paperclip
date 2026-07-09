@@ -149,6 +149,7 @@ describe("codex_local environment diagnostics", () => {
         config: {
           command: "codex",
           cwd,
+          engine: "cli",
         },
       });
 
@@ -205,6 +206,7 @@ describe("codex_local environment diagnostics", () => {
         config: {
           command: "codex",
           cwd,
+          engine: "cli",
           env: {
             OPENAI_API_KEY: "sk-config-key",
           },
