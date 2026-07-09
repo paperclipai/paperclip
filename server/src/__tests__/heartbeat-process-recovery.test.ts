@@ -95,6 +95,8 @@ vi.mock("../adapters/index.ts", async () => {
 });
 
 import {
+  INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+  INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   heartbeatService,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
@@ -1812,6 +1814,119 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(0);
   });
 
+  it("schedules bounded retries for failed accepted interaction continuation wakes", async () => {
+    const { agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
+    const interactionId = randomUUID();
+
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        source: "automation",
+        reason: "issue_commented",
+        payload: {
+          issueId,
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+          mutation: "interaction",
+        },
+      })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        invocationSource: "automation",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_commented",
+          mutation: "interaction",
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(issues)
+      .set({ status: "in_review" })
+      .where(eq(issues.id, issueId));
+
+    mockAdapterExecute.mockRejectedValueOnce(
+      new Error('Failed to start command "codex" in "/workspace". Verify adapter command, working directory, and PATH.'),
+    );
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const runs = await waitForValue(async () => {
+      const rows = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      return rows.length >= 2 ? rows : null;
+    });
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs?.find((row) => row.id === runId);
+    const retryRun = runs?.find((row) => row.id !== runId);
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      errorCode: "adapter_failed",
+    });
+    expect(retryRun).toMatchObject({
+      status: "scheduled_retry",
+      retryOfRunId: runId,
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+    });
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      issueId,
+      interactionId,
+      interactionStatus: "accepted",
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      scheduledRetryAttempt: 1,
+    });
+
+    const wakeups = await db
+      .select({
+        id: agentWakeupRequests.id,
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        runId: agentWakeupRequests.runId,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.find((row) => row.id === wakeupRequestId)).toMatchObject({
+      status: "failed",
+      reason: "issue_commented",
+      runId,
+    });
+    expect(wakeups.find((row) => row.runId === retryRun?.id)).toMatchObject({
+      status: "queued",
+      reason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      payload: expect.objectContaining({
+        issueId,
+        interactionId,
+        retryOfRunId: runId,
+        retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+        scheduledRetryAttempt: 1,
+      }),
+    });
+
+    const issue = await db
+      .select({ status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toEqual({
+      status: "in_review",
+      executionRunId: retryRun?.id ?? null,
+    });
+  });
+
   it("blocks a git-sensitive local adapter before launch when a project-workspace-linked issue is missing its project id", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const projectId = randomUUID();
@@ -3487,6 +3602,89 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("in_progress");
+  });
+
+  it("requeues accepted interaction continuations stranded in_review without execution state", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const resolvedAt = new Date("2026-03-19T00:05:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Accepted plan never resumed",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: agentId,
+      resolvedByUserId: "responsible-user",
+      resolvedAt,
+      updatedAt: resolvedAt,
+      payload: { version: 1, prompt: "Approve the plan?" },
+      result: { outcome: "accepted" },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const run = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.agentId).toBe(agentId);
+    expect(run?.retryOfRunId).toBeNull();
+    expect(run?.contextSnapshot).toMatchObject({
+      issueId,
+      taskId: issueId,
+      wakeReason: "issue_continuation_needed",
+      retryReason: "issue_continuation_needed",
+      source: "issue.interaction_continuation_recovery",
+      interactionId,
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+      interactionContinuationPolicy: "wake_assignee_on_accept",
+      interactionResolvedAt: resolvedAt.toISOString(),
+    });
   });
 
   it("still re-enqueues stranded assigned todo recovery when an old queued wake exists", async () => {

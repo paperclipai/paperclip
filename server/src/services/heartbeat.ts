@@ -302,6 +302,10 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
+export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
+const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 3;
+const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set(["accepted", "answered", "rejected"]);
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
@@ -420,6 +424,45 @@ function readTransientRecoveryContractFromRun(
         retryNotBefore: readTransientRetryNotBeforeFromRun(run),
       }
     : null;
+}
+
+function isResolvedInteractionContinuationWakeContext(contextSnapshot: unknown) {
+  const context = parseObject(contextSnapshot);
+  const interactionId = readNonEmptyString(context.interactionId);
+  const interactionStatus = readNonEmptyString(context.interactionStatus);
+  if (!interactionId || !interactionStatus) return false;
+  if (!RESOLVED_INTERACTION_CONTINUATION_STATUSES.has(interactionStatus)) return false;
+
+  const mutation = readNonEmptyString(context.mutation);
+  const wakeReason = readNonEmptyString(context.wakeReason);
+  const retryReason = readNonEmptyString(context.retryReason);
+  return (
+    (mutation === "interaction" && wakeReason === "issue_commented") ||
+    wakeReason === INTERACTION_CONTINUATION_INFRA_WAKE_REASON ||
+    retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
+  );
+}
+
+function isSpawnLikeFailureMessage(value: unknown) {
+  if (typeof value !== "string") return false;
+  return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
+}
+
+function isRetryableInteractionContinuationInfrastructureFailure(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">,
+) {
+  if (run.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE || run.errorCode === "process_lost") {
+    return true;
+  }
+
+  if (run.errorCode !== "adapter_failed" && run.errorCode !== "setup_failed") return false;
+
+  const resultJson = parseObject(run.resultJson);
+  return (
+    isSpawnLikeFailureMessage(run.error) ||
+    isSpawnLikeFailureMessage(resultJson.errorMessage) ||
+    isSpawnLikeFailureMessage(resultJson.message)
+  );
 }
 
 function mergeAdapterRecoveryMetadata(input: {
@@ -8479,7 +8522,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const maxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
-    const baseSchedule = opts?.delayMs != null
+    const computedBaseSchedule = opts?.delayMs != null
       ? nextAttempt <= maxAttempts
         ? {
             attempt: nextAttempt,
@@ -8492,6 +8535,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : nextAttempt <= maxAttempts
         ? computeBoundedTransientHeartbeatRetrySchedule(nextAttempt, now, opts?.random)
         : null;
+    const baseSchedule = computedBaseSchedule ? { ...computedBaseSchedule, maxAttempts } : null;
     const transientRecovery =
       retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
         ? readTransientRecoveryContractFromRun(run)
@@ -8560,8 +8604,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
-    if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
-      const gate = await evaluateScheduledRetryGate({ run, agent, contextSnapshot, retryReason });
+    const requiresIssueGate =
+      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+      retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
+    if (requiresIssueGate) {
+      const gate = await evaluateScheduledRetryGate({
+        run,
+        agent,
+        contextSnapshot,
+        retryReason,
+        enforceIssueExecutionLock: retryReason === MAX_TURN_CONTINUATION_RETRY_REASON,
+      });
       if (!gate.allowed) {
         await appendRunEvent(run, await nextRunEventSeq(run.id), {
           eventType: "lifecycle",
@@ -8585,6 +8638,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const interactionContinuationPayload = retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
+      ? {
+          mutation: "interaction",
+          interactionId: readNonEmptyString(contextSnapshot.interactionId),
+          interactionKind: readNonEmptyString(contextSnapshot.interactionKind),
+          interactionStatus: readNonEmptyString(contextSnapshot.interactionStatus),
+          continuationPolicy: readNonEmptyString(contextSnapshot.continuationPolicy),
+        }
+      : {};
     const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
@@ -8763,6 +8825,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           payload: withRecoveryModelProfileHint({
             ...(issueId ? { issueId } : {}),
             retryOfRunId: run.id,
+            ...interactionContinuationPayload,
             retryReason,
             ...(transientRecovery ? { errorFamily: transientRecovery.errorFamily } : {}),
             scheduledRetryAttempt: schedule.attempt,
@@ -8908,6 +8971,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       attempt: schedule.attempt,
       maxAttempts: schedule.maxAttempts,
     };
+  }
+
+  async function scheduleInteractionContinuationInfrastructureRetryIfEligible(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+  ) {
+    if (!run.wakeupRequestId) return null;
+    if (!isResolvedInteractionContinuationWakeContext(run.contextSnapshot)) return null;
+    if (!isRetryableInteractionContinuationInfrastructureFailure(run)) return null;
+
+    return scheduleBoundedRetryForRun(run, agent, {
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS,
+    });
   }
 
   async function promoteDueScheduledRetries(now = new Date()) {
@@ -10132,12 +10210,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
+      const retryAgent = await getAgent(run.agentId);
       if (shouldRetry) {
-        const agent = await getAgent(run.agentId);
-        if (agent) {
-          retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
+        if (retryAgent) {
+          retriedRun = await enqueueProcessLossRetry(finalizedRun, retryAgent, now);
         }
-      } else {
+      } else if (retryAgent) {
+        const scheduled = await scheduleInteractionContinuationInfrastructureRetryIfEligible(finalizedRun, retryAgent);
+        retriedRun = scheduled?.outcome === "scheduled" ? scheduled.run : null;
+      }
+
+      if (!retriedRun) {
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
 
@@ -12630,6 +12713,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {
           await finalizeIssueCommentPolicy(livenessRun, agent);
         }
+        await scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
 
         await updateRuntimeState(agent, livenessRun, {
@@ -12741,6 +12825,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {
                 await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
               }
+              await scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent).catch((retryError) => {
+                logger.warn(
+                  { err: retryError, runId: livenessRun.id },
+                  "failed to schedule interaction continuation retry after setup failure",
+                );
+              });
             }
             await releaseIssueExecutionAndPromote(livenessRun).catch((releaseError) => {
               logger.error(
