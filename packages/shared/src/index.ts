@@ -415,6 +415,8 @@ export {
 export type {
   Company,
   Environment,
+  EnvironmentDeleteBlastRadius,
+  EnvironmentDeleteBlockedReason,
   EnvironmentLease,
   EnvironmentProbeResult,
   FakeSandboxEnvironmentConfig,

@@ -3705,6 +3705,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/environments/{id}/delete-blast-radius",
+  tags: ["environments"],
+  summary: "Get environment delete blast radius",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/environments/{id}/leases",
   tags: ["environments"],
   summary: "List leases for an environment",
@@ -3739,7 +3748,7 @@ registry.registerPath({
   tags: ["environments"],
   summary: "Delete an environment",
   request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({
