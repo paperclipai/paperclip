@@ -69,7 +69,6 @@ import {
   createCodexAcpExecutor,
   formatCodexAcpFallbackMessage,
   resolveCodexExecutionEngineForRun,
-  shouldFallbackFromCodexAcpResult,
 } from "./acp.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
@@ -458,19 +457,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
   if (engineSelection.engine === "acp") {
     try {
-      const acpResult = await executeCodexAcp(ctx);
-      if (engineSelection.explicit || !shouldFallbackFromCodexAcpResult(acpResult)) {
-        return acpResult;
-      }
-      const reason =
-        acpResult.errorMessage ??
-        acpResult.summary ??
-        acpResult.errorCode ??
-        "Codex ACPX failed before starting a turn.";
-      await ctx.onLog(
-        "stderr",
-        formatCodexAcpFallbackMessage(`Codex ACPX session setup failed: ${reason}`),
-      );
+      return await executeCodexAcp(ctx);
     } catch (err) {
       if (engineSelection.explicit) throw err;
       const reason = err instanceof Error ? err.message : String(err);

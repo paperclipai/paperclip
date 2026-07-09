@@ -68,14 +68,6 @@ export function formatCodexAcpFallbackMessage(reason: string): string {
   return `[paperclip] Codex ACPX unavailable; falling back to Codex CLI. ${reason} Set engine=acp to require ACPX or engine=cli to silence this fallback.\n`;
 }
 
-export function shouldFallbackFromCodexAcpResult(result: AdapterExecutionResult): boolean {
-  if (result.exitCode === 0) return false;
-  const resultJson = result.resultJson;
-  if (!resultJson || typeof resultJson !== "object" || Array.isArray(resultJson)) return false;
-  const phase = (resultJson as Record<string, unknown>).phase;
-  return phase === "ensure_session" || phase === "configure_session";
-}
-
 function firstNonEmptyString(...values: unknown[]): string | undefined {
   for (const value of values) {
     if (typeof value !== "string") continue;
