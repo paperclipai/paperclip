@@ -1307,8 +1307,16 @@ export function builtInAgentService(db: Db) {
   async function ensure(companyId: string, key: string, input: BuiltInAgentProvisionInput = {}) {
     const definition = requireBuiltInAgentDefinition(key);
     await ensureCompany(companyId);
-    const resolvedInput = await defaultProvisionInput(companyId, definition, input);
     const existing = await findSingleAgent(companyId, definition);
+    const preserveExistingAdapter = Boolean(
+      existing
+      && input.adapterType === undefined
+      && input.adapterConfig === undefined
+      && hasCompleteAdapterConfig(existing.adapterType, existing.adapterConfig),
+    );
+    const resolvedInput = preserveExistingAdapter
+      ? input
+      : await defaultProvisionInput(companyId, definition, input);
     if (existing) {
       const patch: Partial<typeof agents.$inferInsert> = {
         metadata: builtInMetadata(definition, existing.metadata),

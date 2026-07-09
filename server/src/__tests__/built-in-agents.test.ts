@@ -163,6 +163,13 @@ describeEmbeddedPostgres("built-in agents", () => {
       adapterConfig: { model: "gpt-5.4" },
     });
 
+    const reconciled = await svc.ensure(companyId, "briefs");
+    expect(reconciled.status).toBe("ready");
+    expect(reconciled.agent).toMatchObject({
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+    });
+
     const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
     expect(rows).toHaveLength(1);
   });
