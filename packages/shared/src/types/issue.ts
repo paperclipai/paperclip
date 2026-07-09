@@ -13,6 +13,7 @@ import type {
   IssueReferenceSourceKind,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
+  IssueHarnessKind,
   IssueOriginKind,
   IssuePriority,
   IssueRecoveryActionKind,
@@ -146,6 +147,7 @@ export interface AcceptedPlanDecompositionChild {
   description?: string | null;
   status: IssueStatus;
   workMode: IssueWorkMode;
+  harnessKind?: IssueHarnessKind | null;
   priority: IssuePriority;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;

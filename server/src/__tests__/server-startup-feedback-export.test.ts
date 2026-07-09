@@ -29,7 +29,12 @@ const {
   const createDbMock = vi.fn(() => ({}) as never);
   const detectPortMock = vi.fn(async (port: number) => port);
   const deriveAuthTrustedOriginsMock = vi.fn(() => []);
+  const resolveHeartbeatSchedulingSuppressionMock = vi.fn(() => ({
+    suppressed: false,
+    reason: null,
+  }));
   const heartbeatServiceMock = {
+    resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
     reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
     resumeQueuedRuns: vi.fn(async () => undefined),
@@ -62,10 +67,6 @@ const {
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   };
   const routineServiceFactoryMock = vi.fn(() => routineServiceMock);
-  const resolveHeartbeatSchedulingSuppressionMock = vi.fn(() => ({
-    suppressed: false,
-    reason: null,
-  }));
   const feedbackExportServiceMock = {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };

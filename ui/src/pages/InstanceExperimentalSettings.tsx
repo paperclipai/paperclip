@@ -7,6 +7,7 @@ import type {
   PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { isWorktreeRuntime } from "../lib/worktree-branding";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -231,6 +232,8 @@ export function InstanceExperimentalSettings() {
     );
   }
 
+  const inWorktree = isWorktreeRuntime();
+  const enableWorktreeRunExecution = experimentalQuery.data?.enableWorktreeRunExecution === true;
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   // Streamlined left navigation is now the standard sidebar (PAP-12472); the
@@ -317,6 +320,29 @@ export function InstanceExperimentalSettings() {
           {actionError}
         </div>
       )}
+
+      {inWorktree ? (
+        <Card className="block p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1.5">
+              <h2 className="text-sm font-semibold">Run tasks in this worktree</h2>
+              <p className="max-w-2xl text-sm text-muted-foreground">
+                This is an isolated git-worktree preview instance. By default it does not execute agent runs; tasks stay
+                queued so previews never self-run work. Turn this on to let the heartbeat scheduler execute runs here.
+                This setting only affects this worktree instance and is ignored outside a worktree.
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={enableWorktreeRunExecution}
+              onCheckedChange={(checked) =>
+                toggleMutation.mutate({ enableWorktreeRunExecution: checked })
+              }
+              disabled={toggleMutation.isPending}
+              aria-label="Toggle worktree run execution setting"
+            />
+          </div>
+        </Card>
+      ) : null}
 
       <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">

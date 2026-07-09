@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { normalizeAgentApiKeyScope, type AgentApiKeyScope } from "@paperclipai/shared";
 import { resolvePaperclipInstanceId } from "./home-paths.js";
 
 interface JwtHeader {
@@ -12,6 +13,7 @@ export interface LocalAgentJwtClaims {
   adapter_type: string;
   run_id: string;
   responsible_user_id?: string | null;
+  key_scope?: AgentApiKeyScope | null;
   iat: number;
   exp: number;
   iss?: string;
@@ -117,6 +119,7 @@ export function createLocalAgentJwt(
   adapterType: string,
   runId: string,
   responsibleUserId?: string | null,
+  keyScope: AgentApiKeyScope = { kind: "standard" },
 ) {
   const config = jwtConfig();
   if (!config) return null;
@@ -128,6 +131,7 @@ export function createLocalAgentJwt(
     adapter_type: adapterType,
     run_id: runId,
     responsible_user_id: responsibleUserId?.trim() || null,
+    ...(keyScope.kind === "standard" ? {} : { key_scope: keyScope }),
     iat: now,
     exp: now + config.ttlSeconds,
     iss: config.issuer,
@@ -203,6 +207,9 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
       ? claims.responsible_user_id.trim()
       : null
     : undefined;
+  const keyScopeClaim = Object.hasOwn(claims, "key_scope")
+    ? normalizeAgentApiKeyScope(claims.key_scope)
+    : undefined;
   const iat = typeof claims.iat === "number" ? claims.iat : null;
   const exp = typeof claims.exp === "number" ? claims.exp : null;
   if (!sub || !adapterType || !runId || !iat || !exp) return null;
@@ -231,6 +238,7 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
     adapter_type: adapterType,
     run_id: runId,
     ...(responsibleUserClaim !== undefined ? { responsible_user_id: responsibleUserClaim } : {}),
+    ...(keyScopeClaim !== undefined ? { key_scope: keyScopeClaim } : {}),
     iat,
     exp,
     ...(issuer ? { iss: issuer } : {}),

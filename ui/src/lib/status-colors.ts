@@ -95,6 +95,8 @@ export const statusBadge: Record<string, string> = {
   info: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
   terminated: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   pending: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
+  // Skill Studio test-run "queued" aligns with pending (yellow). PAP-12962 D6.
+  queued: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
 
   // Approval statuses
   pending_approval: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",

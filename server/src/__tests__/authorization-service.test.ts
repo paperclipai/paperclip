@@ -1521,4 +1521,72 @@ describeEmbeddedPostgres("authorization service", () => {
       reason: "deny_scope",
     });
   });
+
+  it("scopes skill-test keys to their own issue only", async () => {
+    const company = await createCompany(db, "SkillTest");
+    const skillTestAgent = await createAgent(db, company.id);
+    const ownIssue = await createIssue(db, company.id, { assigneeAgentId: skillTestAgent.id });
+    const otherIssue = await createIssue(db, company.id);
+    const actor = {
+      type: "agent" as const,
+      agentId: skillTestAgent.id,
+      companyId: company.id,
+      source: "agent_key" as const,
+      keyScope: {
+        kind: "skill_test" as const,
+        issueId: ownIssue.id,
+      },
+    };
+    const authz = authorizationService(db);
+
+    for (const action of ["issue:read", "issue:comment", "issue:mutate"] as const) {
+      await expect(authz.decide({
+        actor,
+        action,
+        resource: {
+          type: "issue",
+          companyId: company.id,
+          issueId: ownIssue.id,
+        },
+      })).resolves.toMatchObject({
+        allowed: true,
+      });
+    }
+
+    await expect(authz.decide({
+      actor,
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: otherIssue.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        parentIssueId: ownIssue.id,
+        assigneeAgentId: skillTestAgent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
+  });
 });

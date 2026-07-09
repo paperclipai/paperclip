@@ -29,6 +29,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable-panels";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
@@ -403,8 +408,8 @@ export function DesignGuide() {
             <div className="flex flex-wrap gap-2">
               {[
                 "avatar", "badge", "breadcrumb", "button", "card", "checkbox", "collapsible",
-                "command", "dialog", "dropdown-menu", "input", "label", "popover", "scroll-area",
-                "select", "separator", "sheet", "skeleton", "tabs", "textarea", "tooltip",
+                "command", "dialog", "dropdown-menu", "input", "label", "popover", "resizable-panels",
+                "scroll-area", "select", "separator", "sheet", "skeleton", "tabs", "textarea", "tooltip",
               ].map((name) => (
                 <Badge key={name} variant="outline" className="font-mono text-(length:--text-nano)">
                   {name}
@@ -1779,6 +1784,36 @@ export function DesignGuide() {
           for all 10 states.
         </p>
         <EnvironmentVariablesEditorShowcase />
+      </Section>
+
+      <Section title="Resizable Panels">
+        <p className="text-sm text-muted-foreground">
+          Design-system wrapper over <span className="font-mono">react-resizable-panels</span>{" "}
+          (Skill Studio D2). Drag a handle to resize; panels accept percentage or pixel
+          (<span className="font-mono">minSize="240px"</span>) constraints and the middle panel is
+          collapsible. Use anywhere a split view is needed.
+        </p>
+        <div className="h-48 max-w-2xl overflow-hidden rounded-md border border-border">
+          <ResizablePanelGroup>
+            <ResizablePanel id="a" minSize="120px" className="bg-muted/30">
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                Panel A
+              </div>
+            </ResizablePanel>
+            <ResizableHandle />
+            <ResizablePanel id="b" minSize="120px" collapsible collapsedSize="40px" className="bg-muted/10">
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                Panel B (collapsible)
+              </div>
+            </ResizablePanel>
+            <ResizableHandle />
+            <ResizablePanel id="c" minSize="120px" className="bg-muted/30">
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                Panel C
+              </div>
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        </div>
       </Section>
     </div>
   );

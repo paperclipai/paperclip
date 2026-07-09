@@ -1470,8 +1470,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --hex-eab308: #eab308; /* ActivityCharts.tsx — priority 'medium'; also the 0.5-0.8 success-rate bar tint. */
   --hex-6b7280: #6b7280; /* ActivityCharts.tsx — priority 'low' + unknown-status statusColors fallback. */
   --hex-10b981: #10b981; /* ActivityCharts.tsx — >=0.8 success-rate bar tint; also the run-activity 'succeeded' segment. */
-  --hex-f59e0b: #f59e0b; /* ActivityCharts.tsx — run-activity 'recovered' segment (independent run-outcome series; same value as --status-task-todo by coincidence, decoupled on purpose). */
-  --hex-737373: #737373; /* ActivityCharts.tsx — run-activity 'other' segment (neutral). */
+  --hex-737373: #737373; /* ActivityCharts.tsx — run activity "other" segment tint. */
   --project-none: #64748b; /* Semantic rename of --hex-64748b (DECISION-SHEET.md A3, value unchanged). 'No project assigned' muted-slate fallback (TOKEN-AUDIT.md 1.3) across Routines/MarkdownEditor/RoutineRunVariablesDialog/RoutineList/IssueColumns/editable-sections; also ActivityCharts.tsx status 'backlog'. */
   --project-seed: #6366f1; /* Semantic rename of --hex-6366f1 (DECISION-SHEET.md A3, value unchanged). Project-color-fallback indigo seed default (ProjectDetail/PipelineSettings/IssueProperties/NewIssueDialog) — new-project-color-picker-seed family per TOKEN-AUDIT.md 1.3. */
   --liveness-blue: #2563eb; /* DECISION-SHEET.md A6: IssueChatThread.tsx human-message 'liveness blue' bubble (PAP-95 rev 5). Same value as --status-task-in_progress by coincidence, decoupled on purpose so a future status-hue change doesn't drag the chat bubble along. */
@@ -1648,6 +1647,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-31: calc(100vh - 16rem); /* Extracted from ui/src/pages/CompanyImport.tsx (h-[calc(100vh-16rem)]). */
   --sz-calc-32: min(28rem,70vh); /* Extracted from ui/src/pages/CompanySkills.tsx (max-h-[min(28rem,70vh)]). */
   --sz-11_5rem: 11.5rem; /* Extracted from ui/src/pages/CompanySkills.tsx (min-h-[11.5rem]). */
+  --sz-11_75rem: 11.75rem; /* SkillStudio.tsx file/input browser cap: five min-h-9 rows plus p-1 vertical padding. */
   --sz-calc-33: calc(100dvh - 6rem); /* Extracted from ui/src/pages/CompanySkills.tsx (h-[calc(100dvh-6rem)]). */
   --sz-calc-34: clamp(14rem,45vh,28rem); /* Extracted from ui/src/pages/CompanySkills.tsx (h-[clamp(14rem,45vh,28rem)]). */
   --sz-400px: 400px; /* Extracted from ui/src/pages/CompanySkills.tsx (min-h-[400px]). */

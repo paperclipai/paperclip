@@ -35,6 +35,7 @@ describe("instance settings service", () => {
       enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: false,
+      enableWorktreeRunExecution: false,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
     });
   });

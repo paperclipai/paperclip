@@ -52,6 +52,16 @@ function getCompanyRouteSegment(pathname: string, companyPrefix: string | undefi
   return segments[1]?.toLowerCase() ?? null;
 }
 
+function isSkillsStoreRoute(pathname: string, companyPrefix: string | undefined) {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments[0]?.toLowerCase() === "skills") return true;
+  if (!companyPrefix) return false;
+  return (
+    segments[0]?.toUpperCase() === companyPrefix.toUpperCase() &&
+    segments[1]?.toLowerCase() === "skills"
+  );
+}
+
 export function Layout() {
   const {
     sidebarOpen,
@@ -83,8 +93,8 @@ export function Layout() {
   const navigationType = useNavigationType();
   const isCompanySettingsRoute = location.pathname.includes("/company/settings");
   // The Skills Store renders its own secondary (category) sidebar, so the main
-  // app nav collapses to its rail throughout the /skills section (PAP-10879).
-  const isSkillsRoute = /(^|\/)skills(\/|$)/.test(location.pathname);
+  // app nav collapses to its rail throughout the Skills Store section (PAP-10879).
+  const isSkillsRoute = isSkillsStoreRoute(location.pathname, companyPrefix);
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
