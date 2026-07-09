@@ -7,8 +7,6 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 
 export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.3-codex";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
-export const DEFAULT_CODEX_LOCAL_EXECUTION_ENGINE = "auto";
-export const DEFAULT_CODEX_LOCAL_ACP_WARM_HANDLE_IDLE_MS = 30 * 60 * 1000;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.4"] as const;
 
 function normalizeModelId(model: string | null | undefined): string {
@@ -66,7 +64,6 @@ export const agentConfigurationDoc = `# codex_local agent configuration
 Adapter: codex_local
 
 Core fields:
-- engine (string, optional): execution engine; auto prefers local ACPX when prerequisites pass and falls back to Codex CLI, cli forces the existing CLI lane, acp requires ACPX.
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to stdin prompt at runtime
 - model (string, optional): Codex model id
@@ -84,11 +81,9 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
-- warmHandleIdleMs/acpWarmHandleIdleMs (number, optional): ACPX warm process idle window. Defaults to 1800000 (30 minutes) when engine is auto/acp.
 
 Notes:
 - Prompts are piped via stdin (Codex receives "-" prompt argument).
-- In engine=auto, Paperclip uses ACPX only on the local Paperclip host when Node and the bundled codex-acp command are available. Remote/sandbox runs and unsupported hosts fall back to the existing Codex CLI lane unless engine=acp is set.
 - If instructionsFilePath is configured, Paperclip prepends that file's contents to the stdin prompt on every run.
 - Codex exec automatically applies repo-scoped AGENTS.md instructions from the active workspace. Paperclip cannot suppress that discovery in exec mode, so repo AGENTS.md files may still apply even when you only configured an explicit instructionsFilePath.
 - Paperclip injects desired local skills into the effective CODEX_HOME/skills/ directory at execution time so Codex can discover "$paperclip" and related skills without polluting the project working directory. In managed-home mode (the default) this is ~/.paperclip/instances/<id>/companies/<companyId>/codex-home/skills/; when CODEX_HOME is explicitly overridden in adapter config, that override is used instead.

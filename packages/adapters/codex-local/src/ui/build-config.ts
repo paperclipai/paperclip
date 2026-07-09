@@ -1,7 +1,6 @@
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-  DEFAULT_CODEX_LOCAL_EXECUTION_ENGINE,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "../index.js";
 
@@ -69,13 +68,6 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
 
 export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unknown> {
   const ac: Record<string, unknown> = {};
-  const schemaValues = v.adapterSchemaValues ?? {};
-  ac.engine = typeof schemaValues.engine === "string" && schemaValues.engine.trim()
-    ? schemaValues.engine.trim()
-    : DEFAULT_CODEX_LOCAL_EXECUTION_ENGINE;
-  if (typeof schemaValues.acpWarmHandleIdleMs === "number") {
-    ac.acpWarmHandleIdleMs = schemaValues.acpWarmHandleIdleMs;
-  }
   if (v.cwd) ac.cwd = v.cwd;
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   ac.model = v.model || DEFAULT_CODEX_LOCAL_MODEL;

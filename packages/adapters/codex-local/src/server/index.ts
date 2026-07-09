@@ -1,13 +1,4 @@
 export { execute, ensureCodexSkillsInjected, runCodexLogin } from "./execute.js";
-export {
-  buildCodexAcpConfig,
-  createCodexAcpExecutor,
-  formatCodexAcpFallbackMessage,
-  nodeVersionMeetsCodexAcpMinimum,
-  resolveCodexExecutionEngine,
-  resolveCodexExecutionEngineForRun,
-  testCodexAcpEnvironment,
-} from "./acp.js";
 export { listCodexSkills, syncCodexSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export {

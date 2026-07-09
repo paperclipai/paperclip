@@ -25,10 +25,6 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 import { prepareManagedCodexHome } from "./codex-home.js";
-import {
-  resolveCodexExecutionEngineForRun,
-  testCodexAcpEnvironment,
-} from "./acp.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -163,21 +159,6 @@ export async function testEnvironment(
 ): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
-  const engineSelection = await resolveCodexExecutionEngineForRun({
-    config,
-    executionTarget: ctx.executionTarget,
-  });
-  if (engineSelection.engine === "acp") {
-    return testCodexAcpEnvironment(ctx);
-  }
-  if (engineSelection.fallbackReason) {
-    checks.push({
-      code: "codex_acpx_auto_fallback",
-      level: "info",
-      message: "Codex ACPX auto-selection fell back to the Codex CLI for this environment.",
-      detail: engineSelection.fallbackReason,
-    });
-  }
   const command = asString(config.command, "codex");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
