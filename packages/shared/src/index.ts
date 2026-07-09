@@ -915,6 +915,8 @@ export {
   type TrustPresetInput,
   type LowTrustBoundaryInput,
   type TrustAuthorizationPolicyInput,
+  boardChatMessageSchema,
+  type BoardChatMessageResponse,
 } from "./validators/index.js";
 
 export {

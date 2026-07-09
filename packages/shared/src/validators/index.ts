@@ -575,3 +575,12 @@ export {
   delegationWaitQuerySchema,
   type DelegateRunInput,
 } from "./delegation.js";
+
+export {
+  boardChatMessageSchema,
+  boardChatMessageResponseSchema,
+  boardChatSilentResponseSchema,
+  boardChatAdapterWakePendingResponseSchema,
+  type BoardChatMessage,
+  type BoardChatMessageResponse,
+} from "./board-chat.js";
