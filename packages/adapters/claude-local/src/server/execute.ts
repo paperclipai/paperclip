@@ -100,6 +100,7 @@ interface ClaudeRuntimeConfig {
   timeoutSec: number;
   graceSec: number;
   extraArgs: string[];
+  runtimeServices: Record<string, unknown>[];
 }
 
 export function claudeSessionCwdMatchesExecutionTarget(input: {
@@ -332,6 +333,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     timeoutSec,
     graceSec,
     extraArgs,
+    runtimeServices,
   };
 }
 
@@ -449,6 +451,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutSec,
     graceSec,
     extraArgs,
+    runtimeServices,
   } = runtimeConfig;
   let loggedEnv = initialLoggedEnv;
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
@@ -604,6 +607,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       adapterKey: "claude",
       timeoutSec,
       hostApiToken: env.PAPERCLIP_API_KEY,
+      runtimeServices,
       onLog,
     });
     if (paperclipBridge) {

@@ -614,6 +614,79 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
+  it("bridges localhost runtime services on their sandbox port", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-runtime-service-bridge-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "codex");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const requests: Array<{ method: string; url: string; auth: string | null; runId: string | null }> = [];
+    const serviceServer = createServer((req, res) => {
+      requests.push({
+        method: req.method ?? "GET",
+        url: req.url ?? "/",
+        auth: req.headers.authorization ?? null,
+        runId: typeof req.headers["x-paperclip-run-id"] === "string" ? req.headers["x-paperclip-run-id"] : null,
+      });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", service: "linkedin-queue" }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      serviceServer.once("error", reject);
+      serviceServer.listen(0, "127.0.0.2", () => resolve());
+    });
+    const address = serviceServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected the runtime service test server to listen on a TCP port.");
+    }
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-service-bridge",
+      target,
+      runtimeRootDir,
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: "http://127.0.0.1:9",
+      runtimeServices: [{
+        id: "linkedin-queue",
+        serviceName: "linkedin-queue",
+        port: address.port,
+        url: `http://127.0.0.2:${address.port}`,
+      }],
+    });
+    try {
+      const rewrittenServices = JSON.parse(bridge!.env.PAPERCLIP_RUNTIME_SERVICES_JSON) as Array<{ url: string }>;
+      expect(rewrittenServices[0]?.url).toBe(`http://127.0.0.1:${address.port}`);
+      expect(bridge!.env.PAPERCLIP_RUNTIME_PRIMARY_URL).toBe(`http://127.0.0.1:${address.port}`);
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/health`);
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: "ok", service: "linkedin-queue" });
+      expect(requests).toEqual([{
+        method: "GET",
+        url: "/health",
+        auth: null,
+        runId: null,
+      }]);
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => serviceServer.close(() => resolve()));
+    }
+  });
+
   it("creates a sandbox run log tail factory when bridge streaming is enabled", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-stream-"));
     cleanupDirs.push(rootDir);

@@ -620,6 +620,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         adapterKey: "codex",
         timeoutSec,
         hostApiToken: env.PAPERCLIP_API_KEY,
+        runtimeServices,
         onLog,
       });
       if (paperclipBridge) {

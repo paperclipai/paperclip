@@ -110,6 +110,7 @@ export interface SandboxCallbackBridgeRequest {
   path: string;
   query: string;
   headers: Record<string, string>;
+  targetServiceId?: string | null;
   /**
    * UTF-8 body contents. The bridge rejects non-JSON request bodies; binary
    * payloads are intentionally out of scope for this queue protocol.
@@ -308,6 +309,8 @@ export function sandboxCallbackBridgeDirectories(rootDir: string): SandboxCallba
 export function buildSandboxCallbackBridgeEnv(input: {
   queueDir: string;
   bridgeToken: string;
+  targetServiceId?: string | null;
+  requireToken?: boolean | null;
   host?: string;
   port?: number | null;
   pollIntervalMs?: number | null;
@@ -319,6 +322,8 @@ export function buildSandboxCallbackBridgeEnv(input: {
     PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
     PAPERCLIP_BRIDGE_QUEUE_DIR: input.queueDir,
     PAPERCLIP_BRIDGE_TOKEN: input.bridgeToken,
+    PAPERCLIP_BRIDGE_TARGET_SERVICE_ID: input.targetServiceId?.trim() || "",
+    PAPERCLIP_BRIDGE_REQUIRE_TOKEN: input.requireToken === false ? "false" : "true",
     PAPERCLIP_BRIDGE_HOST: input.host?.trim() || "127.0.0.1",
     PAPERCLIP_BRIDGE_PORT: String(input.port && input.port > 0 ? Math.trunc(input.port) : 0),
     PAPERCLIP_BRIDGE_POLL_INTERVAL_MS: String(
@@ -871,6 +876,8 @@ export async function startSandboxCallbackBridgeServer(input: {
   assetRemoteDir: string;
   queueDir: string;
   bridgeToken: string;
+  targetServiceId?: string | null;
+  requireToken?: boolean | null;
   bridgeAsset?: SandboxCallbackBridgeAsset | null;
   host?: string;
   port?: number | null;
@@ -900,6 +907,8 @@ export async function startSandboxCallbackBridgeServer(input: {
   const env = buildSandboxCallbackBridgeEnv({
     queueDir: input.queueDir,
     bridgeToken: input.bridgeToken,
+    targetServiceId: input.targetServiceId,
+    requireToken: input.requireToken,
     host: input.host,
     port: input.port,
     pollIntervalMs: input.pollIntervalMs,
@@ -1021,6 +1030,8 @@ import path from "node:path";
 
 const queueDir = process.env.PAPERCLIP_BRIDGE_QUEUE_DIR;
 const bridgeToken = process.env.PAPERCLIP_BRIDGE_TOKEN;
+const targetServiceId = (process.env.PAPERCLIP_BRIDGE_TARGET_SERVICE_ID || "").trim();
+const requireToken = process.env.PAPERCLIP_BRIDGE_REQUIRE_TOKEN !== "false";
 const host = process.env.PAPERCLIP_BRIDGE_HOST || "127.0.0.1";
 const port = Number(process.env.PAPERCLIP_BRIDGE_PORT || "0");
 const pollIntervalMs = Number(process.env.PAPERCLIP_BRIDGE_POLL_INTERVAL_MS || "100");
@@ -1099,7 +1110,7 @@ const server = createServer(async (req, res) => {
   try {
     const auth = req.headers.authorization || "";
     const receivedToken = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
-    if (!tokensMatch(receivedToken)) {
+    if (requireToken && !tokensMatch(receivedToken)) {
       res.statusCode = 401;
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ error: "Invalid bridge token." }));
@@ -1129,6 +1140,7 @@ const server = createServer(async (req, res) => {
       path: url.pathname,
       query: url.search,
       headers: normalizeHeaders(req.headers),
+      targetServiceId: targetServiceId || null,
       body: requestBody,
       createdAt: new Date().toISOString(),
     };

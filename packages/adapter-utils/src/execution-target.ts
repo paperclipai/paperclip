@@ -15,6 +15,7 @@ import {
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
   DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+  authorizeSandboxCallbackBridgeRequestWithRoutes,
   sandboxCallbackBridgeDirectories,
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
@@ -123,6 +124,13 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
    */
   runLogTail?: SandboxRunLogTailFactory | null;
   stop(): Promise<void>;
+}
+
+interface PaperclipBridgeRuntimeService {
+  id?: string | null;
+  serviceName?: string | null;
+  port?: number | null;
+  url?: string | null;
 }
 
 export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
@@ -1166,6 +1174,73 @@ function buildBridgeForwardUrl(baseUrl: string, request: { path: string; query: 
   return url;
 }
 
+function parseRuntimeServiceBridgePort(service: PaperclipBridgeRuntimeService): number | null {
+  if (typeof service.port === "number" && Number.isFinite(service.port) && service.port > 0) {
+    return Math.trunc(service.port);
+  }
+  const rawUrl = service.url?.trim();
+  if (!rawUrl) return null;
+  try {
+    const parsed = new URL(rawUrl);
+    const port = Number.parseInt(parsed.port, 10);
+    return Number.isFinite(port) && port > 0 ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+function serviceUrlUsesLocalhost(rawUrl: string): boolean {
+  try {
+    const { hostname } = new URL(rawUrl);
+    return hostname === "localhost" || /^127\./.test(hostname) || hostname === "::1" || hostname === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
+function runtimeServiceBridgeId(service: PaperclipBridgeRuntimeService, index: number): string {
+  const serviceId = service.id?.trim();
+  if (serviceId) return serviceId;
+  const serviceName = service.serviceName?.trim() || "service";
+  const port = parseRuntimeServiceBridgePort(service);
+  return `${serviceName}:${port ?? index}`;
+}
+
+function buildRuntimeServiceBridgeTargets(
+  services: PaperclipBridgeRuntimeService[] | null | undefined,
+): Array<{ id: string; service: PaperclipBridgeRuntimeService; port: number; url: string }> {
+  const targets: Array<{ id: string; service: PaperclipBridgeRuntimeService; port: number; url: string }> = [];
+  const ports = new Set<number>();
+  for (const [index, service] of (services ?? []).entries()) {
+    const url = service.url?.trim();
+    if (!url || !serviceUrlUsesLocalhost(url)) continue;
+    const port = parseRuntimeServiceBridgePort(service);
+    if (!port || ports.has(port)) continue;
+    ports.add(port);
+    targets.push({ id: runtimeServiceBridgeId(service, index), service, port, url });
+  }
+  return targets;
+}
+
+function rewriteRuntimeServicesForBridge(
+  services: PaperclipBridgeRuntimeService[] | null | undefined,
+  bridgeTargets: Array<{ id: string; service: PaperclipBridgeRuntimeService; port: number; url: string }>,
+): PaperclipBridgeRuntimeService[] {
+  const targetByObject = new Map<PaperclipBridgeRuntimeService, { port: number }>();
+  for (const target of bridgeTargets) {
+    targetByObject.set(target.service, { port: target.port });
+  }
+  return (services ?? []).map((service) => {
+    const target = targetByObject.get(service);
+    if (!target) return service;
+    return {
+      ...service,
+      url: `http://127.0.0.1:${target.port}`,
+      port: target.port,
+    };
+  });
+}
+
 function bridgeResponseBodyLimitError(maxBodyBytes: number): Error {
   return new Error(`Bridge response body exceeded the configured size limit of ${maxBodyBytes} bytes.`);
 }
@@ -1208,6 +1283,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   timeoutSec?: number | null;
   hostApiToken: string | null | undefined;
   hostApiUrl?: string | null;
+  runtimeServices?: PaperclipBridgeRuntimeService[] | null;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   maxBodyBytes?: number | null;
 }): Promise<AdapterExecutionTargetPaperclipBridgeHandle | null> {
@@ -1242,6 +1318,8 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ||
     process.env.PAPERCLIP_API_URL?.trim() ||
     resolveDefaultPaperclipApiUrl();
+  const runtimeServiceBridgeTargets = buildRuntimeServiceBridgeTargets(input.runtimeServices);
+  const runtimeServiceUrlById = new Map(runtimeServiceBridgeTargets.map((target) => [target.id, target.url]));
   const shellCommand = adapterExecutionTargetShellCommand(target);
   const runner = adapterExecutionTargetCommandRunner(target);
   const bridgeTimeoutMs =
@@ -1256,6 +1334,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
 
   const bridgeAsset = await createSandboxCallbackBridgeAsset();
   let server: Awaited<ReturnType<typeof startSandboxCallbackBridgeServer>> | null = null;
+  let runtimeServiceServers: Array<Awaited<ReturnType<typeof startSandboxCallbackBridgeServer>>> = [];
   let worker: Awaited<ReturnType<typeof startSandboxCallbackBridgeWorker>> | null = null;
   try {
     const client = createCommandManagedSandboxCallbackBridgeQueueClient({
@@ -1275,8 +1354,19 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       client,
       queueDir,
       maxBodyBytes,
+      authorizeRequest: (request) =>
+        request.targetServiceId?.trim() ? null : authorizeSandboxCallbackBridgeRequestWithRoutes(request),
       handleRequest: async (request) => {
         const method = request.method.trim().toUpperCase() || "GET";
+        const targetServiceId = request.targetServiceId?.trim() || "";
+        const forwardBaseUrl = targetServiceId ? runtimeServiceUrlById.get(targetServiceId) : hostApiUrl;
+        if (!forwardBaseUrl) {
+          return {
+            status: 404,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ error: "Unknown runtime service bridge target." }),
+          };
+        }
         if (bridgeDebugEnabled) {
           await onLog(
             "stdout",
@@ -1288,9 +1378,11 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
           if (value.trim().length === 0) continue;
           headers.set(key, value);
         }
-        headers.set("authorization", `Bearer ${hostApiToken}`);
-        headers.set("x-paperclip-run-id", input.runId);
-        const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
+        if (!targetServiceId) {
+          headers.set("authorization", `Bearer ${hostApiToken}`);
+          headers.set("x-paperclip-run-id", input.runId);
+        }
+        const response = await fetch(buildBridgeForwardUrl(forwardBaseUrl, request), {
           method,
           headers,
           ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
@@ -1320,9 +1412,30 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       maxBodyBytes,
       shellCommand,
     });
+    for (const targetService of runtimeServiceBridgeTargets) {
+      const serviceServer = await startSandboxCallbackBridgeServer({
+        runner,
+        remoteCwd: target.remoteCwd,
+        assetRemoteDir,
+        queueDir,
+        bridgeToken,
+        targetServiceId: targetService.id,
+        requireToken: false,
+        port: targetService.port,
+        timeoutMs: bridgeTimeoutMs,
+        maxBodyBytes,
+        shellCommand,
+      });
+      runtimeServiceServers.push(serviceServer);
+      await onLog(
+        "stdout",
+        `[paperclip] Runtime service bridge ${targetService.service.serviceName ?? targetService.id} listening at ${serviceServer.baseUrl}.\n`,
+      );
+    }
   } catch (error) {
     await Promise.allSettled([
       server?.stop(),
+      ...runtimeServiceServers.map((serviceServer) => serviceServer.stop()),
       worker?.stop(),
       bridgeAsset.cleanup(),
     ]);
@@ -1340,17 +1453,25 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     await onLog("stdout", "[paperclip] Sandbox run log streaming enabled for this run.\n");
   }
 
+  const bridgedRuntimeServices = rewriteRuntimeServicesForBridge(input.runtimeServices, runtimeServiceBridgeTargets);
   return {
     env: {
       PAPERCLIP_API_URL: server.baseUrl,
       PAPERCLIP_API_KEY: bridgeToken,
       PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
       PAPERCLIP_BRIDGE_QUEUE_DIR: queueDir,
+      ...(bridgedRuntimeServices.length > 0
+        ? {
+            PAPERCLIP_RUNTIME_SERVICES_JSON: JSON.stringify(bridgedRuntimeServices),
+            PAPERCLIP_RUNTIME_PRIMARY_URL: bridgedRuntimeServices.find((service) => service.url?.trim())?.url?.trim() ?? "",
+          }
+        : {}),
     },
     runLogTail,
     stop: async () => {
       await Promise.allSettled([
         server?.stop(),
+        ...runtimeServiceServers.map((serviceServer) => serviceServer.stop()),
       ]);
       await Promise.allSettled([
         worker?.stop(),
