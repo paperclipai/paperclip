@@ -8370,27 +8370,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
-    if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
+    if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON || issueId) {
       const gate = await evaluateScheduledRetryGate({ run, agent, contextSnapshot, retryReason });
       if (!gate.allowed) {
-        await appendRunEvent(run, await nextRunEventSeq(run.id), {
-          eventType: "lifecycle",
-          stream: "system",
-          level: "warn",
-          message: gate.reason,
-          payload: {
-            retryReason,
-            scheduledRetryAttempt: nextAttempt,
-            maxAttempts,
-            ...gate.details,
-          },
-        });
-        return {
-          outcome: "not_scheduled" as const,
-          reason: gate.reason,
-          errorCode: gate.errorCode,
-          issueId: gate.issueId,
-        };
+        if (gate.errorCode === "issue_not_found" && retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON) {
+          // Preserve legacy transient retry behavior for runs that only carry a
+          // loose task context rather than a persisted issue row.
+        } else {
+          await appendRunEvent(run, await nextRunEventSeq(run.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: gate.reason,
+            payload: {
+              retryReason,
+              scheduledRetryAttempt: nextAttempt,
+              maxAttempts,
+              ...gate.details,
+            },
+          });
+          return {
+            outcome: "not_scheduled" as const,
+            reason: gate.reason,
+            errorCode: gate.errorCode,
+            issueId: gate.issueId,
+          };
+        }
       }
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
