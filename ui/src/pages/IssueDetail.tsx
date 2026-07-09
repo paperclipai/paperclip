@@ -3082,9 +3082,9 @@ export function IssueDetail() {
     setBreadcrumbs([
       sourceBreadcrumb,
       {
-        label: hasLiveRuns ? `🔵 ${breadcrumbTitle}` : breadcrumbTitle,
-        // Prepend the task's status glyph (lg/20px) to the breadcrumb so the
-        // current task's state reads at a glance.
+        // The status glyph (leading) already conveys in-progress/live state;
+        // no redundant 🔵 emoji prefix on the title.
+        label: breadcrumbTitle,
         leading: breadcrumbStatusLeading,
         leadingKey: breadcrumbStatusKey,
       },

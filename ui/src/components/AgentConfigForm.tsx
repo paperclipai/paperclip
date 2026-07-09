@@ -1579,7 +1579,7 @@ export function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmen
 
 /* ---- Internal sub-components ---- */
 
-function AdapterTypeDropdown({
+export function AdapterTypeDropdown({
   value,
   onChange,
   disabledTypes,
@@ -1652,7 +1652,7 @@ function ExperimentalBadge() {
   );
 }
 
-function ModelDropdown({
+export function ModelDropdown({
   models,
   value,
   onChange,

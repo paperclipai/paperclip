@@ -42,6 +42,7 @@ import {
   environmentCustomImageService,
   heartbeatService,
   instanceSettingsService,
+  reconcileBuiltInAgentsOnStartup,
   reconcileCloudUpstreamRunsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
@@ -777,6 +778,19 @@ export async function startServer(): Promise<StartedServer> {
     })
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of codex_local managed homes failed");
+    });
+
+  void reconcileBuiltInAgentsOnStartup(db as any)
+    .then((result) => {
+      if (result.reconciled > 0 || result.unknown > 0 || result.duplicates > 0 || result.autoEnsured > 0) {
+        logger.warn(
+          result,
+          "startup reconciliation of built-in agents complete",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup reconciliation of built-in agents failed");
     });
 
   // Force the instance onto the Kubernetes sandbox provider when configured via

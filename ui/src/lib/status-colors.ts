@@ -167,6 +167,24 @@ export const runningLabelText = "text-[#1D4ED8] dark:text-[#2563EB]";
  * (liveness), `todo` amber (queued), `in_review` violet (awaiting review),
  * `done` green, `blocked` red, `backlog`/`cancelled` gray (inert).
  */
+
+// ---------------------------------------------------------------------------
+// Inline banner tones (built-in agents provenance / paused notices)
+//
+// Softer, full-width banner surface derived from the same brand hue anchors as
+// `brandChipBadge`. `info` (blue) carries provenance/informational context;
+// `warning` (amber) carries paused/attention context. Consumed by
+// `<InlineBanner>` so feature banners stay token-backed instead of hand-rolling
+// per-instance `bg-yellow-*`/`bg-blue-*` recipes.
+// ---------------------------------------------------------------------------
+
+export type BannerTone = "info" | "warning";
+
+export const brandBanner: Record<BannerTone, string> = {
+  info: "border-[#2563EB]/40 bg-[#DBEAFE]/50 text-[#1D4ED8] dark:border-[#2563eb59] dark:bg-[#2563eb14] dark:text-[#93C5FD]",
+  warning: "border-[#F59E0B]/50 bg-[#FEF3C7]/60 text-[#B45309] dark:border-[#f59e0b59] dark:bg-[#f59e0b12] dark:text-[#F59E0B]",
+};
+
 export const issueStatusColor: Record<string, BrandChipColor> = {
   backlog: "gray",
   todo: "amber",

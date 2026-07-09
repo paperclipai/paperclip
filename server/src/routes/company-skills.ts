@@ -31,9 +31,17 @@ import {
   listCatalogSkillsOrEmpty,
   readCatalogSkillFile,
 } from "../services/skills-catalog.js";
-import { forbidden } from "../errors.js";
+import { forbidden, HttpError } from "../errors.js";
 import { assertAuthenticated, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { authorizationDeniedDetails } from "../services/authorization.js";
+import {
+  changeConsentGateService,
+  skillChangeTargetKey,
+  skillImportChangeTargetKey,
+  skillSlugChangeTargetKey,
+  skillsScanProjectsChangeTargetKey,
+} from "../services/change-consent-gate.js";
 
 type SkillTelemetryInput = {
   key: string;
@@ -50,11 +58,6 @@ export function companySkillRoutes(db: Db) {
   const svc = companySkillService(db);
   const issues = issueService(db);
   const heartbeat = heartbeatService(db);
-
-  function canCreateSkills(agent: { permissions: Record<string, unknown> | null | undefined }) {
-    if (!agent.permissions || typeof agent.permissions !== "object") return true;
-    return (agent.permissions as Record<string, unknown>).canCreateSkills !== false;
-  }
 
   function asString(value: unknown): string | null {
     if (typeof value !== "string") return null;
@@ -98,37 +101,65 @@ export function companySkillRoutes(db: Db) {
     return { type: "system" as const };
   }
 
-  async function assertCanMutateCompanySkills(req: Request, companyId: string) {
+  function skillMutationTargets(input: {
+    skillId?: string | null;
+    slug?: unknown;
+    source?: unknown;
+    catalogSkillId?: unknown;
+    scanProjects?: boolean;
+  }) {
+    const targetKeys: string[] = [];
+    const skillId = asString(input.skillId);
+    const slug = asString(input.slug);
+    const source = asString(input.source);
+    const catalogSkillId = asString(input.catalogSkillId);
+    if (skillId) targetKeys.push(skillChangeTargetKey(skillId));
+    if (slug) targetKeys.push(skillSlugChangeTargetKey(slug));
+    if (source) targetKeys.push(skillImportChangeTargetKey(source));
+    if (catalogSkillId) targetKeys.push(skillImportChangeTargetKey(catalogSkillId));
+    if (input.scanProjects) targetKeys.push(skillsScanProjectsChangeTargetKey());
+    return targetKeys;
+  }
+
+  async function assertCanMutateCompanySkills(req: Request, companyId: string, targetKeys: string[] = []) {
     assertCompanyAccess(req, companyId);
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "skill_config:update",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) {
+      return;
+    }
 
-    if (req.actor.type === "board") {
-      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-      const allowed = await access.canUser(companyId, req.actor.userId, "skills:create");
-      if (!allowed) {
-        throw forbidden("Missing permission: skills:create");
+    if (decision.reason === "deny_missing_consent" && req.actor.type === "agent" && targetKeys.length > 0) {
+      try {
+        await changeConsentGateService(db).assertConsented({
+          companyId,
+          actorAgentId: req.actor.agentId,
+          actorRunId: req.actor.runId ?? null,
+          targetKeys,
+        });
+      } catch (err) {
+        if (err instanceof HttpError && err.status === 403) {
+          throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+        }
+        throw err;
       }
-      return;
+
+      const consentedDecision = await access.decide({
+        actor: req.actor,
+        action: "skill_config:update",
+        resource: { type: "company", companyId },
+        scope: { consentedChange: true },
+      });
+      if (consentedDecision.allowed) {
+        return;
+      }
+      throw forbidden(consentedDecision.explanation, { reason: consentedDecision.reason });
     }
 
-    if (!req.actor.agentId) {
-      throw forbidden("Agent authentication required");
-    }
-
-    const actorAgent = await agents.getById(req.actor.agentId);
-    if (!actorAgent || actorAgent.companyId !== companyId) {
-      throw forbidden("Agent key cannot access another company");
-    }
-
-    if (canCreateSkills(actorAgent)) {
-      return;
-    }
-
-    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "skills:create");
-    if (allowedByGrant) {
-      return;
-    }
-
-    throw forbidden("Missing permission: skills:create");
+    throw forbidden(decision.explanation, { reason: decision.reason });
   }
 
   async function assertCanStartSkillTestRuns(req: Request, companyId: string) {
@@ -608,7 +639,7 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
-      await assertCanMutateCompanySkills(req, companyId);
+      await assertCanMutateCompanySkills(req, companyId, skillMutationTargets({ skillId }));
       const result = await svc.createVersion(companyId, skillId, req.body, skillActor(req));
       const actor = getActorInfo(req);
       await logActivity(db, {
@@ -676,7 +707,10 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
-      await assertCanMutateCompanySkills(req, companyId);
+      await assertCanMutateCompanySkills(req, companyId, skillMutationTargets({
+        skillId,
+        slug: req.body.slug,
+      }));
       const result = await svc.forkSkill(companyId, skillId, req.body, skillActor(req));
       const actor = getActorInfo(req);
       await logActivity(db, {
@@ -806,7 +840,9 @@ export function companySkillRoutes(db: Db) {
     validate(companySkillCreateSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      await assertCanMutateCompanySkills(req, companyId);
+      await assertCanMutateCompanySkills(req, companyId, skillMutationTargets({
+        slug: req.body.slug,
+      }));
       const result = await svc.createLocalSkill(companyId, req.body, skillActor(req));
 
       const actor = getActorInfo(req);
@@ -835,7 +871,7 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
-      await assertCanMutateCompanySkills(req, companyId);
+      await assertCanMutateCompanySkills(req, companyId, skillMutationTargets({ skillId }));
       const result = await svc.updateSkill(companyId, skillId, req.body);
 
       const actor = getActorInfo(req);
@@ -865,7 +901,7 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
-      await assertCanMutateCompanySkills(req, companyId);
+      await assertCanMutateCompanySkills(req, companyId, skillMutationTargets({ skillId }));
       const result = await svc.updateFile(
         companyId,
         skillId,
@@ -929,8 +965,8 @@ export function companySkillRoutes(db: Db) {
     validate(companySkillImportSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      await assertCanMutateCompanySkills(req, companyId);
       const source = String(req.body.source ?? "");
+      await assertCanMutateCompanySkills(req, companyId, skillMutationTargets({ source }));
       const result = await svc.importFromSource(companyId, source);
 
       const actor = getActorInfo(req);
@@ -969,7 +1005,10 @@ export function companySkillRoutes(db: Db) {
     validate(companySkillInstallCatalogSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      await assertCanMutateCompanySkills(req, companyId);
+      await assertCanMutateCompanySkills(req, companyId, skillMutationTargets({
+        catalogSkillId: req.body.catalogSkillId,
+        slug: req.body.slug,
+      }));
       const result = await svc.installFromCatalog(companyId, req.body);
 
       const actor = getActorInfo(req);
@@ -1001,7 +1040,7 @@ export function companySkillRoutes(db: Db) {
     validate(companySkillProjectScanRequestSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      await assertCanMutateCompanySkills(req, companyId);
+      await assertCanMutateCompanySkills(req, companyId, skillMutationTargets({ scanProjects: true }));
       const result = await svc.scanProjectWorkspaces(companyId, req.body);
 
       const actor = getActorInfo(req);
@@ -1032,7 +1071,7 @@ export function companySkillRoutes(db: Db) {
   router.delete("/companies/:companyId/skills/:skillId", async (req, res) => {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
-    await assertCanMutateCompanySkills(req, companyId);
+    await assertCanMutateCompanySkills(req, companyId, skillMutationTargets({ skillId }));
     const result = await svc.deleteSkill(companyId, skillId);
     if (!result) {
       res.status(404).json({ error: "Skill not found" });
@@ -1063,7 +1102,7 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
-      await assertCanMutateCompanySkills(req, companyId);
+      await assertCanMutateCompanySkills(req, companyId, skillMutationTargets({ skillId }));
       const result = await svc.auditSkill(companyId, skillId);
       if (!result) {
         res.status(404).json({ error: "Skill not found" });
@@ -1099,7 +1138,7 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
-      await assertCanMutateCompanySkills(req, companyId);
+      await assertCanMutateCompanySkills(req, companyId, skillMutationTargets({ skillId }));
       const before = await svc.getById(companyId, skillId);
       const result = await svc.installUpdate(companyId, skillId, req.body);
       if (!result) {
@@ -1139,7 +1178,7 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
-      await assertCanMutateCompanySkills(req, companyId);
+      await assertCanMutateCompanySkills(req, companyId, skillMutationTargets({ skillId }));
       const before = await svc.getById(companyId, skillId);
       const result = await svc.resetSkill(companyId, skillId, req.body);
       if (!result) {

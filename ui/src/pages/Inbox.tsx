@@ -1391,6 +1391,15 @@ export function Inbox() {
       return next;
     });
   }, []);
+  const setInboxParentCollapsed = useCallback((parentId: string, collapsed: boolean) => {
+    setCollapsedInboxParents((prev) => {
+      if (prev.has(parentId) === collapsed) return prev;
+      const next = new Set(prev);
+      if (collapsed) next.add(parentId);
+      else next.delete(parentId);
+      return next;
+    });
+  }, []);
 
   // Build flat navigation list from visible rows so keyboard traversal respects collapsed groups.
   const flatNavItems = useMemo((): NavEntry[] => {
@@ -1601,9 +1610,17 @@ export function Inbox() {
     window.addEventListener("mousemove", handlePointerMove, { passive: true });
     return () => window.removeEventListener("mousemove", handlePointerMove);
   }, []);
+  // Which row the cursor is over, tracked WITHOUT React state so scrubbing the
+  // list costs zero re-renders (hover paints via CSS `:hover`, see IssueRow).
+  // Keyboard nav reads this to continue from the hovered row.
+  const hoveredIndexRef = useRef<number | null>(null);
   const setSelectedIndexFromPointer = useCallback((idx: number) => {
     if (!pointerMovedSinceKeyNavRef.current) return;
-    setSelectedIndex(idx);
+    hoveredIndexRef.current = idx;
+    // Drop any keyboard selection band the moment the mouse takes over, so we
+    // never show two identical highlights at once. React bails out when the
+    // value is already -1, so continuous hovering triggers no re-render.
+    setSelectedIndex((prev) => (prev < 0 ? prev : -1));
   }, []);
 
   const invalidateInboxIssueQueryCaches = () => {
@@ -1779,6 +1796,9 @@ export function Inbox() {
           : `group:${entry.groupKey}`;
   const selectedNavKeyRef = useRef<string | null>(null);
   useEffect(() => {
+    // A reshaped list invalidates the numeric hover index; drop it so the next
+    // keypress falls back to the (key-reconciled) keyboard selection.
+    hoveredIndexRef.current = null;
     setSelectedIndex((prev) => {
       if (prev < 0) return resolveInboxSelectionIndex(prev, flatNavItems.length);
       const prevKey = selectedNavKeyRef.current;
@@ -1834,6 +1854,7 @@ export function Inbox() {
     markNonIssueRead: handleMarkNonIssueRead,
     markNonIssueUnread: markItemUnread,
     setGroupCollapsed,
+    setInboxParentCollapsed,
     navigate,
   });
   kbActionsRef.current = {
@@ -1845,6 +1866,7 @@ export function Inbox() {
     markNonIssueRead: handleMarkNonIssueRead,
     markNonIssueUnread: markItemUnread,
     setGroupCollapsed,
+    setInboxParentCollapsed,
     navigate,
   };
 
@@ -1895,7 +1917,7 @@ export function Inbox() {
       const navCount = navItems.length;
       if (navCount === 0) return;
 
-      /** Resolve the nav entry at selectedIndex to an issue (for child entries) or work item. */
+      /** Resolve the nav entry at an index to an issue (for child entries) or work item. */
       const resolveNavEntry = (idx: number): { issue?: Issue; item?: InboxWorkItem } => {
         const entry = navItems[idx];
         if (!entry) return {};
@@ -1904,36 +1926,62 @@ export function Inbox() {
         return {};
       };
 
+      // The row a keystroke acts on: the hovered row when the mouse has moved
+      // since the last key nav (so "hover a row → press a/r/Enter/Arrow" acts on
+      // it), otherwise the keyboard selection. Hover no longer writes selection
+      // state, so this is what threads the pointer position into every handler.
+      const rawHovered = hoveredIndexRef.current;
+      const hoveredIndex = rawHovered != null && rawHovered >= 0 && rawHovered < navCount ? rawHovered : -1;
+      const fromHover = pointerMovedSinceKeyNavRef.current && hoveredIndex >= 0;
+      const effectiveIndex = fromHover ? hoveredIndex : st.selectedIndex;
+
       switch (e.key) {
         case "j":
         case "ArrowDown": {
           e.preventDefault();
           pointerMovedSinceKeyNavRef.current = false;
-          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "next"));
+          setSelectedIndex(getInboxKeyboardSelectionIndex(effectiveIndex, navCount, "next"));
           break;
         }
         case "k":
         case "ArrowUp": {
           e.preventDefault();
           pointerMovedSinceKeyNavRef.current = false;
-          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "previous"));
+          setSelectedIndex(getInboxKeyboardSelectionIndex(effectiveIndex, navCount, "previous"));
           break;
         }
         case "ArrowLeft":
         case "ArrowRight": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
-          const entry = navItems[st.selectedIndex];
-          if (!entry || entry.type !== "group") return;
+          if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
+          const entry = navItems[effectiveIndex];
+          if (!entry) return;
+          if (entry.type === "group") {
+            e.preventDefault();
+            pointerMovedSinceKeyNavRef.current = false;
+            setSelectedIndex(effectiveIndex);
+            act.setGroupCollapsed(entry.groupKey, e.key === "ArrowLeft");
+            break;
+          }
+          // Parent tasks collapse/expand with the same keys as groups.
+          const { issue, item } = resolveNavEntry(effectiveIndex);
+          const targetIssue = issue ?? (item?.kind === "issue" ? item.issue : null);
+          if (!targetIssue) return;
+          const hasChildren = st.workItems.some(
+            (group) => (group.childrenByIssueId.get(targetIssue.id)?.length ?? 0) > 0,
+          );
+          if (!hasChildren) return;
           e.preventDefault();
-          act.setGroupCollapsed(entry.groupKey, e.key === "ArrowLeft");
+          pointerMovedSinceKeyNavRef.current = false;
+          setSelectedIndex(effectiveIndex);
+          act.setInboxParentCollapsed(targetIssue.id, e.key === "ArrowLeft");
           break;
         }
         case "a":
         case "y": {
           if (!st.canArchive) return;
-          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
+          if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
           e.preventDefault();
-          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          const { issue, item } = resolveNavEntry(effectiveIndex);
           if (issue) {
             if (!st.nonInboxSearchIssueIds.has(issue.id) && !st.archivingIssueIds.has(issue.id)) act.archiveIssue(issue.id);
           } else if (item) {
@@ -1950,9 +1998,9 @@ export function Inbox() {
         }
         case "U": {
           if (!st.canArchive) return;
-          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
+          if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
           e.preventDefault();
-          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          const { issue, item } = resolveNavEntry(effectiveIndex);
           if (issue) {
             act.markUnreadIssue(issue.id);
           } else if (item) {
@@ -1963,9 +2011,9 @@ export function Inbox() {
         }
         case "r": {
           if (!st.canArchive) return;
-          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
+          if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
           e.preventDefault();
-          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          const { issue, item } = resolveNavEntry(effectiveIndex);
           if (issue) {
             if (issue.isUnreadForMe && !st.fadingOutIssues.has(issue.id)) act.markRead(issue.id);
           } else if (item) {
@@ -1979,9 +2027,9 @@ export function Inbox() {
           break;
         }
         case "Enter": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
+          if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
           e.preventDefault();
-          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          const { issue, item } = resolveNavEntry(effectiveIndex);
           if (issue) {
             const pathId = issue.identifier ?? issue.id;
             const detailState = armIssueDetailInboxQuickArchive(withIssueDetailHeaderSeed(issueLinkState, issue));
@@ -2622,11 +2670,7 @@ export function Inbox() {
                       <div
                         key={`group-${group.key}`}
                         data-inbox-item
-                        className={cn(
-                          "px-3 sm:px-4",
-                          groupIndex > 0 && "pt-2",
-                          isGroupSelected && "bg-accent/50",
-                        )}
+                        className={cn(groupIndex > 0 && "pt-2")}
                         onClick={() => {
                           if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
                         }}
@@ -2634,6 +2678,11 @@ export function Inbox() {
                           if (groupNavIdx >= 0) setSelectedIndexFromPointer(groupNavIdx);
                         }}
                       >
+                        {/* Left inset aligns the header chevron with the nested
+                            task chevrons. Read rows no longer reserve a
+                            mark-read column, so inbox rows sit at pl-1 before
+                            their chevron — same as the tasks list. */}
+                        <div className={cn("rounded-lg px-3 sm:pl-0 sm:pr-4", isGroupSelected ? "bg-accent/50" : "hover:bg-accent/50")}>
                         <IssueGroupHeader
                           label={group.label}
                           collapsible
@@ -2655,6 +2704,7 @@ export function Inbox() {
                             </Button>
                           ) : null}
                         />
+                        </div>
                       </div>,
                     );
                   }

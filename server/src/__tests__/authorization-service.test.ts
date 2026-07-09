@@ -12,7 +12,7 @@ import {
   principalPermissionGrants,
   projects,
 } from "@paperclipai/db";
-import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { LOW_TRUST_REVIEW_PRESET, type PermissionKey } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -100,7 +100,7 @@ async function grantAgentPermission(
   db: ReturnType<typeof createDb>,
   companyId: string,
   agentId: string,
-  permissionKey: "tasks:assign" | "tasks:assign_scope",
+  permissionKey: PermissionKey,
   scope: Record<string, unknown> | null = null,
 ) {
   await db.insert(companyMemberships).values({
@@ -141,7 +141,7 @@ async function grantUserPermission(
   db: ReturnType<typeof createDb>,
   companyId: string,
   userId: string,
-  permissionKey: "tasks:assign" | "tasks:assign_scope",
+  permissionKey: PermissionKey,
   scope: Record<string, unknown> | null = null,
 ) {
   await db.insert(companyMemberships).values({
@@ -224,23 +224,35 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("Allowed by explicit grant tasks:assign");
   });
 
-  it("allows agent grants for agent configuration decisions", async () => {
-    const company = await createCompany(db, "AgentGrant");
+  it("allows suggest grants to read peer agent configuration", async () => {
+    const company = await createCompany(db, "AgentReadGrant");
     const actorAgent = await createAgent(db, company.id);
     const targetAgent = await createAgent(db, company.id);
-    await db.insert(companyMemberships).values({
-      companyId: company.id,
-      principalType: "agent",
-      principalId: actorAgent.id,
-      status: "active",
-      membershipRole: "member",
+    await grantAgentPermission(db, company.id, actorAgent.id, "agents:suggest-changes");
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
     });
-    await db.insert(principalPermissionGrants).values({
-      companyId: company.id,
-      principalType: "agent",
-      principalId: actorAgent.id,
-      permissionKey: "agents:create",
-      grantedByUserId: null,
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      grant: {
+        principalType: "agent",
+        principalId: actorAgent.id,
+        permissionKey: "agents:suggest-changes",
+      },
+    });
+  });
+
+  it("falls back to the direct config-read grant decision when a suggest read grant is scoped away", async () => {
+    const company = await createCompany(db, "AgentReadScopedSuggestGrant");
+    const actorAgent = await createAgent(db, company.id);
+    const targetAgent = await createAgent(db, company.id);
+    await grantAgentPermission(db, company.id, actorAgent.id, "agents:suggest-changes", {
+      projectId: randomUUID(),
     });
 
     const decision = await authorizationService(db).decide({
@@ -249,8 +261,129 @@ describeEmbeddedPostgres("authorization service", () => {
       resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
     });
 
-    expect(decision.allowed).toBe(true);
-    expect(decision.grant?.permissionKey).toBe("agents:create");
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+      explanation: "Missing permission: agents:configure.",
+    });
+  });
+
+  it("enforces direct or consented suggest grants for agent configuration changes", async () => {
+    const company = await createCompany(db, "AgentChangeGrant");
+    const directAgent = await createAgent(db, company.id);
+    const suggestAgent = await createAgent(db, company.id);
+    const noGrantAgent = await createAgent(db, company.id);
+    const targetAgent = await createAgent(db, company.id);
+    await grantAgentPermission(db, company.id, directAgent.id, "agents:configure");
+    await grantAgentPermission(db, company.id, suggestAgent.id, "agents:suggest-changes");
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: noGrantAgent.id,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const authz = authorizationService(db);
+    await expect(authz.decide({
+      actor: { type: "agent", agentId: directAgent.id, companyId: company.id, source: "agent_key" },
+      action: "agent_config:update",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+      scope: { requiresChangeGrant: true },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_direct_change",
+      grant: { permissionKey: "agents:configure" },
+    });
+
+    await expect(authz.decide({
+      actor: { type: "agent", agentId: suggestAgent.id, companyId: company.id, source: "agent_key" },
+      action: "agent_config:update",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+      scope: { requiresChangeGrant: true },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_consent",
+      grant: { permissionKey: "agents:suggest-changes" },
+    });
+
+    await expect(authz.decide({
+      actor: { type: "agent", agentId: suggestAgent.id, companyId: company.id, source: "agent_key" },
+      action: "agent_config:update",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+      scope: { requiresChangeGrant: true, consentedChange: true },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_consented_change",
+      grant: { permissionKey: "agents:suggest-changes" },
+    });
+
+    await expect(authz.decide({
+      actor: { type: "agent", agentId: noGrantAgent.id, companyId: company.id, source: "agent_key" },
+      action: "agent_config:update",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+      scope: { requiresChangeGrant: true },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_no_grant",
+    });
+  });
+
+  it("enforces direct or consented suggest grants for skill configuration changes", async () => {
+    const company = await createCompany(db, "SkillChangeGrant");
+    const directAgent = await createAgent(db, company.id);
+    const suggestAgent = await createAgent(db, company.id);
+    const noGrantAgent = await createAgent(db, company.id);
+    await grantAgentPermission(db, company.id, directAgent.id, "skills:create");
+    await grantAgentPermission(db, company.id, suggestAgent.id, "skills:suggest-changes");
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: noGrantAgent.id,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const authz = authorizationService(db);
+    await expect(authz.decide({
+      actor: { type: "agent", agentId: directAgent.id, companyId: company.id, source: "agent_key" },
+      action: "skill_config:update",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_direct_change",
+      grant: { permissionKey: "skills:create" },
+    });
+
+    await expect(authz.decide({
+      actor: { type: "agent", agentId: suggestAgent.id, companyId: company.id, source: "agent_key" },
+      action: "skill_config:update",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_consent",
+      grant: { permissionKey: "skills:suggest-changes" },
+    });
+
+    await expect(authz.decide({
+      actor: { type: "agent", agentId: suggestAgent.id, companyId: company.id, source: "agent_key" },
+      action: "skill_config:update",
+      resource: { type: "company", companyId: company.id },
+      scope: { consentedChange: true },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_consented_change",
+      grant: { permissionKey: "skills:suggest-changes" },
+    });
+
+    await expect(authz.decide({
+      actor: { type: "agent", agentId: noGrantAgent.id, companyId: company.id, source: "agent_key" },
+      action: "skill_config:update",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_no_grant",
+    });
   });
 
   it("denies cross-company agent decisions before grant evaluation", async () => {
@@ -602,6 +735,69 @@ describeEmbeddedPostgres("authorization service", () => {
         assigneeAgentId: higherTrustAgent.id,
       },
       scope: { projectId: project.id, assigneeAgentId: higherTrustAgent.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+  });
+
+  it("blocks low-trust configuration actions before evaluating explicit change grants", async () => {
+    const company = await createCompany(db, "LowTrustConfigGrants");
+    const project = await createProject(db, company.id, "Allowed");
+    const targetAgent = await createAgent(db, company.id);
+    const actorAgent = await createAgent(db, company.id, {
+      role: "ceo",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [project.id],
+            allowedAgentIds: [targetAgent.id],
+          },
+        },
+      },
+    });
+    await grantAgentPermission(db, company.id, actorAgent.id, "agents:configure");
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      permissionKey: "skills:create",
+      grantedByUserId: null,
+    });
+
+    const authz = authorizationService(db);
+    const actor = { type: "agent" as const, agentId: actorAgent.id, companyId: company.id, source: "agent_key" as const };
+
+    await expect(authz.decide({
+      actor,
+      action: "agent:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_low_trust_boundary" });
+
+    await expect(authz.decide({
+      actor,
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+
+    await expect(authz.decide({
+      actor,
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: company.id, agentId: actorAgent.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+
+    await expect(authz.decide({
+      actor,
+      action: "agent_config:update",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+      scope: { requiresChangeGrant: true, consentedChange: true },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+
+    await expect(authz.decide({
+      actor,
+      action: "skill_config:update",
+      resource: { type: "company", companyId: company.id },
+      scope: { consentedChange: true },
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 

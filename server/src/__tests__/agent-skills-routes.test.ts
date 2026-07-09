@@ -85,6 +85,7 @@ vi.mock("../services/index.js", () => ({
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
   approvalService: () => mockApprovalService,
+  builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
   companySkillService: () => mockCompanySkillService,
   budgetService: () => mockBudgetService,
   environmentService: () => mockEnvironmentService,
@@ -123,6 +124,7 @@ function registerModuleMocks() {
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,
+    builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
     companySkillService: () => mockCompanySkillService,
     budgetService: () => mockBudgetService,
     heartbeatService: () => mockHeartbeatService,
@@ -695,6 +697,7 @@ describe.sequential("agent skill routes", () => {
           instructionsFilePath: `/tmp/${createdAgentId}/instructions/AGENTS.md`,
         }),
       }),
+      expect.objectContaining({ allowPendingApprovalConfigUpdate: true }),
     );
     expect(mockAgentService.update.mock.calls.at(-1)?.[1]).not.toMatchObject({
       adapterConfig: expect.objectContaining({

@@ -171,6 +171,7 @@ export function InstanceExperimentalSettings() {
       queryClient.setQueryData(queryKeys.instance.experimentalSettings, updatedSettings);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings }),
+        queryClient.invalidateQueries({ queryKey: ["built-in-agents"] }),
         queryClient.invalidateQueries({ queryKey: queryKeys.health }),
       ]);
     },
@@ -246,6 +247,7 @@ export function InstanceExperimentalSettings() {
   const enableTaskWatchdogs = experimentalQuery.data?.enableTaskWatchdogs === true;
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
+  const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
@@ -358,6 +360,24 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ enableEnvironments: !enableEnvironments })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle environments experimental setting"
+          />
+        </div>
+      </Card>
+
+      <Card className="block p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Built-in Agents</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show Paperclip-managed built-in agent surfaces, including built-in roster badges, the Built-in agents
+              tab, and built-in agent setup controls.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableBuiltInAgents}
+            onCheckedChange={() => toggleMutation.mutate({ enableBuiltInAgents: !enableBuiltInAgents })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle built-in agents experimental setting"
           />
         </div>
       </Card>

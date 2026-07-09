@@ -494,7 +494,7 @@ describe("IssuesList", () => {
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
         q: "server",
         projectId: undefined,
-        limit: 100,
+        limit: 200,
       }, { signal: expect.any(AbortSignal) });
       expect(container.textContent).toContain("Server result");
       expect(container.textContent).not.toContain("Local issue");
@@ -529,7 +529,7 @@ describe("IssuesList", () => {
         q: "server",
         projectId: undefined,
         parentId: "parent-1",
-        limit: 100,
+        limit: 200,
       }, { signal: expect.any(AbortSignal) });
       expect(container.textContent).toContain("Server result");
       expect(container.textContent).not.toContain("Local issue");
@@ -1088,7 +1088,7 @@ describe("IssuesList", () => {
   });
 
   it("shows a refinement hint when search results hit the live search cap", async () => {
-    const serverIssues = Array.from({ length: 100 }, (_, index) =>
+    const serverIssues = Array.from({ length: 200 }, (_, index) =>
       createIssue({
         id: `issue-${index + 1}`,
         identifier: `PAP-${index + 1}`,
@@ -1115,7 +1115,7 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Showing up to 100 matches. Refine the search to narrow further.");
+      expect(container.textContent).toContain("Showing up to 200 matches. Refine the search to narrow further.");
     });
 
     act(() => {
@@ -1166,12 +1166,12 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
         status: "backlog",
-        limit: 100,
+        limit: 200,
         includeRoutineExecutions: true,
       }), { signal: expect.any(AbortSignal) });
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
         status: "done",
-        limit: 100,
+        limit: 200,
         includeRoutineExecutions: true,
       }), { signal: expect.any(AbortSignal) });
       expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -1300,7 +1300,7 @@ describe("IssuesList", () => {
       JSON.stringify({ viewMode: "board" }),
     );
 
-    const cappedBacklogIssues = Array.from({ length: 100 }, (_, index) =>
+    const cappedBacklogIssues = Array.from({ length: 200 }, (_, index) =>
       createIssue({
         id: `issue-backlog-${index + 1}`,
         identifier: `PAP-${index + 1}`,
@@ -1326,7 +1326,7 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Some board columns are showing up to 100 tasks. Refine filters or search to reveal the rest.");
+      expect(container.textContent).toContain("Some board columns are showing up to 200 tasks. Refine filters or search to reveal the rest.");
     });
 
     act(() => {

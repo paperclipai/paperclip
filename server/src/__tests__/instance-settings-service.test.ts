@@ -10,6 +10,7 @@ describe("instance settings service", () => {
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
       enableCloudSync: true,
+      enableBuiltInAgents: true,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
       autoRestartDevServerWhenIdle: true,
@@ -28,6 +29,7 @@ describe("instance settings service", () => {
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
       enableCloudSync: true,
+      enableBuiltInAgents: true,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
       autoRestartDevServerWhenIdle: true,
@@ -97,5 +99,11 @@ describe("instance settings service", () => {
     expect(
       normalizeExperimentalSettings({ enableConferenceRoomChat: "yes" }).enableConferenceRoomChat,
     ).toBe(false);
+  });
+
+  it("defaults enableBuiltInAgents to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableBuiltInAgents).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableBuiltInAgents).toBe(false);
+    expect(normalizeExperimentalSettings({ enableExternalObjects: true }).enableBuiltInAgents).toBe(false);
   });
 });

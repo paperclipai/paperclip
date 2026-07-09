@@ -56,6 +56,7 @@ export type AuthorizationAction =
   | PermissionKey
   | "agent_config:read"
   | "agent_config:update"
+  | "skill_config:update"
   | "agent:read"
   | "agent:wake"
   | "company_scope:read"
@@ -93,6 +94,8 @@ export type AuthorizationDecision = {
     | "allow_local_board"
     | "allow_instance_admin"
     | "allow_explicit_grant"
+    | "allow_direct_change"
+    | "allow_consented_change"
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
     | "allow_self"
@@ -104,6 +107,8 @@ export type AuthorizationDecision = {
     | "deny_company_boundary"
     | "deny_missing_membership"
     | "deny_missing_grant"
+    | "deny_missing_consent"
+    | "deny_no_grant"
     | "deny_policy_restricted"
     | "deny_low_trust_boundary"
     | "deny_scope"
@@ -125,7 +130,9 @@ function companyIdForResource(resource: AuthorizationResource) {
 }
 
 function permissionForAction(action: AuthorizationAction): PermissionKey | null {
-  if (action === "agent_config:read" || action === "agent_config:update") return "agents:create";
+  if (action === "agent_config:read" || action === "agent_config:update" || action === "skill_config:update") {
+    return null;
+  }
   if (
     action === "agent:read" ||
     action === "agent:wake" ||
@@ -464,6 +471,10 @@ function activeResponsibleUserCanAuthorizeIssueAction(
     membership.membershipRole !== "viewer" &&
     (action === "issue:comment" || action === "issue:mutate")
   );
+}
+
+function scopeBoolean(scope: Record<string, unknown> | null | undefined, key: string) {
+  return scope?.[key] === true;
 }
 
 export function authorizationDeniedDetails(decision: AuthorizationDecision) {
@@ -878,6 +889,9 @@ export function authorizationService(db: Db) {
 
     if (
       input.action === "company_scope:read" ||
+      input.action === "agent_config:read" ||
+      input.action === "agent_config:update" ||
+      input.action === "skill_config:update" ||
       input.action === "runtime:manage" ||
       input.action === "secrets:read"
     ) {
@@ -1305,6 +1319,94 @@ export function authorizationService(db: Db) {
       return broadDecision;
     }
 
+    async function decideWithAgentConfigReadGrant(
+      principalType: PrincipalType,
+      principalId: string,
+    ): Promise<AuthorizationDecision> {
+      const configureDecision = await decidePrincipalGrant({
+        companyId,
+        principalType,
+        principalId,
+        action: input.action,
+        permissionKey: "agents:configure",
+        scope: input.scope,
+      });
+      if (configureDecision.allowed || configureDecision.reason === "deny_missing_membership") {
+        return configureDecision;
+      }
+
+      const suggestDecision = await decidePrincipalGrant({
+        companyId,
+        principalType,
+        principalId,
+        action: input.action,
+        permissionKey: "agents:suggest-changes",
+        scope: input.scope,
+      });
+      if (suggestDecision.allowed || suggestDecision.reason === "deny_missing_grant") {
+        return suggestDecision;
+      }
+      return configureDecision;
+    }
+
+    async function decideWithProtectedChangeGrants(
+      principalType: PrincipalType,
+      principalId: string,
+      keys: { direct: PermissionKey; suggest: PermissionKey },
+    ): Promise<AuthorizationDecision> {
+      const directDecision = await decidePrincipalGrant({
+        companyId,
+        principalType,
+        principalId,
+        action: input.action,
+        permissionKey: keys.direct,
+        scope: input.scope,
+      });
+      if (directDecision.allowed) {
+        return allow({
+          action: input.action,
+          reason: "allow_direct_change",
+          explanation: `Allowed by direct change permission ${keys.direct}.`,
+          grant: directDecision.grant,
+        });
+      }
+      if (directDecision.reason === "deny_missing_membership") return directDecision;
+
+      const suggestDecision = await decidePrincipalGrant({
+        companyId,
+        principalType,
+        principalId,
+        action: input.action,
+        permissionKey: keys.suggest,
+        scope: input.scope,
+      });
+      if (suggestDecision.allowed) {
+        if (scopeBoolean(input.scope, "consentedChange")) {
+          return allow({
+            action: input.action,
+            reason: "allow_consented_change",
+            explanation: `Allowed by suggest permission ${keys.suggest} after accepted change consent.`,
+            grant: suggestDecision.grant,
+          });
+        }
+        return deny({
+          action: input.action,
+          reason: "deny_missing_consent",
+          explanation: `Permission ${keys.suggest} requires accepted change consent before applying this mutation.`,
+          grant: suggestDecision.grant,
+        });
+      }
+      if (suggestDecision.reason === "deny_missing_membership") return suggestDecision;
+      if (directDecision.reason === "deny_scope") return directDecision;
+      if (suggestDecision.reason === "deny_scope") return suggestDecision;
+
+      return deny({
+        action: input.action,
+        reason: "deny_no_grant",
+        explanation: `Missing permission: ${keys.direct} or ${keys.suggest}.`,
+      });
+    }
+
     async function denyForAssignmentPolicyIfNeeded(
       policyEffect: AssignmentPolicyEffect,
     ): Promise<AuthorizationDecision | null> {
@@ -1464,6 +1566,21 @@ export function authorizationService(db: Db) {
         const policyEffect = taskAssignmentPolicyEffect ?? await assignmentPolicyEffect(input.resource);
         if (policyEffect.kind === "restricted") return denyRestrictedAssignmentPolicy(policyEffect);
         return grantDecision;
+      }
+      if (input.action === "agent_config:read") {
+        return decideWithAgentConfigReadGrant("user", input.actor.userId);
+      }
+      if (input.action === "agent_config:update") {
+        return decideWithProtectedChangeGrants("user", input.actor.userId, {
+          direct: "agents:configure",
+          suggest: "agents:suggest-changes",
+        });
+      }
+      if (input.action === "skill_config:update") {
+        return decideWithProtectedChangeGrants("user", input.actor.userId, {
+          direct: "skills:create",
+          suggest: "skills:suggest-changes",
+        });
       }
       return decidePrincipalGrant({
         companyId,
@@ -1641,12 +1758,38 @@ export function authorizationService(db: Db) {
     if (
       input.action === "agent_config:update" &&
       input.resource.type === "agent" &&
-      input.resource.agentId === actorAgentId
+      input.resource.agentId === actorAgentId &&
+      !scopeBoolean(input.scope, "requiresChangeGrant")
     ) {
       return allow({
         action: input.action,
         reason: "allow_self",
         explanation: "Allowed because the actor is updating its own agent configuration.",
+      });
+    }
+
+    if (input.action === "agent_config:read") {
+      if (input.resource.type === "agent" && input.resource.agentId === actorAgentId) {
+        return allow({
+          action: input.action,
+          reason: "allow_self",
+          explanation: "Allowed because the actor is reading its own agent configuration.",
+        });
+      }
+      return decideWithAgentConfigReadGrant("agent", actorAgentId);
+    }
+
+    if (input.action === "agent_config:update") {
+      return decideWithProtectedChangeGrants("agent", actorAgentId, {
+        direct: "agents:configure",
+        suggest: "agents:suggest-changes",
+      });
+    }
+
+    if (input.action === "skill_config:update") {
+      return decideWithProtectedChangeGrants("agent", actorAgentId, {
+        direct: "skills:create",
+        suggest: "skills:suggest-changes",
       });
     }
 
@@ -1664,8 +1807,6 @@ export function authorizationService(db: Db) {
 
     if (
       (input.action === "agents:create" ||
-        input.action === "agent_config:read" ||
-        input.action === "agent_config:update" ||
         input.action === "tasks:manage_active_checkouts") &&
       canCreateAgentsLegacy(actorAgent)
     ) {

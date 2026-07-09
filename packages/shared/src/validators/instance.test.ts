@@ -29,6 +29,12 @@ describe("instance experimental settings validators", () => {
     expect(settings.enableWorktreeRunExecution).toBe(false);
   });
 
+  it("defaults built-in agents off", () => {
+    const settings = instanceExperimentalSettingsSchema.parse({});
+
+    expect(settings.enableBuiltInAgents).toBe(false);
+  });
+
   it("accepts worktree run execution patches", () => {
     expect(
       patchInstanceExperimentalSettingsSchema.parse({
@@ -66,6 +72,16 @@ describe("instance experimental settings validators", () => {
       }),
     ).toEqual({
       enableGoalsSidebarLink: true,
+    });
+  });
+
+  it("accepts built-in agents patches", () => {
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({
+        enableBuiltInAgents: true,
+      }),
+    ).toEqual({
+      enableBuiltInAgents: true,
     });
   });
 });
