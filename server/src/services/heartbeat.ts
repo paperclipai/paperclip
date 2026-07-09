@@ -75,6 +75,7 @@ import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES 
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
+import { emitCodexCredentialTelemetryForRun } from "./codex-credential-telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
@@ -12135,6 +12136,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }),
         adapterResult.summary ?? null,
       );
+      try {
+        emitCodexCredentialTelemetryForRun({
+          telemetryClient: getTelemetryClient(),
+          agent,
+          resultJson: persistedResultJson,
+        });
+      } catch (telemetryError) {
+        logger.warn(
+          { err: telemetryError, runId: run.id, agentId: agent.id },
+          "failed to emit Codex credential telemetry",
+        );
+      }
 
       const persistedRunWrite = await setRunStatusIfRunning(run.id, status, {
         finishedAt: new Date(),

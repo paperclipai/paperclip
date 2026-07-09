@@ -16,6 +16,18 @@ export { listCodexSkills, syncCodexSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export { parseCodexJsonl, isCodexProviderQuotaError, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
 export {
+  CODEX_CREDENTIAL_TELEMETRY_RESULT_KEY,
+  bucketCodexLastRefreshAge,
+  buildCodexCredentialTelemetryDimensions,
+  classifyCodexAuthRefreshFailure,
+  readCodexCredentialTelemetrySnapshot,
+  type CodexAuthRefreshFailureClass,
+  type CodexCredentialSeedSource,
+  type CodexCredentialTelemetryDimensions,
+  type CodexCredentialTelemetrySnapshot,
+  type CodexLastRefreshAgeBucket,
+} from "./credential-telemetry.js";
+export {
   getQuotaWindows,
   readCodexAuthInfo,
   readCodexToken,

@@ -36,6 +36,46 @@ export function trackCompanyImported(
   });
 }
 
+export function trackCodexCredentialHealth(
+  client: TelemetryClient,
+  dims: {
+    companyId: string;
+    agentId: string;
+    adapterType: RawDimension<EventDimensionsMap["codex.credential_health"]["adapter_type"]>;
+    failureClass?: RawDimension<NonNullable<EventDimensionsMap["codex.credential_health"]["failure_class"]>> | null;
+    seedSource: RawDimension<EventDimensionsMap["codex.credential_health"]["seed_source"]>;
+    lastRefreshAgeBucket: RawDimension<EventDimensionsMap["codex.credential_health"]["last_refresh_age_bucket"]>;
+    rotationsDetected: boolean;
+  },
+): void {
+  client.track("codex.credential_health", {
+    company_id: dims.companyId,
+    agent_id: dims.agentId,
+    adapter_type: asEventDimension(dims.adapterType),
+    ...(dims.failureClass ? { failure_class: asEventDimension(dims.failureClass) } : {}),
+    seed_source: asEventDimension(dims.seedSource),
+    last_refresh_age_bucket: asEventDimension(dims.lastRefreshAgeBucket),
+    rotations_detected: dims.rotationsDetected,
+  });
+}
+
+export function trackCodexSyncBackOutcome(
+  client: TelemetryClient,
+  dims: {
+    companyId: string;
+    agentId: string;
+    adapterType: RawDimension<EventDimensionsMap["codex.sync_back_outcome"]["adapter_type"]>;
+    syncBackOutcome: RawDimension<EventDimensionsMap["codex.sync_back_outcome"]["sync_back_outcome"]>;
+  },
+): void {
+  client.track("codex.sync_back_outcome", {
+    company_id: dims.companyId,
+    agent_id: dims.agentId,
+    adapter_type: asEventDimension(dims.adapterType),
+    sync_back_outcome: asEventDimension(dims.syncBackOutcome),
+  });
+}
+
 export function trackProjectCreated(client: TelemetryClient): void {
   client.track("project.created", {});
 }

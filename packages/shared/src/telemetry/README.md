@@ -133,3 +133,26 @@ When a new event carries only enums, booleans, counts, or coarse buckets and
 no token material or PII, assign it to `operational_enum_count` in
 `EVENT_RETENTION_CLASS`. If no existing class fits, define a new class in
 `RETENTION_DAYS` and document it here.
+
+## Codex Credential Health Events
+
+**`codex.credential_health`** and **`codex.sync_back_outcome`** carry Codex
+adapter authentication and sync state. Key invariants that emitters must preserve:
+
+- Token material (refresh tokens, access tokens, secrets) must **never** appear
+  in any dimension. Emit only derived values: SHA-256 fingerprints of sensitive
+  material, enumerated age buckets (`lt_1h`, `lt_8d`, `gte_8d`, `missing`), and
+  boolean flags (`rotations_detected`).
+- For `codex.credential_health`, the post-run snapshot must be read from the
+  execution environment that held the active `CODEX_HOME` during the run. For
+  remote (sandbox/SSH) executions this is the remote home, not the local host
+  path. Reading the wrong home after a run that rotated credentials will produce
+  a false `rotations_detected: false`.
+- Dimensions: `company_id`, `agent_id`, `adapter_type`, `seed_source`,
+  `last_refresh_age_bucket`, `rotations_detected` (required); `failure_class`
+  (optional — present only when a structured refresh failure was classified).
+- For `codex.sync_back_outcome`: `company_id`, `agent_id`, `adapter_type`,
+  `sync_back_outcome` (all required).
+
+Allowed values for enum dimensions are defined in `generated/paperclip-telemetry.ts`
+and must not be hard-coded or duplicated here.

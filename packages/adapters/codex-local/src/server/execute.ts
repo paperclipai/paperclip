@@ -54,6 +54,14 @@ import {
   resolveSharedCodexHomeDir,
   seedManagedCodexHome,
 } from "./codex-home.js";
+import {
+  CODEX_CREDENTIAL_TELEMETRY_RESULT_KEY,
+  buildCodexCredentialTelemetryDimensions,
+  classifyCodexAuthRefreshFailure,
+  readCodexCredentialTelemetrySnapshot,
+  type CodexAuthRefreshFailureClass,
+  type CodexCredentialSeedSource,
+} from "./credential-telemetry.js";
 import { prepareCodexRuntimeConfig } from "./runtime-config.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
@@ -421,6 +429,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
   const effectiveCodexHome = configuredCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
+  const codexCredentialSeedSource: CodexCredentialSeedSource = configuredOpenAiApiKey
+    ? "configured_key"
+    : executionTargetIsRemote
+      ? "snapshot_file"
+      : "host_file";
+  const codexCredentialSeedSnapshot = await readCodexCredentialTelemetrySnapshot(effectiveCodexHome);
 
   // Never launch a managed CODEX_HOME with no credentials. Without auth.json and
   // with OPENAI_API_KEY="" the provider rejects every request with
@@ -954,7 +968,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     };
 
-    const toResult = (
+    const toResult = async (
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string };
         rawStderr: string;
@@ -965,7 +979,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
       clearSessionOnMissingSession = false,
       isRetry = false,
-    ): AdapterExecutionResult => {
+    ): Promise<AdapterExecutionResult> => {
+      const codexCredentialTelemetryFor = async (
+        failureClass?: CodexAuthRefreshFailureClass | null,
+      ) => ({
+        [CODEX_CREDENTIAL_TELEMETRY_RESULT_KEY]: buildCodexCredentialTelemetryDimensions({
+          seedSource: codexCredentialSeedSource,
+          seedSnapshot: codexCredentialSeedSnapshot,
+          postRunSnapshot: await readCodexCredentialTelemetrySnapshot(effectiveCodexHome),
+          failureClass,
+        }),
+      });
+
       if (attempt.monitor?.fired) {
         const errorMessage = formatOutputInactivityMonitorErrorMessage(attempt.monitor.elapsedMsSinceLastEvent);
         return {
@@ -987,6 +1012,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           resultJson: {
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
+            ...(await codexCredentialTelemetryFor()),
             outputInactivityMonitor: {
               kind: "output_inactivity",
               timeoutMs: attempt.monitor.timeoutMs,
@@ -1004,6 +1030,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           signal: attempt.proc.signal,
           timedOut: true,
           errorMessage: `Timed out after ${timeoutSec}s`,
+          resultJson: await codexCredentialTelemetryFor(),
           clearSession: clearSessionOnMissingSession,
         };
       }
@@ -1040,8 +1067,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               errorMessage: fallbackErrorMessage,
             })
           : null;
+      const authRefreshFailure =
+        (attempt.proc.exitCode ?? 0) !== 0
+          ? classifyCodexAuthRefreshFailure({
+              stdout: attempt.proc.stdout,
+              stderr: attempt.proc.stderr,
+              errorMessage: fallbackErrorMessage,
+            })
+          : null;
       const providerQuota =
         (attempt.proc.exitCode ?? 0) !== 0 &&
+        !authRefreshFailure &&
         isCodexProviderQuotaError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
@@ -1049,13 +1085,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       const transientUpstream =
         (attempt.proc.exitCode ?? 0) !== 0 &&
+        !authRefreshFailure &&
         !providerQuota &&
         isCodexTransientUpstreamError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
           errorMessage: fallbackErrorMessage,
         });
-      const errorFamily = providerQuota ? "provider_quota" : transientUpstream ? "transient_upstream" : null;
+      const errorFamily = authRefreshFailure ?? (providerQuota ? "provider_quota" : transientUpstream ? "transient_upstream" : null);
 
       return {
         exitCode: attempt.proc.exitCode,
@@ -1066,7 +1103,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ? null
             : fallbackErrorMessage,
         errorCode:
-          providerQuota
+          authRefreshFailure
+            ? authRefreshFailure
+            : providerQuota
             ? "provider_quota"
             : transientUpstream
             ? "codex_transient_upstream"
@@ -1085,6 +1124,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
+          ...(await codexCredentialTelemetryFor(authRefreshFailure)),
           ...(errorFamily ? { errorFamily } : {}),
           ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
           ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
@@ -1108,15 +1148,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
         );
         const retry = await runAttempt(null);
-        return toResult(retry, true, true);
+        return await toResult(retry, true, true);
       }
 
-      return toResult(initial, false, false);
+      return await toResult(initial, false, false);
     } finally {
       if (paperclipBridge) {
         await paperclipBridge.stop();
       }
       if (restoreRemoteWorkspace) {
+        // TODO(PAP-1872): when Codex auth sync-back exists, emit codex.sync_back_outcome
+        // with applied/skipped-older/skipped-account-mismatch after this restore path
+        // decides whether the sandbox auth snapshot should update the host file.
         await onLog(
           "stdout",
           `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,

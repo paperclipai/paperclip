@@ -20,6 +20,8 @@ export interface ProviderQuotaResult {
   source?: string | null;
   /** true when the fetch succeeded and windows is populated */
   ok: boolean;
+  /** machine-readable error family when ok is false */
+  errorFamily?: string | null;
   /** error message when ok is false */
   error?: string;
   windows: QuotaWindow[];

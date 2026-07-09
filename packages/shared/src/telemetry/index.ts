@@ -5,6 +5,8 @@ export {
   trackInstallStarted,
   trackInstallCompleted,
   trackCompanyImported,
+  trackCodexCredentialHealth,
+  trackCodexSyncBackOutcome,
   trackProjectCreated,
   trackRoutineCreated,
   trackRoutineRun,

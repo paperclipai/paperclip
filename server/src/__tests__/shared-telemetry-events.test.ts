@@ -3,6 +3,8 @@ import {
   trackAgentCreated,
   trackAgentFirstHeartbeat,
   trackAgentTaskCompleted,
+  trackCodexCredentialHealth,
+  trackCodexSyncBackOutcome,
   trackInteractionResolved,
   trackInstallCompleted,
 } from "@paperclipai/shared/telemetry";
@@ -13,6 +15,10 @@ function createClient(): TelemetryClient {
     track: vi.fn(),
     hashPrivateRef: vi.fn((value: string) => `hashed:${value}`),
   } as unknown as TelemetryClient;
+}
+
+function trackMock(client: TelemetryClient): ReturnType<typeof vi.fn> {
+  return client.track as unknown as ReturnType<typeof vi.fn>;
 }
 
 function runtimeValue<T>(value: string): T {
@@ -125,6 +131,58 @@ describe("shared telemetry agent events", () => {
       option_count: 2,
       selected_option_count: 1,
       skipped_task_count: 3,
+    });
+  });
+
+  it("emits Codex credential health with only approved dimensions", () => {
+    const client = createClient();
+
+    trackCodexCredentialHealth(client, {
+      companyId: "company-1",
+      agentId: "agent-1",
+      adapterType: "codex_local",
+      failureClass: "refresh_token_reused",
+      seedSource: "snapshot_file",
+      lastRefreshAgeBucket: "lt_8d",
+      rotationsDetected: true,
+    });
+
+    expect(client.track).toHaveBeenCalledWith("codex.credential_health", {
+      company_id: "company-1",
+      agent_id: "agent-1",
+      adapter_type: "codex_local",
+      failure_class: "refresh_token_reused",
+      seed_source: "snapshot_file",
+      last_refresh_age_bucket: "lt_8d",
+      rotations_detected: true,
+    });
+    const [, dimensions] = trackMock(client).mock.calls.at(-1)!;
+    expect(Object.keys(dimensions as Record<string, unknown>).sort()).toEqual([
+      "adapter_type",
+      "agent_id",
+      "company_id",
+      "failure_class",
+      "last_refresh_age_bucket",
+      "rotations_detected",
+      "seed_source",
+    ]);
+  });
+
+  it("emits the Codex sync-back outcome contract without account identifiers", () => {
+    const client = createClient();
+
+    trackCodexSyncBackOutcome(client, {
+      companyId: "company-1",
+      agentId: "agent-1",
+      adapterType: "codex_local",
+      syncBackOutcome: "skipped-account-mismatch",
+    });
+
+    expect(client.track).toHaveBeenCalledWith("codex.sync_back_outcome", {
+      company_id: "company-1",
+      agent_id: "agent-1",
+      adapter_type: "codex_local",
+      sync_back_outcome: "skipped-account-mismatch",
     });
   });
 });

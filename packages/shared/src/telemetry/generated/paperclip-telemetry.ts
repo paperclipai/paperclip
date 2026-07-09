@@ -23,6 +23,23 @@ source_ref?: string
 source_ref_hashed?: boolean
 }
 
+export interface PaperclipCodexCredentialHealthDimensions {
+company_id: string
+agent_id: string
+adapter_type: ("codex_local")
+failure_class?: ("refresh_token_reused" | "refresh_token_expired" | "refresh_token_invalidated")
+seed_source: ("configured_key" | "host_file" | "snapshot_file")
+last_refresh_age_bucket: ("lt_1h" | "lt_8d" | "gte_8d" | "missing")
+rotations_detected: boolean
+}
+
+export interface PaperclipCodexSyncBackOutcomeDimensions {
+company_id: string
+agent_id: string
+adapter_type: ("codex_local")
+sync_back_outcome: ("applied" | "skipped-older" | "skipped-account-mismatch")
+}
+
 export interface PaperclipErrorHandlerCrashDimensions {
 error_code: string
 }
@@ -84,6 +101,8 @@ export type PaperclipEventName =
   | "agent.first_heartbeat"
   | "agent.task_completed"
   | "company.imported"
+  | "codex.credential_health"
+  | "codex.sync_back_outcome"
   | "error.handler_crash"
   | "goal.created"
   | "install.completed"
@@ -99,6 +118,8 @@ export interface EventDimensionsMap {
   "agent.first_heartbeat": PaperclipAgentFirstHeartbeatDimensions;
   "agent.task_completed": PaperclipAgentTaskCompletedDimensions;
   "company.imported": PaperclipCompanyImportedDimensions;
+  "codex.credential_health": PaperclipCodexCredentialHealthDimensions;
+  "codex.sync_back_outcome": PaperclipCodexSyncBackOutcomeDimensions;
   "error.handler_crash": PaperclipErrorHandlerCrashDimensions;
   "goal.created": PaperclipGoalCreatedDimensions;
   "install.completed": PaperclipInstallCompletedDimensions;
@@ -115,6 +136,8 @@ export const PAPERCLIP_EVENTS = {
   "agent.first_heartbeat": "agent.first_heartbeat",
   "agent.task_completed": "agent.task_completed",
   "company.imported": "company.imported",
+  "codex.credential_health": "codex.credential_health",
+  "codex.sync_back_outcome": "codex.sync_back_outcome",
   "error.handler_crash": "error.handler_crash",
   "goal.created": "goal.created",
   "install.completed": "install.completed",
@@ -203,6 +226,37 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "catalog": "Import source came from a Paperclip catalog entry.",
       "skills_sh": "Import source came from a Skills.sh-compatible source.",
       "unknown": "Source type could not be classified."
+    }
+  },
+  "codex.credential_health": {
+    "adapter_type": {
+      "codex_local": "Agent runtime uses the local Codex adapter."
+    },
+    "failure_class": {
+      "refresh_token_reused": "Codex reported a refresh token reuse failure.",
+      "refresh_token_expired": "Codex reported an expired refresh token.",
+      "refresh_token_invalidated": "Codex reported an invalidated, revoked, missing, or unauthorized refresh token."
+    },
+    "seed_source": {
+      "configured_key": "Codex auth came from an explicitly configured OPENAI_API_KEY.",
+      "host_file": "Codex auth came from a host-local auth.json file.",
+      "snapshot_file": "Codex auth came from a sandbox or remote snapshot of auth.json."
+    },
+    "last_refresh_age_bucket": {
+      "lt_1h": "auth.json last_refresh was less than one hour old at seed time.",
+      "lt_8d": "auth.json last_refresh was at least one hour and less than eight days old at seed time.",
+      "gte_8d": "auth.json last_refresh was at least eight days old at seed time.",
+      "missing": "auth.json last_refresh was absent or invalid at seed time."
+    }
+  },
+  "codex.sync_back_outcome": {
+    "adapter_type": {
+      "codex_local": "Agent runtime uses the local Codex adapter."
+    },
+    "sync_back_outcome": {
+      "applied": "Sandbox or remote Codex auth sync-back updated the host auth file.",
+      "skipped-older": "Codex auth sync-back skipped because the candidate was older than the host auth file.",
+      "skipped-account-mismatch": "Codex auth sync-back skipped because the candidate account did not match the host auth file."
     }
   },
   "goal.created": {
