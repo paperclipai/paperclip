@@ -83,6 +83,10 @@ describe("company CLI commands", () => {
     delete process.env.PAPERCLIP_API_URL;
     delete process.env.PAPERCLIP_API_KEY;
     delete process.env.PAPERCLIP_COMPANY_ID;
+    // Point context resolution at a path that can never exist so this test's
+    // company-id resolution can't pick up a real ~/.paperclip context file
+    // from the host running the suite (see SAG-6205).
+    process.env.PAPERCLIP_CONTEXT = "/nonexistent/paperclip-cli-company-test-context.json";
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
