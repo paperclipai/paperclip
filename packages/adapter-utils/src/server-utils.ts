@@ -1128,16 +1128,25 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
 
 function normalizePaperclipWakeExecutionWorkspace(value: unknown): PaperclipWakeExecutionWorkspace | null {
   const workspace = parseObject(value);
-  // The branch name is interpolated into a Markdown inline-code span in the
-  // wake prompt, so strip backticks and control characters to keep a hostile
-  // ref name from breaking out of the span or injecting prompt text.
+  // Strip control characters (illegal in git refs, and the newline route into
+  // the prompt) but keep the ref otherwise exact -- the guard must name the
+  // real branch. Renderers escape the name for their output format.
   const branchName =
     asString(workspace.branchName, "")
-      .replace(/[`\u0000-\u001f\u007f]/g, "")
+      .replace(/[\u0000-\u001f\u007f]/g, "")
       .trim()
       .slice(0, 300) || null;
   if (!branchName) return null;
   return { branchName };
+}
+
+// Wrap a value in a Markdown inline-code span whose backtick fence is longer
+// than any backtick run inside the value, so the value cannot close the span.
+function markdownInlineCode(value: string): string {
+  const longestBacktickRun = value.match(/`+/g)?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
+  if (longestBacktickRun === 0) return `\`${value}\``;
+  const fence = "`".repeat(longestBacktickRun + 1);
+  return `${fence} ${value} ${fence}`;
 }
 
 export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
@@ -1349,7 +1358,7 @@ export function renderPaperclipWakePrompt(
   }
   if (!resumedSession && normalized.executionWorkspace?.branchName) {
     lines.push(
-      `- execution workspace branch: you are running in an execution workspace on branch \`${normalized.executionWorkspace.branchName}\`. Do not switch, rename, or re-point this branch; keep all commits on it.`,
+      `- execution workspace branch: you are running in an execution workspace on branch ${markdownInlineCode(normalized.executionWorkspace.branchName)}. Do not switch, rename, or re-point this branch; keep all commits on it.`,
     );
   }
   if (normalized.dependencyBlockedInteraction) {
