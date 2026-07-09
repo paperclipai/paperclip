@@ -72,8 +72,8 @@ The adapter creates a temporary directory with symlinks to Paperclip skills and 
 
 ## Remote credential ownership
 
-`claude_local` uses a snapshot-owns-auth topology for managed remote execution
-targets. When the run uses a sandbox or SSH execution target and no explicit
+`claude_local` uses a snapshot-owns-auth topology for managed sandbox execution
+targets. When the run uses a sandbox execution target and no explicit
 `CLAUDE_CONFIG_DIR` is configured, Paperclip creates a remote
 `CLAUDE_CONFIG_DIR` under the run's Claude runtime directory. It uploads
 sanitized host-side settings such as `settings.json` and `CLAUDE.md`, but the
@@ -83,7 +83,7 @@ After the seed is copied, the remote materialization command checks the
 execution target's own `$HOME/.claude` directory. For each missing credential
 file, it copies `.credentials.json` or `credentials.json` from that remote home
 into the managed `CLAUDE_CONFIG_DIR`. That means credentials baked into the
-sandbox image, or present on the SSH host, win for managed remote Claude runs.
+sandbox image win for managed remote Claude runs.
 
 Worked example: a sandbox image contains `$HOME/.claude/.credentials.json` from
 its own Claude Code login. Paperclip starts a managed remote `claude_local` run,
