@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, it } from "vitest";
-import type { Issue } from "@paperclipai/shared";
+import type { ExternalObjectSummary, Issue } from "@paperclipai/shared";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
@@ -48,6 +48,20 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     updatedAt: new Date("2026-04-15T00:00:00.000Z"),
     ...overrides,
     workMode: overrides.workMode ?? "standard",
+  };
+}
+
+function makeExternalObjectSummary(overrides: Partial<ExternalObjectSummary> = {}): ExternalObjectSummary {
+  return {
+    total: 1,
+    byStatusCategory: {},
+    byLiveness: { fresh: 1 },
+    highestSeverity: "neutral",
+    staleCount: 0,
+    authRequiredCount: 0,
+    unreachableCount: 0,
+    objects: [],
+    ...overrides,
   };
 }
 
@@ -168,5 +182,63 @@ describe("issue filters", () => {
       { id: "execution-isolated", mode: "isolated_workspace", projectWorkspaceId: "workspace-default" },
       new Set(["workspace-default"]),
     )).toBe(true);
+  });
+
+  it.each([
+    ["failed", ["failed-issue", "blocked-issue"]],
+    ["auth_required", ["auth-issue"]],
+    ["stale", ["stale-issue"]],
+    ["none", ["none-issue"]],
+  ])("filters issues by external-object status token %s", (externalObjectStatus, expectedIssueIds) => {
+    const issues = [
+      makeIssue({ id: "failed-issue" }),
+      makeIssue({ id: "blocked-issue" }),
+      makeIssue({ id: "auth-issue" }),
+      makeIssue({ id: "stale-issue" }),
+      makeIssue({ id: "none-issue" }),
+      makeIssue({ id: "fresh-issue" }),
+    ];
+    const summaries = new Map<string, ExternalObjectSummary>([
+      ["failed-issue", makeExternalObjectSummary({ byStatusCategory: { failed: 1 }, highestSeverity: "danger" })],
+      ["blocked-issue", makeExternalObjectSummary({ byStatusCategory: { blocked: 1 }, highestSeverity: "danger" })],
+      ["auth-issue", makeExternalObjectSummary({
+        byLiveness: { auth_required: 1 },
+        highestSeverity: "danger",
+        authRequiredCount: 1,
+      })],
+      ["stale-issue", makeExternalObjectSummary({
+        byLiveness: { stale: 1 },
+        highestSeverity: "warning",
+        staleCount: 1,
+      })],
+      ["fresh-issue", makeExternalObjectSummary({ byStatusCategory: { succeeded: 1 }, highestSeverity: "success" })],
+    ]);
+
+    const filtered = applyIssueFilters(
+      issues,
+      { ...defaultIssueFilterState, externalObjectStatuses: [externalObjectStatus] },
+      null,
+      false,
+      undefined,
+      {
+        externalObjectSummaryByIssueId: summaries,
+        externalObjectSummariesReady: true,
+      },
+    );
+
+    expect(filtered.map((issue) => issue.id)).toEqual(expectedIssueIds);
+  });
+
+  it("does not apply external-object filters before summaries are ready", () => {
+    const filtered = applyIssueFilters(
+      [makeIssue({ id: "issue-1" })],
+      { ...defaultIssueFilterState, externalObjectStatuses: ["none"] },
+      null,
+      false,
+      undefined,
+      { externalObjectSummaryByIssueId: new Map(), externalObjectSummariesReady: false },
+    );
+
+    expect(filtered).toEqual([]);
   });
 });

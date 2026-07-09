@@ -3,6 +3,7 @@ import type { Agent } from "@paperclipai/shared";
 import {
   buildAssistantPartsFromTranscript,
   buildIssueChatMessages,
+  isCoTSegmentActive,
   stabilizeThreadMessages,
   type IssueChatComment,
   type IssueChatLinkedRun,
@@ -12,7 +13,7 @@ import type {
   SuggestTasksInteraction,
 } from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
-import type { LiveRunForIssue } from "../api/heartbeats";
+import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 
 function createAgent(id: string, name: string): Agent {
   return {
@@ -236,6 +237,24 @@ describe("buildAssistantPartsFromTranscript", () => {
       startMs: new Date("2026-04-06T12:00:00.000Z").getTime(),
       endMs: new Date("2026-04-06T12:00:02.000Z").getTime(),
     }]);
+  });
+
+  it("marks only the latest chain-of-thought segment active while a run is live", () => {
+    expect(isCoTSegmentActive({
+      isMessageRunning: true,
+      segmentIndex: 0,
+      segmentCount: 2,
+    })).toBe(false);
+    expect(isCoTSegmentActive({
+      isMessageRunning: true,
+      segmentIndex: 1,
+      segmentCount: 2,
+    })).toBe(true);
+    expect(isCoTSegmentActive({
+      isMessageRunning: false,
+      segmentIndex: 1,
+      segmentCount: 2,
+    })).toBe(false);
   });
 
   it("keeps run errors while suppressing init and system transcript noise", () => {
@@ -616,6 +635,46 @@ describe("buildIssueChatMessages", () => {
         custom: {
           kind: "interaction",
           anchorId: "interaction-interaction-2",
+        },
+      },
+    });
+  });
+
+  it("preserves ephemeral active-run status metadata for rendering", () => {
+    const activeRun: ActiveRunForIssue = {
+      id: "run-active-1",
+      status: "running",
+      invocationSource: "manual",
+      triggerDetail: null,
+      startedAt: "2026-04-06T12:03:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-04-06T12:03:00.000Z",
+      agentId: "agent-1",
+      agentName: "CodexCoder",
+      adapterType: "codex_local",
+      currentStatusMessage: "Syncing git worktree to sandbox",
+      currentStatusUpdatedAt: "2026-04-06T12:03:05.000Z",
+    };
+
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      activeRun,
+      currentUserId: "user-1",
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      role: "assistant",
+      status: { type: "running" },
+      metadata: {
+        custom: {
+          kind: "live-run",
+          runId: "run-active-1",
+          currentStatusMessage: "Syncing git worktree to sandbox",
+          currentStatusUpdatedAt: "2026-04-06T12:03:05.000Z",
         },
       },
     });

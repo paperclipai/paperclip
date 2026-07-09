@@ -112,6 +112,11 @@ function registerModuleMocks() {
     }),
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockInteractionService,
+    taskWatchdogService: () => ({
+      getActiveForIssue: vi.fn(async () => null),
+      upsertForIssue: vi.fn(),
+      disableForIssue: vi.fn(async () => null),
+    }),
     logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => ({

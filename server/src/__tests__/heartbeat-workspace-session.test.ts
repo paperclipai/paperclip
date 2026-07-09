@@ -1,3 +1,8 @@
+import { execFile as execFileCallback } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
@@ -5,6 +10,7 @@ import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
   assertGitSensitiveAdapterWorkspaceValid,
+  assertPushCapabilityCheckoutValid,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
   deriveTaskKeyWithHeartbeatFallback,
@@ -16,6 +22,7 @@ import {
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveNextSessionState,
+  requiresPushCapabilityPreflight,
   resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
   shouldDeferFollowupWakeForSameIssue,
@@ -28,6 +35,8 @@ import {
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
 import type { TrustPresetResolution } from "../services/trust-preset-resolver.ts";
+
+const execFile = promisify(execFileCallback);
 
 function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}): ResolvedWorkspaceForRun {
   return {
@@ -103,6 +112,19 @@ function buildWorkspaceValidationInput(
     executionTarget: { kind: "local" },
     ...overrides,
   };
+}
+
+async function runGit(cwd: string, args: string[]) {
+  await execFile("git", args, { cwd });
+}
+
+async function createGitCheckout(options: { withRemote: boolean }) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-push-preflight-"));
+  await runGit(root, ["init"]);
+  if (options.withRemote) {
+    await runGit(root, ["remote", "add", "origin", "https://github.com/example/repo.git"]);
+  }
+  return root;
 }
 
 async function expectWorkspaceValidationFailure(
@@ -374,6 +396,72 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
         }),
       ),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("assertPushCapabilityCheckoutValid", () => {
+  it("rejects a GitHub PR workflow checkout without a configured push remote", async () => {
+    const cwd = await createGitCheckout({ withRemote: false });
+    try {
+      await expect(assertPushCapabilityCheckoutValid({
+        enabled: true,
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+        },
+        cwd,
+      })).rejects.toMatchObject({
+        code: "workspace_validation_failed",
+        message: expect.stringContaining("has no configured push remote"),
+        resultJson: {
+          workspaceValidation: expect.objectContaining({
+            reason: "missing_git_push_remote",
+            issueId: "issue-1",
+            executionWorkspaceCwd: cwd,
+          }),
+        },
+      });
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a GitHub PR workflow checkout when a push remote is configured", async () => {
+    const cwd = await createGitCheckout({ withRemote: true });
+    try {
+      await expect(assertPushCapabilityCheckoutValid({
+        enabled: true,
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+        },
+        cwd,
+      })).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("requiresPushCapabilityPreflight", () => {
+  it("only enables the guard when the issue explicitly mentions the GitHub PR workflow skill", () => {
+    expect(requiresPushCapabilityPreflight({
+      adapterType: "codex_local",
+      issueId: "issue-1",
+      explicitRunScopedSkillKeys: ["paperclipai/bundled/software-development/github-pr-workflow"],
+    })).toBe(true);
+
+    expect(requiresPushCapabilityPreflight({
+      adapterType: "codex_local",
+      issueId: "issue-1",
+      explicitRunScopedSkillKeys: [],
+    })).toBe(false);
+
+    expect(requiresPushCapabilityPreflight({
+      adapterType: "cursor-cloud",
+      issueId: "issue-1",
+      explicitRunScopedSkillKeys: ["paperclipai/bundled/software-development/github-pr-workflow"],
+    })).toBe(false);
   });
 });
 

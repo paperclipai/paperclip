@@ -8,6 +8,7 @@ import { companySkillsApi } from "../api/companySkills";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
+import { resolveSkillSummaryText } from "../lib/company-skill-summary";
 import { AGENT_ROLES, type AdapterEnvironmentTestResult, type AgentPermissions } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -321,6 +322,7 @@ export function NewAgent() {
                 {availableSkills.map((skill) => {
                   const inputId = `skill-${skill.id}`;
                   const checked = selectedSkillKeys.includes(skill.key);
+                  const summaryText = resolveSkillSummaryText(skill, { fallbackKey: true });
                   return (
                     <div key={skill.id} className="flex items-start gap-3">
                       <Checkbox
@@ -330,9 +332,7 @@ export function NewAgent() {
                       />
                       <label htmlFor={inputId} className="grid gap-1 leading-none">
                         <span className="text-sm font-medium">{skill.name}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {skill.description ?? skill.key}
-                        </span>
+                        {summaryText ? <span className="text-xs text-muted-foreground">{summaryText}</span> : null}
                       </label>
                     </div>
                   );

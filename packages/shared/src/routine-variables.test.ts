@@ -5,6 +5,8 @@ import {
   getBuiltinRoutineVariableValues,
   interpolateRoutineTemplate,
   isBuiltinRoutineVariable,
+  isRoutineDateVariableName,
+  isValidRoutineDateString,
   syncRoutineVariablesWithTemplate,
 } from "./routine-variables.js";
 
@@ -26,13 +28,41 @@ describe("routine variable helpers", () => {
 
   it("preserves existing metadata when syncing variables from a template", () => {
     expect(
-      syncRoutineVariablesWithTemplate(["Triage {{repo}}", "Review {{repo}} and {{priority}}"], [
+      syncRoutineVariablesWithTemplate(["Triage {{repo}}", "Review {{repo}} and {{startDate}}"], [
         { name: "repo", label: "Repository", type: "text", defaultValue: "paperclip", required: true, options: [] },
+        { name: "startDate", label: "Start", type: "text", defaultValue: "soon", required: false, options: [] },
       ]),
     ).toEqual([
       { name: "repo", label: "Repository", type: "text", defaultValue: "paperclip", required: true, options: [] },
-      { name: "priority", label: null, type: "text", defaultValue: null, required: true, options: [] },
+      { name: "startDate", label: "Start", type: "text", defaultValue: "soon", required: false, options: [] },
     ]);
+  });
+
+  it("identifies routine date variable names by strict capital-Date suffix", () => {
+    expect(isRoutineDateVariableName("startDate")).toBe(true);
+    expect(isRoutineDateVariableName("endDate")).toBe(true);
+    expect(isRoutineDateVariableName("fooDate")).toBe(true);
+    expect(isRoutineDateVariableName("date")).toBe(false);
+    expect(isRoutineDateVariableName("startdate")).toBe(false);
+    expect(isRoutineDateVariableName("candidate")).toBe(false);
+    expect(isRoutineDateVariableName("Date")).toBe(false);
+  });
+
+  it("defaults newly synced capital-Date variables to date type", () => {
+    expect(
+      syncRoutineVariablesWithTemplate("Compare {{startDate}} to {{endDate}} with {{date}}", []),
+    ).toEqual([
+      { name: "startDate", label: null, type: "date", defaultValue: null, required: true, options: [] },
+      { name: "endDate", label: null, type: "date", defaultValue: null, required: true, options: [] },
+    ]);
+  });
+
+  it("validates YYYY-MM-DD routine date strings as real calendar dates", () => {
+    expect(isValidRoutineDateString("2024-02-29")).toBe(true);
+    expect(isValidRoutineDateString("2024-02-30")).toBe(false);
+    expect(isValidRoutineDateString("2023-02-29")).toBe(false);
+    expect(isValidRoutineDateString("2024-13-01")).toBe(false);
+    expect(isValidRoutineDateString("2024-1-01")).toBe(false);
   });
 
   it("interpolates provided variable values into the routine template", () => {

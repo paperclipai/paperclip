@@ -206,6 +206,10 @@ export type {
   ExecutionWorkspaceCloseLinkedIssue,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceCloseReadinessState,
+  WorkspaceOverviewItem,
+  WorkspaceOverviewLinkedIssue,
+  WorkspaceOverviewPrimaryService,
+  WorkspaceOverviewResponse,
   ProjectWorkspaceRuntimeConfig,
   WorkspaceCommandDefinition,
   WorkspaceCommandKind,
@@ -265,6 +269,14 @@ export type {
   CompanyArtifactSource,
   CompanyArtifactsResponse,
 } from "./artifact.js";
+
+export type {
+  ExternalObject,
+  ExternalObjectMention,
+  ExternalObjectMentionGroup,
+  ExternalObjectSummary,
+  ExternalObjectSummaryItem,
+} from "./external-object.js";
 export type {
   Issue,
   IssueWorkMode,
@@ -357,6 +369,9 @@ export type {
   IssueAncestorGoal,
   IssueAttachment,
   IssueLabel,
+  IssueWatchdog,
+  IssueWatchdogStatus,
+  IssueWatchdogSummary,
 } from "./issue.js";
 export type {
   IssueTreeControlPreview,
@@ -418,6 +433,7 @@ export type {
   Routine,
   RoutineEnvConfig,
   RoutineManagedByPlugin,
+  RoutineDescriptionDocument,
   RoutineVariable,
   RoutineVariableDefaultValue,
   RoutineRevisionSnapshotRoutineV1,
@@ -440,6 +456,7 @@ export type {
   AgentWakeupSkipped,
   HeartbeatRun,
   HeartbeatRunEvent,
+  HeartbeatRunStatusPhase,
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupRequest,
@@ -548,6 +565,8 @@ export type {
   PluginDatabaseDeclaration,
   PluginApiRouteCompanyResolution,
   PluginApiRouteDeclaration,
+  PluginObjectReferenceRefreshPolicy,
+  PluginObjectReferenceProviderDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
   PluginDatabaseNamespaceRecord,

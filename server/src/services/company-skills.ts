@@ -45,7 +45,7 @@ import type {
   CompanySkillVersionCreateRequest,
   CompanySkillVersionFileInventoryEntry,
 } from "@paperclipai/shared";
-import { normalizeAgentUrlKey } from "@paperclipai/shared";
+import { normalizeAgentUrlKey, parseFrontmatterMarkdown } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
@@ -565,139 +565,6 @@ function deriveTrustLevel(fileInventory: CompanySkillFileInventoryEntry[]): Comp
   return "markdown_only";
 }
 
-function prepareYamlLines(raw: string) {
-  return raw
-    .split("\n")
-    .map((line) => ({
-      indent: line.match(/^ */)?.[0].length ?? 0,
-      content: line.trim(),
-    }))
-    .filter((line) => line.content.length > 0 && !line.content.startsWith("#"));
-}
-
-function parseYamlScalar(rawValue: string): unknown {
-  const trimmed = rawValue.trim();
-  if (trimmed === "") return "";
-  if (trimmed === "null" || trimmed === "~") return null;
-  if (trimmed === "true") return true;
-  if (trimmed === "false") return false;
-  if (trimmed === "[]") return [];
-  if (trimmed === "{}") return {};
-  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
-  if (trimmed.startsWith("\"") || trimmed.startsWith("[") || trimmed.startsWith("{")) {
-    try {
-      return JSON.parse(trimmed);
-    } catch {
-      return trimmed;
-    }
-  }
-  return trimmed;
-}
-
-function parseYamlBlock(
-  lines: Array<{ indent: number; content: string }>,
-  startIndex: number,
-  indentLevel: number,
-): { value: unknown; nextIndex: number } {
-  let index = startIndex;
-  while (index < lines.length && lines[index]!.content.length === 0) index += 1;
-  if (index >= lines.length || lines[index]!.indent < indentLevel) {
-    return { value: {}, nextIndex: index };
-  }
-
-  const isArray = lines[index]!.indent === indentLevel && lines[index]!.content.startsWith("-");
-  if (isArray) {
-    const values: unknown[] = [];
-    while (index < lines.length) {
-      const line = lines[index]!;
-      if (line.indent < indentLevel) break;
-      if (line.indent !== indentLevel || !line.content.startsWith("-")) break;
-      const remainder = line.content.slice(1).trim();
-      index += 1;
-      if (!remainder) {
-        const nested = parseYamlBlock(lines, index, indentLevel + 2);
-        values.push(nested.value);
-        index = nested.nextIndex;
-        continue;
-      }
-      const inlineObjectSeparator = remainder.indexOf(":");
-      if (
-        inlineObjectSeparator > 0 &&
-        !remainder.startsWith("\"") &&
-        !remainder.startsWith("{") &&
-        !remainder.startsWith("[")
-      ) {
-        const key = remainder.slice(0, inlineObjectSeparator).trim();
-        const rawValue = remainder.slice(inlineObjectSeparator + 1).trim();
-        const nextObject: Record<string, unknown> = {
-          [key]: parseYamlScalar(rawValue),
-        };
-        if (index < lines.length && lines[index]!.indent > indentLevel) {
-          const nested = parseYamlBlock(lines, index, indentLevel + 2);
-          if (isPlainRecord(nested.value)) {
-            Object.assign(nextObject, nested.value);
-          }
-          index = nested.nextIndex;
-        }
-        values.push(nextObject);
-        continue;
-      }
-      values.push(parseYamlScalar(remainder));
-    }
-    return { value: values, nextIndex: index };
-  }
-
-  const record: Record<string, unknown> = {};
-  while (index < lines.length) {
-    const line = lines[index]!;
-    if (line.indent < indentLevel) break;
-    if (line.indent !== indentLevel) {
-      index += 1;
-      continue;
-    }
-    const separatorIndex = line.content.indexOf(":");
-    if (separatorIndex <= 0) {
-      index += 1;
-      continue;
-    }
-    const key = line.content.slice(0, separatorIndex).trim();
-    const remainder = line.content.slice(separatorIndex + 1).trim();
-    index += 1;
-    if (!remainder) {
-      const nested = parseYamlBlock(lines, index, indentLevel + 2);
-      record[key] = nested.value;
-      index = nested.nextIndex;
-      continue;
-    }
-    record[key] = parseYamlScalar(remainder);
-  }
-  return { value: record, nextIndex: index };
-}
-
-function parseYamlFrontmatter(raw: string): Record<string, unknown> {
-  const prepared = prepareYamlLines(raw);
-  if (prepared.length === 0) return {};
-  const parsed = parseYamlBlock(prepared, 0, prepared[0]!.indent);
-  return isPlainRecord(parsed.value) ? parsed.value : {};
-}
-
-function parseFrontmatterMarkdown(raw: string): { frontmatter: Record<string, unknown>; body: string } {
-  const normalized = raw.replace(/\r\n/g, "\n");
-  if (!normalized.startsWith("---\n")) {
-    return { frontmatter: {}, body: normalized.trim() };
-  }
-  const closing = normalized.indexOf("\n---\n", 4);
-  if (closing < 0) {
-    return { frontmatter: {}, body: normalized.trim() };
-  }
-  const frontmatterRaw = normalized.slice(4, closing).trim();
-  const body = normalized.slice(closing + 5).trim();
-  return {
-    frontmatter: parseYamlFrontmatter(frontmatterRaw),
-    body,
-  };
-}
-
 async function fetchText(url: string) {
   const response = await ghFetch(url);
   if (!response.ok) {
@@ -1072,6 +939,38 @@ async function collectLocalSkillInventory(
     .sort((left, right) => left.path.localeCompare(right.path));
 }
 
+function inventoryEntriesEqual(
+  left: CompanySkillFileInventoryEntry[],
+  right: CompanySkillFileInventoryEntry[],
+) {
+  if (left.length !== right.length) return false;
+  const normalize = (entries: CompanySkillFileInventoryEntry[]) =>
+    entries
+      .map((entry) => ({
+        path: normalizePortablePath(entry.path),
+        kind: entry.kind,
+      }))
+      .sort((leftEntry, rightEntry) => leftEntry.path.localeCompare(rightEntry.path));
+  const normalizedLeft = normalize(left);
+  const normalizedRight = normalize(right);
+  return normalizedLeft.every((entry, index) => {
+    const other = normalizedRight[index];
+    return other?.path === entry.path && other.kind === entry.kind;
+  });
+}
+
+function inferLocalSkillInventoryMode(
+  skill: Pick<CompanySkillRow, "sourceLocator" | "metadata">,
+): LocalSkillInventoryMode {
+  const metadata = isPlainRecord(skill.metadata) ? skill.metadata : null;
+  const sourceKind = asString(metadata?.sourceKind);
+  const workspaceCwd = asString(metadata?.workspaceCwd);
+  if (sourceKind === "project_scan" && workspaceCwd && skill.sourceLocator === workspaceCwd) {
+    return "project_root";
+  }
+  return "full";
+}
+
 export async function readLocalSkillImportFromDirectory(
   companyId: string,
   skillDir: string,
@@ -1155,8 +1054,9 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
 
   if (stat.isFile()) {
     const markdown = await fs.readFile(resolvedPath, "utf8");
+    const sourceDir = path.dirname(resolvedPath);
     const parsed = parseFrontmatterMarkdown(markdown);
-    const slug = deriveImportedSkillSlug(parsed.frontmatter, path.basename(path.dirname(resolvedPath)));
+    const slug = deriveImportedSkillSlug(parsed.frontmatter, path.basename(sourceDir));
     const parsedMetadata = isPlainRecord(parsed.frontmatter.metadata) ? parsed.frontmatter.metadata : null;
     const skillKey = readCanonicalSkillKey(parsed.frontmatter, parsedMetadata);
     const metadata = {
@@ -1164,14 +1064,12 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
       ...(parsedMetadata ?? {}),
       sourceKind: "local_path",
     };
-    const inventory: CompanySkillFileInventoryEntry[] = [
-      { path: "SKILL.md", kind: "skill" },
-    ];
+    const inventory = await collectLocalSkillInventory(sourceDir, "project_root");
     return [{
       key: deriveCanonicalSkillKey(companyId, {
         slug,
         sourceType: "local_path",
-        sourceLocator: path.dirname(resolvedPath),
+        sourceLocator: sourceDir,
         metadata,
       }),
       slug,
@@ -1180,7 +1078,7 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
       markdown,
       packageDir: path.dirname(resolvedPath),
       sourceType: "local_path",
-      sourceLocator: path.dirname(resolvedPath),
+      sourceLocator: sourceDir,
       sourceRef: null,
       trustLevel: deriveTrustLevel(inventory),
       compatibility: "compatible",
@@ -1370,6 +1268,18 @@ async function readUrlSkillImports(
   throw unprocessable("Unsupported skill source. Use a local path or URL.");
 }
 
+function normalizeFileInventory(row: { fileInventory: unknown }): CompanySkillFileInventoryEntry[] {
+  return Array.isArray(row.fileInventory)
+    ? row.fileInventory.flatMap((entry) => {
+      if (!isPlainRecord(entry)) return [];
+      return [{
+        path: String(entry.path ?? ""),
+        kind: (String(entry.kind ?? "other") as CompanySkillFileInventoryEntry["kind"]),
+      }];
+    })
+    : [];
+}
+
 function toCompanySkill(row: CompanySkillRow): CompanySkill {
   return {
     ...row,
@@ -1379,15 +1289,7 @@ function toCompanySkill(row: CompanySkillRow): CompanySkill {
     sourceRef: row.sourceRef ?? null,
     trustLevel: row.trustLevel as CompanySkillTrustLevel,
     compatibility: row.compatibility as CompanySkillCompatibility,
-    fileInventory: Array.isArray(row.fileInventory)
-      ? row.fileInventory.flatMap((entry) => {
-        if (!isPlainRecord(entry)) return [];
-        return [{
-          path: String(entry.path ?? ""),
-          kind: (String(entry.kind ?? "other") as CompanySkillFileInventoryEntry["kind"]),
-        }];
-      })
-      : [],
+    fileInventory: normalizeFileInventory(row),
     iconUrl: row.iconUrl ?? null,
     color: row.color ?? null,
     tagline: row.tagline ?? null,
@@ -1415,15 +1317,7 @@ function toCompanySkillListRow(row: CompanySkillListDbRow): CompanySkillListRow 
     sourceRef: row.sourceRef ?? null,
     trustLevel: row.trustLevel as CompanySkillTrustLevel,
     compatibility: row.compatibility as CompanySkillCompatibility,
-    fileInventory: Array.isArray(row.fileInventory)
-      ? row.fileInventory.flatMap((entry) => {
-        if (!isPlainRecord(entry)) return [];
-        return [{
-          path: String(entry.path ?? ""),
-          kind: (String(entry.kind ?? "other") as CompanySkillFileInventoryEntry["kind"]),
-        }];
-      })
-      : [],
+    fileInventory: normalizeFileInventory(row),
     iconUrl: row.iconUrl ?? null,
     color: row.color ?? null,
     tagline: row.tagline ?? null,
@@ -2270,6 +2164,8 @@ export function companySkillService(db: Db) {
         slug: companySkills.slug,
         sourceType: companySkills.sourceType,
         sourceLocator: companySkills.sourceLocator,
+        trustLevel: companySkills.trustLevel,
+        fileInventory: companySkills.fileInventory,
         metadata: companySkills.metadata,
       })
       .from(companySkills)
@@ -2277,6 +2173,8 @@ export function companySkillService(db: Db) {
     const skills = rows.map((row) => ({
       ...row,
       sourceType: row.sourceType as CompanySkillSourceType,
+      trustLevel: row.trustLevel as CompanySkillTrustLevel,
+      fileInventory: normalizeFileInventory(row),
       metadata: isPlainRecord(row.metadata) ? row.metadata : null,
     }));
     const missingIds = new Set(await findMissingLocalSkillIds(skills));
@@ -2285,11 +2183,23 @@ export function companySkillService(db: Db) {
       if (skill.sourceType !== "local_path") continue;
 
       if (!missingIds.has(skill.id)) {
-        if (getMissingSourceMarker(skill.metadata)) {
+        const metadata = getMissingSourceMarker(skill.metadata)
+          ? withoutMissingSourceMarker(skill.metadata)
+          : skill.metadata;
+        const sourceLocator = asString(skill.sourceLocator);
+        const nextInventory = sourceLocator
+          ? await collectLocalSkillInventory(sourceLocator, inferLocalSkillInventoryMode(skill)).catch(() => null)
+          : null;
+        const nextTrustLevel = nextInventory ? deriveTrustLevel(nextInventory) : skill.trustLevel;
+        const inventoryChanged = nextInventory ? !inventoryEntriesEqual(skill.fileInventory, nextInventory) : false;
+        const metadataChanged = JSON.stringify(metadata ?? {}) !== JSON.stringify(skill.metadata ?? {});
+        if (inventoryChanged || metadataChanged || nextTrustLevel !== skill.trustLevel) {
           await db
             .update(companySkills)
             .set({
-              metadata: withoutMissingSourceMarker(skill.metadata),
+              ...(nextInventory ? { fileInventory: serializeFileInventory(nextInventory) } : {}),
+              trustLevel: nextTrustLevel,
+              metadata,
               updatedAt: new Date(),
             })
             .where(eq(companySkills.id, skill.id));
@@ -4250,11 +4160,9 @@ export function companySkillService(db: Db) {
 
     const out: PaperclipSkillEntry[] = [];
     for (const skill of skills) {
-      const sourceKind = asString(getSkillMeta(skill).sourceKind);
       const sourceResolution = await resolveRuntimeSkillSource(companyId, skill, options);
       if (!sourceResolution) continue;
 
-      const required = sourceKind === "paperclip_bundled";
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
@@ -4263,10 +4171,6 @@ export function companySkillService(db: Db) {
         currentVersionId: skill.currentVersionId,
         sourceStatus: sourceResolution.status,
         missingDetail: sourceResolution.status === "missing" ? sourceResolution.detail : null,
-        required,
-        requiredReason: required
-          ? "Bundled Paperclip skills are always available for local adapters."
-          : null,
       });
     }
 

@@ -41,7 +41,6 @@
     "exe.dev"
   ],
   "scripts": {
-    "postinstall": "node ../../../../scripts/link-plugin-dev-sdk.mjs",
     "prebuild": "pnpm -C ../../../.. --filter @paperclipai/plugin-sdk ensure-build-deps",
     "build": "rm -rf dist && tsc",
     "clean": "rm -rf dist",

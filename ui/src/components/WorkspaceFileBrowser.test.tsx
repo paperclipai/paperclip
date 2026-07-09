@@ -59,7 +59,7 @@ function createItem(overrides: Partial<WorkspaceFileListFileItem> = {}): Workspa
     byteSize: 2048,
     modifiedAt: new Date(Date.now() - 120_000).toISOString(),
     previewKind: "text",
-    capabilities: { preview: true, download: false, listChildren: false },
+    capabilities: { preview: true, download: true, listChildren: false },
     ...overrides,
   };
 }
@@ -243,6 +243,10 @@ describe("WorkspaceFileBrowser", () => {
       (el) => el.getAttribute("title") === "ui/src/pages/IssueDetail.tsx",
     );
     expect(option).not.toBeUndefined();
+    const download = option!.querySelector<HTMLAnchorElement>('a[aria-label="Download IssueDetail.tsx"]');
+    expect(download?.getAttribute("href")).toBe(
+      "/api/issues/issue-1/file-resources/content?path=ui%2Fsrc%2Fpages%2FIssueDetail.tsx&download=1",
+    );
 
     act(() => {
       option!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));

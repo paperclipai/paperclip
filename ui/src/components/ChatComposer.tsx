@@ -58,8 +58,8 @@ export interface ChatComposerProps {
   submitKey?: "enter" | "mod-enter";
   /** Collapse to a single visual line — strips newlines and disables wrapping (conference room). */
   singleLine?: boolean;
-  /** Visual tone. `"planning"` tints the whole box amber (task planning mode, PAP-95b). */
-  tone?: "standard" | "planning";
+  /** Visual tone. Task issue modes tint the box for planning and ask flows. */
+  tone?: "standard" | "ask" | "planning";
   /**
    * Surface treatment (PAP-128 A / PAP-131).
    * - `"card"`: opaque `bg-card` box (default).
@@ -141,6 +141,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   const [isDragOver, setIsDragOver] = useState(false);
 
   const canAttach = typeof onAttachFiles === "function";
+  const isAsk = tone === "ask";
   const isPlanning = tone === "planning";
   const canSend = !disabled && !submitting && value.trim().length > 0;
 
@@ -233,6 +234,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           ? "border-border/70 bg-background/95 shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]"
           : "border-border bg-card",
         // No blue focus ring — neutral border darkening only.
+        isAsk &&
+          "border-sky-500/55 bg-sky-50/50 focus-within:border-sky-500/70 dark:border-sky-500/50 dark:bg-sky-500/[0.07]",
         isPlanning &&
           "border-amber-500/55 bg-amber-50/50 focus-within:border-amber-500/70 dark:border-amber-500/50 dark:bg-amber-500/[0.07]",
         isDragOver && canAttach && "border-muted-foreground/50 bg-accent/20",

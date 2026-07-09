@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   CompanySecretProviderConfig,
+  RemoteSecretImportPreviewResult,
   SecretProviderConfigDiscoveryPreviewResult,
   SecretProviderDescriptor,
 } from "@paperclipai/shared";
@@ -25,6 +26,8 @@ const mockSecretsApi = vi.hoisted(() => ({
   removeProviderConfig: vi.fn(),
   setDefaultProviderConfig: vi.fn(),
   checkProviderConfigHealth: vi.fn(),
+  remoteImportPreview: vi.fn(),
+  remoteImport: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   rotate: vi.fn(),
@@ -133,6 +136,14 @@ const providerConfigs = [
   },
 ] satisfies Partial<CompanySecretProviderConfig>[];
 
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
+
 async function flushReact() {
   await act(async () => {
     await Promise.resolve();
@@ -187,6 +198,18 @@ function makeDiscoveryPreview(
   };
 }
 
+function makeRemoteImportPreview(
+  overrides: Partial<RemoteSecretImportPreviewResult> = {},
+): RemoteSecretImportPreviewResult {
+  return {
+    providerConfigId: "vault-aws",
+    provider: "aws_secrets_manager",
+    nextToken: null,
+    candidates: [],
+    ...overrides,
+  };
+}
+
 function setInputValue(input: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
   setter?.call(input, value);
@@ -234,6 +257,7 @@ describe("Secrets page layout", () => {
     });
     mockSecretsApi.providerConfigs.mockResolvedValue(providerConfigs);
     mockSecretsApi.providerConfigDiscoveryPreview.mockResolvedValue(makeDiscoveryPreview());
+    mockSecretsApi.remoteImportPreview.mockResolvedValue(makeRemoteImportPreview());
   });
 
   afterEach(() => {
@@ -284,6 +308,7 @@ describe("Secrets page layout", () => {
           onRemove={vi.fn()}
           onSetDefault={vi.fn()}
           onHealthCheck={vi.fn()}
+          onImportSecrets={vi.fn()}
           pendingActionId={null}
         />,
       );
@@ -297,6 +322,58 @@ describe("Secrets page layout", () => {
 
     await act(async () => {
       vaultRoot.unmount();
+    });
+  });
+
+  it("refreshes existing AWS secrets from a provider vault card", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const vaultTabButton = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("Provider vaults"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      vaultTabButton?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      vaultTabButton?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+      vaultTabButton?.click();
+    });
+    await flushReact();
+
+    const refreshButton = document.querySelector(
+      '[data-testid="provider-vault-refresh-secrets-vault-aws"]',
+    ) as HTMLButtonElement | null;
+    expect(refreshButton).not.toBeNull();
+
+    await act(async () => {
+      refreshButton?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Import from AWS Secrets Manager");
+    expect(mockSecretsApi.remoteImportPreview).toHaveBeenCalledWith("company-1", {
+      providerConfigId: "vault-aws",
+      query: null,
+      nextToken: null,
+      pageSize: 50,
+    });
+
+    await act(async () => {
+      root.unmount();
     });
   });
 
@@ -564,9 +641,24 @@ describe("Secrets page layout", () => {
   });
 
   it("shows AWS discovery errors without replacing manual vault form values", async () => {
+    const rawProviderMessage =
+      "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized";
     mockSecretsApi.providerConfigDiscoveryPreview.mockRejectedValueOnce(
       new ApiError("AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.", 403, {
-        details: { code: "access_denied" },
+        details: {
+          code: "access_denied",
+          provider: "aws_secrets_manager",
+          operation: "secret_provider_config.discovery.preview",
+          providerConfigId: "discovery-preview",
+          providerVaultContext: "draft_config",
+          region: "us-west-2",
+          credentialPath: "Paperclip server runtime/provider credential path",
+          requiredCapability: "secretsmanager:ListSecrets",
+          actionableMessage:
+            "AWS discovery preview needs secretsmanager:ListSecrets in the selected region for the Paperclip server runtime/provider credential path.",
+          safeAlternative:
+            "If the operator already knows the exact AWS Secrets Manager ARN, paste/link that ARN instead of using discovery. Exact-resource DescribeSecret and runtime read permissions are still required.",
+        },
       }),
     );
     const root = createRoot(container);
@@ -604,9 +696,75 @@ describe("Secrets page layout", () => {
     await flushReact();
     await flushReact();
 
-    expect(document.body.textContent).toContain("AWS Secrets Manager denied the request");
+    const errorBanner = document.querySelector('[data-testid="aws-vault-discovery-error"]');
+    expect(errorBanner).not.toBeNull();
+    expect(errorBanner?.textContent).toContain("AWS discovery needs ListSecrets permission");
+    expect(errorBanner?.textContent).toContain("secretsmanager:ListSecrets");
+    expect(errorBanner?.textContent).toContain("Paperclip server runtime/provider credential path");
+    expect(errorBanner?.textContent).toContain("paste/link that ARN");
+    expect(errorBanner?.textContent).toContain("DescribeSecret");
+    expect(errorBanner?.textContent).toContain("us-west-2");
+    expect(errorBanner?.textContent).toContain("secret_provider_config.discovery.preview");
+    expect(errorBanner?.textContent).toContain("aws_secrets_manager");
+    expect(errorBanner?.textContent).toContain("Safe request/error details");
+    expect(errorBanner?.textContent).not.toContain(rawProviderMessage);
+    expect(errorBanner?.textContent).not.toContain("arn:aws");
+    expect(errorBanner?.textContent).not.toContain("123456789012");
     expect(regionInput.value).toBe("us-west-2");
     expect(namespaceInput.value).toBe("manual-prod");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps generic AWS discovery 403 errors on the generic failure path", async () => {
+    mockSecretsApi.providerConfigDiscoveryPreview.mockRejectedValueOnce(
+      new ApiError("AWS discovery request failed before IAM evaluation.", 403, {
+        details: {
+          code: "proxy_forbidden",
+          provider: "aws_secrets_manager",
+          operation: "secret_provider_config.discovery.preview",
+          region: "us-west-1",
+        },
+      }),
+    );
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    await openAwsVaultDialog();
+
+    const regionInput = document.getElementById("provider-vault-aws-region") as HTMLInputElement;
+    await act(async () => {
+      setInputValue(regionInput, "us-west-1");
+    });
+    await flushReact();
+
+    await act(async () => {
+      (document.querySelector('[data-testid="aws-vault-discovery-button"]') as HTMLButtonElement | null)?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    const errorBanner = document.querySelector('[data-testid="aws-vault-discovery-error"]');
+    expect(errorBanner).not.toBeNull();
+    expect(errorBanner?.textContent).toContain("AWS discovery failed");
+    expect(errorBanner?.textContent).toContain("AWS discovery request failed before IAM evaluation.");
+    expect(errorBanner?.textContent).toContain("proxy_forbidden");
+    expect(errorBanner?.textContent).not.toContain("AWS discovery needs ListSecrets permission");
 
     await act(async () => {
       root.unmount();

@@ -3,6 +3,7 @@ import {
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
+  isClaudeRefusalResult,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
 } from "./parse.js";
@@ -143,6 +144,55 @@ describe("isClaudePoisonedPreviousMessageIdError", () => {
 
   it("returns false for empty parsed result", () => {
     expect(isClaudePoisonedPreviousMessageIdError({})).toBe(false);
+  });
+});
+
+describe("isClaudeRefusalResult", () => {
+  it("detects stop_reason: refusal even on a clean (is_error=false) result", () => {
+    expect(
+      isClaudeRefusalResult({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        stop_reason: "refusal",
+        result: "",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects the camelCase stopReason variant", () => {
+    expect(isClaudeRefusalResult({ stopReason: "refusal" })).toBe(true);
+  });
+
+  it("detects subtype: model_refusal", () => {
+    expect(
+      isClaudeRefusalResult({ subtype: "model_refusal", is_error: false }),
+    ).toBe(true);
+  });
+
+  it("is case-insensitive and tolerant of surrounding whitespace", () => {
+    expect(isClaudeRefusalResult({ stop_reason: "  Refusal " })).toBe(true);
+  });
+
+  it("returns false for ordinary successful turns", () => {
+    expect(
+      isClaudeRefusalResult({
+        subtype: "success",
+        is_error: false,
+        stop_reason: "end_turn",
+        result: "Here is your answer.",
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for max-turns and other stop reasons", () => {
+    expect(isClaudeRefusalResult({ stop_reason: "max_turns" })).toBe(false);
+    expect(isClaudeRefusalResult({ subtype: "error_max_turns" })).toBe(false);
+  });
+
+  it("returns false for null/empty parsed result", () => {
+    expect(isClaudeRefusalResult(null)).toBe(false);
+    expect(isClaudeRefusalResult({})).toBe(false);
   });
 });
 

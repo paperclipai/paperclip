@@ -82,6 +82,9 @@ import type {
   PluginPerformActionActorContext,
   PluginPerformActionContext,
   ExecuteToolParams,
+  DetectExternalObjectsParams,
+  ResolveExternalObjectParams,
+  RefreshExternalObjectsParams,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
@@ -1351,6 +1354,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       case "executeTool":
         return handleExecuteTool(params as ExecuteToolParams);
+      case "detectExternalObjects":
+        return handleDetectExternalObjects(params as DetectExternalObjectsParams);
+      case "resolveExternalObject":
+        return handleResolveExternalObject(params as ResolveExternalObjectParams);
+      case "refreshExternalObjects":
+        return handleRefreshExternalObjects(params as RefreshExternalObjectsParams);
 
       case "environmentValidateConfig":
         return handleEnvironmentValidateConfig(params as PluginEnvironmentValidateConfigParams);
@@ -1409,6 +1418,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onHealth) supportedMethods.push("health");
     if (plugin.definition.onShutdown) supportedMethods.push("shutdown");
     if (plugin.definition.onApiRequest) supportedMethods.push("handleApiRequest");
+    if (plugin.definition.onDetectExternalObjects) supportedMethods.push("detectExternalObjects");
+    if (plugin.definition.onResolveExternalObject) supportedMethods.push("resolveExternalObject");
+    if (plugin.definition.onRefreshExternalObjects) supportedMethods.push("refreshExternalObjects");
     if (plugin.definition.onEnvironmentValidateConfig) supportedMethods.push("environmentValidateConfig");
     if (plugin.definition.onEnvironmentProbe) supportedMethods.push("environmentProbe");
     if (plugin.definition.onEnvironmentAcquireLease) supportedMethods.push("environmentAcquireLease");
@@ -1586,6 +1598,27 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw new Error(`No tool handler registered for "${params.toolName}"`);
     }
     return entry.fn(params.parameters, params.runContext);
+  }
+
+  async function handleDetectExternalObjects(params: DetectExternalObjectsParams) {
+    if (!plugin.definition.onDetectExternalObjects) {
+      throw methodNotImplemented("detectExternalObjects");
+    }
+    return plugin.definition.onDetectExternalObjects(params);
+  }
+
+  async function handleResolveExternalObject(params: ResolveExternalObjectParams) {
+    if (!plugin.definition.onResolveExternalObject) {
+      throw methodNotImplemented("resolveExternalObject");
+    }
+    return plugin.definition.onResolveExternalObject(params);
+  }
+
+  async function handleRefreshExternalObjects(params: RefreshExternalObjectsParams) {
+    if (!plugin.definition.onRefreshExternalObjects) {
+      throw methodNotImplemented("refreshExternalObjects");
+    }
+    return plugin.definition.onRefreshExternalObjects(params);
   }
 
   function methodNotImplemented(method: string): Error & { code: number } {

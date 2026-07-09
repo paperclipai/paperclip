@@ -47,6 +47,7 @@ const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
   missing_disposition: "Missing Disposition",
   stranded_assigned_issue: "Stranded Task",
   workspace_validation: "Workspace Validation",
+  configuration_validation: "Configuration Validation",
   active_run_watchdog: "Active Watchdog",
   issue_graph_liveness: "Graph Liveness",
 };
@@ -57,6 +58,8 @@ const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
     "Paperclip retried this task's last run and it still has no live execution path.",
   workspace_validation:
     "Paperclip stopped this run because the task's git workspace could not be validated.",
+  configuration_validation:
+    "Paperclip stopped before dispatching this run because required secret/env bindings are missing.",
   active_run_watchdog:
     "The active run has been silent. Recovery is observing without interrupting it.",
   issue_graph_liveness:

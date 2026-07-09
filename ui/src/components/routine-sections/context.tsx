@@ -67,6 +67,15 @@ export type NewTriggerDraft = {
   replayWindowSec: string;
 };
 
+export function createDefaultNewTrigger(): NewTriggerDraft {
+  return {
+    kind: "schedule",
+    cronExpression: "0 10 * * *",
+    signingMode: "bearer",
+    replayWindowSec: "300",
+  };
+}
+
 export type SecretMessage = {
   title: string;
   entries: Array<{ webhookUrl: string; webhookSecret: string }>;

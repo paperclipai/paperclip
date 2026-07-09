@@ -1,74 +1,78 @@
 import { useEffect, useMemo } from "react";
 import { Link, Navigate } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
-import type { ExecutionWorkspace, Issue, Project } from "@paperclipai/shared";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import type { WorkspaceOverviewItem } from "@paperclipai/shared";
+import { Button } from "@/components/ui/button";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { issuesApi } from "../api/issues";
-import { projectsApi } from "../api/projects";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
-import { buildProjectWorkspaceSummaries, type ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
+import type { ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef } from "../lib/utils";
 
 type ProjectWorkspaceGroup = {
-  project: Project;
+  projectId: string;
+  projectName: string;
   projectRef: string;
   summaries: ProjectWorkspaceSummary[];
   lastUpdatedAt: Date;
   runningServiceCount: number;
 };
 
-function buildProjectWorkspaceGroups(input: {
-  projects: Project[];
-  issues: Issue[];
-  executionWorkspaces: ExecutionWorkspace[];
-}): ProjectWorkspaceGroup[] {
-  const issuesByProjectId = new Map<string, Issue[]>();
-  for (const issue of input.issues) {
-    if (!issue.projectId) continue;
-    const existing = issuesByProjectId.get(issue.projectId) ?? [];
-    existing.push(issue);
-    issuesByProjectId.set(issue.projectId, existing);
-  }
+function overviewItemToSummary(item: WorkspaceOverviewItem): ProjectWorkspaceSummary {
+  return {
+    key: item.key,
+    kind: item.kind,
+    workspaceId: item.workspaceId,
+    workspaceName: item.workspaceName,
+    cwd: item.cwd,
+    branchName: item.branchName,
+    lastUpdatedAt: item.lastUpdatedAt,
+    projectWorkspaceId: item.projectWorkspaceId,
+    executionWorkspaceId: item.executionWorkspaceId,
+    executionWorkspaceStatus: item.executionWorkspaceStatus,
+    serviceCount: item.serviceCount,
+    runningServiceCount: item.runningServiceCount,
+    primaryServiceUrl: item.primaryServiceUrl,
+    primaryServiceUrlRunning: item.primaryServiceUrlRunning,
+    hasRuntimeConfig: item.hasRuntimeConfig,
+    linkedIssueCount: item.linkedIssueCount,
+    issues: item.linkedIssues,
+  };
+}
 
-  const executionWorkspacesByProjectId = new Map<string, ExecutionWorkspace[]>();
-  for (const workspace of input.executionWorkspaces) {
-    if (!workspace.projectId) continue;
-    const existing = executionWorkspacesByProjectId.get(workspace.projectId) ?? [];
-    existing.push(workspace);
-    executionWorkspacesByProjectId.set(workspace.projectId, existing);
-  }
-
-  return input.projects
-    .map((project) => {
-      const summaries = buildProjectWorkspaceSummaries({
-        project,
-        issues: issuesByProjectId.get(project.id) ?? [],
-        executionWorkspaces: executionWorkspacesByProjectId.get(project.id) ?? [],
-      });
-      if (summaries.length === 0) return null;
-      return {
-        project,
-        projectRef: projectRouteRef(project),
-        summaries,
-        lastUpdatedAt: summaries.reduce(
-          (latest, summary) => summary.lastUpdatedAt.getTime() > latest.getTime() ? summary.lastUpdatedAt : latest,
-          new Date(0),
-        ),
-        runningServiceCount: summaries.reduce((count, summary) => count + summary.runningServiceCount, 0),
-      };
-    })
-    .filter((group): group is ProjectWorkspaceGroup => group !== null)
-    .sort((a, b) => {
-      const runningDiff = b.runningServiceCount - a.runningServiceCount;
-      if (runningDiff !== 0) return runningDiff;
-      const updatedDiff = b.lastUpdatedAt.getTime() - a.lastUpdatedAt.getTime();
-      return updatedDiff !== 0 ? updatedDiff : a.project.name.localeCompare(b.project.name);
+function buildProjectWorkspaceGroups(items: WorkspaceOverviewItem[]): ProjectWorkspaceGroup[] {
+  const groups = new Map<string, ProjectWorkspaceGroup>();
+  for (const item of items) {
+    const existing = groups.get(item.projectId);
+    const summary = overviewItemToSummary(item);
+    if (existing) {
+      existing.summaries.push(summary);
+      if (summary.lastUpdatedAt.getTime() > existing.lastUpdatedAt.getTime()) {
+        existing.lastUpdatedAt = summary.lastUpdatedAt;
+      }
+      existing.runningServiceCount += summary.runningServiceCount;
+      continue;
+    }
+    groups.set(item.projectId, {
+      projectId: item.projectId,
+      projectName: item.projectName,
+      projectRef: projectRouteRef({ id: item.projectId, name: item.projectName, urlKey: item.projectUrlKey }),
+      summaries: [summary],
+      lastUpdatedAt: summary.lastUpdatedAt,
+      runningServiceCount: summary.runningServiceCount,
     });
+  }
+
+  return [...groups.values()].sort((a, b) => {
+    const runningDiff = b.runningServiceCount - a.runningServiceCount;
+    if (runningDiff !== 0) return runningDiff;
+    const updatedDiff = b.lastUpdatedAt.getTime() - a.lastUpdatedAt.getTime();
+    return updatedDiff !== 0 ? updatedDiff : a.projectName.localeCompare(b.projectName);
+  });
 }
 
 export function Workspaces() {
@@ -80,25 +84,13 @@ export function Workspaces() {
   });
   const isolatedWorkspacesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true;
 
-  const { data: projects = [], isLoading: projectsLoading, error: projectsError } = useQuery({
-    queryKey: selectedCompanyId ? queryKeys.projects.list(selectedCompanyId) : ["projects", "__workspaces__", "disabled"],
-    queryFn: () => projectsApi.list(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId && isolatedWorkspacesEnabled),
-  });
-  const { data: issues = [], isLoading: issuesLoading, error: issuesError } = useQuery({
-    queryKey: selectedCompanyId ? queryKeys.issues.list(selectedCompanyId) : ["issues", "__workspaces__", "disabled"],
-    queryFn: () => issuesApi.list(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId && isolatedWorkspacesEnabled),
-  });
-  const {
-    data: executionWorkspaces = [],
-    isLoading: executionWorkspacesLoading,
-    error: executionWorkspacesError,
-  } = useQuery({
+  const overviewQuery = useInfiniteQuery({
     queryKey: selectedCompanyId
-      ? queryKeys.executionWorkspaces.list(selectedCompanyId)
-      : ["execution-workspaces", "__workspaces__", "disabled"],
-    queryFn: () => executionWorkspacesApi.list(selectedCompanyId!),
+      ? queryKeys.executionWorkspaces.overview(selectedCompanyId)
+      : ["execution-workspaces", "__workspaces-overview__", "disabled"],
+    queryFn: ({ pageParam }) => executionWorkspacesApi.listOverview(selectedCompanyId!, { offset: pageParam as number }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage.nextOffset ?? undefined,
     enabled: Boolean(selectedCompanyId && isolatedWorkspacesEnabled),
   });
 
@@ -106,12 +98,16 @@ export function Workspaces() {
     setBreadcrumbs([{ label: "Workspaces" }]);
   }, [setBreadcrumbs]);
 
-  const groups = useMemo(
-    () => buildProjectWorkspaceGroups({ projects, issues, executionWorkspaces }),
-    [executionWorkspaces, issues, projects],
+  const overviewPages = overviewQuery.data?.pages ?? [];
+  const overviewItems = useMemo(
+    () => overviewPages.flatMap((page) => page.items),
+    [overviewPages],
   );
-  const dataLoading = projectsLoading || issuesLoading || executionWorkspacesLoading;
-  const error = (projectsError ?? issuesError ?? executionWorkspacesError) as Error | null;
+  const groups = useMemo(() => buildProjectWorkspaceGroups(overviewItems), [overviewItems]);
+  const firstPage = overviewPages[0] ?? null;
+  const totalWorkspaceCount = firstPage?.total ?? overviewItems.length;
+  const dataLoading = overviewQuery.isLoading;
+  const error = overviewQuery.error as Error | null;
 
   if (experimentalSettingsQuery.isLoading) return <PageSkeleton variant="detail" />;
   if (!isolatedWorkspacesEnabled) return <Navigate to="/issues" replace />;
@@ -129,20 +125,15 @@ export function Workspaces() {
       ) : (
         <div className="space-y-8">
           {groups.map((group) => (
-            <section key={group.project.id} className="space-y-3">
+            <section key={group.projectId} className="space-y-3">
               <div className="flex flex-wrap items-end justify-between gap-2">
                 <div className="min-w-0">
                   <Link
                     to={`/projects/${group.projectRef}/workspaces`}
                     className="text-base font-semibold hover:underline"
                   >
-                    {group.project.name}
+                    {group.projectName}
                   </Link>
-                  {group.project.description ? (
-                    <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
-                      {group.project.description}
-                    </p>
-                  ) : null}
                 </div>
                 <span className="text-xs text-muted-foreground">
                   {group.summaries.length} workspace{group.summaries.length === 1 ? "" : "s"}
@@ -150,12 +141,28 @@ export function Workspaces() {
               </div>
               <ProjectWorkspacesContent
                 companyId={selectedCompanyId!}
-                projectId={group.project.id}
+                projectId={group.projectId}
                 projectRef={group.projectRef}
                 summaries={group.summaries}
               />
             </section>
           ))}
+          {overviewQuery.hasNextPage ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+              <p className="text-sm text-muted-foreground">
+                Showing {overviewItems.length} of {totalWorkspaceCount} workspaces.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void overviewQuery.fetchNextPage()}
+                disabled={overviewQuery.isFetchingNextPage}
+              >
+                {overviewQuery.isFetchingNextPage ? "Loading..." : "Load more"}
+              </Button>
+            </div>
+          ) : null}
         </div>
       )}
     </div>

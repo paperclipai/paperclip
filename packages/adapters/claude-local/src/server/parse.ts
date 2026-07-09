@@ -185,6 +185,24 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   );
 }
 
+export function isClaudeRefusalResult(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+
+  // A policy refusal exits the CLI cleanly (exitCode=0, is_error=false), so it
+  // must be detected from the structured fields rather than the failure flag.
+  const subtype = asString(parsed.subtype, "").trim().toLowerCase();
+  if (subtype === "model_refusal" || subtype === "refusal") return true;
+
+  const structuredStopReasons = [
+    parsed.stop_reason,
+    parsed.stopReason,
+    parsed.error_code,
+    parsed.errorCode,
+  ].map((value) => asString(value, "").trim().toLowerCase());
+
+  return structuredStopReasons.some((reason) => reason === "refusal");
+}
+
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]

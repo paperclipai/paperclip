@@ -60,6 +60,7 @@ interface ImportFromVaultDialogProps {
   companyId: string;
   providerConfigs: CompanySecretProviderConfig[];
   existingSecrets: CompanySecret[];
+  initialProviderConfigId?: string | null;
   onImportComplete?: (result: RemoteSecretImportResult) => void;
   onManageVaults?: () => void;
 }
@@ -83,9 +84,15 @@ function eligibleVaults(configs: CompanySecretProviderConfig[]): CompanySecretPr
   return configs.filter(isAwsSelectable);
 }
 
-function pickDefaultVault(configs: CompanySecretProviderConfig[]): string | null {
+function pickDefaultVault(
+  configs: CompanySecretProviderConfig[],
+  preferredId?: string | null,
+): string | null {
   const eligible = eligibleVaults(configs);
   if (eligible.length === 0) return null;
+  if (preferredId && eligible.some((vault) => vault.id === preferredId)) {
+    return preferredId;
+  }
   return (eligible.find((vault) => vault.isDefault) ?? eligible[0]).id;
 }
 
@@ -327,6 +334,7 @@ export function ImportFromVaultDialog({
   companyId,
   providerConfigs,
   existingSecrets,
+  initialProviderConfigId,
   onImportComplete,
   onManageVaults,
 }: ImportFromVaultDialogProps) {
@@ -360,7 +368,7 @@ export function ImportFromVaultDialog({
     setSelection(new Map());
     setImportResult(null);
     setShowOnlySelected(false);
-    const next = pickDefaultVault(providerConfigs);
+    const next = pickDefaultVault(providerConfigs, initialProviderConfigId);
     setVaultId(next);
     // We deliberately depend only on open so that re-opens reset the dialog;
     // providerConfigs changes during a session are handled by next preview fetch.

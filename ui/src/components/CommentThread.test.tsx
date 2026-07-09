@@ -9,8 +9,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommentThread } from "./CommentThread";
 
 vi.mock("./MarkdownBody", () => ({
-  MarkdownBody: ({ children, className }: { children: ReactNode; className?: string }) => (
-    <div className={className}>{children}</div>
+  MarkdownBody: ({
+    children,
+    className,
+    externalReferences,
+  }: {
+    children: ReactNode;
+    className?: string;
+    externalReferences?: Record<string, unknown>;
+  }) => (
+    <div
+      className={className}
+      data-testid="markdown-body"
+      data-external-reference-keys={externalReferences ? Object.keys(externalReferences).join(",") : ""}
+    >
+      {children}
+    </div>
   ),
 }));
 
@@ -390,6 +404,53 @@ describe("CommentThread", () => {
     });
 
     expect(copyButton?.textContent).toContain("Copy");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("passes externalReferences to MarkdownBody for comment bodies", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[{
+              id: "comment-ref",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-1",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
+              body: "See https://github.com/example/repo/pull/42 for context.",
+              createdAt: new Date("2026-03-11T11:00:00.000Z"),
+              updatedAt: new Date("2026-03-11T11:00:00.000Z"),
+            }]}
+            externalReferences={{
+              "https://github.com/example/repo/pull/42": {
+                providerKey: "github",
+                objectType: "pull_request",
+                statusCategory: "open",
+                liveness: "fresh",
+                statusLabel: "Open",
+                displayTitle: "PR #42",
+              },
+            }}
+            onAdd={async () => {}}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const commentRow = container.querySelector("#comment-comment-ref") as HTMLDivElement | null;
+    expect(commentRow).not.toBeNull();
+    const markdownBody = commentRow?.querySelector('[data-testid="markdown-body"]') as HTMLElement | null;
+    expect(markdownBody?.getAttribute("data-external-reference-keys"))
+      .toContain("https://github.com/example/repo/pull/42");
 
     act(() => {
       root.unmount();

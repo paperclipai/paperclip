@@ -3,6 +3,14 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 export interface Breadcrumb {
   label: string;
   href?: string;
+  /** Optional node rendered before the label (e.g. a status glyph). */
+  leading?: ReactNode;
+  /**
+   * Stable identity for `leading` so equality/diffing works without comparing
+   * React nodes by reference (which always differ across renders). Set this to
+   * a primitive that changes only when the rendered `leading` should change.
+   */
+  leadingKey?: string;
 }
 
 interface BreadcrumbContextValue {
@@ -23,7 +31,11 @@ function breadcrumbsEqual(left: Breadcrumb[], right: Breadcrumb[]) {
   if (left === right) return true;
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index += 1) {
-    if (left[index]?.label !== right[index]?.label || left[index]?.href !== right[index]?.href) {
+    if (
+      left[index]?.label !== right[index]?.label
+      || left[index]?.href !== right[index]?.href
+      || left[index]?.leadingKey !== right[index]?.leadingKey
+    ) {
       return false;
     }
   }

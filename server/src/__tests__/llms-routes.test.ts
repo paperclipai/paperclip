@@ -72,4 +72,39 @@ describe("llm routes", () => {
     expect(res.text).toContain("Timer heartbeats are opt-in for new hires.");
     expect(res.text).toContain("Leave runtimeConfig.heartbeat.enabled false");
   });
+
+  it("serves static Hermes Gateway configuration docs before the plugin is installed", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const indexRes = await request(app).get("/api/llms/agent-configuration.txt");
+    expect(indexRes.status).toBe(200);
+    expect(indexRes.text).toContain(
+      "- hermes_gateway: /llms/agent-configuration/hermes_gateway.txt",
+    );
+
+    const res = await request(app).get("/api/llms/agent-configuration/hermes_gateway.txt");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("Adapter: hermes_gateway");
+    expect(res.text).toContain('adapterType": "hermes_gateway"');
+    expect(res.text).toContain("API_SERVER_ENABLED=true");
+    expect(res.text).toContain("API_SERVER_KEY");
+    expect(res.text).toContain("hermes gateway run --replace --accept-hooks");
+    expect(res.text).toContain("Default Hermes API server port: 8642");
+    expect(res.text).toContain("agentDefaultsPayload.apiBaseUrl");
+    expect(res.text).toContain("agentDefaultsPayload.paperclipApiUrl");
+    expect(res.text).toContain("hermes_local");
+    expect(res.text).toContain("Hermes-originated Paperclip API usage");
+    expect(res.text).toContain("http://127.0.0.1:8642");
+    expect(res.text).toContain("http://192.168.1.25:8642");
+    expect(res.text).toContain("tailnet-name.ts.net:8642");
+    expect(res.text).toContain("http://host.docker.internal:8642");
+    expect(res.text).toContain("https://hermes-gateway.example");
+  });
 });

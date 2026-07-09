@@ -780,7 +780,6 @@ export const ManagementMatrix: Story = {};
 
 const managedKubernetesEnvironment: Environment = {
   id: "env-k8s-storybook",
-  companyId: COMPANY_ID,
   name: "Kubernetes Sandbox",
   description: "Managed Kubernetes sandbox environment for hosted tenant execution.",
   driver: "sandbox",
@@ -792,6 +791,7 @@ const managedKubernetesEnvironment: Environment = {
     runtimeClassName: "gvisor",
     egressMode: "cilium",
   },
+  envVars: {},
   metadata: { managedByPaperclip: true, managedKubernetesSandbox: true },
   createdAt: recent(2_000),
   updatedAt: recent(60),

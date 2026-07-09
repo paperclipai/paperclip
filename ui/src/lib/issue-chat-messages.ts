@@ -538,6 +538,17 @@ export interface SegmentTiming {
   endMs: number;
 }
 
+export function isCoTSegmentActive(args: {
+  isMessageRunning: boolean;
+  segmentIndex: number;
+  segmentCount: number;
+}) {
+  const { isMessageRunning, segmentIndex, segmentCount } = args;
+  if (!isMessageRunning) return false;
+  if (segmentCount <= 0 || segmentIndex < 0) return true;
+  return segmentIndex === segmentCount - 1;
+}
+
 function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): SegmentTiming[] {
   const timings: SegmentTiming[] = [];
   let inSegment = false;
@@ -839,13 +850,27 @@ function normalizeLiveRuns(
       status: activeRun.status,
       invocationSource: activeRun.invocationSource,
       triggerDetail: activeRun.triggerDetail,
+      contextCommentId: activeRun.contextCommentId,
+      contextWakeCommentId: activeRun.contextWakeCommentId,
       startedAt: activeRun.startedAt ? toDate(activeRun.startedAt).toISOString() : null,
       finishedAt: activeRun.finishedAt ? toDate(activeRun.finishedAt).toISOString() : null,
       createdAt: toDate(activeRun.createdAt).toISOString(),
       agentId: activeRun.agentId,
       agentName: activeRun.agentName,
       adapterType: activeRun.adapterType,
-      issueId,
+      logBytes: activeRun.logBytes,
+      lastOutputBytes: activeRun.lastOutputBytes,
+      issueId: activeRun.issueId ?? issueId,
+      livenessState: activeRun.livenessState,
+      livenessReason: activeRun.livenessReason,
+      continuationAttempt: activeRun.continuationAttempt,
+      lastUsefulActionAt: activeRun.lastUsefulActionAt ? toDate(activeRun.lastUsefulActionAt).toISOString() : null,
+      nextAction: activeRun.nextAction,
+      outputSilence: activeRun.outputSilence,
+      currentStatusMessage: activeRun.currentStatusMessage ?? null,
+      currentStatusUpdatedAt: activeRun.currentStatusUpdatedAt
+        ? toDate(activeRun.currentStatusUpdatedAt).toISOString()
+        : null,
     });
   }
   return [...deduped.values()].sort((a, b) => toTimestamp(a.createdAt) - toTimestamp(b.createdAt));
@@ -884,6 +909,8 @@ function createLiveRunMessage(args: {
       waitingText,
       chainOfThoughtLabel: runDurationLabel(run),
       chainOfThoughtSegments: segments,
+      currentStatusMessage: run.currentStatusMessage ?? null,
+      currentStatusUpdatedAt: run.currentStatusUpdatedAt ?? null,
     }),
   };
   return message;

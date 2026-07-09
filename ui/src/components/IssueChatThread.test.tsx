@@ -12,6 +12,7 @@ import {
   VIRTUALIZED_THREAD_ROW_THRESHOLD,
   canStopIssueChatRun,
   findLatestCommentMessageIndex,
+  getVirtualizedMeasurementScrollAdjustment,
   resolveAssistantMessageFoldedState,
   resolveIssueChatHumanAuthor,
 } from "./IssueChatThread";
@@ -353,6 +354,134 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("labels operator-interrupted cancelled runs as interrupted while preserving plain cancelled runs", () => {
+    const root = createRoot(container);
+    const linkedRuns: IssueChatLinkedRun[] = [
+      {
+        runId: "run-interrupted",
+        status: "cancelled",
+        agentId: "agent-1",
+        agentName: "CodexCoder",
+        createdAt: new Date("2026-04-06T12:00:00.000Z"),
+        startedAt: new Date("2026-04-06T12:00:00.000Z"),
+        finishedAt: new Date("2026-04-06T12:01:00.000Z"),
+        errorCode: "operator_interrupted",
+        resultJson: { operatorInterrupted: true, interruptionSource: "issue_comment_interrupt" },
+      },
+      {
+        runId: "run-cancelled",
+        status: "cancelled",
+        agentId: "agent-1",
+        agentName: "CodexCoder",
+        createdAt: new Date("2026-04-06T12:02:00.000Z"),
+        startedAt: new Date("2026-04-06T12:02:00.000Z"),
+        finishedAt: new Date("2026-04-06T12:03:00.000Z"),
+        resultJson: { stopReason: "cancelled" },
+      },
+    ];
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={linkedRuns}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("interrupted by board after 1 minute");
+    expect(container.textContent).toContain("cancelled after 1 minute");
+    expect(container.textContent).not.toContain("run interrupted");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("falls back to execCommand for comment copy actions in insecure contexts", async () => {
+    const clipboardWrite = vi.fn(async () => {
+      throw new Error("Clipboard API blocked");
+    });
+    const execCommand = vi.fn(() => true);
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, "execCommand");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    });
+
+    try {
+      const root = createRoot(container);
+
+      act(() => {
+        root.render(
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[{
+                id: "comment-copy",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: null,
+                authorUserId: "user-1",
+                authorType: "user",
+                body: "Copy this comment",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:00:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+              }]}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              onAdd={async () => {}}
+              showComposer={false}
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>,
+        );
+      });
+
+      const copyButton = container.querySelector('button[aria-label="Copy message"]') as HTMLButtonElement | null;
+      expect(copyButton).not.toBeNull();
+
+      await act(async () => {
+        copyButton?.click();
+        await Promise.resolve();
+      });
+
+      expect(clipboardWrite).toHaveBeenCalledWith("Copy this comment");
+      expect(execCommand).toHaveBeenCalledWith("copy");
+
+      act(() => {
+        root.unmount();
+      });
+    } finally {
+      if (originalClipboard) {
+        Object.defineProperty(navigator, "clipboard", originalClipboard);
+      } else {
+        // @ts-expect-error test cleanup for optional browser API
+        delete navigator.clipboard;
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, "execCommand", originalExecCommand);
+      } else {
+        // @ts-expect-error test cleanup for optional browser API
+        delete document.execCommand;
+      }
+    }
+  });
+
   it("renders footer content inside the thread viewport before the bottom anchor", () => {
     const root = createRoot(container);
 
@@ -416,6 +545,7 @@ describe("IssueChatThread", () => {
     );
     expect(toggle).not.toBeNull();
     expect(toggle?.getAttribute("data-pending-work-mode")).toBe("planning");
+    expect(toggle?.getAttribute("aria-pressed")).toBe("true");
     expect(toggle?.textContent).toContain("Plan mode");
 
     act(() => {
@@ -423,7 +553,7 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("shows a persistent neutral mode chip on a standard issue and toggles to planning through its menu", () => {
+  it("shows a persistent neutral mode chip on a standard issue and selects planning through its menu", () => {
     const root = createRoot(container);
     const onWorkModeChange = vi.fn();
 
@@ -461,10 +591,10 @@ describe("IssueChatThread", () => {
     });
 
     const menuItem = document.querySelector(
-      '[data-testid="issue-chat-composer-work-mode-menu-toggle"]',
+      '[data-testid="issue-chat-composer-work-mode-menu-planning"]',
     ) as HTMLButtonElement | null;
     expect(menuItem).not.toBeNull();
-    expect(menuItem?.textContent).toContain("Switch to plan mode");
+    expect(menuItem?.textContent).toContain("Plan mode");
 
     act(() => {
       menuItem?.click();
@@ -475,6 +605,115 @@ describe("IssueChatThread", () => {
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("planning");
     expect(composer?.className).toContain("amber");
     expect(chip?.textContent).toContain("Plan mode");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("selects ask mode from the composer menu and cycles work modes with cmd-period", () => {
+    const root = createRoot(container);
+    const onWorkModeChange = vi.fn();
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            issueWorkMode="standard"
+            onWorkModeChange={onWorkModeChange}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const chip = container.querySelector(
+      '[data-testid="issue-chat-composer-work-mode-toggle"]',
+    ) as HTMLButtonElement | null;
+    const composer = container.querySelector('[data-testid="issue-chat-composer"]') as HTMLDivElement | null;
+    expect(chip).not.toBeNull();
+    expect(composer).not.toBeNull();
+
+    act(() => {
+      chip?.click();
+    });
+
+    const askMenuItem = document.querySelector(
+      '[data-testid="issue-chat-composer-work-mode-menu-ask"]',
+    ) as HTMLButtonElement | null;
+    expect(askMenuItem).not.toBeNull();
+    expect(askMenuItem?.textContent).toContain("Ask mode");
+
+    act(() => {
+      askMenuItem?.click();
+    });
+
+    expect(onWorkModeChange).not.toHaveBeenCalled();
+    expect(composer?.getAttribute("data-pending-work-mode")).toBe("ask");
+    expect(composer?.className).toContain("sky");
+    expect(chip?.textContent).toContain("Ask mode");
+
+    act(() => {
+      composer?.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "Period",
+        key: ".",
+        metaKey: true,
+      }));
+    });
+
+    expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
+    expect(chip?.textContent).toContain("Agent mode");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("cycles work modes and prevents default when iOS leaves the keydown code empty", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            issueWorkMode="standard"
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const composer = container.querySelector('[data-testid="issue-chat-composer"]') as HTMLDivElement | null;
+    expect(composer).not.toBeNull();
+    expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
+
+    // iOS Safari with a hardware keyboard frequently reports an empty `code` for
+    // cmd-period. Without a `key` fallback the handler returns early, never calls
+    // preventDefault, and Safari's default cancel/dismiss closes the view.
+    const evt = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      code: "",
+      key: ".",
+      metaKey: true,
+    });
+    act(() => {
+      composer?.dispatchEvent(evt);
+    });
+
+    expect(evt.defaultPrevented).toBe(true);
+    expect(composer?.getAttribute("data-pending-work-mode")).not.toBe("standard");
 
     act(() => {
       root.unmount();
@@ -868,6 +1107,74 @@ describe("IssueChatThread", () => {
     vi.useRealTimers();
   });
 
+  it("can keep the page at the top on initial load while preserving manual jump-to-latest", () => {
+    vi.useFakeTimers();
+    container.remove();
+    const scrollHost = document.createElement("main");
+    scrollHost.id = "main-content";
+    scrollHost.style.overflowY = "auto";
+    scrollHost.style.overflow = "auto";
+    scrollHost.style.height = "640px";
+    document.body.appendChild(scrollHost);
+    container = document.createElement("div");
+    scrollHost.appendChild(container);
+
+    const elementScrollToMock = vi.fn();
+    scrollHost.scrollTo = elementScrollToMock as unknown as typeof scrollHost.scrollTo;
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    const scrollIntoViewMock = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoViewMock as unknown as typeof Element.prototype.scrollIntoView;
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={issueChatLongThreadLinkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            autoScrollToLatestOnInitialLoad={false}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(elementScrollToMock).not.toHaveBeenCalled();
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
+
+    const jump = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    ) as HTMLButtonElement | undefined;
+    expect(jump).toBeDefined();
+
+    act(() => {
+      jump?.click();
+    });
+
+    const scrolledToLatest =
+      elementScrollToMock.mock.calls.some(([arg]) => hasSmoothScrollBehavior(arg))
+      || scrollIntoViewMock.mock.calls.length > 0;
+    expect(scrolledToLatest).toBe(true);
+
+    Element.prototype.scrollIntoView = originalScrollIntoView;
+    act(() => {
+      root.unmount();
+    });
+    scrollHost.remove();
+    vi.useRealTimers();
+  });
+
   // Regression for PAP-2672: when the merged feed ends with a non-comment row
   // (run/timeline/embedded output) we still want Jump to latest to land on the
   // last comment, not whichever activity row sorts last.
@@ -1150,6 +1457,31 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("keeps the viewport anchored when virtualized rows above it remeasure", () => {
+    expect(getVirtualizedMeasurementScrollAdjustment({
+      itemStart: 200,
+      previousSize: 220,
+      nextSize: 360,
+      viewportStart: 480,
+    })).toBe(140);
+
+    expect(getVirtualizedMeasurementScrollAdjustment({
+      itemStart: 200,
+      previousSize: 360,
+      nextSize: 180,
+      viewportStart: 620,
+    })).toBe(-180);
+  });
+
+  it("does not scroll-anchor virtualized measurement changes inside the viewport", () => {
+    expect(getVirtualizedMeasurementScrollAdjustment({
+      itemStart: 420,
+      previousSize: 220,
+      nextSize: 360,
+      viewportStart: 480,
+    })).toBe(0);
+  });
+
   it("renders virtualized rows with the same role/kind metadata as the direct path", () => {
     const root = createRoot(container);
 
@@ -1369,6 +1701,8 @@ describe("IssueChatThread", () => {
     );
     expect(bubble).toBeDefined();
     expect(bubble?.textContent).toContain("Here is my agent reply.");
+    expect(bubble?.className).toContain("max-w-[calc(100%-0.5rem)]");
+    expect(bubble?.className).toContain("sm:max-w-[85%]");
     // Neutral, not the human liveness-blue bubble.
     expect(bubble?.className).not.toContain("bg-[#2563EB]");
 
@@ -3046,6 +3380,48 @@ describe("IssueChatThread", () => {
 
     expect(container.textContent).toContain("Working");
     expect(container.textContent).not.toContain("Worked");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders ephemeral active-run status below the working indicator", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            activeRun={{
+              id: "run-1",
+              issueId: "issue-1",
+              status: "running",
+              invocationSource: "comment",
+              triggerDetail: null,
+              startedAt: "2026-04-06T12:00:00.000Z",
+              finishedAt: null,
+              createdAt: "2026-04-06T12:00:00.000Z",
+              agentId: "agent-1",
+              agentName: "Agent 1",
+              adapterType: "codex_local",
+              currentStatusMessage: "Syncing git worktree to sandbox",
+              currentStatusUpdatedAt: "2026-04-06T12:00:05.000Z",
+            }}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Working...");
+    expect(container.textContent).toContain("Syncing git worktree to sandbox");
+    expect(container.querySelector('[title="Syncing git worktree to sandbox"]')).not.toBeNull();
 
     act(() => {
       root.unmount();

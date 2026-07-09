@@ -18,9 +18,11 @@ import type {
   IssueThreadInteraction,
   IssueTreeControlPreview,
   IssueTreeHold,
+  IssueWatchdog,
   IssueWorkProduct,
   PreviewIssueTreeControl,
   ReleaseIssueTreeHold,
+  UpsertIssueWatchdog,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -125,6 +127,10 @@ export const issuesApi = {
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
   get: (id: string) => api.get<Issue>(`/issues/${id}`),
+  getWatchdog: (id: string) => api.get<IssueWatchdog | null>(`/issues/${id}/watchdog`),
+  upsertWatchdog: (id: string, data: UpsertIssueWatchdog) =>
+    api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),
+  deleteWatchdog: (id: string) => api.delete<{ ok: true }>(`/issues/${id}/watchdog`),
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
   markUnread: (id: string) => api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
   archiveFromInbox: (id: string) =>

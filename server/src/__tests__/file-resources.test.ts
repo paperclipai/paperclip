@@ -231,6 +231,53 @@ describeEmbeddedPostgres("workspace file resources", () => {
     expect(res.body.content.data).toContain("export const ok");
   });
 
+  it("lists and downloads non-previewable workspace files", async () => {
+    const { root, projectRoot, executionRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, executionRoot });
+    const relativePath = "artifacts/archive.bin";
+    const bytes = Buffer.from([0, 1, 2, 3, 4, 255]);
+    await fs.mkdir(path.join(projectRoot, "artifacts"), { recursive: true });
+    await fs.writeFile(path.join(projectRoot, relativePath), bytes);
+
+    const app = createApp(db, {
+      type: "board",
+      userId: "board-user",
+      companyIds: [graph.companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const listed = await request(app)
+      .get(`/api/issues/${graph.issueId}/file-resources/list`)
+      .query({ workspace: "project", mode: "all", path: "artifacts" });
+
+    expect(listed.status).toBe(200);
+    expect(listed.body.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "file",
+        relativePath,
+        previewKind: "unsupported",
+        capabilities: { preview: false, download: true, listChildren: false },
+      }),
+    ]));
+    expect(JSON.stringify(listed.body)).not.toContain(root);
+
+    const downloaded = await request(app)
+      .get(`/api/issues/${graph.issueId}/file-resources/content`)
+      .query({ workspace: "project", path: relativePath, download: "1" })
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on("end", () => callback(null, Buffer.concat(chunks)));
+      });
+
+    expect(downloaded.status).toBe(200);
+    expect(downloaded.headers["content-disposition"]).toBe('attachment; filename="archive.bin"');
+    expect(downloaded.headers["x-content-type-options"]).toBe("nosniff");
+    expect(Buffer.compare(downloaded.body as Buffer, bytes)).toBe(0);
+  });
+
   it("falls back from an execution workspace miss to the project workspace", async () => {
     const { projectRoot, executionRoot } = await makeWorkspace();
     const graph = await seedGraph(db, { projectRoot, executionRoot });
@@ -1125,10 +1172,13 @@ describeEmbeddedPostgres("workspace file resources", () => {
           workspaceKind: "project_workspace",
           workspaceId: "11111111-1111-4111-8111-111111111111",
           previewKind: "text",
-          capabilities: { preview: true, download: false, listChildren: false },
+          capabilities: { preview: true, download: true, listChildren: false },
         };
       }),
       readContent: vi.fn(async () => {
+        throw new Error("not used");
+      }),
+      prepareDownload: vi.fn(async () => {
         throw new Error("not used");
       }),
     };
@@ -1187,10 +1237,13 @@ describeEmbeddedPostgres("workspace file resources", () => {
             workspaceKind: "project_workspace",
             workspaceId: "11111111-1111-4111-8111-111111111111",
             previewKind: "text",
-            capabilities: { preview: true, download: false, listChildren: false },
+            capabilities: { preview: true, download: true, listChildren: false },
           },
           content: { encoding: "utf8", data: "# Visible\n" },
         };
+      }),
+      prepareDownload: vi.fn(async () => {
+        throw new Error("not used");
       }),
     };
     const contentLimitedApp = createApp(
@@ -1223,6 +1276,92 @@ describeEmbeddedPostgres("workspace file resources", () => {
     expect(rowsAfterLimits.some((row) => row.action === "issue.file_resource_resolve_denied")).toBe(true);
     expect(rowsAfterLimits.some((row) => row.action === "issue.file_resource_content_denied")).toBe(true);
     expect(JSON.stringify(rowsAfterLimits.map((row) => row.details))).not.toContain(projectRoot);
+  });
+
+  it("holds download concurrency slots until the file stream completes", async () => {
+    if (process.platform === "win32") return;
+
+    const { projectRoot, executionRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, executionRoot });
+    const fifoPath = path.join(projectRoot, "slow-download.bin");
+    await execFileAsync("mkfifo", [fifoPath]);
+    let slowDownloadStarted: (() => void) | null = null;
+    const downloadStarted = new Promise<void>((resolve) => {
+      slowDownloadStarted = resolve;
+    });
+    const service: WorkspaceFileResourceService = {
+      getIssue: vi.fn(async () => ({ companyId: graph.companyId })),
+      list: vi.fn(async () => {
+        throw new Error("not used");
+      }),
+      resolve: vi.fn(async () => {
+        throw new Error("not used");
+      }),
+      readContent: vi.fn(async () => {
+        throw new Error("not used");
+      }),
+      prepareDownload: vi.fn(async () => {
+        slowDownloadStarted?.();
+        return {
+          resource: {
+            kind: "file",
+            provider: "local_fs",
+            title: "slow-download.bin",
+            displayPath: "slow-download.bin",
+            workspaceLabel: "Workspace",
+            workspaceKind: "project_workspace",
+            workspaceId: "11111111-1111-4111-8111-111111111111",
+            previewKind: "unsupported",
+            contentType: "application/octet-stream",
+            byteSize: null,
+            capabilities: { preview: false, download: true, listChildren: false },
+          },
+          realPath: fifoPath,
+        };
+      }),
+    };
+    const app = createApp(
+      db,
+      {
+        type: "board",
+        userId: "board-user",
+        companyIds: [graph.companyId],
+        source: "session",
+        isInstanceAdmin: false,
+      },
+      {
+        service,
+        limiter: createFileResourceLimiter({ maxConcurrent: 1, maxRequests: 100, windowMs: 60_000 }),
+      },
+    );
+    const firstDownload = request(app)
+      .get(`/api/issues/${graph.issueId}/file-resources/content`)
+      .query({ path: "slow-download.bin", download: "1" })
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on("end", () => callback(null, Buffer.concat(chunks)));
+      });
+    const firstDownloadResponse = firstDownload.then((res) => res);
+
+    await downloadStarted;
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const secondDownload = await request(app)
+      .get(`/api/issues/${graph.issueId}/file-resources/content`)
+      .query({ path: "slow-download.bin", download: "1" });
+    expect(secondDownload.status).toBe(429);
+
+    const writer = await fs.open(fifoPath, "w");
+    await writer.write(Buffer.from("slow"));
+    await writer.close();
+
+    const first = await firstDownloadResponse;
+    expect(first.status).toBe(200);
+    expect(first.headers["content-length"]).toBeUndefined();
+    expect(first.headers["content-disposition"]).toBe('attachment; filename="slow-download.bin"');
+    expect(Buffer.compare(first.body as Buffer, Buffer.from("slow"))).toBe(0);
   });
 
   it("uses tighter list-specific rate and concurrency limits", async () => {
@@ -1265,6 +1404,9 @@ describeEmbeddedPostgres("workspace file resources", () => {
         throw new Error("not used");
       }),
       readContent: vi.fn(async () => {
+        throw new Error("not used");
+      }),
+      prepareDownload: vi.fn(async () => {
         throw new Error("not used");
       }),
     };
@@ -1340,10 +1482,13 @@ describeEmbeddedPostgres("file resource route guards", () => {
           workspaceKind: "project_workspace",
           workspaceId: "11111111-1111-4111-8111-111111111111",
           previewKind: "text",
-          capabilities: { preview: true, download: false, listChildren: false },
+          capabilities: { preview: true, download: true, listChildren: false },
         };
       }),
       readContent: vi.fn(async () => {
+        throw new Error("not used");
+      }),
+      prepareDownload: vi.fn(async () => {
         throw new Error("not used");
       }),
     };

@@ -31,6 +31,8 @@ function normalizePathForMatching(rawPath: string): { pathname: string; search: 
 }
 
 function instanceSettingsSuffix(pathname: string): string | null {
+  if (pathname === "/company/settings/environments") return "/environments";
+
   if (pathname === INSTANCE_SETTINGS_PATH_PREFIX) return "/general";
   if (pathname.startsWith(`${INSTANCE_SETTINGS_PATH_PREFIX}/`)) {
     return pathname.slice(INSTANCE_SETTINGS_PATH_PREFIX.length);
@@ -61,6 +63,7 @@ export function normalizeRememberedInstanceSettingsPath(rawPath: string | null):
   if (
     suffix === "/profile" ||
     suffix === "/general" ||
+    suffix === "/environments" ||
     suffix === "/access" ||
     suffix === "/heartbeats" ||
     suffix === "/plugins" ||

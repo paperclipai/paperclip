@@ -42,6 +42,12 @@ function buildQuery(query: FileResourceQuery | FileResourceListQuery): string {
   return params.toString();
 }
 
+export function buildFileResourceDownloadUrl(issueId: string, query: FileResourceQuery): string {
+  const params = new URLSearchParams(buildQuery(query));
+  params.set("download", "1");
+  return `/api/issues/${encodeURIComponent(issueId)}/file-resources/content?${params.toString()}`;
+}
+
 export const fileResourcesApi = {
   list(issueId: string, query: FileResourceListQuery = {}): Promise<WorkspaceFileListResponse> {
     const search = buildQuery(query);
@@ -62,4 +68,6 @@ export const fileResourcesApi = {
       `/issues/${encodeURIComponent(issueId)}/file-resources/content?${buildQuery(query)}`,
     );
   },
+
+  downloadUrl: buildFileResourceDownloadUrl,
 };
