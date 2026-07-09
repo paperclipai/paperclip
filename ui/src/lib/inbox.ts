@@ -26,7 +26,7 @@ export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
 export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
 export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:inbox:collapsed-groups";
-export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "all";
+export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "all" | "decisions";
 export type InboxCategoryFilter =
   | "everything"
   | "issues_i_touched"
@@ -83,6 +83,7 @@ export interface InboxBadgeData {
   joinRequests: number;
   mineIssues: number;
   alerts: number;
+  pendingInteractions: number;
 }
 
 export interface InboxWorkItemGroup {
@@ -1231,6 +1232,7 @@ export function computeInboxBadgeData({
   dismissedAlerts,
   dismissedAtByKey,
   currentUserId,
+  pendingInteractions = 0,
 }: {
   approvals: Approval[];
   joinRequests: JoinRequest[];
@@ -1240,6 +1242,7 @@ export function computeInboxBadgeData({
   dismissedAlerts: Set<string>;
   dismissedAtByKey: ReadonlyMap<string, number>;
   currentUserId?: string | null;
+  pendingInteractions?: number;
 }): InboxBadgeData {
   const actionableApprovals = approvals.filter(
     (approval) =>
@@ -1269,11 +1272,12 @@ export function computeInboxBadgeData({
 
   return {
     // The inbox badge reflects personal/actionable work, not company-wide health alerts.
-    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues,
+    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues + pendingInteractions,
     approvals: actionableApprovals,
     failedRuns,
     joinRequests: visibleJoinRequests,
     mineIssues: visibleMineIssues,
     alerts,
+    pendingInteractions,
   };
 }

@@ -200,6 +200,14 @@ export function useInboxBadge(companyId: string | null | undefined) {
     staleTime: INBOX_BADGE_HOT_PATH_STALE_MS,
   });
 
+  const { data: pendingInteractionsData = [] } = useQuery({
+    queryKey: queryKeys.pendingInteractions(companyId!),
+    queryFn: () => issuesApi.listPendingInteractions(companyId!),
+    enabled: !!companyId,
+    refetchOnWindowFocus: true,
+    staleTime: INBOX_BADGE_HOT_PATH_STALE_MS,
+  });
+
   return useMemo(
     () =>
       computeInboxBadgeData({
@@ -211,7 +219,8 @@ export function useInboxBadge(companyId: string | null | undefined) {
         dismissedAlerts,
         dismissedAtByKey,
         currentUserId,
+        pendingInteractions: pendingInteractionsData.length,
       }),
-    [approvals, joinRequests, dashboard, heartbeatRuns, mineIssues, dismissedAlerts, dismissedAtByKey, currentUserId],
+    [approvals, joinRequests, dashboard, heartbeatRuns, mineIssues, dismissedAlerts, dismissedAtByKey, currentUserId, pendingInteractionsData.length],
   );
 }

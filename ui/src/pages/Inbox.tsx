@@ -75,6 +75,15 @@ import { IssueFiltersPopover } from "../components/IssueFiltersPopover";
 import { IssueRow } from "../components/IssueRow";
 import { BlockedInboxView } from "../components/BlockedInboxView";
 import { SwipeToArchive } from "../components/SwipeToArchive";
+import { IssueThreadInteractionCard } from "../components/IssueThreadInteractionCard";
+import type { PendingInteractionItem } from "../api/issues";
+import type {
+  AskUserQuestionsAnswer,
+  AskUserQuestionsInteraction,
+  RequestCheckboxConfirmationInteraction,
+  RequestConfirmationInteraction,
+  SuggestTasksInteraction,
+} from "../lib/issue-thread-interactions";
 
 import { StatusIcon } from "../components/StatusIcon";
 import { cn } from "../lib/utils";
@@ -114,6 +123,7 @@ import {
   UserPlus,
   Search,
   ListTree,
+  CheckCircle2,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
@@ -680,6 +690,149 @@ function JoinRequestInboxRow({
   );
 }
 
+type AcceptableInteraction =
+  | SuggestTasksInteraction
+  | RequestConfirmationInteraction
+  | RequestCheckboxConfirmationInteraction;
+
+function DecisionsView({
+  pendingInteractions,
+  isLoading,
+  actionableApprovals,
+  joinRequests,
+  onAcceptInteraction,
+  onRejectInteraction,
+  onRespondInteraction,
+  onCancelInteraction,
+  onApproveApproval,
+  onRejectApproval,
+  isApprovalPending,
+  onApproveJoin,
+  onRejectJoin,
+  isJoinPending,
+  agentNameById,
+}: {
+  pendingInteractions: PendingInteractionItem[];
+  isLoading: boolean;
+  actionableApprovals: Approval[];
+  joinRequests: JoinRequest[];
+  onAcceptInteraction: (item: PendingInteractionItem, interaction: AcceptableInteraction, selectedClientKeys?: string[], selectedOptionIds?: string[]) => void;
+  onRejectInteraction: (item: PendingInteractionItem, interaction: AcceptableInteraction, reason?: string) => void;
+  onRespondInteraction: (item: PendingInteractionItem, interaction: AskUserQuestionsInteraction, answers: AskUserQuestionsAnswer[]) => void;
+  onCancelInteraction: (item: PendingInteractionItem, interaction: AskUserQuestionsInteraction) => void;
+  onApproveApproval: (id: string) => void;
+  onRejectApproval: (id: string) => void;
+  isApprovalPending: boolean;
+  onApproveJoin: (jr: JoinRequest) => void;
+  onRejectJoin: (jr: JoinRequest) => void;
+  isJoinPending: boolean;
+  agentNameById: Map<string, string>;
+}) {
+  const isEmpty =
+    !isLoading &&
+    pendingInteractions.length === 0 &&
+    actionableApprovals.length === 0 &&
+    joinRequests.length === 0;
+
+  if (isLoading && pendingInteractions.length === 0) {
+    return <PageSkeleton variant="inbox" />;
+  }
+
+  if (isEmpty) {
+    return (
+      <div className="flex flex-col items-center gap-3 rounded-xl border border-border bg-card p-12 text-center">
+        <CheckCircle2 className="h-10 w-10 text-emerald-500" />
+        <p className="text-base font-medium">No pending decisions</p>
+        <p className="text-sm text-muted-foreground">
+          Confirmations, questions, and approvals from agents will appear here.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {pendingInteractions.length > 0 && (
+        <div>
+          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            Agent requests ({pendingInteractions.length})
+          </h3>
+          <div className="space-y-3">
+            {pendingInteractions.map((item) => (
+              <div key={item.interaction.id} className="overflow-hidden rounded-xl border border-border">
+                <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-4 py-2">
+                  <Link
+                    to={`/issues/${item.issue.identifier ?? item.issue.id}`}
+                    className="flex min-w-0 items-center gap-1.5 text-sm no-underline text-inherit hover:underline"
+                  >
+                    <span className="font-mono text-xs text-muted-foreground">{item.issue.identifier}</span>
+                    <span className="truncate font-medium">{item.issue.title}</span>
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  </Link>
+                </div>
+                <div className="p-4">
+                  <IssueThreadInteractionCard
+                    interaction={item.interaction}
+                    onAcceptInteraction={(interaction, selectedClientKeys, selectedOptionIds) =>
+                      onAcceptInteraction(item, interaction as AcceptableInteraction, selectedClientKeys, selectedOptionIds)
+                    }
+                    onRejectInteraction={(interaction, reason) =>
+                      onRejectInteraction(item, interaction as AcceptableInteraction, reason)
+                    }
+                    onSubmitInteractionAnswers={(interaction, answers) =>
+                      onRespondInteraction(item, interaction, answers)
+                    }
+                    onCancelInteraction={(interaction) => onCancelInteraction(item, interaction)}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {actionableApprovals.length > 0 && (
+        <div>
+          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            Approvals ({actionableApprovals.length})
+          </h3>
+          <div className="overflow-hidden rounded-xl border border-border">
+            {actionableApprovals.map((approval) => (
+              <ApprovalInboxRow
+                key={approval.id}
+                approval={approval}
+                requesterName={agentNameById.get(approval.requestedByAgentId ?? "") ?? null}
+                onApprove={() => onApproveApproval(approval.id)}
+                onReject={() => onRejectApproval(approval.id)}
+                isPending={isApprovalPending}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {joinRequests.length > 0 && (
+        <div>
+          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            Join requests ({joinRequests.length})
+          </h3>
+          <div className="overflow-hidden rounded-xl border border-border">
+            {joinRequests.map((jr) => (
+              <JoinRequestInboxRow
+                key={jr.id}
+                joinRequest={jr}
+                onApprove={() => onApproveJoin(jr)}
+                onReject={() => onRejectJoin(jr)}
+                isPending={isJoinPending}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Inbox() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -717,6 +870,7 @@ export function Inbox() {
     || pathSegment === "all"
     || pathSegment === "unread"
     || pathSegment === "blocked"
+    || pathSegment === "decisions"
       ? pathSegment
       : "mine";
   const canArchiveFromTab = isMineInboxTab(tab);
@@ -877,6 +1031,12 @@ export function Inbox() {
     refetchInterval: 5000,
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
+  const { data: pendingInteractions = [], isLoading: isPendingInteractionsLoading } = useQuery({
+    queryKey: queryKeys.pendingInteractions(selectedCompanyId!),
+    queryFn: () => issuesApi.listPendingInteractions(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchOnWindowFocus: true,
+  });
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
@@ -1533,6 +1693,50 @@ export function Inbox() {
     },
   });
 
+  const invalidatePendingInteractions = () => {
+    if (!selectedCompanyId) return;
+    queryClient.invalidateQueries({ queryKey: queryKeys.pendingInteractions(selectedCompanyId) });
+  };
+
+  const acceptInteractionMutation = useMutation({
+    mutationFn: (a: { issueId: string; interactionId: string; selectedClientKeys?: string[]; selectedOptionIds?: string[] }) =>
+      issuesApi.acceptInteraction(a.issueId, a.interactionId, {
+        selectedClientKeys: a.selectedClientKeys,
+        selectedOptionIds: a.selectedOptionIds,
+      }),
+    onSuccess: invalidatePendingInteractions,
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to accept");
+    },
+  });
+
+  const rejectInteractionMutation = useMutation({
+    mutationFn: (a: { issueId: string; interactionId: string; reason?: string }) =>
+      issuesApi.rejectInteraction(a.issueId, a.interactionId, a.reason),
+    onSuccess: invalidatePendingInteractions,
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to reject");
+    },
+  });
+
+  const respondInteractionMutation = useMutation({
+    mutationFn: (a: { issueId: string; interactionId: string; answers: AskUserQuestionsAnswer[] }) =>
+      issuesApi.respondToInteraction(a.issueId, a.interactionId, { answers: a.answers }),
+    onSuccess: invalidatePendingInteractions,
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to respond");
+    },
+  });
+
+  const cancelInteractionMutation = useMutation({
+    mutationFn: (a: { issueId: string; interactionId: string }) =>
+      issuesApi.cancelInteraction(a.issueId, a.interactionId),
+    onSuccess: invalidatePendingInteractions,
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to cancel");
+    },
+  });
+
   const [fadingOutIssues, setFadingOutIssues] = useState<Set<string>>(new Set());
   const [showMarkAllReadConfirm, setShowMarkAllReadConfirm] = useState(false);
   const [archivingIssueIds, setArchivingIssueIds] = useState<Set<string>>(new Set());
@@ -2023,12 +2227,12 @@ export function Inbox() {
     .map((issue) => issue.id);
   const canMarkAllRead = unreadIssueIds.length > 0;
   const activeIssueFilterCount = countActiveIssueFilters(issueFilters, true);
-  const showGeneralIssueToolbarControls = tab !== "blocked";
+  const showGeneralIssueToolbarControls = tab !== "blocked" && tab !== "decisions";
   return (
     <div className="space-y-6">
       <div className="space-y-2">
         {/* Search — full-width row on mobile, inline on desktop */}
-        <div className="relative sm:hidden">
+        <div className={cn("relative sm:hidden", tab === "decisions" && "hidden")}>
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             type="search"
@@ -2071,6 +2275,19 @@ export function Inbox() {
               { value: "unread", label: "Unread" },
               { value: "blocked", label: "Blocked" },
               { value: "all", label: "All" },
+              {
+                value: "decisions",
+                label: (
+                  <span className="flex items-center gap-1.5">
+                    Decisions
+                    {pendingInteractions.length > 0 && (
+                      <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold leading-none text-primary-foreground">
+                        {pendingInteractions.length}
+                      </span>
+                    )}
+                  </span>
+                ),
+              },
             ]}
           />
         </Tabs>
@@ -2367,11 +2584,44 @@ export function Inbox() {
         />
       ) : null}
 
-      {tab !== "blocked" && !allLoaded && visibleSections.length === 0 && (
+      {tab === "decisions" ? (
+        <DecisionsView
+          pendingInteractions={pendingInteractions}
+          isLoading={isPendingInteractionsLoading}
+          actionableApprovals={approvalsToRender.filter((a) => ACTIONABLE_APPROVAL_STATUSES.has(a.status))}
+          joinRequests={joinRequestsForTab}
+          onAcceptInteraction={(item, interaction, selectedClientKeys, selectedOptionIds) =>
+            acceptInteractionMutation.mutate({
+              issueId: item.issue.id,
+              interactionId: interaction.id,
+              selectedClientKeys,
+              selectedOptionIds,
+            })
+          }
+          onRejectInteraction={(item, interaction, reason) =>
+            rejectInteractionMutation.mutate({ issueId: item.issue.id, interactionId: interaction.id, reason })
+          }
+          onRespondInteraction={(item, interaction, answers) =>
+            respondInteractionMutation.mutate({ issueId: item.issue.id, interactionId: interaction.id, answers })
+          }
+          onCancelInteraction={(item, interaction) =>
+            cancelInteractionMutation.mutate({ issueId: item.issue.id, interactionId: interaction.id })
+          }
+          onApproveApproval={(id) => approveMutation.mutate(id)}
+          onRejectApproval={(id) => rejectMutation.mutate(id)}
+          isApprovalPending={approveMutation.isPending || rejectMutation.isPending}
+          onApproveJoin={(jr) => approveJoinMutation.mutate(jr)}
+          onRejectJoin={(jr) => rejectJoinMutation.mutate(jr)}
+          isJoinPending={approveJoinMutation.isPending || rejectJoinMutation.isPending}
+          agentNameById={agentById}
+        />
+      ) : null}
+
+      {tab !== "blocked" && tab !== "decisions" && !allLoaded && visibleSections.length === 0 && (
         <PageSkeleton variant="inbox" />
       )}
 
-      {tab !== "blocked" && allLoaded && visibleSections.length === 0 && (
+      {tab !== "blocked" && tab !== "decisions" && allLoaded && visibleSections.length === 0 && (
         <EmptyState
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={
@@ -2388,7 +2638,7 @@ export function Inbox() {
         />
       )}
 
-      {tab !== "blocked" && showWorkItemsSection && (
+      {tab !== "blocked" && tab !== "decisions" && showWorkItemsSection && (
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
@@ -2848,7 +3098,7 @@ export function Inbox() {
         </>
       )}
 
-      {showAlertsSection && (
+      {tab !== "decisions" && showAlertsSection && (
         <>
           {showSeparatorBefore("alerts") && <Separator />}
           <div>
