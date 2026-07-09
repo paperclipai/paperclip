@@ -113,6 +113,7 @@ import { ArtifactFileChip } from "../components/ArtifactFileChip";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
+import { FavouriteButton } from "../components/FavouriteButton";
 import { ProductivityReviewBadge } from "../components/ProductivityReviewBadge";
 import { Identity } from "../components/Identity";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
@@ -4123,6 +4124,7 @@ export function IssueDetail() {
                 <FileCode2 className="h-4 w-4" />
               </Button>
             ) : null}
+            <FavouriteButton issueId={issue.id} />
             <Button
               variant="ghost"
               size="icon-xs"

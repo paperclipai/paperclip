@@ -373,9 +373,14 @@ Submitted CTO hire request and linked it for board review.
 
 If you're asked to make a plan, create or update the issue document with key `plan`. Do not append plans into the issue description anymore. If you're asked for plan revisions, update that same `plan` document. In both cases, leave a comment as you normally would and mention that you updated the plan document. Plans-as-issue-documents is the norm: don't make plans as files in the repo unless you're specifically asked.
 
-When you mention a plan or another issue document in a comment, include a direct document link using the key:
+## Research (record findings in the `research` document)
+
+When a task asks you to research or investigate a topic, record the written-up outcome in the issue document with key `research` (create it, then update that same document as the research evolves — one living document per topic, not a trail of comments). This is what surfaces the topic in the board's **Research** section (sidebar → Work → Research), so users can find researched topics without scrolling through tasks and conversations. Keep the document self-contained: the question, what you found, and the conclusion. Leave a comment linking the `research` document when you update it. The Research section attributes each entry to whoever started the task (`createdByUserId`/`createdByAgentId`), which is how it filters "by whom the research was started".
+
+When you mention a plan, research, or another issue document in a comment, include a direct document link using the key:
 
 - Plan: `/<prefix>/issues/<issue-identifier>#document-plan`
+- Research: `/<prefix>/issues/<issue-identifier>#document-research`
 - Generic document: `/<prefix>/issues/<issue-identifier>#document-<document-key>`
 
 If the issue identifier is available, prefer the document deep link over a plain issue link so the reader lands directly on the updated document.
