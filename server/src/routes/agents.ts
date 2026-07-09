@@ -28,6 +28,10 @@ import {
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
+  PAPERCLIP_SAFETY_CLASSES,
+  PAPERCLIP_SAFETY_CLASSES_REQUIRING_BYPASS_FALSE,
+  AGENT_DANGEROUS_BYPASS_FLAG_KEYS,
+  type PaperclipSafetyClass,
 } from "@paperclipai/shared";
 import {
   resolvePaperclipInstanceRootForAdapter,
@@ -1302,6 +1306,52 @@ export function agentRoutes(
     }
   }
 
+  // AGENT_OPERATIONS_GUIDE §1.6.5/§1.6.7 tripwire: every new agent's
+  // adapterConfig.paperclipSafetyPosture.safetyClass must come from the
+  // ratified 6-value enum, and must be consistent with the dangerous bypass
+  // flag (read_only_auditor/diagnostic_canary MUST NOT carry a true flag).
+  //
+  // Hard-required only for agent-hires-agent creation (req.actor.type ===
+  // "agent") — that is the silent-gap vector the parent tickets (SAG-6355/
+  // SAG-6357) exist to close. Board/user-authenticated creation (the UI hire
+  // form, which does not yet collect this field) only gets the consistency
+  // check applied when the field is present, so this does not regress
+  // existing human-driven agent creation.
+  function assertValidPaperclipSafetyPosture(
+    req: Request,
+    adapterConfig: Record<string, unknown>,
+  ) {
+    const posture = asRecord(adapterConfig.paperclipSafetyPosture);
+    const safetyClass = posture ? posture.safetyClass : undefined;
+
+    if (safetyClass === undefined) {
+      if (req.actor.type === "agent") {
+        throw unprocessable(
+          "adapterConfig.paperclipSafetyPosture.safetyClass is required when an agent creates another agent (AGENT_OPERATIONS_GUIDE §1.6.5/§1.6.7)",
+        );
+      }
+      return;
+    }
+
+    if (
+      typeof safetyClass !== "string"
+      || !(PAPERCLIP_SAFETY_CLASSES as readonly string[]).includes(safetyClass)
+    ) {
+      throw unprocessable(
+        `adapterConfig.paperclipSafetyPosture.safetyClass must be one of: ${PAPERCLIP_SAFETY_CLASSES.join(", ")}`,
+      );
+    }
+
+    if (PAPERCLIP_SAFETY_CLASSES_REQUIRING_BYPASS_FALSE.includes(safetyClass as PaperclipSafetyClass)) {
+      const bypassFlagTrue = AGENT_DANGEROUS_BYPASS_FLAG_KEYS.some((key) => adapterConfig[key] === true);
+      if (bypassFlagTrue) {
+        throw unprocessable(
+          `safetyClass "${safetyClass}" requires ${AGENT_DANGEROUS_BYPASS_FLAG_KEYS.join("/")} to all be false (AGENT_OPERATIONS_GUIDE §1.6.7 invariant)`,
+        );
+      }
+    }
+  }
+
   async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
     if (req.actor.type !== "board") {
@@ -2219,6 +2269,7 @@ export function agentRoutes(
         rawHireAdapterConfig,
       ),
     );
+    assertValidPaperclipSafetyPosture(req, requestedAdapterConfig);
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
       hireInput.adapterType,
@@ -2412,6 +2463,7 @@ export function agentRoutes(
         rawCreateAdapterConfig,
       ),
     );
+    assertValidPaperclipSafetyPosture(req, requestedAdapterConfig);
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
       createInput.adapterType,

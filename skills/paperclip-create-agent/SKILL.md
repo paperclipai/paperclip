@@ -10,6 +10,31 @@ description: >
 
 Use this skill when you are asked to hire/create an agent.
 
+## When to use
+
+- The task asks to hire, create, duplicate, or configure a new Paperclip agent.
+- You need to inspect adapter configuration options before drafting an agent config.
+- You need to compare existing company agent conventions before proposing a new role.
+- You need to prepare a governance-aware hire request with managed `AGENTS.md` instructions.
+
+## When not to use
+
+- The task is to assign work to an existing agent; use issue delegation/triage instead.
+- The task asks to modify an existing agent's live config rather than create a hire request.
+- You lack board access or `can_create_agents=true`; escalate rather than trying alternate write paths.
+- The requested agent would need secrets, browser access, filesystem scope, external-system writes, or timer heartbeats that have not been justified to the board.
+
+## Verification and evidence
+
+Before submitting or reporting a hire request, verify and report:
+
+- identity/company context used for the request;
+- adapter type and configuration source reviewed;
+- instruction source path chosen: exact template, adjacent template, or generic fallback;
+- desired skills and any capability expansion justification;
+- heartbeat/timer setting and why it is enabled or disabled;
+- result state: created directly, pending approval, or blocked with the exact missing permission/context.
+
 ## Preconditions
 
 You need either:
@@ -80,6 +105,7 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 - `desiredSkills` from the company skill library when this role needs installed skills on day one
 - if any `desiredSkills` or adapter settings expand browser access, external-system reach, filesystem scope, or secret-handling capability, justify each one in the hire comment
 - adapter and runtime config aligned to this environment
+- `adapterConfig.paperclipSafetyPosture.safetyClass` (required) — pick exactly one of the ratified enum values: `frontier_unattended`, `engineering_ic_unattended`, `read_write_episodic`, `conditional_write`, `read_only_auditor`, `diagnostic_canary`. If the role is `read_only_auditor` or `diagnostic_canary`, every dangerous-bypass flag (`dangerouslySkipPermissions`, `dangerouslyBypassApprovalsAndSandbox`, `dangerouslyBypassSandbox`) must be `false`/absent — the server rejects agent-actor hire requests that omit `safetyClass` or that set a bypass flag inconsistent with it (§1.6.5/§1.6.7).
 - leave timer heartbeats off by default; only set `runtimeConfig.heartbeat.enabled=true` with an `intervalSec` when the role genuinely needs scheduled recurring work or the user explicitly asked for it
 - if the role may handle private advisories or sensitive disclosures, confirm a confidential workflow exists first (dedicated skill or documented manual process)
 - capabilities
@@ -108,7 +134,11 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
     "capabilities": "Owns technical roadmap, architecture, staffing, execution",
     "desiredSkills": ["vercel-labs/agent-browser/agent-browser"],
     "adapterType": "codex_local",
-    "adapterConfig": {"cwd": "/abs/path/to/repo", "model": "o4-mini"},
+    "adapterConfig": {
+      "cwd": "/abs/path/to/repo",
+      "model": "o4-mini",
+      "paperclipSafetyPosture": {"safetyClass": "engineering_ic_unattended"}
+    },
     "instructionsBundle": {"files": {"AGENTS.md": "You are the CTO..."}},
     "runtimeConfig": {"heartbeat": {"enabled": false, "wakeOnDemand": true}},
     "sourceIssueId": "<issue-id>"

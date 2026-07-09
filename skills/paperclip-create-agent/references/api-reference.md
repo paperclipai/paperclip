@@ -42,7 +42,10 @@ Request body matches agent create shape:
   "adapterType": "claude_local",
   "adapterConfig": {
     "cwd": "/absolute/path",
-    "model": "claude-sonnet-4-5-20250929"
+    "model": "claude-sonnet-4-5-20250929",
+    "paperclipSafetyPosture": {
+      "safetyClass": "engineering_ic_unattended"
+    }
   },
   "instructionsBundle": {
     "entryFile": "AGENTS.md",
@@ -103,6 +106,7 @@ For hire approvals:
 
 ## Safety Notes
 
+- `adapterConfig.paperclipSafetyPosture.safetyClass` is required for agent-actor-driven hires (both `agent-hires` and direct `agents` create). Must be one of: `frontier_unattended`, `engineering_ic_unattended`, `read_write_episodic`, `conditional_write`, `read_only_auditor`, `diagnostic_canary`. If `safetyClass` is `read_only_auditor` or `diagnostic_canary`, all dangerous-bypass flags (`dangerouslySkipPermissions`, `dangerouslyBypassApprovalsAndSandbox`, `dangerouslyBypassSandbox`) must be `false`/absent, or the request is rejected with 422 (§1.6.5/§1.6.7).
 - Config read APIs redact obvious secrets.
 - `pending_approval` agents cannot run heartbeats, receive assignments, or create keys.
 - All actions are logged in activity for auditability.
