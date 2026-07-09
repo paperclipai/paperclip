@@ -1156,7 +1156,7 @@ function sanitizeHttpFailure(error: unknown): { status: ToolConnectionHealthStat
     }
     if (code === "oauth_refresh_missing") {
       return {
-        status: "error",
+        status: "failed",
         message: "OAuth credentials have expired and need to be reconnected.",
         code: "oauth_refresh_missing",
       };
@@ -2916,7 +2916,15 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   }
 
   function oauthConfig(connection: typeof toolConnections.$inferSelect) {
-    return asRecord(connection.config).oauth ? asRecord(asRecord(connection.config).oauth) : {};
+    const oauth = asRecord(connection.config).oauth ? asRecord(asRecord(connection.config).oauth) : {};
+    const {
+      access_token: _accessToken,
+      refresh_token: _refreshToken,
+      accessToken: _camelAccessToken,
+      refreshToken: _camelRefreshToken,
+      ...metadata
+    } = oauth;
+    return metadata;
   }
 
   function connectionSetupUrl(connection: typeof toolConnections.$inferSelect) {

@@ -10,11 +10,13 @@ import {
   companyMemberships,
   companySecretBindings,
   companySecrets,
+  companySecretVersions,
   createDb,
   heartbeatRuns,
   issueThreadInteractions,
   issues,
   principalPermissionGrants,
+  secretAccessEvents,
   toolAccessAuditEvents,
   toolActionRequests,
   toolApplications,
@@ -237,6 +239,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     await db.delete(toolOauthStates);
+    await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
     await db.delete(companySecrets);
     await db.delete(activityLog);
@@ -2471,6 +2474,21 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(mcpCalls.at(-1)?.[1]?.headers).toEqual(expect.objectContaining({ Authorization: "Bearer new-access-token" }));
     const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connect.connectionId));
     expect(Date.parse(String((connection.config.oauth as { expiresAt: string }).expiresAt))).toBeGreaterThan(Date.now());
+    const refreshRef = connection.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!;
+    const refreshVersions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, refreshRef.secretId));
+    expect(refreshVersions).toHaveLength(2);
+    expect(refreshVersions.map((version) => version.status).sort()).toEqual(["current", "previous"]);
+    const credentialAccessEvents = await db
+      .select()
+      .from(secretAccessEvents)
+      .where(and(eq(secretAccessEvents.companyId, company.id), eq(secretAccessEvents.consumerId, connect.connectionId)));
+    expect(credentialAccessEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ configPath: "oauth.refresh_token", outcome: "success" }),
+      expect.objectContaining({ configPath: "credentials.oauth.access_token", outcome: "success" }),
+    ]));
   });
 
   it("uses OAuth client credentials for shared machine-to-machine MCP connections", async () => {
@@ -2596,6 +2614,7 @@ describeEmbeddedPostgres("tool access service", () => {
         code: "oauth_refresh_missing",
         setupUrl: `/apps/${connect.connectionId}/setup`,
         reconnectUrl: `/apps/${connect.connectionId}/advanced`,
+        connection: expect.objectContaining({ healthStatus: "failed" }),
       }),
     });
     expect(fetchMock).not.toHaveBeenCalled();

@@ -37,6 +37,7 @@ import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
   backfillPrincipalAccessCompatibility,
+  backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
   environmentCustomImageService,
   heartbeatService,
@@ -535,6 +536,10 @@ export async function startServer(): Promise<StartedServer> {
   const accessBackfill = await backfillPrincipalAccessCompatibility(db as any);
   if (accessBackfill.agentMembershipsInserted > 0 || accessBackfill.humanGrantsInserted > 0) {
     logger.info(accessBackfill, "Backfilled principal access compatibility records");
+  }
+  const toolOAuthBackfill = await backfillLegacyToolOAuthTokens(db as any);
+  if (toolOAuthBackfill.sanitizedConnections > 0 || toolOAuthBackfill.migratedConnections > 0) {
+    logger.info(toolOAuthBackfill, "Backfilled legacy tool OAuth credentials into company secrets");
   }
   if (config.deploymentMode === "authenticated") {
     const {
