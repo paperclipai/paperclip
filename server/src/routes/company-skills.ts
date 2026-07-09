@@ -122,6 +122,44 @@ export function companySkillRoutes(db: Db) {
     throw forbidden("Missing permission: skills:create");
   }
 
+  // ARC-263 / ADR-GOV-0002 (CSO condition C3): the agent-executable import route is
+  // DEFAULT-DENY. Unlike assertCanMutateCompanySkills — which returns ALLOW for any agent
+  // whose canCreateSkills permission is not explicitly false — an agent may import a company
+  // skill only with an EXPLICIT gov-matrix `skills:create` grant (the same battle-tested
+  // capability from ADR-GOV-0001). Import introduces new code into the resident-fleet supply
+  // chain, so the permissive default that is acceptable for other mutations is a privilege
+  // hole here. Widening this grant beyond CEO/manager is a CSO-gated policy change, never a
+  // silent default. Board actors keep the existing skills:create semantics.
+  async function assertAgentCanImportSkills(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+
+    if (req.actor.type === "board") {
+      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+      const allowed = await access.canUser(companyId, req.actor.userId, "skills:create");
+      if (!allowed) {
+        throw forbidden("Missing permission: skills:create");
+      }
+      return;
+    }
+
+    if (!req.actor.agentId) {
+      throw forbidden("Agent authentication required");
+    }
+
+    const actorAgent = await agents.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== companyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+
+    // Default-DENY: require an explicit grant, NOT the permissive canCreateSkills default.
+    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "skills:create");
+    if (allowedByGrant) {
+      return;
+    }
+
+    throw forbidden("Missing permission: skills:create");
+  }
+
   router.get("/skills/catalog", async (req, res) => {
     assertAuthenticated(req);
     const query = catalogSkillListQuerySchema.parse({
@@ -508,7 +546,8 @@ export function companySkillRoutes(db: Db) {
     validate(companySkillImportSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      await assertCanMutateCompanySkills(req, companyId);
+      // ARC-263 / ADR-GOV-0002 (C1+C3): default-DENY capability gate for agent import.
+      await assertAgentCanImportSkills(req, companyId);
       const source = String(req.body.source ?? "");
       const result = await svc.importFromSource(companyId, source);
 
@@ -526,6 +565,16 @@ export function companySkillRoutes(db: Db) {
           source,
           importedCount: result.imported.length,
           importedSlugs: result.imported.map((skill) => skill.slug),
+          // ARC-263 / ADR-GOV-0002 (C4): content-pinning + provenance for per-operation
+          // audit and tamper-evidence. sourceLocator + contentHash key the import so a
+          // re-import of identical content is an update (idempotent) and a re-import of
+          // different content at the same locator is an AUDITED update, not a silent clobber.
+          imported: result.imported.map((skill) => ({
+            slug: skill.slug,
+            sourceType: skill.sourceType,
+            sourceLocator: skill.sourceLocator ?? null,
+            contentHash: skill.sourceRef ?? null,
+          })),
           warningCount: result.warnings.length,
         },
       });

@@ -870,6 +870,45 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     ]));
   });
 
+  // ARC-263 / ADR-GOV-0002 (C4): re-importing identical content from the same locator is an
+  // idempotent update, not a duplicate row. This backs the per-operation content-pinning the
+  // capability-gated import relies on for tamper-evidence.
+  it("is idempotent on (sourceLocator, contentHash): re-import of identical content updates instead of duplicating", async () => {
+    const companyId = randomUUID();
+    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-idempotent-import-skill-"));
+    cleanupDirs.add(skillDir);
+    await fs.writeFile(
+      path.join(skillDir, "SKILL.md"),
+      "---\nname: Recall\n---\n\n# Recall\n",
+      "utf8",
+    );
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const first = await svc.importFromSource(companyId, path.join(skillDir, "SKILL.md"));
+    // importFromSource materializes the bundled-skill inventory into companySkills as a
+    // side effect, so the table also holds those rows; scope the idempotency assertion to
+    // the imported skill's own key rather than the whole table.
+    const importedKey = first.imported[0]?.key;
+    expect(importedKey).toBeTruthy();
+    const afterFirst = await db.select().from(companySkills);
+
+    const second = await svc.importFromSource(companyId, path.join(skillDir, "SKILL.md"));
+    const afterSecond = await db.select().from(companySkills);
+
+    // Re-import of identical content is an in-place update, not a duplicate: the total row
+    // count is unchanged, and exactly one row corresponds to the imported skill throughout.
+    expect(second.imported).toHaveLength(first.imported.length);
+    expect(afterSecond.length).toBe(afterFirst.length);
+    expect(afterFirst.filter((row) => row.key === importedKey)).toHaveLength(1);
+    expect(afterSecond.filter((row) => row.key === importedKey)).toHaveLength(1);
+  });
+
   it("bounds direct root SKILL.md imports to known support directories", async () => {
     const companyId = randomUUID();
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-root-skill-"));
