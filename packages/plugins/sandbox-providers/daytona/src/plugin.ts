@@ -106,6 +106,7 @@ const NONINTERACTIVE_GIT_ENV: Record<string, string> = {
   GCM_INTERACTIVE: "Never",
   GIT_ASKPASS: "echo",
   SSH_ASKPASS: "echo",
+  SSH_ASKPASS_REQUIRE: "force",
 };
 const DEFAULT_SSH_ACCESS_MINUTES = 60;
 const DAYTONA_SSH_GATEWAY_HOST = "ssh.app.daytona.io";
@@ -592,7 +593,7 @@ function isGitNetworkCommand(command: string, args: string[]): boolean {
     if (GIT_NETWORK_SUBCOMMANDS.has(arg)) return true;
     if (arg === "remote") {
       const next = args.slice(i + 1).find(a => !a.startsWith("-"));
-      return next === "update" || next === "fetch";
+      return next === "update";
     }
     if (arg === "submodule") {
       const next = args.slice(i + 1).find(a => !a.startsWith("-"));
