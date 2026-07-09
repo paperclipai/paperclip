@@ -7,6 +7,7 @@ import {
   formatCodexAcpFallbackMessage,
   nodeVersionMeetsCodexAcpMinimum,
   resolveCodexExecutionEngine,
+  shouldFallbackFromCodexAcpResult,
 } from "./acp.js";
 
 describe("codex_local ACPX engine helpers", () => {
@@ -47,5 +48,32 @@ describe("codex_local ACPX engine helpers", () => {
   it("formats the auto-fallback message with strict-mode guidance", () => {
     expect(formatCodexAcpFallbackMessage("missing command")).toContain("engine=acp");
     expect(formatCodexAcpFallbackMessage("missing command")).toContain("engine=cli");
+  });
+
+  it("falls back only from ACPX setup failures before a Codex turn starts", () => {
+    expect(shouldFallbackFromCodexAcpResult({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      resultJson: { phase: "configure_session" },
+    })).toBe(true);
+    expect(shouldFallbackFromCodexAcpResult({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      resultJson: { phase: "ensure_session" },
+    })).toBe(true);
+    expect(shouldFallbackFromCodexAcpResult({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      resultJson: { phase: "turn" },
+    })).toBe(false);
+    expect(shouldFallbackFromCodexAcpResult({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      resultJson: { phase: "configure_session" },
+    })).toBe(false);
   });
 });
