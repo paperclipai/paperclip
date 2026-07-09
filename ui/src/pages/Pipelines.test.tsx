@@ -147,6 +147,20 @@ describe("workflow draft/live review model", () => {
     expect(model.steps.find((step) => step.id === "seed-website")).toMatchObject({ x: 321, y: 654 });
   });
 
+  it("treats persisted coordinate-only draft steps as auto-saved layout", () => {
+    const base = buildWorkflowBoardRecords([]);
+    const movedStep = { ...base.steps.find((step) => step.id === "seed-website")!, x: 222, y: 333, source: "local" as const };
+    const model = composeWorkflowBoardModel(
+      base,
+      { steps: [], edges: [] },
+      { steps: [movedStep], edges: [] },
+      { positions: {}, panByView: { customer: undefined, operations: undefined }, zoomByView: { customer: undefined, operations: undefined } },
+    );
+
+    expect(model.hasDraft).toBe(false);
+    expect(model.steps.find((step) => step.id === "seed-website")).toMatchObject({ x: 222, y: 333 });
+  });
+
   it("keeps semantic edits as a draft overlay until promotion", () => {
     const base = buildWorkflowBoardRecords([]);
     const draftStep = { ...base.steps.find((step) => step.id === "seed-qualify")!, ownerName: "Sales Agent", source: "local" as const };

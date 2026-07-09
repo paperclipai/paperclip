@@ -877,6 +877,24 @@ function mergeWorkflowRecords<T extends { id: string }>(base: T[], overlay: T[])
   return Array.from(byId.values());
 }
 
+function isWorkflowLayoutOnlyDraftStep(step: WorkflowStepRecord, baseStep: WorkflowStepRecord | undefined) {
+  return Boolean(baseStep
+    && step.id === baseStep.id
+    && step.shortName === baseStep.shortName
+    && step.view === baseStep.view
+    && step.stage === baseStep.stage
+    && step.ownerType === baseStep.ownerType
+    && step.ownerName === baseStep.ownerName
+    && step.stepType === baseStep.stepType
+    && step.completionMethod === baseStep.completionMethod
+    && step.triggerMechanism === baseStep.triggerMechanism
+    && step.inputs === baseStep.inputs
+    && step.outputs === baseStep.outputs
+    && step.knowledgeSources === baseStep.knowledgeSources
+    && step.handoffFiles === baseStep.handoffFiles
+    && step.linkedRecord === baseStep.linkedRecord);
+}
+
 function applyWorkflowLayout(steps: WorkflowStepRecord[], layout: WorkflowLayoutState) {
   return steps.map((step) => {
     const position = layout.positions[step.id];
@@ -892,10 +910,21 @@ export function composeWorkflowBoardModel(
 ) {
   const liveSteps = mergeWorkflowRecords(base.steps, live.steps);
   const liveEdges = mergeWorkflowRecords(base.edges, live.edges);
+  const liveStepsById = new Map(liveSteps.map((step) => [step.id, step]));
+  const semanticDraftSteps = draft.steps.filter((step) => !isWorkflowLayoutOnlyDraftStep(step, liveStepsById.get(step.id)));
+  const layoutOnlyDraftPositions = draft.steps.reduce<WorkflowLayoutState["positions"]>((positions, step) => {
+    if (isWorkflowLayoutOnlyDraftStep(step, liveStepsById.get(step.id))) positions[step.id] = { x: step.x, y: step.y };
+    return positions;
+  }, {});
+  const effectiveLayout: WorkflowLayoutState = {
+    ...layout,
+    positions: { ...layoutOnlyDraftPositions, ...layout.positions },
+  };
+  const hasSemanticDraft = semanticDraftSteps.length > 0 || draft.edges.length > 0;
   return {
-    steps: applyWorkflowLayout(mergeWorkflowRecords(liveSteps, draft.steps), layout),
+    steps: applyWorkflowLayout(mergeWorkflowRecords(liveSteps, semanticDraftSteps), effectiveLayout),
     edges: mergeWorkflowRecords(liveEdges, draft.edges),
-    hasDraft: draft.steps.length > 0 || draft.edges.length > 0,
+    hasDraft: hasSemanticDraft,
   };
 }
 
