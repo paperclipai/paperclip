@@ -1088,6 +1088,16 @@ export interface RequestConfirmationResult {
   reason?: string | null;
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
+  resumeFailure?: {
+    status: "retrying" | "needs_attention";
+    errorCode: string | null;
+    attempt: number;
+    maxAttempts: number;
+    runId?: string | null;
+    retryRunId?: string | null;
+    recoveryActionId?: string | null;
+    updatedAt?: string | null;
+  } | null;
 }
 
 export interface RequestCheckboxConfirmationResult extends RequestConfirmationResult {
