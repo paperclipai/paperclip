@@ -333,6 +333,70 @@ describe("IssueBlockedNotice", () => {
     expect(stepLinks[0]).toContain("TASK-9");
     expect(stepLinks[1]).toContain("TASK-10");
     expect(stepLinks[2]).toContain("TASK-11");
+
+    const runningStep = node.querySelectorAll('[data-testid="issue-blocked-notice-steps"] a')[2];
+    if (!runningStep) throw new Error("Expected a running live-work step.");
+    expect(runningStep.querySelector('svg[aria-label="In Progress status"]')).not.toBeNull();
+    expect(node.querySelector('[data-testid="issue-blocked-notice-now-running"]')).toBeNull();
+  });
+
+  it("shows external now-running blockers beneath the label on a separate line", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        liveIssueIds={new Set(["terminal-live"])}
+        blockerAttention={{
+          state: "covered",
+          reason: "active_dependency",
+          unresolvedBlockerCount: 1,
+          coveredBlockerCount: 1,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: "TASK-99",
+          sampleStalledBlockerIdentifier: null,
+        }}
+        blockers={[
+          {
+            id: "blocker-1",
+            identifier: "TASK-1",
+            title: "Queued dependency",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+            terminalBlockers: [
+              {
+                id: "terminal-live",
+                identifier: "TASK-99",
+                title: "External running task",
+                status: "in_progress",
+                priority: "medium",
+                assigneeAgentId: "agent-1",
+                assigneeUserId: null,
+              },
+            ],
+          },
+        ]}
+        allBlockers={[
+          {
+            id: "blocker-1",
+            identifier: "TASK-1",
+            title: "Queued dependency",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        ]}
+      />,
+    );
+
+    const nowRunning = node.querySelector('[data-testid="issue-blocked-notice-now-running"]');
+    expect(nowRunning).not.toBeNull();
+    expect(nowRunning!.children[0]?.textContent?.trim()).toBe("Now running");
+    expect(nowRunning!.children[1]?.querySelector("a")?.textContent).toContain("TASK-99");
+    const stepText = node.querySelector('[data-testid="issue-blocked-notice-steps"]')?.textContent;
+    expect(stepText).not.toContain("TASK-99");
   });
 
   it("renders a recovery indicator on a blocker chip when the blocker has an active recovery action", () => {

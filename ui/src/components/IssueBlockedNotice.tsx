@@ -22,6 +22,7 @@ import {
   RECOVERY_CHIP_DEFAULT_TONE,
   recoveryChipLabel,
 } from "../lib/recovery-display";
+import { StatusGlyph } from "./StatusGlyph";
 
 function BlockerRecoveryIndicator({ action }: { action: IssueRecoveryAction }) {
   const state = deriveActiveRecoveryDisplayState(action);
@@ -133,6 +134,10 @@ const WAITING_STEP_RANK: Record<WaitingStepStatus, number> = {
   queued: 2,
 };
 
+function waitingTaskStatusLabel(status: string): string {
+  return status.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
 function WaitingChipLink({
   blocker,
   running = false,
@@ -147,6 +152,11 @@ function WaitingChipLink({
       to={createIssueDetailPath(issuePathId)}
       className="inline-flex max-w-full items-center gap-1 rounded-md border border-blue-300/70 bg-background/80 px-2 py-1 font-mono text-xs text-blue-950 transition-colors hover:border-blue-500 hover:bg-blue-100 hover:underline dark:border-blue-500/40 dark:bg-background/40 dark:text-blue-100 dark:hover:bg-blue-500/15"
     >
+      <StatusGlyph
+        status={blocker.status}
+        size="sm"
+        title={`${waitingTaskStatusLabel(blocker.status)} status`}
+      />
       <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
       <span className="max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro) text-blue-800 dark:text-blue-200">
         {blocker.title}
@@ -208,11 +218,13 @@ function WaitingOnLiveWorkNotice({
   const runningCount = steps.filter((step) => step.status === "running").length;
 
   // "Now running" replaces "Ultimately waiting on": prefer live terminal
-  // leaves; otherwise fall back to whichever chain blocker is live.
+  // leaves that are not already shown in the ordered queue list.
+  const stepIds = new Set(steps.map((step) => step.blocker.id));
   const nowRunningSeen = new Set<string>();
   const nowRunning: IssueRelationIssueSummary[] = [];
   for (const blocker of [...terminalBlockers, ...chainBlockers]) {
     if (!liveIds.has(blocker.id)) continue;
+    if (stepIds.has(blocker.id)) continue;
     if (nowRunningSeen.has(blocker.id)) continue;
     nowRunningSeen.add(blocker.id);
     nowRunning.push(blocker);
@@ -276,7 +288,7 @@ function WaitingOnLiveWorkNotice({
             {steps.map(({ blocker, status }) => (
               <div key={blocker.id} className="flex items-stretch gap-2">
                 <div className="flex w-3.5 flex-col items-center">
-                  <span className="mt-0.5">
+                  <span className="flex min-h-6 items-center">
                     <WaitingStepGlyph status={status} />
                   </span>
                   <span
@@ -285,20 +297,14 @@ function WaitingOnLiveWorkNotice({
                   />
                 </div>
                 <div className="min-w-0 pb-1.5">
-                  {status === "running" ? (
-                    <div className="rounded-md border border-blue-500/60 bg-blue-100/60 p-1 dark:border-blue-400/50 dark:bg-blue-500/15">
-                      <WaitingChipLink blocker={blocker} running />
-                    </div>
-                  ) : (
-                    <WaitingChipLink blocker={blocker} />
-                  )}
+                  <WaitingChipLink blocker={blocker} running={status === "running"} />
                 </div>
               </div>
             ))}
             <div className="flex items-stretch gap-2">
               <div className="flex w-3.5 flex-col items-center">
                 <span
-                  className="mt-0.5 h-3 w-3 rounded-full border border-dashed border-blue-400/60 dark:border-blue-400/50"
+                  className="mt-1.5 h-3 w-3 rounded-full border border-dashed border-blue-400/60 dark:border-blue-400/50"
                   aria-hidden
                 />
               </div>
@@ -313,14 +319,16 @@ function WaitingOnLiveWorkNotice({
           {nowRunning.length > 0 ? (
             <div
               data-testid="issue-blocked-notice-now-running"
-              className="flex flex-wrap items-center gap-1.5 pt-0.5"
+              className="space-y-1 pt-0.5"
             >
-              <span className="text-xs font-medium text-blue-800 dark:text-blue-200">
+              <div className="text-xs font-medium text-blue-800 dark:text-blue-200">
                 Now running
-              </span>
-              {nowRunning.map((blocker) => (
-                <WaitingChipLink key={blocker.id} blocker={blocker} running />
-              ))}
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {nowRunning.map((blocker) => (
+                  <WaitingChipLink key={blocker.id} blocker={blocker} running />
+                ))}
+              </div>
             </div>
           ) : null}
 
