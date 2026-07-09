@@ -1,4 +1,6 @@
 import type {
+  ConnectionTokenIssuanceOutcome,
+  ConnectionTokenIssuancePath,
   SecretProjectionClass,
   ToolActionRequestStatus,
   ToolApplicationStatus,
@@ -31,6 +33,8 @@ import type {
 } from "../constants.js";
 
 export type {
+  ConnectionTokenIssuanceOutcome,
+  ConnectionTokenIssuancePath,
   SecretProjectionClass,
   ToolActionRequestStatus,
   ToolApplicationStatus,
@@ -136,6 +140,67 @@ export interface ToolConnection {
   createdByUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export type ConnectionTokenScope = string | string[];
+
+export interface ConnectionTokenRequest {
+  scope?: ConnectionTokenScope;
+  requestedTtlSeconds?: number;
+}
+
+export interface ConnectionTokenAttribution {
+  agentId: string;
+  runId: string;
+  issueId: string | null;
+  projectId: string | null;
+  responsibleUserId: string | null;
+}
+
+export interface ConnectionTokenMintedResponse {
+  status: "minted";
+  connectionId: string;
+  path: Exclude<ConnectionTokenIssuancePath, "static">;
+  token: string;
+  tokenType: "Bearer" | string;
+  expiresAt: string;
+  ttlSeconds: number;
+  scope: string[];
+  attribution: ConnectionTokenAttribution;
+}
+
+export interface ConnectionTokenUseEnvLeaseResponse {
+  status: "use_env_lease";
+  code: "use_env_lease";
+  connectionId: string;
+  path: "static";
+  message: string;
+  scope: string[];
+  attribution: ConnectionTokenAttribution;
+}
+
+export type ConnectionTokenResponse = ConnectionTokenMintedResponse | ConnectionTokenUseEnvLeaseResponse;
+
+export interface ConnectionTokenIssuance {
+  id: string;
+  companyId: string;
+  applicationId: string | null;
+  connectionId: string;
+  agentId: string;
+  runId: string | null;
+  issueId: string | null;
+  projectId: string | null;
+  responsibleUserId: string | null;
+  path: ConnectionTokenIssuancePath;
+  requestedScope: string[];
+  issuedScope: string[];
+  ttlSeconds: number | null;
+  expiresAt: Date | null;
+  tokenHash: string | null;
+  outcome: ConnectionTokenIssuanceOutcome;
+  errorCode: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: Date;
 }
 
 export interface ToolCatalogEntry {

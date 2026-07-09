@@ -983,6 +983,19 @@ export type ToolMcpGatewayTokenSubjectType = (typeof TOOL_MCP_GATEWAY_TOKEN_SUBJ
 export const TOOL_MCP_GATEWAY_TOKEN_ACTIONS = ["tools/list", "tools/call"] as const;
 export type ToolMcpGatewayTokenAction = (typeof TOOL_MCP_GATEWAY_TOKEN_ACTIONS)[number];
 
+export const CONNECTION_TOKEN_ISSUANCE_PATHS = ["exchange", "oauth_access", "static"] as const;
+export type ConnectionTokenIssuancePath = (typeof CONNECTION_TOKEN_ISSUANCE_PATHS)[number];
+
+export const CONNECTION_TOKEN_ISSUANCE_OUTCOMES = [
+  "success",
+  "denied",
+  "rate_limited",
+  "use_env_lease",
+  "upstream_error",
+  "failure",
+] as const;
+export type ConnectionTokenIssuanceOutcome = (typeof CONNECTION_TOKEN_ISSUANCE_OUTCOMES)[number];
+
 export const TOOL_POLICY_TYPES = [
   "allow",
   "block",

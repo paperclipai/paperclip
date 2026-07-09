@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import {
   companies,
   companyMemberships,
   companySecretBindings,
+  connectionTokenIssuances,
   companySecrets,
   companySecretVersions,
   createDb,
@@ -40,6 +41,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { classifyRisk, toolAccessService } from "../services/tool-access.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
+import { secretService } from "../services/secrets.js";
 import { canonicalToolArguments, signToolArguments } from "../services/tool-content-guards.js";
 import { createToolGatewayService, type ToolGatewayService } from "../services/tool-gateway.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
@@ -173,6 +175,120 @@ async function createAgent(db: ReturnType<typeof createDb>, companyId: string, s
   }).returning().then((rows) => rows[0]!);
 }
 
+async function createIssueAndRun(db: ReturnType<typeof createDb>, companyId: string, agentId: string) {
+  const [issue] = await db.insert(issues).values({
+    companyId,
+    title: `Broker issue ${randomUUID()}`,
+    status: "in_progress",
+    assigneeAgentId: agentId,
+  }).returning();
+  const [run] = await db.insert(heartbeatRuns).values({
+    companyId,
+    agentId,
+    invocationSource: "assignment",
+    status: "running",
+    contextSnapshot: { issueId: issue!.id, responsibleUserId: "user-for-run" },
+  }).returning();
+  return { issue: issue!, run: run! };
+}
+
+function agentJwtActor(companyId: string, agentId: string, runId: string): Express.Request["actor"] {
+  return {
+    type: "agent",
+    companyId,
+    agentId,
+    runId,
+    source: "agent_jwt",
+  };
+}
+
+async function allowConnectionForAgent(db: ReturnType<typeof createDb>, companyId: string, agentId: string, connectionId: string) {
+  const [profile] = await db.insert(toolProfiles).values({
+    companyId,
+    profileKey: `broker-${randomUUID()}`,
+    name: `Broker profile ${randomUUID()}`,
+    defaultAction: "deny",
+  }).returning();
+  await db.insert(toolProfileBindings).values({
+    companyId,
+    profileId: profile!.id,
+    targetType: "agent",
+    targetId: agentId,
+  });
+  await db.insert(toolProfileEntries).values({
+    companyId,
+    profileId: profile!.id,
+    selectorType: "connection",
+    effect: "include",
+    connectionId,
+  });
+  return profile!;
+}
+
+async function createBrokerConnection(
+  db: ReturnType<typeof createDb>,
+  companyId: string,
+  input: {
+    path?: "exchange" | "static";
+    parentScopes?: string[];
+    defaultScopes?: string[];
+    rateLimitPerHour?: number;
+    healthStatus?: "unknown" | "healthy" | "degraded" | "failed" | "unchecked" | "ok" | "error" | "missing_secret";
+    tokenUrl?: string;
+  } = {},
+) {
+  const secret = await secretService(db).create(companyId, {
+    provider: "local_encrypted",
+    name: `Broker parent ${randomUUID()}`,
+    key: `broker.parent.${randomUUID()}`,
+    value: "parent-deploy-token",
+  });
+  const [application] = await db.insert(toolApplications).values({
+    companyId,
+    applicationKey: "paperclip-pages",
+    name: `Paperclip Pages ${randomUUID()}`,
+    type: "mcp_http",
+    status: "active",
+  }).returning();
+  const [connection] = await db.insert(toolConnections).values({
+    companyId,
+    applicationId: application!.id,
+    name: `Pages connection ${randomUUID()}`,
+    transport: "remote_http",
+    status: "active",
+    enabled: true,
+    healthStatus: input.healthStatus ?? "ok",
+    config: {
+      service: "pages",
+      namespaceAllowlist: ["dotta"],
+      tokenBroker: {
+        path: input.path ?? "exchange",
+        tokenUrl: input.tokenUrl ?? "https://pages.example.test/v1/tokens/exchange",
+        parentCredentialConfigPath: "credentials.deploy_token",
+        parentScopes: input.parentScopes ?? ["pages:publish:ns/dotta"],
+        defaultScopes: input.defaultScopes ?? [],
+        ...(input.rateLimitPerHour !== undefined ? { rateLimitPerHour: input.rateLimitPerHour } : {}),
+      },
+    },
+    transportConfig: {},
+    credentialSecretRefs: [{
+      secretId: secret.id,
+      versionSelector: "latest",
+      configPath: "credentials.deploy_token",
+      required: true,
+      label: "Pages deploy token",
+    }],
+  }).returning();
+  await db.insert(companySecretBindings).values({
+    companyId,
+    secretId: secret.id,
+    targetType: "tool_connection",
+    targetId: connection!.id,
+    configPath: "credentials.deploy_token",
+  });
+  return { application: application!, connection: connection!, secret };
+}
+
 async function createRemoteToolFixture(
   db: ReturnType<typeof createDb>,
   companyId: string,
@@ -239,6 +355,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     await db.delete(toolOauthStates);
+    await db.delete(connectionTokenIssuances);
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
     await db.delete(companySecrets);
@@ -268,6 +385,159 @@ describeEmbeddedPostgres("tool access service", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("mints generic exchange connection tokens through the agent route and stores only hashes", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id);
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      expect(String(url)).toBe("https://pages.example.test/v1/tokens/exchange");
+      expect(init?.headers).toEqual(expect.objectContaining({ authorization: "Bearer parent-deploy-token" }));
+      const body = JSON.parse(String(init?.body));
+      expect(body).toMatchObject({
+        namespace: "dotta",
+        ttlSeconds: 900,
+        actions: ["publish"],
+        actor: { type: "agent", id: agent.id, runId: run.id, onBehalfOf: "user:user-for-run" },
+      });
+      return {
+        ok: true,
+        status: 201,
+        json: async () => ({
+          token: "child-pages-token",
+          expiresAt: new Date(Date.now() + 900_000).toISOString(),
+          scope: "pages:publish:ns/dotta",
+          token_type: "Bearer",
+        }),
+      } as Response;
+    });
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .set("X-Paperclip-Run-Id", run.id)
+      .send({ scope: "pages:publish:ns/dotta", requestedTtlSeconds: 5000 });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "minted",
+      connectionId: connection.id,
+      path: "exchange",
+      token: "child-pages-token",
+      tokenType: "Bearer",
+      ttlSeconds: expect.any(Number),
+      scope: ["pages:publish:ns/dotta"],
+      attribution: { agentId: agent.id, runId: run.id, issueId: expect.any(String), responsibleUserId: "user-for-run" },
+    });
+    expect(res.body.ttlSeconds).toBeLessThanOrEqual(900);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const issuances = await db.select().from(connectionTokenIssuances);
+    expect(issuances).toHaveLength(1);
+    expect(issuances[0]).toMatchObject({
+      companyId: company.id,
+      connectionId: connection.id,
+      agentId: agent.id,
+      runId: run.id,
+      path: "exchange",
+      outcome: "success",
+      tokenHash: createHash("sha256").update("child-pages-token").digest("hex"),
+    });
+    expect(JSON.stringify(issuances)).not.toContain("child-pages-token");
+    expect(JSON.stringify(issuances)).not.toContain("parent-deploy-token");
+
+    const secretEvents = await db.select().from(secretAccessEvents).where(eq(secretAccessEvents.consumerId, connection.id));
+    expect(secretEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actorType: "agent",
+        actorId: agent.id,
+        configPath: "credentials.deploy_token",
+        heartbeatRunId: run.id,
+        outcome: "success",
+      }),
+    ]));
+  });
+
+  it("returns a typed use_env_lease refusal for static credential delivery", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id, { path: "static" });
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .send({ scope: "pages:publish:ns/dotta" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({
+      status: "use_env_lease",
+      code: "use_env_lease",
+      path: "static",
+      connectionId: connection.id,
+    });
+    const [issuance] = await db.select().from(connectionTokenIssuances);
+    expect(issuance).toMatchObject({
+      connectionId: connection.id,
+      path: "static",
+      outcome: "use_env_lease",
+      errorCode: "use_env_lease",
+      tokenHash: null,
+    });
+  });
+
+  it("denies token scopes outside the parent scope before minting", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id, { parentScopes: ["pages:publish:ns/dotta"] });
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .send({ scope: "pages:publish:ns/other" });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ code: "scope_exceeds_parent" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const [issuance] = await db.select().from(connectionTokenIssuances);
+    expect(issuance).toMatchObject({ outcome: "denied", errorCode: "scope_exceeds_parent", tokenHash: null });
+  });
+
+  it("rate limits connection token minting per agent and connection", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id, { rateLimitPerHour: 1 });
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ token: `child-${randomUUID()}`, expires_in: 600, scope: "pages:publish:ns/dotta" }),
+    } as Response);
+
+    await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .send({ scope: "pages:publish:ns/dotta" })
+      .expect(200);
+
+    const limited = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .send({ scope: "pages:publish:ns/dotta" });
+
+    expect(limited.status).toBe(429);
+    expect(limited.body).toMatchObject({ code: "rate_limited" });
+    const issuances = await db.select().from(connectionTokenIssuances).where(eq(connectionTokenIssuances.connectionId, connection.id));
+    expect(issuances.map((row) => row.outcome).sort()).toEqual(["rate_limited", "success"]);
   });
 
   it("quarantines new or changed catalog entries during active opt-in catalog refresh", async () => {

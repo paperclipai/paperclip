@@ -5,6 +5,7 @@ import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
+  connectionTokenIssuances,
   authUsers,
   companySecretBindings,
   companySecrets,
@@ -31,6 +32,10 @@ import {
   toolRuntimeSlots,
 } from "@paperclipai/db";
 import type {
+  ConnectionTokenIssuanceOutcome,
+  ConnectionTokenIssuancePath,
+  ConnectionTokenRequest,
+  ConnectionTokenResponse,
   CreateToolApplication,
   CreateToolConnection,
   ConnectToolApp,
@@ -1315,6 +1320,443 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       await recordToolRuntimeAuditWriteFailure(db, input.companyId);
       throw error;
     }
+  }
+
+
+  function readConfigString(record: Record<string, unknown>, key: string): string | null {
+    const value = record[key];
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  }
+
+  function readConfigStringArray(value: unknown): string[] {
+    if (Array.isArray(value)) {
+      return value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+    if (typeof value === "string") return value.split(/\s+/).map((item) => item.trim()).filter(Boolean);
+    return [];
+  }
+
+  function normalizeConnectionTokenScopes(scope: ConnectionTokenRequest["scope"]): string[] {
+    if (Array.isArray(scope)) return [...new Set(scope.map((item) => item.trim()).filter(Boolean))];
+    if (typeof scope === "string") return [...new Set(scope.split(/\s+/).map((item) => item.trim()).filter(Boolean))];
+    return [];
+  }
+
+  function tokenBrokerConfig(connection: typeof toolConnections.$inferSelect): Record<string, unknown> {
+    const config = asRecord(connection.config);
+    const broker = asRecord(config.tokenBroker);
+    if (Object.keys(broker).length > 0) return broker;
+    return asRecord(config.broker);
+  }
+
+  function isPagesTokenConnection(connection: typeof toolConnections.$inferSelect, application?: typeof toolApplications.$inferSelect | null) {
+    const config = asRecord(connection.config);
+    const broker = tokenBrokerConfig(connection);
+    const applicationKey = application?.applicationKey ?? "";
+    return Boolean(
+      applicationKey === "paperclip-pages"
+      || applicationKey === "paperclip.pages"
+      || applicationKey === "pages.paperclip"
+      || readConfigString(config, "connectionType") === "pages"
+      || readConfigString(config, "service") === "pages"
+      || readConfigString(broker, "connectionType") === "pages"
+      || readConfigString(broker, "service") === "pages"
+      || asRecord(config.pages).enabled === true,
+    );
+  }
+
+  async function getConnectionApplication(connection: typeof toolConnections.$inferSelect) {
+    const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, connection.applicationId));
+    return application ?? null;
+  }
+
+  function inferConnectionTokenPath(
+    connection: typeof toolConnections.$inferSelect,
+    application?: typeof toolApplications.$inferSelect | null,
+  ): ConnectionTokenIssuancePath {
+    const broker = tokenBrokerConfig(connection);
+    const configuredPath = readConfigString(broker, "path") ?? readConfigString(asRecord(connection.config), "tokenPath");
+    if (configuredPath === "exchange" || configuredPath === "oauth_access" || configuredPath === "static") return configuredPath;
+    if (isPagesTokenConnection(connection, application)) return "exchange";
+    if (readConfigString(broker, "tokenUrl") || readConfigString(asRecord(connection.config), "tokenExchangeUrl")) return "exchange";
+    const oauth = oauthConfig(connection);
+    if (typeof oauth.tokenUrl === "string" || oauthSecretRef(connection, "oauth.refresh_token") || oauthSecretRef(connection, "oauth.access_token")) {
+      return "oauth_access";
+    }
+    return "static";
+  }
+
+  function parentScopesForConnection(connection: typeof toolConnections.$inferSelect): string[] {
+    const config = asRecord(connection.config);
+    const broker = tokenBrokerConfig(connection);
+    const configured = [
+      ...readConfigStringArray(broker.parentScopes),
+      ...readConfigStringArray(broker.scopes),
+      ...readConfigStringArray(config.parentScopes),
+      ...readConfigStringArray(asRecord(config.oauth).scopes),
+      ...readConfigStringArray(asRecord(config.oauth).scope),
+    ];
+    const namespaceAllowlist = readConfigStringArray(config.namespaceAllowlist)
+      .map((namespace) => `pages:publish:ns/${namespace}`);
+    return [...new Set([...configured, ...namespaceAllowlist])];
+  }
+
+  function defaultScopesForConnection(connection: typeof toolConnections.$inferSelect): string[] {
+    const broker = tokenBrokerConfig(connection);
+    return [...new Set([
+      ...readConfigStringArray(broker.defaultScopes),
+      ...readConfigStringArray(asRecord(connection.config).defaultScopes),
+    ])];
+  }
+
+  function assertScopeSubset(input: { requestedScope: string[]; parentScopes: string[] }) {
+    if (input.requestedScope.length === 0) return;
+    const parent = new Set(input.parentScopes);
+    if (parent.size === 0 || input.requestedScope.some((scope) => !parent.has(scope))) {
+      throw forbidden("Requested token scope exceeds the connection parent scope");
+    }
+  }
+
+  function requestedTtlSeconds(body: ConnectionTokenRequest, connection: typeof toolConnections.$inferSelect): number {
+    const broker = tokenBrokerConfig(connection);
+    const configured = Number(broker.defaultTtlSeconds ?? broker.ttlSeconds ?? 900);
+    const requested = Number(body.requestedTtlSeconds ?? configured);
+    const finite = Number.isFinite(requested) && requested > 0 ? Math.trunc(requested) : 900;
+    return Math.max(1, Math.min(900, finite));
+  }
+
+  function sha256Hex(value: string): string {
+    return createHash("sha256").update(value).digest("hex");
+  }
+
+  function bearerTokenHash(token: string): string {
+    return sha256Hex(token);
+  }
+
+  function runSnapshotString(snapshot: Record<string, unknown>, ...keys: string[]): string | null {
+    for (const key of keys) {
+      const value = snapshot[key];
+      if (typeof value === "string" && value.trim().length > 0) return value;
+    }
+    return null;
+  }
+
+  async function loadBrokerRunContext(input: { companyId: string; agentId: string; runId: string }) {
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
+    if (!run || run.companyId !== input.companyId || run.agentId !== input.agentId) {
+      throw forbidden("Agent run context does not match the authenticated actor");
+    }
+    const snapshot = asRecord(run.contextSnapshot);
+    const paperclipIssue = asRecord(snapshot.paperclipIssue);
+    return {
+      run,
+      issueId: runSnapshotString(snapshot, "issueId") ?? runSnapshotString(paperclipIssue, "id"),
+      projectId: runSnapshotString(snapshot, "projectId") ?? runSnapshotString(paperclipIssue, "projectId"),
+      routineId: runSnapshotString(snapshot, "routineId"),
+      responsibleUserId: runSnapshotString(snapshot, "responsibleUserId", "responsible_user_id")
+        ?? runSnapshotString(paperclipIssue, "responsibleUserId", "responsible_user_id"),
+    };
+  }
+
+  async function recordConnectionTokenIssuance(input: {
+    companyId: string;
+    applicationId: string | null;
+    connectionId: string;
+    agentId: string;
+    runId: string | null;
+    issueId: string | null;
+    projectId: string | null;
+    responsibleUserId: string | null;
+    path: ConnectionTokenIssuancePath;
+    requestedScope: string[];
+    issuedScope: string[];
+    ttlSeconds: number | null;
+    expiresAt: Date | null;
+    tokenHash: string | null;
+    outcome: ConnectionTokenIssuanceOutcome;
+    errorCode?: string | null;
+    metadata?: Record<string, unknown>;
+  }) {
+    await db.insert(connectionTokenIssuances).values({
+      companyId: input.companyId,
+      applicationId: input.applicationId,
+      connectionId: input.connectionId,
+      agentId: input.agentId,
+      runId: input.runId,
+      issueId: input.issueId,
+      projectId: input.projectId,
+      responsibleUserId: input.responsibleUserId,
+      path: input.path,
+      requestedScope: input.requestedScope,
+      issuedScope: input.issuedScope,
+      ttlSeconds: input.ttlSeconds,
+      expiresAt: input.expiresAt,
+      tokenHash: input.tokenHash,
+      outcome: input.outcome,
+      errorCode: input.errorCode ?? null,
+      metadata: input.metadata ?? {},
+    });
+  }
+
+  async function auditConnectionTokenIssuance(input: {
+    companyId: string;
+    connectionId: string;
+    agentId: string;
+    runId: string;
+    path: ConnectionTokenIssuancePath;
+    outcome: ConnectionTokenIssuanceOutcome;
+    reasonCode?: string | null;
+    details?: Record<string, unknown>;
+  }) {
+    const success = input.outcome === "success";
+    await audit({
+      companyId: input.companyId,
+      connectionId: input.connectionId,
+      action: success ? "connection_token.minted" : "connection_token.denied",
+      outcome: success ? "success" : "failure",
+      reasonCode: input.reasonCode ?? null,
+      actor: { actorType: "agent", actorId: input.agentId },
+      details: { path: input.path, outcome: input.outcome, runId: input.runId, ...(input.details ?? {}) },
+    });
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: "agent",
+      actorId: input.agentId,
+      agentId: input.agentId,
+      runId: input.runId,
+      action: success ? "connection_token.minted" : "connection_token.denied",
+      entityType: "tool_connection",
+      entityId: input.connectionId,
+      details: { path: input.path, outcome: input.outcome, reasonCode: input.reasonCode ?? null, ...(input.details ?? {}) },
+    });
+  }
+
+  async function enforceDefaultConnectionTokenRateLimit(input: {
+    connection: typeof toolConnections.$inferSelect;
+    agentId: string;
+    path: ConnectionTokenIssuancePath;
+  }) {
+    const broker = tokenBrokerConfig(input.connection);
+    const configured = Number(broker.rateLimitPerHour ?? 30);
+    const limit = Number.isFinite(configured) && configured > 0 ? Math.trunc(configured) : 30;
+    const since = new Date(now().getTime() - 60 * 60 * 1000);
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(connectionTokenIssuances)
+      .where(and(
+        eq(connectionTokenIssuances.companyId, input.connection.companyId),
+        eq(connectionTokenIssuances.connectionId, input.connection.id),
+        eq(connectionTokenIssuances.agentId, input.agentId),
+        eq(connectionTokenIssuances.outcome, "success"),
+        gte(connectionTokenIssuances.createdAt, since),
+      ));
+    const count = Number(row?.count ?? 0);
+    if (count >= limit) {
+      throw new HttpError(429, "Connection token mint rate limit exceeded", {
+        code: "rate_limited",
+        path: input.path,
+        limit,
+        windowSeconds: 3600,
+      });
+    }
+  }
+
+  function accessContextForBroker(input: {
+    connection: typeof toolConnections.$inferSelect;
+    agentId: string;
+    runId: string;
+    issueId: string | null;
+    actorSource?: ActorInfo["actorType"] | null;
+    configPath: string;
+  }) {
+    return {
+      consumerType: "tool_connection" as const,
+      consumerId: input.connection.id,
+      configPath: input.configPath,
+      actorType: "agent" as const,
+      actorId: input.agentId,
+      actorSource: "agent_jwt" as const,
+      issueId: input.issueId,
+      heartbeatRunId: input.runId,
+    };
+  }
+
+  function findBrokerCredentialRef(connection: typeof toolConnections.$inferSelect) {
+    const broker = tokenBrokerConfig(connection);
+    const configuredPath = readConfigString(broker, "parentCredentialConfigPath")
+      ?? readConfigString(broker, "credentialConfigPath")
+      ?? readConfigString(broker, "secretConfigPath");
+    const configuredName = readConfigString(broker, "parentCredentialName") ?? readConfigString(broker, "credentialName");
+    const secretCandidates = connection.credentialSecretRefs.filter((ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token");
+    const secretRef = configuredPath
+      ? connection.credentialSecretRefs.find((ref) => ref.configPath === configuredPath)
+      : secretCandidates.find((ref) => ref.configPath === "credentials.deploy_token")
+        ?? secretCandidates.find((ref) => ref.configPath === "pages.deploy_token")
+        ?? secretCandidates[0];
+    if (secretRef) return { kind: "secret_ref" as const, ref: secretRef, configPath: secretRef.configPath };
+    const credentialRef = configuredName
+      ? connection.credentialRefs.find((ref) => ref.name === configuredName)
+      : connection.credentialRefs[0];
+    if (credentialRef) return { kind: "credential_ref" as const, ref: credentialRef, configPath: `credentials.${credentialRef.name}` };
+    return null;
+  }
+
+  async function resolveBrokerParentCredential(input: {
+    connection: typeof toolConnections.$inferSelect;
+    agentId: string;
+    runId: string;
+    issueId: string | null;
+  }) {
+    const ref = findBrokerCredentialRef(input.connection);
+    if (!ref) {
+      throw unprocessable("Connection token exchange requires a vault-backed parent credential", {
+        code: "parent_credential_missing",
+      });
+    }
+    if (ref.kind === "secret_ref") {
+      return secrets.resolveSecretValue(input.connection.companyId, ref.ref.secretId, ref.ref.versionSelector ?? "latest", {
+        accessContext: accessContextForBroker({ ...input, configPath: ref.configPath }),
+        bindingContext: accessContextForBroker({ ...input, configPath: ref.configPath }),
+      });
+    }
+    return secrets.resolveSecretValue(input.connection.companyId, ref.ref.secretId, ref.ref.version ?? "latest", {
+      accessContext: accessContextForBroker({ ...input, configPath: ref.configPath }),
+      bindingContext: accessContextForBroker({ ...input, configPath: ref.configPath }),
+    });
+  }
+
+  function exchangeTokenUrl(connection: typeof toolConnections.$inferSelect, isPages: boolean): string {
+    const broker = tokenBrokerConfig(connection);
+    const config = asRecord(connection.config);
+    const url = readConfigString(broker, "tokenUrl")
+      ?? readConfigString(broker, "exchangeTokenUrl")
+      ?? readConfigString(config, "tokenExchangeUrl")
+      ?? readConfigString(config, "pagesTokenExchangeUrl");
+    if (url) return url;
+    const pagesApiBase = process.env.PAPERCLIP_PAGES_API_URL?.trim();
+    if (isPages && pagesApiBase) return new URL("/v1/tokens/exchange", pagesApiBase.endsWith("/") ? pagesApiBase : `${pagesApiBase}/`).toString();
+    throw unprocessable("Connection token exchange URL is not configured", { code: "exchange_url_missing" });
+  }
+
+  function pagesNamespaceFromScope(scope: string[]): string | null {
+    const first = scope[0];
+    if (!first) return null;
+    const match = first.match(/^pages:publish:ns\/([^/\s]+)$/);
+    return match?.[1] ?? null;
+  }
+
+  async function mintExchangeConnectionToken(input: {
+    connection: typeof toolConnections.$inferSelect;
+    application: typeof toolApplications.$inferSelect | null;
+    agentId: string;
+    runId: string;
+    issueId: string | null;
+    responsibleUserId: string | null;
+    scope: string[];
+    ttlSeconds: number;
+  }) {
+    const isPages = isPagesTokenConnection(input.connection, input.application);
+    const parentToken = await resolveBrokerParentCredential(input);
+    const broker = tokenBrokerConfig(input.connection);
+    const protocol = readConfigString(broker, "protocol") ?? readConfigString(broker, "exchangeProtocol") ?? (isPages ? "pages" : "generic");
+    const url = exchangeTokenUrl(input.connection, isPages);
+    const actor = {
+      type: "agent",
+      id: input.agentId,
+      runId: input.runId,
+      ...(input.responsibleUserId ? { onBehalfOf: `user:${input.responsibleUserId}` } : {}),
+    };
+    let response: Response;
+    if (protocol === "rfc8693") {
+      const body = new URLSearchParams();
+      body.set("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange");
+      body.set("subject_token", parentToken);
+      body.set("subject_token_type", readConfigString(broker, "subjectTokenType") ?? "urn:ietf:params:oauth:token-type:access_token");
+      body.set("scope", input.scope.join(" "));
+      const audience = readConfigString(broker, "audience");
+      if (audience) body.set("audience", audience);
+      body.set("requested_token_type", readConfigString(broker, "requestedTokenType") ?? "urn:ietf:params:oauth:token-type:access_token");
+      body.set("actor_token", Buffer.from(JSON.stringify(actor)).toString("base64url"));
+      body.set("actor_token_type", readConfigString(broker, "actorTokenType") ?? "urn:ietf:params:oauth:token-type:jwt");
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body,
+      });
+    } else {
+      const namespace = isPages ? pagesNamespaceFromScope(input.scope) : null;
+      const body = isPages && namespace
+        ? { namespace, ttlSeconds: input.ttlSeconds, actions: ["publish"], actor }
+        : { scope: input.scope, ttlSeconds: input.ttlSeconds, actor, audience: readConfigString(broker, "audience") };
+      response = await fetch(url, {
+        method: "POST",
+        headers: { authorization: `Bearer ${parentToken}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
+    const payload = await response.json().catch(() => ({})) as unknown;
+    const record = asRecord(payload);
+    if (!response.ok) {
+      const code = typeof record.code === "string"
+        ? record.code
+        : typeof record.error === "string"
+          ? record.error
+          : "upstream_error";
+      throw new HttpError(response.status === 401 || response.status === 403 ? 409 : 502, "Connection token exchange failed", {
+        code: code === "parent_revoked" ? "credential_revoked" : "upstream_error",
+        upstreamCode: code,
+        upstreamStatus: response.status,
+        upstreamRequestId: typeof record.requestId === "string" ? record.requestId : null,
+      });
+    }
+    const token = typeof record.token === "string"
+      ? record.token
+      : typeof record.access_token === "string"
+        ? record.access_token
+        : null;
+    if (!token) throw new HttpError(502, "Connection token exchange did not return a token", { code: "upstream_token_missing" });
+    const expiresIn = typeof record.expires_in === "number" ? record.expires_in : Number(record.expires_in);
+    const expiresAt = typeof record.expiresAt === "string" && Number.isFinite(Date.parse(record.expiresAt))
+      ? new Date(record.expiresAt)
+      : typeof record.expires_at === "string" && Number.isFinite(Date.parse(record.expires_at))
+        ? new Date(record.expires_at)
+        : new Date(now().getTime() + Math.min(input.ttlSeconds, Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : input.ttlSeconds) * 1000);
+    const responseScope = readConfigStringArray(record.scope).length > 0 ? readConfigStringArray(record.scope) : input.scope;
+    return {
+      token,
+      tokenType: typeof record.token_type === "string" ? record.token_type : "Bearer",
+      expiresAt,
+      scope: responseScope,
+    };
+  }
+
+  async function mintOAuthAccessConnectionToken(input: {
+    connection: typeof toolConnections.$inferSelect;
+    agentId: string;
+    runId: string;
+    issueId: string | null;
+    ttlSeconds: number;
+  }) {
+    const refreshed = await maybeRefreshOAuthCredentials(input.connection, { actorType: "agent", actorId: input.agentId }, {
+      actorSource: "agent_jwt",
+      issueId: input.issueId,
+      heartbeatRunId: input.runId,
+    });
+    const accessRef = oauthSecretRef(refreshed, "oauth.access_token");
+    if (!accessRef) {
+      throw unprocessable("OAuth access projection requires a vault-backed access token", { code: "oauth_access_missing" });
+    }
+    const token = await secrets.resolveSecretValue(refreshed.companyId, accessRef.secretId, accessRef.versionSelector ?? "latest", {
+      accessContext: accessContextForBroker({ ...input, connection: refreshed, configPath: "oauth.access_token" }),
+      bindingContext: accessContextForBroker({ ...input, connection: refreshed, configPath: "oauth.access_token" }),
+    });
+    const oauthExpires = oauthExpiresAtMs(refreshed);
+    const maxExpiresAt = new Date(now().getTime() + input.ttlSeconds * 1000);
+    const expiresAt = oauthExpires ? new Date(Math.min(oauthExpires, maxExpiresAt.getTime())) : maxExpiresAt;
+    return { token, tokenType: "Bearer", expiresAt, connection: refreshed };
   }
 
   function runtimeAlert(input: ToolRuntimeAlertRecommendation): ToolRuntimeAlertRecommendation {
@@ -3286,6 +3728,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function maybeRefreshOAuthCredentials(
     connection: typeof toolConnections.$inferSelect,
     actor?: ActorInfo,
+    accessContext?: {
+      actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+      issueId?: string | null;
+      heartbeatRunId?: string | null;
+    },
   ): Promise<typeof toolConnections.$inferSelect> {
     const oauth = oauthConfig(connection);
     if (typeof oauth.tokenUrl !== "string" || typeof oauth.provider !== "string") return connection;
@@ -3311,6 +3758,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           configPath: "oauth.refresh_token",
           actorType: actor?.actorType ?? "system",
           actorId: actor?.actorId ?? null,
+          actorSource: accessContext?.actorSource,
+          issueId: accessContext?.issueId,
+          heartbeatRunId: accessContext?.heartbeatRunId,
         })
       : null;
     const token = await exchangeOAuthToken({
@@ -5405,6 +5855,235 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         allowedTools,
         allowedToolNames: [...allowedToolNames].sort((a, b) => a.localeCompare(b)),
       };
+    },
+
+    mintConnectionTokenForAgent: async (input: {
+      connectionId: string;
+      companyId: string;
+      agentId: string;
+      runId: string;
+      body: ConnectionTokenRequest;
+    }): Promise<ConnectionTokenResponse> => {
+      const runContext = await loadBrokerRunContext({ companyId: input.companyId, agentId: input.agentId, runId: input.runId });
+      const connection = await getConnectionRow(input.connectionId, input.companyId);
+      const application = await getConnectionApplication(connection);
+      const path = inferConnectionTokenPath(connection, application);
+      const requestedScope = normalizeConnectionTokenScopes(input.body.scope);
+      const parentScopes = parentScopesForConnection(connection);
+      const fallbackScopes = defaultScopesForConnection(connection);
+      const issuedScope = requestedScope.length > 0
+        ? requestedScope
+        : fallbackScopes.length > 0
+          ? fallbackScopes
+          : parentScopes;
+      const ttlSeconds = requestedTtlSeconds(input.body, connection);
+      const attribution = {
+        agentId: input.agentId,
+        runId: input.runId,
+        issueId: runContext.issueId,
+        projectId: runContext.projectId,
+        responsibleUserId: runContext.responsibleUserId,
+      };
+
+      const recordFailure = async (outcome: ConnectionTokenIssuanceOutcome, errorCode: string, details: Record<string, unknown> = {}) => {
+        await recordConnectionTokenIssuance({
+          companyId: connection.companyId,
+          applicationId: connection.applicationId,
+          connectionId: connection.id,
+          agentId: input.agentId,
+          runId: input.runId,
+          issueId: runContext.issueId,
+          projectId: runContext.projectId,
+          responsibleUserId: runContext.responsibleUserId,
+          path,
+          requestedScope,
+          issuedScope,
+          ttlSeconds: outcome === "use_env_lease" ? null : ttlSeconds,
+          expiresAt: null,
+          tokenHash: null,
+          outcome,
+          errorCode,
+          metadata: details,
+        });
+        await auditConnectionTokenIssuance({
+          companyId: connection.companyId,
+          connectionId: connection.id,
+          agentId: input.agentId,
+          runId: input.runId,
+          path,
+          outcome,
+          reasonCode: errorCode,
+          details,
+        });
+      };
+
+      const fail = async (status: number, message: string, outcome: ConnectionTokenIssuanceOutcome, errorCode: string, details: Record<string, unknown> = {}) => {
+        await recordFailure(outcome, errorCode, details);
+        throw new HttpError(status, message, { code: errorCode, path, ...details });
+      };
+
+      if (!connection.enabled || connection.status !== "active") {
+        await fail(409, "Connection is not active", "denied", "connection_not_active", {
+          connectionStatus: connection.status,
+          enabled: connection.enabled,
+        });
+      }
+      if (["failed", "error", "missing_secret"].includes(connection.healthStatus)) {
+        await fail(409, "Connection credential needs attention", "denied", "credential_revoked", {
+          healthStatus: connection.healthStatus,
+          healthMessage: connection.healthMessage ?? null,
+        });
+      }
+      try {
+        assertScopeSubset({ requestedScope: issuedScope, parentScopes });
+      } catch {
+        await fail(403, "Requested token scope exceeds the connection parent scope", "denied", "scope_exceeds_parent", {
+          parentScopeCount: parentScopes.length,
+        });
+      }
+
+      const decisionInput = {
+        companyId: connection.companyId,
+        actor: {
+          actorType: "agent" as const,
+          actorId: input.agentId,
+          agentId: input.agentId,
+        },
+        runContext: {
+          heartbeatRunId: input.runId,
+          issueId: runContext.issueId,
+          projectId: runContext.projectId,
+          routineId: runContext.routineId,
+        },
+        request: {
+          applicationId: connection.applicationId,
+          connectionId: connection.id,
+          providerType: "connection_token_broker",
+          applicationKey: application?.applicationKey ?? null,
+          upstreamToolName: "connection_token.mint",
+          riskLevel: "write",
+          toolName: "connection_token.mint",
+          arguments: {
+            path,
+            scope: issuedScope,
+            requestedTtlSeconds: input.body.requestedTtlSeconds ?? null,
+          },
+        },
+        consumeRateLimit: true,
+      };
+      const decision = await policySvc.decide(decisionInput);
+      await policySvc.writeAudit(decisionInput, decision);
+      if (!decision.allowed) {
+        await fail(
+          decision.decision === "rate_limited" ? 429 : 403,
+          decision.explanation,
+          decision.decision === "rate_limited" ? "rate_limited" : "denied",
+          decision.reasonCode,
+          {
+            decision: decision.decision,
+            effectiveProfileIds: decision.effectiveProfileIds,
+            matchedPolicyIds: decision.matchedPolicyIds,
+            rateLimitState: decision.rateLimitState ?? null,
+          },
+        );
+      }
+
+      try {
+        await enforceDefaultConnectionTokenRateLimit({ connection, agentId: input.agentId, path });
+      } catch (error) {
+        if (error instanceof HttpError && error.status === 429) {
+          await fail(429, error.message, "rate_limited", "rate_limited", asRecord(error.details));
+        }
+        throw error;
+      }
+
+      if (path === "static") {
+        await recordFailure("use_env_lease", "use_env_lease", {
+          reason: "Connection uses durable static credentials; broker token delivery is refused.",
+        });
+        return {
+          status: "use_env_lease",
+          code: "use_env_lease",
+          connectionId: connection.id,
+          path: "static",
+          message: "This connection uses static credentials. Use an audited environment lease projection instead.",
+          scope: issuedScope,
+          attribution,
+        };
+      }
+
+      try {
+        const minted = path === "exchange"
+          ? await mintExchangeConnectionToken({
+              connection,
+              application,
+              agentId: input.agentId,
+              runId: input.runId,
+              issueId: runContext.issueId,
+              responsibleUserId: runContext.responsibleUserId,
+              scope: issuedScope,
+              ttlSeconds,
+            })
+          : await mintOAuthAccessConnectionToken({
+              connection,
+              agentId: input.agentId,
+              runId: input.runId,
+              issueId: runContext.issueId,
+              ttlSeconds,
+            });
+        const expiresAt = minted.expiresAt;
+        const mintedScope = "scope" in minted ? minted.scope : issuedScope;
+        const effectiveTtlSeconds = Math.max(1, Math.min(900, Math.ceil((expiresAt.getTime() - now().getTime()) / 1000)));
+        const tokenHash = bearerTokenHash(minted.token);
+        await recordConnectionTokenIssuance({
+          companyId: connection.companyId,
+          applicationId: connection.applicationId,
+          connectionId: connection.id,
+          agentId: input.agentId,
+          runId: input.runId,
+          issueId: runContext.issueId,
+          projectId: runContext.projectId,
+          responsibleUserId: runContext.responsibleUserId,
+          path,
+          requestedScope,
+          issuedScope: mintedScope,
+          ttlSeconds: effectiveTtlSeconds,
+          expiresAt,
+          tokenHash,
+          outcome: "success",
+          metadata: { tokenRef: tokenHash, tokenType: minted.tokenType },
+        });
+        await auditConnectionTokenIssuance({
+          companyId: connection.companyId,
+          connectionId: connection.id,
+          agentId: input.agentId,
+          runId: input.runId,
+          path,
+          outcome: "success",
+          details: { ttlSeconds: effectiveTtlSeconds, scopeCount: mintedScope.length, tokenRef: tokenHash },
+        });
+        return {
+          status: "minted",
+          connectionId: connection.id,
+          path,
+          token: minted.token,
+          tokenType: minted.tokenType,
+          expiresAt: expiresAt.toISOString(),
+          ttlSeconds: effectiveTtlSeconds,
+          scope: mintedScope,
+          attribution,
+        };
+      } catch (error) {
+        const details = error instanceof HttpError && asRecord(error.details).code
+          ? asRecord(error.details)
+          : {};
+        const errorCode = typeof details.code === "string" ? details.code : "mint_failed";
+        const outcome: ConnectionTokenIssuanceOutcome = errorCode === "upstream_error" || errorCode === "upstream_token_missing"
+          ? "upstream_error"
+          : "failure";
+        await recordFailure(outcome, errorCode, { ...details, message: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
     },
 
     listRuntimeSlots: async (companyId: string): Promise<ToolRuntimeSlot[]> => {

@@ -25,6 +25,7 @@ import {
   reviewToolProfileNewToolsSchema,
   createToolTrustRuleFromActionRequestSchema,
   importMcpJsonSchema,
+  connectionTokenRequestSchema,
   revokeToolTrustRuleSchema,
   reorderToolPoliciesSchema,
   toolPolicyTestRequestSchema,
@@ -159,6 +160,30 @@ export function toolAccessRoutes(
   async function assertToolsRuntimeManage(req: Request, companyId: string) {
     await assertBoardToolPermission(req, companyId, "tools:manage_runtime");
   }
+
+  router.post("/agents/me/connections/:connectionId/token", validate(connectionTokenRequestSchema), async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
+      res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
+    if (!req.actor.runId) {
+      res.status(401).json({ error: "Agent run id required", code: "run_id_required" });
+      return;
+    }
+    const headerRunId = req.get("X-Paperclip-Run-Id")?.trim();
+    if (headerRunId && headerRunId !== req.actor.runId) {
+      res.status(403).json({ error: "Run id header does not match agent token", code: "run_id_mismatch" });
+      return;
+    }
+    const result = await svc.mintConnectionTokenForAgent({
+      connectionId: req.params.connectionId as string,
+      companyId: req.actor.companyId,
+      agentId: req.actor.agentId,
+      runId: req.actor.runId,
+      body: req.body,
+    });
+    res.status(result.status === "use_env_lease" ? 409 : 200).json(result);
+  });
 
   function assertToolAppMutationAccess(req: Request, companyId: string) {
     assertBoard(req);

@@ -103,6 +103,7 @@ export {
   toolRuntimeMetricCounters,
   toolStdioCommandTemplates,
   toolGatewaySessions,
+  connectionTokenIssuances,
   toolInvocations,
   toolActionRequests,
   toolCallEvents,

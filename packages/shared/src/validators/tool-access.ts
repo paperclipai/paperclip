@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  CONNECTION_TOKEN_ISSUANCE_PATHS,
   SECRET_PROJECTION_CLASSES,
   TOOL_ACTION_REQUEST_STATUSES,
   TOOL_APPLICATION_STATUSES,
@@ -156,6 +157,20 @@ export const updateToolConnectionSchema = createToolConnectionSchema.omit({ appl
 );
 
 export type UpdateToolConnection = z.infer<typeof updateToolConnectionSchema>;
+
+export const connectionTokenIssuancePathSchema = z.enum(CONNECTION_TOKEN_ISSUANCE_PATHS);
+
+export const connectionTokenScopeSchema = z.union([
+  z.string().trim().min(1).max(500),
+  z.array(z.string().trim().min(1).max(240)).max(100),
+]);
+
+export const connectionTokenRequestSchema = z.object({
+  scope: connectionTokenScopeSchema.optional(),
+  requestedTtlSeconds: z.number().int().positive().max(86_400).optional(),
+}).strict();
+
+export type ConnectionTokenRequestInput = z.infer<typeof connectionTokenRequestSchema>;
 
 const envKeyPattern = /^[A-Z_][A-Z0-9_]*$/i;
 

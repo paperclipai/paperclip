@@ -13,6 +13,8 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type {
+  ConnectionTokenIssuanceOutcome,
+  ConnectionTokenIssuancePath,
   McpConnectionCredentialRef,
   ToolActionRequestStatus,
   ToolApplicationStatus,
@@ -647,6 +649,41 @@ export const toolCallEvents = pgTable(
     index("tool_call_events_issue_idx").on(table.companyId, table.issueId),
     index("tool_call_events_invocation_idx").on(table.invocationId),
     index("tool_call_events_gateway_idx").on(table.companyId, table.gatewayId),
+  ],
+);
+
+export const connectionTokenIssuances = pgTable(
+  "connection_token_issuances",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    applicationId: uuid("application_id").references(() => toolApplications.id, { onDelete: "set null" }),
+    connectionId: uuid("connection_id").notNull().references(() => toolConnections.id, { onDelete: "cascade" }),
+    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    runId: uuid("run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+    responsibleUserId: text("responsible_user_id"),
+    path: text("path").$type<ConnectionTokenIssuancePath>().notNull(),
+    requestedScope: jsonb("requested_scope").$type<string[]>().notNull().default([]),
+    issuedScope: jsonb("issued_scope").$type<string[]>().notNull().default([]),
+    ttlSeconds: integer("ttl_seconds"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    tokenHash: text("token_hash"),
+    outcome: text("outcome").$type<ConnectionTokenIssuanceOutcome>().notNull(),
+    errorCode: text("error_code"),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("connection_token_issuances_company_created_idx").on(table.companyId, table.createdAt),
+    index("connection_token_issuances_connection_created_idx").on(table.companyId, table.connectionId, table.createdAt),
+    index("connection_token_issuances_agent_connection_idx").on(table.companyId, table.agentId, table.connectionId, table.createdAt),
+    index("connection_token_issuances_run_idx").on(table.companyId, table.runId),
+    sql`CONSTRAINT connection_token_issuances_path_check CHECK (${table.path} IN ('exchange', 'oauth_access', 'static'))`,
+    sql`CONSTRAINT connection_token_issuances_outcome_check CHECK (${table.outcome} IN ('success', 'denied', 'rate_limited', 'use_env_lease', 'upstream_error', 'failure'))`,
+    sql`CONSTRAINT connection_token_issuances_ttl_bounds CHECK (${table.ttlSeconds} IS NULL OR (${table.ttlSeconds} >= 1 AND ${table.ttlSeconds} <= 900))`,
+    sql`CONSTRAINT connection_token_issuances_token_hash_format CHECK (${table.tokenHash} IS NULL OR ${table.tokenHash} ~ '^[a-f0-9]{64}$')`,
   ],
 );
 

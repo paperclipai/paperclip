@@ -141,6 +141,7 @@ import {
   createToolApplicationSchema,
   updateToolApplicationSchema,
   createToolConnectionSchema,
+  connectionTokenRequestSchema,
   createToolStdioCommandTemplateSchema,
   disableToolStdioCommandTemplateSchema,
   finishToolAppSchema,
@@ -682,6 +683,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/tool-connections/{connectionId}/test-agents",
   "POST /api/tool-connections/{connectionId}/test-calls",
   "GET /api/tool-connections/{connectionId}/test-calls/{actionRequestId}",
+  "POST /api/agents/me/connections/{connectionId}/token",
   "POST /api/tools/oauth/{connectionId}/start",
   "GET /api/tools/oauth/callback",
   "GET /api/companies/{companyId}/tools/profiles",
@@ -1181,6 +1183,18 @@ registry.registerPath({
   tags: ["agents"],
   summary: "Get current agent inbox (lite)",
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/me/connections/{connectionId}/token",
+  tags: ["tools"],
+  summary: "Mint a short-lived token for an agent connection",
+  request: {
+    params: z.object({ connectionId: z.string() }),
+    body: jsonBody(connectionTokenRequestSchema),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 429: r.tooManyRequests },
 });
 
 registry.registerPath({

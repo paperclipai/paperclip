@@ -1009,6 +1009,13 @@
       "when": 1783632000000,
       "tag": "0143_plugin_config_company_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 144,
+      "version": "7",
+      "when": 1783632600000,
+      "tag": "0144_connection_token_issuances",
+      "breakpoints": true
     }
   ]
 }
