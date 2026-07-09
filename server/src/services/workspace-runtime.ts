@@ -668,6 +668,7 @@ type GitWorktreeBranchCoherenceResult = {
   branchName: string | null;
   reconciledForward: boolean;
   pendingForwardBranchReconcile?: PendingForwardBranchReconcile | null;
+  dirtyQuarantineRepair?: DirtyQuarantineRepairResult | null;
   warnings: string[];
 };
 
@@ -1553,6 +1554,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
     return {
       branchName: expectedBranchName,
       reconciledForward: false,
+      dirtyQuarantineRepair: result,
       warnings: [
         `Execution workspace dirty worktree state was quarantined on rescue branch "${result.rescueBranch}" (${formatShortSha(result.rescueCommitSha)}; ${result.fileCount} ${result.fileCount === 1 ? "file" : "files"}) before restoring recorded branch "${expectedBranchName}".`,
       ],

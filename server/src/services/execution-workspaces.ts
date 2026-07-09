@@ -41,7 +41,7 @@ const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 
-export type ExecutionWorkspaceBranchReconcileMode = "forward" | "override";
+export type ExecutionWorkspaceBranchReconcileMode = "forward" | "override" | "quarantine_restore";
 
 export type ExecutionWorkspaceBranchReconcileActor = {
   actorType: "agent" | "user" | "system";
@@ -69,6 +69,20 @@ export type ExecutionWorkspaceBranchReconcileResult = {
   inspection: ExecutionWorkspaceBranchReconcileInspection;
   recoveryAction: IssueRecoveryAction | null;
   auditCommentId: string | null;
+  rescueRef: {
+    branchName: string;
+    commitSha: string;
+    fileCount: number;
+    sourceAuditCommentId: string | null;
+    claimantAuditCommentId: string | null;
+  } | null;
+  restoredSourceIssue: {
+    id: string;
+    companyId: string;
+    status: string;
+    assigneeAgentId: string | null;
+  } | null;
+  sourceIssueStatusChanged: boolean;
 };
 
 export type ExecutionWorkspaceGitWorktreeContention = {
@@ -290,6 +304,7 @@ function formatBranchReconcileAuditComment(input: {
   workspaceId: string;
   inspection: ExecutionWorkspaceBranchReconcileInspection;
   recoveryActionId: string | null;
+  rescueRef: ExecutionWorkspaceBranchReconcileResult["rescueRef"];
 }) {
   return [
     "Execution workspace branch reconciled.",
@@ -303,8 +318,29 @@ function formatBranchReconcileAuditComment(input: {
     `- Verdict: \`${input.inspection.ancestryVerdict}\``,
     `- Fingerprint: \`${input.inspection.fingerprint}\``,
     `- Recovery action: ${input.recoveryActionId ? `\`${input.recoveryActionId}\`` : "none matched"}`,
+    ...(input.rescueRef
+      ? [
+          `- Rescue ref: \`${input.rescueRef.branchName}\``,
+          `- Rescue commit: \`${input.rescueRef.commitSha}\``,
+          `- Rescued file count: \`${input.rescueRef.fileCount}\``,
+        ]
+      : []),
     ...(input.reason ? [`- Operator reason: ${input.reason}`] : []),
   ].join("\n");
+}
+
+function isWorkspaceRuntimeValidationFailure(error: unknown): error is {
+  code: "workspace_validation_failed";
+  message: string;
+  resultJson: Record<string, unknown>;
+} {
+  if (!error || typeof error !== "object") return false;
+  const maybe = error as { code?: unknown; resultJson?: unknown; message?: unknown };
+  return maybe.code === "workspace_validation_failed" &&
+    typeof maybe.message === "string" &&
+    Boolean(maybe.resultJson) &&
+    typeof maybe.resultJson === "object" &&
+    !Array.isArray(maybe.resultJson);
 }
 
 function assertBranchReconcileWorkspaceIsSafe(input: {
@@ -372,6 +408,66 @@ function assertLockedBranchReconcileWorkspaceStillMatchesInspection(input: {
         worktreePath: currentPath,
       },
     });
+  }
+}
+
+async function quarantineRestoreDirtyWorkspaceBranch(input: {
+  db: Db;
+  workspace: Pick<ExecutionWorkspace, "id" | "sourceIssueId">;
+  inspection: ExecutionWorkspaceBranchReconcileInspection;
+  actor: ExecutionWorkspaceBranchReconcileActor;
+}): Promise<NonNullable<ExecutionWorkspaceBranchReconcileResult["rescueRef"]>> {
+  const sourceIssue = await input.db
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      workMode: issues.workMode,
+    })
+    .from(issues)
+    .where(eq(issues.id, input.workspace.sourceIssueId!))
+    .then((rows) => rows[0] ?? null);
+  if (!sourceIssue) throw notFound("Source issue not found");
+
+  const { ensureGitWorktreeBranchCoherent } = await import("./workspace-runtime.js");
+  try {
+    const result = await ensureGitWorktreeBranchCoherent({
+      db: input.db,
+      repoRoot: input.inspection.repoRoot,
+      worktreePath: input.inspection.worktreePath,
+      expectedBranchName: input.inspection.fromBranch,
+      actualBranchName: input.inspection.toBranch,
+      sourceIssue,
+      executionWorkspaceId: input.workspace.id,
+      heartbeatRunId: input.actor.runId,
+      enableWorkspaceBranchReconcileForward: false,
+      enableWorkspaceDirtyQuarantineRepair: true,
+      persistForwardReconcile: false,
+      reconcileOperationPhase: "worktree_prepare",
+      recorder: null,
+    });
+
+    if (!result.dirtyQuarantineRepair) {
+      throw unprocessable("Quarantine restore requires a dirty foreign-branch worktree to repair", {
+        inspection: input.inspection,
+      });
+    }
+
+    return {
+      branchName: result.dirtyQuarantineRepair.rescueBranch,
+      commitSha: result.dirtyQuarantineRepair.rescueCommitSha,
+      fileCount: result.dirtyQuarantineRepair.fileCount,
+      sourceAuditCommentId: result.dirtyQuarantineRepair.sourceAuditCommentId,
+      claimantAuditCommentId: result.dirtyQuarantineRepair.claimantAuditCommentId,
+    };
+  } catch (error) {
+    if (isWorkspaceRuntimeValidationFailure(error)) {
+      throw unprocessable(error.message, {
+        code: error.code,
+        ...error.resultJson,
+      });
+    }
+    throw error;
   }
 }
 
@@ -1492,6 +1588,14 @@ export function executionWorkspaceService(db: Db) {
       }
 
       const reason = readNullableString(input.reason);
+      const rescueRef = input.mode === "quarantine_restore"
+        ? await quarantineRestoreDirtyWorkspaceBranch({
+            db,
+            workspace: existing,
+            inspection,
+            actor: input.actor,
+          })
+        : null;
       const now = new Date();
       const allowActiveWorkspace =
         input.mode === "forward" &&
@@ -1556,57 +1660,62 @@ export function executionWorkspaceService(db: Db) {
         if (!lockedWorkspace.sourceIssueId) {
           throw unprocessable("Execution workspace needs a source issue before Paperclip can audit branch reconciliation");
         }
-        assertBranchReconcileWorkspaceIsSafe({
-          workspaceStatus: lockedWorkspace.status,
-          inspection,
-          runtimeServices: lockedRuntimeServices,
-          allowActiveWorkspace,
-        });
-        if (lockedWorkspace.branchName !== inspection.fromBranch) {
-          throw unprocessable("Execution workspace branch changed during reconciliation; retry with a fresh inspection", {
-            workspaceBranch: lockedWorkspace.branchName,
-            inspection,
-          });
-        }
 
-        const updatePatch: Partial<typeof executionWorkspaces.$inferInsert> = {
-          branchName: inspection.toBranch,
-          updatedAt: now,
-        };
-        if (lockedWorkspace.name === inspection.fromBranch) {
-          updatePatch.name = inspection.toBranch;
-        }
-
-        const [updatedRow] = await tx
-          .update(executionWorkspaces)
-          .set(updatePatch)
-          .where(
-            and(
-              eq(executionWorkspaces.id, lockedWorkspace.id),
-              allowActiveWorkspace
-                ? inArray(executionWorkspaces.status, ["idle", "active"])
-                : eq(executionWorkspaces.status, "idle"),
-              eq(executionWorkspaces.branchName, inspection.fromBranch),
-              noActiveRuntimeServicesForWorkspaceCondition(lockedRow),
-            ),
-          )
-          .returning();
-        if (!updatedRow) {
-          const latestRuntimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(
-            txDb,
-            lockedRow.companyId,
-            [lockedRow],
-          );
-          const latestRuntimeServices = (latestRuntimeServicesByWorkspaceId.get(lockedRow.id) ?? []).map(toRuntimeService);
+        let updatedRow: ExecutionWorkspaceRow = lockedRow;
+        if (input.mode !== "quarantine_restore") {
           assertBranchReconcileWorkspaceIsSafe({
             workspaceStatus: lockedWorkspace.status,
             inspection,
-            runtimeServices: latestRuntimeServices,
+            runtimeServices: lockedRuntimeServices,
             allowActiveWorkspace,
           });
-          throw unprocessable("Execution workspace branch reconciliation requires the workspace to stay idle with stopped runtime services during the update", {
-            inspection,
-          });
+          if (lockedWorkspace.branchName !== inspection.fromBranch) {
+            throw unprocessable("Execution workspace branch changed during reconciliation; retry with a fresh inspection", {
+              workspaceBranch: lockedWorkspace.branchName,
+              inspection,
+            });
+          }
+
+          const updatePatch: Partial<typeof executionWorkspaces.$inferInsert> = {
+            branchName: inspection.toBranch,
+            updatedAt: now,
+          };
+          if (lockedWorkspace.name === inspection.fromBranch) {
+            updatePatch.name = inspection.toBranch;
+          }
+
+          const [branchUpdatedRow] = await tx
+            .update(executionWorkspaces)
+            .set(updatePatch)
+            .where(
+              and(
+                eq(executionWorkspaces.id, lockedWorkspace.id),
+                allowActiveWorkspace
+                  ? inArray(executionWorkspaces.status, ["idle", "active"])
+                  : eq(executionWorkspaces.status, "idle"),
+                eq(executionWorkspaces.branchName, inspection.fromBranch),
+                noActiveRuntimeServicesForWorkspaceCondition(lockedRow),
+              ),
+            )
+            .returning();
+          if (!branchUpdatedRow) {
+            const latestRuntimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(
+              txDb,
+              lockedRow.companyId,
+              [lockedRow],
+            );
+            const latestRuntimeServices = (latestRuntimeServicesByWorkspaceId.get(lockedRow.id) ?? []).map(toRuntimeService);
+            assertBranchReconcileWorkspaceIsSafe({
+              workspaceStatus: lockedWorkspace.status,
+              inspection,
+              runtimeServices: latestRuntimeServices,
+              allowActiveWorkspace,
+            });
+            throw unprocessable("Execution workspace branch reconciliation requires the workspace to stay idle with stopped runtime services during the update", {
+              inspection,
+            });
+          }
+          updatedRow = branchUpdatedRow;
         }
 
         let recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
@@ -1618,7 +1727,9 @@ export function executionWorkspaceService(db: Db) {
             fingerprint: inspection.fingerprint,
             status: "resolved",
             outcome: "restored",
-            resolutionNote: `Execution workspace branch record reconciled from "${inspection.fromBranch}" to "${inspection.toBranch}".`,
+            resolutionNote: input.mode === "quarantine_restore" && rescueRef
+              ? `Execution workspace dirty worktree quarantined on "${rescueRef.branchName}" and restored recorded branch "${inspection.fromBranch}".`
+              : `Execution workspace branch record reconciled from "${inspection.fromBranch}" to "${inspection.toBranch}".`,
           },
           tx,
         );
@@ -1634,12 +1745,48 @@ export function executionWorkspaceService(db: Db) {
                 fingerprint: alternateFingerprint,
                 status: "resolved",
                 outcome: "restored",
-                resolutionNote: `Execution workspace branch record reconciled from "${inspection.fromBranch}" to "${inspection.toBranch}".`,
+                resolutionNote: input.mode === "quarantine_restore" && rescueRef
+                  ? `Execution workspace dirty worktree quarantined on "${rescueRef.branchName}" and restored recorded branch "${inspection.fromBranch}".`
+                  : `Execution workspace branch record reconciled from "${inspection.fromBranch}" to "${inspection.toBranch}".`,
               },
               tx,
             );
             if (recoveryAction) break;
           }
+        }
+
+        let restoredSourceIssue: ExecutionWorkspaceBranchReconcileResult["restoredSourceIssue"] = null;
+        let sourceIssueStatusChanged = false;
+        if (input.mode === "quarantine_restore") {
+          const [sourceBefore] = await tx
+            .select({
+              id: issues.id,
+              companyId: issues.companyId,
+              status: issues.status,
+            })
+            .from(issues)
+            .where(eq(issues.id, lockedWorkspace.sourceIssueId))
+            .for("update");
+          if (!sourceBefore) throw notFound("Source issue not found");
+
+          const { issueService } = await import("./issues.js");
+          const updatedIssue = await issueService(db).update(
+            lockedWorkspace.sourceIssueId,
+            {
+              status: "todo",
+              actorAgentId: input.actor.agentId ?? null,
+              actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+            },
+            tx,
+          );
+          if (!updatedIssue) throw notFound("Source issue not found");
+          restoredSourceIssue = {
+            id: updatedIssue.id,
+            companyId: updatedIssue.companyId,
+            status: updatedIssue.status,
+            assigneeAgentId: updatedIssue.assigneeAgentId,
+          };
+          sourceIssueStatusChanged = sourceBefore.status !== updatedIssue.status;
         }
 
         const [auditComment] = await tx
@@ -1657,6 +1804,7 @@ export function executionWorkspaceService(db: Db) {
               workspaceId: existing.id,
               inspection,
               recoveryActionId: recoveryAction?.id ?? null,
+              rescueRef,
             }),
           })
           .returning({ id: issueComments.id });
@@ -1671,6 +1819,9 @@ export function executionWorkspaceService(db: Db) {
           inspection,
           recoveryAction,
           auditCommentId: auditComment?.id ?? null,
+          rescueRef,
+          restoredSourceIssue,
+          sourceIssueStatusChanged,
         };
       });
     },
