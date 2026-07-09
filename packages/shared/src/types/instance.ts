@@ -7,6 +7,20 @@ export const DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24;
 export const MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 1;
 export const MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24 * 30;
 
+/**
+ * Productivity-review no-comment-streak escalation threshold.
+ *
+ * Number of consecutive completed (terminal) issue-linked runs with no
+ * run-created issue comment that triggers a productivity review (human
+ * escalation). Default 3 so a 0-token / terminal-no-comment loop escalates
+ * within <=3 runs instead of ~10. Operator-tunable via the
+ * `productivityReviewNoCommentStreakRuns` experimental instance-setting
+ * (no redeploy to tune).
+ */
+export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 3;
+export const MIN_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 1;
+export const MAX_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 50;
+
 export interface BackupRetentionPolicy {
   dailyDays: (typeof DAILY_RETENTION_PRESETS)[number];
   weeklyWeeks: (typeof WEEKLY_RETENTION_PRESETS)[number];
@@ -61,6 +75,7 @@ export interface InstanceExperimentalSettings {
   enableIssueGraphLivenessAutoRecovery: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
+  productivityReviewNoCommentStreakRuns?: number;
 }
 
 export interface InstanceSettings {

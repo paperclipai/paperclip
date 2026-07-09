@@ -34,6 +34,7 @@ describe("instance settings service", () => {
       enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
+      productivityReviewNoCommentStreakRuns: 3,
     });
   });
 
@@ -96,5 +97,31 @@ describe("instance settings service", () => {
     expect(
       normalizeExperimentalSettings({ enableConferenceRoomChat: "yes" }).enableConferenceRoomChat,
     ).toBe(false);
+  });
+
+  it("defaults productivityReviewNoCommentStreakRuns to 3 for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).productivityReviewNoCommentStreakRuns).toBe(3);
+    expect(normalizeExperimentalSettings({}).productivityReviewNoCommentStreakRuns).toBe(3);
+    // Rows persisted before the setting existed must normalize to the default.
+    expect(
+      normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: true })
+        .productivityReviewNoCommentStreakRuns,
+    ).toBe(3);
+  });
+
+  it("preserves an explicit productivityReviewNoCommentStreakRuns and rejects out-of-range back to the default", () => {
+    expect(
+      normalizeExperimentalSettings({ productivityReviewNoCommentStreakRuns: 2 })
+        .productivityReviewNoCommentStreakRuns,
+    ).toBe(2);
+    // Out-of-range values fail the whole experimental parse -> all defaults (3).
+    expect(
+      normalizeExperimentalSettings({ productivityReviewNoCommentStreakRuns: 0 })
+        .productivityReviewNoCommentStreakRuns,
+    ).toBe(3);
+    expect(
+      normalizeExperimentalSettings({ productivityReviewNoCommentStreakRuns: 51 })
+        .productivityReviewNoCommentStreakRuns,
+    ).toBe(3);
   });
 });
