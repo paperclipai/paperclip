@@ -1348,9 +1348,7 @@ export function IssuesList({
   const loadMoreIssueRows = useCallback(() => {
     if (viewState.viewMode !== "list") return;
     if (hasMoreRenderedRows) {
-      startTransition(() => {
-        setRenderedIssueRowLimit((current) => Math.min(filtered.length, current + ISSUE_ROW_RENDER_BATCH_SIZE));
-      });
+      setRenderedIssueRowLimit((current) => Math.min(filtered.length, current + ISSUE_ROW_RENDER_BATCH_SIZE));
       return;
     }
     if (hasMoreIssues && !isLoadingMoreIssues) {

@@ -232,6 +232,13 @@ async function flush() {
   });
 }
 
+async function flushAnimationFrame() {
+  await act(async () => {
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    await Promise.resolve();
+  });
+}
+
 async function waitForAssertion(assertion: () => void, attempts = 20) {
   let lastError: unknown;
 
@@ -1381,10 +1388,13 @@ describe("IssuesList", () => {
       expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
     });
 
+    await flush();
+
     act(() => {
       setDocumentScrollMetrics({ innerHeight: 600, scrollY: 1500, scrollHeight: 2000 });
       window.dispatchEvent(new Event("scroll"));
     });
+    await flushAnimationFrame();
 
     await waitForAssertion(() => {
       expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(250);
@@ -1437,6 +1447,7 @@ describe("IssuesList", () => {
       main.scrollTop = 1500;
       main.dispatchEvent(new Event("scroll"));
     });
+    await flushAnimationFrame();
 
     await waitForAssertion(() => {
       expect(container.querySelectorAll('[data-testid="issue-row"]').length).toBeGreaterThan(100);
@@ -1484,6 +1495,7 @@ describe("IssuesList", () => {
       setDocumentScrollMetrics({ innerHeight: 600, scrollY: 1500, scrollHeight: 2000 });
       window.dispatchEvent(new Event("scroll"));
     });
+    await flushAnimationFrame();
 
     await waitForAssertion(() => {
       expect(onLoadMoreIssues).toHaveBeenCalledTimes(2);
