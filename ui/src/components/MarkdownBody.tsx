@@ -210,6 +210,30 @@ const tableCellWrapStyle: React.CSSProperties = {
   wordBreak: "normal",
 };
 
+function isHtmlCommentNode(node: MarkdownAstNode) {
+  return node.type === "html" && typeof node.value === "string" && /^<!--[\s\S]*-->$/.test(node.value.trim());
+}
+
+function isEscapedHtmlCommentPlaceholder(node: MarkdownAstNode) {
+  if (node.type !== "text" || typeof node.value !== "string") return false;
+  const value = node.value.trim();
+  return /^\\?<!--\s*-->$/.test(value) || /^&lt;!--\s*--&gt;$/.test(value);
+}
+
+function remarkDropHtmlComments() {
+  return (tree: MarkdownAstNode) => {
+    const visit = (node: MarkdownAstNode) => {
+      const children = node.children;
+      if (!children) return;
+      node.children = children.filter((child) => !isHtmlCommentNode(child) && !isEscapedHtmlCommentPlaceholder(child));
+      for (const child of node.children) {
+        visit(child);
+      }
+    };
+    visit(tree);
+  };
+}
+
 function mergeWrapStyle(style?: React.CSSProperties): React.CSSProperties {
   return {
     ...wrapAnywhereStyle,
@@ -688,7 +712,7 @@ function MarkdownBodyImpl({
   // parent re-renders frequently (see PAP-10767). Memoize both so re-renders
   // that don't change the inputs are cheap and non-destructive.
   const remarkPlugins = useMemo<NonNullable<Options["remarkPlugins"]>>(() => {
-    const plugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
+    const plugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm, remarkDropHtmlComments];
     if (enableWikiLinks) {
       plugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
     }
