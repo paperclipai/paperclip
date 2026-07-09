@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProjectMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
@@ -20,6 +20,10 @@ const mdxEditorMockState = vi.hoisted(() => ({
   emitMountSilentEmptyState: false,
   markdownValues: [] as string[],
   suppressHtmlProcessingValues: [] as boolean[],
+  /** Every value pushed through the imperative `setMarkdown` handle. */
+  setMarkdownCalls: [] as string[],
+  /** Latest `onChange` the editor was rendered with — lets tests simulate an editor-originated edit. */
+  lastOnChange: null as ((value: string) => void) | null,
 }));
 
 function containsHtmlLikeTag(markdown: string) {
@@ -59,10 +63,14 @@ vi.mock("@mdxeditor/editor", async () => {
   ) {
     mdxEditorMockState.markdownValues.push(markdown);
     mdxEditorMockState.suppressHtmlProcessingValues.push(Boolean(suppressHtmlProcessing));
+    mdxEditorMockState.lastOnChange = onChange ?? null;
     const [content, setContent] = React.useState(markdown);
     const editableRef = React.useRef<HTMLDivElement>(null);
     const handle = React.useMemo(() => ({
-      setMarkdown: (value: string) => setContent(value),
+      setMarkdown: (value: string) => {
+        mdxEditorMockState.setMarkdownCalls.push(value);
+        setContent(value);
+      },
       focus: () => editableRef.current?.focus(),
     }), []);
 
@@ -193,6 +201,8 @@ describe("MarkdownEditor", () => {
     mdxEditorMockState.emitMountSilentEmptyState = false;
     mdxEditorMockState.markdownValues = [];
     mdxEditorMockState.suppressHtmlProcessingValues = [];
+    mdxEditorMockState.setMarkdownCalls = [];
+    mdxEditorMockState.lastOnChange = null;
   });
 
   it("applies async external value updates once the editor ref becomes ready", async () => {
@@ -898,6 +908,195 @@ describe("MarkdownEditor", () => {
     expect(handleChange).not.toHaveBeenCalled();
 
     await act(async () => {
+      root.unmount();
+    });
+  });
+});
+
+/**
+ * NEO-411 (parent NEO-405): iPhone dictation duplication.
+ *
+ * On-device evidence (NEO-405 capture log) revised the original diagnosis: iOS
+ * dictation emits **no** composition events and **no** `insertReplacementText`.
+ * It streams full-range `insertText` replacements, then after a pause replays the
+ * whole transcript as a same-tick collapsed-insert burst. The class of bug is a
+ * controlled-component race: a `setMarkdown` reconciliation firing mid-input
+ * desyncs the editor from the OS input buffer. These guards lock the reconcile
+ * invariants — gate reconciliation on the *real* input signal (`beforeinput` /
+ * `input` + composition), never swallow a genuine external update, and never let
+ * an editor-originated value round-trip back into `setMarkdown`.
+ *
+ * Note: jsdom cannot reproduce iOS's internal replay, so on-device confirmation
+ * that the duplication no longer fires is tracked separately (NEO-405 Phase 4).
+ */
+describe("MarkdownEditor — dictation reconciliation gate (NEO-411)", () => {
+  const SETTLE_PAST_MS = 400; // comfortably past the component's INPUT_SETTLE_MS (350ms)
+  let container: HTMLDivElement;
+
+  function Controlled({ initialValue }: { initialValue: string }) {
+    const [v, setV] = useState(initialValue);
+    return <MarkdownEditor value={v} onChange={(next) => setV(next)} placeholder="Body" />;
+  }
+
+  function getEditable(): HTMLElement {
+    const editable = container.querySelector('[contenteditable="true"]');
+    if (!(editable instanceof HTMLElement)) throw new Error("contenteditable not found");
+    return editable;
+  }
+
+  function fireInput(editable: HTMLElement, type: "beforeinput" | "input" | "compositionstart" | "compositionend") {
+    editable.dispatchEvent(new Event(type, { bubbles: true }));
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    container.remove();
+    vi.clearAllMocks();
+    vi.useRealTimers();
+    mdxEditorMockState.markdownValues = [];
+    mdxEditorMockState.suppressHtmlProcessingValues = [];
+    mdxEditorMockState.setMarkdownCalls = [];
+    mdxEditorMockState.lastOnChange = null;
+  });
+
+  it("never re-invokes setMarkdown for an editor-originated change (no self round-trip)", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(<Controlled initialValue="start" />);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1); // attach the imperative ref
+    });
+    mdxEditorMockState.setMarkdownCalls = [];
+
+    // The editor emits a user edit; the controlled parent echoes it straight back
+    // as the `value` prop. That round-trip must not re-enter the editor.
+    act(() => {
+      mdxEditorMockState.lastOnChange?.("start typed by user");
+    });
+    act(() => {
+      vi.advanceTimersByTime(SETTLE_PAST_MS);
+    });
+
+    expect(mdxEditorMockState.setMarkdownCalls).not.toContain("start typed by user");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("defers an external value update during active input and flushes it once input settles", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(<MarkdownEditor value="start" onChange={() => {}} placeholder="Body" />);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    mdxEditorMockState.setMarkdownCalls = [];
+    const editable = getEditable();
+
+    // iOS dictation streams beforeinput/input — mark input in-flight.
+    act(() => {
+      fireInput(editable, "beforeinput");
+      fireInput(editable, "input");
+    });
+
+    // A genuine external/remote value arrives mid-burst.
+    act(() => {
+      root.render(<MarkdownEditor value="EXTERNAL UPDATE" onChange={() => {}} placeholder="Body" />);
+    });
+
+    // Deferred: not yanked into the editor while input is flowing.
+    expect(mdxEditorMockState.setMarkdownCalls).not.toContain("EXTERNAL UPDATE");
+
+    // Once input settles the external update flushes — never swallowed.
+    act(() => {
+      vi.advanceTimersByTime(SETTLE_PAST_MS);
+    });
+    expect(mdxEditorMockState.setMarkdownCalls).toContain("EXTERNAL UPDATE");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("defers reconciliation during desktop IME composition and flushes after it ends", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(<MarkdownEditor value="start" onChange={() => {}} placeholder="Body" />);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    mdxEditorMockState.setMarkdownCalls = [];
+    const editable = getEditable();
+
+    act(() => {
+      fireInput(editable, "compositionstart");
+    });
+    act(() => {
+      root.render(<MarkdownEditor value="外部の更新" onChange={() => {}} placeholder="Body" />);
+    });
+    expect(mdxEditorMockState.setMarkdownCalls).not.toContain("外部の更新");
+
+    // compositionend re-arms the settle window; still deferred until it elapses.
+    act(() => {
+      fireInput(editable, "compositionend");
+    });
+    act(() => {
+      vi.advanceTimersByTime(SETTLE_PAST_MS);
+    });
+    expect(mdxEditorMockState.setMarkdownCalls).toContain("外部の更新");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("never reconciles during the iOS two-phase dictation stream + replay (NEO-405 repro)", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(<Controlled initialValue="" />);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    const editable = getEditable();
+    mdxEditorMockState.setMarkdownCalls = [];
+
+    // Phase A: iOS streams full-range insertText replacements (each supersedes the last).
+    const stream = [
+      "I",
+      "I told them",
+      "I told them their package",
+      "I told them their packages would arrive to their house too late.",
+    ];
+    // Phase B: after a pause, iOS replays the whole transcript as collapsed word inserts.
+    const replay = [
+      "I told them their packages would arrive to their house too late.I",
+      "I told them their packages would arrive to their house too late.I told them their packages",
+      "I told them their packages would arrive to their house too late.There are two packages over there.",
+    ];
+
+    act(() => {
+      for (const data of [...stream, ...replay]) {
+        fireInput(editable, "beforeinput");
+        mdxEditorMockState.lastOnChange?.(data);
+        fireInput(editable, "input");
+      }
+    });
+
+    // Across the whole dictation + replay window, the editor-originated round-trip
+    // must never reconcile back into the editor — that desync is the duplication.
+    expect(mdxEditorMockState.setMarkdownCalls).toEqual([]);
+
+    act(() => {
       root.unmount();
     });
   });

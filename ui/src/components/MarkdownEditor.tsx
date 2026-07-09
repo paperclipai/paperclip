@@ -216,6 +216,14 @@ const MENTION_MENU_CHROME_HEIGHT = 8;
 const MAX_AUTOCOMPLETE_OPTIONS = 50;
 /** Roughly one space-width of breathing room between the caret and the menu. */
 const MENTION_MENU_CARET_GAP = 10;
+/**
+ * NEO-411: how long after the last input event we consider the editor "settled"
+ * and safe to reconcile a controlled-value change into it. iOS dictation streams
+ * `insertText` events a few hundred ms apart, so this window must comfortably span
+ * the gaps within one dictation burst without stranding a legitimate external
+ * update for long once input actually stops.
+ */
+const INPUT_SETTLE_MS = 350;
 
 const CODE_BLOCK_LANGUAGES: Record<string, string> = {
   txt: "Text",
@@ -592,6 +600,18 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
    * normalize or transform values cannot loop. Replaces the older blur/focus gate for the same concern.
    */
   const echoIgnoreMarkdownRef = useRef<string | null>(null);
+  /**
+   * NEO-411: true while the OS/user is actively feeding input into the editor
+   * (typing, iOS dictation `insertText` stream, or desktop IME composition).
+   * While true we do NOT push a controlled-value change back in via
+   * `setMarkdown` — doing so mid-stream desyncs the editor from the OS input
+   * buffer (the iPhone-dictation duplication in NEO-405). A deferred external
+   * update is flushed once input settles, so remote/external changes are never
+   * swallowed — only postponed. Driven by `beforeinput`/`input` (iOS dictation
+   * never emits composition events) and composition events (CJK / macOS IME).
+   */
+  const inputActiveRef = useRef(false);
+  const inputSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [richEditorError, setRichEditorError] = useState<string | null>(null);
@@ -803,17 +823,75 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return all;
   }, [hasImageUpload]);
 
-  useEffect(() => {
-    if (editorValue !== latestValueRef.current) {
-      if (ref.current) {
-        // Pair with onChange echo suppression (echoIgnoreMarkdownRef).
-        echoIgnoreMarkdownRef.current = editorValue;
-        recordTts("setMarkdown", { origin: "prop-sync", len: editorValue.length });
-        ref.current.setMarkdown(editorValue);
-        latestValueRef.current = editorValue;
+  // Push a controlled-value change into the editor. Pairs with the onChange echo
+  // suppression (echoIgnoreMarkdownRef) so the resulting onChange doesn't loop.
+  const applyReconcile = useCallback((nextEditorValue: string) => {
+    const instance = ref.current;
+    if (!instance) return;
+    echoIgnoreMarkdownRef.current = nextEditorValue;
+    recordTts("setMarkdown", { origin: "prop-sync", len: nextEditorValue.length });
+    instance.setMarkdown(nextEditorValue);
+    latestValueRef.current = nextEditorValue;
+  }, [recordTts]);
+
+  // Whether the editor already holds `candidate` — either verbatim (our own
+  // echoed onChange round-trip) or once normalized through the same prepare step
+  // the controlled value goes through. NEO-411 Phase 2: an editor-originated
+  // value that round-trips back as the controlled prop must never re-enter
+  // setMarkdown, so we compare against the *last value the editor emitted*
+  // rather than only the raw-prepared value.
+  const editorAlreadyHolds = useCallback((candidate: string) => {
+    const lastEmitted = latestValueRef.current;
+    return candidate === lastEmitted || candidate === prepareMarkdownForEditor(lastEmitted);
+  }, []);
+
+  // Mark input as active and (re)arm the settle timer. When input finally stops,
+  // flush any controlled-value change that was deferred while input was flowing.
+  const markInputActive = useCallback(() => {
+    inputActiveRef.current = true;
+    if (inputSettleTimerRef.current) clearTimeout(inputSettleTimerRef.current);
+    inputSettleTimerRef.current = setTimeout(() => {
+      inputSettleTimerRef.current = null;
+      inputActiveRef.current = false;
+      // valueRef holds the freshest prepared controlled value. Flush only a
+      // genuine external change; an editor-originated value the editor already
+      // holds is dropped (no self-inflicted round-trip).
+      if (ref.current && !editorAlreadyHolds(valueRef.current)) {
+        applyReconcile(valueRef.current);
       }
-    }
-  }, [editorValue, recordTts]);
+    }, INPUT_SETTLE_MS);
+  }, [applyReconcile, editorAlreadyHolds]);
+
+  // NEO-411 Phase 1+2: reconcile the controlled value into the editor, but never
+  // while input is actively streaming (defer to settle) and never for a value the
+  // editor already emitted (drop the round-trip).
+  useEffect(() => {
+    if (editorAlreadyHolds(editorValue)) return;
+    if (!ref.current) return;
+    // Defer while dictation/composition/typing is in flight; the settle timer
+    // flushes the latest controlled value once input stops.
+    if (inputActiveRef.current) return;
+    applyReconcile(editorValue);
+  }, [editorValue, applyReconcile, editorAlreadyHolds]);
+
+  // NEO-411 Phase 1: track active input at the container so the reconcile effect
+  // above can gate on it. Capture-phase + container-level so it survives the
+  // contenteditable remounting and sees events before Lexical consumes them.
+  // Always attached (not gated behind the debug harness) — this is the fix path.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const onInputActivity = () => markInputActive();
+    const events = ["beforeinput", "input", "compositionstart", "compositionupdate", "compositionend"];
+    for (const type of events) container.addEventListener(type, onInputActivity, true);
+    return () => {
+      for (const type of events) container.removeEventListener(type, onInputActivity, true);
+      if (inputSettleTimerRef.current) {
+        clearTimeout(inputSettleTimerRef.current);
+        inputSettleTimerRef.current = null;
+      }
+    };
+  }, [markInputActive]);
 
   // NEO-405/NEO-409: capture the raw input timeline (beforeinput + composition)
   // that Lexical/MDXEditor otherwise swallow. Container-level capture listeners
