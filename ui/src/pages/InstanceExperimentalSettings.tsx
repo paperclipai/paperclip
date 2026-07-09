@@ -380,9 +380,9 @@ export function InstanceExperimentalSettings() {
             aria-label="Toggle built-in agents experimental setting"
           />
         </div>
-      </section>
+      </Card>
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Experimental File Viewer</h2>
