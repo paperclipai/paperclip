@@ -85,6 +85,14 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  // Reap runs stuck in a non-terminal state (queued / scheduled_retry) with a dead
+  // process so their permanent execution lock can be swept. Shipped enabled; flip
+  // STUCK_RUN_LOCK_REAP_ENABLED=false to disable.
+  stuckRunLockReapEnabled: boolean;
+  // How long a stuck run must be idle (queued: since updatedAt; scheduled_retry:
+  // past its scheduledRetryAt due time) before it is reaped. Must comfortably
+  // exceed normal promotion latency so live scheduled retries are never reaped.
+  stuckRunLockStaleThresholdMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
 }
@@ -331,6 +339,11 @@ export function loadConfig(): Config {
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    stuckRunLockReapEnabled: process.env.STUCK_RUN_LOCK_REAP_ENABLED !== "false",
+    stuckRunLockStaleThresholdMs: Math.max(
+      60_000,
+      Number(process.env.STUCK_RUN_LOCK_STALE_THRESHOLD_MS) || 30 * 60 * 1000,
+    ),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };

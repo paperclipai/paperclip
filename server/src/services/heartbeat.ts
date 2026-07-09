@@ -10039,8 +10039,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: {
+    staleThresholdMs?: number;
+    // When true, also finalize runs stuck in a non-terminal state (queued /
+    // scheduled_retry) whose process is dead, so their execution lock can be
+    // swept ("finalize-then-sweep"). Opt-in — callers that only want the classic
+    // "running" reap (and the many tests that rely on queued runs surviving) must
+    // leave it off.
+    reapStuckNonTerminalRuns?: boolean;
+    stuckRunStaleThresholdMs?: number;
+    // When scheduling is suppressed (e.g. during a provider rate-limit outage) the
+    // reap still runs as pure DB lock hygiene, but must not spend — no immediate
+    // recovery dispatch and no next-queued-run start.
+    suppressed?: boolean;
+  }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const suppressed = opts?.suppressed ?? false;
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -10138,7 +10152,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
         }
       } else {
-        await releaseIssueExecutionAndPromote(finalizedRun);
+        await releaseIssueExecutionAndPromote(finalizedRun, { suppressImmediateRecovery: suppressed });
       }
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
@@ -10157,7 +10171,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       await finalizeAgentStatus(run.agentId, "failed", baseMessage);
-      await startNextQueuedRunForAgent(run.agentId);
+      // Starting the agent's next queued run is model/agent spend — skip it while
+      // suppressed so the reap stays pure DB hygiene during an outage.
+      if (!suppressed) await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -10165,7 +10181,123 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
-    return { reaped: reaped.length, runIds: reaped };
+
+    // Finalize-then-sweep: runs stuck in a non-terminal state (queued /
+    // scheduled_retry) whose process is dead never transition to terminal on their
+    // own, so sweepStaleIssueLocks — which only clears locks referencing a terminal
+    // run — can never release their execution lock, leaving it held permanently.
+    // Drive them to `failed` here; the caller's subsequent sweep then clears the
+    // lock and emits the `issue.stale_lock_cleared` audit event. Opt-in only.
+    const stuckFinalized: string[] = [];
+    if (opts?.reapStuckNonTerminalRuns) {
+      const stuckThresholdMs = opts?.stuckRunStaleThresholdMs ?? 30 * 60 * 1000;
+      const stuckRuns = await db
+        .select({
+          run: heartbeatRuns,
+          adapterType: agents.adapterType,
+          adapterConfig: agents.adapterConfig,
+        })
+        .from(heartbeatRuns)
+        .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+        .where(inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]));
+
+      for (const { run, adapterType, adapterConfig } of stuckRuns) {
+        // A live in-memory execution or a live OS process still owns this run.
+        if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+        if (run.processPid && isProcessAlive(run.processPid)) continue;
+
+        // Staleness reference:
+        //  - scheduled_retry: the *due* time (scheduledRetryAt). A retry not yet due —
+        //    or due only recently — is a LIVE handoff that promoteDueScheduledRetries
+        //    still owns, so it keeps its lock and is never reaped. Legit retries can be
+        //    scheduled 2h+ out (bounded backoff) or far further behind a rate-limit
+        //    Retry-After, so age-since-creation must never be used here.
+        //  - queued: idle since updatedAt (falling back to createdAt) — a freshly
+        //    queued run legitimately waiting for its agent slot is within threshold.
+        const refTimeSource =
+          run.status === "scheduled_retry"
+            ? (run.scheduledRetryAt ?? run.updatedAt ?? run.createdAt)
+            : (run.updatedAt ?? run.createdAt);
+        // No timing information at all: we cannot prove this run is stale, so leave
+        // it alone rather than reaping it unconditionally.
+        if (!refTimeSource) continue;
+        const refTime = new Date(refTimeSource).getTime();
+        if (now.getTime() - refTime < stuckThresholdMs) continue;
+
+        const staleSeconds = Math.round((now.getTime() - refTime) / 1000);
+        const stuckMessage =
+          `Stale ${run.status} run with no tracked process (idle ${staleSeconds}s, ` +
+          `past ${Math.round(stuckThresholdMs / 1000)}s threshold); driven terminal ` +
+          `so its stale execution lock can be swept`;
+
+        let finalizedRun = await setRunStatus(run.id, "failed", {
+          error: stuckMessage,
+          errorCode: "stale_run_reaped",
+          finishedAt: now,
+          resultJson: mergeRunStopMetadataForAgent(
+            { adapterType, adapterConfig },
+            "failed",
+            {
+              resultJson: parseObject(run.resultJson),
+              errorCode: "stale_run_reaped",
+              errorMessage: stuckMessage,
+            },
+          ),
+        });
+        await setWakeupStatus(run.wakeupRequestId, "failed", {
+          finishedAt: now,
+          error: stuckMessage,
+        });
+        if (!finalizedRun) finalizedRun = await getRun(run.id);
+        if (!finalizedRun) continue;
+        finalizedRun =
+          (await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson))) ??
+          finalizedRun;
+        await releaseEnvironmentLeasesForRun({
+          runId: finalizedRun.id,
+          companyId: finalizedRun.companyId,
+          agentId: finalizedRun.agentId,
+          status: finalizedRun.status,
+          failureReason: finalizedRun.error ?? undefined,
+        });
+        await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: stuckMessage,
+          payload: {
+            previousStatus: run.status,
+            staleSeconds,
+            ...(run.scheduledRetryAt
+              ? { scheduledRetryAt: new Date(run.scheduledRetryAt).toISOString() }
+              : {}),
+          },
+        });
+        // Reconcile the owning agent's status so a dead stuck run does not leave the
+        // agent stranded in a non-idle status. keepIdleOnFailure so a queued/retry
+        // run being reaped settles the agent to idle (or stays running if it still
+        // has other live runs) rather than being falsely flagged as errored.
+        await finalizeAgentStatus(run.agentId, "failed", stuckMessage, {
+          keepIdleOnFailure: true,
+        });
+        runningProcesses.delete(run.id);
+        stuckFinalized.push(run.id);
+      }
+
+      if (stuckFinalized.length > 0) {
+        logger.warn(
+          { stuckFinalizedCount: stuckFinalized.length, runIds: stuckFinalized, suppressed },
+          "finalized stuck non-terminal heartbeat runs for stale-lock sweep",
+        );
+      }
+    }
+
+    return {
+      reaped: reaped.length,
+      runIds: reaped,
+      stuckFinalized: stuckFinalized.length,
+      stuckRunIds: stuckFinalized,
+    };
   }
 
   async function resumeQueuedRuns() {

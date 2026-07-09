@@ -138,6 +138,8 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     feedbackExportBackendToken: "telemetry-token",
     heartbeatSchedulerEnabled: false,
     heartbeatSchedulerIntervalMs: 30000,
+    stuckRunLockReapEnabled: true,
+    stuckRunLockStaleThresholdMs: 30 * 60 * 1000,
     companyDeletionEnabled: false,
     ...overrides,
   };
@@ -300,16 +302,30 @@ describe("startServer feedback export wiring", () => {
     try {
       await startServer();
 
-      expect(heartbeatServiceMock.reapOrphanedRuns).not.toHaveBeenCalled();
+      // Stale-lock hygiene (reap dead runs + sweep their locks) is pure DB
+      // maintenance with zero model/agent spend, so it runs even while scheduling is
+      // suppressed — in suppressed/no-spend mode. The spend-y timer ticks stay
+      // suppressed.
+      expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenLastCalledWith(
+        expect.objectContaining({ suppressed: true }),
+      );
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(1);
       expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.promoteDueScheduledRetries).not.toHaveBeenCalled();
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(1);
 
       expect(intervalCallback).not.toBeNull();
       intervalCallback?.();
       await Promise.resolve();
       await Promise.resolve();
+      await Promise.resolve();
 
+      // The periodic tick also runs the suppressed lock hygiene, still with no spend.
+      expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(2);
       expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.promoteDueScheduledRetries).not.toHaveBeenCalled();
       expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(2);
     } finally {
