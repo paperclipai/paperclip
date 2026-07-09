@@ -377,6 +377,37 @@ describeEmbeddedPostgres("companySearchService", () => {
     expect(result.hasMore).toBe(false);
   });
 
+  it("returns issue rows for filter-only searches", async () => {
+    const companyId = await createCompany();
+    const agentId = await createAgent(companyId, { name: "Filter owner" });
+    const matchingIssue = await createIssue(companyId, {
+      identifier: "TST-34",
+      title: "Filtered task",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    await createIssue(companyId, {
+      identifier: "TST-35",
+      title: "Filtered decoy",
+      status: "done",
+      assigneeAgentId: agentId,
+    });
+    await createAgent(companyId, { name: "Todo" });
+    await createProject(companyId, { name: "Todo" });
+
+    const result = await svc.search(companyId, companySearchQuerySchema.parse({
+      q: "",
+      status: "todo",
+      assigneeAgentId: agentId,
+    }));
+
+    expect(result.results.map((row) => row.id)).toEqual([matchingIssue]);
+    expect(result.countsByType.issue).toBe(1);
+    expect(result.countsByType.agent).toBe(0);
+    expect(result.countsByType.project).toBe(0);
+    expect(result.results[0]?.snippets).toEqual([]);
+  });
+
   it("returns zero-result loosen data and suppresses agent/project rows while issue filters are active", async () => {
     const companyId = await createCompany();
     await createAgent(companyId, { name: "Needle agent", capabilities: "Needle capabilities" });

@@ -531,12 +531,13 @@ export function companySearchService(db: Db) {
   return {
     search: async (companyId: string, query: CompanySearchQuery): Promise<CompanySearchResponse> => {
       const normalizedQuery = normalizeQuery(query.q);
+      const hasSearchText = normalizedQuery.length > 0;
       const tokens = tokenizeQuery(normalizedQuery);
       const scope = query.scope;
       const sort = query.sort;
       const limit = query.limit;
       const offset = query.offset;
-      if (normalizedQuery.length === 0) {
+      if (!hasSearchText && !issueOnlyFiltersActive(query)) {
         return {
           query: query.q,
           normalizedQuery,
@@ -564,9 +565,9 @@ export function companySearchService(db: Db) {
       const fuzzyTokens = fuzzyEligibleTokens(tokens);
       const fuzzyTokenArray = sqlTextArray(fuzzyTokens);
       const escapedQuery = escapeLikePattern(normalizedQuery);
-      const containsPattern = `%${escapedQuery}%`;
-      const startsWithPattern = `${escapedQuery}%`;
-      const fuzzyEnabled = normalizedQuery.length >= MIN_FUZZY_QUERY_LENGTH && !/[\\%_]/.test(normalizedQuery);
+      const containsPattern = hasSearchText ? `%${escapedQuery}%` : "__paperclip_no_match__";
+      const startsWithPattern = hasSearchText ? `${escapedQuery}%` : "__paperclip_no_match__";
+      const fuzzyEnabled = hasSearchText && normalizedQuery.length >= MIN_FUZZY_QUERY_LENGTH && !/[\\%_]/.test(normalizedQuery);
       const fuzzyTokensEnabled = fuzzyEnabled && fuzzyTokens.length > 0;
 
       const titlePhraseMatch = sql<boolean>`lower(${issues.title}) LIKE ${containsPattern} ESCAPE '\\'`;
@@ -711,6 +712,12 @@ export function companySearchService(db: Db) {
       `;
       const issueFilters = issueFilterConditions(companyId, query);
       const hasIssueOnlyFilters = issueOnlyFiltersActive(query);
+      const issueScopeSearchCondition = hasSearchText
+        ? issueSearchCondition(scope, { issueTextMatch, commentMatch, documentMatch, fuzzyMatch })
+        : scope === "comments" || scope === "documents"
+          ? noMatchSql()
+          : sql<boolean>`true`;
+      const issueTitleSearchCondition = hasSearchText ? sql<boolean>`(${issueTextMatch} OR ${fuzzyMatch})` : sql<boolean>`true`;
       const priorityOrder = priorityRankSql();
       const issueOrderBy = sort === "updated"
         ? [desc(issues.updatedAt), desc(score), desc(issues.id)]
@@ -856,7 +863,7 @@ export function companySearchService(db: Db) {
             eq(issues.companyId, companyId),
             visibleIssueCondition(),
             ...issueFilters,
-            issueSearchCondition(scope, { issueTextMatch, commentMatch, documentMatch, fuzzyMatch }),
+            issueScopeSearchCondition,
           ))
           .orderBy(...issueOrderBy)
           .limit(fetchLimit)
@@ -868,7 +875,7 @@ export function companySearchService(db: Db) {
         sql`${agents.title}`,
         sql`${agents.capabilities}`,
       ], containsPattern, tokenArray);
-      const agentRows = scopeIncludesAgents(scope) && !hasIssueOnlyFilters
+      const agentRows = hasSearchText && scopeIncludesAgents(scope) && !hasIssueOnlyFilters
         ? await db
           .select({
             id: agents.id,
@@ -888,7 +895,7 @@ export function companySearchService(db: Db) {
         sql`${projects.name}`,
         sql`${projects.description}`,
       ], containsPattern, tokenArray);
-      const projectRows = scopeIncludesProjects(scope) && !hasIssueOnlyFilters
+      const projectRows = hasSearchText && scopeIncludesProjects(scope) && !hasIssueOnlyFilters
         ? await db
           .select({
             id: projects.id,
@@ -917,6 +924,7 @@ export function companySearchService(db: Db) {
       }
 
       async function countArtifacts(filters: CompanySearchQuery = query) {
+        if (!hasSearchText) return 0;
         const artifactIssueFilters = issueFilterConditions(companyId, filters);
         const artifactIssueConditions = [
           eq(issues.companyId, companyId),
@@ -984,7 +992,7 @@ export function companySearchService(db: Db) {
       }
 
       async function countAgents(filters: CompanySearchQuery = query) {
-        if (issueOnlyFiltersActive(filters)) return 0;
+        if (!hasSearchText || issueOnlyFiltersActive(filters)) return 0;
         const rows = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(agents)
@@ -993,7 +1001,7 @@ export function companySearchService(db: Db) {
       }
 
       async function countProjects(filters: CompanySearchQuery = query) {
-        if (issueOnlyFiltersActive(filters)) return 0;
+        if (!hasSearchText || issueOnlyFiltersActive(filters)) return 0;
         const rows = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(projects)
@@ -1004,7 +1012,7 @@ export function companySearchService(db: Db) {
       async function countTotalResults(filters: CompanySearchQuery = query) {
         const counts = await Promise.all([
           scopeIncludesIssues(scope)
-            ? countIssueMatches(issueSearchCondition(scope, { issueTextMatch, commentMatch, documentMatch, fuzzyMatch }), filters)
+            ? countIssueMatches(issueScopeSearchCondition, filters)
             : Promise.resolve(0),
           scopeIncludesArtifacts(scope) ? countArtifacts(filters) : Promise.resolve(0),
           scopeIncludesAgents(scope) ? countAgents(filters) : Promise.resolve(0),
@@ -1019,9 +1027,9 @@ export function companySearchService(db: Db) {
         const countComments = scope === "all" || scope === "comments";
         const countDocuments = scope === "all" || scope === "documents";
         const [issueCount, commentCount, documentCount, artifactCount, agentCount, projectCount] = await Promise.all([
-          countTasks ? countIssueMatches(sql<boolean>`(${issueTextMatch} OR ${fuzzyMatch})`) : Promise.resolve(0),
-          countComments ? countIssueMatches(commentMatch) : Promise.resolve(0),
-          countDocuments ? countIssueMatches(documentMatch) : Promise.resolve(0),
+          countTasks ? countIssueMatches(issueTitleSearchCondition) : Promise.resolve(0),
+          countComments ? countIssueMatches(hasSearchText ? commentMatch : noMatchSql()) : Promise.resolve(0),
+          countDocuments ? countIssueMatches(hasSearchText ? documentMatch : noMatchSql()) : Promise.resolve(0),
           scopeIncludesArtifacts(scope) ? countArtifacts(query) : Promise.resolve(0),
           scopeIncludesAgents(scope) ? countAgents(query) : Promise.resolve(0),
           scopeIncludesProjects(scope) ? countProjects(query) : Promise.resolve(0),
@@ -1038,8 +1046,10 @@ export function companySearchService(db: Db) {
       async function buildFilterOptionCounts() {
         const counts = emptyFilterOptionCounts();
         const optionSearchCondition = scopeIncludesIssues(scope)
-          ? issueSearchCondition(scope, { issueTextMatch, commentMatch, documentMatch, fuzzyMatch })
-          : issueSearchCondition("all", { issueTextMatch, commentMatch, documentMatch, fuzzyMatch });
+          ? issueScopeSearchCondition
+          : hasSearchText
+            ? issueSearchCondition("all", { issueTextMatch, commentMatch, documentMatch, fuzzyMatch })
+            : sql<boolean>`true`;
         const issueOptionConditions = (omit?: CompanySearchIssueFilterKey) => [
           eq(issues.companyId, companyId),
           visibleIssueCondition(),
@@ -1110,7 +1120,7 @@ export function companySearchService(db: Db) {
         return counts;
       }
 
-      const artifactRows = scopeIncludesArtifacts(scope)
+      const artifactRows = hasSearchText && scopeIncludesArtifacts(scope)
         ? await companyArtifactsService(db).list(companyId, {
           q: normalizedQuery.slice(0, COMPANY_ARTIFACTS_MAX_QUERY_LENGTH),
           limit: Math.min(fetchLimit, COMPANY_ARTIFACTS_MAX_LIMIT),

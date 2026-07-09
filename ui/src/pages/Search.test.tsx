@@ -34,6 +34,14 @@ const projectsApiMock = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const issuesApiMock = vi.hoisted(() => ({
+  listLabels: vi.fn(),
+}));
+
+const authApiMock = vi.hoisted(() => ({
+  getSession: vi.fn(),
+}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => companyState,
 }));
@@ -60,6 +68,14 @@ vi.mock("../api/agents", () => ({
 
 vi.mock("../api/projects", () => ({
   projectsApi: projectsApiMock,
+}));
+
+vi.mock("../api/issues", () => ({
+  issuesApi: issuesApiMock,
+}));
+
+vi.mock("../api/auth", () => ({
+  authApi: authApiMock,
 }));
 
 vi.mock("@/lib/router", async () => {
@@ -153,8 +169,12 @@ describe("Search page", () => {
     searchApiMock.search.mockReset();
     agentsApiMock.list.mockReset();
     projectsApiMock.list.mockReset();
+    issuesApiMock.listLabels.mockReset();
+    authApiMock.getSession.mockReset();
     agentsApiMock.list.mockResolvedValue([]);
     projectsApiMock.list.mockResolvedValue([]);
+    issuesApiMock.listLabels.mockResolvedValue([]);
+    authApiMock.getSession.mockResolvedValue({ user: { id: "user-1" }, session: { userId: "user-1" } });
     window.localStorage.clear();
   });
 
@@ -606,4 +626,102 @@ describe("Search page", () => {
       root.unmount();
     });
   });
+
+  it("parses URL filters into search params and operator pills", async () => {
+    searchApiMock.search.mockResolvedValueOnce({
+      query: "auth",
+      normalizedQuery: "auth",
+      scope: "all",
+      limit: 20,
+      offset: 0,
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
+      hasMore: false,
+      results: [],
+    });
+
+    const { root } = renderSearch("/search?q=auth&status=todo&updatedWithin=7d", container);
+
+    await waitForAssertion(() => {
+      expect(searchApiMock.search).toHaveBeenCalledWith("company-1", {
+        q: "auth",
+        scope: "all",
+        limit: 20,
+        status: ["todo"],
+        updatedWithin: "7d",
+      });
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("status:todo");
+      expect(container.textContent).toContain("updated:>7d");
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("parses typed operators before dispatching search", async () => {
+    searchApiMock.search.mockResolvedValue({
+      query: "auth",
+      normalizedQuery: "auth",
+      scope: "all",
+      limit: 20,
+      offset: 0,
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
+      hasMore: false,
+      results: [],
+    });
+
+    const { root } = renderSearch("/search", container);
+    const input = container.querySelector('input[aria-label="Search query"]') as HTMLInputElement;
+
+    flushSync(() => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      nativeSetter.call(input, "auth status:blocked");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    await waitForAssertion(() => {
+      expect(searchApiMock.search).toHaveBeenCalledWith("company-1", {
+        q: "auth",
+        scope: "all",
+        limit: 20,
+        status: ["blocked"],
+      });
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("status:blocked");
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
 });
