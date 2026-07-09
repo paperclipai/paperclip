@@ -270,6 +270,69 @@ describe("cost routes", () => {
     });
   });
 
+  it("rejects a cost event with neither issueId nor heartbeatRunId (unlinked spend)", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/cost-events")
+      .send({
+        agentId: "33333333-3333-3333-3333-333333333333",
+        provider: "anthropic",
+        model: "claude-sonnet-4-20250514",
+        inputTokens: 100,
+        outputTokens: 50,
+        costCents: 12,
+        occurredAt: new Date().toISOString(),
+      });
+    expect(res.status).toBe(400);
+    expect(mockCostService.createEvent).not.toHaveBeenCalled();
+  });
+
+  it("accepts a cost event linked to an issueId", async () => {
+    mockCostService.createEvent.mockResolvedValue({
+      id: "cost-event-1",
+      costCents: 12,
+      model: "claude-sonnet-4-20250514",
+    });
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/cost-events")
+      .send({
+        agentId: "33333333-3333-3333-3333-333333333333",
+        issueId: "11111111-1111-1111-1111-111111111111",
+        provider: "anthropic",
+        model: "claude-sonnet-4-20250514",
+        inputTokens: 100,
+        outputTokens: 50,
+        costCents: 12,
+        occurredAt: new Date().toISOString(),
+      });
+    expect(res.status).toBe(201);
+    expect(mockCostService.createEvent).toHaveBeenCalled();
+  });
+
+  it("accepts a cost event linked to a heartbeatRunId", async () => {
+    mockCostService.createEvent.mockResolvedValue({
+      id: "cost-event-2",
+      costCents: 12,
+      model: "claude-sonnet-4-20250514",
+    });
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/cost-events")
+      .send({
+        agentId: "33333333-3333-3333-3333-333333333333",
+        heartbeatRunId: "22222222-2222-2222-2222-222222222222",
+        provider: "anthropic",
+        model: "claude-sonnet-4-20250514",
+        inputTokens: 100,
+        outputTokens: 50,
+        costCents: 12,
+        occurredAt: new Date().toISOString(),
+      });
+    expect(res.status).toBe(201);
+    expect(mockCostService.createEvent).toHaveBeenCalled();
+  });
+
   it("returns 400 for invalid finance event list limits", async () => {
     const { parseCostLimit } = await loadCostParsers();
     expect(() => parseCostLimit({ limit: "0" })).toThrow(/invalid 'limit'/i);
@@ -498,6 +561,47 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
       model: "clawrouter/claude-opus-4-8-200k",
       costCents: 801,
     });
+  });
+
+  it("rejects createEvent when neither issueId nor heartbeatRunId is set", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Unlinked Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "pi_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await expect(
+      costs.createEvent(companyId, {
+        agentId,
+        provider: "anthropic",
+        biller: "anthropic",
+        billingType: "metered_api",
+        model: "claude-sonnet-4-20250514",
+        inputTokens: 100,
+        cachedInputTokens: 0,
+        outputTokens: 50,
+        costCents: 12,
+        occurredAt: new Date(),
+      }),
+    ).rejects.toThrow(/must be linked to an issueId or a heartbeatRunId/i);
+
+    const summary = await costs.summary(companyId);
+    expect(summary.spendCents).toBe(0);
   });
 
   it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {

@@ -17,6 +17,9 @@ export const createCostEventSchema = z.object({
   outputTokens: z.number().int().nonnegative().optional().default(0),
   costCents: z.number().int().nonnegative(),
   occurredAt: z.string().datetime(),
+}).refine((value) => Boolean(value.issueId) || Boolean(value.heartbeatRunId), {
+  message: "cost event must be linked to an issueId or a heartbeatRunId — unattributed spend is not allowed",
+  path: ["heartbeatRunId"],
 }).transform((value) => ({
   ...value,
   biller: value.biller ?? value.provider,

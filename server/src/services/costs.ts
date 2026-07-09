@@ -63,6 +63,9 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (agent.companyId !== companyId) {
         throw unprocessable("Agent does not belong to company");
       }
+      if (!data.issueId && !data.heartbeatRunId) {
+        throw unprocessable("Cost event must be linked to an issueId or a heartbeatRunId — unattributed spend is not allowed");
+      }
 
       const billingType = data.billingType ?? "unknown";
       const cachedInputTokens = data.cachedInputTokens ?? 0;
