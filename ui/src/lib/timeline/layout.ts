@@ -183,20 +183,46 @@ function kickoffEdgeRunDistanceMs(edge: WorkTimelineEdge, span: WorkTimelineSpan
   return Math.abs(spanStartMs(span) - new Date(edge.at).getTime());
 }
 
-function isClosestRunForKickoffEdge(edge: WorkTimelineEdge, span: WorkTimelineSpan, spans: readonly WorkTimelineSpan[]) {
-  const currentDistance = kickoffEdgeRunDistanceMs(edge, span);
-  for (const other of spans) {
-    if (other.runId === span.runId) continue;
-    if (other.actorId !== edge.toActorId || other.issueId !== edge.issueId) continue;
-    const otherDistance = kickoffEdgeRunDistanceMs(edge, other);
+function spanGroupKey(actorId: string, issueId: string): string {
+  return `${actorId}\0${issueId}`;
+}
+
+function closestRunForKickoffEdge(edge: WorkTimelineEdge, spans: readonly WorkTimelineSpan[]): string | null {
+  let closest: { span: WorkTimelineSpan; distance: number } | null = null;
+  for (const span of spans) {
+    const distance = kickoffEdgeRunDistanceMs(edge, span);
     if (
-      otherDistance < currentDistance
-      || (otherDistance === currentDistance && other.runId.localeCompare(span.runId) < 0)
+      !closest
+      || distance < closest.distance
+      || (distance === closest.distance && span.runId.localeCompare(closest.span.runId) < 0)
     ) {
-      return false;
+      closest = { span, distance };
     }
   }
-  return true;
+  return closest?.span.runId ?? null;
+}
+
+function buildClosestRunByKickoffEdge(
+  spans: readonly WorkTimelineSpan[],
+  edges: readonly WorkTimelineEdge[],
+): Map<WorkTimelineEdge, string> {
+  const spansByActorIssue = new Map<string, WorkTimelineSpan[]>();
+  for (const span of spans) {
+    const key = spanGroupKey(span.actorId, span.issueId);
+    const group = spansByActorIssue.get(key);
+    if (group) group.push(span);
+    else spansByActorIssue.set(key, [span]);
+  }
+
+  const closestRunByEdge = new Map<WorkTimelineEdge, string>();
+  for (const edge of edges) {
+    const closestRunId = closestRunForKickoffEdge(
+      edge,
+      spansByActorIssue.get(spanGroupKey(edge.toActorId, edge.issueId)) ?? [],
+    );
+    if (closestRunId) closestRunByEdge.set(edge, closestRunId);
+  }
+  return closestRunByEdge;
 }
 
 /**
@@ -207,9 +233,9 @@ function isClosestRunForKickoffEdge(edge: WorkTimelineEdge, span: WorkTimelineSp
  */
 function resolveKickoff(
   span: WorkTimelineSpan,
-  spans: readonly WorkTimelineSpan[],
   edges: WorkTimelineEdge[],
   actorById: Map<string, WorkTimelineActor>,
+  closestRunByKickoffEdge: ReadonlyMap<WorkTimelineEdge, string>,
 ): WorkTimelineActor | null {
   const start = spanStartMs(span);
   let best: { edge: WorkTimelineEdge; delta: number } | null = null;
@@ -222,7 +248,7 @@ function resolveKickoff(
     if (!best || delta < best.delta) best = { edge: e, delta };
   }
   if (!best) return null;
-  if (!isClosestRunForKickoffEdge(best.edge, span, spans)) return null;
+  if (closestRunByKickoffEdge.get(best.edge) !== span.runId) return null;
   return actorById.get(best.edge.fromActorId) ?? null;
 }
 
@@ -231,6 +257,7 @@ export function computeLayout(result: WorkTimelineResult, opts: LayoutOptions): 
   const fromMs = new Date(result.window.from).getTime();
   const toMs = new Date(result.window.to).getTime();
   const actorById = new Map(result.actors.map((a) => [a.id, a]));
+  const closestRunByKickoffEdge = buildClosestRunByKickoffEdge(result.spans, result.edges);
 
   const x = (ms: number) => gutter + ((ms - fromMs) / 60000) * pxPerMinute;
 
@@ -305,7 +332,7 @@ export function computeLayout(result: WorkTimelineResult, opts: LayoutOptions): 
         yc: laneTop + barH / 2,
         height: barH,
         running: isRunningStatus(r.status),
-        kickoff: resolveKickoff(r, result.spans, result.edges, actorById),
+        kickoff: resolveKickoff(r, result.edges, actorById, closestRunByKickoffEdge),
       };
       barIndex.set(r.runId, bar);
       return bar;
