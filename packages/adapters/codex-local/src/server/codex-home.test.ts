@@ -52,7 +52,7 @@ describe("codex managed home", () => {
     const managedAuth = path.join(managedCodexHome, "auth.json");
 
     await fs.mkdir(sharedCodexHome, { recursive: true });
-    await fs.writeFile(sharedAuth, '{"token":"shared"}\n', "utf8");
+    await fs.writeFile(sharedAuth, '{"OPENAI_API_KEY":"shared"}\n', "utf8");
 
     const originalSymlink = fs.symlink.bind(fs);
     vi.spyOn(fs, "symlink").mockImplementationOnce(async (source, target, type) => {
@@ -99,7 +99,7 @@ describe("codex managed home", () => {
     const managedAuth = path.join(managedCodexHome, "auth.json");
 
     await fs.mkdir(sharedCodexHome, { recursive: true });
-    await fs.writeFile(sharedAuth, '{"token":"shared"}\n', "utf8");
+    await fs.writeFile(sharedAuth, '{"OPENAI_API_KEY":"shared"}\n', "utf8");
     await fs.writeFile(wrongAuth, '{"token":"other"}\n', "utf8");
 
     const originalSymlink = fs.symlink.bind(fs);
@@ -275,7 +275,67 @@ describe("codexHomeHasUsableAuth", () => {
       await fs.writeFile(path.join(root, "auth.json"), '{"foo":"bar"}', "utf8");
       expect(await codexHomeHasUsableAuth(root)).toBe(false);
       await fs.writeFile(path.join(root, "auth.json"), '{"token":"shared"}', "utf8");
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
+      await fs.writeFile(path.join(root, "auth.json"), '{"access_token":"shared"}', "utf8");
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
+      await fs.writeFile(path.join(root, "auth.json"), '{"OPENAI_API_KEY":"shared"}', "utf8");
       expect(await codexHomeHasUsableAuth(root)).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recognizes the Codex 0.143 AuthDotJson subscription shape", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-auth-modern-"));
+    try {
+      await fs.writeFile(
+        path.join(root, "auth.json"),
+        JSON.stringify({
+          tokens: {
+            id_token: "synthetic-id-token",
+            access_token: "synthetic-access-token",
+            refresh_token: "synthetic-refresh-token",
+            account_id: "acct-modern",
+          },
+          last_refresh: "2026-07-09T00:00:00Z",
+        }),
+        "utf8",
+      );
+
+      expect(await codexHomeHasUsableAuth(root)).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats subscription auth without account_id or token material as unusable", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-auth-modern-invalid-"));
+    try {
+      await fs.writeFile(
+        path.join(root, "auth.json"),
+        JSON.stringify({
+          tokens: {
+            id_token: "synthetic-id-token",
+            access_token: "synthetic-access-token",
+            refresh_token: "synthetic-refresh-token",
+          },
+          last_refresh: "2026-07-09T00:00:00Z",
+        }),
+        "utf8",
+      );
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
+
+      await fs.writeFile(
+        path.join(root, "auth.json"),
+        JSON.stringify({
+          tokens: {
+            account_id: "acct-modern",
+          },
+          last_refresh: "2026-07-09T00:00:00Z",
+        }),
+        "utf8",
+      );
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -311,7 +371,7 @@ describe("seedManagedCodexHome", () => {
       const agentAuth = path.join(agentHome, "auth.json");
 
       await fs.mkdir(sharedCodexHome, { recursive: true });
-      await fs.writeFile(sharedAuth, '{"token":"shared"}', "utf8");
+      await fs.writeFile(sharedAuth, '{"OPENAI_API_KEY":"shared"}', "utf8");
 
       await seedManagedCodexHome(agentHome, { CODEX_HOME: sharedCodexHome }, async () => {});
 
@@ -359,7 +419,7 @@ describe("reconcileManagedCodexHome", () => {
     const sharedAuth = path.join(sharedCodexHome, "auth.json");
     const agentAuth = path.join(agentHome, "auth.json");
     await fs.mkdir(sharedCodexHome, { recursive: true });
-    await fs.writeFile(sharedAuth, '{"token":"shared"}', "utf8");
+    await fs.writeFile(sharedAuth, '{"OPENAI_API_KEY":"shared"}', "utf8");
     const env = {
       CODEX_HOME: sharedCodexHome,
       PAPERCLIP_HOME: paperclipHome,
