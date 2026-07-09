@@ -10,9 +10,11 @@ import {
   companies,
   companySkillVersions,
   companySkills,
+  companyMemberships,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  principalPermissionGrants,
   routines,
   routineTriggers,
 } from "@paperclipai/db";
@@ -54,6 +56,8 @@ describeEmbeddedPostgres("companyService", () => {
     await db.delete(agentConfigRevisions);
     await db.delete(activityLog);
     await db.delete(agents);
+    await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
