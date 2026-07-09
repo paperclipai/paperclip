@@ -336,39 +336,42 @@ export function clipService(db: Db) {
     const existing = await getClipBySlug(input.slug);
     if (existing) throw conflict("Clip slug already exists");
     const creatorProfile = await resolveCreatorProfile(companyId, input);
-    const [clip] = await db
-      .insert(clips)
-      .values({
-        sourceCompanyId: companyId,
-        creatorProfileId: creatorProfile.id,
-        slug: input.slug,
-        type: input.type,
-        title: input.title,
-        summary: input.summary,
-        description: input.description ?? null,
-        visibility: input.visibility ?? "unlisted",
-        status: input.status ?? (input.visibility === "public" ? "pending_review" : "published"),
-        tags: input.tags ?? [],
-        categories: input.categories ?? [],
-        useCases: input.useCases ?? [],
-        requiredProviders: input.requiredProviders ?? [],
-        compatibility: input.compatibility ?? {},
-        sourceKind: input.sourceKind ?? null,
-        sourceObjectType: input.sourceObjectType ?? null,
-        sourceObjectId: input.sourceObjectId ?? null,
-      })
-      .returning();
-    const revision = await insertRevision(db, clip.id, input.revision, 1);
-    const visibleRevisionId = clip.status === "published" ? revision.id : null;
-    const [updated] = await db
-      .update(clips)
-      .set({
-        currentRevisionId: revision.id,
-        latestApprovedRevisionId: visibleRevisionId,
-        updatedAt: new Date(),
-      })
-      .where(eq(clips.id, clip.id))
-      .returning();
+    const { clip: updated, revision } = await db.transaction(async (tx) => {
+      const [clip] = await tx
+        .insert(clips)
+        .values({
+          sourceCompanyId: companyId,
+          creatorProfileId: creatorProfile.id,
+          slug: input.slug,
+          type: input.type,
+          title: input.title,
+          summary: input.summary,
+          description: input.description ?? null,
+          visibility: input.visibility ?? "unlisted",
+          status: input.status ?? (input.visibility === "public" ? "pending_review" : "published"),
+          tags: input.tags ?? [],
+          categories: input.categories ?? [],
+          useCases: input.useCases ?? [],
+          requiredProviders: input.requiredProviders ?? [],
+          compatibility: input.compatibility ?? {},
+          sourceKind: input.sourceKind ?? null,
+          sourceObjectType: input.sourceObjectType ?? null,
+          sourceObjectId: input.sourceObjectId ?? null,
+        })
+        .returning();
+      const revision = await insertRevision(tx, clip.id, input.revision, 1);
+      const visibleRevisionId = clip.status === "published" ? revision.id : null;
+      const [updated] = await tx
+        .update(clips)
+        .set({
+          currentRevisionId: revision.id,
+          latestApprovedRevisionId: visibleRevisionId,
+          updatedAt: new Date(),
+        })
+        .where(eq(clips.id, clip.id))
+        .returning();
+      return { clip: updated, revision };
+    });
     await rebuildRankingSnapshot(updated);
     return { clip: updated, revision, creatorProfile };
   }

@@ -138,6 +138,39 @@ describeEmbeddedPostgres("clipService", () => {
     expect(detail).not.toHaveProperty("sourceObjectId");
   });
 
+  it("rolls back initial publish when revision dependency insertion fails", async () => {
+    const companyId = await seedCompany();
+    const slug = "rollback-test-" + companyId.slice(0, 8);
+
+    await expect(svc.publish(companyId, {
+      creatorProfile: {
+        handle: "rollback-creator-" + companyId.slice(0, 8),
+        displayName: "Rollback Creator",
+      },
+      slug,
+      type: "agent",
+      title: "Rollback Test Agent",
+      summary: "Exercises transaction rollback on publish.",
+      visibility: "public",
+      status: "published",
+      sourceKind: "paperclip_company_object",
+      sourceObjectType: "agent",
+      sourceObjectId: "rollback-agent-id",
+      revision: {
+        manifestChecksum: "sha256:manifest-rollback",
+        artifactChecksum: "sha256:artifact-rollback",
+        manifestPayload: { schema: "paperclip.clip/v1", rollback: true },
+        dependencies: [
+          { type: "adapter", key: "codex_local" },
+          { type: "adapter", key: "codex_local" },
+        ],
+      },
+    })).rejects.toThrow();
+
+    const rows = await db.select().from(clips).where(eq(clips.slug, slug));
+    expect(rows).toHaveLength(0);
+  });
+
   it("stores revisions append-only and serves exact revision manifests", async () => {
     const companyId = await seedCompany();
     const { clip, revision } = await publishFixture(companyId);
