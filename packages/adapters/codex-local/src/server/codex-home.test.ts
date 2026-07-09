@@ -10,6 +10,7 @@ import {
   prepareManagedCodexHome,
   reconcileManagedCodexHome,
   seedManagedCodexHome,
+  writeApiKeyAuthJson,
 } from "./codex-home.js";
 
 describe("codex managed home", () => {
@@ -196,6 +197,47 @@ describe("codex managed home", () => {
 
       expect((await fs.lstat(target)).isDirectory()).toBe(true);
       expect(await fs.readFile(path.join(target, "sentinel"), "utf8")).toBe("keep-me");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats current Codex subscription auth fields as usable", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-modern-auth-"));
+    try {
+      const home = path.join(root, "codex-home");
+      await fs.mkdir(home, { recursive: true });
+      await fs.writeFile(
+        path.join(home, "auth.json"),
+        JSON.stringify({
+          tokens: {
+            id_token: "id-token",
+            access_token: "access-token",
+            refresh_token: "refresh-token",
+            account_id: "account-1",
+          },
+          last_refresh: "2026-07-09T00:00:00.000Z",
+        }),
+        { mode: 0o600 },
+      );
+
+      await expect(codexHomeHasUsableAuth(home)).resolves.toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("writes API-key auth.json with owner-only permissions", async () => {
+    if (process.platform === "win32") return;
+
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-api-auth-"));
+    try {
+      await writeApiKeyAuthJson(root, "sk-test");
+
+      const mode = (await fs.stat(path.join(root, "auth.json"))).mode & 0o777;
+      expect(mode).toBe(0o600);
+      await expect(fs.readFile(path.join(root, "auth.json"), "utf8"))
+        .resolves.toBe(JSON.stringify({ OPENAI_API_KEY: "sk-test" }));
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

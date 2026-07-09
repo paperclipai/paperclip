@@ -110,6 +110,220 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
+const CODEX_AUTH_JSON_NAME = "auth.json";
+
+function buildCodexAuthMergeNodeScript(): string {
+  return String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+
+const [destinationAuthPath, hostAuthPath] = process.argv.slice(2);
+const credentialKeyPattern = /(?:openai[_-]?key|api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|session|auth)/i;
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readFileBytes(filePath) {
+  try {
+    return fs.readFileSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function readJson(filePath) {
+  const bytes = readFileBytes(filePath);
+  if (!bytes) return { bytes: null, parsed: null };
+  try {
+    const parsed = JSON.parse(bytes.toString("utf8"));
+    return { bytes, parsed };
+  } catch {
+    return { bytes, parsed: null };
+  }
+}
+
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasUsableAuthPayload(value) {
+  if (!isObject(value)) return false;
+  for (const [key, fieldValue] of Object.entries(value)) {
+    if (!credentialKeyPattern.test(key)) continue;
+    if (key.toLowerCase() === "token_type") continue;
+    if (typeof fieldValue === "string" && fieldValue.trim().length > 0) return true;
+  }
+  const tokens = isObject(value.tokens) ? value.tokens : null;
+  if (!tokens) return false;
+  return ["id_token", "access_token", "refresh_token"].some((key) => {
+    const fieldValue = tokens[key];
+    return typeof fieldValue === "string" && fieldValue.trim().length > 0;
+  });
+}
+
+function parseLastRefreshMs(value) {
+  const raw = nonEmptyString(value);
+  if (!raw) return null;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function classifyAuth(filePath) {
+  const { bytes, parsed } = readJson(filePath);
+  if (!bytes || !isObject(parsed) || !hasUsableAuthPayload(parsed)) {
+    return { kind: "unusable", bytes };
+  }
+
+  if (nonEmptyString(parsed.OPENAI_API_KEY)) {
+    return { kind: "apikey", bytes };
+  }
+
+  const tokens = isObject(parsed.tokens) ? parsed.tokens : null;
+  const accountId = tokens ? nonEmptyString(tokens.account_id) : null;
+  if (!accountId) return { kind: "unusable", bytes };
+
+  return {
+    kind: "subscription",
+    accountId,
+    lastRefreshMs: parseLastRefreshMs(parsed.last_refresh),
+    bytes,
+  };
+}
+
+function shouldInstallHost(sandboxAuth, hostAuth) {
+  if (hostAuth.kind === "unusable") {
+    process.stderr.write("[paperclip] Codex auth merge kept sandbox auth because uploaded host auth was unusable.\n");
+    return false;
+  }
+  if (sandboxAuth.kind === "unusable") return true;
+  if (hostAuth.kind === "apikey" || sandboxAuth.kind === "apikey") return true;
+  if (hostAuth.accountId !== sandboxAuth.accountId) return true;
+  return (
+    hostAuth.lastRefreshMs !== null &&
+    sandboxAuth.lastRefreshMs !== null &&
+    hostAuth.lastRefreshMs > sandboxAuth.lastRefreshMs
+  );
+}
+
+function keepSandboxAuth() {
+  try {
+    fs.chmodSync(destinationAuthPath, 0o600);
+  } catch {
+    // Best-effort normalization; preserving same-account sandbox auth wins over
+    // replacing a potentially newer token family because chmod failed.
+  }
+}
+
+function renameTempIntoDestination(tmpPath) {
+  try {
+    fs.renameSync(tmpPath, destinationAuthPath);
+    return;
+  } catch (error) {
+    if (error && ["EISDIR", "ENOTDIR", "ENOTEMPTY"].includes(error.code)) {
+      fs.rmSync(destinationAuthPath, { recursive: true, force: true });
+      fs.renameSync(tmpPath, destinationAuthPath);
+      return;
+    }
+    throw error;
+  }
+}
+
+function installHostAuth(hostAuth) {
+  if (!hostAuth.bytes) return;
+  fs.mkdirSync(path.dirname(destinationAuthPath), { recursive: true });
+  const tmpPath = path.join(
+    path.dirname(destinationAuthPath),
+    ".auth.json.paperclip-" + process.pid + "-" + Date.now() + ".tmp",
+  );
+  let fd = null;
+  try {
+    fd = fs.openSync(tmpPath, "wx", 0o600);
+    fs.fchmodSync(fd, 0o600);
+    fs.writeFileSync(fd, hostAuth.bytes);
+    fs.closeSync(fd);
+    fd = null;
+    renameTempIntoDestination(tmpPath);
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+    try {
+      fs.rmSync(tmpPath, { force: true });
+    } catch {
+      // best-effort cleanup; destination was never written through this path
+    }
+  }
+}
+
+const sandboxAuth = classifyAuth(destinationAuthPath);
+const hostAuth = classifyAuth(hostAuthPath);
+
+try {
+  if (shouldInstallHost(sandboxAuth, hostAuth)) {
+    installHostAuth(hostAuth);
+  } else {
+    keepSandboxAuth();
+  }
+} catch {
+  installHostAuth(hostAuth);
+}
+`;
+}
+
+function buildMoveStagedAssetEntriesCommand(input: {
+  remoteStageDir: string;
+  remoteAssetDir: string;
+}): string {
+  const quotedStageDir = shellQuote(input.remoteStageDir);
+  const quotedAssetDir = shellQuote(input.remoteAssetDir);
+  return [
+    `find ${quotedAssetDir} -mindepth 1 -maxdepth 1 ! -name ${shellQuote(CODEX_AUTH_JSON_NAME)} -exec rm -rf -- {} +`,
+    `for entry in ${quotedStageDir}/* ${quotedStageDir}/.[!.]* ${quotedStageDir}/..?*; do ` +
+      `[ -e "$entry" ] || continue; ` +
+      `[ "$(basename "$entry")" = ${shellQuote(CODEX_AUTH_JSON_NAME)} ] && continue; ` +
+      `mv "$entry" ${quotedAssetDir}/; ` +
+      `done`,
+  ].join(" && ");
+}
+
+function buildCodexHomeAssetExtractCommand(input: {
+  remoteAssetDir: string;
+  remoteAssetTar: string;
+  remoteStageDir: string;
+}): string {
+  const destinationAuthPath = path.posix.join(input.remoteAssetDir, CODEX_AUTH_JSON_NAME);
+  const hostAuthPath = path.posix.join(input.remoteStageDir, CODEX_AUTH_JSON_NAME);
+  const fallbackTmpPath = path.posix.join(
+    input.remoteAssetDir,
+    `.auth.json.paperclip-fallback-$$.tmp`,
+  );
+  const compareAndMergeCommand =
+    `{ node - ${shellQuote(destinationAuthPath)} ${shellQuote(hostAuthPath)} <<'NODE'\n${buildCodexAuthMergeNodeScript()}\nNODE\n` +
+    `} || (` +
+    `umask 077; ` +
+    `rm -f ${shellQuote(fallbackTmpPath)}; ` +
+    `if [ -f ${shellQuote(hostAuthPath)} ]; then ` +
+    `cat ${shellQuote(hostAuthPath)} > ${shellQuote(fallbackTmpPath)} && ` +
+    `chmod 600 ${shellQuote(fallbackTmpPath)} && ` +
+    `rm -rf ${shellQuote(destinationAuthPath)} && ` +
+    `mv ${shellQuote(fallbackTmpPath)} ${shellQuote(destinationAuthPath)}; ` +
+    `else exit 0; fi` +
+    `)`;
+  const setupAndMerge = [
+    `rm -rf ${shellQuote(input.remoteStageDir)}`,
+    `mkdir -p ${shellQuote(input.remoteStageDir)}`,
+    `tar -xf ${shellQuote(input.remoteAssetTar)} -C ${shellQuote(input.remoteStageDir)}`,
+    `mkdir -p ${shellQuote(input.remoteAssetDir)}`,
+    buildMoveStagedAssetEntriesCommand(input),
+    compareAndMergeCommand,
+  ].join(" && ");
+
+  return `${setupAndMerge}
+status=$?
+rm -rf ${shellQuote(input.remoteStageDir)}
+rm -f ${shellQuote(input.remoteAssetTar)}
+exit "$status"`;
+}
+
 export function parseSandboxRemoteExecutionSpec(value: unknown): SandboxRemoteExecutionSpec | null {
   const parsed = asObject(value);
   const transport = asString(parsed.transport).trim();
@@ -564,6 +778,7 @@ export async function prepareSandboxManagedRuntime(input: {
       const assetTarBytes = await fs.readFile(assetTarPath);
       const remoteAssetDir = path.posix.join(runtimeRootDir, asset.key);
       const remoteAssetTar = path.posix.join(runtimeRootDir, `${asset.key}-upload.tar`);
+      const remoteAssetStageDir = path.posix.join(runtimeRootDir, `${asset.key}-upload-stage`);
       const assetUpload = makeTransferProgress(
         input.onProgress,
         "Syncing",
@@ -573,13 +788,19 @@ export async function prepareSandboxManagedRuntime(input: {
       );
       await input.client.writeFile(remoteAssetTar, toArrayBuffer(assetTarBytes), assetUpload.options);
       await assetUpload.finish(assetTarBytes.byteLength, assetTarBytes.byteLength);
-      await input.client.run(
-        `sh -c ${shellQuote(
-          `rm -rf ${shellQuote(remoteAssetDir)} && ` +
+      const extractAssetCommand =
+        input.adapterKey === "codex" && asset.key === "home"
+          ? buildCodexHomeAssetExtractCommand({
+              remoteAssetDir,
+              remoteAssetTar,
+              remoteStageDir: remoteAssetStageDir,
+            })
+          : `rm -rf ${shellQuote(remoteAssetDir)} && ` +
             `mkdir -p ${shellQuote(remoteAssetDir)} && ` +
             `tar -xf ${shellQuote(remoteAssetTar)} -C ${shellQuote(remoteAssetDir)} && ` +
-            `rm -f ${shellQuote(remoteAssetTar)}`,
-        )}`,
+            `rm -f ${shellQuote(remoteAssetTar)}`;
+      await input.client.run(
+        `sh -c ${shellQuote(extractAssetCommand)}`,
         { timeoutMs: input.spec.timeoutMs },
       );
     }

@@ -22,10 +22,22 @@ function hasUsableAuthPayload(authPayload: unknown): boolean {
     return false;
   }
 
-  for (const [key, value] of Object.entries(authPayload as Record<string, unknown>)) {
+  const record = authPayload as Record<string, unknown>;
+  for (const [key, value] of Object.entries(record)) {
     if (!AUTH_CREDENTIAL_KEYS.test(key)) continue;
     if (key.toLowerCase() === "token_type") continue;
     if (typeof value === "string" && value.trim().length > 0) return true;
+  }
+
+  const tokens =
+    record.tokens !== null && typeof record.tokens === "object" && !Array.isArray(record.tokens)
+      ? record.tokens as Record<string, unknown>
+      : null;
+  if (tokens) {
+    for (const key of ["id_token", "access_token", "refresh_token"]) {
+      const value = tokens[key];
+      if (typeof value === "string" && value.trim().length > 0) return true;
+    }
   }
 
   return false;
