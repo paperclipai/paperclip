@@ -643,6 +643,61 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("named unblock owner/action");
   });
 
+  it("renders the execution workspace branch guard only on non-resumed sessions", () => {
+    const payload = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1582",
+        title: "Ship the fix",
+        status: "in_progress",
+      },
+      executionWorkspace: { branchName: "PAP-1582-ship-the-fix" },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const firstPrompt = renderPaperclipWakePrompt(payload);
+    expect(firstPrompt).toContain(
+      "- execution workspace branch: you are running in an execution workspace on branch `PAP-1582-ship-the-fix`. Do not switch, rename, or re-point this branch; keep all commits on it.",
+    );
+
+    const resumedPrompt = renderPaperclipWakePrompt(payload, { resumedSession: true });
+    expect(resumedPrompt).toContain("## Paperclip Resume Delta");
+    expect(resumedPrompt).not.toContain("execution workspace branch");
+
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      executionWorkspace: { branchName: "PAP-1582-ship-the-fix" },
+    });
+  });
+
+  it("omits the branch guard when no execution workspace branch is pinned", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1583",
+        title: "Agent-home run",
+        status: "in_progress",
+      },
+      executionWorkspace: { branchName: "  " },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).not.toContain("execution workspace branch");
+  });
+
   it("renders resolved checkbox selections in scoped wake prompts", () => {
     const payload = {
       reason: "issue_commented",
