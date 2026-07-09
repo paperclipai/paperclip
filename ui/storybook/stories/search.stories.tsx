@@ -15,6 +15,7 @@ import { SearchFilterBar, type SearchFilterDataProps } from "@/components/search
 import { SearchFilterChips } from "@/components/search/SearchFilterChips";
 import { ZeroResultsRecovery } from "@/components/search/ZeroResultsRecovery";
 import type { FilterChipLookups, SearchFilters } from "@/lib/search-filters";
+import { SEARCH_OPERATOR_QUICK_FILTERS, searchOperatorSuggestions } from "@/lib/search-query-parser";
 import { Tabs } from "@/components/ui/tabs";
 import {
   Bot,
@@ -410,6 +411,39 @@ function SearchPagePreview({
   );
 }
 
+function SearchOperatorInputPreview() {
+  const suggestions = searchOperatorSuggestions("auth sta", 4);
+  return (
+    <div className="border-t border-border bg-background p-4">
+      <div className="relative">
+        <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <Input value="auth status:blocked updated:>7d" readOnly className="h-10 pl-9 pr-4 text-sm" />
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-(length:--text-micro) text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge variant="outline" className="px-1.5 py-0 text-(length:--text-micro) font-normal normal-case">
+            status:blocked
+          </Badge>
+          <Badge variant="outline" className="px-1.5 py-0 text-(length:--text-micro) font-normal normal-case">
+            updated:&gt;7d
+          </Badge>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {suggestions.map((suggestion) => (
+            <span
+              key={suggestion.token}
+              className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5"
+            >
+              <span className="font-mono text-(length:--text-micro)">{suggestion.token}</span>
+              <span className="hidden text-(length:--text-micro) sm:inline">{suggestion.description}</span>
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CommandPaletteWithSearchAll({
   query,
   emptyResults = false,
@@ -444,6 +478,15 @@ function CommandPaletteWithSearchAll({
               <kbd className="rounded border border-border bg-background px-1 py-0.5 text-[10px]">↵</kbd>
             </span>
           </CommandItem>
+        </CommandGroup>
+        <CommandSeparator />
+        <CommandGroup heading="Quick filters">
+          {SEARCH_OPERATOR_QUICK_FILTERS.map((chip) => (
+            <CommandItem key={chip} value={`quick-filter ${chip}`}>
+              <SearchIcon className="mr-2 h-4 w-4" />
+              <span className="font-mono text-xs">{chip}</span>
+            </CommandItem>
+          ))}
         </CommandGroup>
         <CommandSeparator />
         <CommandGroup heading="Actions">
@@ -583,6 +626,14 @@ function SearchStories() {
             <h2 className="mt-1 text-lg font-semibold">Results, query &ldquo;auth flake&rdquo;</h2>
           </div>
           <SearchPagePreview response={fixtureResponse} state="results" query="auth flake" />
+        </section>
+
+        <section className="paperclip-story__frame overflow-hidden">
+          <div className="paperclip-story__title-block">
+            <div className="paperclip-story__label">/search · screen 3</div>
+            <h2 className="mt-1 text-lg font-semibold">Typed operators, pills &amp; autocomplete</h2>
+          </div>
+          <SearchOperatorInputPreview />
         </section>
 
         <section className="paperclip-story__frame overflow-hidden">

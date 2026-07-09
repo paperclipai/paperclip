@@ -30,10 +30,12 @@ import { loadRecentSearches, pushRecentSearch } from "../lib/recent-searches";
 import { PageTabBar, type PageTabItem } from "../components/PageTabBar";
 import {
   applySearchFiltersToParams,
+  applySearchOperatorSuggestion,
   hasSearchFilters,
   parseSearchQuery,
   readSearchFiltersFromParams,
   searchFilterPills,
+  searchOperatorSuggestions,
   type ParsedSearchQuery,
   type SearchQueryParserContext,
 } from "../lib/search-query-parser";
@@ -188,6 +190,7 @@ export function Search() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [draftSheetFilters, setDraftSheetFilters] = useState<ParsedSearchQuery["filters"]>({});
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const [inputFocused, setInputFocused] = useState(false);
   const lastUrlSyncRef = useRef<string>("");
   const lastIdentifierRedirectRef = useRef<string>("");
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
@@ -526,6 +529,10 @@ export function Search() {
   const subgroups = useMemo(() => buildSubgroups(data?.results ?? []), [data?.results]);
 
   const operatorPills = useMemo(() => searchFilterPills(draftFilters, parserContext), [draftFilters, parserContext]);
+  const operatorSuggestions = useMemo(
+    () => (inputFocused ? searchOperatorSuggestions(draftQuery, 4) : []),
+    [draftQuery, inputFocused],
+  );
   const showInitialState = !displayQuery && !hasSearchFilters(activeFilters);
   const isLoading = queryEnabled && isFetching && !data;
   const hasResults = !!data && totalResults > 0;
@@ -581,6 +588,8 @@ export function Search() {
             autoFocus
             value={draftQuery}
             onChange={(event) => setDraftQuery(event.currentTarget.value)}
+            onFocus={() => setInputFocused(true)}
+            onBlur={() => setInputFocused(false)}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 if (draftQuery.length > 0) {
@@ -622,11 +631,32 @@ export function Search() {
               ))}
             </div>
           ) : null}
-          <span className="truncate">
-            Try <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)">status:todo</code>,{" "}
-            <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)">assignee:me</code>,{" "}
-            or <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)">updated:&gt;7d</code>.
-          </span>
+          {operatorSuggestions.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1.5" data-testid="search-operator-suggestions">
+              {operatorSuggestions.map((suggestion) => (
+                <button
+                  key={suggestion.token}
+                  type="button"
+                  aria-label={`Insert operator ${suggestion.token}`}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    setDraftQuery(applySearchOperatorSuggestion(draftQuery, suggestion.token));
+                    inputRef.current?.focus();
+                  }}
+                  className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 hover:bg-accent/60"
+                >
+                  <span className="font-mono text-(length:--text-micro)">{suggestion.token}</span>
+                  <span className="hidden text-(length:--text-micro) sm:inline">{suggestion.description}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <span className="truncate">
+              Try <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)">status:todo</code>,{" "}
+              <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)">assignee:me</code>,{" "}
+              or <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)">updated:&gt;7d</code>.
+            </span>
+          )}
         </div>
       </div>
 

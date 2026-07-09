@@ -31,6 +31,24 @@ export interface SearchOperatorPill {
   label: string;
 }
 
+export interface SearchOperatorSuggestion {
+  token: string;
+  label: string;
+  description: string;
+}
+
+export const SEARCH_OPERATOR_QUICK_FILTERS = ["assignee:me", "is:open", "updated:>7d"] as const;
+
+export const SEARCH_OPERATOR_SUGGESTIONS: SearchOperatorSuggestion[] = [
+  { token: "status:todo", label: "Open todo tasks", description: "Filter by task status" },
+  { token: "status:blocked", label: "Blocked tasks", description: "Find blocked work" },
+  { token: "assignee:me", label: "Assigned to me", description: "Use your current board user" },
+  { token: "project:\"Paperclip App\"", label: "Project name", description: "Quote multi-word project names" },
+  { token: "label:bug", label: "Label", description: "Filter by issue label" },
+  { token: "priority:high", label: "High priority", description: "Filter by priority" },
+  { token: "updated:>7d", label: "Recently updated", description: "Updated in the last 7 days" },
+];
+
 export interface SearchQueryParserContext {
   currentAgentId?: string | null;
   currentUserId?: string | null;
@@ -98,6 +116,30 @@ function tokenizeQuery(input: string): QueryToken[] {
     tokens.push({ raw, value: raw });
   }
   return tokens;
+}
+
+function currentTokenBounds(input: string): { start: number; end: number; token: string } {
+  let end = input.length;
+  while (end > 0 && /\s/.test(input[end - 1] ?? "")) end -= 1;
+  let start = end;
+  while (start > 0 && !/\s/.test(input[start - 1] ?? "")) start -= 1;
+  return { start, end, token: input.slice(start, end) };
+}
+
+export function searchOperatorSuggestions(input: string, limit = 5): SearchOperatorSuggestion[] {
+  const { token } = currentTokenBounds(input);
+  const normalized = token.toLowerCase();
+  const candidates = normalized.length > 0
+    ? SEARCH_OPERATOR_SUGGESTIONS.filter((suggestion) => suggestion.token.toLowerCase().startsWith(normalized))
+    : SEARCH_OPERATOR_SUGGESTIONS;
+  return candidates.slice(0, limit);
+}
+
+export function applySearchOperatorSuggestion(input: string, token: string): string {
+  const { start, end } = currentTokenBounds(input);
+  const prefix = input.slice(0, start).trimEnd();
+  const suffix = input.slice(end).trimStart();
+  return [prefix, token, suffix].filter(Boolean).join(" ").trim();
 }
 
 function normalizedLookup(value: string) {

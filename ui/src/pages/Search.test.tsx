@@ -724,6 +724,65 @@ describe("Search page", () => {
     });
   });
 
+  it("shows operator autocomplete suggestions and applies one to the current token", async () => {
+    searchApiMock.search.mockResolvedValue({
+      query: "auth",
+      normalizedQuery: "auth",
+      scope: "all",
+      limit: 20,
+      offset: 0,
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
+      hasMore: false,
+      results: [],
+    });
+
+    const { root } = renderSearch("/search", container);
+    const input = container.querySelector('input[aria-label="Search query"]') as HTMLInputElement;
+    expect(input).not.toBeNull();
+
+    flushSync(() => {
+      input.focus();
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      nativeSetter.call(input, "auth sta");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    let suggestionButton: HTMLButtonElement | null = null;
+    await waitForAssertion(() => {
+      const suggestions = container.querySelector('[data-testid="search-operator-suggestions"]');
+      expect(suggestions).not.toBeNull();
+      expect(suggestions!.textContent).toContain("status:todo");
+      expect(suggestions!.textContent).toContain("status:blocked");
+      expect(suggestions!.textContent).not.toContain("assignee:me");
+      suggestionButton = container.querySelector('button[aria-label="Insert operator status:todo"]');
+      expect(suggestionButton).not.toBeNull();
+    });
+
+    flushSync(() => {
+      suggestionButton!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      suggestionButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(input.value).toBe("auth status:todo");
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
   function emptyResponse(overrides: Record<string, unknown> = {}) {
     return {
       query: "auth",

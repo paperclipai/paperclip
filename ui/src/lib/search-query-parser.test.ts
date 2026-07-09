@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildSearchPathFromQuery, parseSearchQuery, readSearchFiltersFromParams } from "./search-query-parser";
+import {
+  applySearchOperatorSuggestion,
+  buildSearchPathFromQuery,
+  parseSearchQuery,
+  readSearchFiltersFromParams,
+  searchOperatorSuggestions,
+} from "./search-query-parser";
 
 const context = {
   currentUserId: "user-1",
@@ -119,5 +125,19 @@ describe("search query URLs", () => {
       priority: ["high"],
       updatedWithin: "7d",
     });
+  });
+});
+
+describe("search operator suggestions", () => {
+  it("suggests syntax for the current partial token", () => {
+    expect(searchOperatorSuggestions("auth sta").map((suggestion) => suggestion.token)).toEqual([
+      "status:todo",
+      "status:blocked",
+    ]);
+  });
+
+  it("replaces only the current token when applying a suggestion", () => {
+    expect(applySearchOperatorSuggestion("auth sta", "status:todo")).toBe("auth status:todo");
+    expect(applySearchOperatorSuggestion("", "assignee:me")).toBe("assignee:me");
   });
 });

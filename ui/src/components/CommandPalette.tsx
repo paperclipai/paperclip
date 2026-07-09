@@ -35,10 +35,14 @@ import {
 } from "lucide-react";
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
-import { buildSearchPathFromQuery, parseSearchQuery, type SearchQueryParserContext } from "../lib/search-query-parser";
+import {
+  SEARCH_OPERATOR_QUICK_FILTERS,
+  buildSearchPathFromQuery,
+  parseSearchQuery,
+  type SearchQueryParserContext,
+} from "../lib/search-query-parser";
 
 const SEARCH_ALL_VALUE = "__paperclip-search-all__";
-const QUICK_FILTER_CHIPS = ["assignee:me", "is:open", "updated:>7d"] as const;
 
 export function buildFullSearchPath(query: string, context: SearchQueryParserContext = {}) {
   return buildSearchPathFromQuery(query, context);
@@ -269,7 +273,7 @@ export function CommandPalette() {
         {showSearchAll ? <CommandSeparator /> : null}
 
         <CommandGroup heading="Quick filters">
-          {QUICK_FILTER_CHIPS.map((chip) => (
+          {SEARCH_OPERATOR_QUICK_FILTERS.map((chip) => (
             <CommandItem
               key={chip}
               value={`quick-filter ${chip}`}
