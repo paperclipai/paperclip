@@ -1335,6 +1335,14 @@ export function builtInAgentService(db: Db) {
       if (!existingPendingApproval && resolvedInput.budgetMonthlyCents !== undefined) {
         patch.budgetMonthlyCents = resolvedInput.budgetMonthlyCents;
       }
+      if (
+        !existingPendingApproval
+        && definition.defaultManager === "single_root_agent"
+        && !existing.reportsTo
+      ) {
+        const reportsTo = await findSingleRootManager(companyId);
+        if (reportsTo) patch.reportsTo = reportsTo;
+      }
       const updated = await agentSvc.update(existing.id, patch, {
         allowBuiltInAgentMetadata: true,
         recordRevision: { source: "built-in-agent:ensure" },
@@ -1423,9 +1431,13 @@ export function builtInAgentService(db: Db) {
       return { state: await state(definition, existing), approval: null };
     }
 
+    const reportsTo = definition.defaultManager === "single_root_agent"
+      ? await findSingleRootManager(companyId)
+      : null;
     const pending = await agentSvc.create(companyId, {
       ...definitionPatch(definition, input),
       status: "pending_approval",
+      reportsTo,
       metadata: builtInMetadata(definition),
       runtimeConfig: {},
       permissions: definition.defaultPermissions ?? {},
