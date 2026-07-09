@@ -998,13 +998,34 @@ export const ISSUE_DOCUMENT_FORMATS = ["markdown"] as const;
 
 export const issueDocumentFormatSchema = z.enum(ISSUE_DOCUMENT_FORMATS);
 
-export const upsertIssueDocumentSchema = z.object({
-  title: z.string().trim().max(200).nullable().optional(),
-  format: issueDocumentFormatSchema,
-  body: multilineTextSchema.pipe(z.string().max(524288)),
-  changeSummary: z.string().trim().max(500).nullable().optional(),
-  baseRevisionId: z.string().uuid().nullable().optional(),
-});
+export const upsertIssueDocumentSchema = z.preprocess(
+  (value) => {
+    // Tolerate the request shape agents naturally produce: they frequently send
+    // the document text under `content` (the field name used by the comments
+    // API), which previously 400'd every verdict/plan write. Alias `content` ->
+    // `body` at the edge; `body` wins when both are present. The generated
+    // OpenAPI schema still advertises `body` only, because the doc converter
+    // unwraps this ZodEffects to the inner object.
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const obj = value as Record<string, unknown>;
+      if (obj.body === undefined && typeof obj.content === "string") {
+        const { content, ...rest } = obj;
+        return { ...rest, body: content };
+      }
+    }
+    return value;
+  },
+  z.object({
+    title: z.string().trim().max(200).nullable().optional(),
+    // `markdown` is the only legal format, so requiring callers to send it is
+    // pure friction (agents routinely omit it). Default it to match the MCP
+    // upsert tool, which has always defaulted it.
+    format: issueDocumentFormatSchema.default("markdown"),
+    body: multilineTextSchema.pipe(z.string().max(524288)),
+    changeSummary: z.string().trim().max(500).nullable().optional(),
+    baseRevisionId: z.string().uuid().nullable().optional(),
+  }),
+);
 
 export const restoreIssueDocumentRevisionSchema = z.object({});
 

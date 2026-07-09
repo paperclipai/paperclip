@@ -223,6 +223,34 @@ describe("issue validators", () => {
     expect(document.body).toBe("# Plan\n\nShip it");
   });
 
+  it("defaults document format to markdown when omitted", () => {
+    const document = upsertIssueDocumentSchema.parse({
+      body: "<!-- paperclip-verdict: ship_it -->\n",
+    });
+
+    expect(document.format).toBe("markdown");
+  });
+
+  it("accepts `content` as an alias for `body` (agent-friendly shape)", () => {
+    const document = upsertIssueDocumentSchema.parse({
+      title: "Verdict",
+      content: "<!-- paperclip-verdict: ship_it -->\\n",
+    });
+
+    expect(document.body).toBe("<!-- paperclip-verdict: ship_it -->\n");
+    expect(document.format).toBe("markdown");
+    expect((document as Record<string, unknown>).content).toBeUndefined();
+  });
+
+  it("prefers `body` over `content` when both are present", () => {
+    const document = upsertIssueDocumentSchema.parse({
+      body: "real body",
+      content: "ignored",
+    });
+
+    expect(document.body).toBe("real body");
+  });
+
   it("clamps oversized requestDepth values on create", () => {
     const parsed = createIssueSchema.parse({
       title: "Clamp request depth",
