@@ -556,7 +556,7 @@ describe("SkillStudio editor frontmatter", () => {
     expect(node.querySelector("#fm-name")).toBeNull();
   });
 
-  it("links read-only skills directly to a Studio fork draft", async () => {
+  it("offers an 'Edit a copy' CTA on the read-only banner (PAP-13112)", async () => {
     mockCompanySkillsApi.detail.mockResolvedValueOnce(makeSkill({
       editable: false,
       editableReason: "Bundled skill.",
@@ -565,9 +565,16 @@ describe("SkillStudio editor frontmatter", () => {
     const node = await renderStudio();
 
     await waitFor(() => expect(node.textContent).toContain("Bundled skill."));
-    const forkLink = Array.from(node.querySelectorAll("a")).find((link) => link.textContent?.trim() === "Fork");
 
-    expect(forkLink?.getAttribute("href")).toBe("/skills/studio/new?forkFrom=source-skill");
-    expect(node.textContent).not.toContain("Fork or import locally");
+    // The dead-end "Fork" text link is replaced by a primary "Edit a copy"
+    // button that opens the fork-confirm dialog (agent-switch flow).
+    const editCopy = Array.from(node.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Edit a copy",
+    );
+    expect(editCopy).toBeTruthy();
+    const staleForkLink = Array.from(node.querySelectorAll("a")).find((link) =>
+      link.getAttribute("href")?.includes("/skills/studio/new?forkFrom"),
+    );
+    expect(staleForkLink).toBeUndefined();
   });
 });
