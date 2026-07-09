@@ -4,9 +4,11 @@ import { Search as SearchIcon, AlertTriangle, FileQuestion, Plus, X } from "luci
 import {
   COMPANY_SEARCH_DEFAULT_LIMIT,
   COMPANY_SEARCH_SCOPES,
+  type CompanySearchCountType,
   type CompanySearchResponse,
   type CompanySearchResult,
   type CompanySearchScope,
+  type CompanySearchSort,
 } from "@paperclipai/shared";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
@@ -37,6 +39,19 @@ import {
 } from "../lib/search-query-parser";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { SearchResultRow } from "../components/search/SearchResultRow";
+import { SearchFilterBar, type SearchFilterDataProps } from "../components/search/SearchFilterBar";
+import { SearchFilterChips } from "../components/search/SearchFilterChips";
+import { SearchFilterSheet, SearchFilterSheetTrigger } from "../components/search/SearchFilterSheet";
+import { SearchSortMenu } from "../components/search/SearchSortMenu";
+import { ZeroResultsRecovery } from "../components/search/ZeroResultsRecovery";
+import { useSidebar } from "../context/SidebarContext";
+import {
+  SORT_LABELS,
+  countActiveFilters,
+  parseSearchSort,
+  type FilterChipLookups,
+} from "../lib/search-filters";
+import type { ReactNode } from "react";
 import type { Agent, IssueLabel, Project } from "@paperclipai/shared";
 
 const SEARCH_DEBOUNCE_MS = 250;
@@ -99,6 +114,17 @@ function describeScope(scope: CompanySearchScope) {
   return SCOPE_LABELS[scope];
 }
 
+function totalMatchCount(counts: Partial<Record<CompanySearchCountType, number>>): number {
+  return (
+    (counts.issue ?? 0)
+    + (counts.comment ?? 0)
+    + (counts.document ?? 0)
+    + (counts.artifact ?? 0)
+    + (counts.agent ?? 0)
+    + (counts.project ?? 0)
+  );
+}
+
 function mergeSearchFilters(
   base: ParsedSearchQuery["filters"],
   override: ParsedSearchQuery["filters"],
@@ -111,6 +137,7 @@ export function buildSearchUrl(
   query: string,
   scope: CompanySearchScope,
   filters: ParsedSearchQuery["filters"] = {},
+  sort: CompanySearchSort = "relevance",
 ): string {
   const url = new URL(href);
   if (query.length === 0) {
@@ -124,6 +151,11 @@ export function buildSearchUrl(
     url.searchParams.set("scope", scope);
   }
   applySearchFiltersToParams(url.searchParams, filters);
+  if (sort === "relevance") {
+    url.searchParams.delete("sort");
+  } else {
+    url.searchParams.set("sort", sort);
+  }
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
@@ -143,13 +175,18 @@ export function Search() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
+  const { isMobile } = useSidebar();
   const urlQuery = searchParams.get("q") ?? "";
   const urlScopeRaw = searchParams.get("scope");
   const urlScope: CompanySearchScope = isCompanySearchScope(urlScopeRaw) ? urlScopeRaw : "all";
+  const urlSort = useMemo(() => parseSearchSort(searchParams), [searchParams]);
 
   const [draftQuery, setDraftQuery] = useState(urlQuery);
   const [committedQuery, setCommittedQuery] = useState(urlQuery);
   const [scope, setScope] = useState<CompanySearchScope>(urlScope);
+  const [sort, setSort] = useState<CompanySearchSort>(urlSort);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [draftSheetFilters, setDraftSheetFilters] = useState<ParsedSearchQuery["filters"]>({});
   const inputRef = useRef<HTMLInputElement | null>(null);
   const lastUrlSyncRef = useRef<string>("");
   const lastIdentifierRedirectRef = useRef<string>("");
@@ -173,6 +210,10 @@ export function Search() {
   useEffect(() => {
     setScope(urlScope);
   }, [urlScope]);
+
+  useEffect(() => {
+    setSort(urlSort);
+  }, [urlSort]);
 
   const { data: agents = [] } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -231,7 +272,7 @@ export function Search() {
       if (typeof window !== "undefined") {
         const nextFilters = hasSearchFilters(draftOperatorFilters) ? draftFilters : urlFilters;
         setUrlFilters(nextFilters);
-        const next = buildSearchUrl(window.location.href, parsedDraftQuery.query, scope, nextFilters);
+        const next = buildSearchUrl(window.location.href, parsedDraftQuery.query, scope, nextFilters, sort);
         if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}` && next !== lastUrlSyncRef.current) {
           lastUrlSyncRef.current = next;
           window.history.replaceState(window.history.state, "", next);
@@ -239,19 +280,55 @@ export function Search() {
       }
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [draftFilters, draftOperatorFilters, draftQuery, committedQuery, parsedDraftQuery.query, scope, urlFilters]);
+  }, [draftFilters, draftOperatorFilters, draftQuery, committedQuery, parsedDraftQuery.query, scope, sort, urlFilters]);
 
   const handleScopeChange = useCallback(
     (next: string) => {
       if (!isCompanySearchScope(next) || next === scope) return;
       setScope(next);
       if (typeof window !== "undefined") {
-        const url = buildSearchUrl(window.location.href, parsedCommittedQuery.query, next, activeFilters);
+        const url = buildSearchUrl(window.location.href, parsedCommittedQuery.query, next, activeFilters, sort);
+        window.history.pushState(window.history.state, "", url);
+      }
+    },
+    [activeFilters, parsedCommittedQuery.query, scope, sort],
+  );
+
+  const handleSortChange = useCallback(
+    (next: CompanySearchSort) => {
+      setSort(next);
+      if (typeof window !== "undefined") {
+        const url = buildSearchUrl(window.location.href, parsedCommittedQuery.query, scope, activeFilters, next);
         window.history.pushState(window.history.state, "", url);
       }
     },
     [activeFilters, parsedCommittedQuery.query, scope],
   );
+
+  // Filter-bar / chip / sheet changes write the issue filters into the URL.
+  const handleFiltersChange = useCallback(
+    (next: ParsedSearchQuery["filters"]) => {
+      setUrlFilters(next);
+      if (typeof window !== "undefined") {
+        const url = buildSearchUrl(window.location.href, parsedCommittedQuery.query, scope, next, sort);
+        window.history.pushState(window.history.state, "", url);
+      }
+    },
+    [parsedCommittedQuery.query, scope, sort],
+  );
+
+  // "Clear all" drops both URL filters and any typed operator tokens (keeping the
+  // plain text query), so the results snap back to the unfiltered set.
+  const handleClearAllFilters = useCallback(() => {
+    const plain = parsedCommittedQuery.query;
+    setDraftQuery(plain);
+    setCommittedQuery(plain);
+    setUrlFilters({});
+    if (typeof window !== "undefined") {
+      const url = buildSearchUrl(window.location.href, plain, scope, {}, sort);
+      window.history.replaceState(window.history.state, "", url);
+    }
+  }, [parsedCommittedQuery.query, scope, sort]);
 
   const trimmedQuery = parsedCommittedQuery.query.trim();
   const displayQuery = committedQuery.trim();
@@ -267,6 +344,7 @@ export function Search() {
         0,
       ),
       activeFilters,
+      sort,
     ] as const,
     queryFn: () =>
       searchApi.search(selectedCompanyId!, {
@@ -274,6 +352,7 @@ export function Search() {
         scope,
         limit: COMPANY_SEARCH_DEFAULT_LIMIT,
         ...activeFilters,
+        ...(sort !== "relevance" ? { sort } : {}),
       }),
     enabled: queryEnabled,
     placeholderData: (previousData) => previousData,
@@ -284,6 +363,61 @@ export function Search() {
     for (const agent of agents) map.set(agent.id, agent);
     return map;
   }, [agents]);
+
+  const projectsById = useMemo(() => new Map((projects as Project[]).map((p) => [p.id, p])), [projects]);
+  const labelsById = useMemo(() => new Map((labels as IssueLabel[]).map((l) => [l.id, l])), [labels]);
+
+  const filterLookups = useMemo<FilterChipLookups>(
+    () => ({
+      agentName: (id) => agentsById.get(id)?.name,
+      userName: () => undefined,
+      projectName: (id) => projectsById.get(id)?.name,
+      labelName: (id) => labelsById.get(id)?.name,
+      currentUserId,
+    }),
+    [agentsById, projectsById, labelsById, currentUserId],
+  );
+
+  const filterData = useMemo<SearchFilterDataProps>(
+    () => ({
+      counts: data?.filterOptionCounts,
+      agents: agents as Agent[],
+      projects: projects as Project[],
+      labels: labels as IssueLabel[],
+      currentUserId,
+    }),
+    [data?.filterOptionCounts, agents, projects, labels, currentUserId],
+  );
+
+  const filtersActive = hasSearchFilters(activeFilters);
+  const activeFilterCount = countActiveFilters(activeFilters);
+
+  // Preview query for the mobile bottom sheet: run the draft filters so the apply
+  // button can show "Show N results" before the user commits.
+  const { data: previewData } = useQuery<CompanySearchResponse>({
+    queryKey: [
+      ...queryKeys.companySearch.search(
+        selectedCompanyId ?? "__no-company__",
+        trimmedQuery,
+        scope,
+        COMPANY_SEARCH_DEFAULT_LIMIT,
+        0,
+      ),
+      "preview",
+      draftSheetFilters,
+      sort,
+    ] as const,
+    queryFn: () =>
+      searchApi.search(selectedCompanyId!, {
+        q: trimmedQuery,
+        scope,
+        limit: COMPANY_SEARCH_DEFAULT_LIMIT,
+        ...draftSheetFilters,
+        ...(sort !== "relevance" ? { sort } : {}),
+      }),
+    enabled: queryEnabled && sheetOpen,
+    placeholderData: (previousData) => previousData,
+  });
 
   // Persist recent searches once we have a successful response with a non-empty query.
   useEffect(() => {
@@ -342,6 +476,8 @@ export function Search() {
 
   const counts = data?.countsByType ?? { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 };
   const totalResults = data?.results.length ?? 0;
+  const allMatchTotal = data ? totalMatchCount(counts) : 0;
+  const previewTotal = previewData ? totalMatchCount(previewData.countsByType) : null;
 
   const tabItems = useMemo<PageTabItem[]>(() => {
     function pill(value: number) {
@@ -368,17 +504,24 @@ export function Search() {
       else if (value === "artifacts") count = counts.artifact ?? 0;
       else if (value === "agents") count = counts.agent ?? 0;
       else if (value === "projects") count = counts.project ?? 0;
+      // Issue-only filters don't constrain agents/projects, so show a dash there
+      // rather than an unfiltered count that would misrepresent the result set.
+      const dashOut = filtersActive && (value === "agents" || value === "projects");
       return {
         value,
         label: (
           <span className="flex items-center">
             {SCOPE_LABELS[value as CompanySearchScope]}
-            {count !== null ? pill(count) : null}
+            {dashOut ? (
+              <span className="ml-1.5 text-(length:--text-nano) text-muted-foreground">—</span>
+            ) : count !== null ? (
+              pill(count)
+            ) : null}
           </span>
         ),
       } satisfies PageTabItem;
     });
-  }, [counts, data]);
+  }, [counts, data, filtersActive]);
 
   const subgroups = useMemo(() => buildSubgroups(data?.results ?? []), [data?.results]);
 
@@ -391,6 +534,19 @@ export function Search() {
   const apiError = hasError ? shapeError(error) : null;
   const apiMessage = data?.results === undefined && data ? null : null;
   void apiMessage;
+
+  // Zero-results recovery (wireframe screen 4) is only meaningful when active
+  // filters are what emptied the page; the backend signals that via `zeroResults`.
+  const zeroResultsSlot: ReactNode = data?.zeroResults ? (
+    <ZeroResultsRecovery
+      query={displayQuery || trimmedQuery}
+      filters={activeFilters}
+      zeroResults={data.zeroResults}
+      lookups={filterLookups}
+      onChange={handleFiltersChange}
+      onClearAll={handleClearAllFilters}
+    />
+  ) : null;
 
   function navigateIssuesFallback() {
     const fallbackQuery = trimmedQuery || displayQuery;
@@ -479,6 +635,33 @@ export function Search() {
           <PageTabBar items={tabItems} value={scope} onValueChange={handleScopeChange} align="start" />
         </div>
 
+        {!showInitialState ? (
+          <div className="flex flex-col gap-2 border-b border-border px-2 py-2 sm:px-4" data-testid="search-filters">
+            {isMobile ? (
+              <div className="flex items-center gap-2">
+                <SearchFilterSheetTrigger activeCount={activeFilterCount} onClick={() => setSheetOpen(true)} />
+                <div className="ml-auto">
+                  <SearchSortMenu value={sort} onChange={handleSortChange} />
+                </div>
+              </div>
+            ) : (
+              <SearchFilterBar
+                filters={activeFilters}
+                onChange={handleFiltersChange}
+                sort={sort}
+                onSortChange={handleSortChange}
+                data={filterData}
+              />
+            )}
+            <SearchFilterChips
+              filters={activeFilters}
+              lookups={filterLookups}
+              onChange={handleFiltersChange}
+              onClearAll={handleClearAllFilters}
+            />
+          </div>
+        ) : null}
+
         {COMPANY_SEARCH_SCOPES.map((scopeValue) => (
           <TabsContent
             key={scopeValue}
@@ -503,6 +686,10 @@ export function Search() {
                 onRecentClick={handleRecentClick}
                 subgroups={subgroups}
                 totalResults={totalResults}
+                allMatchTotal={allMatchTotal}
+                activeFilterCount={activeFilterCount}
+                sortLabel={SORT_LABELS[sort]}
+                zeroResultsSlot={zeroResultsSlot}
                 isFetching={isFetching && !!data}
                 agentsById={agentsById}
               />
@@ -510,6 +697,20 @@ export function Search() {
           </TabsContent>
         ))}
       </Tabs>
+
+      {isMobile ? (
+        <SearchFilterSheet
+          open={sheetOpen}
+          onOpenChange={setSheetOpen}
+          filters={activeFilters}
+          onApply={handleFiltersChange}
+          onDraftChange={setDraftSheetFilters}
+          previewTotal={previewTotal}
+          data={filterData}
+          sort={sort}
+          onSortChange={handleSortChange}
+        />
+      ) : null}
     </div>
   );
 }
@@ -531,6 +732,10 @@ interface SearchTabContentProps {
   onRecentClick: (query: string) => void;
   subgroups: Array<{ key: SubGroupKey; results: CompanySearchResult[] }>;
   totalResults: number;
+  allMatchTotal: number;
+  activeFilterCount: number;
+  sortLabel: string;
+  zeroResultsSlot: ReactNode;
   isFetching: boolean;
   agentsById: ReadonlyMap<string, Pick<Agent, "id" | "name">>;
 }
@@ -552,6 +757,10 @@ function SearchTabContent({
   onRecentClick,
   subgroups,
   totalResults,
+  allMatchTotal,
+  activeFilterCount,
+  sortLabel,
+  zeroResultsSlot,
   isFetching,
   agentsById,
 }: SearchTabContentProps) {
@@ -650,6 +859,9 @@ function SearchTabContent({
   }
 
   if (isEmpty) {
+    // Filters emptied the page → recovery UI (screen 4). Plain zero-results keeps
+    // the tips card below.
+    if (zeroResultsSlot) return zeroResultsSlot;
     return (
       <div className="mx-auto flex w-full max-w-xl flex-col items-center justify-center gap-3 px-4 py-12 text-center">
         <FileQuestion className="h-10 w-10 text-muted-foreground" aria-hidden />
@@ -689,7 +901,15 @@ function SearchTabContent({
     <div className="flex w-full max-w-(--sz-960px) flex-col px-2 sm:px-4" data-testid="search-results">
       <div className="flex items-center justify-between py-2 text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
         <span>
-          {totalResults === 1 ? "1 result" : `${totalResults} results`} · sorted by relevance
+          {allMatchTotal > totalResults
+            ? `${totalResults} of ${allMatchTotal} results`
+            : totalResults === 1
+              ? "1 result"
+              : `${totalResults} results`}
+          {` · sorted by ${sortLabel}`}
+          {activeFilterCount > 0
+            ? ` · ${activeFilterCount} ${activeFilterCount === 1 ? "filter" : "filters"} active`
+            : ""}
         </span>
         {isFetching ? <span aria-live="polite" className="normal-case tracking-normal">Updating…</span> : null}
       </div>
