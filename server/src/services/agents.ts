@@ -176,6 +176,9 @@ function configPatchFromApprovalPayload(payload: Record<string, unknown>) {
   if (Object.prototype.hasOwnProperty.call(payload, "metadata")) {
     patch.metadata = isPlainRecord(payload.metadata) ? payload.metadata : null;
   }
+  if (isPlainRecord(payload.permissions)) {
+    patch.permissions = payload.permissions;
+  }
   return patch;
 }
 
@@ -781,6 +784,12 @@ export function agentService(db: Db) {
             existing.companyId,
             patch.adapterConfig,
             { adapterType: (patch.adapterType ?? existing.adapterType) as string },
+          );
+        }
+        if (patch.permissions !== undefined) {
+          patch.permissions = normalizeAgentPermissions(
+            patch.permissions,
+            (patch.role ?? existing.role) as string,
           );
         }
         const updated = await tx

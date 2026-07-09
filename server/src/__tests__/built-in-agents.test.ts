@@ -511,6 +511,11 @@ describeEmbeddedPostgres("built-in agents", () => {
 
   it("preserves new-agent approval gates during automatic Reflection Coach provisioning", async () => {
     const companyId = await seedCompany({ requireApproval: true });
+    const mutationPolicy = {
+      requiresDisplayedDiff: true,
+      requiresAcceptedTaskInteraction: true,
+      applyInSeparateFollowUpRun: true,
+    };
 
     const result = await reconcileBuiltInAgentsOnStartup(db);
 
@@ -526,6 +531,9 @@ describeEmbeddedPostgres("built-in agents", () => {
         name: "Reflection Coach",
         status: "pending_approval",
         budgetMonthlyCents: 0,
+        permissions: {
+          builtInMutationPolicy: mutationPolicy,
+        },
       },
     });
     expect(state.resources.map((resource) => resource.stockStatus)).toEqual(["missing", "missing", "missing"]);
@@ -538,6 +546,18 @@ describeEmbeddedPostgres("built-in agents", () => {
         agentId: state.agentId,
         sourceBuiltInAgentKey: "reflection-coach",
         featureKeys: ["reflection-coach"],
+        permissions: expect.objectContaining({
+          builtInMutationPolicy: mutationPolicy,
+        }),
+      },
+    });
+
+    await approvalService(db).approve(approval.id, "board-user", "Approved Reflection Coach");
+    await expect(builtInAgentService(db).get(companyId, "reflection-coach")).resolves.toMatchObject({
+      agent: {
+        permissions: {
+          builtInMutationPolicy: mutationPolicy,
+        },
       },
     });
 

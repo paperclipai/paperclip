@@ -1416,7 +1416,7 @@ export function builtInAgentService(db: Db) {
       status: "pending_approval",
       metadata: builtInMetadata(definition),
       runtimeConfig: {},
-      permissions: {},
+      permissions: definition.defaultPermissions ?? {},
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     }, { allowBuiltInAgentMetadata: true }) as Agent;
@@ -1436,6 +1436,7 @@ export function builtInAgentService(db: Db) {
         adapterType: pending.adapterType,
         adapterConfig: pending.adapterConfig,
         runtimeConfig: pending.runtimeConfig,
+        permissions: pending.permissions,
         budgetMonthlyCents: pending.budgetMonthlyCents,
         metadata: pending.metadata,
         agentId: pending.id,
