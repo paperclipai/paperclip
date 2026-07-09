@@ -284,17 +284,20 @@ export function Agents() {
       <EntityRow
         key={agent.id}
         title={agent.name}
-        // Fixed (truncating) title width so the `meta` group starts at a
+        // Fixed (truncating) title width at xl so the `meta` group starts at a
         // constant x on every row — that's what makes the model + timestamp
-        // columns line up vertically. Agent names vary in width, so
-        // a content-sized title (`min-w-(--sz-7rem)`) shifted meta's start per row.
-        titleClassName="w-56"
+        // columns line up vertically. Below xl the meta columns are hidden, so
+        // the title flexes instead: a fixed width there let the shrink-0
+        // trailing actions squeeze the name to zero width on mobile.
+        titleClassName="flex-1 xl:flex-none xl:w-56"
+        titleTextClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
+        subtitleClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
         className={cn(
           "group",
           agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
-          resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "text-foreground/55" : "",
+          resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "sm:text-foreground/55" : "",
         )}
         leading={hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
@@ -310,19 +313,9 @@ export function Agents() {
             />
           </div>
         }
+        metaSpacerClassName="hidden xl:block"
         trailing={
           <div className="flex items-center gap-3">
-            <span className="sm:hidden">
-              {liveRunByAgent.has(agent.id) ? (
-                <LiveRunIndicator
-                  agentRef={agentRouteRef(agent)}
-                  runId={liveRunByAgent.get(agent.id)!.runId}
-                  liveCount={liveRunByAgent.get(agent.id)!.liveCount}
-                />
-              ) : (
-                <AgentStatusBadge status={agent.status} />
-              )}
-            </span>
             <div className="hidden sm:flex items-center gap-3">
               {liveRunByAgent.has(agent.id) && (
                 <LiveRunIndicator
@@ -334,20 +327,33 @@ export function Agents() {
               <span className="w-20 flex justify-end">
                 <AgentStatusBadge status={agent.status} />
               </span>
-            </div>
-            {/* Row actions mirror the agent detail page; stop the click
-                from bubbling to the row link so buttons don't navigate. */}
-            <div
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-              }}
-            >
-              <AgentActionButtons
-                agent={agent}
-                companyId={selectedCompanyId}
-                runLabel="Run Heartbeat"
-                showStatus={false}
+              {/* Row actions mirror the agent detail page; stop the click
+                  from bubbling to the row link so buttons don't navigate.
+                  Hidden on mobile so the agent name keeps room to render. */}
+              <div
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+              >
+                <AgentActionButtons
+                  agent={agent}
+                  companyId={selectedCompanyId}
+                  runLabel="Run Heartbeat"
+                  showStatus={false}
+                />
+              </div>
+              <StarToggle
+                size="row"
+                starred={agentStarred}
+                pending={agentStarPending}
+                resourceName={agent.name}
+                onToggle={(next) => membershipMutation.mutate({
+                  resourceType: "agent",
+                  resourceId: agent.id,
+                  resourceName: agent.name,
+                  starred: next,
+                })}
               />
             </div>
             <MembershipAction
@@ -366,18 +372,6 @@ export function Agents() {
                 resourceId: agent.id,
                 resourceName: agent.name,
                 state: "left",
-              })}
-            />
-            <StarToggle
-              size="row"
-              starred={agentStarred}
-              pending={agentStarPending}
-              resourceName={agent.name}
-              onToggle={(next) => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: agent.id,
-                resourceName: agent.name,
-                starred: next,
               })}
             />
           </div>
@@ -542,7 +536,7 @@ function OrgTreeNode({
         className={cn(
           "group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit",
           agent?.pausedAt && tab !== "paused" && "opacity-50",
-          membershipState === "left" && "text-foreground/55",
+          membershipState === "left" && "sm:text-foreground/55",
         )}
       >
         {hasInvalidOrgChain ? (
@@ -550,7 +544,9 @@ function OrgTreeNode({
         ) : (
           <AgentStatusCapsule status={node.status} />
         )}
-        <div className="flex-1 min-w-(--sz-7rem)">
+        {/* min-w-0 + truncate so deep indentation on narrow screens shortens
+            the name with an ellipsis instead of overflowing the row. */}
+        <div className="flex-1 min-w-0 truncate">
           <span className="text-sm font-medium">{node.name}</span>
           <span className="text-xs text-muted-foreground ml-2">
             {roleLabels[node.role] ?? node.role}
@@ -612,18 +608,20 @@ function OrgTreeNode({
               state: "left",
             })}
           />
-          <StarToggle
-            size="row"
-            starred={starred}
-            pending={starPending}
-            resourceName={node.name}
-            onToggle={(next) => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: node.id,
-              resourceName: node.name,
-              starred: next,
-            })}
-          />
+          <div className="hidden sm:flex items-center gap-3">
+            <StarToggle
+              size="row"
+              starred={starred}
+              pending={starPending}
+              resourceName={node.name}
+              onToggle={(next) => membershipMutation.mutate({
+                resourceType: "agent",
+                resourceId: node.id,
+                resourceName: node.name,
+                starred: next,
+              })}
+            />
+          </div>
         </div>
       </Link>
       {node.reports && node.reports.length > 0 && (

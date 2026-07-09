@@ -13,12 +13,15 @@ interface EntityRowProps {
    * `trailing`, so meta sits next to the name while trailing stays pinned right.
    */
   meta?: ReactNode;
+  metaSpacerClassName?: string;
   trailing?: ReactNode;
   selected?: boolean;
   to?: string;
   onClick?: () => void;
   className?: string;
   titleClassName?: string;
+  titleTextClassName?: string;
+  subtitleClassName?: string;
   reserveSubtitleSpace?: boolean;
 }
 
@@ -28,12 +31,15 @@ export function EntityRow({
   title,
   subtitle,
   meta,
+  metaSpacerClassName,
   trailing,
   selected,
   to,
   onClick,
   className,
   titleClassName,
+  titleTextClassName,
+  subtitleClassName,
   reserveSubtitleSpace,
 }: EntityRowProps) {
   const isClickable = !!(to || onClick);
@@ -54,11 +60,18 @@ export function EntityRow({
               {identifier}
             </span>
           )}
-          <span className="truncate" title={title}>{title}</span>
+          <span className={cn(!titleTextClassName && "truncate", titleTextClassName)} title={title}>
+            {title}
+          </span>
         </div>
         {(subtitle || reserveSubtitleSpace) && (
           <p
-            className={cn("text-xs text-muted-foreground truncate mt-0.5 min-h-4", !subtitle && "invisible")}
+            className={cn(
+              "text-xs text-muted-foreground mt-0.5 min-h-4",
+              !subtitleClassName && "truncate",
+              subtitleClassName,
+              !subtitle && "invisible",
+            )}
             aria-hidden={!subtitle}
           >
             {subtitle}
@@ -66,7 +79,7 @@ export function EntityRow({
         )}
       </div>
       {meta && <div className="flex items-center gap-2 shrink-0">{meta}</div>}
-      {meta && <div className="flex-1" />}
+      {meta && <div className={cn("flex-1", metaSpacerClassName)} />}
       {trailing && <div className="flex items-center gap-2 shrink-0">{trailing}</div>}
     </>
   );

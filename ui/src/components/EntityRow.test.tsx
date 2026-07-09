@@ -42,6 +42,19 @@ describe("EntityRow", () => {
     expect(markup).not.toContain("min-w-0 flex-1");
   });
 
+  it("lets callers make the meta spacer responsive", () => {
+    const markup = renderToStaticMarkup(
+      <EntityRow
+        title="Alpha"
+        meta={<span data-testid="meta-cell">gpt-5.4</span>}
+        trailing={<span data-testid="trailing-cell">badge</span>}
+        metaSpacerClassName="hidden xl:block"
+      />,
+    );
+
+    expect(markup).toContain('class="flex-1 hidden xl:block"');
+  });
+
   it("keeps the title flex-growing when no meta is provided", () => {
     const markup = renderToStaticMarkup(<EntityRow title="Alpha" />);
     expect(markup).toContain("min-w-0 flex-1");
