@@ -280,6 +280,9 @@ describe("GET /health", () => {
       deploymentExposure: "public",
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
+      features: {
+        authDisableSignUp: false,
+      },
       databaseBackup: {
         enabled: true,
         status: "warning",
@@ -336,6 +339,9 @@ describe("GET /health", () => {
       deploymentExposure: "public",
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
+      features: {
+        authDisableSignUp: false,
+      },
     });
     expect(res.body.serverInfo).toBeUndefined();
   });
@@ -373,6 +379,9 @@ describe("GET /health", () => {
       deploymentExposure: "public",
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
+      features: {
+        authDisableSignUp: false,
+      },
     });
     expect(res.body.serverInfo).toBeUndefined();
   });
@@ -417,6 +426,7 @@ describe("GET /health", () => {
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
       features: {
+        authDisableSignUp: false,
         companyDeletionEnabled: false,
       },
       serverInfo: testServerInfo,
