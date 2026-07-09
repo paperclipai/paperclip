@@ -199,6 +199,36 @@ function readEnvironmentSandboxProvider(environment: Environment): string | null
     : null;
 }
 
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readProbeMetadata(probe: EnvironmentProbeResult): Record<string, unknown> {
+  const details = readRecord(probe.details);
+  return readRecord(details?.metadata) ?? {};
+}
+
+function readStringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function sandboxProbeLifecycleNote(probe: EnvironmentProbeResult): string | null {
+  if (probe.driver !== "sandbox") return null;
+  const metadata = readProbeMetadata(probe);
+  const provider = readStringValue(metadata.provider) ?? readStringValue(readRecord(probe.details)?.provider) ?? "sandbox";
+  const sandboxName = readStringValue(metadata.sandboxName);
+  const sandboxId = readStringValue(metadata.sandboxId);
+  const sandboxLabel = sandboxName && sandboxId
+    ? `${sandboxName} (${sandboxId})`
+    : sandboxName ?? sandboxId;
+  const base = sandboxLabel
+    ? `Verified temporary ${provider} sandbox ${sandboxLabel}.`
+    : `Verified a temporary ${provider} sandbox.`;
+  return `${base} Test probes clean up the validation sandbox after the check, so it may not remain visible in the provider dashboard.`;
+}
+
 function formatDateTime(value: string | Date | null | undefined): string | null {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -1150,7 +1180,7 @@ export function CompanyEnvironments() {
   });
 
   const environmentProbeMutation = useMutation({
-    mutationFn: async (environmentId: string) => await environmentsApi.probe(environmentId),
+    mutationFn: async (environmentId: string) => await environmentsApi.probe(environmentId, selectedCompanyId),
     onMutate: (environmentId) => {
       setTestingEnvironmentId(environmentId);
     },
@@ -1409,6 +1439,7 @@ export function CompanyEnvironments() {
           </div>
           {savedEnvironments.map((environment) => {
             const probe = probeResults[environment.id] ?? null;
+            const sandboxLifecycleNote = probe ? sandboxProbeLifecycleNote(probe) : null;
             const isEditing = editingEnvironmentId === environment.id;
             const sandboxProvider = readEnvironmentSandboxProvider(environment);
             const sandboxProviderCapability = sandboxProvider
@@ -1478,6 +1509,9 @@ export function CompanyEnvironments() {
                     }
                   >
                     <div className="font-medium">{probe.summary}</div>
+                    {sandboxLifecycleNote ? (
+                      <div className="mt-1 text-muted-foreground">{sandboxLifecycleNote}</div>
+                    ) : null}
                     {probe.details?.error && typeof probe.details.error === "string" ? (
                       <div className="mt-1 font-mono text-(length:--text-micro)">{probe.details.error}</div>
                     ) : null}

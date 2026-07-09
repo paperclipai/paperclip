@@ -65,7 +65,10 @@ export const environmentsApi = {
     config?: Record<string, unknown>;
     metadata?: Record<string, unknown> | null;
   }) => api.patch<Environment>(`/environments/${environmentId}`, body),
-  probe: (environmentId: string) => api.post<EnvironmentProbeResult>(`/environments/${environmentId}/probe`, {}),
+  probe: (environmentId: string, companyId?: string | null) => {
+    const query = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
+    return api.post<EnvironmentProbeResult>(`/environments/${environmentId}/probe${query}`, {});
+  },
   probeConfig: (companyId: string, body: {
     name?: string;
     driver: "local" | "ssh" | "sandbox" | "plugin";

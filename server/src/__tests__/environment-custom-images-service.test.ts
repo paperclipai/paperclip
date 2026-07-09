@@ -419,6 +419,46 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     })).rejects.toThrow("Setup template must be the active template");
   });
 
+  it("turns missing provider template setup failures into conflicts", async () => {
+    const { environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    workerManager.call.mockImplementation(async (_pluginId, method) => {
+      if (method === "environmentStartInteractiveSetup") {
+        throw new Error("Snapshot not found");
+      }
+      throw new Error(`Unexpected plugin call: ${method}`);
+    });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+    const [template] = await db.insert(environmentCustomImageTemplates).values({
+      environmentId,
+      provider: "fake-plugin",
+      templateKind: "snapshot",
+      templateRef: "snapshot-missing",
+      status: "active",
+    }).returning();
+
+    await expect(service.startSetupSession({
+      environmentId,
+      templateId: template!.id,
+      actor: { userId: "user-1" },
+    })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("customImage template no longer exists"),
+    });
+
+    const [session] = await db
+      .select({
+        status: environmentCustomImageSetupSessions.status,
+        failureReason: environmentCustomImageSetupSessions.failureReason,
+      })
+      .from(environmentCustomImageSetupSessions)
+      .where(eq(environmentCustomImageSetupSessions.templateId, template!.id));
+    expect(session).toEqual({
+      status: "failed",
+      failureReason: "Selected provider template is missing.",
+    });
+  });
+
   it("applies the active template regardless of base-config changes and falls back when none exists", async () => {
     const { companyId, environmentId } = await seed();
     const environment = await db.select().from(environments).where(eq(environments.id, environmentId)).then((rows) => rows[0]!);

@@ -185,6 +185,24 @@ function isActiveSetupStatus(status: EnvironmentCustomImageSetupSessionStatus): 
   return (ACTIVE_SETUP_STATUSES as readonly string[]).includes(status);
 }
 
+function providerErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isProviderMissingTemplateError(error: unknown): boolean {
+  const message = providerErrorMessage(error).toLowerCase();
+  return (
+    (message.includes("snapshot") || message.includes("template") || message.includes("image"))
+    && (message.includes("not found") || message.includes("missing"))
+  );
+}
+
+function missingProviderTemplateConflict() {
+  return conflict(
+    "The selected environment customImage template no longer exists in the sandbox provider. Disable this custom image or roll back to a previous template, then start image setup again.",
+  );
+}
+
 function templateConfigBindingFromDriver(input: {
   templateRefKind?: string | null | undefined;
   templateConfigBinding?: unknown;
@@ -700,11 +718,17 @@ export function environmentCustomImageService(
           connectionPayload: providerSession.connectionPayload ?? null,
         };
       } catch (error) {
+        const failureReason = selectedTemplate && isProviderMissingTemplateError(error)
+          ? "Selected provider template is missing."
+          : providerErrorMessage(error);
         await markSessionStatus({
           sessionId,
           status: "failed",
-          failureReason: error instanceof Error ? error.message : String(error),
+          failureReason,
         });
+        if (selectedTemplate && isProviderMissingTemplateError(error)) {
+          throw missingProviderTemplateConflict();
+        }
         throw error;
       }
     },

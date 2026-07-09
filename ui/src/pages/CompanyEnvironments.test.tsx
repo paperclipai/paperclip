@@ -485,7 +485,50 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(buttonsAfter[0].disabled).toBe(true);
     expect(buttonsAfter[1].textContent?.trim()).toBe("Test provider");
     expect(buttonsAfter[1].disabled).toBe(false);
-    expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-1");
+    expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
+  });
+
+  it("explains that successful sandbox provider tests use a temporary sandbox", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.probe.mockResolvedValue({
+      ok: true,
+      driver: "sandbox",
+      summary: "Connected to Daytona sandbox paperclip-probe.",
+      details: {
+        provider: "daytona",
+        diagnostics: [],
+        metadata: {
+          provider: "daytona",
+          sandboxId: "473167E9",
+          sandboxName: "paperclip-probe",
+        },
+      },
+    });
+
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanyEnvironments />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    await act(async () => {
+      testProviderButtons(container)[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
+    expect(container.textContent).toContain("Verified temporary daytona sandbox paperclip-probe (473167E9).");
+    expect(container.textContent).toContain("Test probes clean up the validation sandbox after the check");
   });
 
   it("keeps the second environment's testing state when an earlier probe settles", async () => {
