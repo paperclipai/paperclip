@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Stable public API for Paperclip plugins — worker-side context and UI bridge hooks",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://docs.paperclip.ing",
   "bugs": {
     "url": "https://github.com/paperclipai/paperclip/issues"
   },
