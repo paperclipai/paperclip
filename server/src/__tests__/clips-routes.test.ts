@@ -168,6 +168,59 @@ describe("clip routes", () => {
     vi.clearAllMocks();
   });
 
+  it("normalizes public publish moderation and trust states before persistence", async () => {
+    const companyId = "11111111-1111-4111-8111-111111111111";
+    const clipId = "22222222-2222-4222-8222-222222222222";
+    const revisionId = "33333333-3333-4333-8333-333333333333";
+    mockClipService.publish.mockResolvedValue({
+      clip: {
+        id: clipId,
+        slug: "support-triage",
+        visibility: "public",
+        status: "pending_review",
+      },
+      revision: {
+        id: revisionId,
+        revisionNumber: 1,
+      },
+      creatorProfile: {
+        id: "44444444-4444-4444-8444-444444444444",
+      },
+    });
+
+    const res = await request(createApp())
+      .post(`/api/companies/${companyId}/clips/publish`)
+      .send({
+        creatorProfile: {
+          handle: "support-team",
+          displayName: "Support Team",
+        },
+        slug: "support-triage",
+        type: "bundle",
+        title: "Support Triage",
+        summary: "Routes support tickets.",
+        visibility: "public",
+        status: "published",
+        revision: {
+          manifestChecksum: HASH,
+          artifactChecksum: HASH,
+          manifestPayload: { ok: true },
+          securityReviewState: "security_reviewed",
+          verificationState: "passed",
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockClipService.publish).toHaveBeenCalledWith(companyId, expect.objectContaining({
+      visibility: "public",
+      status: "pending_review",
+      revision: expect.objectContaining({
+        securityReviewState: "unreviewed",
+        verificationState: "not_run",
+      }),
+    }));
+  });
+
   it("rejects malformed companyId path params before share-preview database lookups", async () => {
     const res = await request(createApp())
       .post("/api/companies/random-company-id/clips/share-preview")

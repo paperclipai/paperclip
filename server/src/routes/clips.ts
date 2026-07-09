@@ -510,7 +510,16 @@ export function clipRoutes(db: Db, storage?: StorageService) {
     const companyId = getClipCompanyIdParam(req);
     assertCompanyAccess(req, companyId);
     if (!consumeClipRateLimit(req, res, "publish")) return;
-    const result = await svc.publish(companyId, req.body);
+    const publishInput = {
+      ...req.body,
+      status: req.body.visibility === "public" ? "pending_review" as const : req.body.status,
+      revision: {
+        ...req.body.revision,
+        securityReviewState: "unreviewed" as const,
+        verificationState: "not_run" as const,
+      },
+    };
+    const result = await svc.publish(companyId, publishInput);
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId,
