@@ -34,7 +34,6 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@lexical/link": "0.46.0",
     "@mdxeditor/editor": "^3.55.0",
-    "@paperclipai/adapter-acpx-local": "workspace:*",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-cloud": "workspace:*",

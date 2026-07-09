@@ -12,6 +12,7 @@ import {
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 import { Button } from "./ui/button";
 import { Skeleton } from "./ui/skeleton";
+import { Badge } from "@/components/ui/badge";
 
 // -- Tree types --------------------------------------------------------------
 
@@ -357,14 +358,14 @@ export function FileTree({
           className="flex min-h-9 items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm"
         >
           <div className="flex min-w-0 items-center gap-2">
-            <span
+            <Badge variant="ghost"
               className={cn(
-                "inline-flex shrink-0 items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap",
+                "px-2.5",
                 statusBadge.error ?? statusBadgeDefault,
               )}
             >
               error
-            </span>
+            </Badge>
             <span className="min-w-0 text-destructive">{error.message}</span>
           </div>
           {error.retry && (
@@ -464,15 +465,15 @@ export function FileTree({
               </span>
             </span>
             {badge && (
-              <span
+              <Badge variant="ghost"
                 className={cn(
-                  "ml-3 shrink-0 rounded-full px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide",
+                  "ml-3 text-(length:--text-nano) uppercase tracking-wide",
                   statusBadge[badge.status] ?? statusBadgeDefault,
                 )}
                 title={badge.tooltip}
               >
                 {badge.label}
-              </span>
+              </Badge>
             )}
             {node.kind === "file" && renderFileExtra?.(node, allChecked)}
             {node.kind === "dir" && (

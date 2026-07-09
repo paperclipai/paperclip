@@ -251,6 +251,12 @@ export function formatJoinRequestInboxLabel(
 
 type NonIssueUnreadState = "visible" | "fading" | "hidden" | null;
 
+// Rows outside SwipeToArchive (non-archivable tabs/sections) still need the
+// hover-follows-selection band that SwipeToArchive's surface normally paints.
+function InboxRowSurface({ selected, children }: { selected: boolean; children: ReactNode }) {
+  return <div className={cn(selected && "rounded-lg bg-accent/50")}>{children}</div>;
+}
+
 export function FailedRunInboxRow({
   run,
   issueById,
@@ -1584,6 +1590,21 @@ export function Inbox() {
   const [archivingNonIssueIds, setArchivingNonIssueIds] = useState<Set<string>>(new Set());
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
   const listRef = useRef<HTMLDivElement>(null);
+  // Keyboard nav scrolls the list, which fires mouseenter on whatever row lands
+  // under the stationary cursor — that must not steal the selection. Hover only
+  // selects after the pointer has physically moved since the last key nav.
+  const pointerMovedSinceKeyNavRef = useRef(true);
+  useEffect(() => {
+    const handlePointerMove = () => {
+      pointerMovedSinceKeyNavRef.current = true;
+    };
+    window.addEventListener("mousemove", handlePointerMove, { passive: true });
+    return () => window.removeEventListener("mousemove", handlePointerMove);
+  }, []);
+  const setSelectedIndexFromPointer = useCallback((idx: number) => {
+    if (!pointerMovedSinceKeyNavRef.current) return;
+    setSelectedIndex(idx);
+  }, []);
 
   const invalidateInboxIssueQueryCaches = () => {
     if (!selectedCompanyId) return;
@@ -1743,10 +1764,33 @@ export function Inbox() {
     return "hidden";
   };
 
-  // Keep selection valid when the list shape changes, but do not auto-select on initial load.
+  // Keep selection on the same logical item when the list shape changes —
+  // rows archived/refreshed above the selection would otherwise shift the
+  // numeric index onto a neighboring row (and Enter would open the wrong
+  // task). Falls back to clamping when the item is gone; never auto-selects
+  // on initial load.
+  const navEntryKey = (entry: NavEntry | undefined): string | null =>
+    !entry
+      ? null
+      : entry.type === "top"
+        ? `top:${entry.itemKey}`
+        : entry.type === "child"
+          ? `child:${entry.issueId}`
+          : `group:${entry.groupKey}`;
+  const selectedNavKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    setSelectedIndex((prev) => resolveInboxSelectionIndex(prev, flatNavItems.length));
-  }, [flatNavItems.length]);
+    setSelectedIndex((prev) => {
+      if (prev < 0) return resolveInboxSelectionIndex(prev, flatNavItems.length);
+      const prevKey = selectedNavKeyRef.current;
+      const keyIndex = prevKey === null
+        ? -1
+        : flatNavItems.findIndex((entry) => navEntryKey(entry) === prevKey);
+      return keyIndex >= 0 ? keyIndex : resolveInboxSelectionIndex(prev, flatNavItems.length);
+    });
+  }, [flatNavItems]);
+  useEffect(() => {
+    selectedNavKeyRef.current = selectedIndex >= 0 ? navEntryKey(flatNavItems[selectedIndex]) : null;
+  }, [flatNavItems, selectedIndex]);
 
   useEffect(() => {
     setUndoableArchiveIssueIds([]);
@@ -1827,10 +1871,9 @@ export function Inbox() {
       const st = kbStateRef.current;
       const act = kbActionsRef.current;
 
-      // Keyboard shortcuts are only active on the "mine" tab
-      if (!st.canArchive) return;
-
-      const undoArchiveAction = resolveInboxUndoArchiveKeyAction({
+      // Navigation works on every tab; archive/undo (and a/y below) stay
+      // scoped to the "mine" tab, the only place items are archivable.
+      const undoArchiveAction = !st.canArchive ? "none" : resolveInboxUndoArchiveKeyAction({
         hasUndoableArchive: st.undoableArchiveIssueIds.length > 0,
         defaultPrevented: e.defaultPrevented,
         key: e.key,
@@ -1865,12 +1908,14 @@ export function Inbox() {
         case "j":
         case "ArrowDown": {
           e.preventDefault();
+          pointerMovedSinceKeyNavRef.current = false;
           setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "next"));
           break;
         }
         case "k":
         case "ArrowUp": {
           e.preventDefault();
+          pointerMovedSinceKeyNavRef.current = false;
           setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "previous"));
           break;
         }
@@ -1885,6 +1930,7 @@ export function Inbox() {
         }
         case "a":
         case "y": {
+          if (!st.canArchive) return;
           if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
           const { issue, item } = resolveNavEntry(st.selectedIndex);
@@ -1903,6 +1949,7 @@ export function Inbox() {
           break;
         }
         case "U": {
+          if (!st.canArchive) return;
           if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
           const { issue, item } = resolveNavEntry(st.selectedIndex);
@@ -1915,6 +1962,7 @@ export function Inbox() {
           break;
         }
         case "r": {
+          if (!st.canArchive) return;
           if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
           const { issue, item } = resolveNavEntry(st.selectedIndex);
@@ -2392,7 +2440,7 @@ export function Inbox() {
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
-            <div ref={listRef} className="overflow-hidden rounded-xl">
+            <div ref={listRef} className="overflow-hidden">
               {(() => {
                 const renderInboxIssue = ({
                   issue,
@@ -2438,13 +2486,15 @@ export function Inbox() {
                     && blockerAttention?.state === "covered"
                   );
                   const rowStatusIcon = (
-                    <StatusIcon status={issue.status} blockerAttention={blockerAttention} />
+                    <StatusIcon status={issue.status} blockerAttention={blockerAttention} size="md" />
                   );
                   return (
                     <IssueRow
                       key={`issue:${issue.id}`}
                       issue={issue}
                       issueLinkState={issueLinkState}
+                      treeGuides={depth}
+                      hideDivider={hasChildren && isExpanded}
                       externalObjectSummary={externalObjectSummaryByIssueId.get(issue.id) ?? null}
                       selected={selected}
                       className={
@@ -2472,7 +2522,6 @@ export function Inbox() {
                               <span className="hidden w-4 shrink-0 sm:block" />
                             )
                           ) : null}
-                          {depth > 0 ? <span className="hidden w-4 shrink-0 sm:block" /> : null}
                           <InboxIssueMetaLeading
                             issue={issue}
                             isLive={isLive}
@@ -2504,7 +2553,7 @@ export function Inbox() {
                             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                           </button>
                         ) : (
-                          <StatusIcon status={issue.status} blockerAttention={blockerAttention} size="lg" />
+                          <StatusIcon status={issue.status} blockerAttention={blockerAttention} size="md" />
                         )
                       }
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
@@ -2582,7 +2631,7 @@ export function Inbox() {
                           if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
                         }}
                         onMouseEnter={() => {
-                          if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
+                          if (groupNavIdx >= 0) setSelectedIndexFromPointer(groupNavIdx);
                         }}
                       >
                         <IssueGroupHeader
@@ -2620,7 +2669,7 @@ export function Inbox() {
                         data-inbox-item
                         className="relative"
                         onClick={() => setSelectedIndex(navIdx)}
-                        onMouseEnter={() => setSelectedIndex(navIdx)}
+                        onMouseEnter={() => setSelectedIndexFromPointer(navIdx)}
                       >
                         {child}
                       </div>
@@ -2676,7 +2725,7 @@ export function Inbox() {
                         >
                           {row}
                         </SwipeToArchive>
-                      ) : row));
+                      ) : <InboxRowSurface selected={isSelected}>{row}</InboxRowSurface>));
                       continue;
                     }
 
@@ -2714,7 +2763,7 @@ export function Inbox() {
                         >
                           {row}
                         </SwipeToArchive>
-                      ) : row));
+                      ) : <InboxRowSurface selected={isSelected}>{row}</InboxRowSurface>));
                       continue;
                     }
 
@@ -2749,7 +2798,7 @@ export function Inbox() {
                         >
                           {row}
                         </SwipeToArchive>
-                      ) : row));
+                      ) : <InboxRowSurface selected={isSelected}>{row}</InboxRowSurface>));
                       continue;
                     }
 
@@ -2792,7 +2841,7 @@ export function Inbox() {
                               if (childNavIdx >= 0) setSelectedIndex(childNavIdx);
                             }}
                             onMouseEnter={() => {
-                              if (childNavIdx >= 0) setSelectedIndex(childNavIdx);
+                              if (childNavIdx >= 0) setSelectedIndexFromPointer(childNavIdx);
                             }}
                           >
                             {canArchiveIssue ? (
@@ -2804,7 +2853,7 @@ export function Inbox() {
                               >
                                 {childRow}
                               </SwipeToArchive>
-                            ) : childRow}
+                            ) : <InboxRowSurface selected={isChildSelected}>{childRow}</InboxRowSurface>}
                           </div>
                         );
 
@@ -2832,7 +2881,7 @@ export function Inbox() {
                       >
                         {parentRow}
                       </SwipeToArchive>
-                    ) : parentRow));
+                    ) : <InboxRowSurface selected={isSelected}>{parentRow}</InboxRowSurface>));
 
                     if (isExpanded) {
                       elements.push(...renderChildIssueRows(childIssues, 1, new Set([issue.id])));

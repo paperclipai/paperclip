@@ -25,6 +25,8 @@ function sentenceCaseStatus(status: string): string {
 /**
  * Generic status badge for runs / goals / approvals (not task status).
  */
+// design-allow(pill-pattern): DECISION-SHEET.md C8 — status badges keep the bespoke WCAG-tuned
+// .status-chip color-mix mechanic and do not wrap the Badge primitive.
 export function StatusBadge({ status }: { status: string }) {
   return (
     <span

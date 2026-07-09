@@ -21,6 +21,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 
 interface ArtifactsPanelProps {
   taskId: string;
@@ -212,14 +213,14 @@ export function ArtifactsPanel({ taskId, isAgentWorking, openDocKey, openDocTitl
                           {wp.type.replace(/_/g, " ")}
                         </span>
                         {showGenerating ? (
-                          <span className="inline-flex items-center gap-1 text-(length:--text-nano) font-medium px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                          <Badge variant="ghost" className="[&>svg]:size-2.5 text-(length:--text-nano) px-1.5 bg-blue-500/10 text-blue-600 dark:text-blue-400">
                             <Loader2 className="h-2.5 w-2.5 animate-spin" />
                             Generating...
-                          </span>
+                          </Badge>
                         ) : (
-                          <span className={cn("text-(length:--text-nano) font-medium px-1.5 py-0.5 rounded-full", badge.className)}>
+                          <Badge variant="ghost" className={cn("text-(length:--text-nano) px-1.5", badge.className)}>
                             {badge.label}
-                          </span>
+                          </Badge>
                         )}
                       </div>
                       {wp.summary && (

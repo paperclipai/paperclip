@@ -14,6 +14,7 @@ import { accessApi, type CurrentBoardAccess } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
@@ -173,6 +174,7 @@ import {
   SlidersHorizontal,
   XCircle,
 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import {
   deriveOriginatingActor,
   getClosedIsolatedExecutionWorkspaceMessage,
@@ -184,6 +186,7 @@ import {
   type Agent,
   type FeedbackVote,
   type Issue,
+  type IssueRecoveryAction,
   type IssueAttachment,
   type IssueComment,
   type IssueWorkProduct,
@@ -290,6 +293,60 @@ export function canBoardResolveRecoveryAction(
   );
   if (!membership) return false;
   return membership.membershipRole !== "viewer" && membership.membershipRole !== null;
+}
+
+/**
+ * Best-effort client mirror of the backend `runtime:manage` gate that the break-glass override
+ * reconcile (`POST /execution-workspaces/:id/reconcile-branch` in `override` mode) actually
+ * enforces. The server re-checks `runtime:manage` for every reconcile and is authoritative, so
+ * this is defense-in-depth: it hides the "reconcile anyway" affordance from viewers rather than
+ * showing a button that always 403s. For human board members `runtime:manage` grants on the
+ * same non-viewer, active-membership condition as recovery resolution (see
+ * `server/src/services/authorization.ts`), so the shape matches; per-permission-key overrides
+ * are not surfaced to the client and remain the server's call.
+ */
+export function canBoardManageRuntime(
+  companyId: string | null | undefined,
+  boardAccess: CurrentBoardAccess | undefined,
+) {
+  if (!companyId || !boardAccess) return false;
+  if (boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin) return true;
+  if (!boardAccess.memberships || boardAccess.memberships.length === 0) {
+    return boardAccess.companyIds.includes(companyId);
+  }
+
+  const membership = boardAccess.memberships.find(
+    (item) => item.companyId === companyId && item.status === "active",
+  );
+  if (!membership) return false;
+  return membership.membershipRole !== "viewer" && membership.membershipRole !== null;
+}
+
+/**
+ * The execution workspace a reconcile action should target. The recovery card is rendered from a
+ * specific `workspace_validation` recovery action whose evidence pins the workspace that diverged;
+ * that workspace — not the page-level `issue.executionWorkspaceId` — is the authoritative target.
+ * The page-level id can drift (e.g. a re-issue rebinds the issue to a new workspace) while the card
+ * still shows the older action, so we prefer the action's evidence and only fall back to the
+ * page-level id when the evidence carries no workspace reference.
+ *
+ * The branch-incoherence failure (the one that renders the reconcile-forward / break-glass actions)
+ * records the workspace under `persistedExecutionWorkspaceId`; the not-reusable failure records it
+ * under `executionWorkspaceId`. We accept either key so both divergence shapes pin correctly.
+ */
+export function readRecoveryReconcileWorkspaceId(
+  action: IssueRecoveryAction | null | undefined,
+): string | null {
+  if (!action || action.kind !== "workspace_validation") return null;
+  const workspaceValidation = asRecord(action.evidence?.workspaceValidation);
+  if (!workspaceValidation) return null;
+  const persisted = workspaceValidation.persistedExecutionWorkspaceId;
+  if (typeof persisted === "string" && persisted.length > 0) return persisted;
+  const executionWorkspaceId = workspaceValidation.executionWorkspaceId;
+  if (typeof executionWorkspaceId === "string" && executionWorkspaceId.length > 0) {
+    return executionWorkspaceId;
+  }
+  return null;
 }
 
 export function shouldScrollIssueDetailToTopOnNavigation(input: {
@@ -667,13 +724,13 @@ function IssueDetailLoadingState({
                 <span className="text-sm font-mono text-muted-foreground shrink-0">{identifier}</span>
               ) : null}
               {headerSeed.originKind === "routine_execution" && headerSeed.originId ? (
-                <span
-                  className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium text-violet-600 dark:text-violet-400 shrink-0"
+                <Badge variant="outline"
+                  className="border-violet-500/30 bg-violet-500/10 text-(length:--text-nano) text-violet-600 dark:text-violet-400"
                   title={`Routine execution from routine ${headerSeed.originId}`}
                 >
                   <Repeat className="h-3 w-3" />
                   Routine
-                </span>
+                </Badge>
               ) : null}
               {headerSeed.projectId ? (
                 <span className="inline-flex items-center gap-1 text-xs text-muted-foreground rounded px-1 -mx-1 py-0.5 min-w-0">
@@ -832,6 +889,7 @@ type IssueDetailChatTabProps = {
   issueWorkMode: IssueWorkMode;
   executionRunId: string | null;
   blockedBy: Issue["blockedBy"];
+  liveIssueIds: ReadonlySet<string>;
   blockerAttention: Issue["blockerAttention"] | null;
   successfulRunHandoff: Issue["successfulRunHandoff"] | null;
   scheduledRetry: Issue["scheduledRetry"] | null;
@@ -839,6 +897,10 @@ type IssueDetailChatTabProps = {
   onResolveRecoveryAction?: (outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome) => void;
   onReissueIsolatedRecoveryAction?: (request: import("../components/IssueRecoveryActionCard").RecoveryReissueRequest) => void;
   reissueIsolatedRecoveryActionPending?: boolean;
+  onReconcileForwardRecoveryAction?: () => void;
+  onBreakGlassOverrideRecoveryAction?: (reason: string) => void;
+  canBreakGlassRecoveryAction?: boolean;
+  reconcileRecoveryActionPending?: boolean;
   canFalsePositiveRecoveryAction?: boolean;
   legacyRecoverySourceIssue?: {
     identifier: string | null;
@@ -911,6 +973,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   issueStatus,
   executionRunId,
   blockedBy,
+  liveIssueIds,
   blockerAttention,
   successfulRunHandoff,
   scheduledRetry,
@@ -918,6 +981,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onResolveRecoveryAction,
   onReissueIsolatedRecoveryAction,
   reissueIsolatedRecoveryActionPending,
+  onReconcileForwardRecoveryAction,
+  onBreakGlassOverrideRecoveryAction,
+  canBreakGlassRecoveryAction,
+  reconcileRecoveryActionPending,
   canFalsePositiveRecoveryAction,
   legacyRecoverySourceIssue,
   comments,
@@ -1130,6 +1197,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         activeRun={resolvedActiveRun}
         issueId={issueId}
         blockedBy={blockedBy ?? []}
+        liveIssueIds={liveIssueIds}
         blockerAttention={blockerAttention}
         successfulRunHandoff={successfulRunHandoff}
         scheduledRetry={scheduledRetry}
@@ -1137,6 +1205,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         onResolveRecoveryAction={onResolveRecoveryAction}
         onReissueIsolatedRecoveryAction={onReissueIsolatedRecoveryAction}
         reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryActionPending}
+        onReconcileForwardRecoveryAction={onReconcileForwardRecoveryAction}
+        onBreakGlassOverrideRecoveryAction={onBreakGlassOverrideRecoveryAction}
+        canBreakGlassRecoveryAction={canBreakGlassRecoveryAction}
+        reconcileRecoveryActionPending={reconcileRecoveryActionPending}
         canFalsePositiveRecoveryAction={canFalsePositiveRecoveryAction}
         legacyRecoverySourceIssue={legacyRecoverySourceIssue ?? null}
         companyId={companyId}
@@ -1699,6 +1771,9 @@ export function IssueDetail() {
     && boardAccess?.companyIds?.includes(selectedCompanyId),
   );
   const canResolveBoardRecoveryAction = canBoardResolveRecoveryAction(selectedCompanyId, boardAccess);
+  // The break-glass override reconcile is `runtime:manage`-gated server-side, not gated on the
+  // recovery-resolution permission — so hide its affordance behind the matching client check.
+  const canManageBoardRuntime = canBoardManageRuntime(selectedCompanyId, boardAccess);
   const { data: feedbackVotes } = useQuery({
     queryKey: queryKeys.issues.feedbackVotes(issueId!),
     queryFn: () => issuesApi.listFeedbackVotes(issueId!),
@@ -3642,6 +3717,83 @@ export function IssueDetail() {
     [reissueIsolatedRecoveryAction.mutateAsync],
   );
 
+  // Actions 1 & 2 (workspace_validation): reconcile the recorded workspace branch to the live one
+  // via the S4 (PAP-1586) op. `forward` is the ancestry-proven safe path (server re-verifies);
+  // `override` is the audited, permission-gated break-glass carrying the operator's reason. Both
+  // resolve the matching recovery action server-side, so the task resumes via the existing flow.
+  const reconcileRecoveryAction = useMutation({
+    // The target workspace id is captured at click time (see the handlers below) and threaded
+    // through as an explicit argument, so the in-flight mutation always reconciles the workspace
+    // the operator saw on the card — never a value re-read from a `issue` snapshot that may have
+    // been refetched to a different `executionWorkspaceId` while the request was pending.
+    mutationFn: async (
+      input:
+        | { workspaceId: string; mode: "forward" }
+        | { workspaceId: string; mode: "override"; reason: string },
+    ) => {
+      const { workspaceId, ...body } = input;
+      return executionWorkspacesApi.reconcile(workspaceId, body);
+    },
+    onSuccess: () => {
+      // Refresh the detail card itself (not just the list collections): a successful reconcile
+      // clears the active recovery action, so the card must re-fetch to stop showing stale actions.
+      invalidateIssueDetail();
+      invalidateIssueCollections();
+      pushToast({
+        title: "Workspace branch reconciled",
+        body: "The recorded branch now matches the live branch; the task will resume.",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Reconcile failed",
+        body: err instanceof Error ? err.message : "Unable to reconcile the workspace branch.",
+        tone: "error",
+      });
+    },
+  });
+  // Bind the workspace id at the moment the operator clicks, from the same render that produced the
+  // visible recovery card, rather than re-reading it inside the async mutation body. The target is
+  // the workspace pinned by the recovery action's evidence — the workspace that actually diverged —
+  // not the page-level `issue.executionWorkspaceId`, which can drift (e.g. a re-issue rebinds the
+  // issue to a new workspace) while the card still shows the older action. Fall back to the
+  // page-level id only when the action carries no workspace reference.
+  const reconcileExecutionWorkspaceId =
+    readRecoveryReconcileWorkspaceId(issue?.activeRecoveryAction) ?? issue?.executionWorkspaceId ?? null;
+  const handleReconcileForwardRecoveryAction = useCallback(() => {
+    if (!reconcileExecutionWorkspaceId) {
+      pushToast({
+        title: "Reconcile failed",
+        body: "This task has no execution workspace to reconcile.",
+        tone: "error",
+      });
+      return;
+    }
+    void reconcileRecoveryAction.mutateAsync({
+      workspaceId: reconcileExecutionWorkspaceId,
+      mode: "forward",
+    });
+  }, [reconcileExecutionWorkspaceId, reconcileRecoveryAction.mutateAsync, pushToast]);
+  const handleBreakGlassOverrideRecoveryAction = useCallback(
+    (reason: string) => {
+      if (!reconcileExecutionWorkspaceId) {
+        pushToast({
+          title: "Reconcile failed",
+          body: "This task has no execution workspace to reconcile.",
+          tone: "error",
+        });
+        return;
+      }
+      void reconcileRecoveryAction.mutateAsync({
+        workspaceId: reconcileExecutionWorkspaceId,
+        mode: "override",
+        reason,
+      });
+    },
+    [reconcileExecutionWorkspaceId, reconcileRecoveryAction.mutateAsync, pushToast],
+  );
+
   const treePreviewAffectedIssues = useMemo(
     () => (treeControlPreview?.issues ?? []).filter((candidate) => !candidate.skipped),
     [treeControlPreview],
@@ -3968,13 +4120,13 @@ export function IssueDetail() {
           <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
 
           {hasLiveRuns && (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/10 border border-blue-500/30 px-2 py-0.5 text-(length:--text-nano) font-medium text-blue-600 dark:text-blue-400 shrink-0">
+            <Badge variant="outline" className="gap-1.5 bg-blue-500/10 border-blue-500/30 text-(length:--text-nano) text-blue-600 dark:text-blue-400">
               <span className="relative flex h-1.5 w-1.5">
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-blue-500" />
               </span>
               Live
-            </span>
+            </Badge>
           )}
 
           {issue.originKind === "routine_execution" && issue.originId && (
@@ -3993,48 +4145,48 @@ export function IssueDetail() {
           ) : null}
 
           {issue.originKind === "issue_productivity_review" ? (
-            <span
-              className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300 shrink-0"
+            <Badge variant="outline"
+              className="border-amber-500/40 bg-amber-500/10 text-(length:--text-nano) text-amber-700 dark:text-amber-300"
               title="This task is a productivity review."
             >
               <Eye className="h-3 w-3" />
               Productivity review
-            </span>
+            </Badge>
           ) : null}
 
           {issue.originKind === "task_watchdog" ? (
-            <span
-              className="inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium text-sky-700 dark:text-sky-300 shrink-0"
+            <Badge variant="outline"
+              className="border-sky-500/40 bg-sky-500/10 text-(length:--text-nano) text-sky-700 dark:text-sky-300"
               title="This task is a generated watchdog task. It verifies whether stopped work in the watched task tree is legitimate."
             >
               <ScanEye className="h-3 w-3" />
               Watchdog
-            </span>
+            </Badge>
           ) : null}
 
           {issue.workMode === "ask" || issue.workMode === "planning" ? (() => {
             const workModeMeta = workModeMetaFor(issue.workMode);
             const WorkModeIcon = workModeMeta.icon;
             return (
-              <span
-                className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-nano) font-medium shrink-0", workModeMeta.classes.badge)}
+              <Badge variant="outline"
+                className={cn("text-(length:--text-nano)", workModeMeta.classes.badge)}
                 title={`This task is in ${workModeMeta.label.toLowerCase()}.`}
               >
                 <WorkModeIcon className="h-3 w-3" aria-hidden />
                 {workModeMeta.label}
-              </span>
+              </Badge>
             );
           })() : null}
 
           {hasAssignedBacklogBlocker(issue.blockedBy) ? (
-            <span
+            <Badge variant="outline"
               data-testid="issue-detail-parked-blocker"
-              className="inline-flex items-center gap-1 rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300 shrink-0"
+              className="border-amber-500/60 bg-amber-500/15 text-(length:--text-nano) text-amber-700 dark:text-amber-300"
               title="Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee."
             >
               <Flag className="h-3 w-3" />
               Blocked by parked work
-            </span>
+            </Badge>
           ) : null}
 
           {issue.projectId ? (
@@ -4062,9 +4214,9 @@ export function IssueDetail() {
           {(issue.labels ?? []).length > 0 && (
             <div className="hidden sm:flex items-center gap-1">
               {(issue.labels ?? []).slice(0, 4).map((label) => (
-                <span
+                <Badge variant="outline"
                   key={label.id}
-                  className="inline-flex items-center rounded-full border px-2 py-0.5 text-(length:--text-nano) font-medium"
+                  className="text-(length:--text-nano)"
                   style={{
                     borderColor: label.color,
                     color: pickTextColorForPillBg(label.color, 0.12),
@@ -4072,7 +4224,7 @@ export function IssueDetail() {
                   }}
                 >
                   {label.name}
-                </span>
+                </Badge>
               ))}
               {(issue.labels ?? []).length > 4 && (
                 <span className="text-(length:--text-nano) text-muted-foreground">+{(issue.labels ?? []).length - 4}</span>
@@ -4528,6 +4680,7 @@ export function IssueDetail() {
               issueWorkMode={issue.workMode ?? "standard"}
               executionRunId={issue.executionRunId ?? null}
               blockedBy={issue.blockedBy ?? []}
+              liveIssueIds={liveIssueIds}
               blockerAttention={issue.blockerAttention ?? null}
               successfulRunHandoff={issue.successfulRunHandoff ?? null}
               scheduledRetry={issue.scheduledRetry ?? null}
@@ -4535,6 +4688,10 @@ export function IssueDetail() {
               onResolveRecoveryAction={handleResolveRecoveryAction}
               onReissueIsolatedRecoveryAction={handleReissueIsolatedRecoveryAction}
               reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryAction.isPending}
+              onReconcileForwardRecoveryAction={handleReconcileForwardRecoveryAction}
+              onBreakGlassOverrideRecoveryAction={handleBreakGlassOverrideRecoveryAction}
+              canBreakGlassRecoveryAction={canManageBoardRuntime}
+              reconcileRecoveryActionPending={reconcileRecoveryAction.isPending}
               canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}
               legacyRecoverySourceIssue={legacyRecoverySourceIssue}
               comments={threadComments}

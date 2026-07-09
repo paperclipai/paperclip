@@ -36,6 +36,7 @@ import { Check, Copy, Diff, Download, FilePenLine, FileText, Lock, MoreHorizonta
 import { DocumentDiffModal } from "./DocumentDiffModal";
 import { DocumentFrameHeader } from "./DocumentFrameHeader";
 import { SourceTrustBadge } from "./SourceTrustBadge";
+import { Badge } from "@/components/ui/badge";
 
 type DraftState = {
   key: string;
@@ -881,9 +882,9 @@ export function IssueDocumentsSection({
         >
           <div className="mb-2 flex items-center gap-2">
             <FileText className="h-4 w-4 text-amber-600" />
-            <span className="rounded-full border border-amber-500/30 px-2 py-0.5 font-mono text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-700 dark:text-amber-300">
+            <Badge variant="outline" className="border-amber-500/30 font-mono text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-700 dark:text-amber-300">
               PLAN
-            </span>
+            </Badge>
           </div>
           <div className={documentBodyPaddingClassName}>
             {renderFoldableBody(issue.legacyPlanDocument.body, documentBodyContentClassName, externalReferences)}

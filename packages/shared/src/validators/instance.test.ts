@@ -17,6 +17,12 @@ describe("instance experimental settings validators", () => {
     expect(settings.enableWorkspaceBranchReconcileForward).toBe(false);
   });
 
+  it("defaults the goals sidebar link off", () => {
+    const settings = instanceExperimentalSettingsSchema.parse({});
+
+    expect(settings.enableGoalsSidebarLink).toBe(false);
+  });
+
   it("accepts server info debug view patches", () => {
     expect(
       patchInstanceExperimentalSettingsSchema.parse({
@@ -34,6 +40,16 @@ describe("instance experimental settings validators", () => {
       }),
     ).toEqual({
       enableWorkspaceBranchReconcileForward: true,
+    });
+  });
+
+  it("accepts goals sidebar link patches", () => {
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({
+        enableGoalsSidebarLink: true,
+      }),
+    ).toEqual({
+      enableGoalsSidebarLink: true,
     });
   });
 });

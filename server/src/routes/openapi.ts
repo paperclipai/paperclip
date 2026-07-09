@@ -3709,6 +3709,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/environments/{id}/delete-blast-radius",
+  tags: ["environments"],
+  summary: "Get environment delete blast radius",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/environments/{id}/leases",
   tags: ["environments"],
   summary: "List leases for an environment",
@@ -3743,7 +3752,7 @@ registry.registerPath({
   tags: ["environments"],
   summary: "Delete an environment",
   request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({
@@ -4866,6 +4875,7 @@ for (const route of [
   ["get", "/api/companies/{companyId}/skills/{skillId}/versions/{versionId}", "Get a skill version"],
   ["post", "/api/companies/{companyId}/skills/{skillId}/star", "Star a company skill"],
   ["delete", "/api/companies/{companyId}/skills/{skillId}/star", "Unstar a company skill"],
+  ["get", "/api/companies/{companyId}/skills/{skillId}/fork-precheck", "Preview company skill fork impact"],
   ["post", "/api/companies/{companyId}/skills/{skillId}/fork", "Fork a company skill"],
   ["get", "/api/companies/{companyId}/skills/{skillId}/comments", "List skill comments"],
   ["post", "/api/companies/{companyId}/skills/{skillId}/comments", "Create a skill comment"],

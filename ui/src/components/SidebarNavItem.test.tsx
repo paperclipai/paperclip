@@ -102,6 +102,23 @@ describe("SidebarNavItem", () => {
     expect(link().parentElement?.getAttribute("data-slot")).toBe("tooltip-trigger");
   });
 
+  it("surfaces the trailing status label in the rail aria-label", () => {
+    sidebarState.collapsed = true;
+    render(
+      <SidebarNavItem
+        to="/agents/codexcoder"
+        label="CodexCoder"
+        icon={Inbox}
+        trailing={<span aria-label="Invalid reporting chain" />}
+        trailingLabel="Invalid reporting chain"
+      />,
+    );
+
+    // The trailing warning is hidden in the rail, so its text equivalent must
+    // ride on the link's accessible name.
+    expect(link().getAttribute("aria-label")).toBe("CodexCoder, Invalid reporting chain");
+  });
+
   it("keeps the full presentation while peeking even when collapsed", () => {
     sidebarState.collapsed = true;
     sidebarState.peeking = true;

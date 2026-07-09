@@ -18,6 +18,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
 import { SidebarServerInfo } from "./SidebarServerInfo";
+import { Badge } from "@/components/ui/badge";
 
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
@@ -172,9 +173,9 @@ export function SidebarAccountMenu({
               <div className="min-w-0 flex-1 pt-1">
                 <div className="flex items-center gap-2">
                   <h2 className="truncate text-base font-semibold text-foreground">{displayName}</h2>
-                  <span className="rounded-full bg-accent px-2 py-0.5 text-(length:--text-nano) font-semibold uppercase tracking-wide text-muted-foreground">
+                  <Badge variant="ghost" className="bg-accent text-(length:--text-nano) font-semibold uppercase tracking-wide text-muted-foreground">
                     {accountBadge}
-                  </span>
+                  </Badge>
                 </div>
                 <p className="truncate text-sm text-muted-foreground">{secondaryLabel}</p>
                 {version ? (

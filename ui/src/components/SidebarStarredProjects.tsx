@@ -121,7 +121,8 @@ export function SidebarStarredProjects() {
               if (isMobile) setSidebarOpen(false);
             }}
             className={cn(
-              "flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1.5 pl-8 pointer-coarse:py-1 pr-8 text-(length:--text-compact) font-medium transition-colors",
+              "flex min-w-0 flex-1 items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 pr-8 text-(length:--text-compact) font-medium transition-colors",
+              !rail && "pl-6",
               isActive
                 ? "bg-accent text-foreground"
                 : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
@@ -150,7 +151,7 @@ export function SidebarStarredProjects() {
 
             {!rail && !isMobile ? (
               // Desktop: quiet inline unstar revealed on hover/focus.
-              <span className="absolute right-1 top-1/2 -translate-y-1/2">
+              <span className="absolute right-3 top-1/2 -translate-y-1/2">
                 <StarToggle
                   size="row"
                   quiet
@@ -170,7 +171,7 @@ export function SidebarStarredProjects() {
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    className="absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 opacity-100"
+                    className="absolute right-3 top-1/2 h-6 w-6 -translate-y-1/2 opacity-100"
                     aria-label={`Open actions for ${project.name}`}
                   >
                     <MoreHorizontal className="h-3.5 w-3.5" />

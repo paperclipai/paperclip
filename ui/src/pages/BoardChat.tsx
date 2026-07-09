@@ -796,6 +796,7 @@ export function BoardChat() {
                               setInput(chip.prompt);
                               composerRef.current?.focus();
                             }}
+                            // design-allow(card-pattern): interactive suggestion-pill <button>, not a content card (C5a Run 3)
                             className="rounded-full border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
                           >
                             {chip.label}
@@ -941,6 +942,7 @@ export function BoardChat() {
               type="button"
               onClick={() => scrollToLatest("smooth")}
               aria-label="Jump to latest messages"
+              // design-allow(card-pattern): floating scroll-to-bottom <button>, not a content card (C5a Run 3)
               className="absolute bottom-24 left-1/2 z-20 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-border bg-card text-foreground shadow-md transition-colors duration-150 hover:bg-accent hover:border-muted-foreground/30"
             >
               <ArrowDown className="h-4 w-4" />

@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { cn, relativeTime } from "@/lib/utils";
 import { formatBytes, outputFilename, type IssueOutputItem } from "@/lib/issue-output";
 import { OutputFileTile } from "./OutputFileTile";
+import { Card } from "@/components/ui/card";
 
 interface OutputRowProps {
   item: IssueOutputItem;
@@ -23,7 +24,7 @@ export function OutputRow({ item, creatorName }: OutputRowProps) {
   metaBits.push(relativeTime(item.createdAt));
 
   return (
-    <div className="flex items-center gap-2.5 rounded-md border border-border bg-card p-2">
+    <Card className="flex-row items-center gap-2.5 p-2">
       <OutputFileTile contentType={meta?.contentType} />
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-foreground" title={filename}>
@@ -52,6 +53,6 @@ export function OutputRow({ item, creatorName }: OutputRowProps) {
           </Button>
         </div>
       ) : null}
-    </div>
+    </Card>
   );
 }

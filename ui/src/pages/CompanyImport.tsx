@@ -47,6 +47,7 @@ import {
 } from "../components/FileTree";
 import { readZipArchive } from "../lib/zip";
 import { getPortableFileDataUrl, getPortableFileText, isPortableImageFile } from "../lib/portable-files";
+import { Badge } from "@/components/ui/badge";
 
 // ── Import-specific helpers ───────────────────────────────────────────
 
@@ -150,12 +151,12 @@ function renderImportFileExtra(node: FileTreeNode, checked: boolean, renameMap: 
   // Show rename indicator only on directories (folders), not individual files
   const renamedTo = node.kind === "dir" ? renameMap.get(node.path) : undefined;
   const actionBadge = node.action ? (
-    <span className={cn(
-      "shrink-0 rounded-full border px-2 py-0.5 text-(length:--text-nano) uppercase tracking-wide",
+    <Badge variant="outline" className={cn(
+      "text-(length:--text-nano) uppercase tracking-wide",
       ACTION_COLORS[node.action] ?? ACTION_COLORS.skip,
     )}>
       {checked ? node.action : "skip"}
-    </span>
+    </Badge>
   ) : null;
 
   if (!actionBadge && !renamedTo) return null;
@@ -228,12 +229,12 @@ function ImportPreviewPane({
             )}
           </div>
           {action && (
-            <span className={cn(
-              "shrink-0 rounded-full border px-2 py-0.5 text-xs uppercase tracking-wide",
+            <Badge variant="outline" className={cn(
+              "uppercase tracking-wide",
               actionColor,
             )}>
               {action}
-            </span>
+            </Badge>
           )}
         </div>
       </div>
@@ -445,8 +446,8 @@ function ConflictResolutionList({
                   {isSkipped ? "skipped" : "skip"}
                 </button>
 
-                <span className={cn(
-                  "shrink-0 rounded-full border px-2 py-0.5 text-(length:--text-nano) uppercase tracking-wide",
+                <Badge variant="outline" className={cn(
+                  "text-(length:--text-nano) uppercase tracking-wide",
                   isSkipped
                     ? "text-muted-foreground border-border"
                     : isConfirmed
@@ -454,7 +455,7 @@ function ConflictResolutionList({
                       : "text-amber-500 border-amber-500/30",
                 )}>
                   {item.kind}
-                </span>
+                </Badge>
 
                 <span className={cn(
                   "shrink-0 font-mono text-xs",
@@ -563,12 +564,12 @@ function AdapterPickerList({
             return (
               <div key={agent.slug}>
                 <div className="flex items-center gap-3 px-4 py-2.5 text-sm">
-                  <span className={cn(
-                    "shrink-0 rounded-full border px-2 py-0.5 text-(length:--text-nano) uppercase tracking-wide",
+                  <Badge variant="outline" className={cn(
+                    "text-(length:--text-nano) uppercase tracking-wide",
                     "text-blue-500 border-blue-500/30",
                   )}>
                     agent
-                  </span>
+                  </Badge>
                   <span className="shrink-0 font-mono text-xs text-muted-foreground">
                     {agent.name}
                   </span>

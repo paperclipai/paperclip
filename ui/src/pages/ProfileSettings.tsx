@@ -8,6 +8,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -157,7 +158,7 @@ export function ProfileSettings() {
       ) : null}
 
       <section className="space-y-8">
-        <div className="relative overflow-hidden rounded-(--rad-28) border border-border/70 bg-card shadow-sm">
+        <Card className="block relative overflow-hidden rounded-(--rad-28) border-border/70">
           <div className="absolute inset-x-0 top-0 h-32 bg-(image:--gradient-extract-26)" />
           <div className="absolute inset-0 bg-(image:--gradient-extract-7)" />
           <div className="relative p-6 pt-10">
@@ -225,7 +226,7 @@ export function ProfileSettings() {
               </div>
             </div>
           </div>
-        </div>
+        </Card>
 
         <form
           className="grid gap-6 md:grid-cols-2"

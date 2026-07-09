@@ -27,6 +27,7 @@ import { isVisualAdapterChoice } from "../adapters/metadata";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { useToast } from "../context/ToastContext";
+import { Badge } from "@/components/ui/badge";
 
 /**
  * Adapter types that are suitable for agent creation (excludes internal
@@ -311,9 +312,9 @@ export function NewAgentDialog() {
                     }}
                   >
                     {opt.recommended && (
-                      <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-(length:--text-nano) font-semibold px-1.5 py-0.5 rounded-full leading-none">
+                      <Badge variant="ghost" className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-(length:--text-nano) font-semibold px-1.5 leading-none">
                         Recommended
-                      </span>
+                      </Badge>
                     )}
                     <opt.icon className="h-4 w-4" />
                     <span className="font-medium">{opt.label}</span>

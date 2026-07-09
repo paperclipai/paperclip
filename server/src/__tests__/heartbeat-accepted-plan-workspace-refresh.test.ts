@@ -23,6 +23,7 @@ import {
   issueComments,
   issueDocuments,
   issuePlanDecompositions,
+  issueThreadInteractions,
   issues,
   projects,
   projectWorkspaces,
@@ -34,6 +35,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { issueService } from "../services/issues.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -72,15 +74,31 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+async function runGit(cwd: string, args: string[]) {
+  const result = await execFileAsync("git", args, { cwd });
+  return result.stdout.trim();
+}
+
 async function createGitRepo() {
   const repoRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-accepted-plan-repo-"));
-  await execFileAsync("git", ["init"], { cwd: repoRoot });
-  await execFileAsync("git", ["config", "user.email", "paperclip-test@example.com"], { cwd: repoRoot });
-  await execFileAsync("git", ["config", "user.name", "Paperclip Test"], { cwd: repoRoot });
+  await runGit(repoRoot, ["init"]);
+  await runGit(repoRoot, ["checkout", "-B", "master"]);
+  await runGit(repoRoot, ["config", "user.email", "paperclip-test@example.com"]);
+  await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
   await writeFile(path.join(repoRoot, "README.md"), "accepted plan workspace refresh\n");
-  await execFileAsync("git", ["add", "README.md"], { cwd: repoRoot });
-  await execFileAsync("git", ["commit", "-m", "initial"], { cwd: repoRoot });
+  await runGit(repoRoot, ["add", "README.md"]);
+  await runGit(repoRoot, ["commit", "-m", "initial"]);
   return repoRoot;
+}
+
+async function createGitRepoWithOrigin() {
+  const repoRoot = await createGitRepo();
+  const originRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-accepted-plan-origin-"));
+  await runGit(originRoot, ["init", "--bare"]);
+  await runGit(repoRoot, ["remote", "add", "origin", originRoot]);
+  await runGit(repoRoot, ["push", "-u", "origin", "master"]);
+  await runGit(repoRoot, ["fetch", "origin", "master"]);
+  return { repoRoot, originRoot };
 }
 
 describeEmbeddedPostgres("accepted plan workspace refresh", () => {
@@ -114,6 +132,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       if (root) await rm(root, { recursive: true, force: true }).catch(() => undefined);
     }
     await db.delete(issuePlanDecompositions);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
@@ -196,6 +215,73 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       updatedAt: new Date(),
       ...(args.status === "completed" ? { completedAt: new Date() } : {}),
     });
+  }
+
+  async function seedAcceptedPlanAcceptance(args: {
+    companyId: string;
+    issueId: string;
+    ownerAgentId: string;
+  }) {
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    const interactionId = randomUUID();
+
+    await db.insert(documents).values({
+      id: documentId,
+      companyId: args.companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "Plan body",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+      createdByAgentId: args.ownerAgentId,
+      updatedByAgentId: args.ownerAgentId,
+    });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId: args.companyId,
+      documentId,
+      revisionNumber: 1,
+      title: "Plan",
+      format: "markdown",
+      body: "Plan body",
+      createdByAgentId: args.ownerAgentId,
+    });
+    await db.insert(issueDocuments).values({
+      companyId: args.companyId,
+      issueId: args.issueId,
+      documentId,
+      key: "plan",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId: args.companyId,
+      issueId: args.issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+        target: {
+          type: "issue_document",
+          issueId: args.issueId,
+          documentId,
+          key: "plan",
+          revisionId,
+          revisionNumber: 1,
+        },
+      },
+      result: {
+        version: 1,
+        outcome: "accepted",
+      },
+      resolvedAt: new Date(),
+      createdByUserId: "local-board",
+      resolvedByUserId: "local-board",
+    });
+
+    return revisionId;
   }
 
   it("realizes an isolated workspace and drops stale shared task-session params before executing", async () => {
@@ -371,6 +457,232 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       sourceIssueId: issueId,
     });
     expect(isolatedRows[0]?.cwd).not.toBe(repoRoot);
+  }, 20_000);
+
+  it("keeps accepted-plan children strategy-only until first realization after the base ref moves", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const agentId = randomUUID();
+    const { repoRoot, originRoot } = await createGitRepoWithOrigin();
+    tempRoots.push(repoRoot, originRoot);
+
+    await instanceSettingsService(db).updateExperimental({
+      enableIsolatedWorkspaces: true,
+    });
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      status: "active",
+      defaultResponsibleUserId: "responsible-user",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Accepted Plan Branch Freshness",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: repoRoot,
+      isPrimary: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Planning source issue",
+      status: "in_progress",
+      workMode: "planning",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      identifier: "PAP-1584",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: "origin/master",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const heartbeat = heartbeatService(db);
+    adapterExecute.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      sessionParams: { sessionId: "planning-source-session" },
+      sessionDisplayId: "planning-source-session",
+      summary: "Realized the planning source workspace.",
+      provider: "test",
+      model: "test-model",
+    }));
+
+    const sourceRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      contextSnapshot: {
+        issueId: sourceIssueId,
+        taskId: sourceIssueId,
+        wakeReason: "issue_commented",
+        skipIssueComment: true,
+      },
+    });
+    expect(sourceRun).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(sourceRun!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 10_000 });
+
+    const sourceWorkspace = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.sourceIssueId, sourceIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceWorkspace).toMatchObject({
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      baseRef: "origin/master",
+    });
+    expect(sourceWorkspace?.branchName).toBeTruthy();
+
+    await writeFile(path.join(repoRoot, "base-moved.txt"), "base moved after planning\n");
+    await runGit(repoRoot, ["add", "base-moved.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Move base after planning"]);
+    const movedBaseSha = await runGit(repoRoot, ["rev-parse", "HEAD"]);
+    await runGit(repoRoot, ["push", "origin", "HEAD:master"]);
+    await runGit(repoRoot, ["fetch", "origin", "master"]);
+
+    const acceptedPlanRevisionId = await seedAcceptedPlanAcceptance({
+      companyId,
+      issueId: sourceIssueId,
+      ownerAgentId: agentId,
+    });
+    const decomposition = await issueService(db).decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          title: "Implement approved child after base move",
+          status: "todo",
+          workMode: "standard",
+          priority: "medium",
+          assigneeAgentId: agentId,
+        },
+      ],
+      actorAgentId: agentId,
+    });
+    const childIssueId = decomposition.childIssueIds[0];
+    expect(childIssueId).toBeTruthy();
+
+    const childBeforeRun = await db
+      .select({
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      })
+      .from(issues)
+      .where(eq(issues.id, childIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(childBeforeRun?.executionWorkspaceId).toBeNull();
+    expect(childBeforeRun?.executionWorkspacePreference).toBeNull();
+    expect(childBeforeRun?.executionWorkspaceSettings).toMatchObject({
+      mode: "isolated_workspace",
+      workspaceStrategy: {
+        type: "git_worktree",
+        baseRef: "origin/master",
+        branchTemplate: "{{issue.identifier}}-{{slug}}",
+      },
+    });
+
+    let childRunWorkspace:
+      | { cwd: string; branchName: string; executionWorkspaceId: string }
+      | null = null;
+    adapterExecute.mockImplementationOnce(async (input) => {
+      const context = (input as { context?: Record<string, unknown> }).context ?? {};
+      const workspace = context.paperclipWorkspace as Record<string, unknown> | undefined;
+      const cwd = typeof workspace?.cwd === "string" ? workspace.cwd : null;
+      const branchName = typeof workspace?.branchName === "string" ? workspace.branchName : null;
+      const executionWorkspaceId =
+        typeof context.executionWorkspaceId === "string" ? context.executionWorkspaceId : null;
+      if (!cwd || !branchName || !executionWorkspaceId) {
+        throw new Error("Accepted-plan child run did not receive a realized workspace");
+      }
+      childRunWorkspace = { cwd, branchName, executionWorkspaceId };
+      expect(branchName).not.toBe(sourceWorkspace?.branchName);
+      await expect(runGit(cwd, ["rev-parse", "HEAD"])).resolves.toBe(movedBaseSha);
+      await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, childIssueId!));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: { sessionId: "child-session" },
+        sessionDisplayId: "child-session",
+        summary: "Child realized from the moved base.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const childRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      contextSnapshot: {
+        issueId: childIssueId,
+        taskId: childIssueId,
+        wakeReason: "issue_assigned",
+        skipIssueComment: true,
+      },
+    });
+    expect(childRun).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(childRun!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 10_000 });
+
+    expect(childRunWorkspace).not.toBeNull();
+    expect(childRunWorkspace?.executionWorkspaceId).not.toBe(sourceWorkspace?.id);
+    const childAfterRun = await db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId })
+      .from(issues)
+      .where(eq(issues.id, childIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(childAfterRun?.executionWorkspaceId).toBe(childRunWorkspace?.executionWorkspaceId);
   }, 20_000);
 
   it("forces a fresh session and suppresses accepted-plan continuation when another issue owns the in-flight claim", async () => {

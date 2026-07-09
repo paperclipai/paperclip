@@ -33,10 +33,13 @@ export default defineConfig({
     browserName: "chromium",
     viewport: { width: 1200, height: 800 },
     deviceScaleFactor: 1,
+    // JS-driven tickers/timers key off prefers-reduced-motion for
+    // deterministic captures (CSS animations are already disabled).
+    reducedMotion: "reduce",
     baseURL: "http://localhost:6106",
   },
   webServer: {
-    command: "node ../../scripts/serve-storybook-static.mjs",
+    command: "node ../../scripts/serve-storybook-static.mjs --port 6106",
     url: "http://localhost:6106/index.json",
     reuseExistingServer: true,
     timeout: 30_000,

@@ -27,6 +27,7 @@ import { Checkbox } from "./ui/checkbox";
 import { PriorityIcon } from "./PriorityIcon";
 import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { Badge } from "@/components/ui/badge";
 
 const OTHER_ANSWER_ID = "__paperclip_other__";
 
@@ -842,10 +843,10 @@ function AskUserQuestionsCard({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2.5 py-1 font-medium uppercase tracking-(--tracking-eyebrow) text-foreground/70">
+        <Badge variant="outline" className="border-border/70 bg-background/70 px-2.5 py-1 uppercase tracking-(--tracking-eyebrow) text-foreground/70">
           <MessageSquareQuote className="h-3 w-3" />
           Ask user questions
-        </span>
+        </Badge>
         <span>
           {questions.length === 1
             ? "1 question"
@@ -1931,7 +1932,7 @@ export function IssueThreadInteractionCard({
       : null;
 
   return (
-    <div className={cn("rounded-sm border p-5 shadow-none", styles.shell)}>
+    <div className={cn("rounded-lg border p-5 shadow-none", styles.shell)}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 flex-1 basis-64">
           <div className="flex flex-wrap items-center gap-2">

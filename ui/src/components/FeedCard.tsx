@@ -22,6 +22,7 @@ import {
   Target,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { Card } from "@/components/ui/card";
 
 /* ------------------------------------------------------------------ */
 /*  Canonical verb table — one verb per action, used on every card.    */
@@ -433,10 +434,10 @@ export function FeedCard({
   const mutedTextHover = isMuted ? "" : "group-hover:text-white";
 
   const card = (
-    <div
+    <Card
       data-fc="card"
       className={cn(
-        "group ml-3 mr-3 md:ml-0 my-2 flex items-center gap-2 rounded-lg border bg-card p-(--sz-18px) text-xs",
+        "flex-row group ml-3 mr-3 md:ml-0 my-2 items-center gap-2 p-(--sz-18px) text-xs",
         "transition-(--tp-background-color-border-color) duration-150",
         content.link && "cursor-pointer hover:bg-accent hover:border-muted-foreground/30",
         className,
@@ -472,7 +473,7 @@ export function FeedCard({
       <span data-fc="time" className="shrink-0 text-muted-foreground">
         {timeAgo(event.createdAt)}
       </span>
-    </div>
+    </Card>
   );
 
   if (content.link) {

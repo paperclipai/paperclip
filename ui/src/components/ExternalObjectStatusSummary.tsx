@@ -44,6 +44,8 @@ function buildBreakdownTitle(summary: ExternalObjectSummary): string {
  * the dominant severity icon plus a count badge. Hidden when there are zero
  * external objects or every object is in a muted tone.
  */
+// design-allow(pill-pattern): COMPONENT-INVENTORY §5.1 — external-object status is a deliberately
+// separate status-presentation family; not a Badge.
 export function ExternalObjectStatusSummary({
   summary,
   compact,

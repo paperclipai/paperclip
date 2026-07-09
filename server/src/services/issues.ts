@@ -69,8 +69,14 @@ import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
+  isUnrunnableWorktreeCombo,
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
+  resolvePinnedIssueWorkspaceStrategyType,
+  WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
+  WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
+  WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+  type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
@@ -167,6 +173,48 @@ function applyStatusSideEffects(
   return patch;
 }
 
+function workspaceWorktreeRequiresProjectDetails() {
+  return {
+    code: WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
+    remediation: WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+  };
+}
+
+function assertExplicitPinnedWorktreeIssueRunnable(input: {
+  projectId: string | null | undefined;
+  projectWorkspaceId: string | null | undefined;
+  executionWorkspaceId: string | null | undefined;
+  executionWorkspacePreference: string | null | undefined;
+  executionWorkspaceSettings: unknown;
+}) {
+  const settings = parseIssueExecutionWorkspaceSettings(input.executionWorkspaceSettings);
+  const mode = settings?.mode;
+  if (mode !== "isolated_workspace" && mode !== "operator_branch") return;
+
+  const resolvedMode = mode as ParsedExecutionWorkspaceMode;
+  if (
+    isUnrunnableWorktreeCombo({
+      issue: {
+        projectId: input.projectId ?? null,
+        projectWorkspaceId: input.projectWorkspaceId ?? null,
+        executionWorkspaceId: input.executionWorkspaceId ?? null,
+        executionWorkspacePreference: input.executionWorkspacePreference ?? null,
+      },
+      resolvedMode,
+      resolvedStrategy: resolvePinnedIssueWorkspaceStrategyType({
+        mode: resolvedMode,
+        issueSettings: settings,
+      }),
+      hasResolvablePriorSessionWorkspace: false,
+    })
+  ) {
+    throw unprocessable(
+      WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
+      workspaceWorktreeRequiresProjectDetails(),
+    );
+  }
+}
+
 function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
@@ -236,6 +284,32 @@ function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
     teardownCommand: settings?.workspaceStrategy?.teardownCommand ?? null,
     workspaceRuntime: settings?.workspaceRuntime ?? null,
   };
+}
+
+// Accepted-plan children are not realized yet, so carry only unresolved
+// workspace intent and let the first child run render/persist its own branch.
+function buildPreRealizationExecutionWorkspaceSettings(raw: unknown): Record<string, unknown> | null {
+  const settings = parseIssueExecutionWorkspaceSettings(raw, { includeEnvironmentId: true });
+  if (!settings) return null;
+  const mode =
+    settings.mode && settings.mode !== "inherit" && settings.mode !== "reuse_existing"
+      ? settings.mode
+      : null;
+  const next: Record<string, unknown> = {};
+  if (mode) next.mode = mode;
+  if (settings.environmentId !== undefined) next.environmentId = settings.environmentId;
+  if (settings.workspaceRuntime) next.workspaceRuntime = settings.workspaceRuntime;
+  if (settings.workspaceStrategy) {
+    next.workspaceStrategy = {
+      type: settings.workspaceStrategy.type,
+      ...(settings.workspaceStrategy.baseRef ? { baseRef: settings.workspaceStrategy.baseRef } : {}),
+      ...(settings.workspaceStrategy.branchTemplate ? { branchTemplate: settings.workspaceStrategy.branchTemplate } : {}),
+      ...(settings.workspaceStrategy.worktreeParentDir ? { worktreeParentDir: settings.workspaceStrategy.worktreeParentDir } : {}),
+      ...(settings.workspaceStrategy.provisionCommand ? { provisionCommand: settings.workspaceStrategy.provisionCommand } : {}),
+      ...(settings.workspaceStrategy.teardownCommand ? { teardownCommand: settings.workspaceStrategy.teardownCommand } : {}),
+    };
+  }
+  return Object.keys(next).length > 0 ? next : null;
 }
 
 function toTimestampMs(value: Date | string | null | undefined) {
@@ -494,6 +568,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
+  skipExecutionWorkspaceInheritance?: boolean;
   watchdog?: { agentId: string; instructions?: string | null } | null;
   watchdogActorRunId?: string | null;
   actorRunId?: string | null;
@@ -503,6 +578,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
   blockParentUntilDone?: boolean;
+  executionWorkspaceInheritanceMode?: "linkage" | "strategy_only";
   actorAgentId?: string | null;
   actorUserId?: string | null;
 };
@@ -604,7 +680,7 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   return checkoutRunId == null;
 }
 
-export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
@@ -693,6 +769,8 @@ const ACCEPTED_PLAN_DECOMPOSITION_FINGERPRINT_CHILD_METADATA_KEYS = new Set([
   "updatedByUserId",
   "actorAgentId",
   "actorUserId",
+  "executionWorkspaceInheritanceMode",
+  "skipExecutionWorkspaceInheritance",
 ]);
 
 function normalizeAcceptedPlanDecompositionFingerprintChild(child: IssueChildCreateInput) {
@@ -5558,14 +5636,25 @@ export function issueService(db: Db) {
       const {
         acceptanceCriteria,
         blockParentUntilDone,
+        executionWorkspaceInheritanceMode = "linkage",
         actorAgentId,
         actorUserId,
         ...issueData
       } = data;
+      const inheritStrategyOnly = executionWorkspaceInheritanceMode === "strategy_only";
+      const hasExplicitExecutionWorkspaceOverride =
+        issueData.executionWorkspaceId !== undefined ||
+        issueData.executionWorkspacePreference !== undefined ||
+        issueData.executionWorkspaceSettings !== undefined;
+      const inheritedPreRealizationWorkspaceSettings =
+        inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
+          ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
+          : null;
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
         projectId: issueData.projectId ?? parent.projectId,
+        projectWorkspaceId: issueData.projectWorkspaceId ?? (inheritStrategyOnly ? parent.projectWorkspaceId : undefined),
         goalId: issueData.goalId ?? parent.goalId,
         actorResponsibleUserId: issueData.actorResponsibleUserId ?? null,
         trustExplicitResponsibleUserId: issueData.trustExplicitResponsibleUserId === true,
@@ -5573,7 +5662,12 @@ export function issueService(db: Db) {
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
         description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
-        inheritExecutionWorkspaceFromIssueId: parent.id,
+        ...(inheritedPreRealizationWorkspaceSettings
+          ? { executionWorkspaceSettings: inheritedPreRealizationWorkspaceSettings }
+          : {}),
+        ...(inheritStrategyOnly
+          ? { skipExecutionWorkspaceInheritance: true }
+          : { inheritExecutionWorkspaceFromIssueId: parent.id }),
       });
 
       if (blockParentUntilDone) {
@@ -5748,7 +5842,10 @@ export function issueService(db: Db) {
             throw new Error("Accepted-plan decomposition child cursor moved past the requested children");
           }
 
-          const createdChild = await issueService(tx as unknown as Db).createChild(sourceIssue.id, nextChildInput);
+          const createdChild = await issueService(tx as unknown as Db).createChild(sourceIssue.id, {
+            ...nextChildInput,
+            executionWorkspaceInheritanceMode: "strategy_only",
+          });
           const nextIds = [...existingChildIssueIds, createdChild.issue.id];
           const now = new Date();
           const nextStatus = nextIds.length === data.children.length ? "completed" : "in_flight";
@@ -5876,6 +5973,7 @@ export function issueService(db: Db) {
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
+        skipExecutionWorkspaceInheritance,
         watchdog,
         watchdogActorRunId,
         actorRunId,
@@ -5908,7 +6006,9 @@ export function issueService(db: Db) {
         let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
-        const workspaceInheritanceIssueId = inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
+        const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
+          ? null
+          : inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
         const hasExplicitExecutionWorkspaceOverride =
           issueData.executionWorkspaceId !== undefined ||
           issueData.executionWorkspacePreference !== undefined ||
@@ -6007,6 +6107,15 @@ export function issueService(db: Db) {
         }
         if (executionWorkspaceId) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
+        }
+        if (isolatedWorkspacesEnabled && issueData.executionWorkspaceSettings !== undefined) {
+          assertExplicitPinnedWorktreeIssueRunnable({
+            projectId: issueData.projectId ?? null,
+            projectWorkspaceId,
+            executionWorkspaceId,
+            executionWorkspacePreference,
+            executionWorkspaceSettings: issueData.executionWorkspaceSettings,
+          });
         }
         // Self-correcting counter: use MAX(issue_number) + 1 if the counter
         // has drifted below the actual max, preventing identifier collisions.
@@ -6223,6 +6332,15 @@ export function issueService(db: Db) {
           await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
         }
       }
+      if (isolatedWorkspacesEnabled && issueData.executionWorkspaceSettings !== undefined) {
+        assertExplicitPinnedWorktreeIssueRunnable({
+          projectId: nextProjectId ?? null,
+          projectWorkspaceId: nextProjectWorkspaceId ?? null,
+          executionWorkspaceId: nextExecutionWorkspaceId ?? null,
+          executionWorkspacePreference: nextExecutionWorkspacePreference ?? null,
+          executionWorkspaceSettings: issueData.executionWorkspaceSettings,
+        });
+      }
 
       applyStatusSideEffects(issueData.status, patch);
       if (issueData.status && issueData.status !== "done") {
@@ -6357,7 +6475,10 @@ export function issueService(db: Db) {
 
       let cleared = 0;
       for (const row of rows) {
-        const settings = parseIssueExecutionWorkspaceSettings(row.executionWorkspaceSettings);
+        const settings = parseIssueExecutionWorkspaceSettings(
+          row.executionWorkspaceSettings,
+          { includeEnvironmentId: true },
+        );
         if (settings?.environmentId !== environmentId) continue;
 
         await db

@@ -8,8 +8,10 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  canBoardManageRuntime,
   canBoardResolveRecoveryAction,
   IssueDetail,
+  readRecoveryReconcileWorkspaceId,
   shouldScrollIssueDetailToTopOnNavigation,
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
@@ -2507,6 +2509,132 @@ describe("canBoardResolveRecoveryAction", () => {
         userId: "user-1",
       }),
     ).toBe(false);
+  });
+});
+
+describe("canBoardManageRuntime", () => {
+  it("falls back to companyIds when memberships are not populated", () => {
+    expect(
+      canBoardManageRuntime("company-1", {
+        companyIds: ["company-1"],
+        memberships: [],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("denies viewers the runtime-manage-gated break-glass affordance", () => {
+    expect(
+      canBoardManageRuntime("company-1", {
+        companyIds: ["company-1"],
+        memberships: [
+          {
+            companyId: "company-1",
+            membershipRole: "viewer",
+            status: "active",
+          },
+        ],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("allows non-viewer active members (mirrors the backend runtime:manage member gate)", () => {
+    expect(
+      canBoardManageRuntime("company-1", {
+        companyIds: ["company-1"],
+        memberships: [
+          {
+            companyId: "company-1",
+            membershipRole: "operator",
+            status: "active",
+          },
+        ],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("readRecoveryReconcileWorkspaceId", () => {
+  const makeAction = (evidence: Record<string, unknown>, kind = "workspace_validation") =>
+    ({ kind, evidence } as unknown as Parameters<typeof readRecoveryReconcileWorkspaceId>[0]);
+
+  it("returns null when the action is missing", () => {
+    expect(readRecoveryReconcileWorkspaceId(null)).toBeNull();
+    expect(readRecoveryReconcileWorkspaceId(undefined)).toBeNull();
+  });
+
+  it("returns null for non-workspace_validation actions even with a workspace id in evidence", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction(
+          { workspaceValidation: { persistedExecutionWorkspaceId: "ws-1" } },
+          "stranded_assigned_issue",
+        ),
+      ),
+    ).toBeNull();
+  });
+
+  it("prefers persistedExecutionWorkspaceId (git_worktree_branch_incoherence shape)", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({
+          workspaceValidation: {
+            reason: "git_worktree_branch_incoherence",
+            persistedExecutionWorkspaceId: "ws-diverged",
+            executionWorkspaceId: "ws-other",
+          },
+        }),
+      ),
+    ).toBe("ws-diverged");
+  });
+
+  it("falls back to executionWorkspaceId (git_worktree_not_reusable shape)", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({
+          workspaceValidation: {
+            reason: "git_worktree_not_reusable",
+            executionWorkspaceId: "ws-not-reusable",
+          },
+        }),
+      ),
+    ).toBe("ws-not-reusable");
+  });
+
+  it("returns null when the evidence carries no workspace reference (so the caller falls back to the page-level id)", () => {
+    expect(readRecoveryReconcileWorkspaceId(makeAction({}))).toBeNull();
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({ workspaceValidation: { reason: "git_worktree_branch_incoherence" } }),
+      ),
+    ).toBeNull();
+  });
+
+  it("ignores non-string / empty workspace ids", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({ workspaceValidation: { persistedExecutionWorkspaceId: "" } }),
+      ),
+    ).toBeNull();
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({ workspaceValidation: { persistedExecutionWorkspaceId: 42 } }),
+      ),
+    ).toBeNull();
   });
 });
 

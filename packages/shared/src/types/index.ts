@@ -1,6 +1,8 @@
 export type { Company } from "./company.js";
 export type {
   Environment,
+  EnvironmentDeleteBlastRadius,
+  EnvironmentDeleteBlockedReason,
   EnvironmentLease,
   EnvironmentProbeResult,
   FakeSandboxEnvironmentConfig,
@@ -77,6 +79,11 @@ export type {
   CompanySkillCommentCreateRequest,
   CompanySkillCommentUpdateRequest,
   CompanySkillForkRequest,
+  CompanySkillOriginalSummary,
+  CompanySkillForkSummary,
+  CompanySkillForkReassignment,
+  CompanySkillForkResult,
+  CompanySkillForkPrecheckResult,
   CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
   CompanySkillAuditSeverity,

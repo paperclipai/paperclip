@@ -5,6 +5,7 @@ import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { useSidebar } from "../context/SidebarContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { LucideIcon } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 
 /**
  * Forces the full-label (non-rail) presentation for any `SidebarNavItem`
@@ -34,7 +35,13 @@ export function useSidebarNavExpanded() {
 interface SidebarNavItemProps {
   to: string;
   label: string;
-  icon: LucideIcon;
+  icon?: LucideIcon;
+  /**
+   * Pre-rendered icon element for rows whose icon isn't a plain Lucide
+   * component (e.g. the agent rows' `AgentIcon`). Takes precedence over `icon`;
+   * the caller owns its sizing/color classes.
+   */
+  iconNode?: ReactNode;
   end?: boolean;
   className?: string;
   badge?: number;
@@ -48,12 +55,24 @@ interface SidebarNavItemProps {
   textBadgeTone?: "default" | "amber";
   alert?: boolean;
   liveCount?: number;
+  /**
+   * Overrides NavLink's own route matching for rows whose active state is
+   * computed externally (agent rows match `/agents/:ref` across tab suffixes).
+   */
+  active?: boolean;
+  /** Rendered after the label, before the right-aligned status cluster. */
+  trailing?: ReactNode;
+  /** Accessible text for `trailing` status content, surfaced in the collapsed rail (where `trailing` is hidden). */
+  trailingLabel?: string;
+  /** Rendered inside the right-aligned status cluster, before the live dot. */
+  liveAccessory?: ReactNode;
 }
 
 export function SidebarNavItem({
   to,
   label,
   icon: Icon,
+  iconNode,
   end,
   className,
   badge,
@@ -63,6 +82,10 @@ export function SidebarNavItem({
   textBadgeTone = "default",
   alert = false,
   liveCount,
+  active,
+  trailing,
+  trailingLabel,
+  liveAccessory,
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   // A fixed-width contextual pane (SecondarySidebar) forces full labels even
@@ -78,15 +101,16 @@ export function SidebarNavItem({
 
   // Accessible text equivalent for the collapsed dot indicator. The visible
   // label is `sr-only` in the rail, so the count must be surfaced here.
-  const railAriaLabel = !rail
+  const railStatusText = hasLive
+    ? `${liveCount} live`
+    : hasBadge
+      ? `${badge}${badgeLabel ? ` ${badgeLabel}` : ""}`
+      : alert
+        ? "attention needed"
+        : undefined;
+  const railAriaLabel = !rail || (!railStatusText && !trailingLabel)
     ? undefined
-    : hasLive
-      ? `${label}, ${liveCount} live`
-      : hasBadge
-        ? `${label}, ${badge}${badgeLabel ? ` ${badgeLabel}` : ""}`
-        : alert
-          ? `${label}, attention needed`
-          : undefined;
+    : `${label}${railStatusText ? `, ${railStatusText}` : ""}${trailingLabel ? `, ${trailingLabel}` : ""}`;
 
   const link = (
     <NavLink
@@ -97,8 +121,12 @@ export function SidebarNavItem({
       onClick={() => { if (isMobile) setSidebarOpen(false); }}
       className={({ isActive }) =>
         cn(
-          "flex items-center gap-2.5 px-3 py-2 pointer-coarse:py-1.5 text-(length:--text-compact) font-medium transition-colors",
-          isActive
+          // One rhythm and one inset pill highlight: mx-2 floats the row off
+          // the sidebar edges, rounded-lg matches the card anchor, px-2 gives
+          // the icon breathing room inside the pill. Rows with hover menus
+          // (agents/projects) reserve extra right padding via className.
+          "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium transition-colors",
+          (active ?? isActive)
             ? "bg-accent text-foreground"
             : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
           className,
@@ -106,7 +134,7 @@ export function SidebarNavItem({
       }
     >
       <span className="relative shrink-0">
-        <Icon className="h-4 w-4" />
+        {iconNode ?? (Icon ? <Icon className="h-4 w-4" /> : null)}
         {alert && (
           <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-500 shadow-(--shadow-extract-12)" aria-hidden="true" />
         )}
@@ -114,8 +142,8 @@ export function SidebarNavItem({
             icon. The icon markup is untouched so it stays pixel-aligned. */}
         {rail && !alert && hasLive && (
           <span className="absolute -right-0.5 -top-0.5 flex h-2 w-2" aria-hidden="true">
-            <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-            <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500 shadow-(--shadow-extract-12)" />
+            <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-(--status-agent-running) opacity-75" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-(--status-agent-running) shadow-(--shadow-extract-12)" />
           </span>
         )}
         {rail && !alert && !hasLive && hasBadge && (
@@ -129,38 +157,44 @@ export function SidebarNavItem({
         )}
       </span>
       <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "flex-1 truncate"}>{label}</span>
+      {!rail && trailing}
       {!rail && textBadge && (
-        <span
+        <Badge variant="ghost"
           className={cn(
-            "ml-auto rounded-full px-1.5 py-0.5 text-(length:--text-nano) font-medium leading-none",
+            "ml-auto px-1.5 text-(length:--text-nano) leading-none",
             textBadgeTone === "amber"
               ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
               : "bg-muted text-muted-foreground",
           )}
         >
           {textBadge}
-        </span>
+        </Badge>
       )}
-      {!rail && hasLive && (
+      {!rail && (hasLive || liveAccessory) && (
         <span className="ml-auto flex items-center gap-1.5">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-          </span>
-          <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{liveCount} live</span>
+          {liveAccessory}
+          {hasLive && (
+            <>
+              <span className="relative flex h-2 w-2">
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-(--status-agent-running) opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-(--status-agent-running)" />
+              </span>
+              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{liveCount} live</span>
+            </>
+          )}
         </span>
       )}
       {!rail && hasBadge && (
-        <span
+        <Badge variant="ghost"
           className={cn(
-            "ml-auto rounded-full px-1.5 py-0.5 text-xs leading-none",
+            "ml-auto px-1.5 leading-none",
             badgeTone === "danger"
               ? "bg-red-600/90 text-red-50"
               : "bg-primary text-primary-foreground",
           )}
         >
           {badge}
-        </span>
+        </Badge>
       )}
     </NavLink>
   );

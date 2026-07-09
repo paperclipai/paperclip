@@ -10,6 +10,7 @@ import {
 import { Activity, ExternalLink, Loader2, Play, RotateCcw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 
 export type WorkspaceRuntimeAction = "start" | "stop" | "restart" | "run";
 
@@ -353,8 +354,8 @@ function CommandSection({
                 </div>
                 {item.healthStatus && item.statusLabel !== "stopped" ? (
                   <div className="flex items-center gap-2">
-                    <span className={cn(
-                      "inline-flex items-center rounded-full border px-2.5 py-1 text-(length:--text-micro)",
+                    <Badge variant="outline" className={cn(
+                      "px-2.5 py-1 text-(length:--text-micro)",
                       item.healthStatus === "healthy"
                         ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
                         : item.healthStatus === "unhealthy"
@@ -362,7 +363,7 @@ function CommandSection({
                           : "border-border text-muted-foreground",
                     )}>
                       {item.healthStatus}
-                    </span>
+                    </Badge>
                   </div>
                 ) : null}
               </div>
@@ -407,9 +408,9 @@ export function WorkspaceRuntimeControls({
         <div className="space-y-1">
           <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Workspace commands</div>
           <div className="flex flex-wrap items-center gap-2">
-            <span
+            <Badge variant="outline"
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
+                "gap-1.5 px-2.5 py-1",
                 runningCount > 0
                   ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
                   : "border-border bg-background text-muted-foreground",
@@ -417,7 +418,7 @@ export function WorkspaceRuntimeControls({
             >
               <Activity className="h-3.5 w-3.5" />
               {runningCount > 0 ? `${runningCount} services running` : "No services running"}
-            </span>
+            </Badge>
             <span className="text-xs text-muted-foreground">
               {resolvedSections.jobs.length > 0
                 ? `${resolvedSections.jobs.length} job${resolvedSections.jobs.length === 1 ? "" : "s"} available to run on demand.`

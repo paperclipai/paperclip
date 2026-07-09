@@ -18,6 +18,7 @@ import {
 } from "@/lib/issue-attachments";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
+import { Card } from "@/components/ui/card";
 
 interface IssueAttachmentsSectionProps {
   attachments: IssueAttachment[];
@@ -157,7 +158,7 @@ function VideoAttachmentCard({
 }) {
   const filename = attachmentFilename(attachment);
   return (
-    <div id={`attachment-${attachment.id}`} className="scroll-mt-20 overflow-hidden rounded-md border border-border bg-card">
+    <Card id={`attachment-${attachment.id}`} className="block scroll-mt-20 overflow-hidden py-0">
       <OutputVideoPlayer src={attachment.contentPath} title={filename} />
       <div className="flex flex-col gap-2 p-3 md:flex-row md:items-center md:justify-between">
         <div className="min-w-0">
@@ -171,7 +172,7 @@ function VideoAttachmentCard({
           onPreview={onPreview}
         />
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -186,7 +187,7 @@ function GenericAttachmentRow({
 }) {
   const filename = attachmentFilename(attachment);
   return (
-    <div id={`attachment-${attachment.id}`} className="flex scroll-mt-20 items-center gap-2.5 rounded-md border border-border bg-card p-2">
+    <Card id={`attachment-${attachment.id}`} className="flex-row scroll-mt-20 items-center gap-2.5 p-2">
       <OutputFileTile contentType={attachment.contentType} />
       <div className="min-w-0 flex-1">
         <a
@@ -203,7 +204,7 @@ function GenericAttachmentRow({
         </p>
       </div>
       <AttachmentActions attachment={attachment} onDelete={onDelete} deletePending={deletePending} />
-    </div>
+    </Card>
   );
 }
 

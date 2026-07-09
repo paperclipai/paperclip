@@ -138,7 +138,7 @@ function ProjectItem({
         if (isMobile) setSidebarOpen(false);
       }}
       className={cn(
-        "flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1.5 pr-8 pointer-coarse:py-1 text-(length:--text-compact) font-medium transition-colors",
+        "flex min-w-0 flex-1 items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pr-8 pointer-coarse:py-1 text-(length:--text-compact) font-medium transition-colors",
         activeProjectRef === routeRef || activeProjectRef === project.id
           ? "bg-accent text-foreground"
           : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
@@ -177,7 +177,7 @@ function ProjectItem({
               variant="ghost"
               size="icon-xs"
               className={cn(
-                "absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 transition-opacity data-[state=open]:pointer-events-auto data-[state=open]:opacity-100",
+                "absolute right-3 top-1/2 h-6 w-6 -translate-y-1/2 transition-opacity data-[state=open]:pointer-events-auto data-[state=open]:opacity-100",
                 isMobile
                   ? "opacity-100"
                   : "pointer-events-none opacity-0 group-hover/project:pointer-events-auto group-hover/project:opacity-100 group-focus-within/project:pointer-events-auto group-focus-within/project:opacity-100",

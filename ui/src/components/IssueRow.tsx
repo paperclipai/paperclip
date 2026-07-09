@@ -17,6 +17,7 @@ import { StatusIcon } from "./StatusIcon";
 import { productivityReviewTriggerLabel } from "./ProductivityReviewBadge";
 import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
 import { ExternalObjectStatusSummary } from "./ExternalObjectStatusSummary";
+import { Badge } from "@/components/ui/badge";
 
 type UnreadState = "hidden" | "visible" | "fading";
 
@@ -46,6 +47,12 @@ interface IssueRowProps {
   onArchive?: () => void;
   archiveDisabled?: boolean;
   className?: string;
+  /** Pointer entered the row (used by list keyboard nav to track hover). */
+  onMouseEnter?: () => void;
+  /** Ancestor levels; renders that many vertical tree-guide slots (desktop). */
+  treeGuides?: number;
+  /** Suppress the row divider (parents with expanded children keep visual attachment to their subtree). */
+  hideDivider?: boolean;
 }
 
 export function IssueRow({
@@ -70,6 +77,9 @@ export function IssueRow({
   onArchive,
   archiveDisabled,
   className,
+  onMouseEnter,
+  treeGuides = 0,
+  hideDivider = false,
 }: IssueRowProps) {
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
@@ -99,14 +109,14 @@ export function IssueRow({
   const recoveryAction = issue.activeRecoveryAction ?? null;
   const recoveryIndicator = recoveryAction ? renderRecoveryChip(recoveryAction, selected) : null;
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
-    <span
+    <Badge variant="outline"
       data-testid="issue-row-parked-blocker"
-      className="ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300"
+      className="[&>svg]:size-2.5 ml-1.5 gap-0.5 border-amber-500/60 bg-amber-500/15 text-(length:--text-nano) text-amber-700 dark:text-amber-300"
       title="Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee."
     >
       <Flag className="h-2.5 w-2.5" aria-hidden />
       Blocked by parked work
-    </span>
+    </Badge>
   ) : null;
 
   return (
@@ -119,15 +129,17 @@ export function IssueRow({
       id={checklistRowId}
       aria-current={checklistCurrentStep ? "step" : undefined}
       onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
+      onMouseEnter={onMouseEnter}
       className={cn(
-        "group flex items-start gap-2 border-b border-border py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
+        "group flex items-start gap-2 rounded-lg py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors sm:items-center sm:py-2 sm:pl-1",
+        !hideDivider && "border-b border-border last:border-b-0",
         selected ? "hover:bg-transparent" : "hover:bg-accent/50",
         checklistCurrentStep ? "border-l-2 border-l-primary bg-primary/5 pl-(--sz-calc-11) sm:pl-(--sz-calc-12)" : null,
         className,
       )}
     >
       <span className="flex shrink-0 items-center gap-1 pt-px sm:hidden">
-        {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} size="lg" className={selectedStatusClass} />}
+        {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />}
         {productivityReviewIndicator}
         {parkedBlockerIndicator}
         {recoveryIndicator}
@@ -141,14 +153,30 @@ export function IssueRow({
             {checklistDependencyChips}
           </span>
         ) : null}
-        <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
+        <span className="flex items-center gap-2 self-stretch sm:order-1 sm:shrink-0">
+          {treeGuides > 0
+            ? Array.from({ length: treeGuides }, (_, level) => (
+              // Tree guide: occupies the same flex slot as the parent's
+              // chevron column so the line lands under the parent's status
+              // column; stretched past the row padding so consecutive rows
+              // read as one continuous line.
+              <span key={`guide-${level}`} aria-hidden="true" className="relative hidden w-4 shrink-0 self-stretch sm:block">
+                {/* bg-background underlay: dark-mode --border is translucent,
+                    so overlapping row segments would stack brighter without
+                    an opaque base. */}
+                <span className="absolute -inset-y-3 left-1/2 w-px bg-background">
+                  <span className="absolute inset-0 bg-border" />
+                </span>
+              </span>
+            ))
+            : null}
           {desktopLeadingSpacer ? (
             <span className="hidden w-3.5 shrink-0 sm:block" />
           ) : null}
           {desktopMetaLeading ?? (
             <>
               <span className="hidden shrink-0 items-center gap-1 sm:inline-flex">
-                <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} size="lg" className={selectedStatusClass} />
+                <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />
                 {productivityReviewIndicator}
               </span>
               {checklistStep}
@@ -249,14 +277,14 @@ function renderRecoveryChip(action: IssueRecoveryAction, selected: boolean): Rea
   const Icon = tone.icon;
   const label = recoveryChipLabel(state, action.kind);
   return (
-    <span
+    <Badge variant="outline"
       data-testid="issue-row-recovery-indicator"
       data-recovery-state={state}
       data-recovery-kind={action.kind}
       role="status"
       aria-label={label}
       className={cn(
-        "ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border px-2 py-0.5 text-(length:--text-nano) font-medium",
+        "ml-1.5 gap-0.5 text-(length:--text-nano)",
         tone.className,
         selected ? "!border-muted-foreground !text-muted-foreground" : null,
       )}
@@ -264,6 +292,6 @@ function renderRecoveryChip(action: IssueRecoveryAction, selected: boolean): Rea
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
       {label}
-    </span>
+    </Badge>
   );
 }

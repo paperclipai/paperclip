@@ -179,6 +179,18 @@ export function companySkillRoutes(db: Db) {
     res.json(result);
   });
 
+  router.get("/companies/:companyId/skills/:skillId/fork-precheck", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.forkPrecheck(companyId, skillId, skillActor(req));
+    if (!result) {
+      res.status(404).json({ error: "Skill not found" });
+      return;
+    }
+    res.json(result);
+  });
+
   router.get("/companies/:companyId/skills/:skillId/versions", async (req, res) => {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
@@ -284,11 +296,12 @@ export function companySkillRoutes(db: Db) {
         runId: actor.runId,
         action: "company.skill_forked",
         entityType: "company_skill",
-        entityId: result.id,
+        entityId: result.skill.id,
         details: {
           sourceSkillId: skillId,
-          slug: result.slug,
-          name: result.name,
+          slug: result.skill.slug,
+          name: result.skill.name,
+          reassignedAgentIds: result.reassignments.map((entry: { agentId: string }) => entry.agentId),
         },
       });
       res.status(201).json(result);

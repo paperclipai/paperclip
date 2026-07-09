@@ -74,6 +74,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 import {
   AlertTriangle,
   ArrowUpCircle,
@@ -436,10 +437,10 @@ function TrustChip({ level }: { level: CompanySkillTrustLevel }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-micro)", config.className)}>
+        <Badge variant="outline" className={cn("text-(length:--text-micro)", config.className)}>
           <Icon className="h-3 w-3" aria-hidden="true" />
           {config.label}
-        </span>
+        </Badge>
       </TooltipTrigger>
       <TooltipContent>{config.tooltip}</TooltipContent>
     </Tooltip>
@@ -467,10 +468,10 @@ function CompatChip({ compatibility }: { compatibility: CompanySkillCompatibilit
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-micro)", config.className)}>
+        <Badge variant="outline" className={cn("text-(length:--text-micro)", config.className)}>
           <Icon className="h-3 w-3" aria-hidden="true" />
           {config.label}
-        </span>
+        </Badge>
       </TooltipTrigger>
       <TooltipContent>{config.tooltip}</TooltipContent>
     </Tooltip>
@@ -792,9 +793,9 @@ function SkillStat({ icon: Icon, value }: { icon: typeof Star; value: string }) 
 
 function SkillCategoryChip({ label }: { label: string }) {
   return (
-    <span className="inline-flex items-center rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--text-nano) capitalize text-muted-foreground">
+    <Badge variant="outline" className="border-border bg-muted/40 text-(length:--text-nano) capitalize text-muted-foreground">
       {label}
-    </span>
+    </Badge>
   );
 }
 
@@ -804,7 +805,9 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
       type="button"
       onClick={() => onOpen(card)}
       className={cn(
-        "group flex h-full min-h-(--sz-11_5rem) flex-col rounded-md border border-border p-4 text-left transition-colors hover:border-primary hover:bg-accent/30 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        // Quiet interactive-card affordance (DECISION-SHEET: one recipe for
+        // clickable cards): pointer cursor, border darkens, slight lift.
+        "group flex h-full min-h-(--sz-11_5rem) flex-col rounded-lg border border-border bg-card p-4 text-left cursor-pointer transition-colors hover:border-foreground/20 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         card.required && "bg-muted/30",
       )}
     >
@@ -864,18 +867,18 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-1">
           {card.installed ? (
-            <span className="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-(length:--text-nano) text-emerald-700 dark:text-emerald-300">
+            <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-(length:--text-nano) text-emerald-700 dark:text-emerald-300">
               Installed
-            </span>
+            </Badge>
           ) : null}
           {card.categories.slice(0, 2).map((category) => (
             <SkillCategoryChip key={category} label={category} />
           ))}
           {card.required ? (
-            <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-border bg-muted/60 px-2 py-0.5 text-(length:--text-nano) text-muted-foreground">
+            <Badge variant="outline" className="ml-auto border-border bg-muted/60 text-(length:--text-nano) text-muted-foreground">
               <Lock className="h-3 w-3" aria-hidden="true" />
               Bundled
-            </span>
+            </Badge>
           ) : null}
         </div>
       </div>
@@ -1770,28 +1773,28 @@ function CatalogDetailPane({
           {hashOutOfSync ? (
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-(length:--text-micro) text-amber-800 dark:text-amber-200">
+                <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-(length:--text-micro) text-amber-800 dark:text-amber-200">
                   <ArrowUpCircle className="h-3 w-3" aria-hidden="true" />
                   Update available
-                </span>
+                </Badge>
               </TooltipTrigger>
               <TooltipContent>Catalog content hash has changed since this skill was installed.</TooltipContent>
             </Tooltip>
           ) : null}
           {skill.requires.length > 0 ? (
-            <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--text-micro) text-muted-foreground">
+            <Badge variant="outline" className="border-border bg-muted/40 text-(length:--text-micro) text-muted-foreground">
               Requires: {skill.requires.join(", ")}
-            </span>
+            </Badge>
           ) : null}
           {skill.recommendedForRoles.length > 0 ? (
-            <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--text-micro) text-muted-foreground">
+            <Badge variant="outline" className="border-border bg-muted/40 text-(length:--text-micro) text-muted-foreground">
               Roles: {skill.recommendedForRoles.join(" · ")}
-            </span>
+            </Badge>
           ) : null}
           {skill.tags.length > 0 ? (
-            <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--text-micro) text-muted-foreground">
+            <Badge variant="outline" className="border-border bg-muted/40 text-(length:--text-micro) text-muted-foreground">
               Tags: {skill.tags.join(" · ")}
-            </span>
+            </Badge>
           ) : null}
         </div>
 
@@ -2127,10 +2130,10 @@ function AttachAgentsPopover({
                     <span className="flex items-center gap-1.5">
                       <span className="truncate">{agent.name}</span>
                       {agent.paused ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide text-amber-500">
+                        <Badge variant="outline" className="[&>svg]:size-2.5 border-amber-500/30 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-wide text-amber-500">
                           <Pause className="h-2.5 w-2.5" aria-hidden="true" />
                           Paused
-                        </span>
+                        </Badge>
                       ) : null}
                     </span>
                     <span className="text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
@@ -2480,7 +2483,7 @@ function SkillVersionDiffDialog({
           </DialogHeader>
           <div className="flex flex-wrap items-center gap-3 text-xs">
             <label className="flex items-center gap-2">
-              <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 font-medium uppercase tracking-wider text-red-400">Old</span>
+              <Badge variant="outline" className="border-red-500/30 bg-red-500/10 uppercase tracking-wider text-red-400">Old</Badge>
               <select
                 value={leftVersionId ?? ""}
                 onChange={(event) => onLeftVersionChange(event.target.value || null)}
@@ -2493,7 +2496,7 @@ function SkillVersionDiffDialog({
               </select>
             </label>
             <label className="flex items-center gap-2">
-              <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 font-medium uppercase tracking-wider text-green-400">New</span>
+              <Badge variant="outline" className="border-green-500/30 bg-green-500/10 uppercase tracking-wider text-green-400">New</Badge>
               <select
                 value={right?.id ?? ""}
                 onChange={(event) => onRightVersionChange(event.target.value || null)}
@@ -2934,10 +2937,10 @@ export function SkillDetailPage({
                     <div className="flex items-center gap-1.5">
                       <span className="truncate font-medium">{agent.name}</span>
                       {meta?.paused ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide text-amber-500">
+                        <Badge variant="outline" className="[&>svg]:size-2.5 border-amber-500/30 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-wide text-amber-500">
                           <Pause className="h-2.5 w-2.5" aria-hidden="true" />
                           Paused
-                        </span>
+                        </Badge>
                       ) : null}
                     </div>
                     <div className="mt-0.5 text-xs text-muted-foreground">{agent.adapterType}</div>
@@ -3555,10 +3558,10 @@ function SkillPane({
             {readonlyMetadataValue(detail.metadata, "userModifiedAt") ? (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/40 bg-violet-500/10 px-2 py-0.5 text-(length:--text-micro) text-violet-200">
+                  <Badge variant="outline" className="border-violet-500/40 bg-violet-500/10 text-(length:--text-micro) text-violet-200">
                     <Pencil className="h-3 w-3" aria-hidden="true" />
                     Locally modified
-                  </span>
+                  </Badge>
                 </TooltipTrigger>
                 <TooltipContent>You have edited this skill after installing. Updates from the catalog will overwrite your changes.</TooltipContent>
               </Tooltip>

@@ -1,10 +1,19 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import { readAdapterExecutionTarget, adapterExecutionTargetSessionIdentity } from "@paperclipai/adapter-utils/execution-target";
+import {
+  adapterExecutionTargetSessionIdentity,
+  formatAdapterExecutionTimeoutErrorMessage,
+  formatAdapterExecutionTimeoutStartLogLine,
+  readAdapterExecutionTarget,
+  resolveAdapterExecutionTargetTimeout,
+  type AdapterExecutionTargetTimeoutResolution,
+} from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   applyPaperclipWorkspaceEnv,
@@ -14,6 +23,7 @@ import {
   buildPaperclipEnv,
   ensureAbsoluteDirectory,
   ensurePathInEnv,
+  ensurePaperclipSkillSymlink,
   joinPromptSections,
   materializePaperclipSkillCopy,
   parseObject,
@@ -23,6 +33,7 @@ import {
   renderTemplate,
   resolvePaperclipInstanceRootForAdapter,
   resolvePaperclipDesiredSkillNames,
+  removeMaintainerOnlySkillSymlinks,
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
@@ -43,21 +54,21 @@ import {
   type AcpRuntimeTurnResult,
 } from "acpx/runtime";
 import {
-  DEFAULT_ACPX_LOCAL_AGENT,
-  DEFAULT_ACPX_LOCAL_MODE,
-  DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS,
-  DEFAULT_ACPX_LOCAL_PERMISSION_MODE,
-  DEFAULT_ACPX_LOCAL_TIMEOUT_SEC,
-  DEFAULT_ACPX_LOCAL_WARM_HANDLE_IDLE_MS,
-} from "../index.js";
+  DEFAULT_ACP_ENGINE_AGENT,
+  DEFAULT_ACP_ENGINE_MODE,
+  DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS,
+  DEFAULT_ACP_ENGINE_PERMISSION_MODE,
+  DEFAULT_ACP_ENGINE_TIMEOUT_SEC,
+  DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
+} from "./constants.js";
 
-const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const WRAPPER_CLEANUP_RETENTION_MS = 15 * 60 * 1000;
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 
 type AcpxRuntimeFactory = (options: AcpRuntimeOptions) => AcpRuntime;
 
-interface RuntimeCacheEntry {
+export interface RuntimeCacheEntry {
   runtime: AcpRuntime;
   handle: AcpRuntimeHandle;
   fingerprint: string;
@@ -65,10 +76,19 @@ interface RuntimeCacheEntry {
   cleanupTimer?: NodeJS.Timeout;
 }
 
-interface ExecuteDeps {
+interface AcpxEngineSettings {
+  adapterType: string;
+  moduleDir: string;
+  packageRootDir: string;
+}
+
+export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
   now?: () => number;
   warmHandles?: Map<string, RuntimeCacheEntry>;
+  adapterType?: string;
+  moduleDir?: string;
+  packageRootDir?: string;
 }
 
 interface AcpxPreparedRuntime {
@@ -87,6 +107,7 @@ interface AcpxPreparedRuntime {
   requestedThinkingEffort: string;
   fastMode: boolean;
   timeoutSec: number;
+  timeoutResolution: AdapterExecutionTargetTimeoutResolution;
   sessionKey: string;
   fingerprint: string;
   agentCommand: string | null;
@@ -99,6 +120,15 @@ interface AcpxPreparedRuntime {
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
+
+function resolveEngineSettings(options: AcpxEngineExecutorOptions): AcpxEngineSettings {
+  const moduleDir = path.resolve(options.moduleDir ?? defaultModuleDir);
+  return {
+    adapterType: options.adapterType?.trim() || "acp_engine",
+    moduleDir,
+    packageRootDir: path.resolve(options.packageRootDir ?? path.resolve(moduleDir, "../..")),
+  };
+}
 
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
@@ -125,31 +155,101 @@ function defaultPaperclipInstanceDir(): string {
 }
 
 function defaultStateDir(companyId: string, agentId: string): string {
-  return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "acpx-local", "agents", agentId);
+  return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "acp-engine", "agents", agentId);
 }
 
 function resolveManagedCodexHomeDir(companyId: string): string {
   return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "codex-home");
 }
 
-function packageRootDir(): string {
-  return path.resolve(__moduleDir, "../..");
+// Walk up from startDir looking for `node_modules/.bin/<binName>`. This matches
+// npm/pnpm binary hoisting in packaged installs while preserving monorepo dev.
+export async function findAncestorBin(startDir: string, binName: string): Promise<string | null> {
+  let current = path.resolve(startDir);
+  while (true) {
+    const candidate = path.join(current, "node_modules", ".bin", binName);
+    if (await pathExists(candidate)) return candidate;
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
 }
 
-function resolveBuiltInAgentCommand(agent: string): string | null {
-  const binName =
-    agent === "claude"
-      ? "claude-agent-acp"
-      : agent === "codex"
-        ? "codex-acp"
-        : null;
+interface BuiltInAgentCommand {
+  command: string;
+  shellCommand: string;
+}
+
+async function resolveBuiltInAgentCommand(agent: string, packageRootDir: string): Promise<BuiltInAgentCommand | null> {
+  if (agent === "gemini") {
+    return { command: "gemini --acp", shellCommand: "gemini --acp" };
+  }
+  const binName = agent === "claude" ? "claude-agent-acp" : agent === "codex" ? "codex-acp" : null;
   if (!binName) return null;
-  return path.join(packageRootDir(), "node_modules", ".bin", binName);
+  const resolved = (await findAncestorBin(packageRootDir, binName)) ?? binName;
+  return { command: resolved, shellCommand: shellQuote(resolved) };
+}
+
+const execFileAsync = promisify(execFile);
+// Gemini CLI renamed --experimental-acp to --acp in 0.33.0. acpx normally
+// rewrites the flag itself, but the agent wrapper script hides the gemini
+// command from acpx's detection, so the engine must downgrade it here.
+const GEMINI_NATIVE_ACP_FLAG_MIN_VERSION = [0, 33, 0] as const;
+const GEMINI_VERSION_PROBE_TIMEOUT_MS = 2000;
+
+export function parseGeminiVersionParts(output: string | null | undefined): number[] | null {
+  const match = output?.match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+export function geminiVersionSupportsNativeAcpFlag(parts: number[] | null): boolean {
+  if (!parts) return true;
+  for (let index = 0; index < GEMINI_NATIVE_ACP_FLAG_MIN_VERSION.length; index += 1) {
+    const diff = (parts[index] ?? 0) - GEMINI_NATIVE_ACP_FLAG_MIN_VERSION[index];
+    if (diff !== 0) return diff > 0;
+  }
+  return true;
+}
+
+export function rewriteGeminiAcpFlagForVersion(commandShell: string, versionParts: number[] | null): string {
+  if (geminiVersionSupportsNativeAcpFlag(versionParts)) return commandShell;
+  return commandShell
+    .trim()
+    .split(/\s+/)
+    .map((token) => (token === "--acp" ? "--experimental-acp" : token))
+    .join(" ");
+}
+
+function geminiAcpCommandTokens(commandShell: string): string[] | null {
+  const tokens = commandShell.trim().split(/\s+/);
+  const bin = tokens[0];
+  if (!bin || bin.startsWith("'") || bin.startsWith('"')) return null;
+  if (path.basename(bin) !== "gemini") return null;
+  if (!tokens.includes("--acp")) return null;
+  return tokens;
+}
+
+async function normalizeGeminiAcpCommandShell(commandShell: string, env: NodeJS.ProcessEnv): Promise<string> {
+  const tokens = geminiAcpCommandTokens(commandShell);
+  if (!tokens) return commandShell;
+  let versionParts: number[] | null = null;
+  try {
+    const { stdout } = await execFileAsync(tokens[0], ["--version"], {
+      timeout: GEMINI_VERSION_PROBE_TIMEOUT_MS,
+      encoding: "utf8",
+      env,
+    });
+    versionParts = parseGeminiVersionParts(stdout);
+  } catch {
+    return commandShell;
+  }
+  return rewriteGeminiAcpFlagForVersion(commandShell, versionParts);
 }
 
 function normalizeAgent(config: Record<string, unknown>): string {
-  const agent = asString(config.agent, DEFAULT_ACPX_LOCAL_AGENT).trim();
-  return agent || DEFAULT_ACPX_LOCAL_AGENT;
+  const agent = asString(config.agent, DEFAULT_ACP_ENGINE_AGENT).trim();
+  return agent || DEFAULT_ACP_ENGINE_AGENT;
 }
 
 async function pathExists(candidate: string): Promise<boolean> {
@@ -293,8 +393,9 @@ async function buildSkillSetKey(input: {
 
 async function resolveSelectedRuntimeSkills(
   config: Record<string, unknown>,
+  moduleDir: string,
 ): Promise<{ allSkills: PaperclipSkillEntry[]; selectedSkills: PaperclipSkillEntry[]; desiredSkillNames: string[] }> {
-  const allSkills = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const allSkills = await readPaperclipRuntimeSkillEntries(config, moduleDir);
   const desiredSkillNames = resolvePaperclipDesiredSkillNames(config, allSkills);
   const desiredSet = new Set(desiredSkillNames);
   return {
@@ -307,13 +408,14 @@ async function resolveSelectedRuntimeSkills(
 async function prepareClaudeSkillRuntime(input: {
   stateDir: string;
   config: Record<string, unknown>;
+  moduleDir: string;
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<{
   identity: Record<string, unknown>;
   promptInstructions: string;
   commandNotes: string[];
 }> {
-  const { selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config);
+  const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "claude" });
   const bundleRoot = path.join(input.stateDir, "runtime-skills", "claude", skillSetKey);
   const skillsHome = path.join(bundleRoot, ".claude", "skills");
@@ -435,6 +537,7 @@ async function prepareCodexSkillRuntime(input: {
   companyId: string;
   config: Record<string, unknown>;
   env: Record<string, string>;
+  moduleDir: string;
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<{ identity: Record<string, unknown>; commandNotes: string[] }> {
   const envConfig = parseObject(input.config.env);
@@ -454,7 +557,7 @@ async function prepareCodexSkillRuntime(input: {
       targetHome: managedCodexHome,
       onLog: input.onLog,
     });
-  const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config);
+  const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "codex" });
   const skillsHome = path.join(effectiveCodexHome, "skills");
   await fs.mkdir(skillsHome, { recursive: true });
@@ -499,19 +602,76 @@ async function prepareCodexSkillRuntime(input: {
   };
 }
 
+function resolveGeminiSkillsHome(config: Record<string, unknown>): string {
+  const envConfig = parseObject(config.env);
+  const configuredHome =
+    typeof envConfig.HOME === "string" && envConfig.HOME.trim().length > 0
+      ? path.resolve(envConfig.HOME.trim())
+      : os.homedir();
+  return path.join(configuredHome, ".gemini", "skills");
+}
+
+async function prepareGeminiSkillRuntime(input: {
+  config: Record<string, unknown>;
+  moduleDir: string;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<{ identity: Record<string, unknown>; commandNotes: string[] }> {
+  const { selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
+  const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "gemini" });
+  const skillsHome = resolveGeminiSkillsHome(input.config);
+  await fs.mkdir(skillsHome, { recursive: true });
+
+  const allowedSkillNames = selectedSkills.map((entry) => entry.runtimeName);
+  const removedSkills = await removeMaintainerOnlySkillSymlinks(skillsHome, allowedSkillNames);
+  for (const skillName of removedSkills) {
+    await input.onLog("stdout", `[paperclip] Removed maintainer-only ACPX Gemini skill "${skillName}" from ${skillsHome}\n`);
+  }
+
+  for (const entry of selectedSkills) {
+    const target = path.join(skillsHome, entry.runtimeName);
+    try {
+      const result = await ensurePaperclipSkillSymlink(entry.source, target);
+      if (result === "created" || result === "repaired") {
+        await input.onLog(
+          "stdout",
+          `[paperclip] ${result === "repaired" ? "Repaired" : "Linked"} ACPX Gemini skill "${entry.runtimeName}" into ${skillsHome}\n`,
+        );
+      }
+    } catch (err) {
+      await input.onLog(
+        "stderr",
+        `[paperclip] Failed to link ACPX Gemini skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  return {
+    identity: {
+      mode: "gemini",
+      skillSetKey,
+      desiredSkillNames,
+      selectedSkills: selectedSkills.map((entry) => entry.runtimeName).sort(),
+      skillsHome,
+    },
+    commandNotes: selectedSkills.length > 0
+      ? [`Prepared ${selectedSkills.length} ACPX Gemini skill(s) at ${skillsHome}.`]
+      : [],
+  };
+}
+
 function normalizeMode(config: Record<string, unknown>): "persistent" | "oneshot" {
-  return asString(config.mode, DEFAULT_ACPX_LOCAL_MODE) === "oneshot" ? "oneshot" : "persistent";
+  return asString(config.mode, DEFAULT_ACP_ENGINE_MODE) === "oneshot" ? "oneshot" : "persistent";
 }
 
 function normalizePermissionMode(config: Record<string, unknown>): "approve-all" | "approve-reads" | "deny-all" {
-  const value = asString(config.permissionMode, DEFAULT_ACPX_LOCAL_PERMISSION_MODE).trim();
+  const value = asString(config.permissionMode, DEFAULT_ACP_ENGINE_PERMISSION_MODE).trim();
   if (value === "approve-reads" || value === "deny-all") return value;
   if (value === "default") return "approve-reads";
   return "approve-all";
 }
 
 function normalizeNonInteractivePermissions(config: Record<string, unknown>): "deny" | "fail" {
-  return asString(config.nonInteractivePermissions, DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS) === "fail"
+  return asString(config.nonInteractivePermissions, DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS) === "fail"
     ? "fail"
     : "deny";
 }
@@ -578,7 +738,7 @@ function uniqueSorted(values: Array<string | null | undefined>): string[] {
   return [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))].sort();
 }
 
-// Phase 4.1 (PAPA-388): the Claude Code SDK that `claude-agent-acp` runs uses
+// The Claude Code SDK that `claude-agent-acp` runs uses
 // `settingSources: ["user", "project", "local"]`. By writing a per-worktree
 // `.claude/settings.local.json` we override the user's potentially-restrictive
 // `~/.claude/settings.json` (e.g. `defaultMode: "dontAsk"`, which silently
@@ -692,7 +852,9 @@ async function writeAgentWrapper(input: {
     `stderr_dir=${shellQuote(input.childStderrDir)}`,
     "if [[ -n \"${PAPERCLIP_RUN_ID:-}\" ]]; then",
     "  mkdir -p \"$stderr_dir\"",
-    "  exec 2> >(tee -a \"$stderr_dir/$PAPERCLIP_RUN_ID.log\" >&2)",
+    // Keep the run-stderr file unfiltered, but do not forward the known-benign
+    // ACP nes/close cleanup RPC error to Paperclip's live stderr stream.
+    "  exec 2> >(tee -a \"$stderr_dir/$PAPERCLIP_RUN_ID.log\" | grep -Ev \"method: ['\\\"]nes/close['\\\"].*-32601\" >&2 || true)",
     "fi",
     `exec ${input.agentCommandShell} "$@"`,
     "",
@@ -731,9 +893,12 @@ async function cleanupStaleAgentWrappers(input: { wrappersDir: string; currentFi
 
 async function buildRuntime(input: {
   ctx: AdapterExecutionContext;
+  engine: AcpxEngineSettings;
 }): Promise<AcpxPreparedRuntime> {
   const { runId, agent, config, context, authToken } = input.ctx;
   const workspaceContext = parseObject(context.paperclipWorkspace);
+  const secretsContext = parseObject(context.paperclipSecrets);
+  const secretManifest = Array.isArray(secretsContext.manifest) ? secretsContext.manifest : [];
   const workspaceCwd = asString(workspaceContext.cwd, "");
   const workspaceSource = asString(workspaceContext.source, "");
   const workspaceStrategy = asString(workspaceContext.strategy, "");
@@ -772,7 +937,14 @@ async function buildRuntime(input: {
   const requestedModel = asString(config.model, "").trim();
   const requestedThinkingEffort = normalizeRequestedThinkingEffort(config);
   const fastMode = acpxAgent === "codex" && config.fastMode === true;
-  const timeoutSec = asNumber(config.timeoutSec, DEFAULT_ACPX_LOCAL_TIMEOUT_SEC);
+  // Resolve the wall-clock timeout through the shared execution-target
+  // resolver so sandbox-backed runs pick up the 4h backstop default while
+  // local/SSH runs keep the historical "0 = no adapter timeout" behavior.
+  const timeoutResolution = resolveAdapterExecutionTargetTimeout(
+    executionTarget,
+    asNumber(config.timeoutSec, DEFAULT_ACP_ENGINE_TIMEOUT_SEC),
+  );
+  const timeoutSec = timeoutResolution.timeoutSec;
   const stateDir = path.resolve(asString(config.stateDir, "") || defaultStateDir(agent.companyId, agent.id));
   await fs.mkdir(stateDir, { recursive: true });
 
@@ -843,6 +1015,7 @@ async function buildRuntime(input: {
     const preparedSkills = await prepareClaudeSkillRuntime({
       stateDir,
       config,
+      moduleDir: input.engine.moduleDir,
       onLog: input.ctx.onLog,
     });
     skillPromptInstructions = preparedSkills.promptInstructions;
@@ -864,12 +1037,24 @@ async function buildRuntime(input: {
       companyId: agent.companyId,
       config,
       env,
+      moduleDir: input.engine.moduleDir,
+      onLog: input.ctx.onLog,
+    });
+    skillsIdentity = preparedSkills.identity;
+    skillCommandNotes.push(...preparedSkills.commandNotes);
+  } else if (acpxAgent === "gemini") {
+    const preparedSkills = await prepareGeminiSkillRuntime({
+      config,
+      moduleDir: input.engine.moduleDir,
       onLog: input.ctx.onLog,
     });
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
   } else {
-    const desired = resolvePaperclipDesiredSkillNames(config, await readPaperclipRuntimeSkillEntries(config, __moduleDir));
+    const desired = resolvePaperclipDesiredSkillNames(
+      config,
+      await readPaperclipRuntimeSkillEntries(config, input.engine.moduleDir),
+    );
     skillsIdentity = { mode: "custom_unsupported", desiredSkillNames: desired };
     if (desired.length > 0) {
       skillCommandNotes.push("Selected Paperclip skills are tracked only; ACPX custom commands do not expose a runtime skill contract yet.");
@@ -877,9 +1062,19 @@ async function buildRuntime(input: {
   }
 
   const configuredCommand = asString(config.agentCommand, "").trim();
-  const builtInCommand = resolveBuiltInAgentCommand(acpxAgent);
-  const agentCommand = configuredCommand || builtInCommand || null;
-  const agentCommandShell = configuredCommand || (builtInCommand ? shellQuote(builtInCommand) : "");
+  const builtInCommand = await resolveBuiltInAgentCommand(acpxAgent, input.engine.packageRootDir);
+  let agentCommand = configuredCommand || builtInCommand?.command || null;
+  let agentCommandShell = configuredCommand || builtInCommand?.shellCommand || "";
+  if (acpxAgent === "gemini" && agentCommandShell) {
+    const normalized = await normalizeGeminiAcpCommandShell(
+      agentCommandShell,
+      ensurePathInEnv({ ...process.env, ...env }),
+    );
+    if (normalized !== agentCommandShell) {
+      agentCommandShell = normalized;
+      agentCommand = normalized;
+    }
+  }
   const childStderrDir = path.join(stateDir, "run-stderr");
   const childStderrLogPath = agentCommand ? path.join(childStderrDir, `${runId}.log`) : null;
   const wrapper = agentCommand
@@ -914,6 +1109,7 @@ async function buildRuntime(input: {
           defaultMode: paperclipClaudeSettings.defaultMode,
         }
       : null,
+    secretManifestHash: shortHash(secretManifest),
   });
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
   const sessionKey = `paperclip:${agent.companyId}:${agent.id}:${taskKey}:${fingerprint}`;
@@ -940,6 +1136,7 @@ async function buildRuntime(input: {
     requestedThinkingEffort,
     fastMode,
     timeoutSec,
+    timeoutResolution,
     sessionKey,
     fingerprint,
     agentCommand,
@@ -1005,7 +1202,40 @@ async function applySessionConfigOptions(input: {
   }
 }
 
-async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean): Promise<{
+function renderPaperclipEnvNote(env: Record<string, string>): string {
+  const paperclipKeys = Object.keys(env)
+    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .sort();
+  if (paperclipKeys.length === 0) return "";
+  return [
+    "Paperclip runtime note:",
+    `The following PAPERCLIP_* environment variables are available in this run: ${paperclipKeys.join(", ")}`,
+    "Do not assume these variables are missing without checking your shell environment.",
+  ].join("\n");
+}
+
+function renderApiAccessNote(env: Record<string, string>): string {
+  if (!env.PAPERCLIP_API_URL || !env.PAPERCLIP_API_KEY) return "";
+  const lines = [
+    "Paperclip API access note:",
+    "Use terminal commands with curl to make Paperclip API requests.",
+    "Normalize the base URL before adding API paths:",
+    `  PAPERCLIP_API_BASE="\${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="\${PAPERCLIP_API_BASE%/api}"`,
+    "GET example:",
+    `  curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_BASE/api/agents/me"`,
+  ];
+  if (env.PAPERCLIP_TASK_ID) {
+    lines.push(
+      "Scoped issue comment example:",
+      `  curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Content-Type: application/json" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -d '{"body":"Status update from agent."}' "$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID/comments"`,
+    );
+  } else {
+    lines.push("Use a real issue id from the current context before making issue write requests.");
+  }
+  return lines.join("\n");
+}
+
+async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean, env: Record<string, string>): Promise<{
   prompt: string;
   promptMetrics: Record<string, number>;
   commandNotes: string[];
@@ -1057,12 +1287,16 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
+  const paperclipEnvNote = renderPaperclipEnvNote(env);
+  const apiAccessNote = renderApiAccessNote(env);
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
     wakePrompt,
     sessionHandoffNote,
     taskContextNote,
+    paperclipEnvNote,
+    apiAccessNote,
     renderedPrompt,
   ]);
 
@@ -1076,6 +1310,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
       wakePromptChars: wakePrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
       taskContextChars: taskContextNote.length,
+      runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
       heartbeatPromptChars: renderedPrompt.length,
     },
   };
@@ -1258,8 +1493,8 @@ async function emitAcpxFailure(input: {
   err: unknown;
   phase: AcpxExecutionPhase;
   // Replace the err-derived message in both the stderr-tail log header and the
-  // acpx.error payload. Used by the turn path to surface "Timed out after Ns"
-  // instead of the raw underlying error message.
+  // acpx.error payload. Used by the turn path to surface the self-describing
+  // adapter execution timeout message instead of the raw underlying error.
   messageOverride?: string;
 }): Promise<{
   classified: Pick<AdapterExecutionResult, "errorCode" | "errorMeta">;
@@ -1373,17 +1608,26 @@ function warmHandleMatches(
   runtime: AcpRuntime,
   handle: AcpRuntimeHandle,
 ): boolean {
-  return entry?.runtime === runtime && entry.handle === handle;
+  return entry !== undefined && entry.runtime === runtime && entry.handle === handle;
 }
 
-export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
+export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const createRuntime = deps.createRuntime ?? createAcpRuntime;
   const now = deps.now ?? (() => Date.now());
   const warmHandles = deps.warmHandles ?? defaultWarmHandles;
+  const engine = resolveEngineSettings(deps);
 
-  return async function executeAcpxLocal(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-    const prepared = await buildRuntime({ ctx });
-    const warmIdleMs = asNumber(ctx.config.warmHandleIdleMs, DEFAULT_ACPX_LOCAL_WARM_HANDLE_IDLE_MS);
+  return async function executeAcpxEngine(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+    const prepared = await buildRuntime({ ctx, engine });
+    // State the effective wall-clock timeout and its source up front so a
+    // later timeout is diagnosable from the run log alone. Goes to stderr:
+    // the acpx stdout log stream carries JSON acpx.* event payloads and must
+    // stay machine-parseable line by line.
+    await ctx.onLog(
+      "stderr",
+      `[paperclip] ${formatAdapterExecutionTimeoutStartLogLine(prepared.timeoutResolution)}\n`,
+    );
+    const warmIdleMs = asNumber(ctx.config.warmHandleIdleMs, DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS);
     await cleanupIdleHandles({ handles: warmHandles, now: now(), idleMs: warmIdleMs });
 
     const previousParams = parseObject(ctx.runtime.sessionParams);
@@ -1397,8 +1641,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       permissionMode: prepared.permissionMode,
       nonInteractivePermissions: prepared.nonInteractivePermissions,
       timeoutMs: prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined,
-      // Scope ACPX runtime verbose logs to the claude agent only — that's the
-      // surface we know needs the extra session-event detail (PAPA-388). codex
+      // Scope ACPX runtime verbose logs to the claude agent only. Codex
       // and custom agents already emit their own per-tool output and don't
       // benefit from doubling the log volume.
       verbose: prepared.acpxAgent === "claude",
@@ -1520,7 +1763,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         summary: message,
       };
     }
-    const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession);
+    const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env);
     const runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
     await emitAcpxLog(ctx, {
       type: "acpx.session",
@@ -1537,7 +1780,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
     });
     if (ctx.onMeta) {
       await ctx.onMeta({
-        adapterType: "acpx_local",
+        adapterType: engine.adapterType,
         command: prepared.agentCommand ?? prepared.acpxAgent,
         cwd: prepared.cwd,
         commandNotes: [
@@ -1576,7 +1819,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         timeout = setTimeout(() => {
           timedOut = true;
           controller?.abort();
-          void cancelActiveTurn?.(`Timed out after ${prepared.timeoutSec}s`).catch(() => {});
+          void cancelActiveTurn?.(formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)).catch(() => {});
         }, timeoutMs);
       }
       const turn = runtime.startTurn({
@@ -1656,7 +1899,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       }
 
       const errorMessage = timedOut
-        ? `Timed out after ${prepared.timeoutSec}s`
+        ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
         : resultErrorMessage(terminal);
       const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
       await emitAcpxLog(ctx, {
@@ -1692,7 +1935,9 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       };
     } catch (err) {
       if (timeout) clearTimeout(timeout);
-      const messageOverride = timedOut ? `Timed out after ${prepared.timeoutSec}s` : undefined;
+      const messageOverride = timedOut
+        ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
+        : undefined;
       const cancel = cancelActiveTurn as ((reason: string) => Promise<void>) | null;
       const preEmitMessage =
         messageOverride ?? (err instanceof Error ? err.message : String(err));
@@ -1731,4 +1976,5 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
   };
 }
 
-export const execute = createAcpxLocalExecutor();
+
+export const execute = createAcpxEngineExecutor();
