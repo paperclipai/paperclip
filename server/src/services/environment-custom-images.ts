@@ -192,7 +192,7 @@ function providerErrorMessage(error: unknown): string {
 function isProviderMissingTemplateError(error: unknown): boolean {
   const message = providerErrorMessage(error).toLowerCase();
   return (
-    (message.includes("snapshot") || message.includes("template") || message.includes("image"))
+    (message.includes("snapshot") || message.includes("template"))
     && (message.includes("not found") || message.includes("missing"))
   );
 }

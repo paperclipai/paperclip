@@ -459,6 +459,43 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     });
   });
 
+  it("does not rewrite generic missing image setup failures as template conflicts", async () => {
+    const { environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    workerManager.call.mockImplementation(async (_pluginId, method) => {
+      if (method === "environmentStartInteractiveSetup") {
+        throw new Error("Base image not found in registry");
+      }
+      throw new Error(`Unexpected plugin call: ${method}`);
+    });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+    const [template] = await db.insert(environmentCustomImageTemplates).values({
+      environmentId,
+      provider: "fake-plugin",
+      templateKind: "snapshot",
+      templateRef: "snapshot-valid",
+      status: "active",
+    }).returning();
+
+    await expect(service.startSetupSession({
+      environmentId,
+      templateId: template!.id,
+      actor: { userId: "user-1" },
+    })).rejects.toThrow("Base image not found in registry");
+
+    const [session] = await db
+      .select({
+        status: environmentCustomImageSetupSessions.status,
+        failureReason: environmentCustomImageSetupSessions.failureReason,
+      })
+      .from(environmentCustomImageSetupSessions)
+      .where(eq(environmentCustomImageSetupSessions.templateId, template!.id));
+    expect(session).toEqual({
+      status: "failed",
+      failureReason: "Base image not found in registry",
+    });
+  });
+
   it("applies the active template regardless of base-config changes and falls back when none exists", async () => {
     const { companyId, environmentId } = await seed();
     const environment = await db.select().from(environments).where(eq(environments.id, environmentId)).then((rows) => rows[0]!);

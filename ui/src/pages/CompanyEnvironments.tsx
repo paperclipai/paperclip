@@ -215,7 +215,7 @@ function readStringValue(value: unknown): string | null {
 }
 
 function sandboxProbeLifecycleNote(probe: EnvironmentProbeResult): string | null {
-  if (probe.driver !== "sandbox") return null;
+  if (probe.driver !== "sandbox" || !probe.ok) return null;
   const metadata = readProbeMetadata(probe);
   const provider = readStringValue(metadata.provider) ?? readStringValue(readRecord(probe.details)?.provider) ?? "sandbox";
   const sandboxName = readStringValue(metadata.sandboxName);
