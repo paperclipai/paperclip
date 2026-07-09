@@ -127,3 +127,4 @@ describe("company routes", () => {
     expect(toCompanyRelativePath("/docs/api")).toBe("/docs/api");
   });
 });
+
