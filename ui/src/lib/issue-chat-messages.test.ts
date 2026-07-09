@@ -1117,6 +1117,36 @@ describe("buildIssueChatMessages", () => {
 });
 
 describe("stabilizeThreadMessages", () => {
+  it("reveals live streamed additions at word boundaries instead of character boundaries", () => {
+    expect(preserveReadableStreamingRetraction(
+      "Writing ",
+      "Writing the pla",
+    )).toBe("Writing the ");
+    expect(preserveReadableStreamingRetraction(
+      "Writing ",
+      "Writing the plan ",
+    )).toBe("Writing the plan ");
+    expect(preserveReadableStreamingRetraction(
+      "Writing ",
+      "Writing the plan.",
+    )).toBe("Writing the plan.");
+  });
+
+  it("holds sliding-window removals until an older paragraph or group boundary drops", () => {
+    expect(preserveReadableStreamingRetraction(
+      "First sentence. Second sentence is visible",
+      "irst sentence. Second sentence is visible now ",
+    )).toBe("First sentence. Second sentence is visible now ");
+    expect(preserveReadableStreamingRetraction(
+      "First sentence. Second sentence is visible",
+      "Second sentence is visible now ",
+    )).toBe("Second sentence is visible now ");
+    expect(preserveReadableStreamingRetraction(
+      "Paragraph one.\n\nParagraph two is visible",
+      "Paragraph two is visible now ",
+    )).toBe("Paragraph two is visible now ");
+  });
+
   it("keeps live streamed retractions readable until a whole line disappears", () => {
     expect(preserveReadableStreamingRetraction(
       "First line\nSecond line\nThird line is complete",

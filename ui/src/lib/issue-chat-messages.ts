@@ -128,8 +128,23 @@ function isLiveRunThreadMessage(message: ThreadMessage) {
 
 export function preserveReadableStreamingRetraction(previousText: string, nextText: string) {
   if (!previousText || !nextText) return nextText;
+
+  if (nextText.length >= previousText.length && nextText.startsWith(previousText)) {
+    return revealCompleteStreamingWords(previousText, nextText);
+  }
+
+  const overlapLength = longestSuffixPrefixOverlap(previousText, nextText);
+  if (overlapLength > 0 && overlapLength < previousText.length) {
+    const removedPrefix = previousText.slice(0, previousText.length - overlapLength);
+    if (isQuietStreamingRemovalBoundary(removedPrefix)) {
+      return nextText;
+    }
+
+    return revealCompleteStreamingWords(previousText, previousText + nextText.slice(overlapLength));
+  }
+
   if (nextText.length >= previousText.length || !previousText.startsWith(nextText)) {
-    return nextText;
+    return revealCompleteStreamingWords(previousText, nextText);
   }
 
   const nextLength = nextText.length;
@@ -138,6 +153,44 @@ export function preserveReadableStreamingRetraction(previousText: string, nextTe
   const nextLineBreak = previousText.indexOf("\n", nextLength);
   if (nextLineBreak === -1) return previousText;
   return previousText.slice(0, nextLineBreak);
+}
+
+function revealCompleteStreamingWords(previousText: string, nextText: string) {
+  if (nextText.length <= previousText.length || !nextText.startsWith(previousText)) {
+    return nextText;
+  }
+
+  const addedText = nextText.slice(previousText.length);
+  if (!addedText) return nextText;
+
+  const boundaryIndex = lastReadableWordBoundary(addedText);
+  if (boundaryIndex === -1) return previousText;
+  return previousText + addedText.slice(0, boundaryIndex + 1);
+}
+
+function lastReadableWordBoundary(text: string) {
+  let index = -1;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (/\s/.test(char) || /[.,;:!?)}\]"'`]/.test(char)) {
+      index = i;
+    }
+  }
+  return index;
+}
+
+function longestSuffixPrefixOverlap(previousText: string, nextText: string) {
+  const maxLength = Math.min(previousText.length, nextText.length);
+  for (let length = maxLength; length > 0; length -= 1) {
+    if (previousText.endsWith(nextText.slice(0, length))) {
+      return length;
+    }
+  }
+  return 0;
+}
+
+function isQuietStreamingRemovalBoundary(removedPrefix: string) {
+  return /(?:\n\s*\n|\n|[.!?]\s+)$/.test(removedPrefix);
 }
 
 function smoothLiveRunRetractions(
