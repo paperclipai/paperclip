@@ -18,8 +18,20 @@ import { formatAssigneeUserLabel } from "./assignees";
 export const RECENT_ISSUES_LIMIT = 100;
 export const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
 export const ACTIONABLE_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
-export const DISMISSED_KEY = "paperclip:inbox:dismissed";
-export const READ_ITEMS_KEY = "paperclip:inbox:read-items";
+// Company-scoped storage key prefixes. State is namespaced per company so
+// read/dismiss state never bleeds or goes stale across workspaces.
+export const DISMISSED_KEY_PREFIX = "paperclip:inbox:dismissed";
+export const READ_ITEMS_KEY_PREFIX = "paperclip:inbox:read-items";
+
+export function getDismissedAlertsStorageKey(companyId: string | null | undefined): string | null {
+  if (!companyId) return null;
+  return `${DISMISSED_KEY_PREFIX}:${companyId}`;
+}
+
+export function getReadItemsStorageKey(companyId: string | null | undefined): string | null {
+  if (!companyId) return null;
+  return `${READ_ITEMS_KEY_PREFIX}:${companyId}`;
+}
 export const INBOX_LAST_TAB_KEY = "paperclip:inbox:last-tab";
 export const INBOX_ISSUE_COLUMNS_KEY = "paperclip:inbox:issue-columns";
 export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
@@ -271,9 +283,11 @@ export function saveCollapsedInboxGroupKeys(
   }
 }
 
-export function loadDismissedInboxAlerts(): Set<string> {
+export function loadDismissedInboxAlerts(companyId: string | null | undefined): Set<string> {
+  const key = getDismissedAlertsStorageKey(companyId);
+  if (!key) return new Set();
   try {
-    const raw = localStorage.getItem(DISMISSED_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return new Set();
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return new Set();
@@ -283,9 +297,11 @@ export function loadDismissedInboxAlerts(): Set<string> {
   }
 }
 
-export function saveDismissedInboxAlerts(ids: Set<string>) {
+export function saveDismissedInboxAlerts(companyId: string | null | undefined, ids: Set<string>) {
+  const key = getDismissedAlertsStorageKey(companyId);
+  if (!key) return;
   try {
-    localStorage.setItem(DISMISSED_KEY, JSON.stringify([...ids]));
+    localStorage.setItem(key, JSON.stringify([...ids]));
   } catch {
     // Ignore localStorage failures.
   }
@@ -307,18 +323,22 @@ export function isInboxEntityDismissed(
   return dismissedAt >= normalizeTimestamp(activityAt);
 }
 
-export function loadReadInboxItems(): Set<string> {
+export function loadReadInboxItems(companyId: string | null | undefined): Set<string> {
+  const key = getReadItemsStorageKey(companyId);
+  if (!key) return new Set();
   try {
-    const raw = localStorage.getItem(READ_ITEMS_KEY);
+    const raw = localStorage.getItem(key);
     return raw ? new Set(JSON.parse(raw)) : new Set();
   } catch {
     return new Set();
   }
 }
 
-export function saveReadInboxItems(ids: Set<string>) {
+export function saveReadInboxItems(companyId: string | null | undefined, ids: Set<string>) {
+  const key = getReadItemsStorageKey(companyId);
+  if (!key) return;
   try {
-    localStorage.setItem(READ_ITEMS_KEY, JSON.stringify([...ids]));
+    localStorage.setItem(key, JSON.stringify([...ids]));
   } catch {
     // Ignore localStorage failures.
   }

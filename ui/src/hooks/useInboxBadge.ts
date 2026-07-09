@@ -17,7 +17,8 @@ import {
   saveDismissedInboxAlerts,
   loadReadInboxItems,
   saveReadInboxItems,
-  READ_ITEMS_KEY,
+  DISMISSED_KEY_PREFIX,
+  READ_ITEMS_KEY_PREFIX,
 } from "../lib/inbox";
 
 const INBOX_ISSUE_STATUSES = "backlog,todo,in_progress,in_review,blocked,done";
@@ -25,23 +26,29 @@ const INBOX_BADGE_ISSUE_LIMIT = 500;
 const INBOX_BADGE_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_BADGE_HOT_PATH_STALE_MS = 30_000;
 
-export function useDismissedInboxAlerts() {
-  const [dismissed, setDismissed] = useState<Set<string>>(loadDismissedInboxAlerts);
+export function useDismissedInboxAlerts(companyId: string | null | undefined) {
+  const [dismissed, setDismissed] = useState<Set<string>>(() => loadDismissedInboxAlerts(companyId));
+
+  // Reload the scoped set whenever the active company changes so state never
+  // bleeds across workspaces.
+  useEffect(() => {
+    setDismissed(loadDismissedInboxAlerts(companyId));
+  }, [companyId]);
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
-      if (event.key !== "paperclip:inbox:dismissed") return;
-      setDismissed(loadDismissedInboxAlerts());
+      if (!event.key || !event.key.startsWith(DISMISSED_KEY_PREFIX)) return;
+      setDismissed(loadDismissedInboxAlerts(companyId));
     };
     window.addEventListener("storage", handleStorage);
     return () => window.removeEventListener("storage", handleStorage);
-  }, []);
+  }, [companyId]);
 
   const dismiss = (id: string) => {
     setDismissed((prev) => {
       const next = new Set(prev);
       next.add(id);
-      saveDismissedInboxAlerts(next);
+      saveDismissedInboxAlerts(companyId, next);
       return next;
     });
   };
@@ -106,23 +113,29 @@ export function useInboxDismissals(companyId: string | null | undefined) {
   };
 }
 
-export function useReadInboxItems() {
-  const [readItems, setReadItems] = useState<Set<string>>(loadReadInboxItems);
+export function useReadInboxItems(companyId: string | null | undefined) {
+  const [readItems, setReadItems] = useState<Set<string>>(() => loadReadInboxItems(companyId));
+
+  // Reload the scoped set whenever the active company changes so read state
+  // never bleeds or goes stale across workspaces.
+  useEffect(() => {
+    setReadItems(loadReadInboxItems(companyId));
+  }, [companyId]);
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
-      if (event.key !== READ_ITEMS_KEY) return;
-      setReadItems(loadReadInboxItems());
+      if (!event.key || !event.key.startsWith(READ_ITEMS_KEY_PREFIX)) return;
+      setReadItems(loadReadInboxItems(companyId));
     };
     window.addEventListener("storage", handleStorage);
     return () => window.removeEventListener("storage", handleStorage);
-  }, []);
+  }, [companyId]);
 
   const markRead = (id: string) => {
     setReadItems((prev) => {
       const next = new Set(prev);
       next.add(id);
-      saveReadInboxItems(next);
+      saveReadInboxItems(companyId, next);
       return next;
     });
   };
@@ -131,7 +144,7 @@ export function useReadInboxItems() {
     setReadItems((prev) => {
       const next = new Set(prev);
       next.delete(id);
-      saveReadInboxItems(next);
+      saveReadInboxItems(companyId, next);
       return next;
     });
   };
@@ -140,7 +153,7 @@ export function useReadInboxItems() {
 }
 
 export function useInboxBadge(companyId: string | null | undefined) {
-  const { dismissed: dismissedAlerts } = useDismissedInboxAlerts();
+  const { dismissed: dismissedAlerts } = useDismissedInboxAlerts(companyId);
   const { dismissedAtByKey } = useInboxDismissals(companyId);
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,

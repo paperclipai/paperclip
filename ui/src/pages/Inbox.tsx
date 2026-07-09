@@ -691,9 +691,9 @@ export function Inbox() {
   const [blockedGroupBy, setBlockedGroupBy] = useState<BlockedInboxGroupBy>("none");
   const [blockedSortBy, setBlockedSortBy] = useState<BlockedInboxSort>("most_recent");
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(loadInboxIssueColumns);
-  const { dismissed: dismissedAlerts, dismiss: dismissAlert } = useDismissedInboxAlerts();
+  const { dismissed: dismissedAlerts, dismiss: dismissAlert } = useDismissedInboxAlerts(selectedCompanyId);
   const { dismissedAtByKey, dismiss: dismissInboxItem } = useInboxDismissals(selectedCompanyId);
-  const { readItems, markRead: markItemRead, markUnread: markItemUnread } = useReadInboxItems();
+  const { readItems, markRead: markItemRead, markUnread: markItemUnread } = useReadInboxItems(selectedCompanyId);
   const { allCategoryFilter, allApprovalFilter, issueFilters } = filterPreferences;
 
   const pathSegment = location.pathname.split("/").pop() ?? "mine";
@@ -1746,13 +1746,16 @@ export function Inbox() {
   }, [markItemRead]);
 
   const handleArchiveNonIssue = useCallback((key: string) => {
+    // Fire the dismissal immediately (both paths are optimistic) so the click
+    // registers instantly — the fade class is cleared separately and never
+    // gates the mutation.
     setArchivingNonIssueIds((prev) => new Set(prev).add(key));
+    if (key.startsWith("alert:")) {
+      dismissAlert(key);
+    } else {
+      dismissInboxItem(key);
+    }
     setTimeout(() => {
-      if (key.startsWith("alert:")) {
-        dismissAlert(key);
-      } else {
-        dismissInboxItem(key);
-      }
       setArchivingNonIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(key);
@@ -1778,6 +1781,11 @@ export function Inbox() {
   useEffect(() => {
     setUndoableArchiveIssueIds([]);
     setUnarchivingIssueIds(new Set());
+    // Clear transient animation state so a stale fade/archiving class from the
+    // previous workspace never lingers after switching companies.
+    setFadingOutIssues(new Set());
+    setFadingNonIssueItems(new Set());
+    setArchivingNonIssueIds(new Set());
   }, [selectedCompanyId]);
 
   // Use refs for keyboard handler to avoid stale closures
