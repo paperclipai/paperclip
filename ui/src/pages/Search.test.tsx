@@ -724,4 +724,121 @@ describe("Search page", () => {
     });
   });
 
+  function emptyResponse(overrides: Record<string, unknown> = {}) {
+    return {
+      query: "auth",
+      normalizedQuery: "auth",
+      scope: "all",
+      limit: 20,
+      offset: 0,
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
+      hasMore: false,
+      results: [],
+      ...overrides,
+    };
+  }
+
+  it("round-trips the sort param through the URL and into the search request", async () => {
+    searchApiMock.search.mockResolvedValue(emptyResponse({ sort: "updated" }));
+
+    const { root } = renderSearch("/search?q=auth&sort=updated", container);
+
+    await waitForAssertion(() => {
+      expect(searchApiMock.search).toHaveBeenCalledWith("company-1", {
+        q: "auth",
+        scope: "all",
+        limit: 20,
+        sort: "updated",
+      });
+    });
+
+    await waitForAssertion(() => {
+      // The Sort menu trigger reflects the active sort.
+      expect(container.textContent).toContain("Recently updated");
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders a removable filter chip and re-queries without the filter when removed", async () => {
+    searchApiMock.search.mockResolvedValue(emptyResponse());
+
+    const { root } = renderSearch("/search?q=auth&status=todo", container);
+
+    // First request carries the status filter from the URL.
+    await waitForAssertion(() => {
+      expect(searchApiMock.search).toHaveBeenCalledWith("company-1", {
+        q: "auth",
+        scope: "all",
+        limit: 20,
+        status: ["todo"],
+      });
+    });
+
+    // A removable chip is rendered for the active filter.
+    const removeButton = await (async () => {
+      let button: HTMLButtonElement | null = null;
+      await waitForAssertion(() => {
+        button = container.querySelector<HTMLButtonElement>('button[aria-label="Remove filter Status: Todo"]');
+        expect(button).not.toBeNull();
+      });
+      return button!;
+    })();
+
+    flushSync(() => {
+      removeButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // After removal the search re-fires with no status filter.
+    await waitForAssertion(() => {
+      const lastCall = searchApiMock.search.mock.calls.at(-1);
+      expect(lastCall?.[1]).toEqual({ q: "auth", scope: "all", limit: 20 });
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders zero-results recovery with loosen suggestions when filters empty the page", async () => {
+    searchApiMock.search.mockResolvedValueOnce(
+      emptyResponse({
+        zeroResults: {
+          unfilteredTotal: 12,
+          loosenSuggestions: [
+            { filter: "status", values: ["done"], resultCount: 12, additionalCount: 12 },
+          ],
+        },
+      }),
+    );
+
+    const { root } = renderSearch("/search?q=auth&status=done", container);
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="search-zero-results-recovery"]')).not.toBeNull();
+      expect(container.textContent).toContain("No results with these filters");
+      expect(container.textContent).toContain("12 results match");
+      expect(container.textContent).toContain("Loosen a filter");
+      expect(container.textContent).toContain("+12 results");
+      expect(container.textContent).toContain("Clear all filters");
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
 });

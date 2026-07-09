@@ -127,14 +127,26 @@ export function buildFilterChips(filters: SearchFilters, lookups: FilterChipLook
     chips.push({
       id: `status:${status}`,
       label: `Status: ${humanize(status)}`,
-      remove: (current) => ({ ...current, status: (current.status ?? []).filter((value) => value !== status) }),
+      remove: (current) => {
+        const next = { ...current };
+        const remaining = (current.status ?? []).filter((value) => value !== status);
+        if (remaining.length > 0) next.status = remaining;
+        else delete next.status;
+        return next;
+      },
     });
   }
   for (const priority of filters.priority ?? []) {
     chips.push({
       id: `priority:${priority}`,
       label: `Priority: ${humanize(priority)}`,
-      remove: (current) => ({ ...current, priority: (current.priority ?? []).filter((value) => value !== priority) }),
+      remove: (current) => {
+        const next = { ...current };
+        const remaining = (current.priority ?? []).filter((value) => value !== priority);
+        if (remaining.length > 0) next.priority = remaining;
+        else delete next.priority;
+        return next;
+      },
     });
   }
   if (filters.assigneeAgentId !== undefined || filters.assigneeUserId) {
