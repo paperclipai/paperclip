@@ -170,6 +170,59 @@ describe("codex local adapter skill injection", () => {
     );
   });
 
+  it("repairs a Codex skill symlink that still points at a stale company-owned corpus", async () => {
+    const instanceRoot = await makeTempDir("paperclip-codex-instance-");
+    const skillsHome = await makeTempDir("paperclip-codex-home-");
+    cleanupDirs.add(instanceRoot);
+    cleanupDirs.add(skillsHome);
+
+    const staleCompanyOwnedDir = await createCompanyOwnedSkill(instanceRoot, companyId, "modern-delivery");
+    const currentSource = path.join(
+      instanceRoot,
+      "companies",
+      companyId,
+      "skills",
+      "modern-delivery-v2",
+    );
+    await fs.mkdir(currentSource, { recursive: true });
+    await fs.writeFile(
+      path.join(currentSource, "SKILL.md"),
+      "---\nname: modern-delivery-v2\n---\n",
+      "utf8",
+    );
+    await fs.mkdir(path.join(currentSource, "references"), { recursive: true });
+    await fs.writeFile(path.join(currentSource, "references", "governance.md"), "# governance v2\n", "utf8");
+    await fs.symlink(
+      staleCompanyOwnedDir,
+      path.join(skillsHome, modernDeliveryRuntimeName),
+    );
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    await ensureCodexSkillsInjected(
+      async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+      {
+        skillsHome,
+        skillsEntries: [{
+          key: modernDeliveryKey,
+          runtimeName: modernDeliveryRuntimeName,
+          source: currentSource,
+        }],
+      },
+    );
+
+    expect(await fs.realpath(path.join(skillsHome, modernDeliveryRuntimeName))).toBe(
+      await fs.realpath(currentSource),
+    );
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        stream: "stdout",
+        chunk: expect.stringContaining(`Repaired Codex skill "${modernDeliveryRuntimeName}"`),
+      }),
+    );
+  });
+
   it("preserves a custom Codex skill symlink outside Paperclip repo checkouts", async () => {
     const currentRepo = await makeTempDir("paperclip-codex-current-");
     const customRoot = await makeTempDir("paperclip-codex-custom-");

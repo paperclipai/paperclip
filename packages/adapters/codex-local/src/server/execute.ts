@@ -162,8 +162,13 @@ async function isLikelyManagedInstanceSkillPath(
   const skillsIdx = segments.lastIndexOf("skills");
   if (skillsIdx < 0) return false;
 
-  const skillsParent = skillsIdx > 0 ? segments[skillsIdx - 1] : "";
-  if (skillsParent === "companies") {
+  // Company-owned corpus: .../companies/<companyId>/skills/<slug>
+  const companiesIdx = skillsIdx - 2;
+  if (
+    companiesIdx >= 0 &&
+    segments[companiesIdx] === "companies" &&
+    segments[skillsIdx - 1]?.length > 0
+  ) {
     if (options.requireSkillMarkdown !== false && !(await pathExists(path.join(normalized, "SKILL.md")))) {
       return false;
     }
