@@ -24,7 +24,11 @@ import {
 } from "@/components/ui/tooltip";
 import { Activity, ArrowDown, History, MessageSquarePlus, X } from "lucide-react";
 import { ActivityFeed } from "../components/ActivityFeed";
-import { ChatComposer, type ChatComposerHandle } from "../components/ChatComposer";
+import {
+  MarkdownEditor,
+  type MarkdownEditorRef,
+  type MentionOption,
+} from "../components/MarkdownEditor";
 import {
   AgentBubbleActionRow,
   agentBubbleDateLabel,
@@ -32,12 +36,13 @@ import {
 import { AgentIcon } from "../components/AgentIconPicker";
 import { cn, formatDateTime } from "../lib/utils";
 import type { FeedbackVoteValue } from "@paperclipai/shared";
+import type { BoardChatMessageResponse } from "@paperclipai/shared";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 
 /**
- * Board Concierge Chat — a chat interface powered by the board-member skill.
- * Uses /board/chat/stream to invoke Claude with the board skill as system prompt.
- * The user manages their Paperclip company through natural conversation.
+ * Conference Room — issue-backed chat with silent-until-@ mentions.
+ * Messages without structured agent mentions persist only; mentions return
+ * adapter_wake_pending (host run + reply lands in P1).
  */
 /** Hit zone to the right of the 1px line (line sits on chat pane’s right edge). */
 const SPLIT_DIVIDER_PX = 12;
@@ -182,6 +187,7 @@ export function BoardChat() {
   );
 
   const [input, setInput] = useState("");
+  const inputRef = useRef("");
   /** Guards the draft-persistence effect so it doesn't overwrite a saved
    *  draft with "" before we've had a chance to load it. */
   const loadedDraftCompanyRef = useRef<string | null>(null);
@@ -189,13 +195,14 @@ export function BoardChat() {
   const [streamingText, setStreamingText] = useState("");
   const [statusText, setStatusText] = useState("");
   const [errorText, setErrorText] = useState("");
+  const [statusNotice, setStatusNotice] = useState("");
   const [boardIssueId, setBoardIssueId] = useState<string | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [optimisticMessage, setOptimisticMessage] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const hasRestoredScrollRef = useRef(false);
-  const composerRef = useRef<ChatComposerHandle>(null);
+  const composerRef = useRef<MarkdownEditorRef>(null);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   /** True when the user is scrolled away from the bottom AND new content
@@ -251,8 +258,10 @@ export function BoardChat() {
         `paperclip.boardChat.draft.${selectedCompanyId}`,
       );
       setInput(saved ?? "");
+      inputRef.current = saved ?? "";
     } catch {
       setInput("");
+      inputRef.current = "";
     }
     loadedDraftCompanyRef.current = selectedCompanyId;
   }, [selectedCompanyId]);
@@ -330,6 +339,20 @@ export function BoardChat() {
   // Agent lookup so each bubble can show its author's name + icon header.
   const agentMap = useMemo(
     () => new Map((agents ?? []).map((a) => [a.id, a] as const)),
+    [agents],
+  );
+
+  const mentionOptions = useMemo<MentionOption[]>(
+    () =>
+      (agents ?? [])
+        .filter((agent) => agent.status !== "terminated")
+        .map((agent) => ({
+          id: `agent:${agent.id}`,
+          name: agent.name,
+          kind: "agent" as const,
+          agentId: agent.id,
+          agentIcon: agent.icon,
+        })),
     [agents],
   );
 
@@ -549,17 +572,16 @@ export function BoardChat() {
       const trimmed = body.trim();
       if (!trimmed || sending || !selectedCompanyId) return;
 
-      // Show user message immediately
       setOptimisticMessage(trimmed);
       setSending(true);
       setInput("");
+      inputRef.current = "";
       setStreamingText("");
       setErrorText("");
-      setStatusText("Connecting...");
+      setStatusText("");
+      setStatusNotice("");
 
       try {
-        const controller = new AbortController();
-        const fetchTimeout = setTimeout(() => controller.abort(), 130000);
         const res = await fetch("/api/board/chat/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -568,73 +590,48 @@ export function BoardChat() {
             message: trimmed,
             taskId: boardIssueId ?? undefined,
           }),
-          signal: controller.signal,
         });
-        clearTimeout(fetchTimeout);
 
-        if (!res.ok || !res.body) {
-          throw new Error("Board chat stream not available");
-        }
+        const payload = (await res.json().catch(() => ({}))) as
+          | BoardChatMessageResponse
+          | { error?: string; code?: string; message?: string };
 
-        setStatusText("Thinking...");
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let accumulated = "";
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            try {
-              const event = JSON.parse(line.slice(6));
-              if (event.type === "chunk" && event.text) {
-                accumulated += event.text;
-                setStreamingText(accumulated);
-                setStatusText("");
-              } else if (event.type === "status" && event.text) {
-                setStatusText(event.text);
-              } else if (event.type === "start" && event.issueId) {
-                setBoardIssueId(event.issueId);
-              } else if (event.type === "error") {
-                setErrorText(
-                  event.message ||
-                    "The board assistant couldn't respond. Please try again.",
-                );
-                setStatusText("");
-              } else if (event.type === "done") {
-                if (event.issueId) {
-                  queryClient.invalidateQueries({
-                    queryKey: queryKeys.issues.comments(event.issueId),
-                  });
-                  queryClient.invalidateQueries({
-                    queryKey: queryKeys.issues.list(selectedCompanyId),
-                  });
-                }
-              }
-            } catch {
-              /* malformed SSE line */
-            }
+        if (!res.ok) {
+          const code = "code" in payload ? payload.code : undefined;
+          if (code === "FANOUT_NOT_ENABLED") {
+            throw new Error(
+              "Mencione um agente por vez. Fan-out @A @B chega na fase P2.",
+            );
           }
+          throw new Error(
+            ("error" in payload && payload.error) ||
+              "Não foi possível enviar a mensagem para a Conference Room.",
+          );
         }
 
-        setStreamingText("");
-        setStatusText("");
-        if (boardIssueId) {
-          queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(boardIssueId) });
+        const result = payload as BoardChatMessageResponse;
+
+        if (result.issueId) {
+          setBoardIssueId(result.issueId);
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.issues.comments(result.issueId),
+          });
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.issues.list(selectedCompanyId),
+          });
+        }
+
+        if (result.mode === "adapter_wake_pending") {
+          setStatusNotice(
+            "Menção registrada. O agente será acordado na próxima fase (P1).",
+          );
         }
       } catch (err) {
         console.error("Board chat error:", err);
-        setStatusText("");
         setErrorText(
-          "The board assistant is unavailable right now. Please try again in a moment.",
+          err instanceof Error
+            ? err.message
+            : "A Conference Room está indisponível. Tente novamente em instantes.",
         );
       } finally {
         setSending(false);
@@ -645,8 +642,13 @@ export function BoardChat() {
   );
 
   const handleSend = useCallback(() => {
-    sendMessage(input);
-  }, [input, sendMessage]);
+    sendMessage(inputRef.current);
+  }, [sendMessage]);
+
+  const handleInputChange = useCallback((value: string) => {
+    inputRef.current = value;
+    setInput(value);
+  }, []);
 
   // NOTE: declared before the early return below — all hooks must run on
   // every render (Rules of Hooks). Placing it after the `!selectedCompanyId`
@@ -660,7 +662,7 @@ export function BoardChat() {
         <div className="text-center max-w-sm">
           <h2 className="text-lg font-semibold">No company selected</h2>
           <p className="text-sm text-muted-foreground mt-2">
-            Select a company to start chatting with your board concierge.
+            Select a company to open the Conference Room.
           </p>
         </div>
       </div>
@@ -794,6 +796,7 @@ export function BoardChat() {
                             type="button"
                             onClick={() => {
                               setInput(chip.prompt);
+                              inputRef.current = chip.prompt;
                               composerRef.current?.focus();
                             }}
                             className="rounded-full border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
@@ -899,7 +902,13 @@ export function BoardChat() {
                    is preparing a reply but no text has streamed yet. Shows
                    alongside the user's optimistic bubble to make the
                    turn-taking feel alive. */}
-              {sending && !streamingText && <TypingBubble />}
+              {sending && !streamingText && statusText ? <TypingBubble /> : null}
+
+              {statusNotice && !sending ? (
+                <div className="pl-1 text-xs text-muted-foreground" role="status">
+                  {statusNotice}
+                </div>
+              ) : null}
 
               {/* Status bar — always visible while sending, independent from the chat bubble */}
               {sending && (
@@ -960,18 +969,17 @@ export function BoardChat() {
                (mirrors IssueChatThread's composer dock). pointer-events pass through
                the fade so the scrollbar stays usable; the composer re-enables them. */}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-background via-background/95 to-background/0 px-6 pt-6 pb-5">
-            <ChatComposer
+            <MarkdownEditor
               ref={composerRef}
               value={input}
-              onChange={setInput}
+              onChange={handleInputChange}
               onSubmit={handleSend}
-              placeholder="Ask anything about your company..."
-              submitKey="enter"
-              surface="translucent"
-              submitting={sending}
-              disabled={sending}
-              sendLabel="Send message"
-              className="pointer-events-auto"
+              placeholder="Mensagem à sala… use @ para chamar um agente"
+              mentions={mentionOptions}
+              readOnly={sending}
+              bordered={false}
+              contentClassName="max-h-[28dvh] overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
+              className="pointer-events-auto rounded-xl border border-border/80 bg-background/80 backdrop-blur-sm"
             />
           </div>
         </div>

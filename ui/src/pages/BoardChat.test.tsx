@@ -52,10 +52,10 @@ vi.mock("../components/ActivityFeed", () => ({
 vi.mock("../components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
-vi.mock("../components/ChatComposer", () => ({
-  ChatComposer: forwardRef((_props, ref) => {
+vi.mock("../components/MarkdownEditor", () => ({
+  MarkdownEditor: forwardRef((_props, ref) => {
     useImperativeHandle(ref, () => ({ focus: vi.fn() }));
-    return <div data-testid="chat-composer" />;
+    return <div data-testid="markdown-editor" />;
   }),
 }));
 vi.mock("../components/AgentBubbleActionRow", () => ({
