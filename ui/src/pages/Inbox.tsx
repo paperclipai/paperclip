@@ -9,6 +9,7 @@ import { ApiError } from "../api/client";
 import { dashboardApi } from "../api/dashboard";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
+import type { AwaitingHumanInteractionItem } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -117,7 +118,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
-import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
+import type { Approval, HeartbeatRun, Issue, IssueThreadInteraction, JoinRequest } from "@paperclipai/shared";
 import {
   ACTIONABLE_APPROVAL_STATUSES,
   DEFAULT_INBOX_ISSUE_COLUMNS,
@@ -174,6 +175,7 @@ const INBOX_HOT_PATH_STALE_MS = 30_000;
 export { InboxIssueMetaLeading, InboxIssueTrailingColumns } from "../components/IssueColumns";
 export { IssueGroupHeader as InboxGroupHeader } from "../components/IssueGroupHeader";
 type SectionKey =
+  | "waiting_on_you"
   | "work_items"
   | "alerts";
 
@@ -198,6 +200,23 @@ function runFailureMessage(run: HeartbeatRun): string {
 
 function approvalStatusLabel(status: Approval["status"]): string {
   return status.replaceAll("_", " ");
+}
+
+function interactionKindLabel(kind: IssueThreadInteraction["kind"]): string {
+  switch (kind) {
+    case "request_confirmation":
+      return "Confirmation requested";
+    case "ask_user_questions":
+      return "Questions for you";
+    case "request_checkbox_confirmation":
+      return "Checkbox confirmation";
+    case "suggest_tasks":
+      return "Task suggestions";
+    default: {
+      const _exhaustive: never = kind;
+      return _exhaustive;
+    }
+  }
 }
 
 function readIssueIdFromRun(run: HeartbeatRun): string | null {
@@ -555,6 +574,136 @@ function ApprovalInboxRow({
   );
 }
 
+function AwaitingHumanInboxRow({
+  interactions,
+  issue,
+  onDismiss,
+  onNavigate,
+  isNavigating,
+  unreadState = null,
+  onMarkRead,
+  onArchive,
+  archiveDisabled,
+  selected = false,
+  className,
+}: {
+  interactions: IssueThreadInteraction[];
+  issue: { id: string; identifier: string | null; title: string; status: string };
+  onDismiss: () => void;
+  onNavigate: () => void;
+  isNavigating: boolean;
+  unreadState?: NonIssueUnreadState;
+  onMarkRead?: () => void;
+  onArchive?: () => void;
+  archiveDisabled?: boolean;
+  selected?: boolean;
+  className?: string;
+}) {
+  // Most-recent ask drives the summary/time; multiple asks on one issue collapse to one row.
+  const latest = interactions.reduce((a, b) =>
+    new Date(b.updatedAt).getTime() > new Date(a.updatedAt).getTime() ? b : a,
+  );
+  const kindLabel =
+    interactions.length > 1
+      ? `${interactions.length} requests`
+      : interactionKindLabel(latest.kind);
+  const showUnreadSlot = unreadState !== null;
+  const showUnreadDot = unreadState === "visible" || unreadState === "fading";
+
+  return (
+    <div className={cn(
+      "group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
+      className,
+    )}>
+      <div className="flex items-start gap-2 sm:items-center">
+        {showUnreadSlot ? (
+          <span className="hidden sm:inline-flex h-4 w-4 shrink-0 items-center justify-center self-center">
+            {showUnreadDot ? (
+              <button
+                type="button"
+                onClick={onMarkRead}
+                className={cn(
+                  "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
+                  "hover:bg-blue-500/20",
+                )}
+                aria-label="Mark as read"
+              >
+                <span className={cn(
+                  "block h-2 w-2 rounded-full transition-opacity duration-300",
+                  "bg-blue-600 dark:bg-blue-400",
+                  unreadState === "fading" ? "opacity-0" : "opacity-100",
+                )} />
+              </button>
+            ) : onArchive ? (
+              <button
+                type="button"
+                onClick={onArchive}
+                disabled={archiveDisabled}
+                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+                aria-label="Dismiss from inbox"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            ) : (
+              <span className="inline-flex h-4 w-4" aria-hidden="true" />
+            )}
+          </span>
+        ) : null}
+        <button
+          type="button"
+          onClick={onNavigate}
+          disabled={isNavigating}
+          className={cn(
+            "flex min-w-0 flex-1 items-start gap-2 no-underline text-inherit transition-colors text-left cursor-pointer disabled:cursor-default",
+            selected ? "hover:bg-transparent" : "hover:bg-accent/50",
+          )}
+        >
+          {!showUnreadSlot && <span className="hidden h-2 w-2 shrink-0 sm:inline-flex" aria-hidden="true" />}
+          <span className="hidden h-3.5 w-3.5 shrink-0 sm:inline-flex" aria-hidden="true" />
+          <span className="mt-0.5 shrink-0 rounded-md bg-blue-500/20 p-1.5 sm:mt-0">
+            <Check className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="line-clamp-2 text-sm font-medium sm:truncate sm:line-clamp-none">
+              <span className="font-mono text-muted-foreground mr-1.5">
+                {issue.identifier ?? issue.id.slice(0, 8)}
+              </span>
+              {issue.title}
+            </span>
+            <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">{kindLabel}</span>
+              {latest.summary && <span className="truncate max-w-[300px]">{latest.summary}</span>}
+              <span>{timeAgo(latest.createdAt)}</span>
+            </span>
+          </span>
+        </button>
+        {!showUnreadSlot && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="hidden shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 sm:block"
+            aria-label="Dismiss"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+      {!showUnreadSlot && (
+        <div className="mt-3 flex gap-2 sm:hidden">
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            aria-label="Dismiss"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function JoinRequestInboxRow({
   joinRequest,
   onApprove,
@@ -713,6 +862,7 @@ export function Inbox() {
   const pathSegment = location.pathname.split("/").pop() ?? "mine";
   const tab: InboxTab =
     pathSegment === "mine"
+    || pathSegment === "waiting"
     || pathSegment === "recent"
     || pathSegment === "all"
     || pathSegment === "unread"
@@ -874,6 +1024,15 @@ export function Inbox() {
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    refetchInterval: 5000,
+  });
+
+  const { data: awaitingHumanInteractionsData = [] } = useQuery({
+    queryKey: queryKeys.issues.awaitingHumanInteractions(selectedCompanyId!),
+    queryFn: () => issuesApi.listAwaitingHumanInteractions(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    // Keep the list in lockstep with the sidebar badge (which polls every 5s) so a new
+    // ask appears here instead of only after a reload.
     refetchInterval: 5000,
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
@@ -1132,6 +1291,29 @@ export function Inbox() {
     if (tab === "all" && !showFailedRunsCategory) return [];
     return failedRuns;
   }, [failedRuns, tab, showFailedRunsCategory]);
+
+  // Non-dismissed awaiting-human asks, independent of the active tab so the "Waiting on you"
+  // tab badge stays accurate from any tab. Compare against updatedAt to match the server badge
+  // query, so a dismissal never leaves the badge counting a row the list has hidden (or vice versa).
+  const awaitingHumanVisible = useMemo(
+    () =>
+      awaitingHumanInteractionsData.filter(
+        (item) => !isInboxEntityDismissed(dismissedAtByKey, `interaction:${item.interaction.id}`, item.interaction.updatedAt),
+      ),
+    [awaitingHumanInteractionsData, dismissedAtByKey],
+  );
+  // Group by issue so an issue with several pending asks reads as a single row (and a single
+  // badge count), instead of repeating the same issue once per interaction.
+  const awaitingHumanGroups = useMemo(() => {
+    const byIssue = new Map<string, { issue: AwaitingHumanInteractionItem["issue"]; interactions: IssueThreadInteraction[] }>();
+    for (const { issue, interaction } of awaitingHumanVisible) {
+      const existing = byIssue.get(issue.id);
+      if (existing) existing.interactions.push(interaction);
+      else byIssue.set(issue.id, { issue, interactions: [interaction] });
+    }
+    return [...byIssue.values()];
+  }, [awaitingHumanVisible]);
+  const awaitingHumanGroupsForTab = tab === "waiting" ? awaitingHumanGroups : [];
 
   const joinRequestsForTab = useMemo(() => {
     if (tab === "all" && !showJoinRequestsCategory) return [];
@@ -2001,8 +2183,12 @@ export function Inbox() {
     showOnUnread: false,
     showOnAll: hasAlerts,
   });
+  const hasAwaitingHuman = awaitingHumanGroupsForTab.length > 0;
+  // "Waiting on you" is its own tab, so the section only renders there.
+  const showAwaitingHumanSection = tab === "waiting" && hasAwaitingHuman;
 
   const visibleSections = [
+    showAwaitingHumanSection ? "waiting_on_you" : null,
     showAlertsSection ? "alerts" : null,
     showWorkItemsSection ? "work_items" : null,
   ].filter((key): key is SectionKey => key !== null);
@@ -2023,7 +2209,7 @@ export function Inbox() {
     .map((issue) => issue.id);
   const canMarkAllRead = unreadIssueIds.length > 0;
   const activeIssueFilterCount = countActiveIssueFilters(issueFilters, true);
-  const showGeneralIssueToolbarControls = tab !== "blocked";
+  const showGeneralIssueToolbarControls = tab !== "blocked" && tab !== "waiting";
   return (
     <div className="space-y-6">
       <div className="space-y-2">
@@ -2063,6 +2249,19 @@ export function Inbox() {
               {
                 value: "mine",
                 label: "Mine",
+              },
+              {
+                value: "waiting",
+                label: (
+                  <span className="inline-flex items-center gap-1.5">
+                    Waiting on you
+                    {awaitingHumanGroups.length > 0 && (
+                      <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-500/20 px-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400">
+                        {awaitingHumanGroups.length}
+                      </span>
+                    )}
+                  </span>
+                ),
               },
               {
                 value: "recent",
@@ -2367,7 +2566,7 @@ export function Inbox() {
         />
       ) : null}
 
-      {tab !== "blocked" && !allLoaded && visibleSections.length === 0 && (
+      {tab !== "blocked" && tab !== "waiting" && !allLoaded && visibleSections.length === 0 && (
         <PageSkeleton variant="inbox" />
       )}
 
@@ -2377,6 +2576,8 @@ export function Inbox() {
           message={
             searchQuery.trim()
               ? "No inbox items match your search."
+              : tab === "waiting"
+              ? "Nothing is waiting on you right now."
               : tab === "mine"
               ? "Inbox zero."
               : tab === "unread"
@@ -2388,7 +2589,7 @@ export function Inbox() {
         />
       )}
 
-      {tab !== "blocked" && showWorkItemsSection && (
+      {tab !== "blocked" && tab !== "waiting" && showWorkItemsSection && (
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
@@ -2843,6 +3044,49 @@ export function Inbox() {
                   return elements;
                 });
               })()}
+            </div>
+          </div>
+        </>
+      )}
+
+      {showAwaitingHumanSection && (
+        <>
+          {showSeparatorBefore("waiting_on_you") && <Separator />}
+          <div>
+            <div className="divide-y divide-border border border-border">
+              {awaitingHumanGroupsForTab.map(({ interactions, issue }) => {
+                // Dismissals are tracked per interaction; the primary key drives the row's
+                // unread/animation state, and dismissing the row clears every ask on the issue.
+                const interactionKeys = interactions.map((i) => `interaction:${i.id}`);
+                const primaryKey = interactionKeys[0];
+                const dismissGroup = () => interactionKeys.forEach((k) => handleArchiveNonIssue(k));
+                const isArchiving = interactionKeys.some((k) => archivingNonIssueIds.has(k));
+                return (
+                  <AwaitingHumanInboxRow
+                    key={issue.id}
+                    interactions={interactions}
+                    issue={issue}
+                    onDismiss={dismissGroup}
+                    onNavigate={() => {
+                      const pathId = issue.identifier ?? issue.id;
+                      const detailState = armIssueDetailInboxQuickArchive(withIssueDetailHeaderSeed(issueLinkState, issue as Partial<Issue> as Issue));
+                      rememberIssueDetailLocationState(pathId, detailState);
+                      void prefetchIssueDetail(queryClient, pathId, { issue: issue as Partial<Issue> as Issue });
+                      navigate(createIssueDetailPath(pathId), { state: detailState });
+                    }}
+                    isNavigating={false}
+                    unreadState={nonIssueUnreadState(primaryKey)}
+                    onMarkRead={() => interactionKeys.forEach((k) => handleMarkNonIssueRead(k))}
+                    onArchive={dismissGroup}
+                    archiveDisabled={isArchiving}
+                    className={
+                      isArchiving
+                        ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                        : "transition-all duration-200 ease-out"
+                    }
+                  />
+                );
+              })}
             </div>
           </div>
         </>

@@ -8368,6 +8368,15 @@ export function issueRoutes(
     res.json(interactions);
   });
 
+  // Company-wide list of pending agent->human asks for the founder Inbox "Waiting on you" section.
+  router.get("/companies/:companyId/awaiting-human-interactions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const interactionSvc = issueThreadInteractionService(db);
+    const items = await interactionSvc.listAwaitingHumanForCompany(companyId);
+    res.json(items);
+  });
+
   router.post("/issues/:id/interactions", validate(createIssueThreadInteractionSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
