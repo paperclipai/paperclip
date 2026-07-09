@@ -179,6 +179,61 @@ describe("clip routes", () => {
     expect(mockCompanyPortabilityService.previewExport).not.toHaveBeenCalled();
   });
 
+  it("strips owner-supplied trust states when creating revisions", async () => {
+    const clipId = "33333333-3333-4333-8333-333333333333";
+    const sourceCompanyId = "22222222-2222-4222-8222-222222222222";
+    mockClipService.getClipById.mockResolvedValue({
+      id: clipId,
+      slug: "support-triage",
+      sourceCompanyId,
+    });
+    mockClipService.createRevision.mockResolvedValue({
+      clip: { id: clipId, slug: "support-triage" },
+      revision: { id: "44444444-4444-4444-8444-444444444444", revisionNumber: 2 },
+    });
+
+    const res = await request(createApp())
+      .post("/api/clips/" + clipId + "/revisions")
+      .send({
+        manifestChecksum: "sha256:manifest-v2",
+        artifactChecksum: "sha256:artifact-v2",
+        manifestPayload: { schema: "paperclip.clip/v1" },
+        securityReviewState: "security_reviewed",
+        verificationState: "passed",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockClipService.createRevision).toHaveBeenCalledWith(
+      clipId,
+      expect.objectContaining({
+        securityReviewState: "unreviewed",
+        verificationState: "not_run",
+      }),
+    );
+  });
+
+  it("rejects owner moderation and publish-status patches", async () => {
+    const clipId = "33333333-3333-4333-8333-333333333333";
+    const sourceCompanyId = "22222222-2222-4222-8222-222222222222";
+    mockClipService.getClipById.mockResolvedValue({
+      id: clipId,
+      slug: "support-triage",
+      sourceCompanyId,
+      status: "pending_review",
+    });
+
+    const moderationRes = await request(createApp())
+      .patch("/api/clips/" + clipId)
+      .send({ moderationState: "normal" });
+    const publishRes = await request(createApp())
+      .patch("/api/clips/" + clipId)
+      .send({ status: "published" });
+
+    expect(moderationRes.status).toBe(403);
+    expect(publishRes.status).toBe(403);
+    expect(mockClipService.updateClip).not.toHaveBeenCalled();
+  });
+
   it("uses the clip source company when building import previews", async () => {
     const destinationCompanyId = "11111111-1111-4111-8111-111111111111";
     const sourceCompanyId = "22222222-2222-4222-8222-222222222222";

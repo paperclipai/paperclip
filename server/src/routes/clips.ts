@@ -605,7 +605,12 @@ export function clipRoutes(db: Db, storage?: StorageService) {
     }
     assertCompanyAccess(req, clip.sourceCompanyId);
     if (!consumeClipRateLimit(req, res, "update")) return;
-    const result = await svc.createRevision(clip.id, req.body);
+    const revisionInput = {
+      ...req.body,
+      securityReviewState: "unreviewed" as const,
+      verificationState: "not_run" as const,
+    };
+    const result = await svc.createRevision(clip.id, revisionInput);
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: clip.sourceCompanyId,
@@ -632,6 +637,12 @@ export function clipRoutes(db: Db, storage?: StorageService) {
       return;
     }
     assertCompanyAccess(req, clip.sourceCompanyId);
+    if (req.body.moderationState !== undefined || req.body.moderationReason !== undefined) {
+      throw forbidden("Clip moderation fields require platform moderation access");
+    }
+    if (req.body.status === "published" && clip.status !== "published") {
+      throw forbidden("Publishing clips requires platform moderation access");
+    }
     const actorInfo = getActorInfo(req);
     const updated = await svc.updateClip(clip.id, req.body, {
       actorType: actorInfo.actorType,

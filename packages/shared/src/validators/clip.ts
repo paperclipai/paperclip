@@ -42,7 +42,7 @@ export const createClipCreatorProfileSchema = z.object({
   bio: z.string().trim().max(1_000).nullable().optional(),
   avatarUrl: z.string().url().nullable().optional(),
   websiteUrl: z.string().url().nullable().optional(),
-  verificationState: z.string().trim().min(1).max(48).optional(),
+  verificationState: z.literal("unverified").optional(),
   reputationSummary: recordSchema.optional(),
 });
 
