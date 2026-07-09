@@ -100,6 +100,7 @@ import {
 } from "@paperclipai/adapter-acpx-local";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+  DEFAULT_CODEX_LOCAL_EXECUTION_ENGINE,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
@@ -1194,6 +1195,9 @@ export function agentRoutes(
       return ensureGatewayDeviceKey(adapterType, next);
     }
     if (adapterType === "codex_local") {
+      if (!asNonEmptyString(next.engine)) {
+        next.engine = DEFAULT_CODEX_LOCAL_EXECUTION_ENGINE;
+      }
       if (!asNonEmptyString(next.model)) {
         next.model = DEFAULT_CODEX_LOCAL_MODEL;
       }

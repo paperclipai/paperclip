@@ -19,6 +19,8 @@ import { credentialsApi, type ProviderCredential } from "../api/credentials";
 import { Link } from "@/lib/router";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+  DEFAULT_CODEX_LOCAL_ACP_WARM_HANDLE_IDLE_MS,
+  DEFAULT_CODEX_LOCAL_EXECUTION_ENGINE,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
@@ -694,6 +696,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
+  const currentCodexExecutionEngine =
+    adapterType === "codex_local"
+      ? isCreate
+        ? String(val!.adapterSchemaValues?.engine ?? DEFAULT_CODEX_LOCAL_EXECUTION_ENGINE)
+        : eff("adapterConfig", "engine", String(config.engine ?? DEFAULT_CODEX_LOCAL_EXECUTION_ENGINE))
+      : DEFAULT_CODEX_LOCAL_EXECUTION_ENGINE;
   // Cheap profile read/write helpers. Edit-mode values come from
   // runtimeConfig.modelProfiles.cheap with overlay overrides on top; create-mode
   // values come straight from CreateConfigValues (cheapModel + cheapModelEnabled).
@@ -1055,6 +1063,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     const nextValues: CreateConfigValues = { ...defaults, adapterType: t };
                     if (t === "codex_local") {
                       nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
+                      nextValues.adapterSchemaValues = {
+                        ...(nextValues.adapterSchemaValues ?? {}),
+                        engine: DEFAULT_CODEX_LOCAL_EXECUTION_ENGINE,
+                        acpWarmHandleIdleMs: DEFAULT_CODEX_LOCAL_ACP_WARM_HANDLE_IDLE_MS,
+                      };
                       nextValues.dangerouslyBypassSandbox =
                         DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
                     } else if (t === "gemini_local") {
@@ -1092,6 +1105,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         mode: "",
                         ...(t === "codex_local"
                           ? {
+                              engine: DEFAULT_CODEX_LOCAL_EXECUTION_ENGINE,
+                              acpWarmHandleIdleMs: DEFAULT_CODEX_LOCAL_ACP_WARM_HANDLE_IDLE_MS,
                               dangerouslyBypassApprovalsAndSandbox:
                                 DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
                             }
@@ -1265,6 +1280,71 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   open={cheapModelOpen}
                   onOpenChange={setCheapModelOpen}
                 />
+              )}
+
+              {adapterType === "codex_local" && (
+                <>
+                  <Field
+                    label="Execution engine"
+                    hint="Auto prefers local ACPX when available and falls back to Codex CLI. ACP requires ACPX. CLI keeps the previous execution path."
+                  >
+                    <select
+                      className={inputClass}
+                      value={currentCodexExecutionEngine}
+                      onChange={(event) =>
+                        isCreate
+                          ? set!({
+                              adapterSchemaValues: {
+                                ...(val!.adapterSchemaValues ?? {}),
+                                engine: event.target.value,
+                              },
+                            })
+                          : mark("adapterConfig", "engine", event.target.value)
+                      }
+                    >
+                      <option value="auto">Auto (ACPX preferred)</option>
+                      <option value="cli">Codex CLI</option>
+                      <option value="acp">ACPX</option>
+                    </select>
+                  </Field>
+                  {currentCodexExecutionEngine !== "cli" && (
+                    <Field
+                      label="ACPX warm idle ms"
+                      hint="How long to keep the live ACPX Codex process warm after a successful persistent run. Default is 1800000 ms."
+                    >
+                      <DraftNumberInput
+                        value={
+                          isCreate
+                            ? Number(
+                                val!.adapterSchemaValues?.acpWarmHandleIdleMs ??
+                                  DEFAULT_CODEX_LOCAL_ACP_WARM_HANDLE_IDLE_MS,
+                              )
+                            : eff(
+                                "adapterConfig",
+                                "acpWarmHandleIdleMs",
+                                Number(
+                                  config.acpWarmHandleIdleMs ??
+                                    config.warmHandleIdleMs ??
+                                    DEFAULT_CODEX_LOCAL_ACP_WARM_HANDLE_IDLE_MS,
+                                ),
+                              )
+                        }
+                        onCommit={(v) =>
+                          isCreate
+                            ? set!({
+                                adapterSchemaValues: {
+                                  ...(val!.adapterSchemaValues ?? {}),
+                                  acpWarmHandleIdleMs: v,
+                                },
+                              })
+                            : mark("adapterConfig", "acpWarmHandleIdleMs", v)
+                        }
+                        immediate
+                        className={inputClass}
+                      />
+                    </Field>
+                  )}
+                </>
               )}
 
               {(

@@ -215,7 +215,7 @@ describe("acpx_local execute", () => {
     }
   });
 
-  it("closes successful persistent runs by default while retaining session state", async () => {
+  it("keeps successful persistent runs warm by default", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-close-success-"));
     try {
       const runtime = new FakeRuntime({} as AcpRuntimeOptions);
@@ -229,6 +229,30 @@ describe("acpx_local execute", () => {
         mode: "persistent",
         acpSessionId: "acp-1",
       });
+      expect(runtime.closeInputs).toEqual([]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("closes successful persistent runs when warm handles are disabled", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-close-success-disabled-"));
+    try {
+      const runtime = new FakeRuntime({} as AcpRuntimeOptions);
+      const execute = createAcpxLocalExecutor({
+        createRuntime: () => runtime,
+      });
+      const result = await execute(buildContext(root, {
+        config: {
+          agent: "claude",
+          cwd: root,
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+          warmHandleIdleMs: 0,
+        },
+      }));
+
+      expect(result.exitCode).toBe(0);
       expect(runtime.closeInputs).toEqual([
         expect.objectContaining({
           reason: "paperclip completed turn cleanup",

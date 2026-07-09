@@ -176,6 +176,9 @@ importers:
 
   packages/adapters/codex-local:
     dependencies:
+      '@paperclipai/adapter-acpx-local':
+        specifier: workspace:*
+        version: link:../acpx-local
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils

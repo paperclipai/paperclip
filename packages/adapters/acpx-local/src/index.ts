@@ -8,7 +8,7 @@ export const DEFAULT_ACPX_LOCAL_MODE = "persistent";
 export const DEFAULT_ACPX_LOCAL_PERMISSION_MODE = "approve-all";
 export const DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS = "deny";
 export const DEFAULT_ACPX_LOCAL_TIMEOUT_SEC = 0;
-export const DEFAULT_ACPX_LOCAL_WARM_HANDLE_IDLE_MS = 0;
+export const DEFAULT_ACPX_LOCAL_WARM_HANDLE_IDLE_MS = 30 * 60 * 1000;
 
 export const acpxAgentOptions = [
   { id: "claude", label: "Claude via ACPX" },
@@ -47,7 +47,7 @@ Core fields:
 - effort/modelReasoningEffort (string, optional): requested thinking effort. Claude uses effort; Codex uses modelReasoningEffort/reasoning_effort.
 - fastMode (boolean, optional): for ACPX Codex, request Codex fast mode through ACP session config.
 - timeoutSec (number, optional): run timeout in seconds. Defaults to 0, meaning no adapter timeout.
-- warmHandleIdleMs (number, optional): live ACPX process idle window after a successful persistent run. Defaults to 0, meaning Paperclip shuts the process down after each run while retaining ACPX session state.
+- warmHandleIdleMs (number, optional): live ACPX process idle window after a successful persistent run. Defaults to 1800000 (30 minutes), which keeps active coordination sessions warm while retaining persistent session state.
 - env (object, optional): KEY=VALUE environment variables or secret bindings.
 
 Dependency decision:

@@ -254,7 +254,7 @@ describe("adapter routes", () => {
         }),
         expect.objectContaining({
           key: "warmHandleIdleMs",
-          default: 0,
+          default: 1800000,
         }),
       ]),
     );
