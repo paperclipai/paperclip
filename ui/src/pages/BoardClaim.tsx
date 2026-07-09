@@ -5,6 +5,7 @@ import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 
 export function BoardClaimPage() {
   const queryClient = useQueryClient();
@@ -51,12 +52,12 @@ export function BoardClaimPage() {
   if (statusQuery.error) {
     return (
       <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
+        <Card className="block p-6">
           <h1 className="text-lg font-semibold">Claim challenge unavailable</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             {statusQuery.error instanceof Error ? statusQuery.error.message : "Challenge is invalid or expired."}
           </p>
-        </div>
+        </Card>
       </div>
     );
   }
@@ -69,7 +70,7 @@ export function BoardClaimPage() {
   if (status.status === "claimed") {
     return (
       <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
+        <Card className="block p-6">
           <h1 className="text-lg font-semibold">Board ownership claimed</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             This instance is now linked to your authenticated user.
@@ -77,7 +78,7 @@ export function BoardClaimPage() {
           <Button asChild className="mt-4">
             <Link to="/">Open board</Link>
           </Button>
-        </div>
+        </Card>
       </div>
     );
   }
@@ -85,7 +86,7 @@ export function BoardClaimPage() {
   if (!sessionQuery.data) {
     return (
       <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
+        <Card className="block p-6">
           <h1 className="text-lg font-semibold">Sign in required</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             Sign in or create an account, then return to this page to claim Board ownership.
@@ -93,14 +94,14 @@ export function BoardClaimPage() {
           <Button asChild className="mt-4">
             <Link to={`/auth?next=${encodeURIComponent(currentPath)}`}>Sign in / Create account</Link>
           </Button>
-        </div>
+        </Card>
       </div>
     );
   }
 
   return (
     <div className="mx-auto max-w-xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">
+      <Card className="block p-6">
         <h1 className="text-xl font-semibold">Claim Board ownership</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           This will promote your user to instance admin and migrate company ownership access from local trusted mode.
@@ -119,7 +120,7 @@ export function BoardClaimPage() {
         >
           {claimMutation.isPending ? "Claiming…" : "Claim ownership"}
         </Button>
-      </div>
+      </Card>
     </div>
   );
 }

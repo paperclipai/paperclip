@@ -1,10 +1,13 @@
 export { companyService } from "./companies.js";
+export { companyArtifactsService } from "./company-artifacts.js";
+export { companySearchService } from "./company-search.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
+export { documentAnnotationService } from "./document-annotations.js";
 export {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   buildContinuationSummaryMarkdown,
@@ -23,15 +26,40 @@ export { issueThreadInteractionService } from "./issue-thread-interactions.js";
 export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
+export { issueRecoveryActionService } from "./issue-recovery-actions.js";
+export { taskWatchdogService } from "./task-watchdogs.js";
+export {
+  issueIsInTaskWatchdogSubtree,
+  resolveTaskWatchdogMutationScope,
+  taskWatchdogScopeAllowsIssueMutation,
+} from "./task-watchdog-scope.js";
+export {
+  createExternalObjectDetectorRegistry,
+  createExternalObjectResolverRegistry,
+  externalObjectService,
+  type ExternalObjectDetector,
+  type ExternalObjectResolver,
+  type ExternalObjectResolveResult,
+  type ExternalObjectResolverSnapshot,
+} from "./external-objects.js";
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
+export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
+export type {
+  WorkTimelineActor,
+  WorkTimelineEdge,
+  WorkTimelineEvent,
+  WorkTimelineQuery,
+  WorkTimelineResult,
+  WorkTimelineSpan,
+} from "./work-timeline.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
-export { heartbeatService } from "./heartbeat.js";
+export { heartbeatService, resolveHeartbeatSchedulingSuppression } from "./heartbeat.js";
 export {
   productivityReviewService,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
@@ -40,17 +68,57 @@ export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recover
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferenceService } from "./sidebar-preferences.js";
+export { resourceMembershipService, type ResourceMembershipPolicyHook } from "./resource-memberships.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
 export { accessService } from "./access.js";
+export {
+  backfillPrincipalAccessCompatibility,
+  ensureHumanRoleDefaultGrants,
+  insertMissingPrincipalGrants,
+  type PrincipalAccessCompatibilityBackfillStats,
+} from "./principal-access-compatibility.js";
+export { authorizationService } from "./authorization.js";
+export type {
+  AuthorizationAction,
+  AuthorizationActor,
+  AuthorizationDecision,
+  AuthorizationResource,
+} from "./authorization.js";
 export { boardAuthService } from "./board-auth.js";
 export { instanceSettingsService } from "./instance-settings.js";
+export { bootstrapExecutionPolicyFromEnv } from "./execution-policy-bootstrap.js";
+export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./cloud-upstreams.js";
 export { companyPortabilityService } from "./company-portability.js";
+export { teamsCatalogService } from "./teams-catalog.js";
 export { environmentService } from "./environments.js";
+export {
+  applyCustomImageTemplateToSandboxConfig,
+  fingerprintEnvironmentSandboxProviderConfig,
+} from "./environment-custom-image-runtime.js";
+export {
+  environmentCustomImageService,
+} from "./environment-custom-images.js";
+export {
+  environmentCustomImageTerminalConnectionRegistry,
+  environmentCustomImageTerminalSessionStore,
+  EnvironmentCustomImageTerminalConnectionRegistry,
+  EnvironmentCustomImageTerminalSessionStore,
+  parseCustomImageSetupSshCommand,
+  type EnvironmentCustomImageTerminalConnectionClose,
+  type EnvironmentCustomImageTerminalSessionRecord,
+  type MintedEnvironmentCustomImageTerminalSession,
+  type ParsedCustomImageSetupSshCommand,
+} from "./environment-custom-image-terminal-sessions.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
 export { workspaceOperationService } from "./workspace-operations.js";
+export { workspaceFileResourceService } from "./workspace-file-resources.js";
 export { workProductService } from "./work-products.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
+export {
+  reconcileCodexLocalManagedHomesOnStartup,
+  type CodexAuthReconciliationSummary,
+} from "./codex-auth-reconciliation.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";

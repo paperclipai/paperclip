@@ -6,15 +6,18 @@ export {
   findServerAdapter,
   findActiveServerAdapter,
   detectAdapterModel,
+  listAdapterModelProfiles,
   registerServerAdapter,
   unregisterServerAdapter,
   requireServerAdapter,
 } from "./registry.js";
 export type {
   ServerAdapterModule,
+  AcpTargetDescriptor,
   AdapterExecutionContext,
   AdapterExecutionResult,
   AdapterInvocationMeta,
+  AdapterModelProfileDefinition,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestStatus,

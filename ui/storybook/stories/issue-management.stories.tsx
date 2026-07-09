@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueLabel, Project } from "@paperclipai/shared";
+import type { RunForIssue } from "@/api/activity";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowDownAZ,
@@ -31,6 +32,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { countActiveIssueFilters, defaultIssueFilterState, type IssueFilterState } from "@/lib/issue-filters";
 import { DEFAULT_INBOX_ISSUE_COLUMNS, type InboxIssueColumn } from "@/lib/inbox";
 import { queryKeys } from "@/lib/queryKeys";
@@ -51,7 +53,7 @@ import {
 const companyId = "company-storybook";
 const issueListViewKey = "storybook:issue-management:list";
 const scopedIssueListViewKey = `${issueListViewKey}:${companyId}`;
-const visibleColumns: InboxIssueColumn[] = ["status", "id", "assignee", "project", "workspace", "labels", "updated"];
+const visibleColumns: InboxIssueColumn[] = ["status", "id", "assignee", "kickedOffBy", "project", "workspace", "labels", "updated"];
 
 const issueDocumentSummaries = storybookIssueDocuments.map(({ body: _body, ...summary }) => summary);
 const primaryIssue: Issue = {
@@ -61,6 +63,95 @@ const primaryIssue: Issue = {
   currentExecutionWorkspace: storybookExecutionWorkspaces[0]!,
 };
 const childIssues = storybookIssues.filter((issue) => issue.parentId === primaryIssue.id);
+const longProject: Project = {
+  ...storybookProjects[0]!,
+  id: "project-long-properties-pane-regression",
+  name: "Project with a deliberately long name for properties pane truncation review",
+};
+const longLabels: IssueLabel[] = [
+  {
+    id: "label-long-properties-pane-regression",
+    companyId,
+    name: "label-with-a-deliberately-long-name-that-must-truncate-inside-the-pane",
+    color: "#0f766e",
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+  },
+  {
+    id: "label-long-properties-pane-follow-up",
+    companyId,
+    name: "secondary-overflow-regression-label",
+    color: "#b45309",
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+  },
+];
+const longParentIssue: Issue = {
+  ...storybookIssues[1]!,
+  id: "issue-long-properties-pane-parent",
+  identifier: "QAT-1",
+  issueNumber: 1,
+  projectId: longProject.id,
+  project: longProject,
+  title: "MAIN - properties pane QA target with a parent title long enough to overflow the 320px pane",
+};
+const longValueIssue: Issue = {
+  ...primaryIssue,
+  id: "issue-long-properties-pane-child",
+  identifier: "QAT-2",
+  issueNumber: 2,
+  parentId: longParentIssue.id,
+  projectId: longProject.id,
+  project: longProject,
+  labelIds: longLabels.map((label) => label.id),
+  labels: longLabels,
+  title: "Child task used to verify the properties pane does not scroll horizontally",
+  ancestors: [
+    {
+      id: longParentIssue.id,
+      identifier: longParentIssue.identifier,
+      title: longParentIssue.title,
+      description: longParentIssue.description,
+      status: longParentIssue.status,
+      priority: longParentIssue.priority,
+      assigneeAgentId: longParentIssue.assigneeAgentId,
+      assigneeUserId: longParentIssue.assigneeUserId,
+      projectId: longParentIssue.projectId,
+      goalId: longParentIssue.goalId,
+      project: null,
+      goal: null,
+    },
+  ],
+};
+const attributionIssues: Issue[] = [
+  {
+    ...primaryIssue,
+    id: "issue-attribution-explicit",
+    title: "Human kickoff with explicit responsible owner",
+    createdByAgentId: null,
+    createdByUserId: "user-board",
+    responsibleUserId: "user-product",
+    assigneeAgentId: "agent-codex",
+  },
+  {
+    ...primaryIssue,
+    id: "issue-attribution-collapsed",
+    title: "Responsible auto-derived from kickoff user",
+    createdByAgentId: null,
+    createdByUserId: "user-board",
+    responsibleUserId: null,
+    assigneeAgentId: "agent-codex",
+  },
+  {
+    ...primaryIssue,
+    id: "issue-attribution-unassigned",
+    title: "Agent-created task with no responsible human",
+    createdByAgentId: "agent-codex",
+    createdByUserId: null,
+    responsibleUserId: null,
+    assigneeAgentId: "agent-qa",
+  },
+];
 
 function Section({
   eyebrow,
@@ -83,7 +174,7 @@ function Section({
 }
 
 function hydrateStorybookQueries(queryClient: ReturnType<typeof useQueryClient>) {
-  queryClient.setQueryData(queryKeys.companies.all, storybookCompanies);
+  queryClient.setQueryData(queryKeys.companies.all, { companies: storybookCompanies, unauthorized: false });
   queryClient.setQueryData(queryKeys.auth.session, storybookAuthSession);
   queryClient.setQueryData(queryKeys.agents.list(companyId), storybookAgents);
   queryClient.setQueryData(queryKeys.projects.list(companyId), storybookProjects);
@@ -106,6 +197,16 @@ function hydrateStorybookQueries(queryClient: ReturnType<typeof useQueryClient>)
           id: "user-board",
           email: "riley@paperclip.local",
           name: "Riley Board",
+          image: null,
+        },
+      },
+      {
+        principalId: "user-product",
+        status: "active",
+        user: {
+          id: "user-product",
+          email: "morgan@paperclip.local",
+          name: "Morgan Product",
           image: null,
         },
       },
@@ -163,6 +264,53 @@ function StorybookData({ children }: { children: React.ReactNode }) {
   return ready ? children : null;
 }
 
+function LongValueStorybookData({ children }: { children: React.ReactNode }) {
+  const queryClient = useQueryClient();
+  const [ready] = useState(() => {
+    hydrateStorybookQueries(queryClient);
+    queryClient.setQueryData(queryKeys.projects.list(companyId), [longProject, ...storybookProjects]);
+    queryClient.setQueryData(queryKeys.issues.list(companyId), [
+      longValueIssue,
+      longParentIssue,
+      ...storybookIssues,
+    ]);
+    queryClient.setQueryData(queryKeys.issues.labels(companyId), [...longLabels, ...storybookIssueLabels]);
+    seedIssueListLocalStorage();
+    return true;
+  });
+
+  return ready ? children : null;
+}
+
+function IssuePropertiesLongValuePane({ inline = false }: { inline?: boolean }) {
+  return (
+    <LongValueStorybookData>
+      <div className="paperclip-story p-6">
+        <div
+          className={
+            inline
+              ? "mx-auto flex h-[620px] w-[390px] max-w-full flex-col overflow-hidden border border-border bg-background"
+              : "flex h-[620px] w-80 flex-col overflow-hidden border border-border bg-card"
+          }
+        >
+          <div className="border-b border-border px-4 py-2 text-sm font-medium">Properties</div>
+          <ScrollArea className="flex-1">
+            <div className="p-4">
+              <IssueProperties
+                issue={longValueIssue}
+                childIssues={[]}
+                onAddSubIssue={() => undefined}
+                onUpdate={() => undefined}
+                inline={inline}
+              />
+            </div>
+          </ScrollArea>
+        </div>
+      </div>
+    </LongValueStorybookData>
+  );
+}
+
 function ColumnConfigurationMatrix() {
   const [columns, setColumns] = useState<InboxIssueColumn[]>(visibleColumns);
   const visibleColumnSet = useMemo(() => new Set(columns), [columns]);
@@ -180,8 +328,9 @@ function ColumnConfigurationMatrix() {
       <div className="overflow-hidden rounded-lg border border-border bg-background/70">
         <div className="grid grid-cols-[minmax(0,1fr)_minmax(420px,0.9fr)] items-center border-b border-border px-4 py-2 text-[11px] font-semibold uppercase text-muted-foreground">
           <span>Issue</span>
-          <span className="grid grid-cols-[6rem_7rem_9rem_6rem_4.5rem] gap-2">
+          <span className="grid grid-cols-[6rem_6rem_7rem_9rem_6rem_4.5rem] gap-2">
             <span>Assignee</span>
+            <span>Kicked off by</span>
             <span>Project</span>
             <span>Workspace</span>
             <span>Tags</span>
@@ -208,6 +357,8 @@ function ColumnConfigurationMatrix() {
               workspaceName={issue.currentExecutionWorkspace?.name ?? "Board UI"}
               assigneeName={issue.assigneeAgentId ? storybookAgentMap.get(issue.assigneeAgentId)?.name ?? null : null}
               assigneeUserName={issue.assigneeUserId ? "Riley Board" : null}
+              creatorAgentName={issue.createdByAgentId ? storybookAgentMap.get(issue.createdByAgentId)?.name ?? null : null}
+              creatorUserName={issue.createdByUserId ? "Riley Board" : null}
               currentUserId="user-board"
               parentIdentifier={storybookIssues.find((candidate) => candidate.id === issue.parentId)?.identifier ?? null}
               parentTitle={storybookIssues.find((candidate) => candidate.id === issue.parentId)?.title ?? null}
@@ -330,6 +481,116 @@ function OpenFiltersPopover() {
           ]}
         />
       </div>
+    </div>
+  );
+}
+
+const modelProfileLedgerRuns: RunForIssue[] = [
+  {
+    runId: "run-cheap-applied",
+    status: "succeeded",
+    agentId: "agent-codex",
+    adapterType: "codex_local",
+    startedAt: "2026-04-29T09:30:00.000Z",
+    finishedAt: "2026-04-29T09:32:14.000Z",
+    createdAt: "2026-04-29T09:29:55.000Z",
+    invocationSource: "manual",
+    usageJson: { costCents: 17, inputTokens: 6400, outputTokens: 480 },
+    resultJson: {
+      stopReason: "completed",
+      modelProfile: {
+        requested: "cheap",
+        applied: "cheap",
+        configSource: "agent_runtime_config",
+      },
+    },
+    livenessState: "advanced",
+    livenessReason: "Cheap-lane summary completed inside the planned scope.",
+    continuationAttempt: 0,
+    lastUsefulActionAt: "2026-04-29T09:32:10.000Z",
+    nextAction: "Hand the routine output back to the operator inbox.",
+  },
+  {
+    runId: "run-cheap-fallback",
+    status: "succeeded",
+    agentId: "agent-codex",
+    adapterType: "codex_local",
+    startedAt: "2026-04-29T08:10:00.000Z",
+    finishedAt: "2026-04-29T08:14:42.000Z",
+    createdAt: "2026-04-29T08:09:50.000Z",
+    invocationSource: "manual",
+    usageJson: { costCents: 91, inputTokens: 21800, outputTokens: 3200 },
+    resultJson: {
+      stopReason: "completed",
+      modelProfile: {
+        requested: "cheap",
+        applied: "primary",
+        configSource: "adapter_default",
+        fallbackReason: "Cheap profile not configured for this agent",
+      },
+    },
+    livenessState: "advanced",
+    livenessReason: "Routine fell back to the primary model after the cheap lookup missed.",
+    continuationAttempt: 0,
+    lastUsefulActionAt: "2026-04-29T08:14:36.000Z",
+    nextAction: "Configure agent-codex with a cheap profile to avoid the fallback.",
+  },
+  {
+    runId: "run-baseline",
+    status: "succeeded",
+    agentId: "agent-codex",
+    adapterType: "codex_local",
+    startedAt: "2026-04-28T18:05:00.000Z",
+    finishedAt: "2026-04-28T18:14:11.000Z",
+    createdAt: "2026-04-28T18:04:50.000Z",
+    invocationSource: "scheduler",
+    usageJson: { costCents: 142, inputTokens: 38400, outputTokens: 7200 },
+    resultJson: { stopReason: "completed" },
+    livenessState: "advanced",
+    livenessReason: "Standard primary-lane run with no profile metadata recorded.",
+    continuationAttempt: 0,
+    lastUsefulActionAt: "2026-04-28T18:13:58.000Z",
+    nextAction: "Continue with the next planned subtask.",
+  },
+];
+
+function ModelProfileBadgeLedger() {
+  return (
+    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <IssueRunLedgerContent
+        runs={modelProfileLedgerRuns}
+        activeRun={null}
+        liveRuns={[]}
+        issueStatus="in_progress"
+        childIssues={[]}
+        agentMap={storybookAgentMap}
+      />
+      <Card className="shadow-none">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <GitBranch className="h-4 w-4" />
+            Model profile metadata
+          </CardTitle>
+          <CardDescription>
+            Profile badges read <code>resultJson.modelProfile</code> on each run. Applied matching the request renders
+            emerald; an applied fallback renders amber and surfaces the inline reason.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-xs text-muted-foreground">
+          <div className="rounded-md border border-border bg-background/70 p-3">
+            <div className="font-mono text-emerald-600 dark:text-emerald-400">Profile: cheap</div>
+            <p className="mt-1">requested + applied both equal cheap → emerald badge.</p>
+          </div>
+          <div className="rounded-md border border-border bg-background/70 p-3">
+            <div className="font-mono text-amber-600 dark:text-amber-400">Profile: cheap → primary</div>
+            <p className="mt-1">cheap requested but primary applied → amber badge plus inline fallback reason.</p>
+          </div>
+          <div className="rounded-md border border-border bg-background/70 p-3">
+            <div className="font-mono text-muted-foreground">No profile badge</div>
+            <p className="mt-1">Run with no <code>modelProfile</code> metadata renders without a badge for visual contrast.</p>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -527,6 +788,19 @@ function IssueManagementStories() {
                 />
               </div>
             </div>
+            <div className="mt-5 grid gap-4 lg:grid-cols-3">
+              {attributionIssues.map((issue) => (
+                <div key={issue.id} className="rounded-lg border border-border bg-background/70 p-4">
+                  <div className="mb-3 truncate text-sm font-medium">{issue.title}</div>
+                  <IssueProperties
+                    issue={issue}
+                    childIssues={[]}
+                    onUpdate={() => undefined}
+                    inline
+                  />
+                </div>
+              ))}
+            </div>
           </Section>
 
           <Section eyebrow="IssueDocumentsSection" title="Documents list with plan and notes documents">
@@ -547,6 +821,10 @@ function IssueManagementStories() {
 
           <Section eyebrow="IssueRunLedger" title="Run history table with status, duration, and cost columns">
             <RunLedgerWithCostColumns />
+          </Section>
+
+          <Section eyebrow="IssueRunLedger" title="Model profile badges for cheap, fallback, and baseline runs">
+            <ModelProfileBadgeLedger />
           </Section>
 
           <Section eyebrow="IssueWorkspaceCard" title="Workspace info card with branch, path, and runtime status">
@@ -599,3 +877,50 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const FullSurfaceMatrix: Story = {};
+
+export const IssuePropertiesLongValuesDesktop: Story = {
+  name: "IssueProperties - long values desktop pane",
+  render: () => <IssuePropertiesLongValuePane />,
+};
+
+export const IssuePropertiesLongValuesMobile: Story = {
+  name: "IssueProperties - long values mobile inline",
+  render: () => <IssuePropertiesLongValuePane inline />,
+};
+
+function ModelProfileLedgerStandalone() {
+  return (
+    <StorybookData>
+      <div className="paperclip-story">
+        <main className="paperclip-story__inner space-y-6">
+          <section className="paperclip-story__frame p-6">
+            <div className="flex flex-wrap items-start justify-between gap-5">
+              <div>
+                <div className="paperclip-story__label">IssueRunLedger</div>
+                <h1 className="mt-2 text-3xl font-semibold tracking-tight">Model profile badges</h1>
+                <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
+                  Run ledger isolated to the cheap-lane visual states: an emerald applied=cheap badge, an amber
+                  cheap-fell-back-to-primary badge with the inline fallback reason, and a baseline run without a
+                  modelProfile so the visual diff stays obvious.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="outline">cheap applied</Badge>
+                <Badge variant="outline">cheap → primary</Badge>
+                <Badge variant="outline">no profile</Badge>
+              </div>
+            </div>
+          </section>
+          <Section eyebrow="IssueRunLedger" title="Cheap, fallback, and baseline runs">
+            <ModelProfileBadgeLedger />
+          </Section>
+        </main>
+      </div>
+    </StorybookData>
+  );
+}
+
+export const RunLedgerModelProfileBadges: Story = {
+  name: "Run ledger - Model profile badges",
+  render: () => <ModelProfileLedgerStandalone />,
+};

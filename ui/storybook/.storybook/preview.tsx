@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { Preview } from "@storybook/react-vite";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { WorkTimelineResult } from "@paperclipai/shared";
 import { MemoryRouter } from "@/lib/router";
 import { BreadcrumbProvider } from "@/context/BreadcrumbContext";
 import { CompanyProvider } from "@/context/CompanyContext";
@@ -20,11 +21,53 @@ import {
   storybookIssues,
   storybookLiveRuns,
   storybookProjects,
+  storybookSecretAccessEvents,
+  storybookSecretBindings,
+  storybookSecretProviderConfigs,
+  storybookSecretProviderDiscoveryPreview,
+  storybookSecretProviderHealth,
+  storybookSecretProviders,
+  storybookSecrets,
   storybookSidebarBadges,
 } from "../fixtures/paperclipData";
+import timelineSample from "../fixtures/workTimeline.human.sample.json";
 import "@mdxeditor/editor/style.css";
 import "./tailwind-entry.css";
 import "./styles.css";
+
+const STORYBOOK_USER_AVATAR =
+  "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=96&q=80";
+
+function withStorybookTimelineDetails(data: WorkTimelineResult): WorkTimelineResult {
+  return {
+    ...data,
+    actors: data.actors.map((actor) => (
+      actor.type === "user" ? { ...actor, avatar: STORYBOOK_USER_AVATAR } : actor
+    )),
+    spans: data.spans.map((span, index) => {
+      const inputTokens = 42_000 + index * 137;
+      const cachedInputTokens = index % 3 === 0 ? 8_000 : 0;
+      const outputTokens = 5_400 + index * 29;
+      return {
+        ...span,
+        usage: span.usage ?? {
+          inputTokens,
+          cachedInputTokens,
+          outputTokens,
+          totalTokens: inputTokens + cachedInputTokens + outputTokens,
+        },
+      };
+    }),
+  };
+}
+
+const storybookTimelineSample = withStorybookTimelineDetails(timelineSample as WorkTimelineResult);
+
+// Install fetch monkeypatch eagerly so any module-load-time fetches (e.g. schema
+// caches in adapter config renderers) hit our fixtures before they reach the
+// network. Some renderers issue a fetch from useEffect on first paint, which
+// can otherwise race the StorybookProviders mount.
+installStorybookApiFixtures();
 
 function installStorybookApiFixtures() {
   if (typeof window === "undefined") return;
@@ -87,8 +130,122 @@ function installStorybookApiFixtures() {
       });
     }
 
+    if (url.pathname === "/api/adapters") {
+      return Response.json([
+        {
+          type: "claude_local",
+          label: "Claude Code",
+          source: "builtin",
+          modelsCount: 2,
+          loaded: true,
+          disabled: false,
+          capabilities: {
+            supportsInstructionsBundle: true,
+            supportsSkills: true,
+            supportsLocalAgentJwt: true,
+            requiresMaterializedRuntimeSkills: false,
+            supportsModelProfiles: true,
+          },
+        },
+        {
+          type: "codex_local",
+          label: "Codex",
+          source: "builtin",
+          modelsCount: 3,
+          loaded: true,
+          disabled: false,
+          capabilities: {
+            supportsInstructionsBundle: true,
+            supportsSkills: true,
+            supportsLocalAgentJwt: true,
+            requiresMaterializedRuntimeSkills: false,
+            supportsModelProfiles: true,
+          },
+        },
+      ]);
+    }
+
+    const adapterModelsMatch = url.pathname.match(
+      /^\/api\/companies\/[^/]+\/adapters\/([^/]+)\/(models|model-profiles)$/,
+    );
+    if (adapterModelsMatch) {
+      const [, , resource] = adapterModelsMatch;
+      if (resource === "models") {
+        return Response.json([
+          { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
+          { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+          { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+        ]);
+      }
+      return Response.json([
+        {
+          key: "cheap",
+          label: "Cheap",
+          adapterConfig: { model: "claude-sonnet-4-6" },
+          source: "adapter_default",
+        },
+      ]);
+    }
+
     if (url.pathname === "/api/plugins/ui-contributions") {
       return Response.json([]);
+    }
+
+    const adapterSchemaMatch = url.pathname.match(/^\/api\/adapters\/([^/]+)\/config-schema$/);
+    if (adapterSchemaMatch) {
+      const [, adapterType] = adapterSchemaMatch;
+      const schemas = (window as typeof window & {
+        __paperclipStorybookAdapterSchemas?: Record<string, unknown>;
+      }).__paperclipStorybookAdapterSchemas;
+      const schema = schemas?.[adapterType];
+      if (schema) return Response.json(schema);
+    }
+
+    const secretsListMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/secrets$/);
+    if (secretsListMatch) {
+      const [, companyId] = secretsListMatch;
+      return Response.json(companyId === "company-storybook" ? storybookSecrets : []);
+    }
+
+    const secretProvidersMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/secret-providers$/);
+    if (secretProvidersMatch) {
+      return Response.json(storybookSecretProviders);
+    }
+
+    const secretProviderHealthMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/secret-providers\/health$/,
+    );
+    if (secretProviderHealthMatch) {
+      return Response.json(storybookSecretProviderHealth);
+    }
+
+    const secretProviderConfigsMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/secret-provider-configs$/,
+    );
+    if (secretProviderConfigsMatch) {
+      return Response.json(storybookSecretProviderConfigs);
+    }
+
+    const secretProviderConfigDiscoveryPreviewMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/secret-provider-configs\/discovery\/preview$/,
+    );
+    if (secretProviderConfigDiscoveryPreviewMatch && init?.method?.toUpperCase() === "POST") {
+      return Response.json(storybookSecretProviderDiscoveryPreview);
+    }
+
+    const secretUsageMatch = url.pathname.match(/^\/api\/secrets\/([^/]+)\/usage$/);
+    if (secretUsageMatch) {
+      const [, secretId] = secretUsageMatch;
+      return Response.json({
+        secretId,
+        bindings: storybookSecretBindings.filter((binding) => binding.secretId === secretId),
+      });
+    }
+
+    const secretEventsMatch = url.pathname.match(/^\/api\/secrets\/([^/]+)\/access-events$/);
+    if (secretEventsMatch) {
+      const [, secretId] = secretEventsMatch;
+      return Response.json(storybookSecretAccessEvents.filter((event) => event.secretId === secretId));
     }
 
     const companyResourceMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/([^/]+)$/);
@@ -108,6 +265,24 @@ function installStorybookApiFixtures() {
           ...storybookDashboardSummary,
           companyId,
         });
+      }
+      if (resource === "timeline") {
+        return Response.json(
+          companyId === "company-storybook"
+            ? storybookTimelineSample
+            : {
+                actors: [],
+                spans: [],
+                events: [],
+                edges: [],
+                pagination: { limit: 100, offset: 0, totalIssues: 0, hasMore: false },
+                window: {
+                  from: url.searchParams.get("from") ?? new Date(0).toISOString(),
+                  to: url.searchParams.get("to") ?? new Date(0).toISOString(),
+                  capped: false,
+                },
+              },
+        );
       }
       if (resource === "heartbeat-runs") {
         return Response.json([]);
@@ -149,6 +324,11 @@ function installStorybookApiFixtures() {
   };
 }
 
+// Install fetch fixtures at module load so React Query never sees a real network failure.
+if (typeof window !== "undefined") {
+  installStorybookApiFixtures();
+}
+
 function applyStorybookTheme(theme: "light" | "dark") {
   if (typeof document === "undefined") return;
   document.documentElement.classList.toggle("dark", theme === "dark");
@@ -174,9 +354,12 @@ function StorybookProviders({
       }),
   );
 
+  if (typeof window !== "undefined") {
+    installStorybookApiFixtures();
+  }
+
   useEffect(() => {
     applyStorybookTheme(theme);
-    installStorybookApiFixtures();
   }, [theme]);
 
   return (

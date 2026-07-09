@@ -2,6 +2,8 @@
 
 import { describe, expect, it, vi } from "vitest";
 import {
+  applyMainContentScrollTop,
+  NavigationScrollMemory,
   resetNavigationScroll,
   SIDEBAR_SCROLL_RESET_STATE,
   shouldResetScrollOnNavigation,
@@ -35,6 +37,37 @@ describe("navigation-scroll", () => {
         pathname: "/dashboard",
         navigationType: "POP",
         state: SIDEBAR_SCROLL_RESET_STATE,
+      }),
+    ).toBe(false);
+  });
+
+  it("resets scroll when navigating into the top-level issues page", () => {
+    expect(
+      shouldResetScrollOnNavigation({
+        previousPathname: "/issues/PAP-1389",
+        pathname: "/issues",
+        navigationType: "PUSH",
+        state: null,
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldResetScrollOnNavigation({
+        previousPathname: "/PAP/issues/PAP-1389",
+        pathname: "/PAP/issues",
+        navigationType: "REPLACE",
+        state: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not reset issues page scroll on browser history restoration", () => {
+    expect(
+      shouldResetScrollOnNavigation({
+        previousPathname: "/issues/PAP-1389",
+        pathname: "/issues",
+        navigationType: "POP",
+        state: null,
       }),
     ).toBe(false);
   });
@@ -122,5 +155,34 @@ describe("navigation-scroll", () => {
     expect(document.body.scrollTop).toBe(0);
     expect(document.body.scrollLeft).toBe(0);
     expect(windowScrollTo).toHaveBeenCalledWith({ top: 0, left: 0, behavior: "auto" });
+  });
+
+  it("remembers and recalls scroll offsets per history key", () => {
+    const memory = new NavigationScrollMemory();
+    expect(memory.recall("missing")).toBe(0);
+
+    memory.remember("inbox", 640);
+    memory.remember("issue", 1820);
+    expect(memory.recall("inbox")).toBe(640);
+    expect(memory.recall("issue")).toBe(1820);
+
+    memory.remember("inbox", 700);
+    expect(memory.recall("inbox")).toBe(700);
+
+    memory.remember("inbox", -50);
+    expect(memory.recall("inbox")).toBe(0);
+  });
+
+  it("restores a remembered scroll offset onto the main content element", () => {
+    const main = document.createElement("main");
+    main.scrollTo = vi.fn();
+
+    applyMainContentScrollTop(main, 540);
+
+    expect(main.scrollTo).toHaveBeenCalledWith({ top: 540, left: 0, behavior: "auto" });
+    expect(main.scrollTop).toBe(540);
+    expect(main.scrollLeft).toBe(0);
+
+    expect(() => applyMainContentScrollTop(null, 540)).not.toThrow();
   });
 });

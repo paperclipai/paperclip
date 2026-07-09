@@ -133,6 +133,13 @@ done < <(printf '%s\n' "$PUBLIC_PACKAGE_INFO" | cut -f2)
 
 [ -n "$PUBLIC_PACKAGE_INFO" ] || release_fail "no public packages were found in the workspace."
 
+# Pre-fetch published versions for every public package in parallel so the
+# version helpers below do not each issue one serial `npm view` call per
+# package (see scripts/release-registry-versions.mjs).
+RELEASE_PACKAGE_VERSIONS_FILE="$(mktemp)"
+export RELEASE_PACKAGE_VERSIONS_FILE
+node "$REPO_ROOT/scripts/release-registry-versions.mjs" fetch "${PUBLIC_PACKAGE_NAMES[@]}" > "$RELEASE_PACKAGE_VERSIONS_FILE"
+
 TARGET_STABLE_VERSION="$(next_stable_version "$RELEASE_DATE" "${PUBLIC_PACKAGE_NAMES[@]}")"
 TARGET_PUBLISH_VERSION="$TARGET_STABLE_VERSION"
 DIST_TAG="latest"
@@ -145,6 +152,9 @@ if [ "$channel" = "canary" ]; then
 else
   tag_name="$(stable_tag_name "$TARGET_STABLE_VERSION")"
 fi
+
+rm -f "$RELEASE_PACKAGE_VERSIONS_FILE"
+unset RELEASE_PACKAGE_VERSIONS_FILE
 
 if [ "$print_version_only" = true ]; then
   printf '%s\n' "$TARGET_PUBLISH_VERSION"
@@ -168,12 +178,10 @@ if git_local_tag_exists "$tag_name" || git_remote_tag_exists "$tag_name" "$PUBLI
   release_fail "git tag $tag_name already exists locally or on $PUBLISH_REMOTE."
 fi
 
-while IFS= read -r package_name; do
-  [ -z "$package_name" ] && continue
-  if npm_package_version_exists "$package_name" "$TARGET_PUBLISH_VERSION"; then
-    release_fail "npm version ${package_name}@${TARGET_PUBLISH_VERSION} already exists."
-  fi
-done <<< "$(printf '%s\n' "${PUBLIC_PACKAGE_NAMES[@]}")"
+# Fresh (non-cached) existence check, batched in parallel. Prints the
+# offending package@version pairs itself before failing.
+node "$REPO_ROOT/scripts/release-registry-versions.mjs" assert-absent "$TARGET_PUBLISH_VERSION" "${PUBLIC_PACKAGE_NAMES[@]}" \
+  || release_fail "npm version ${TARGET_PUBLISH_VERSION} already exists for one or more packages."
 
 release_info ""
 release_info "==> Release plan"
@@ -197,6 +205,10 @@ if [ "$channel" = "stable" ]; then
 fi
 
 set_cleanup_trap
+
+# The release flow already prepares ui/dist before packaging. Reuse that output
+# so server prepack does not rebuild the UI a second time during preview/publish.
+export PAPERCLIP_RELEASE_REUSE_UI_DIST=1
 
 if [ "$skip_verify" = false ]; then
   release_info ""
@@ -254,7 +266,7 @@ else
     [ -z "$pkg_dir" ] && continue
     release_info "  Publishing $pkg_name@$pkg_version"
     cd "$REPO_ROOT/$pkg_dir"
-    pnpm publish --no-git-checks --tag "$DIST_TAG" --access public
+    publish_package_to_npm "$DIST_TAG" "$pkg_name" "$pkg_version"
   done <<< "$VERSIONED_PACKAGE_INFO"
   release_info "  ✓ Published all packages under dist-tag $DIST_TAG"
 fi
@@ -263,9 +275,11 @@ release_info ""
 if [ "$dry_run" = true ]; then
   release_info "==> Step 6/7: Skipping npm verification in dry-run mode..."
 else
-  release_info "==> Step 6/7: Confirming npm package availability..."
+  release_info "==> Step 6/7: Confirming npm package availability and dist-tag integrity..."
   VERIFY_ATTEMPTS="${NPM_PUBLISH_VERIFY_ATTEMPTS:-12}"
   VERIFY_DELAY_SECONDS="${NPM_PUBLISH_VERIFY_DELAY_SECONDS:-5}"
+  REGISTRY_STATE_VERIFY_ATTEMPTS="${NPM_REGISTRY_STATE_VERIFY_ATTEMPTS:-12}"
+  REGISTRY_STATE_VERIFY_DELAY_SECONDS="${NPM_REGISTRY_STATE_VERIFY_DELAY_SECONDS:-5}"
   MISSING_PUBLISHED_PACKAGES=""
 
   while IFS=$'\t' read -r _pkg_dir pkg_name pkg_version; do
@@ -285,6 +299,31 @@ else
   [ -z "$MISSING_PUBLISHED_PACKAGES" ] || release_fail "publish completed but npm never exposed: $MISSING_PUBLISHED_PACKAGES"
 
   release_info "  ✓ Verified all versioned packages are available on npm"
+
+  verify_args=(
+    --channel "$channel"
+    --dist-tag "$DIST_TAG"
+    --target-version "$TARGET_PUBLISH_VERSION"
+  )
+  while IFS=$'\t' read -r _pkg_dir pkg_name _pkg_version; do
+    [ -z "$pkg_name" ] && continue
+    verify_args+=(--package "$pkg_name")
+  done <<< "$VERSIONED_PACKAGE_INFO"
+
+  release_info "  Waiting for npm dist-tags and package metadata to converge..."
+  if wait_for_release_registry_state \
+    "$REGISTRY_STATE_VERIFY_ATTEMPTS" \
+    "$REGISTRY_STATE_VERIFY_DELAY_SECONDS" \
+    "${verify_args[@]}"; then
+    :
+  else
+    verify_status=$?
+    if [ "$verify_status" -eq 2 ]; then
+      release_fail "publish completed, but registry verification failed immediately for ${TARGET_PUBLISH_VERSION}; dist-tag state is wrong or requires operator intervention"
+    fi
+
+    release_fail "publish completed, but npm dist-tags or registry metadata never converged for ${TARGET_PUBLISH_VERSION}"
+  fi
 fi
 
 release_info ""

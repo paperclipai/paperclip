@@ -21,6 +21,7 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
 }));
 
@@ -53,6 +54,14 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => ({}),
 }));
 
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => mockSecretService,
+}));
+
+vi.mock("../services/environments.js", () => ({
+  environmentService: () => mockEnvironmentService,
+}));
+
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: mockFindServerAdapter,
   listAdapterModels: vi.fn(),
@@ -73,6 +82,14 @@ function registerModuleMocks() {
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => ({}),
+  }));
+
+  vi.doMock("../services/secrets.js", () => ({
+    secretService: () => mockSecretService,
+  }));
+
+  vi.doMock("../services/environments.js", () => ({
+    environmentService: () => mockEnvironmentService,
   }));
 
   vi.doMock("../adapters/index.js", () => ({
@@ -159,6 +176,11 @@ describe("agent instructions bundle routes", () => {
     vi.clearAllMocks();
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockFindServerAdapter.mockImplementation((_type: string) => ({ type: _type }));
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant",
+    });
     mockAgentService.getById.mockResolvedValue(makeAgent());
     mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeAgent(),
@@ -300,6 +322,45 @@ describe("agent instructions bundle routes", () => {
           instructionsRootPath: "/tmp/agent-1",
           instructionsEntryFile: "AGENTS.md",
           instructionsFilePath: "/tmp/agent-1/AGENTS.md",
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("preserves paperclip skill-sync selections when switching adapters", async () => {
+    // Desired skills live inside the per-adapter config under
+    // `paperclipSkillSync`, yet they are adapter-agnostic company-level
+    // selections. Switching adapter type must not silently wipe them — the
+    // server carries them over from the existing config the same way it
+    // preserves env/cwd and the instructions bundle.
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterType: "claude_local",
+      adapterConfig: {
+        model: "claude-sonnet-4",
+        paperclipSkillSync: { desiredSkills: ["research", "code-review"] },
+      },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        adapterType: "codex_local",
+        replaceAdapterConfig: true,
+        adapterConfig: {
+          model: "gpt-5.4",
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterType: "codex_local",
+        adapterConfig: expect.objectContaining({
+          model: "gpt-5.4",
+          paperclipSkillSync: { desiredSkills: ["research", "code-review"] },
         }),
       }),
       expect.any(Object),

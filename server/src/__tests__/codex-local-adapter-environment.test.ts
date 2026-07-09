@@ -26,6 +26,7 @@ describe("codex_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "codex_local",
       config: {
+        engine: "cli",
         command: process.execPath,
         cwd,
       },
@@ -57,6 +58,7 @@ describe("codex_local environment diagnostics", () => {
         companyId: "company-1",
         adapterType: "codex_local",
         config: {
+          engine: "cli",
           command: process.execPath,
           cwd,
           env: { CODEX_HOME: codexHome },
@@ -86,6 +88,7 @@ describe("codex_local environment diagnostics", () => {
         companyId: "company-1",
         adapterType: "codex_local",
         config: {
+          engine: "cli",
           command: process.execPath,
           cwd,
           env: { CODEX_HOME: codexHome },
@@ -124,6 +127,7 @@ describe("codex_local environment diagnostics", () => {
         companyId: "company-1",
         adapterType: "codex_local",
         config: {
+          engine: "cli",
           command: "codex",
           cwd,
           env: {

@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
-import type { Issue, Agent } from "@paperclipai/shared";
+import { useMemo, useState, type ReactNode } from "react";
+import type { ActivityEvent, Issue, Agent } from "@paperclipai/shared";
+import { isResponsibleUserDenialCode, responsibleUserLabel } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { accessApi, type CurrentBoardAccess } from "../api/access";
@@ -16,6 +17,9 @@ import { cn, relativeTime } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { describeRunRetryState } from "../lib/runRetryState";
+import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
+import { SourceResolvedFoldBadge } from "./SourceResolvedFoldBadge";
+import { ResponsibleUserDenialNotice } from "./ResponsibleUserDenialNotice";
 
 type IssueRunLedgerProps = {
   issueId: string;
@@ -24,6 +28,9 @@ type IssueRunLedgerProps = {
   childIssues: Issue[];
   agentMap: ReadonlyMap<string, Agent>;
   hasLiveRuns: boolean;
+  activityEvents?: ActivityEvent[];
+  renderActivityEvent?: (event: ActivityEvent) => ReactNode;
+  resolveUserLabel?: (userId: string) => string | null | undefined;
 };
 
 type IssueRunLedgerContentProps = {
@@ -33,6 +40,9 @@ type IssueRunLedgerContentProps = {
   issueStatus: Issue["status"];
   childIssues: Issue[];
   agentMap: ReadonlyMap<string, Pick<Agent, "name">>;
+  activityEvents?: ActivityEvent[];
+  renderActivityEvent?: (event: ActivityEvent) => ReactNode;
+  resolveUserLabel?: (userId: string) => string | null | undefined;
   pendingWatchdogDecision?: WatchdogDecisionInput["decision"] | null;
   canRecordWatchdogDecisions?: boolean;
   watchdogDecisionError?: string | null;
@@ -45,6 +55,20 @@ type LedgerRun = RunForIssue & {
   outputSilence?: ActiveRunForIssue["outputSilence"];
 };
 
+type LedgerFeedItem =
+  | {
+      kind: "run";
+      id: string;
+      timestamp: string;
+      run: LedgerRun;
+    }
+  | {
+      kind: "activity";
+      id: string;
+      timestamp: string;
+      event: ActivityEvent;
+    };
+
 type LivenessCopy = {
   label: string;
   tone: string;
@@ -55,7 +79,7 @@ const LIVENESS_COPY: Record<RunLivenessState, LivenessCopy> = {
   completed: {
     label: "Completed",
     tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-    description: "Issue reached a terminal state.",
+    description: "Task reached a terminal state.",
   },
   advanced: {
     label: "Advanced",
@@ -75,7 +99,7 @@ const LIVENESS_COPY: Record<RunLivenessState, LivenessCopy> = {
   blocked: {
     label: "Blocked",
     tone: "border-yellow-500/30 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300",
-    description: "Run or issue declared a blocker.",
+    description: "Run or task declared a blocker.",
   },
   failed: {
     label: "Failed",
@@ -97,7 +121,7 @@ const PENDING_LIVENESS_COPY: LivenessCopy = {
 
 const RETRY_PENDING_LIVENESS_COPY: LivenessCopy = {
   label: "Retry pending",
-  tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
+  tone: "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300",
   description: "Paperclip queued an automatic retry that has not started yet.",
 };
 
@@ -139,6 +163,45 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+interface ModelProfileSummary {
+  requested: string;
+  applied: string | null;
+  configSource: string | null;
+  fallbackReason: string | null;
+}
+
+function modelProfileForRun(run: RunForIssue): ModelProfileSummary | null {
+  const result = asRecord(run.resultJson);
+  const profile = asRecord(result?.modelProfile);
+  if (!profile) return null;
+  const requested = readString(profile.requested);
+  if (!requested) return null;
+  return {
+    requested,
+    applied: readString(profile.applied),
+    configSource: readString(profile.configSource),
+    fallbackReason: readString(profile.fallbackReason),
+  };
+}
+
+function modelProfileBadgeTone(summary: ModelProfileSummary) {
+  if (summary.applied === summary.requested) {
+    return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  }
+  if (summary.fallbackReason) {
+    return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+  }
+  return "border-border bg-background text-muted-foreground";
+}
+
+function modelProfileTitle(summary: ModelProfileSummary) {
+  const lines = [`Requested: ${summary.requested}`];
+  if (summary.applied) lines.push(`Applied: ${summary.applied}`);
+  if (summary.configSource) lines.push(`Source: ${summary.configSource}`);
+  if (summary.fallbackReason) lines.push(`Fallback: ${summary.fallbackReason}`);
+  return lines.join("\n");
 }
 
 function readNumber(value: unknown) {
@@ -254,9 +317,10 @@ function stopReasonLabel(run: RunForIssue) {
   if (timeoutFired || stopReason === "timeout") {
     return timeoutText ? `timeout (${timeoutText})` : "timeout";
   }
+  if (stopReason === "max_turns_exhausted" || stopReason === "turn_limit_exhausted") return "max turns exhausted";
   if (stopReason === "budget_paused") return "budget paused";
   if (stopReason === "cancelled") return "cancelled";
-  if (stopReason === "paused") return "paused";
+  if (stopReason === "paused") return "paused by board";
   if (stopReason === "process_lost") return "process lost";
   if (stopReason === "adapter_failed") return "adapter failed";
   if (stopReason === "completed") return timeoutText ? `completed (${timeoutText})` : "completed";
@@ -345,6 +409,9 @@ export function IssueRunLedger({
   childIssues,
   agentMap,
   hasLiveRuns,
+  activityEvents,
+  renderActivityEvent,
+  resolveUserLabel,
 }: IssueRunLedgerProps) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
@@ -405,6 +472,9 @@ export function IssueRunLedger({
       issueStatus={issueStatus}
       childIssues={childIssues}
       agentMap={agentMap}
+      activityEvents={activityEvents}
+      renderActivityEvent={renderActivityEvent}
+      resolveUserLabel={resolveUserLabel}
       pendingWatchdogDecision={watchdogDecision.variables?.decision ?? null}
       canRecordWatchdogDecisions={canBoardRecordWatchdogDecision(companyId, boardAccess)}
       watchdogDecisionError={watchdogDecisionError}
@@ -420,6 +490,9 @@ export function IssueRunLedgerContent({
   issueStatus,
   childIssues,
   agentMap,
+  activityEvents,
+  renderActivityEvent,
+  resolveUserLabel,
   pendingWatchdogDecision,
   canRecordWatchdogDecisions = true,
   watchdogDecisionError,
@@ -436,9 +509,40 @@ export function IssueRunLedgerContent({
     [ledgerRuns],
   );
   const children = childIssueSummary(childIssues);
+  const canRenderActivityEvents = Boolean(renderActivityEvent);
+  const feedItems = useMemo<LedgerFeedItem[]>(() => {
+    const items: LedgerFeedItem[] = [];
+    for (const run of ledgerRuns) {
+      items.push({
+        kind: "run",
+        id: run.runId,
+        timestamp: run.startedAt ?? run.createdAt,
+        run,
+      });
+    }
+    if (canRenderActivityEvents) {
+      for (const event of activityEvents ?? []) {
+        items.push({
+          kind: "activity",
+          id: event.id,
+          timestamp: event.createdAt instanceof Date
+            ? event.createdAt.toISOString()
+            : String(event.createdAt),
+          event,
+        });
+      }
+    }
+    return items.sort((a, b) => {
+      const aTime = new Date(a.timestamp).getTime();
+      const bTime = new Date(b.timestamp).getTime();
+      if (aTime !== bTime) return bTime - aTime;
+      if (a.kind !== b.kind) return a.kind === "run" ? -1 : 1;
+      return b.id.localeCompare(a.id);
+    });
+  }, [activityEvents, canRenderActivityEvents, ledgerRuns]);
 
   return (
-    <section className="space-y-3" aria-label="Issue run ledger">
+    <section className="space-y-3" aria-label="Task run ledger">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <h3 className="text-sm font-medium text-muted-foreground">Run ledger</h3>
@@ -476,7 +580,7 @@ export function IssueRunLedgerContent({
                 <Link
                   key={child.id}
                   to={`/issues/${child.identifier ?? child.id}`}
-                  className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-[11px] hover:bg-accent/40"
+                  className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-(length:--text-micro) hover:bg-accent/40"
                 >
                   <span className="shrink-0 font-mono text-muted-foreground">{child.identifier ?? child.id.slice(0, 8)}</span>
                   <span className="truncate">{child.title}</span>
@@ -484,7 +588,7 @@ export function IssueRunLedgerContent({
                 </Link>
               ))}
               {children.active.length > 4 ? (
-                <span className="rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground">
+                <span className="rounded-md border border-border px-2 py-1 text-(length:--text-micro) text-muted-foreground">
                   +{children.active.length - 4} more
                 </span>
               ) : null}
@@ -528,7 +632,7 @@ export function IssueRunLedgerContent({
             <div className="mt-2 flex flex-wrap gap-1.5">
               <button
                 type="button"
-                className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
+                className="rounded-md border border-border bg-background/80 px-2 py-1 text-(length:--text-micro) text-foreground hover:bg-background"
                 onClick={() =>
                   onWatchdogDecision({
                     runId: latestSilentRun.runId,
@@ -541,7 +645,7 @@ export function IssueRunLedgerContent({
               </button>
               <button
                 type="button"
-                className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
+                className="rounded-md border border-border bg-background/80 px-2 py-1 text-(length:--text-micro) text-foreground hover:bg-background"
                 onClick={() =>
                   onWatchdogDecision({
                     runId: latestSilentRun.runId,
@@ -556,7 +660,7 @@ export function IssueRunLedgerContent({
               </button>
               <button
                 type="button"
-                className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
+                className="rounded-md border border-border bg-background/80 px-2 py-1 text-(length:--text-micro) text-foreground hover:bg-background"
                 onClick={() =>
                   onWatchdogDecision({
                     runId: latestSilentRun.runId,
@@ -571,47 +675,73 @@ export function IssueRunLedgerContent({
             </div>
           ) : null}
           {watchdogDecisionError ? (
-            <p className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-900 dark:text-red-200">
+            <p className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-(length:--text-micro) text-red-900 dark:text-red-200">
               {watchdogDecisionError}
             </p>
           ) : null}
         </div>
       ) : null}
 
-      {ledgerRuns.length === 0 ? (
+      {feedItems.length === 0 ? (
         <div className="rounded-md border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
-          Historical runs without liveness metadata will appear here once linked to this issue.
+          {renderActivityEvent
+            ? "Runs and activity will appear here once this task has history."
+            : "Historical runs without liveness metadata will appear here once linked to this task."}
         </div>
       ) : (
-        <div className="divide-y divide-border rounded-md border border-border/70">
-          {ledgerRuns.slice(0, 8).map((run) => {
+        <div className="space-y-1.5">
+          {feedItems.slice(0, 20).map((item) => {
+            if (item.kind === "activity") {
+              return <div key={`activity:${item.id}`}>{renderActivityEvent?.(item.event)}</div>;
+            }
+            const run = item.run;
             const liveness = livenessCopyForRun(run);
             const stopReason = stopReasonLabel(run);
             const duration = formatDuration(run.startedAt, run.finishedAt);
             const exhausted = hasExhaustedContinuation(run);
             const continuation = continuationLabel(run);
             const retryState = describeRunRetryState(run);
+            const agentName = compactAgentName(run, agentMap);
+            const onBehalfOfLabel = run.responsibleUserId
+              ? responsibleUserLabel(resolveUserLabel?.(run.responsibleUserId))
+              : null;
+            const denialCode = isResponsibleUserDenialCode(run.errorCode) ? run.errorCode : null;
+            const sourceResolvedFold = readSourceResolvedWatchdogFold(run.resultJson);
             return (
-              <article key={run.runId} className="space-y-2 px-3 py-3">
-                <div className="flex flex-wrap items-center gap-2">
+              <article
+                key={`run:${run.runId}`}
+                className="space-y-1.5 rounded-lg border border-border/60 px-3 py-2 text-xs text-muted-foreground"
+              >
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="font-medium text-foreground">Run</span>
                   <Link
                     to={`/agents/${run.agentId}/runs/${run.runId}`}
-                    className="min-w-0 max-w-full truncate font-mono text-xs text-foreground hover:underline"
+                    className="min-w-0 max-w-full truncate font-mono text-foreground hover:underline"
                   >
                     {run.runId.slice(0, 8)}
                   </Link>
-                  <span className="rounded-md border border-border px-1.5 py-0.5 text-[11px] capitalize text-muted-foreground">
+                  <span>by {agentName}</span>
+                  {onBehalfOfLabel ? (
+                    <span
+                      data-testid="run-on-behalf-of"
+                      className="min-w-0 max-w-full truncate text-muted-foreground"
+                      title={`Acting on behalf of ${onBehalfOfLabel}`}
+                    >
+                      on behalf of <span className="text-foreground">{onBehalfOfLabel}</span>
+                    </span>
+                  ) : null}
+                  <span className="rounded-md border border-border px-1.5 py-0.5 text-(length:--text-micro) capitalize text-muted-foreground">
                     {statusLabel(run.status)}
                   </span>
                   {run.isLive ? (
-                    <span className="inline-flex items-center gap-1 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[11px] text-cyan-700 dark:text-cyan-300">
-                      <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
+                    <span className="inline-flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 text-(length:--text-micro) text-blue-700 dark:text-blue-300">
+                      <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
                       live
                     </span>
                   ) : null}
                   <span
                     className={cn(
-                      "rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
+                      "rounded-md border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
                       liveness.tone,
                     )}
                     title={liveness.description}
@@ -619,17 +749,17 @@ export function IssueRunLedgerContent({
                     {liveness.label}
                   </span>
                   {exhausted ? (
-                    <span className="rounded-md border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[11px] font-medium text-red-700 dark:text-red-300">
+                    <span className="rounded-md border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-(length:--text-micro) font-medium text-red-700 dark:text-red-300">
                       Exhausted
                     </span>
                   ) : null}
                   {continuation ? (
-                    <span className="text-[11px] text-muted-foreground">{continuation}</span>
+                    <span className="text-(length:--text-micro) text-muted-foreground">{continuation}</span>
                   ) : null}
                   {retryState ? (
                     <span
                       className={cn(
-                        "rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
+                        "rounded-md border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
                         retryState.tone,
                       )}
                     >
@@ -639,13 +769,35 @@ export function IssueRunLedgerContent({
                   {run.outputSilence && RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level] ? (
                     <span
                       className={cn(
-                        "rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
+                        "rounded-md border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
                         RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level]?.tone,
                       )}
                     >
                       {RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level]?.label}
                     </span>
                   ) : null}
+                  {(() => {
+                    const profile = modelProfileForRun(run);
+                    if (!profile) return null;
+                    const label = profile.applied === profile.requested
+                      ? `Profile: ${profile.requested}`
+                      : profile.applied
+                        ? `Profile: ${profile.requested} → ${profile.applied}`
+                        : `Profile: ${profile.requested} (unavailable)`;
+                    return (
+                      <span
+                        className={cn(
+                          "rounded-md border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
+                          modelProfileBadgeTone(profile),
+                        )}
+                        title={modelProfileTitle(profile)}
+                      >
+                        {label}
+                      </span>
+                    );
+                  })()}
+                  {sourceResolvedFold ? <SourceResolvedFoldBadge /> : null}
+                  <span className="ml-auto shrink-0">{relativeTime(item.timestamp)}</span>
                 </div>
 
                 <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
@@ -681,10 +833,31 @@ export function IssueRunLedgerContent({
                   </div>
                 ) : null}
 
+                {(() => {
+                  const profile = modelProfileForRun(run);
+                  if (!profile?.fallbackReason || profile.applied === profile.requested) return null;
+                  return (
+                    <p className="min-w-0 break-words text-(length:--text-micro) leading-5 text-amber-700 dark:text-amber-300">
+                      {profile.requested === "cheap"
+                        ? "Cheap profile fell back to primary"
+                        : `${profile.requested} profile unavailable`}
+                      {": "}
+                      <span className="font-mono">{profile.fallbackReason}</span>
+                    </p>
+                  );
+                })()}
+
                 {run.livenessReason ? (
                   <p className="min-w-0 break-words text-xs leading-5 text-muted-foreground">
                     {run.livenessReason}
                   </p>
+                ) : null}
+
+                {denialCode ? (
+                  <ResponsibleUserDenialNotice
+                    code={denialCode}
+                    userName={run.responsibleUserId ? resolveUserLabel?.(run.responsibleUserId) : null}
+                  />
                 ) : null}
 
                 {run.nextAction ? (
@@ -696,9 +869,9 @@ export function IssueRunLedgerContent({
               </article>
             );
           })}
-          {ledgerRuns.length > 8 ? (
+          {feedItems.length > 20 ? (
             <div className="px-3 py-2 text-xs text-muted-foreground">
-              {ledgerRuns.length - 8} older runs not shown
+              {feedItems.length - 20} older items not shown
             </div>
           ) : null}
         </div>
