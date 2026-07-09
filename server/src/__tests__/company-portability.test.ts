@@ -480,6 +480,55 @@ describe("company portability", () => {
     expect(exported.warnings).toContain("Agent claudecoder PATH override was omitted from export because it is system-dependent.");
   });
 
+  it("exports agent permission grants through the Paperclip extension and manifest", async () => {
+    const db = {
+      select: vi.fn((selection: Record<string, unknown>) => ({
+        from: vi.fn(() => ({
+          where: vi.fn(async () => {
+            if (!selection.permissionKey) return [];
+            return [
+              {
+                principalId: "agent-1",
+                permissionKey: "agents:suggest-changes",
+                scope: null,
+              },
+              {
+                principalId: "agent-1",
+                permissionKey: "skills:create",
+                scope: { targetAgentIds: ["agent-1"] },
+              },
+            ];
+          }),
+        })),
+      })),
+    };
+    const portability = companyPortabilityService(db as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+    });
+
+    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    expect(extension).toContain("permissionGrants:");
+    expect(extension).toContain('permissionKey: "agents:suggest-changes"');
+    expect(extension).toContain('permissionKey: "skills:create"');
+    expect(exported.manifest.agents.find((agent) => agent.slug === "claudecoder")?.permissionGrants).toEqual([
+      {
+        permissionKey: "agents:suggest-changes",
+        scope: null,
+      },
+      {
+        permissionKey: "skills:create",
+        scope: { targetAgentIds: ["agent-1"] },
+      },
+    ]);
+  });
+
   it("exports hire approval policy only when approval is required", async () => {
     const portability = companyPortabilityService({} as any);
 
@@ -1556,6 +1605,90 @@ describe("company portability", () => {
       expect.objectContaining({
         OPENAI_API_KEY: expect.objectContaining({ secretId: "secret-created" }),
       }),
+    );
+  });
+
+  it("imports agent permission grants from package metadata", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-imported",
+      name: input.name,
+      adapterType: input.adapterType,
+      adapterConfig: input.adapterConfig,
+      runtimeConfig: input.runtimeConfig,
+      status: input.status,
+    }));
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        files: {
+          "COMPANY.md": [
+            "---",
+            "name: Import",
+            "includes:",
+            "  - agents/coder/AGENTS.md",
+            "---",
+            "",
+          ].join("\n"),
+          "agents/coder/AGENTS.md": [
+            "---",
+            "name: Coder",
+            "slug: coder",
+            "kind: agent",
+            "---",
+            "",
+            "# Coder",
+            "",
+          ].join("\n"),
+          ".paperclip.yaml": [
+            "schema: paperclip/v1",
+            "agents:",
+            "  coder:",
+            "    adapter:",
+            "      type: process",
+            "      config: {}",
+            "    permissionGrants:",
+            "      - permissionKey: agents:suggest-changes",
+            "      - permissionKey: skills:create",
+            "        scope:",
+            "          targetAgentIds:",
+            "            - agent-imported",
+            "",
+          ].join("\n"),
+        },
+      },
+      include: {
+        company: false,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "existing_company",
+        companyId: "company-1",
+      },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(accessSvc.setPrincipalPermission).toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-imported",
+      "agents:suggest-changes",
+      true,
+      "user-1",
+      null,
+    );
+    expect(accessSvc.setPrincipalPermission).toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-imported",
+      "skills:create",
+      true,
+      "user-1",
+      { targetAgentIds: ["agent-imported"] },
     );
   });
 

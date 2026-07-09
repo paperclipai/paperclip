@@ -3,8 +3,8 @@ import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
-import { eq } from "drizzle-orm";
-import { builtInManagedResources, type Db } from "@paperclipai/db";
+import { and, eq, inArray } from "drizzle-orm";
+import { builtInManagedResources, principalPermissionGrants, type Db } from "@paperclipai/db";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityCollisionStrategy,
@@ -30,6 +30,7 @@ import type {
   CompanyPortabilitySkillManifestEntry,
   CompanySkill,
   AgentEnvConfig,
+  PermissionKey,
   RoutineVariable,
 } from "@paperclipai/shared";
 import {
@@ -49,6 +50,7 @@ import {
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
   normalizeAgentUrlKey,
+  PERMISSION_KEYS,
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
@@ -718,6 +720,23 @@ function asString(value: unknown): string | null {
 
 function asBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
+}
+
+type PortableAgentPermissionGrant = CompanyPortabilityAgentManifestEntry["permissionGrants"][number];
+
+const VALID_PERMISSION_KEYS = new Set<PermissionKey>(PERMISSION_KEYS);
+
+function normalizePortablePermissionGrants(value: unknown): PortableAgentPermissionGrant[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): PortableAgentPermissionGrant[] => {
+    if (!isPlainRecord(entry)) return [];
+    const permissionKey = asString(entry.permissionKey);
+    if (!permissionKey || !VALID_PERMISSION_KEYS.has(permissionKey as PermissionKey)) return [];
+    return [{
+      permissionKey: permissionKey as PermissionKey,
+      scope: isPlainRecord(entry.scope) ? entry.scope : null,
+    }];
+  });
 }
 
 function asInteger(value: unknown): number | null {
@@ -1926,6 +1945,7 @@ const YAML_KEY_PRIORITY = [
   "adapter",
   "runtime",
   "permissions",
+  "permissionGrants",
   "budgetMonthlyCents",
   "metadata",
 ] as const;
@@ -2692,6 +2712,7 @@ function buildManifestFromPackageFiles(
     const extensionAdapter = isPlainRecord(extension.adapter) ? extension.adapter : null;
     const extensionRuntime = isPlainRecord(extension.runtime) ? extension.runtime : null;
     const extensionPermissions = isPlainRecord(extension.permissions) ? extension.permissions : null;
+    const extensionPermissionGrants = normalizePortablePermissionGrants(extension.permissionGrants);
     const extensionMetadata = isPlainRecord(extension.metadata) ? extension.metadata : null;
     const adapterConfig = isPlainRecord(extensionAdapter?.config)
       ? extensionAdapter.config
@@ -2715,6 +2736,7 @@ function buildManifestFromPackageFiles(
       adapterConfig,
       runtimeConfig,
       permissions: extensionPermissions ?? {},
+      permissionGrants: extensionPermissionGrants,
       budgetMonthlyCents:
         typeof extension.budgetMonthlyCents === "number" && Number.isFinite(extension.budgetMonthlyCents)
           ? Math.max(0, Math.floor(extension.budgetMonthlyCents))
@@ -3003,6 +3025,27 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const secrets = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const defaultSecretProvider = getConfiguredSecretProvider();
+
+  async function applyImportedAgentPermissionGrants(
+    companyId: string,
+    agentId: string,
+    permissionGrants: PortableAgentPermissionGrant[],
+    grantedByUserId: string | null,
+  ) {
+    if (permissionGrants.length === 0) return;
+    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
+    for (const grant of permissionGrants) {
+      await access.setPrincipalPermission(
+        companyId,
+        "agent",
+        agentId,
+        grant.permissionKey,
+        true,
+        grantedByUserId,
+        grant.scope ?? null,
+      );
+    }
+  }
 
   function assertKnownImportAdapterType(type: string | null | undefined): string {
     const adapterType = typeof type === "string" ? type.trim() : "";
@@ -3346,6 +3389,33 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const slug = uniqueSlug(baseSlug, usedSlugs);
       idToSlug.set(agent.id, slug);
     }
+    const agentPermissionGrantRows = agentRows.length > 0 && typeof (db as { select?: unknown }).select === "function"
+      ? await db
+        .select({
+          principalId: principalPermissionGrants.principalId,
+          permissionKey: principalPermissionGrants.permissionKey,
+          scope: principalPermissionGrants.scope,
+        })
+        .from(principalPermissionGrants)
+        .where(and(
+          eq(principalPermissionGrants.companyId, companyId),
+          eq(principalPermissionGrants.principalType, "agent"),
+          inArray(principalPermissionGrants.principalId, agentRows.map((agent) => agent.id)),
+        ))
+      : [];
+    const permissionGrantsByAgentId = new Map<string, PortableAgentPermissionGrant[]>();
+    for (const row of agentPermissionGrantRows) {
+      if (!VALID_PERMISSION_KEYS.has(row.permissionKey as PermissionKey)) continue;
+      const grants = permissionGrantsByAgentId.get(row.principalId) ?? [];
+      grants.push({
+        permissionKey: row.permissionKey as PermissionKey,
+        scope: isPlainRecord(row.scope) ? row.scope : null,
+      });
+      permissionGrantsByAgentId.set(row.principalId, grants);
+    }
+    for (const grants of permissionGrantsByAgentId.values()) {
+      grants.sort((left, right) => left.permissionKey.localeCompare(right.permissionKey));
+    }
 
     const projectsSvc = projectService(db);
     const issuesSvc = issueService(db);
@@ -3609,6 +3679,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           },
         ) as Record<string, unknown>;
         const portablePermissions = pruneDefaultLikeValue(agent.permissions ?? {}, { dropFalseBooleans: true }) as Record<string, unknown>;
+        const portablePermissionGrants = permissionGrantsByAgentId.get(agent.id) ?? [];
         const agentEnvInputs = dedupeEnvInputs(
           envInputs
             .slice(envInputsStart)
@@ -3651,6 +3722,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           },
           runtime: portableRuntimeConfig,
           permissions: portablePermissions,
+          permissionGrants: portablePermissionGrants.length > 0 ? portablePermissionGrants : undefined,
           budgetMonthlyCents: (agent.budgetMonthlyCents ?? 0) > 0 ? agent.budgetMonthlyCents : undefined,
           metadata: (agent.metadata as Record<string, unknown> | null) ?? null,
         });
@@ -4651,6 +4723,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             } catch (err) {
               warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
             }
+            await applyImportedAgentPermissionGrants(
+              targetCompany.id,
+              updated.id,
+              manifestAgent.permissionGrants ?? [],
+              actorUserId ?? null,
+            );
             agentStatusById.set(updated.id, updated.status ?? agentStatusById.get(updated.id) ?? null);
             await secrets.syncEnvBindingsForTarget?.(
               targetCompany.id,
@@ -4692,6 +4770,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
+          await applyImportedAgentPermissionGrants(
+            targetCompany.id,
+            created.id,
+            manifestAgent.permissionGrants ?? [],
+            actorUserId ?? null,
+          );
           agentStatusById.set(created.id, created.status ?? createdStatus);
           await secrets.syncEnvBindingsForTarget?.(
             targetCompany.id,

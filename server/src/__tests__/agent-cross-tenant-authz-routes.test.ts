@@ -182,6 +182,7 @@ vi.mock("../services/index.js", () => ({
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
   approvalService: () => mockApprovalService,
+  builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
   companySkillService: () => mockCompanySkillService,
   budgetService: () => mockBudgetService,
   heartbeatService: () => mockHeartbeatService,

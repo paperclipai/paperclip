@@ -8,6 +8,10 @@ const mockAgentService = vi.hoisted(() => ({
   resolveByReference: vi.fn(),
 }));
 
+const mockBuiltInAgentService = vi.hoisted(() => ({
+  ensureCompanyDefaultAgentGrants: vi.fn(),
+}));
+
 const mockAgentInstructionsService = vi.hoisted(() => ({
   getBundle: vi.fn(),
   readFile: vi.fn(),
@@ -42,6 +46,7 @@ vi.mock("../services/index.js", () => ({
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
   approvalService: () => ({}),
+  builtInAgentService: () => mockBuiltInAgentService,
   companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
   budgetService: () => ({}),
   environmentService: () => mockEnvironmentService,
@@ -73,6 +78,7 @@ function registerModuleMocks() {
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
     approvalService: () => ({}),
+    builtInAgentService: () => mockBuiltInAgentService,
     companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
     budgetService: () => ({}),
     heartbeatService: () => ({}),
@@ -193,6 +199,7 @@ describe("agent instructions bundle routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockBuiltInAgentService.ensureCompanyDefaultAgentGrants.mockResolvedValue(0);
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockFindServerAdapter.mockImplementation((_type: string) => ({ type: _type }));
     mockAccessService.decide.mockResolvedValue({
@@ -290,7 +297,11 @@ describe("agent instructions bundle routes", () => {
       }
       return makeAgent();
     });
-    mockAccessService.hasPermission.mockResolvedValue(false);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      reason: "deny_no_grant",
+      explanation: "Missing permission: agents:configure or agents:suggest-changes.",
+    });
 
     const res = await requestApp(
       await createApp({
@@ -305,6 +316,14 @@ describe("agent instructions bundle routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toContain("Missing permission");
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "agent_config:read",
+      resource: {
+        type: "agent",
+        companyId: "company-1",
+        agentId: "11111111-1111-4111-8111-111111111111",
+      },
+    }));
     expect(mockAgentInstructionsService.getBundle).not.toHaveBeenCalled();
   });
 
@@ -324,7 +343,18 @@ describe("agent instructions bundle routes", () => {
     expect(mockAgentInstructionsService.getBundle).toHaveBeenCalled();
   });
 
-  it("allows the built-in Reflection Coach to read peer instructions bundles", async () => {
+  it("allows agents with suggest grants to read peer instructions bundles", async () => {
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by explicit grant agents:suggest-changes.",
+      grant: {
+        principalType: "agent",
+        principalId: "coach-agent",
+        permissionKey: "agents:suggest-changes",
+        scope: null,
+      },
+    });
     mockAgentService.getById.mockImplementation(async (id: string) => {
       if (id === "coach-agent") {
         return makeReflectionCoachAgent({ id: "coach-agent" });
@@ -345,6 +375,14 @@ describe("agent instructions bundle routes", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "agent_config:read",
+      resource: {
+        type: "agent",
+        companyId: "company-1",
+        agentId: "11111111-1111-4111-8111-111111111111",
+      },
+    }));
     expect(mockAgentInstructionsService.readFile).toHaveBeenCalledWith(
       expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }),
       "AGENTS.md",

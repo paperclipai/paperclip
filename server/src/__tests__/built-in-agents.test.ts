@@ -9,6 +9,7 @@ import {
   budgetPolicies,
   builtInManagedResources,
   companies,
+  companyMemberships,
   companySkillVersions,
   companySkills,
   createDb,
@@ -68,6 +69,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     await db.delete(companySkillVersions);
     await db.delete(companySkills);
     await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
     await db.delete(agentConfigRevisions);
     await db.delete(activityLog);
     await db.delete(approvals);
@@ -79,6 +81,14 @@ describeEmbeddedPostgres("built-in agents", () => {
   afterAll(async () => {
     await tempDb?.cleanup();
   });
+
+  async function permissionKeysForAgent(agentId: string) {
+    const grants = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, agentId));
+    return grants.map((grant) => grant.permissionKey).sort();
+  }
 
   async function seedCompany(options: { requireApproval?: boolean } = {}) {
     const companyId = randomUUID();
@@ -415,7 +425,7 @@ describeEmbeddedPostgres("built-in agents", () => {
 
   it("auto-provisions a paused Reflection Coach bundle with skill sync and a disabled routine", async () => {
     const companyId = await seedCompany({ requireApproval: false });
-    await agentService(db).create(companyId, {
+    const root = await agentService(db).create(companyId, {
       name: "CEO",
       role: "ceo",
       status: "idle",
@@ -427,6 +437,12 @@ describeEmbeddedPostgres("built-in agents", () => {
 
     const result = await reconcileBuiltInAgentsOnStartup(db);
     expect(result.autoEnsured).toBeGreaterThanOrEqual(1);
+    expect(result.defaultGrantsEnsured).toBeGreaterThanOrEqual(4);
+
+    const rootGrantKeys = await permissionKeysForAgent(root.id);
+    expect(rootGrantKeys).toEqual(expect.arrayContaining(["agents:configure", "skills:create"]));
+    expect(rootGrantKeys).not.toContain("agents:suggest-changes");
+    expect(rootGrantKeys).not.toContain("skills:suggest-changes");
 
     const state = await builtInAgentService(db).get(companyId, "reflection-coach");
     expect(state).toMatchObject({
@@ -487,6 +503,10 @@ describeEmbeddedPostgres("built-in agents", () => {
       cronExpression: "0 9 * * 1",
       timezone: "UTC",
     });
+    const coachGrantKeys = await permissionKeysForAgent(state.agentId!);
+    expect(coachGrantKeys).toEqual(expect.arrayContaining(["agents:suggest-changes", "skills:suggest-changes"]));
+    expect(coachGrantKeys).not.toContain("agents:configure");
+    expect(coachGrantKeys).not.toContain("skills:create");
   });
 
   it("preserves new-agent approval gates during automatic Reflection Coach provisioning", async () => {
@@ -757,11 +777,11 @@ describeEmbeddedPostgres("built-in agents", () => {
       timezone: "UTC",
     });
 
-    const grants = await db
-      .select()
-      .from(principalPermissionGrants)
-      .where(eq(principalPermissionGrants.principalId, state.agentId!));
-    expect(grants.map((grant) => grant.permissionKey)).not.toContain("tasks:assign");
+    const grantKeys = await permissionKeysForAgent(state.agentId!);
+    expect(grantKeys).toEqual(expect.arrayContaining(["agents:suggest-changes", "skills:suggest-changes"]));
+    expect(grantKeys).not.toContain("tasks:assign");
+    expect(grantKeys).not.toContain("agents:configure");
+    expect(grantKeys).not.toContain("skills:create");
   });
 
   it("controls the Reflection Coach routine schedule without enabling it by default", async () => {

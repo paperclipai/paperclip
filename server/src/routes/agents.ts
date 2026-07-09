@@ -41,6 +41,7 @@ import {
   agentInstructionsService,
   accessService,
   approvalService,
+  builtInAgentService,
   companySkillService,
   budgetService,
   heartbeatService,
@@ -52,7 +53,7 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -99,8 +100,8 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
-import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
 import {
+  AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
   agentInstructionsChangeTargetKey,
   agentProfileChangeTargetKey,
   changeConsentGateService,
@@ -696,30 +697,22 @@ export function agentRoutes(
     // read-only operation available to any board (human) member of the
     // company. Responses go through `redactAgentConfiguration` so secrets
     // are never exposed. Mutations and environment probes still gate on
-    // agents:create via assertCanCreateAgentsForCompany / assertCanUpdateAgent.
+    // agents:create or agents:configure via the mutating route helpers.
     //
-    // For AGENT actors we keep the previous, stricter gate: an agent must
-    // either have an explicit `agents:create` grant or the legacy
-    // `canCreateAgents` permission on its own record. Agents are
-    // non-human principals — they should not be able to introspect peer
-    // agents' configurations just by virtue of being in the same company.
+    // For AGENT actors we keep a stricter gate: an agent must have either
+    // agents:configure or agents:suggest-changes before it can inspect peer
+    // agent configuration for a proposed diff.
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "agent") {
-      if (!req.actor.agentId) throw forbidden("Agent authentication required");
-      const actorAgent = await svc.getById(req.actor.agentId);
-      if (!actorAgent || actorAgent.companyId !== companyId) {
-        throw forbidden("Agent key cannot access another company");
+      const decision = await access.decide({
+        actor: req.actor,
+        action: "agent_config:read",
+        resource: { type: "company", companyId },
+      });
+      if (!decision.allowed) {
+        throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       }
-      const allowedByGrant = await access.hasPermission(
-        companyId,
-        "agent",
-        actorAgent.id,
-        "agents:create",
-      );
-      if (!allowedByGrant && !canCreateAgents(actorAgent)) {
-        throw forbidden("Missing permission: can create agents");
-      }
-      return actorAgent;
+      return req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
     }
     return null;
   }
@@ -739,26 +732,21 @@ export function agentRoutes(
 
   async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
     // Mirrors assertCanReadConfigurations but returns a boolean instead of
-    // throwing. Board actors only need company access; agent actors must
-    // still pass the agents:create gate (explicit grant or canCreateAgents
-    // on their own record) so peer agents cannot snoop each others'
-    // configurations.
+    // throwing. Board actors only need company access; agent actors must pass
+    // the agent configuration read grant ladder so peer agents cannot snoop
+    // each others' configurations.
     try {
       assertCompanyAccess(req, companyId);
     } catch {
       return false;
     }
     if (req.actor.type === "board") return true;
-    if (!req.actor.agentId) return false;
-    const actorAgent = await svc.getById(req.actor.agentId);
-    if (!actorAgent || actorAgent.companyId !== companyId) return false;
-    const allowedByGrant = await access.hasPermission(
-      companyId,
-      "agent",
-      actorAgent.id,
-      "agents:create",
-    );
-    return allowedByGrant || canCreateAgents(actorAgent);
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agent_config:read",
+      resource: { type: "company", companyId },
+    });
+    return decision.allowed;
   }
 
   async function buildSkippedWakeupResponse(
@@ -853,20 +841,14 @@ export function agentRoutes(
     }
     if (actorAgent.id === targetAgent.id) return;
 
-    const builtInMarker = readBuiltInAgentMarker(actorAgent.metadata);
-    if (builtInMarker?.key === "reflection-coach") {
-      return;
-    }
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+    });
+    if (decision.allowed) return;
 
-    const allowedByGrant = await access.hasPermission(
-      targetAgent.companyId,
-      "agent",
-      actorAgent.id,
-      "agents:create",
-    );
-    if (allowedByGrant || canCreateAgents(actorAgent)) return;
-
-    throw forbidden("Missing permission: can create agents");
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
   function assertKnownAdapterType(type: string | null | undefined): string {
@@ -1329,48 +1311,70 @@ export function agentRoutes(
     }
   }
 
-  async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
+  async function assertCanApplyProtectedAgentChange(
+    req: Request,
+    targetAgent: { id: string; companyId: string },
+    targetKeys: string[],
+  ) {
     assertCompanyAccess(req, targetAgent.companyId);
-    if (req.actor.type === "board") {
-      await assertBoardCanManageAgentsForCompany(req, targetAgent.companyId);
+    const changeScope = { requiresChangeGrant: true };
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agent_config:update",
+      resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+      scope: changeScope,
+    });
+    if (decision.allowed) {
       return;
     }
 
-    if (await isReflectionCoachActor(req, targetAgent.companyId)) {
-      const allowedByReflectionCoachGate = await changeConsentGateService(db).assertConsented({
-        companyId: targetAgent.companyId,
-        actorAgentId: req.actor.agentId,
-        actorRunId: req.actor.runId ?? null,
-        targetKeys: [agentInstructionsChangeTargetKey(targetAgent.id)],
+    if (decision.reason === "deny_missing_consent" && req.actor.type === "agent" && targetKeys.length > 0) {
+      try {
+        await changeConsentGateService(db).assertConsented({
+          companyId: targetAgent.companyId,
+          actorAgentId: req.actor.agentId,
+          actorRunId: req.actor.runId ?? null,
+          targetKeys,
+        });
+      } catch (err) {
+        if (err instanceof HttpError && err.status === 403) {
+          throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+        }
+        throw err;
+      }
+
+      const consentedDecision = await access.decide({
+        actor: req.actor,
+        action: "agent_config:update",
+        resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+        scope: { ...changeScope, consentedChange: true },
       });
-      if (allowedByReflectionCoachGate) return;
+      if (consentedDecision.allowed) {
+        return;
+      }
+      throw forbidden(consentedDecision.explanation, authorizationDeniedDetails(consentedDecision));
     }
 
-    throw forbidden(
-      "Only board-authenticated callers can manage instructions path or bundle configuration",
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
+  async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
+    await assertCanApplyProtectedAgentChange(
+      req,
+      targetAgent,
+      [agentInstructionsChangeTargetKey(targetAgent.id)],
     );
   }
 
-  async function isReflectionCoachActor(req: Request, companyId: string) {
-    if (req.actor.type !== "agent" || !req.actor.agentId) return false;
-    const actorAgent = await svc.getById(req.actor.agentId);
-    if (!actorAgent || actorAgent.companyId !== companyId) {
-      throw forbidden("Agent key cannot access another company");
-    }
-    return readBuiltInAgentMarker(actorAgent.metadata)?.key === "reflection-coach";
-  }
-
-  async function assertReflectionCoachAgentDescriptionMutationGate(
+  async function assertCanApplyAgentProfileChange(
     req: Request,
     targetAgent: { id: string; companyId: string },
   ) {
-    if (!(await isReflectionCoachActor(req, targetAgent.companyId))) return;
-    await changeConsentGateService(db).assertConsented({
-      companyId: targetAgent.companyId,
-      actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
-      actorRunId: req.actor.runId ?? null,
-      targetKeys: [agentProfileChangeTargetKey(targetAgent.id)],
-    });
+    await assertCanApplyProtectedAgentChange(
+      req,
+      targetAgent,
+      [agentProfileChangeTargetKey(targetAgent.id)],
+    );
   }
 
   function assertNoAgentInstructionsConfigMutation(
@@ -2533,6 +2537,7 @@ export function agentRoutes(
       agent.id,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
+    await builtInAgentService(db).ensureCompanyDefaultAgentGrants(companyId);
 
     if (agent.budgetMonthlyCents > 0) {
       await budgets.upsertPolicy(
@@ -2861,7 +2866,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    await assertCanUpdateAgent(req, existing);
+    assertCompanyAccess(req, existing.companyId);
 
     if (hasOwn(req.body as object, "permissions")) {
       res.status(422).json({ error: "Use /api/agents/:id/permissions for permission changes" });
@@ -2973,8 +2978,14 @@ export function agentRoutes(
         },
       );
     }
-    if (touchesAgentProfileChangeConsentFields(patchData)) {
-      await assertReflectionCoachAgentDescriptionMutationGate(req, existing);
+    const touchesProfileFields = touchesAgentProfileChangeConsentFields(patchData);
+    const profileOnlyChange = touchesProfileFields && Object.keys(patchData).every((key) =>
+      (AGENT_PROFILE_CHANGE_CONSENT_FIELDS as readonly string[]).includes(key),
+    );
+    if (profileOnlyChange) {
+      await assertCanApplyAgentProfileChange(req, existing);
+    } else {
+      await assertCanUpdateAgent(req, existing);
     }
 
     const actor = getActorInfo(req);

@@ -7,7 +7,7 @@ import { and, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
 import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
-import type { Agent, Approval, CompanySkill, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
+import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsService } from "./agent-instructions.js";
@@ -19,6 +19,7 @@ import {
 } from "./built-in-agent-metadata.js";
 import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
+import { accessService } from "./access.js";
 
 export type BuiltInAgentStatus = "not_provisioned" | "pending_approval" | "needs_setup" | "ready" | "paused";
 
@@ -252,6 +253,11 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
 ]);
 
 const DEFINITIONS_BY_KEY = new Map(DEFINITIONS.map((definition) => [definition.key, definition]));
+
+const ROOT_AGENT_DEFAULT_CHANGE_GRANTS: PermissionKey[] = ["agents:configure", "skills:create"];
+const BUILT_IN_AGENT_DEFAULT_GRANTS: Record<string, PermissionKey[]> = {
+  "reflection-coach": ["agents:suggest-changes", "skills:suggest-changes"],
+};
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -546,6 +552,7 @@ function rowIsBuiltInAgent(row: typeof agents.$inferSelect, key: string) {
 
 export function builtInAgentService(db: Db) {
   const agentSvc = agentService(db);
+  const accessSvc = accessService(db);
   const approvalSvc = approvalService(db);
   const instructionsSvc = agentInstructionsService();
   const skillSvc = companySkillService(db);
@@ -558,6 +565,51 @@ export function builtInAgentService(db: Db) {
       .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
     const nonBuiltInRoots = roots.filter((agent) => !readBuiltInAgentMarker(agent.metadata) && !agent.reportsTo);
     return nonBuiltInRoots.length === 1 ? nonBuiltInRoots[0]!.id : null;
+  }
+
+  async function ensureAgentDefaultGrants(companyId: string, agentId: string, grantKeys: PermissionKey[]) {
+    if (grantKeys.length === 0) return 0;
+    await accessSvc.ensureMembership(companyId, "agent", agentId, "member", "active");
+    let ensured = 0;
+    for (const permissionKey of grantKeys) {
+      await accessSvc.setPrincipalPermission(companyId, "agent", agentId, permissionKey, true, null);
+      ensured += 1;
+    }
+    return ensured;
+  }
+
+  async function ensureBuiltInAgentDefaultGrants(agent: Agent, definition: BuiltInAgentDefinition) {
+    if (agent.status === "pending_approval" || agent.status === "terminated") return 0;
+    return ensureAgentDefaultGrants(
+      agent.companyId,
+      agent.id,
+      BUILT_IN_AGENT_DEFAULT_GRANTS[definition.key] ?? [],
+    );
+  }
+
+  async function ensureRootAgentDefaultChangeGrants(companyId: string) {
+    const rows = await db
+      .select()
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
+    const rootCeoRows = rows.filter((agent) =>
+      !readBuiltInAgentMarker(agent.metadata) &&
+      !agent.reportsTo &&
+      agent.role.trim().toLowerCase() === "ceo" &&
+      agent.status !== "pending_approval"
+    );
+    if (rootCeoRows.length !== 1) return 0;
+    return ensureAgentDefaultGrants(companyId, rootCeoRows[0]!.id, ROOT_AGENT_DEFAULT_CHANGE_GRANTS);
+  }
+
+  async function ensureCompanyDefaultAgentGrants(companyId: string) {
+    let ensured = await ensureRootAgentDefaultChangeGrants(companyId);
+    for (const definition of DEFINITIONS) {
+      const agent = await findSingleAgent(companyId, definition);
+      if (!agent) continue;
+      ensured += await ensureBuiltInAgentDefaultGrants(agent as Agent, definition);
+    }
+    return ensured;
   }
 
   async function defaultProvisionInput(companyId: string, definition: BuiltInAgentDefinition, input: BuiltInAgentProvisionInput) {
@@ -1279,6 +1331,7 @@ export function builtInAgentService(db: Db) {
         recordRevision: { source: "built-in-agent:ensure" },
       });
       if (!updated) throw notFound("Built-in agent not found");
+      await ensureBuiltInAgentDefaultGrants(updated as Agent, definition);
       const resources = await reconcileBundleResources(updated as Agent, definition, "reconcile");
       return state(definition, await agentSvc.getById(existing.id) as Agent, resources);
     }
@@ -1313,6 +1366,7 @@ export function builtInAgentService(db: Db) {
       },
     });
 
+    await ensureBuiltInAgentDefaultGrants(created, definition);
     const resources = await reconcileBundleResources(created, definition, "reconcile");
     return state(definition, await agentSvc.getById(created.id) as Agent, resources);
   }
@@ -1420,6 +1474,7 @@ export function builtInAgentService(db: Db) {
       recordRevision: { source: "built-in-agent:reconcile-defaults" },
     });
     if (!updated) throw notFound("Built-in agent not found");
+    await ensureBuiltInAgentDefaultGrants(updated as Agent, definition);
     return state(definition, updated as Agent);
   }
 
@@ -1508,7 +1563,8 @@ export function builtInAgentService(db: Db) {
       }
       autoEnsured += 1;
     }
-    return { autoEnsured, pendingApprovals };
+    const defaultGrantsEnsured = await ensureCompanyDefaultAgentGrants(companyId);
+    return { autoEnsured, pendingApprovals, defaultGrantsEnsured };
   }
 
   return {
@@ -1533,6 +1589,7 @@ export function builtInAgentService(db: Db) {
     runRoutine,
     requireBuiltInAgent,
     autoProvisionBundledAgents,
+    ensureCompanyDefaultAgentGrants,
     reconcileDefinitionDefaults,
   };
 }
@@ -1544,10 +1601,12 @@ export async function reconcileBuiltInAgentsOnStartup(db: Db) {
     .from(companies);
   let autoEnsured = 0;
   let pendingApprovals = 0;
+  let defaultGrantsEnsured = 0;
   for (const company of companyRows) {
     const result = await svc.autoProvisionBundledAgents(company.id);
     autoEnsured += result.autoEnsured;
     pendingApprovals += result.pendingApprovals;
+    defaultGrantsEnsured += result.defaultGrantsEnsured;
   }
   const rows = await db
     .select({
@@ -1581,5 +1640,5 @@ export async function reconcileBuiltInAgentsOnStartup(db: Db) {
     reconciled += 1;
   }
 
-  return { scanned, reconciled, unknown, duplicates, autoEnsured, pendingApprovals };
+  return { scanned, reconciled, unknown, duplicates, autoEnsured, pendingApprovals, defaultGrantsEnsured };
 }
