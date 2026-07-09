@@ -21,7 +21,13 @@ import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
+import { AlertTriangle, Bot, Plus, List, GitBranch, ExternalLink, Link2 } from "lucide-react";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import {
   isStarred,
@@ -280,109 +286,125 @@ export function Agents() {
     const agentStarPending = agentPending && membershipMutation.variables?.starred !== undefined;
     const agentJoinLeavePending = agentPending && membershipMutation.variables?.starred === undefined;
     const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
+    const agentHref = agentUrl(agent);
     return (
-      <EntityRow
-        key={agent.id}
-        title={agent.name}
-        // Fixed (truncating) title width so the `meta` group starts at a
-        // constant x on every row — that's what makes the model + timestamp
-        // columns line up vertically. Agent names vary in width, so
-        // a content-sized title (`min-w-(--sz-7rem)`) shifted meta's start per row.
-        titleClassName="w-56"
-        subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
-        to={agentUrl(agent)}
-        className={cn(
-          "group",
-          agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
-          resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "text-foreground/55" : "",
-        )}
-        leading={hasInvalidOrgChain ? (
-          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
-        ) : (
-          <AgentStatusCapsule status={agent.status} />
-        )}
-        meta={
-          <div className="hidden xl:flex items-center gap-3">
-            <AgentMetaColumns
-              agent={agent}
-              environment={resolveRenderedEnvironment(agent.id)}
-              showEnvironment={showEnvironmentColumn}
-            />
-          </div>
-        }
-        trailing={
-          <div className="flex items-center gap-3">
-            <span className="sm:hidden">
-              {liveRunByAgent.has(agent.id) ? (
-                <LiveRunIndicator
-                  agentRef={agentRouteRef(agent)}
-                  runId={liveRunByAgent.get(agent.id)!.runId}
-                  liveCount={liveRunByAgent.get(agent.id)!.liveCount}
-                />
+      <ContextMenu key={agent.id}>
+        <ContextMenuTrigger asChild>
+          <div>
+            <EntityRow
+              title={agent.name}
+              // Fixed (truncating) title width so the `meta` group starts at a
+              // constant x on every row — that's what makes the model + timestamp
+              // columns line up vertically. Agent names vary in width, so
+              // a content-sized title (`min-w-(--sz-7rem)`) shifted meta's start per row.
+              titleClassName="w-56"
+              subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
+              to={agentHref}
+              className={cn(
+                "group",
+                agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
+                resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "text-foreground/55" : "",
+              )}
+              leading={hasInvalidOrgChain ? (
+                <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
               ) : (
-                <AgentStatusBadge status={agent.status} />
+                <AgentStatusCapsule status={agent.status} />
               )}
-            </span>
-            <div className="hidden sm:flex items-center gap-3">
-              {liveRunByAgent.has(agent.id) && (
-                <LiveRunIndicator
-                  agentRef={agentRouteRef(agent)}
-                  runId={liveRunByAgent.get(agent.id)!.runId}
-                  liveCount={liveRunByAgent.get(agent.id)!.liveCount}
-                />
-              )}
-              <span className="w-20 flex justify-end">
-                <AgentStatusBadge status={agent.status} />
-              </span>
-            </div>
-            {/* Row actions mirror the agent detail page; stop the click
-                from bubbling to the row link so buttons don't navigate. */}
-            <div
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-              }}
-            >
-              <AgentActionButtons
-                agent={agent}
-                companyId={selectedCompanyId}
-                runLabel="Run Heartbeat"
-                showStatus={false}
-              />
-            </div>
-            <MembershipAction
-              state={resourceMembershipState(membershipsQuery.data, "agent", agent.id)}
-              pending={agentJoinLeavePending}
-              pendingState={agentJoinLeavePending ? membershipMutation.variables?.state ?? null : null}
-              resourceName={agent.name}
-              onJoin={() => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: agent.id,
-                resourceName: agent.name,
-                state: "joined",
-              })}
-              onLeave={() => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: agent.id,
-                resourceName: agent.name,
-                state: "left",
-              })}
-            />
-            <StarToggle
-              size="row"
-              starred={agentStarred}
-              pending={agentStarPending}
-              resourceName={agent.name}
-              onToggle={(next) => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: agent.id,
-                resourceName: agent.name,
-                starred: next,
-              })}
+              meta={
+                <div className="hidden xl:flex items-center gap-3">
+                  <AgentMetaColumns
+                    agent={agent}
+                    environment={resolveRenderedEnvironment(agent.id)}
+                    showEnvironment={showEnvironmentColumn}
+                  />
+                </div>
+              }
+              trailing={
+                <div className="flex items-center gap-3">
+                  <span className="sm:hidden">
+                    {liveRunByAgent.has(agent.id) ? (
+                      <LiveRunIndicator
+                        agentRef={agentRouteRef(agent)}
+                        runId={liveRunByAgent.get(agent.id)!.runId}
+                        liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+                      />
+                    ) : (
+                      <AgentStatusBadge status={agent.status} />
+                    )}
+                  </span>
+                  <div className="hidden sm:flex items-center gap-3">
+                    {liveRunByAgent.has(agent.id) && (
+                      <LiveRunIndicator
+                        agentRef={agentRouteRef(agent)}
+                        runId={liveRunByAgent.get(agent.id)!.runId}
+                        liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+                      />
+                    )}
+                    <span className="w-20 flex justify-end">
+                      <AgentStatusBadge status={agent.status} />
+                    </span>
+                  </div>
+                  {/* Row actions mirror the agent detail page; stop the click
+                      from bubbling to the row link so buttons don't navigate. */}
+                  <div
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                  >
+                    <AgentActionButtons
+                      agent={agent}
+                      companyId={selectedCompanyId}
+                      runLabel="Run Heartbeat"
+                      showStatus={false}
+                    />
+                  </div>
+                  <MembershipAction
+                    state={resourceMembershipState(membershipsQuery.data, "agent", agent.id)}
+                    pending={agentJoinLeavePending}
+                    pendingState={agentJoinLeavePending ? membershipMutation.variables?.state ?? null : null}
+                    resourceName={agent.name}
+                    onJoin={() => membershipMutation.mutate({
+                      resourceType: "agent",
+                      resourceId: agent.id,
+                      resourceName: agent.name,
+                      state: "joined",
+                    })}
+                    onLeave={() => membershipMutation.mutate({
+                      resourceType: "agent",
+                      resourceId: agent.id,
+                      resourceName: agent.name,
+                      state: "left",
+                    })}
+                  />
+                  <StarToggle
+                    size="row"
+                    starred={agentStarred}
+                    pending={agentStarPending}
+                    resourceName={agent.name}
+                    onToggle={(next) => membershipMutation.mutate({
+                      resourceType: "agent",
+                      resourceId: agent.id,
+                      resourceName: agent.name,
+                      starred: next,
+                    })}
+                  />
+                </div>
+              }
             />
           </div>
-        }
-      />
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onClick={() => window.open(agentHref, "_blank", "noopener,noreferrer")}>
+            <ExternalLink className="h-4 w-4" />
+            Open in new tab
+          </ContextMenuItem>
+          <ContextMenuItem onClick={() => { navigator.clipboard.writeText(`${window.location.origin}${agentHref}`).catch(() => {}); }}>
+            <Link2 className="h-4 w-4" />
+            Copy link
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     );
   };
 
@@ -535,97 +557,113 @@ function OrgTreeNode({
   const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
   const starred = isStarred(memberships, "agent", node.id);
 
+  const nodeHref = agent ? agentUrl(agent) : `/agents/${node.id}`;
+
   return (
     <div style={{ paddingLeft: depth * 24 }}>
-      <Link
-        to={agent ? agentUrl(agent) : `/agents/${node.id}`}
-        className={cn(
-          "group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit",
-          agent?.pausedAt && tab !== "paused" && "opacity-50",
-          membershipState === "left" && "text-foreground/55",
-        )}
-      >
-        {hasInvalidOrgChain ? (
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
-        ) : (
-          <AgentStatusCapsule status={node.status} />
-        )}
-        <div className="flex-1 min-w-(--sz-7rem)">
-          <span className="text-sm font-medium">{node.name}</span>
-          <span className="text-xs text-muted-foreground ml-2">
-            {roleLabels[node.role] ?? node.role}
-            {agent?.title ? ` - ${agent.title}` : ""}
-          </span>
-        </div>
-        <div className="flex items-center gap-3 shrink-0">
-          <span className="sm:hidden">
-            {liveRunByAgent.has(node.id) ? (
-              <LiveRunIndicator
-                agentRef={agent ? agentRouteRef(agent) : node.id}
-                runId={liveRunByAgent.get(node.id)!.runId}
-                liveCount={liveRunByAgent.get(node.id)!.liveCount}
-              />
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <Link
+            to={nodeHref}
+            className={cn(
+              "group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit",
+              agent?.pausedAt && tab !== "paused" && "opacity-50",
+              membershipState === "left" && "text-foreground/55",
+            )}
+          >
+            {hasInvalidOrgChain ? (
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
             ) : (
-              <AgentStatusBadge status={node.status} />
+              <AgentStatusCapsule status={node.status} />
             )}
-          </span>
-          <div className="hidden sm:flex items-center gap-3">
-            {liveRunByAgent.has(node.id) && (
-              <LiveRunIndicator
-                agentRef={agent ? agentRouteRef(agent) : node.id}
-                runId={liveRunByAgent.get(node.id)!.runId}
-                liveCount={liveRunByAgent.get(node.id)!.liveCount}
-              />
-            )}
-            {agent && (
-              <div className="hidden xl:flex items-center gap-3">
-                <AgentMetaColumns
-                  agent={agent}
-                  environment={
-                    environmentDataLoading
-                      ? loadingEnvironmentDescriptor
-                      : environmentByAgentId.get(agent.id) ?? localEnvironmentDescriptor
-                  }
-                  showEnvironment={showEnvironment}
-                />
+            <div className="flex-1 min-w-(--sz-7rem)">
+              <span className="text-sm font-medium">{node.name}</span>
+              <span className="text-xs text-muted-foreground ml-2">
+                {roleLabels[node.role] ?? node.role}
+                {agent?.title ? ` - ${agent.title}` : ""}
+              </span>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <span className="sm:hidden">
+                {liveRunByAgent.has(node.id) ? (
+                  <LiveRunIndicator
+                    agentRef={agent ? agentRouteRef(agent) : node.id}
+                    runId={liveRunByAgent.get(node.id)!.runId}
+                    liveCount={liveRunByAgent.get(node.id)!.liveCount}
+                  />
+                ) : (
+                  <AgentStatusBadge status={node.status} />
+                )}
+              </span>
+              <div className="hidden sm:flex items-center gap-3">
+                {liveRunByAgent.has(node.id) && (
+                  <LiveRunIndicator
+                    agentRef={agent ? agentRouteRef(agent) : node.id}
+                    runId={liveRunByAgent.get(node.id)!.runId}
+                    liveCount={liveRunByAgent.get(node.id)!.liveCount}
+                  />
+                )}
+                {agent && (
+                  <div className="hidden xl:flex items-center gap-3">
+                    <AgentMetaColumns
+                      agent={agent}
+                      environment={
+                        environmentDataLoading
+                          ? loadingEnvironmentDescriptor
+                          : environmentByAgentId.get(agent.id) ?? localEnvironmentDescriptor
+                      }
+                      showEnvironment={showEnvironment}
+                    />
+                  </div>
+                )}
+                <span className="w-20 flex justify-end">
+                  <AgentStatusBadge status={node.status} />
+                </span>
               </div>
-            )}
-            <span className="w-20 flex justify-end">
-              <AgentStatusBadge status={node.status} />
-            </span>
-          </div>
-          <MembershipAction
-            state={membershipState}
-            pending={joinLeavePending}
-            pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
-            resourceName={node.name}
-            onJoin={() => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: node.id,
-              resourceName: node.name,
-              state: "joined",
-            })}
-            onLeave={() => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: node.id,
-              resourceName: node.name,
-              state: "left",
-            })}
-          />
-          <StarToggle
-            size="row"
-            starred={starred}
-            pending={starPending}
-            resourceName={node.name}
-            onToggle={(next) => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: node.id,
-              resourceName: node.name,
-              starred: next,
-            })}
-          />
-        </div>
-      </Link>
+              <MembershipAction
+                state={membershipState}
+                pending={joinLeavePending}
+                pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
+                resourceName={node.name}
+                onJoin={() => membershipMutation.mutate({
+                  resourceType: "agent",
+                  resourceId: node.id,
+                  resourceName: node.name,
+                  state: "joined",
+                })}
+                onLeave={() => membershipMutation.mutate({
+                  resourceType: "agent",
+                  resourceId: node.id,
+                  resourceName: node.name,
+                  state: "left",
+                })}
+              />
+              <StarToggle
+                size="row"
+                starred={starred}
+                pending={starPending}
+                resourceName={node.name}
+                onToggle={(next) => membershipMutation.mutate({
+                  resourceType: "agent",
+                  resourceId: node.id,
+                  resourceName: node.name,
+                  starred: next,
+                })}
+              />
+            </div>
+          </Link>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onClick={() => window.open(nodeHref, "_blank", "noopener,noreferrer")}>
+            <ExternalLink className="h-4 w-4" />
+            Open in new tab
+          </ContextMenuItem>
+          <ContextMenuItem onClick={() => { navigator.clipboard.writeText(`${window.location.origin}${nodeHref}`).catch(() => {}); }}>
+            <Link2 className="h-4 w-4" />
+            Copy link
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
       {node.reports && node.reports.length > 0 && (
         <div className="border-l border-border ml-4">
           {node.reports.map((child) => (
