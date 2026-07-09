@@ -4,6 +4,7 @@ import {
   createIssueDetailLocationState,
   createIssueDetailPath,
   hasLegacyIssueDetailQuery,
+  issueProjectBreadcrumb,
   readIssueDetailHeaderSeed,
   readIssueDetailLocationState,
   readIssueDetailBreadcrumb,
@@ -207,6 +208,26 @@ describe("issueDetailBreadcrumb", () => {
       projectName: "Paperclip App",
       originKind: "manual",
       originId: null,
+    });
+  });
+
+  it("omits the project crumb when the issue has no resolvable project", () => {
+    expect(issueProjectBreadcrumb(null)).toBeNull();
+    expect(issueProjectBreadcrumb(undefined)).toBeNull();
+  });
+
+  it("builds a project crumb from the project's short URL key when available", () => {
+    expect(
+      issueProjectBreadcrumb({ id: "project-1", name: "Paperclip App", urlKey: "paperclip-app" }),
+    ).toEqual({ label: "Paperclip App", href: "/projects/paperclip-app" });
+  });
+
+  it("derives the crumb href from the project name when there is no URL key", () => {
+    expect(
+      issueProjectBreadcrumb({ id: "11111111-1111-4111-8111-111111111111", name: "Paperclip App", urlKey: null }),
+    ).toEqual({
+      label: "Paperclip App",
+      href: "/projects/paperclip-app",
     });
   });
 

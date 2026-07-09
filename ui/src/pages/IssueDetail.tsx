@@ -33,6 +33,7 @@ import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import {
   hasLegacyIssueDetailQuery,
   createIssueDetailPath,
+  issueProjectBreadcrumb,
   readIssueDetailLocationState,
   readIssueDetailBreadcrumb,
   readIssueDetailHeaderSeed,
@@ -74,7 +75,7 @@ import {
 } from "../lib/optimistic-issue-comments";
 import { clearIssueExecutionRun, removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
-import { relativeTime, cn, formatDurationMs, formatTokens, projectUrl, visibleRunCostUsd } from "../lib/utils";
+import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
@@ -3098,8 +3099,9 @@ export function IssueDetail() {
 
   useEffect(() => {
     const crumbs: Breadcrumb[] = [sourceBreadcrumb];
-    if (resolvedProject) {
-      crumbs.push({ label: resolvedProject.name, href: projectUrl(resolvedProject) });
+    const projectCrumb = issueProjectBreadcrumb(resolvedProject);
+    if (projectCrumb) {
+      crumbs.push(projectCrumb);
     }
     crumbs.push({
       // The status glyph (leading) already conveys in-progress/live state;
