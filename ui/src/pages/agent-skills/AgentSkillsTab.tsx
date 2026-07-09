@@ -254,8 +254,8 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
             </Tooltip>
           ) : null}
           <SaveStatusChip pending={syncSkills.isPending} unsaved={hasUnsavedChanges} />
-          <div className="ml-auto flex items-center gap-2">
-            <div className="relative">
+          <div className="ml-auto flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:items-center">
+            <div className="relative w-full sm:w-auto">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={search}
