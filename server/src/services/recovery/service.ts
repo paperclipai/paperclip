@@ -69,6 +69,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { CLAUDE_QUOTA_BLOCK_ERROR_CODE } from "../claude-quota-guard.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -250,6 +251,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "agent_not_found",
   "budget_blocked",
   "budget_exhausted",
+  CLAUDE_QUOTA_BLOCK_ERROR_CODE,
   "issue_paused",
   "issue_dependencies_blocked",
 ]);
@@ -263,6 +265,8 @@ const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+const CLAUDE_LOCAL_ADAPTER_TYPE = "claude_local";
+const CLAUDE_AUTOMATIC_RECOVERY_RETRY_BUDGET = 1;
 
 type ContinuationRetryClassification = {
   kind: "transient_infra" | "non_retryable" | "default";
@@ -842,6 +846,55 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     retryOfRunId?: string | null;
     extraContext?: Record<string, unknown>;
   }) {
+    const agent = await getAgent(input.agentId);
+    if (agent?.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE) {
+      const latestQuotaEvent = await db
+        .select({ createdAt: activityLog.createdAt })
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, agent.companyId),
+          eq(activityLog.action, "claude.quota_circuit_opened"),
+        ))
+        .orderBy(desc(activityLog.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const windowStart = latestQuotaEvent?.createdAt ??
+        new Date(Date.now() - 60 * 60 * 1000);
+      const priorRetries = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, agent.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+          gte(heartbeatRuns.createdAt, windowStart),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'retryReason' = ${input.retryReason}`,
+        ))
+        .limit(CLAUDE_AUTOMATIC_RECOVERY_RETRY_BUDGET);
+      if (priorRetries.length >= CLAUDE_AUTOMATIC_RECOVERY_RETRY_BUDGET) {
+        await logActivity(db, {
+          companyId: agent.companyId,
+          actorType: "system",
+          actorId: "claude_quota_guard",
+          agentId: input.agentId,
+          runId: input.retryOfRunId ?? null,
+          action: "claude.automatic_recovery_retry_budget_exhausted",
+          entityType: "issue",
+          entityId: input.issueId,
+          details: {
+            state: "degraded_retry_budget_exhausted",
+            adapterType: CLAUDE_LOCAL_ADAPTER_TYPE,
+            retryReason: input.retryReason,
+            source: input.source,
+            retryOfRunId: input.retryOfRunId ?? null,
+            windowStart: windowStart.toISOString(),
+            maxRetries: CLAUDE_AUTOMATIC_RECOVERY_RETRY_BUDGET,
+          },
+        });
+        return null;
+      }
+    }
+
     const queued = await deps.enqueueWakeup(input.agentId, {
       source: "automation",
       triggerDetail: "system",

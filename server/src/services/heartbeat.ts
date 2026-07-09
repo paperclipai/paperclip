@@ -191,6 +191,14 @@ import { productivityReviewService } from "./productivity-review.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
+  CLAUDE_LOCAL_ADAPTER_TYPE,
+  CLAUDE_QUOTA_BLOCK_ERROR_CODE,
+  acquireClaudeLocalDispatchSlot,
+  blockIfClaudeQuotaOpen,
+  claudeQuotaBlockMessage,
+  recordClaudeQuotaFailure,
+} from "./claude-quota-guard.js";
+import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
   shouldCancelRunsForNonInvokableAgent,
@@ -8379,7 +8387,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_execution_lock_changed"
           | "issue_review_participant_changed"
           | "issue_paused"
-          | "issue_dependencies_blocked";
+          | "issue_dependencies_blocked"
+          | typeof CLAUDE_QUOTA_BLOCK_ERROR_CODE;
         issueId: string | null;
         details: Record<string, unknown>;
       };
@@ -8667,6 +8676,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const contextSnapshot = parseObject(dueRun.contextSnapshot);
+    if (agent.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE) {
+      const block = await blockIfClaudeQuotaOpen(db, agent.companyId);
+      if (block) {
+        const gate: BlockedScheduledRetryGate = {
+          allowed: false as const,
+          reason: claudeQuotaBlockMessage(block),
+          errorCode: CLAUDE_QUOTA_BLOCK_ERROR_CODE,
+          issueId: readNonEmptyString(contextSnapshot.issueId),
+          details: {
+            blockedUntil: block.blockedUntil?.toISOString() ?? null,
+            operatorResumeRequired: block.operatorResumeRequired,
+          },
+        };
+        const cancelled = await cancelScheduledRetryForGate(dueRun, gate, now);
+        return cancelled
+          ? {
+              outcome: "gate_suppressed",
+              run: cancelled,
+              reason: gate.reason,
+              errorCode: gate.errorCode,
+            }
+          : { outcome: "not_promoted", run: null };
+      }
+    }
     const gate = await evaluateScheduledRetryGate({
       run: dueRun,
       agent,
@@ -8755,6 +8788,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const maxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
+    if (agent.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE) {
+      const block = await blockIfClaudeQuotaOpen(db, agent.companyId);
+      if (block) {
+        const reason = claudeQuotaBlockMessage(block);
+        const contextSnapshot = parseObject(run.contextSnapshot);
+        const issueId = readNonEmptyString(contextSnapshot.issueId);
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: reason,
+          payload: {
+            retryReason,
+            scheduledRetryAttempt: nextAttempt,
+            maxAttempts,
+            blockedUntil: block.blockedUntil?.toISOString() ?? null,
+            operatorResumeRequired: block.operatorResumeRequired,
+          },
+        });
+        return {
+          outcome: "not_scheduled" as const,
+          reason,
+          errorCode: CLAUDE_QUOTA_BLOCK_ERROR_CODE,
+          issueId,
+        };
+      }
+    }
     const computedBaseSchedule = opts?.delayMs != null
       ? nextAttempt <= maxAttempts
         ? {
@@ -9947,25 +10007,67 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    const claimedAt = new Date();
     const responsibleUserId = await resolveResponsibleUserIdForRun({
       run,
       contextSnapshot: context,
       issueContext: issueId ? await getIssueExecutionContext(run.companyId, issueId) : null,
       routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
     });
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        responsibleUserId,
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
-      })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    const claimed = await db.transaction(async (tx) => {
+      const claimedAt = new Date();
+      if (agent.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE) {
+        const slot = await acquireClaudeLocalDispatchSlot(tx, run.companyId, run.id);
+        if (!slot.allowed) {
+          if (slot.reason === "circuit_open") {
+            const reason = claudeQuotaBlockMessage(slot.block!);
+            const blocked = await tx
+              .update(heartbeatRuns)
+              .set({
+                status: "cancelled",
+                finishedAt: claimedAt,
+                error: reason,
+                errorCode: CLAUDE_QUOTA_BLOCK_ERROR_CODE,
+                resultJson: {
+                  ...parseObject(run.resultJson),
+                  stopReason: CLAUDE_QUOTA_BLOCK_ERROR_CODE,
+                  blockedUntil: slot.block!.blockedUntil?.toISOString() ?? null,
+                  operatorResumeRequired: slot.block!.operatorResumeRequired,
+                },
+                updatedAt: claimedAt,
+              })
+              .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+              .returning()
+              .then((rows) => rows[0] ?? null);
+            if (blocked?.wakeupRequestId) {
+              await tx
+                .update(agentWakeupRequests)
+                .set({
+                  status: "skipped",
+                  finishedAt: claimedAt,
+                  error: reason,
+                  updatedAt: claimedAt,
+                })
+                .where(eq(agentWakeupRequests.id, blocked.wakeupRequestId));
+            }
+          }
+          return null;
+        }
+      }
+
+      return tx
+        .update(heartbeatRuns)
+        .set({
+          status: "running",
+          responsibleUserId,
+          startedAt: run.startedAt ?? claimedAt,
+          updatedAt: claimedAt,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    });
     if (!claimed) return null;
+    const claimedAt = claimed.startedAt ?? new Date();
 
     publishLiveEvent({
       companyId: claimed.companyId,
@@ -12829,6 +12931,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : outcome === "failed"
               ? (adapterResult.errorCode ?? recordedResponsibleUserDenialCode ?? "adapter_failed")
               : null;
+      if (agent.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE && outcome !== "succeeded") {
+        await recordClaudeQuotaFailure(db, {
+          adapterType: agent.adapterType,
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          status: outcome === "timed_out" ? "timed_out" : runErrorCode,
+          errorCode: runErrorCode,
+          errorMessage: runErrorMessage,
+          stderrExcerpt,
+          resultJson: adapterResult.resultJson,
+        });
+      }
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
@@ -13099,6 +13214,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ?? configurationIncompleteFailure?.code
         ?? recordedResponsibleUserDenialCode
         ?? "adapter_failed";
+      if (agent.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE) {
+        await recordClaudeQuotaFailure(db, {
+          adapterType: agent.adapterType,
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          status: failureErrorCode,
+          errorCode: failureErrorCode,
+          errorMessage: message,
+          stderrExcerpt,
+        });
+      }
       logger.error({ err, runId }, "heartbeat execution failed");
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -14255,6 +14382,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         error: `Wake suppressed because company status is ${companyStatus}`,
       });
       return null;
+    }
+
+    if (agent.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE) {
+      const block = await blockIfClaudeQuotaOpen(db, agent.companyId);
+      if (block) {
+        const message = claudeQuotaBlockMessage(block);
+        await writeSkippedRequest(CLAUDE_QUOTA_BLOCK_ERROR_CODE, {
+          error: message,
+          payload: {
+            ...(payload ?? {}),
+            claudeQuotaCircuit: {
+              state: CLAUDE_QUOTA_BLOCK_ERROR_CODE,
+              blockedUntil: block.blockedUntil?.toISOString() ?? null,
+              operatorResumeRequired: block.operatorResumeRequired,
+            },
+          },
+        });
+        if (opts.requestedByActorType === "user") {
+          throw conflict(message, {
+            code: CLAUDE_QUOTA_BLOCK_ERROR_CODE,
+            blockedUntil: block.blockedUntil?.toISOString() ?? null,
+            operatorResumeRequired: block.operatorResumeRequired,
+          });
+        }
+        return null;
+      }
     }
 
     const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, taskKey);
