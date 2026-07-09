@@ -70,7 +70,7 @@ export function AttentionQueueRow({
           <button
             type="button"
             onClick={onToggleExpand}
-            className="mt-0.5 shrink-0 rounded-md p-0.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-ring focus-visible:ring-[3px]"
+            className="mt-0.5 shrink-0 rounded-md p-0.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-(length:--rad-3) focus-visible:ring-ring"
             aria-expanded={expanded}
             aria-label={expanded ? "Collapse decision" : "Expand decision"}
           >
@@ -239,7 +239,7 @@ function ApprovalResolver({ item, companyId }: { item: AttentionItem; companyId:
         value={note}
         onChange={(e) => setNote(e.target.value)}
         placeholder="Optional decision note…"
-        className="min-h-[64px] text-sm"
+        className="min-h-16 text-sm"
       />
       <div className="flex flex-wrap gap-2">
         <Button size="sm" onClick={() => approve.mutate()} disabled={pending}>
