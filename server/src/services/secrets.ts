@@ -226,8 +226,10 @@ type CanonicalEnvBinding =
       projectionAllowlistKey: string | null;
     };
 
+type SecretAccessConsumerType = SecretBindingTargetType | "plugin_worker";
+
 type SecretConsumerContext = {
-  consumerType: SecretBindingTargetType;
+  consumerType: SecretAccessConsumerType;
   consumerId: string;
   configPath?: string | null;
   actorType?: "agent" | "user" | "system" | "plugin";
@@ -239,8 +241,12 @@ type SecretConsumerContext = {
   allowedBindingIds?: string[] | null;
 };
 
+type SecretBindingContext = Omit<SecretConsumerContext, "consumerType"> & {
+  consumerType: SecretBindingTargetType;
+};
+
 type SecretResolutionOptions = {
-  bindingContext?: SecretConsumerContext;
+  bindingContext?: SecretBindingContext;
   accessContext?: SecretConsumerContext;
 };
 
@@ -467,7 +473,7 @@ export function secretService(db: Db) {
   async function assertBindingContext(
     companyId: string,
     secretId: string,
-    context: SecretConsumerContext | undefined,
+    context: SecretBindingContext | undefined,
   ) {
     if (!context) return null;
     if (!context.configPath) {
@@ -762,16 +768,22 @@ export function secretService(db: Db) {
     }
   }
 
+  function isSecretResolutionOptions(
+    value: SecretBindingContext | SecretResolutionOptions | undefined,
+  ): value is SecretResolutionOptions {
+    return Boolean(value && ("bindingContext" in value || "accessContext" in value));
+  }
+
   async function resolveSecretValue(
     companyId: string,
     secretId: string,
     version: number | "latest",
-    context?: SecretConsumerContext,
+    contextOrOptions?: SecretBindingContext | SecretResolutionOptions,
   ): Promise<string> {
-    return (await resolveSecretValueInternal(companyId, secretId, version, {
-      bindingContext: context,
-      accessContext: context,
-    })).value;
+    const options = isSecretResolutionOptions(contextOrOptions)
+      ? contextOrOptions
+      : { bindingContext: contextOrOptions, accessContext: contextOrOptions };
+    return (await resolveSecretValueInternal(companyId, secretId, version, options)).value;
   }
 
   async function resolveSecretValueForEphemeralAccess(
@@ -825,7 +837,7 @@ export function secretService(db: Db) {
     companyId: string,
     secretId: string,
     version: number | "latest",
-    context?: SecretConsumerContext,
+    context?: SecretBindingContext,
   ): Promise<number> {
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
@@ -2712,7 +2724,7 @@ export function secretService(db: Db) {
     resolveEnvBindings: async (
       companyId: string,
       envValue: unknown,
-      context?: Omit<SecretConsumerContext, "configPath">,
+      context?: Omit<SecretBindingContext, "configPath">,
     ): Promise<{ env: Record<string, string>; secretKeys: Set<string>; manifest: RuntimeSecretManifestEntry[] }> => {
       const record = asRecord(envValue);
       if (!record) return { env: {} as Record<string, string>, secretKeys: new Set<string>(), manifest: [] };
@@ -2758,7 +2770,7 @@ export function secretService(db: Db) {
     collectMissingRuntimeBindings: async (
       companyId: string,
       envValue: unknown,
-      context: Omit<SecretConsumerContext, "configPath">,
+      context: Omit<SecretBindingContext, "configPath">,
     ): Promise<MissingRuntimeBinding[]> => {
       const record = asRecord(envValue);
       if (!record) return [];
@@ -2809,7 +2821,7 @@ export function secretService(db: Db) {
       companyId: string,
       adapterConfig: Record<string, unknown>,
       adapterType: string | null | undefined,
-      context: Omit<SecretConsumerContext, "configPath">,
+      context: Omit<SecretBindingContext, "configPath">,
     ): Promise<MissingRuntimeBinding[]> => {
       const secretFieldKeys = await listAdapterSchemaSecretFieldKeys(adapterType);
       const secretRefs = secretFieldKeys.flatMap((key) => {
@@ -2856,7 +2868,7 @@ export function secretService(db: Db) {
     resolveAdapterConfigForRuntime: async (
       companyId: string,
       adapterConfig: Record<string, unknown>,
-      context?: Omit<SecretConsumerContext, "configPath">,
+      context?: Omit<SecretBindingContext, "configPath">,
       opts?: { adapterType?: string | null },
     ): Promise<{ config: Record<string, unknown>; secretKeys: Set<string>; manifest: RuntimeSecretManifestEntry[] }> => {
       const resolved = { ...adapterConfig };

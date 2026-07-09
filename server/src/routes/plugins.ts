@@ -82,9 +82,9 @@ import {
   setStoredLocalFolder,
 } from "../services/plugin-local-folders.js";
 import {
-  extractSecretRefPathsFromConfig,
-  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
+  extractSecretRefBindingsFromConfig,
 } from "../services/plugin-secrets-handler.js";
+import { secretService } from "../services/secrets.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -714,6 +714,35 @@ export function pluginRoutes(
     }
     assertCompanyAccess(req, companyId);
     return companyId;
+  }
+
+  function requirePluginConfigCompanyId(req: Request, companyId: unknown): string {
+    if (typeof companyId !== "string" || companyId.trim().length === 0) {
+      throw badRequest('"companyId" is required and must be a non-empty string');
+    }
+    const scopedCompanyId = companyId.trim();
+    assertCompanyAccess(req, scopedCompanyId);
+    return scopedCompanyId;
+  }
+
+  async function validatePluginSecretRefsForCompany(
+    companyId: string,
+    refs: ReturnType<typeof extractSecretRefBindingsFromConfig>,
+  ): Promise<void> {
+    if (refs.length === 0) return;
+    const secretsSvc = secretService(db);
+    const checked = new Set<string>();
+    for (const ref of refs) {
+      if (checked.has(ref.secretId)) continue;
+      checked.add(ref.secretId);
+      const secret = await secretsSvc.getById(ref.secretId);
+      if (!secret || secret.companyId !== companyId) {
+        throw unprocessable("Plugin config references a secret outside the selected company");
+      }
+      if (secret.status === "deleted") {
+        throw unprocessable("Plugin config references a deleted secret");
+      }
+    }
   }
 
   function performActionActorContext(req: Request, companyId: string | undefined): PluginPerformActionActorContext {
@@ -2170,7 +2199,7 @@ export function pluginRoutes(
   /**
    * GET /api/plugins/:pluginId/config
    *
-   * Retrieve the current instance configuration for a plugin.
+   * Retrieve the current company-scoped configuration for a plugin.
    *
    * Returns the `PluginConfig` record if one exists, or `null` if the plugin
    * has not yet been configured.
@@ -2181,6 +2210,7 @@ export function pluginRoutes(
   router.get("/plugins/:pluginId/config", async (req, res) => {
     assertBoardOrgAccess(req);
     const { pluginId } = req.params;
+    const companyId = requirePluginConfigCompanyId(req, req.query.companyId);
 
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
@@ -2188,19 +2218,20 @@ export function pluginRoutes(
       return;
     }
 
-    const config = await registry.getConfig(plugin.id);
+    const config = await registry.getConfig(plugin.id, companyId);
     res.json(config);
   });
 
   /**
    * POST /api/plugins/:pluginId/config
    *
-   * Save (create or replace) the instance configuration for a plugin.
+   * Save (create or replace) the company-scoped configuration for a plugin.
    *
    * The caller provides the full `configJson` object. The server persists it
    * via `registry.upsertConfig()`.
    *
    * Request body:
+   * - `companyId`: Company that owns this plugin config row
    * - `configJson`: Configuration values matching the plugin's `instanceConfigSchema`
    *
    * Response: `PluginConfig`
@@ -2218,8 +2249,9 @@ export function pluginRoutes(
       return;
     }
 
-    const body = req.body as { configJson?: Record<string, unknown> } | undefined;
-    if (!body?.configJson || typeof body.configJson !== "object") {
+    const body = req.body as { companyId?: unknown; configJson?: Record<string, unknown> } | undefined;
+    const companyId = requirePluginConfigCompanyId(req, body?.companyId);
+    if (!body?.configJson || typeof body.configJson !== "object" || Array.isArray(body.configJson)) {
       res.status(400).json({ error: '"configJson" is required and must be an object' });
       return;
     }
@@ -2249,18 +2281,24 @@ export function pluginRoutes(
     }
 
     try {
-      const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
-      if (secretRefsByPath.size > 0) {
-        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
-        return;
-      }
+      const secretRefs = extractSecretRefBindingsFromConfig(body.configJson, schema);
+      await validatePluginSecretRefsForCompany(companyId, secretRefs);
+      await secretService(db).syncSecretRefsForTarget(
+        companyId,
+        { targetType: "plugin", targetId: plugin.id },
+        secretRefs,
+        { replaceAll: true },
+      );
 
-      const result = await registry.upsertConfig(plugin.id, {
+      const result = await registry.upsertConfig(plugin.id, companyId, {
+        companyId,
         configJson: body.configJson,
       });
       await logPluginMutationActivity(req, "plugin.config.updated", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
+        companyId,
+        secretRefCount: secretRefs.length,
         configKeyCount: Object.keys(body.configJson).length,
       });
 
@@ -2273,7 +2311,7 @@ export function pluginRoutes(
           await bridgeDeps.workerManager.call(
             plugin.id,
             "configChanged",
-            { config: body.configJson },
+            { config: body.configJson, companyId },
           );
         } catch (rpcErr) {
           if (
@@ -2342,8 +2380,9 @@ export function pluginRoutes(
       return;
     }
 
-    const body = req.body as { configJson?: Record<string, unknown> } | undefined;
-    if (!body?.configJson || typeof body.configJson !== "object") {
+    const body = req.body as { companyId?: unknown; configJson?: Record<string, unknown> } | undefined;
+    const companyId = requirePluginConfigCompanyId(req, body?.companyId);
+    if (!body?.configJson || typeof body.configJson !== "object" || Array.isArray(body.configJson)) {
       res.status(400).json({ error: '"configJson" is required and must be an object' });
       return;
     }
@@ -2362,6 +2401,9 @@ export function pluginRoutes(
     }
 
     try {
+      const secretRefs = extractSecretRefBindingsFromConfig(body.configJson, schema);
+      await validatePluginSecretRefsForCompany(companyId, secretRefs);
+
       const result = await bridgeDeps.workerManager.call(
         plugin.id,
         "validateConfig",

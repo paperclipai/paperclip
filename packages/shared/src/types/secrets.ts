@@ -227,7 +227,7 @@ export interface SecretAccessEvent {
   provider: SecretProvider;
   actorType: "agent" | "user" | "system" | "plugin";
   actorId: string | null;
-  consumerType: SecretBindingTargetType;
+  consumerType: SecretBindingTargetType | "plugin_worker";
   consumerId: string;
   configPath: string | null;
   issueId: string | null;

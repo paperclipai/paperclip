@@ -277,11 +277,13 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
       return;
     }
 
-    // Step 2b: Check for devUiUrl in plugin config — proxy to local dev server
-    // when a plugin author has configured a dev server URL for hot-reload.
+    // Step 2b: Check for devUiUrl in company-scoped plugin config — proxy to
+    // local dev server when a plugin author has configured hot-reload.
     // See PLUGIN_SPEC.md §27.2 — Local Development Workflow
     try {
-      const configRow = await registry.getConfig(plugin.id);
+      const rawCompanyId = req.query.companyId;
+      const companyId = typeof rawCompanyId === "string" ? rawCompanyId.trim() : "";
+      const configRow = companyId ? await registry.getConfig(plugin.id, companyId) : null;
       const devUiUrl =
         configRow &&
         typeof configRow === "object" &&

@@ -100,7 +100,10 @@ export class InvocationScopeDeniedError extends Error {
 export interface HostServices {
   /** Provides `config.get`. */
   config: {
-    get(): Promise<Record<string, unknown>>;
+    get(
+      params: WorkerToHostMethods["config.get"][0],
+      context?: WorkerHostCallContext,
+    ): Promise<Record<string, unknown>>;
   };
 
   /** Provides trusted company-scoped local folder helpers. */
@@ -147,7 +150,10 @@ export interface HostServices {
 
   /** Provides `secrets.resolve`. */
   secrets: {
-    resolve(params: WorkerToHostMethods["secrets.resolve"][0]): Promise<string>;
+    resolve(
+      params: WorkerToHostMethods["secrets.resolve"][0],
+      context?: WorkerHostCallContext,
+    ): Promise<string>;
   };
 
   /** Provides `activity.log`. */
@@ -590,6 +596,28 @@ export function createHostClientHandlers(
     }
   }
 
+  function resolveRequiredCompanyId(
+    method: WorkerToHostMethodName,
+    params: unknown,
+    context?: WorkerHostCallContext,
+  ): string {
+    if (context?.invalidInvocationScope) {
+      throw new InvocationScopeDeniedError(
+        pluginId,
+        method,
+        "the worker referenced a missing, expired, or unknown invocation scope",
+      );
+    }
+
+    const requested = requestedCompanyScope(method, params);
+    if (requested.kind === "single") return requested.companyId;
+
+    const scopedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
+    if (scopedCompanyId) return scopedCompanyId;
+
+    throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
+  }
+
   /**
    * Assert that the plugin has the required capability for a method.
    * Throws `CapabilityDeniedError` if the capability is missing.
@@ -627,8 +655,9 @@ export function createHostClientHandlers(
 
   return {
     // Config
-    "config.get": gated("config.get", async () => {
-      return services.config.get();
+    "config.get": gated("config.get", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("config.get", params, context);
+      return services.config.get({ ...params, companyId }, context);
     }),
 
     "localFolders.declarations": gated("localFolders.declarations", async (params) => {
@@ -696,8 +725,9 @@ export function createHostClientHandlers(
     }),
 
     // Secrets
-    "secrets.resolve": gated("secrets.resolve", async (params) => {
-      return services.secrets.resolve(params);
+    "secrets.resolve": gated("secrets.resolve", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("secrets.resolve", params, context);
+      return services.secrets.resolve({ ...params, companyId }, context);
     }),
 
     // Activity

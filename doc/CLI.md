@@ -808,9 +808,9 @@ pnpm paperclipai plugin tool:execute --payload-json '{...}'
 pnpm paperclipai plugin health <plugin-id>
 pnpm paperclipai plugin logs <plugin-id>
 pnpm paperclipai plugin upgrade <plugin-id>
-pnpm paperclipai plugin config <plugin-id>
-pnpm paperclipai plugin config:set <plugin-id> --payload-json '{"configJson":{...}}'
-pnpm paperclipai plugin config:test <plugin-id> --payload-json '{"configJson":{...}}'
+pnpm paperclipai plugin config <plugin-id> --company-id <company-id>
+pnpm paperclipai plugin config:set <plugin-id> --company-id <company-id> --payload-json '{"configJson":{...}}'
+pnpm paperclipai plugin config:test <plugin-id> --company-id <company-id> --payload-json '{"configJson":{...}}'
 pnpm paperclipai plugin jobs <plugin-id>
 pnpm paperclipai plugin job:runs <plugin-id> <job-id>
 pnpm paperclipai plugin job:trigger <plugin-id> <job-id> [--payload-json '{...}']

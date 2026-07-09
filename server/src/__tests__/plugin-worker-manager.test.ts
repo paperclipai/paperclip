@@ -418,3 +418,35 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 });
+
+
+describe("plugin host company context guards", () => {
+  it("rejects config and secret calls without company context before host services run", async () => {
+    const configGet = vi.fn(async () => ({ apiKey: "unreachable" }));
+    const secretsResolve = vi.fn(async () => "unreachable");
+    const handlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["secrets.read-ref"],
+      services: {
+        config: { get: configGet },
+        secrets: { resolve: secretsResolve },
+      } as unknown as HostServices,
+    });
+
+    await expect(handlers["config.get"]({})).rejects.toMatchObject({
+      name: "InvocationScopeDeniedError",
+      message: expect.stringContaining("company context is required"),
+    });
+    await expect(
+      handlers["secrets.resolve"]({
+        secretRef: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" },
+      }),
+    ).rejects.toMatchObject({
+      name: "InvocationScopeDeniedError",
+      message: expect.stringContaining("company context is required"),
+    });
+
+    expect(configGet).not.toHaveBeenCalled();
+    expect(secretsResolve).not.toHaveBeenCalled();
+  });
+});
