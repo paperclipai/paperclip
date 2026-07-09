@@ -9,7 +9,10 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 
 - Codex CLI installed (`codex` command available)
 - Either a host Codex login with `~/.codex/auth.json`, or a per-agent
-  `OPENAI_API_KEY` configured in adapter env
+  `OPENAI_API_KEY` configured in adapter env (Paperclip materializes this into
+  `$CODEX_HOME/auth.json` for managed homes; Codex CLI reads credentials from
+  `auth.json`, not directly from the process environment — for a self-managed
+  external `CODEX_HOME`, write `auth.json` there directly instead)
 
 ## Configuration Fields
 
