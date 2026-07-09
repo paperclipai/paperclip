@@ -583,14 +583,21 @@ export type {
   ProjectGoalRef,
   ProjectManagedByPlugin,
   ProjectWorkspace,
+  CompanySearchCountType,
+  CompanySearchFilterOptionCounts,
   CompanySearchHighlight,
   CompanySearchArtifactSummary,
+  CompanySearchIssueFilterKey,
   CompanySearchIssueSummary,
   CompanySearchResponse,
   CompanySearchResult,
   CompanySearchResultType,
   CompanySearchScope,
   CompanySearchSnippet,
+  CompanySearchSort,
+  CompanySearchUpdatedWithinOption,
+  CompanySearchZeroResults,
+  CompanySearchZeroResultsLoosenSuggestion,
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,
   ExecutionWorkspaceConfig,
@@ -992,7 +999,7 @@ export type {
   QuotaWindow,
   ProviderQuotaResult,
 } from "./types/index.js";
-export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
+export { COMPANY_SEARCH_SCOPES, COMPANY_SEARCH_SORTS, COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS } from "./types/index.js";
 export {
   ISSUE_REFERENCE_IDENTIFIER_RE,
   buildIssueReferenceHref,

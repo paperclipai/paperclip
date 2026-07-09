@@ -219,16 +219,23 @@ export type {
 } from "./document-annotation.js";
 export type { Project, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
 export type {
+  CompanySearchCountType,
+  CompanySearchFilterOptionCounts,
   CompanySearchHighlight,
   CompanySearchArtifactSummary,
+  CompanySearchIssueFilterKey,
   CompanySearchIssueSummary,
   CompanySearchResponse,
   CompanySearchResult,
   CompanySearchResultType,
   CompanySearchScope,
   CompanySearchSnippet,
+  CompanySearchSort,
+  CompanySearchUpdatedWithinOption,
+  CompanySearchZeroResults,
+  CompanySearchZeroResultsLoosenSuggestion,
 } from "./search.js";
-export { COMPANY_SEARCH_SCOPES } from "./search.js";
+export { COMPANY_SEARCH_SCOPES, COMPANY_SEARCH_SORTS, COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS } from "./search.js";
 export type {
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,

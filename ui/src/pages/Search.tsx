@@ -20,12 +20,24 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useDialogActions } from "../context/DialogContext";
 import { searchApi } from "../api/search";
 import { agentsApi } from "../api/agents";
+import { authApi } from "../api/auth";
+import { issuesApi } from "../api/issues";
+import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
 import { loadRecentSearches, pushRecentSearch } from "../lib/recent-searches";
 import { PageTabBar, type PageTabItem } from "../components/PageTabBar";
+import {
+  applySearchFiltersToParams,
+  hasSearchFilters,
+  parseSearchQuery,
+  readSearchFiltersFromParams,
+  searchFilterPills,
+  type ParsedSearchQuery,
+  type SearchQueryParserContext,
+} from "../lib/search-query-parser";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { SearchResultRow } from "../components/search/SearchResultRow";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, IssueLabel, Project } from "@paperclipai/shared";
 
 const SEARCH_DEBOUNCE_MS = 250;
 const IDENTIFIER_PATTERN = /^[A-Z]+-\d+$/;
@@ -87,7 +99,19 @@ function describeScope(scope: CompanySearchScope) {
   return SCOPE_LABELS[scope];
 }
 
-export function buildSearchUrl(href: string, query: string, scope: CompanySearchScope): string {
+function mergeSearchFilters(
+  base: ParsedSearchQuery["filters"],
+  override: ParsedSearchQuery["filters"],
+): ParsedSearchQuery["filters"] {
+  return { ...base, ...override };
+}
+
+export function buildSearchUrl(
+  href: string,
+  query: string,
+  scope: CompanySearchScope,
+  filters: ParsedSearchQuery["filters"] = {},
+): string {
   const url = new URL(href);
   if (query.length === 0) {
     url.searchParams.delete("q");
@@ -99,6 +123,7 @@ export function buildSearchUrl(href: string, query: string, scope: CompanySearch
   } else {
     url.searchParams.set("scope", scope);
   }
+  applySearchFiltersToParams(url.searchParams, filters);
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
@@ -149,13 +174,64 @@ export function Search() {
     setScope(urlScope);
   }, [urlScope]);
 
-  // Debounce the draft query into committedQuery and write to URL via replaceState.
+  const { data: agents = [] } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: projects = [] } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: labels = [] } = useQuery({
+    queryKey: queryKeys.issues.labels(selectedCompanyId!),
+    queryFn: () => issuesApi.listLabels(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const parserContext = useMemo<SearchQueryParserContext>(() => ({
+    currentUserId,
+    agents: agents as Agent[],
+    projects: projects as Project[],
+    labels: labels as IssueLabel[],
+  }), [agents, currentUserId, labels, projects]);
+  const parsedUrlFilters = useMemo(() => readSearchFiltersFromParams(searchParams), [searchParams]);
+  const [urlFilters, setUrlFilters] = useState(parsedUrlFilters);
+
+  useEffect(() => {
+    setUrlFilters(parsedUrlFilters);
+  }, [parsedUrlFilters]);
+  const parsedDraftQuery = useMemo(() => parseSearchQuery(draftQuery, parserContext), [draftQuery, parserContext]);
+  const parsedCommittedQuery = useMemo(() => parseSearchQuery(committedQuery, parserContext), [committedQuery, parserContext]);
+  const committedOperatorFilters = parsedCommittedQuery.filters;
+  const draftOperatorFilters = parsedDraftQuery.filters;
+  const activeFilters = useMemo(
+    () => mergeSearchFilters(urlFilters, committedOperatorFilters),
+    [committedOperatorFilters, urlFilters],
+  );
+  const draftFilters = useMemo(
+    () => mergeSearchFilters(urlFilters, draftOperatorFilters),
+    [draftOperatorFilters, urlFilters],
+  );
+
+  // Debounce the draft query into committedQuery and write parsed filters to URL via replaceState.
   useEffect(() => {
     if (draftQuery === committedQuery) return;
     const handle = window.setTimeout(() => {
       setCommittedQuery(draftQuery);
       if (typeof window !== "undefined") {
-        const next = buildSearchUrl(window.location.href, draftQuery, scope);
+        const nextFilters = hasSearchFilters(draftOperatorFilters) ? draftFilters : urlFilters;
+        setUrlFilters(nextFilters);
+        const next = buildSearchUrl(window.location.href, parsedDraftQuery.query, scope, nextFilters);
         if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}` && next !== lastUrlSyncRef.current) {
           lastUrlSyncRef.current = next;
           window.history.replaceState(window.history.state, "", next);
@@ -163,60 +239,59 @@ export function Search() {
       }
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [draftQuery, committedQuery, scope]);
+  }, [draftFilters, draftOperatorFilters, draftQuery, committedQuery, parsedDraftQuery.query, scope, urlFilters]);
 
   const handleScopeChange = useCallback(
     (next: string) => {
       if (!isCompanySearchScope(next) || next === scope) return;
       setScope(next);
       if (typeof window !== "undefined") {
-        const url = buildSearchUrl(window.location.href, committedQuery, next);
+        const url = buildSearchUrl(window.location.href, parsedCommittedQuery.query, next, activeFilters);
         window.history.pushState(window.history.state, "", url);
       }
     },
-    [committedQuery, scope],
+    [activeFilters, parsedCommittedQuery.query, scope],
   );
 
-  const trimmedQuery = committedQuery.trim();
-  const queryEnabled = !!selectedCompanyId && trimmedQuery.length > 0;
+  const trimmedQuery = parsedCommittedQuery.query.trim();
+  const displayQuery = committedQuery.trim();
+  const queryEnabled = !!selectedCompanyId && (trimmedQuery.length > 0 || hasSearchFilters(activeFilters));
 
   const { data, isFetching, error, refetch } = useQuery<CompanySearchResponse>({
-    queryKey: queryKeys.companySearch.search(
-      selectedCompanyId ?? "__no-company__",
-      trimmedQuery,
-      scope,
-      COMPANY_SEARCH_DEFAULT_LIMIT,
-      0,
-    ),
+    queryKey: [
+      ...queryKeys.companySearch.search(
+        selectedCompanyId ?? "__no-company__",
+        trimmedQuery,
+        scope,
+        COMPANY_SEARCH_DEFAULT_LIMIT,
+        0,
+      ),
+      activeFilters,
+    ] as const,
     queryFn: () =>
       searchApi.search(selectedCompanyId!, {
         q: trimmedQuery,
         scope,
         limit: COMPANY_SEARCH_DEFAULT_LIMIT,
+        ...activeFilters,
       }),
     enabled: queryEnabled,
     placeholderData: (previousData) => previousData,
   });
 
-  const { data: agents } = useQuery({
-    queryKey: queryKeys.agents.list(selectedCompanyId!),
-    queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-
   const agentsById = useMemo<ReadonlyMap<string, Pick<Agent, "id" | "name">>>(() => {
     const map = new Map<string, Pick<Agent, "id" | "name">>();
-    for (const agent of agents ?? []) map.set(agent.id, agent);
+    for (const agent of agents) map.set(agent.id, agent);
     return map;
   }, [agents]);
 
   // Persist recent searches once we have a successful response with a non-empty query.
   useEffect(() => {
     if (!selectedCompanyId) return;
-    if (!data || !trimmedQuery) return;
-    const next = pushRecentSearch(selectedCompanyId, trimmedQuery);
+    if (!data || !displayQuery) return;
+    const next = pushRecentSearch(selectedCompanyId, displayQuery);
     setRecentSearches(next);
-  }, [data, trimmedQuery, selectedCompanyId]);
+  }, [data, displayQuery, selectedCompanyId]);
 
   // Identifier shortcut: when q matches PAP-123 and the API returns an exact identifier match, redirect to it.
   useEffect(() => {
@@ -241,7 +316,8 @@ export function Search() {
     setCommittedQuery("");
     inputRef.current?.focus();
     if (typeof window !== "undefined") {
-      const next = buildSearchUrl(window.location.href, "", scope);
+      setUrlFilters({});
+      const next = buildSearchUrl(window.location.href, "", scope, {});
       window.history.replaceState(window.history.state, "", next);
     }
   }, [scope]);
@@ -264,7 +340,7 @@ export function Search() {
     return () => window.removeEventListener("keydown", handler);
   }, [focusInput]);
 
-  const counts = data?.countsByType ?? { issue: 0, artifact: 0, agent: 0, project: 0 };
+  const counts = data?.countsByType ?? { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 };
   const totalResults = data?.results.length ?? 0;
 
   const tabItems = useMemo<PageTabItem[]>(() => {
@@ -279,8 +355,16 @@ export function Search() {
     const issuesTotal = counts.issue ?? 0;
     return COMPANY_SEARCH_SCOPES.map((value) => {
       let count: number | null = null;
-      if (value === "all") count = (counts.issue ?? 0) + (counts.artifact ?? 0) + (counts.agent ?? 0) + (counts.project ?? 0);
-      else if (value === "issues") count = issuesTotal;
+      if (value === "all") {
+        count = (counts.issue ?? 0)
+          + (counts.comment ?? 0)
+          + (counts.document ?? 0)
+          + (counts.artifact ?? 0)
+          + (counts.agent ?? 0)
+          + (counts.project ?? 0);
+      } else if (value === "issues") count = issuesTotal;
+      else if (value === "comments") count = counts.comment ?? 0;
+      else if (value === "documents") count = counts.document ?? 0;
       else if (value === "artifacts") count = counts.artifact ?? 0;
       else if (value === "agents") count = counts.agent ?? 0;
       else if (value === "projects") count = counts.project ?? 0;
@@ -298,7 +382,8 @@ export function Search() {
 
   const subgroups = useMemo(() => buildSubgroups(data?.results ?? []), [data?.results]);
 
-  const showInitialState = !trimmedQuery;
+  const operatorPills = useMemo(() => searchFilterPills(draftFilters, parserContext), [draftFilters, parserContext]);
+  const showInitialState = !displayQuery && !hasSearchFilters(activeFilters);
   const isLoading = queryEnabled && isFetching && !data;
   const hasResults = !!data && totalResults > 0;
   const isEmpty = !!data && !isFetching && totalResults === 0;
@@ -308,14 +393,16 @@ export function Search() {
   void apiMessage;
 
   function navigateIssuesFallback() {
-    navigate(`/issues?q=${encodeURIComponent(trimmedQuery)}`);
+    const fallbackQuery = trimmedQuery || displayQuery;
+    navigate(fallbackQuery ? `/issues?q=${encodeURIComponent(fallbackQuery)}` : "/issues");
   }
 
   function handleRecentClick(value: string) {
     setDraftQuery(value);
     setCommittedQuery(value);
     if (typeof window !== "undefined") {
-      const next = buildSearchUrl(window.location.href, value, scope);
+      setUrlFilters({});
+      const next = buildSearchUrl(window.location.href, value, scope, {});
       window.history.replaceState(window.history.state, "", next);
     }
   }
@@ -366,6 +453,22 @@ export function Search() {
           >
             ⌘K
           </kbd>
+        </div>
+        <div className="mt-2 flex min-h-6 flex-wrap items-center gap-1.5 text-(length:--text-micro) text-muted-foreground">
+          {operatorPills.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1.5" data-testid="search-operator-pills">
+              {operatorPills.map((pill) => (
+                <Badge key={`${pill.key}:${pill.value}`} variant="outline" className="px-1.5 py-0 text-(length:--text-micro) font-normal normal-case">
+                  {pill.label}
+                </Badge>
+              ))}
+            </div>
+          ) : null}
+          <span className="truncate">
+            Try <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)">status:todo</code>,{" "}
+            <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)">assignee:me</code>,{" "}
+            or <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)">updated:&gt;7d</code>.
+          </span>
         </div>
       </div>
 

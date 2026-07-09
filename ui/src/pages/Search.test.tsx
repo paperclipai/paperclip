@@ -169,7 +169,18 @@ describe("Search page", () => {
       scope: "all",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 1, artifact: 0, agent: 0, project: 0 },
+      sort: "relevance",
+      countsByType: { issue: 1, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
       hasMore: false,
       results: [
         {
@@ -239,7 +250,18 @@ describe("Search page", () => {
       scope: "artifacts",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 0, artifact: 1, agent: 0, project: 0 },
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 0, document: 0, artifact: 1, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
       hasMore: false,
       results: [
         {
@@ -297,6 +319,138 @@ describe("Search page", () => {
     });
   });
 
+  it("renders comment and document result rows with exact anchors, source chips, and highlights", async () => {
+    searchApiMock.search.mockResolvedValueOnce({
+      query: "needle",
+      normalizedQuery: "needle",
+      scope: "all",
+      limit: 20,
+      offset: 0,
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 1, document: 1, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
+      hasMore: false,
+      results: [
+        {
+          id: "issue-comment",
+          type: "issue",
+          score: 180,
+          title: "PAP-77 Comment source",
+          href: "/PAP/issues/PAP-77#comment-comment-77",
+          matchedFields: ["comment"],
+          sourceLabel: "Comment",
+          snippet: "thread needle evidence",
+          snippets: [
+            {
+              field: "comment",
+              label: "Comment",
+              text: "thread needle evidence",
+              highlights: [{ start: 7, end: 13 }],
+            },
+          ],
+          issue: {
+            id: "issue-comment",
+            identifier: "PAP-77",
+            title: "Comment source",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+            projectId: null,
+            updatedAt: new Date().toISOString(),
+          },
+          updatedAt: new Date().toISOString(),
+          previewImageUrl: null,
+        },
+        {
+          id: "issue-document",
+          type: "issue",
+          score: 170,
+          title: "PAP-78 Document source",
+          href: "/PAP/issues/PAP-78#document-plan",
+          matchedFields: ["document"],
+          sourceLabel: "Plan",
+          snippet: "plan needle evidence",
+          snippets: [
+            {
+              field: "document",
+              label: "Plan",
+              text: "plan needle evidence",
+              highlights: [{ start: 5, end: 11 }],
+            },
+          ],
+          issue: {
+            id: "issue-document",
+            identifier: "PAP-78",
+            title: "Document source",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+            projectId: null,
+            updatedAt: new Date().toISOString(),
+          },
+          updatedAt: new Date().toISOString(),
+          previewImageUrl: null,
+        },
+      ],
+    });
+
+    const { root } = renderSearch("/search?q=needle", container);
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('a[href="/PAP/issues/PAP-77#comment-comment-77"]')).not.toBeNull();
+      expect(container.querySelector('a[href="/PAP/issues/PAP-78#document-plan"]')).not.toBeNull();
+      expect(container.textContent).toContain("Comment");
+      expect(container.textContent).toContain("Doc");
+      expect(container.querySelectorAll("mark")).toHaveLength(2);
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders the explicit loading state while search is pending", async () => {
+    searchApiMock.search.mockReturnValueOnce(new Promise(() => {}));
+
+    const { root } = renderSearch("/search?q=slow", container);
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="search-loading"]')?.textContent).toContain("slow");
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders the explicit error state with retry and fallback actions", async () => {
+    searchApiMock.search.mockRejectedValueOnce(Object.assign(new Error("Search failed"), { status: 500 }));
+
+    const { root } = renderSearch("/search?q=broken", container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Couldn’t run that search");
+      expect(container.textContent).toContain("The server returned 500.");
+      expect(container.textContent).toContain("Retry");
+      expect(container.textContent).toContain("Open Tasks filter view");
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
   it("debounces typing into the input and dispatches a search after the debounce window", async () => {
     searchApiMock.search.mockResolvedValue({
       query: "deflake",
@@ -304,7 +458,18 @@ describe("Search page", () => {
       scope: "all",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 0, artifact: 0, agent: 0, project: 0 },
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
       hasMore: false,
       results: [],
     });
@@ -348,7 +513,18 @@ describe("Search page", () => {
       scope: "all",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 1, artifact: 0, agent: 0, project: 0 },
+      sort: "relevance",
+      countsByType: { issue: 1, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
       hasMore: false,
       results: [
         {
@@ -402,7 +578,18 @@ describe("Search page", () => {
       scope: "comments",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 0, artifact: 0, agent: 0, project: 0 },
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
       hasMore: false,
       results: [],
     });
