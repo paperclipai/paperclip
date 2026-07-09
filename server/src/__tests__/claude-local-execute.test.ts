@@ -1337,18 +1337,78 @@ describe("claude execute", () => {
       });
 
       expect(result.exitCode).toBe(1);
-      expect(result.errorCode).toBe("provider_quota");
-      expect(result.errorFamily).toBe("provider_quota");
+      expect(result.errorCode).toBe("provider_quota_exhausted");
+      expect(result.errorFamily).toBe("transient_upstream");
       const expectedRetryNotBefore = "2026-04-22T21:00:00.000Z";
       expect(result.retryNotBefore).toBe(expectedRetryNotBefore);
       expect(result.resultJson?.retryNotBefore).toBe(expectedRetryNotBefore);
-      expect(result.resultJson?.providerQuotaRetryNotBefore).toBe(expectedRetryNotBefore);
+      expect(result.resultJson?.provider).toBe("anthropic");
+      expect(result.resultJson?.retryGuidance).toContain("Switch to another approved lane");
+      expect(result.errorMeta?.resetAt).toBe(expectedRetryNotBefore);
       expect(result.errorMessage ?? "").toContain("extra usage");
       expect(new Date(String(result.resultJson?.transientRetryNotBefore)).getTime()).toBe(
         new Date("2026-04-22T21:00:00.000Z").getTime(),
       );
     } finally {
       vi.useRealTimers();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies Claude session-limit failures as provider_session_limit", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-session-limit-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingClaudeCommand(commandPath, {
+      resultEvent: {
+        type: "result",
+        subtype: "error",
+        session_id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        is_error: true,
+        result: "You've hit your session limit. Try again later.",
+        errors: [{ type: "rate_limit_error", message: "You've hit your session limit" }],
+      },
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-claude-session-limit",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("provider_session_limit");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.resultJson?.provider).toBe("anthropic");
+      expect(result.resultJson?.retryGuidance).toContain("Switch to another approved lane");
+    } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
