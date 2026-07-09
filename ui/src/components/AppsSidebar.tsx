@@ -69,7 +69,7 @@ export function AppsSidebar() {
           Apps
         </div>
         <div className="flex flex-col gap-0.5">
-          <SidebarNavItem to="/apps" label="All apps" icon={AppWindow} end />
+          <SidebarNavItem to="/apps" label="Connections" icon={AppWindow} end />
           <SidebarNavItem
             to="/apps/review"
             label="Review"
@@ -91,7 +91,7 @@ export function AppsSidebar() {
           Developer
         </div>
         <p className="px-3 pb-1.5 text-[11px] leading-snug text-muted-foreground/70">
-          Optional control-plane. Most people never need this.
+          Advanced setup for developers. Most teams never open this.
         </p>
         <div className="flex flex-col gap-0.5">
           {DEVELOPER_TABS.map((tab) => (

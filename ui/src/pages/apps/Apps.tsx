@@ -22,7 +22,6 @@ import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import { advancedTabHref } from "@/pages/tools/tool-tabs";
 import { AppLogo } from "./AppLogo";
-import { AppsSubNav } from "./gateways/AppsSubNav";
 import { useReviewCount } from "./useReviewCount";
 
 const POPULAR_KEYS = ["zapier", "github", "slack", "notion", "linear"];
@@ -210,8 +209,6 @@ export function Apps() {
             <Button onClick={() => navigate("/apps/connect")}>Connect an app</Button>
           </header>
 
-          <AppsSubNav active="connected" />
-
           <div className="text-sm">
             <span className="font-medium">
               {rows.length} {rows.length === 1 ? "app" : "apps"}
@@ -244,18 +241,18 @@ export function Apps() {
             <button
               type="button"
               onClick={() => navigate("/apps/attention")}
-              className="flex w-full items-center gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-left transition-colors hover:bg-amber-500/15"
+              className="flex w-full items-center gap-3 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-left transition-colors hover:bg-red-500/15"
             >
-              <ShieldAlert className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
+              <ShieldAlert className="h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-semibold text-amber-900 dark:text-amber-100">
+                <div className="text-sm font-semibold text-red-900 dark:text-red-100">
                   {rowsNeedingAttention.length} {rowsNeedingAttention.length === 1 ? "app needs" : "apps need"} attention
                 </div>
-                <div className="truncate text-xs text-amber-700 dark:text-amber-300">
+                <div className="truncate text-xs text-red-700 dark:text-red-300">
                   {floatSummary(rowsNeedingAttention)}
                 </div>
               </div>
-              <span className="shrink-0 text-xs font-semibold text-amber-800 dark:text-amber-200">Review →</span>
+              <span className="shrink-0 text-xs font-semibold text-red-800 dark:text-red-200">Fix →</span>
             </button>
           )}
 
@@ -387,10 +384,10 @@ function ByoConnectCard({ onConnect }: { onConnect: () => void }) {
         <ServerCog className="h-5 w-5 text-muted-foreground" />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-semibold text-foreground">Connect your own MCP server</div>
+        <div className="text-sm font-semibold text-foreground">Connect your own tool</div>
         <div className="text-xs text-muted-foreground">
           Have a custom or self-hosted tool? Paste its URL and we’ll walk you through it — same
-          guided permissions and review as any gallery app.
+          guided setup and review as any app in the store.
         </div>
       </div>
       <span className="shrink-0 text-xs font-semibold text-primary">Connect →</span>
@@ -406,7 +403,7 @@ function AdvancedToolsLink() {
       className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
     >
       <Wrench className="h-3.5 w-3.5" />
-      Advanced / developer tools
+      Developer tools (advanced)
     </Link>
   );
 }

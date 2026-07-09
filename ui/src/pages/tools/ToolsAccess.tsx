@@ -129,9 +129,15 @@ export function ToolsAccess() {
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 p-4 sm:p-6">
-      <div className="flex items-center gap-2">
-        <Settings2 className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-xl font-bold text-foreground">Developer tools</h1>
+      <div>
+        <div className="flex items-center gap-2">
+          <Settings2 className="h-5 w-5 text-muted-foreground" />
+          <h1 className="text-xl font-bold text-foreground">Developer tools</h1>
+        </div>
+        <p className="mt-1.5 max-w-2xl text-sm text-muted-foreground">
+          Apps is the simple way to connect tools. This Developer area is for wiring your own
+          servers, tokens, and rules by hand — most teams never need it.
+        </p>
       </div>
 
       <div className="min-h-[300px]">{renderTab(activeTab, selectedCompanyId)}</div>
