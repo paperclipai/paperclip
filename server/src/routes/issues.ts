@@ -138,6 +138,7 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeIdempotencyKey,
   findExistingIssueBlockersResolvedWake,
+  promoteUnblockedDependentToTodo,
 } from "../services/issue-dependency-wakeups.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
@@ -7922,6 +7923,18 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
+          if (!dependent.assigneeAgentId) {
+            await promoteUnblockedDependentToTodo(db, {
+              companyId: issue.companyId,
+              dependentIssueId: dependent.id,
+              resolvedBlockerIssueId: issue.id,
+              blockerIssueIds: dependent.blockerIssueIds,
+              source: "issue.blockers_resolved",
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+            });
+            continue;
+          }
           await addDependencyResolvedWakeup({
             agentId: dependent.assigneeAgentId,
             dependentIssueId: dependent.id,
@@ -9404,6 +9417,18 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(currentIssue.id);
         for (const dependent of dependents) {
+          if (!dependent.assigneeAgentId) {
+            await promoteUnblockedDependentToTodo(db, {
+              companyId: currentIssue.companyId,
+              dependentIssueId: dependent.id,
+              resolvedBlockerIssueId: currentIssue.id,
+              blockerIssueIds: dependent.blockerIssueIds,
+              source: "issue.blockers_resolved",
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+            });
+            continue;
+          }
           await addDependencyResolvedWakeup({
             agentId: dependent.assigneeAgentId,
             dependentIssueId: dependent.id,

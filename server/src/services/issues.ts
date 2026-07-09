@@ -5512,9 +5512,12 @@ export function issueService(db: Db) {
         );
       if (candidates.length === 0) return [];
 
+      // Unassigned dependents are kept here even though they cannot receive a
+      // wake row (agent_wakeup_requests.agent_id is NOT NULL). Callers return
+      // them to the assignable pool instead; dropping them here pinned them in
+      // `blocked` forever once their last blocker closed.
       const wakeableCandidates = candidates.filter(
-        (candidate) =>
-          candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status),
+        (candidate) => !["backlog", "done", "cancelled"].includes(candidate.status),
       );
       if (wakeableCandidates.length === 0) return [];
 
@@ -5537,7 +5540,8 @@ export function issueService(db: Db) {
         .filter(({ readiness }) => readiness.isDependencyReady && readiness.blockerIssueIds.length > 0)
         .map(({ candidate, readiness }) => ({
           id: candidate.id,
-          assigneeAgentId: candidate.assigneeAgentId!,
+          assigneeAgentId: candidate.assigneeAgentId as string | null,
+          status: candidate.status,
           blockerIssueIds: readiness.blockerIssueIds,
         }));
     },

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -30,6 +30,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { promoteUnblockedDependentToTodo } from "../services/issue-dependency-wakeups.ts";
 import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
@@ -3600,6 +3601,189 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         blockerIssueIds: expect.arrayContaining([blockerA, blockerB]),
       }),
     ]);
+  });
+
+  describe("unassigned blocked dependents (BLU-20179)", () => {
+    async function seedUnassignedDependent(options?: {
+      blockerStatus?: string;
+      dependentStatus?: string;
+      assigneeAgentId?: string | null;
+    }) {
+      const companyId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      const blockerId = randomUUID();
+      const dependentId = randomUUID();
+      await db.insert(issues).values([
+        { id: blockerId, companyId, title: "Blocker", status: "todo", priority: "medium" },
+        {
+          id: dependentId,
+          companyId,
+          title: "Dependent",
+          status: options?.dependentStatus ?? "blocked",
+          priority: "medium",
+          assigneeAgentId: options?.assigneeAgentId ?? null,
+        },
+      ]);
+
+      await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
+      // Set the blocker's terminal status directly: svc.update would resolve
+      // the dependency as a side effect, which is the behavior under test.
+      await db
+        .update(issues)
+        .set({ status: options?.blockerStatus ?? "done" })
+        .where(eq(issues.id, blockerId));
+
+      return { companyId, blockerId, dependentId };
+    }
+
+    async function readIssueStatus(issueId: string) {
+      return db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]?.status ?? null);
+    }
+
+    async function readIssueUpdatedActivity(issueId: string) {
+      return db
+        .select({ details: activityLog.details })
+        .from(activityLog)
+        .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.updated")));
+    }
+
+    it("returns an unassigned dependent once its only blocker is done", async () => {
+      const { blockerId, dependentId } = await seedUnassignedDependent();
+
+      await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([
+        expect.objectContaining({
+          id: dependentId,
+          assigneeAgentId: null,
+          blockerIssueIds: [blockerId],
+        }),
+      ]);
+    });
+
+    it("does not return a dependent whose only blocker is cancelled", async () => {
+      const { blockerId } = await seedUnassignedDependent({ blockerStatus: "cancelled" });
+
+      await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([]);
+    });
+
+    it("promotes an unassigned blocked dependent to todo and logs issue.updated", async () => {
+      const { companyId, blockerId, dependentId } = await seedUnassignedDependent();
+
+      await expect(
+        promoteUnblockedDependentToTodo(db, {
+          companyId,
+          dependentIssueId: dependentId,
+          resolvedBlockerIssueId: blockerId,
+          blockerIssueIds: [blockerId],
+          source: "issue.blockers_resolved",
+        }),
+      ).resolves.toBe(true);
+
+      expect(await readIssueStatus(dependentId)).toBe("todo");
+      expect(await readIssueUpdatedActivity(dependentId)).toEqual([
+        {
+          details: expect.objectContaining({
+            status: "todo",
+            previousStatus: "blocked",
+            resolvedBlockerIssueId: blockerId,
+            blockerIssueIds: [blockerId],
+            source: "issue.blockers_resolved",
+          }),
+        },
+      ]);
+    });
+
+    it("is idempotent: a second promotion updates nothing and logs nothing", async () => {
+      const { companyId, blockerId, dependentId } = await seedUnassignedDependent();
+      const input = {
+        companyId,
+        dependentIssueId: dependentId,
+        resolvedBlockerIssueId: blockerId,
+        blockerIssueIds: [blockerId],
+        source: "issue.blockers_resolved",
+      };
+
+      await expect(promoteUnblockedDependentToTodo(db, input)).resolves.toBe(true);
+      await expect(promoteUnblockedDependentToTodo(db, input)).resolves.toBe(false);
+
+      expect(await readIssueStatus(dependentId)).toBe("todo");
+      expect(await readIssueUpdatedActivity(dependentId)).toHaveLength(1);
+    });
+
+    it("never promotes a dependent that still has an assignee", async () => {
+      const assigneeAgentId = randomUUID();
+      const companyId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: assigneeAgentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      const blockerId = randomUUID();
+      const dependentId = randomUUID();
+      await db.insert(issues).values([
+        { id: blockerId, companyId, title: "Blocker", status: "done", priority: "medium" },
+        {
+          id: dependentId,
+          companyId,
+          title: "Dependent",
+          status: "blocked",
+          priority: "medium",
+          assigneeAgentId,
+        },
+      ]);
+
+      await expect(
+        promoteUnblockedDependentToTodo(db, {
+          companyId,
+          dependentIssueId: dependentId,
+          resolvedBlockerIssueId: blockerId,
+          blockerIssueIds: [blockerId],
+          source: "issue.blockers_resolved",
+        }),
+      ).resolves.toBe(false);
+
+      expect(await readIssueStatus(dependentId)).toBe("blocked");
+    });
+
+    it("never promotes an unassigned dependent that is not blocked", async () => {
+      const { companyId, blockerId, dependentId } = await seedUnassignedDependent({
+        dependentStatus: "in_progress",
+      });
+
+      await expect(
+        promoteUnblockedDependentToTodo(db, {
+          companyId,
+          dependentIssueId: dependentId,
+          resolvedBlockerIssueId: blockerId,
+          blockerIssueIds: [blockerId],
+          source: "issue.blockers_resolved",
+        }),
+      ).resolves.toBe(false);
+
+      expect(await readIssueStatus(dependentId)).toBe("in_progress");
+    });
   });
 
   it("treats done blockers on a shared workspace as ready while a foreign issue is in-flight", async () => {

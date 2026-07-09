@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockFindExistingIssueBlockersResolvedWake = vi.hoisted(() => vi.fn(async () => null));
+const mockPromoteUnblockedDependentToTodo = vi.hoisted(() => vi.fn(async () => true));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getById: vi.fn(),
@@ -94,6 +95,7 @@ vi.mock("../services/issue-dependency-wakeups.js", async () => {
   return {
     ...actual,
     findExistingIssueBlockersResolvedWake: mockFindExistingIssueBlockersResolvedWake,
+    promoteUnblockedDependentToTodo: mockPromoteUnblockedDependentToTodo,
   };
 });
 
@@ -127,6 +129,7 @@ describe("issue dependency wakeups in issue routes", () => {
     vi.doUnmock("../middleware/index.js");
     vi.clearAllMocks();
     mockFindExistingIssueBlockersResolvedWake.mockResolvedValue(null);
+    mockPromoteUnblockedDependentToTodo.mockResolvedValue(true);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.getCommentCursor.mockResolvedValue({
@@ -205,6 +208,58 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
+    expect(mockPromoteUnblockedDependentToTodo).not.toHaveBeenCalled();
+  });
+
+  it("returns an unassigned dependent to todo instead of dropping it (BLU-20179)", async () => {
+    const blockerIssue = {
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-100",
+      title: "Finish blocker",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    };
+    mockIssueService.getById.mockResolvedValue(blockerIssue);
+    mockIssueService.update.mockResolvedValue({ ...blockerIssue, status: "done" });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: "issue-2",
+        assigneeAgentId: null,
+        status: "blocked",
+        blockerIssueIds: ["issue-1"],
+      },
+    ]);
+
+    const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "done" });
+    expect(res.status).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockPromoteUnblockedDependentToTodo).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          companyId: "company-1",
+          dependentIssueId: "issue-2",
+          resolvedBlockerIssueId: "issue-1",
+          blockerIssueIds: ["issue-1"],
+          source: "issue.blockers_resolved",
+        }),
+      );
+    });
+
+    expect(mockWakeup).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ reason: "issue_blockers_resolved" }),
+    );
   });
 
   it("wakes an assigned blocked issue when blockers are applied after the blocker is already done", async () => {
