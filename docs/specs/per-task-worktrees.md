@@ -73,6 +73,14 @@ concurrent `cargo` serialize on `target/.cargo-lock`, capping parallel Architect
 which recovers the cold-start cost content-addressably across worktrees. Do not reintroduce
 `CARGO_TARGET_DIR`.
 
+**Removing it from `~/.profile` is not sufficient.** The paperclip daemon is long-lived and its
+environment is a snapshot of `~/.profile` from whenever it last restarted; a daemon started
+before the change still exports `CARGO_TARGET_DIR=~/.cargo-shared-target` and passes it to
+every agent run (observed live, four days stale). The Architect's detached verify wrapper
+therefore `unset`s it explicitly rather than trusting the inherited env — see Architect
+`INSTRUCTIONS.md` §Cargo discipline rule 10. Restarting the daemon fixes the env; the `unset`
+means you do not have to remember to.
+
 ### 3.2 Branch naming + cleanup
 
 - **Branch name**: `task/{task-id}` — short, predictable, sortable. Alternative: `task/{task-id}-{slugified-title}` for readability at the cost of length. Prefer the short form; PR title carries the readable name.
