@@ -569,11 +569,11 @@ export function DesignGuide() {
 
         <SubSection title="With keyboard shortcut hint (Kbd)">
           <div className="flex items-center gap-2 flex-wrap">
-            <Button size="sm">
+            <Button size="sm" aria-keyshortcuts="Meta+Enter Control+Enter">
               Send
               <Kbd>{modEnterLabel()}</Kbd>
             </Button>
-            <Button size="sm" variant="outline">
+            <Button size="sm" variant="outline" aria-keyshortcuts="Meta+S Control+S">
               Save changes
               <Kbd>{modComboLabel("S")}</Kbd>
             </Button>
