@@ -97,6 +97,12 @@ import {
 } from "./run-liveness.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
+  allowsSharedSubscriptionHome,
+  findSubscriptionHomeConflicts,
+  listOtherActiveAgentsForSubscriptionHomeCheck,
+  listSubscriptionHomeBindings,
+} from "./subscription-home-guard.js";
+import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
   ensureGitWorktreeBranchCoherent,
@@ -10713,6 +10719,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    // Runtime hardening: warn (never abort) when this run resolves a subscription
+    // home (CODEX_HOME / CLAUDE_CONFIG_DIR / HOME) that another active agent of
+    // the same company also binds. Env keys resolved from secrets are skipped so
+    // secret-derived values never reach logs.
+    try {
+      const subscriptionHomeBindings = listSubscriptionHomeBindings(effectiveResolvedConfig, {
+        skipEnvKeys: secretKeys,
+      });
+      if (subscriptionHomeBindings.length > 0 && !allowsSharedSubscriptionHome(effectiveResolvedConfig)) {
+        const subscriptionHomeConflicts = findSubscriptionHomeConflicts({
+          candidateBindings: subscriptionHomeBindings,
+          otherAgents: await listOtherActiveAgentsForSubscriptionHomeCheck(db, agent.companyId, agent.id),
+        });
+        if (subscriptionHomeConflicts.length > 0) {
+          logger.warn(
+            {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+              conflicts: subscriptionHomeConflicts,
+            },
+            "Run starts with a subscription home that another active agent also binds; provider logins may mix across employees. Set adapterConfig.allowSharedSubscriptionHome=true if the sharing is intentional.",
+          );
+        }
+      }
+    } catch (error) {
+      logger.warn(
+        { err: error, companyId: agent.companyId, agentId: agent.id, runId: run.id },
+        "Subscription home duplicate check failed at run start; continuing without it",
+      );
+    }
     const latestAgentConfigRevision = await getLatestAgentConfigRevision(agent.companyId, agent.id);
     const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata({
       adapterType: agent.adapterType,
