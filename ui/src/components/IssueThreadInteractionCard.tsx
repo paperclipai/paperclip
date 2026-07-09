@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Agent } from "@paperclipai/shared";
-import { AlertTriangle, CheckCircle2, ChevronRight, CircleDashed, FileText, GitBranch, ImagePlus, Loader2, MessageSquareQuote, X, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, FileText, GitBranch, ImagePlus, Loader2, MessageSquareQuote, X, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import {
@@ -24,6 +24,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 import { PriorityIcon } from "./PriorityIcon";
 import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -1217,6 +1218,7 @@ function RequestConfirmationCard({
   const [shots, setShots] = useState<{ name: string; url: string }[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Screenshots ride along in the decline reason as markdown image refs so the
   // board can attach images when sending a plan back — no schema change needed.
@@ -1469,7 +1471,40 @@ function RequestConfirmationCard({
           ) : null}
         </div>
       ) : (
-        <RequestConfirmationResolution interaction={interaction} />
+        <div className="space-y-2">
+          <RequestConfirmationResolution interaction={interaction} />
+          {interaction.payload.prompt || interaction.payload.detailsMarkdown ? (
+            <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen}>
+              <CollapsibleTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 w-full justify-between px-2 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <span>{detailsOpen ? "Hide details" : "Show details"}</span>
+                  <ChevronDown
+                    className={cn(
+                      "h-3.5 w-3.5 transition-transform duration-200",
+                      detailsOpen && "rotate-180",
+                    )}
+                  />
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="mt-1 space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
+                  <div className="text-sm leading-6 text-foreground">
+                    {interaction.payload.prompt}
+                  </div>
+                  {interaction.payload.detailsMarkdown ? (
+                    <div className="border-t border-border/60 pt-3 text-sm">
+                      <MarkdownBody externalReferences={externalReferences}>{interaction.payload.detailsMarkdown}</MarkdownBody>
+                    </div>
+                  ) : null}
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+          ) : null}
+        </div>
       )}
     </div>
   );
