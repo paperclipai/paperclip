@@ -91,11 +91,17 @@ function AgentBubbleHeader({ name, icon }: { name: string; icon: string | null }
 }
 
 /** Agent-styled chat bubble containing the three-dot typing indicator. */
-function TypingBubble({ label }: { label?: string }) {
+function TypingBubble({ label, elapsedSec }: { label?: string; elapsedSec?: number }) {
   return (
     <div className="flex flex-col items-start gap-1">
       {label ? (
-        <div className="pl-1 text-xs text-muted-foreground">{label}</div>
+        <div className="flex items-center gap-2 pl-1 text-xs text-muted-foreground">
+          <img src="/paperclip-thinking.svg" alt="" className="inline-block shrink-0" style={{ width: 14, height: 14 }} />
+          <span>{label}</span>
+          {elapsedSec != null && elapsedSec > 0 ? (
+            <span className="opacity-50">{elapsedSec.toFixed(1)}s</span>
+          ) : null}
+        </div>
       ) : null}
       <div className="flex justify-start">
         <div
@@ -357,23 +363,24 @@ export function BoardChat() {
     return active?.title ?? null;
   }, [goals]);
 
-  // Find or detect the board operations issue
-  const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+  // Find Board Operations via title search (avoids scanning full issue lists).
+  const { data: boardOpsIssues } = useQuery({
+    queryKey: queryKeys.issues.search(selectedCompanyId!, "Board Operations", undefined, 20),
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, { q: "Board Operations", limit: 20 }),
     enabled: !!selectedCompanyId,
   });
 
   useEffect(() => {
-    if (!issues) {
+    if (!boardOpsIssues) {
       setBoardIssueId(null);
       return;
     }
-    const boardIssue = issues.find(
+    const boardIssue = boardOpsIssues.find(
       (i) => i.title === "Board Operations" && i.status !== "done" && i.status !== "cancelled",
     );
     setBoardIssueId(boardIssue?.id ?? null);
-  }, [issues]);
+  }, [boardOpsIssues]);
 
   // Fetch comments for the board issue
   const { data: comments } = useQuery({
@@ -401,32 +408,6 @@ export function BoardChat() {
         hostLiveRun.status === "running" ||
         hostLiveRun.status === "starting"),
   );
-
-  useEffect(() => {
-    if (!hostRunId) return;
-    if (!hostLiveRun) return;
-    const terminal = ["succeeded", "failed", "cancelled", "timed_out"].includes(
-      hostLiveRun.status,
-    );
-    if (terminal) {
-      setHostRunId(null);
-      setSending(false);
-      setStatusText("");
-      if (hostLiveRun.status !== "succeeded") {
-        setErrorText(
-          `A run do agente terminou com status ${hostLiveRun.status}. Abra o detalhe da run para mais informações.`,
-        );
-      }
-      if (boardIssueId) {
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.issues.comments(boardIssueId),
-        });
-      }
-      queryClient.invalidateQueries({
-        queryKey: ["board-chat-run-costs", boardIssueId],
-      });
-    }
-  }, [hostLiveRun, hostRunId, boardIssueId, queryClient]);
 
   const sortedComments = (comments ?? [])
     .slice()
@@ -456,10 +437,39 @@ export function BoardChat() {
       );
       return Object.fromEntries(entries);
     },
-    enabled: Boolean(boardIssueId) && runIdsForCost.length > 0,
+    enabled: runIdsForCost.length > 0,
     staleTime: 8_000,
-    refetchInterval: hostRunActive ? 2_000 : false,
+    refetchInterval: hostRunId ? 2000 : false,
   });
+
+  const hostRunSnapshot = hostRunId ? runById?.[hostRunId] ?? null : null;
+
+  useEffect(() => {
+    if (!hostRunId) return;
+    const trackedRun = hostRunSnapshot ?? hostLiveRun;
+    if (!trackedRun) return;
+    const terminal = ["succeeded", "failed", "cancelled", "timed_out"].includes(
+      trackedRun.status,
+    );
+    if (terminal) {
+      setHostRunId(null);
+      setSending(false);
+      setStatusText("");
+      if (trackedRun.status !== "succeeded") {
+        setErrorText(
+          `A run do agente terminou com status ${trackedRun.status}. Abra o detalhe da run para mais informações.`,
+        );
+      }
+      if (boardIssueId) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.comments(boardIssueId),
+        });
+      }
+      queryClient.invalidateQueries({
+        queryKey: ["board-chat-run-costs", boardIssueId],
+      });
+    }
+  }, [hostRunSnapshot, hostLiveRun, hostRunId, boardIssueId, queryClient]);
 
   const threadMessages = useMemo(
     () => sortedComments.map(commentToThreadMessage),
@@ -680,7 +690,7 @@ export function BoardChat() {
   // Elapsed timer for thinking state — tick at 100ms so the tenths place
   // updates smoothly and the wait feels quicker than a whole-second counter.
   useEffect(() => {
-    if (sending) {
+    if (sending || hostRunActive) {
       setElapsedSec(0);
       const startedAt = Date.now();
       elapsedTimerRef.current = setInterval(() => {
@@ -695,7 +705,7 @@ export function BoardChat() {
     return () => {
       if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
     };
-  }, [sending]);
+  }, [sending, hostRunActive]);
 
   const sendMessage = useCallback(
     async (body: string) => {
@@ -1119,10 +1129,11 @@ export function BoardChat() {
               {(sending || hostRunActive) && !streamingText ? (
                 <TypingBubble
                   label={
-                    hostRunActive
+                    hostRunActive || hostRunId
                       ? `${hostAgentName} está respondendo…`
-                      : statusText || undefined
+                      : statusText || "Enviando…"
                   }
+                  elapsedSec={elapsedSec}
                 />
               ) : null}
 
@@ -1131,21 +1142,6 @@ export function BoardChat() {
                   {statusNotice}
                 </div>
               ) : null}
-
-              {/* Status bar — always visible while sending, independent from the chat bubble */}
-              {(sending || hostRunActive) && (
-                <div className="flex items-center gap-2 pl-1 text-xs text-muted-foreground">
-                  <img src="/paperclip-thinking.svg" alt="" className="inline-block shrink-0" style={{ width: 14, height: 14 }} />
-                  <span>
-                    {hostRunActive
-                      ? `${hostAgentName} está respondendo…`
-                      : statusText || "Enviando…"}
-                  </span>
-                  {elapsedSec > 0 && (
-                    <span className="opacity-50">{elapsedSec.toFixed(1)}s</span>
-                  )}
-                </div>
-              )}
 
               {/* Error notice — surfaced when the stream endpoint fails so
                   the message doesn't silently sit with no response. */}

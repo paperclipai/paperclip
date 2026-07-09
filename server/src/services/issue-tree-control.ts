@@ -76,11 +76,13 @@ export const ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS: ReadonlySet<string> = 
   "issue_commented",
   "issue_reopened_via_comment",
   "issue_comment_mentioned",
+  "conference_room_mentioned",
 ] as const);
 const ISSUE_TREE_CONTROL_INTERACTION_WAKE_SOURCES: Readonly<Record<string, ReadonlySet<string>>> = {
   issue_commented: new Set(["issue.comment"]),
   issue_reopened_via_comment: new Set(["issue.comment.reopen"]),
   issue_comment_mentioned: new Set(["comment.mention"]),
+  conference_room_mentioned: new Set(["board_chat.mention"]),
 };
 
 type VerifiedInteractionActor = {

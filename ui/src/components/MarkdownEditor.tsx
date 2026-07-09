@@ -82,8 +82,10 @@ interface MarkdownEditorProps {
   bordered?: boolean;
   /** List of mentionable entities. Enables @-mention autocomplete. */
   mentions?: MentionOption[];
-  /** Called on Cmd/Ctrl+Enter */
+  /** Called on submit key (default: Cmd/Ctrl+Enter). */
   onSubmit?: () => void;
+  /** Enter submits when "enter"; Cmd/Ctrl+Enter when "mod-enter" (default). */
+  submitKey?: "enter" | "mod-enter";
   /** Render the rich editor without allowing edits. */
   readOnly?: boolean;
 }
@@ -597,6 +599,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   bordered = true,
   mentions,
   onSubmit,
+  submitKey = "mod-enter",
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
@@ -1110,10 +1113,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           }}
           onBlur={() => onBlur?.()}
           onKeyDown={(event) => {
-            if (onSubmit && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault();
-              onSubmit();
-            }
+            if (!onSubmit || event.key !== "Enter") return;
+            const wantsSubmit =
+              submitKey === "mod-enter"
+                ? event.metaKey || event.ctrlKey
+                : !event.shiftKey && !event.metaKey && !event.ctrlKey;
+            if (!wantsSubmit) return;
+            event.preventDefault();
+            onSubmit();
           }}
           className={cn(
             "min-h-[12rem] w-full resize-none bg-transparent px-3 pb-3 pt-2 font-mono text-sm leading-6 outline-none",
@@ -1135,12 +1142,17 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       )}
       onKeyDownCapture={(e) => {
         if (readOnly) return;
-        // Cmd/Ctrl+Enter to submit
-        if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-          e.preventDefault();
-          e.stopPropagation();
-          onSubmit();
-          return;
+        if (onSubmit && e.key === "Enter") {
+          const wantsSubmit =
+            submitKey === "mod-enter"
+              ? e.metaKey || e.ctrlKey
+              : !e.shiftKey && !e.metaKey && !e.ctrlKey;
+          if (wantsSubmit) {
+            e.preventDefault();
+            e.stopPropagation();
+            onSubmit();
+            return;
+          }
         }
 
         // Mention keyboard handling
