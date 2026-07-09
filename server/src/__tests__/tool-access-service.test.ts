@@ -202,7 +202,13 @@ function agentJwtActor(companyId: string, agentId: string, runId: string): Expre
   };
 }
 
-async function allowConnectionForAgent(db: ReturnType<typeof createDb>, companyId: string, agentId: string, connectionId: string) {
+async function allowConnectionForAgent(
+  db: ReturnType<typeof createDb>,
+  companyId: string,
+  agentId: string,
+  connectionId: string,
+  input: { brokerMint?: boolean } = {},
+) {
   const [profile] = await db.insert(toolProfiles).values({
     companyId,
     profileKey: `broker-${randomUUID()}`,
@@ -222,6 +228,15 @@ async function allowConnectionForAgent(db: ReturnType<typeof createDb>, companyI
     effect: "include",
     connectionId,
   });
+  if (input.brokerMint ?? true) {
+    await db.insert(toolProfileEntries).values({
+      companyId,
+      profileId: profile!.id,
+      selectorType: "tool_name",
+      effect: "include",
+      toolName: "connection_token.mint",
+    });
+  }
   return profile!;
 }
 
@@ -262,6 +277,7 @@ async function createBrokerConnection(
       service: "pages",
       namespaceAllowlist: ["dotta"],
       tokenBroker: {
+        enabled: true,
         path: input.path ?? "exchange",
         tokenUrl: input.tokenUrl ?? "https://pages.example.test/v1/tokens/exchange",
         parentCredentialConfigPath: "credentials.deploy_token",
@@ -287,6 +303,61 @@ async function createBrokerConnection(
     configPath: "credentials.deploy_token",
   });
   return { application: application!, connection: connection!, secret };
+}
+
+async function createOAuthConnection(
+  db: ReturnType<typeof createDb>,
+  companyId: string,
+  input: { tokenBroker?: Record<string, unknown> } = {},
+) {
+  const accessSecret = await secretService(db).create(companyId, {
+    provider: "local_encrypted",
+    name: `OAuth access ${randomUUID()}`,
+    key: `oauth.access.${randomUUID()}`,
+    value: "stored-upstream-oauth-access-token",
+  });
+  const [application] = await db.insert(toolApplications).values({
+    companyId,
+    applicationKey: `oauth-fixture-${randomUUID()}`,
+    name: `OAuth fixture ${randomUUID()}`,
+    type: "mcp_http",
+    status: "active",
+  }).returning();
+  const [connection] = await db.insert(toolConnections).values({
+    companyId,
+    applicationId: application!.id,
+    name: `OAuth connection ${randomUUID()}`,
+    transport: "remote_http",
+    status: "active",
+    enabled: true,
+    healthStatus: "ok",
+    config: {
+      url: "https://oauth-app.example.test/mcp",
+      oauth: {
+        provider: "slack",
+        tokenUrl: "https://oauth-app.example.test/oauth/token",
+        scopes: ["channels:write"],
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      },
+      ...(input.tokenBroker ? { tokenBroker: input.tokenBroker } : {}),
+    },
+    transportConfig: { url: "https://oauth-app.example.test/mcp" },
+    credentialSecretRefs: [{
+      secretId: accessSecret.id,
+      versionSelector: "latest",
+      configPath: "oauth.access_token",
+      required: true,
+      label: "OAuth access token",
+    }],
+  }).returning();
+  await db.insert(companySecretBindings).values({
+    companyId,
+    secretId: accessSecret.id,
+    targetType: "tool_connection",
+    targetId: connection!.id,
+    configPath: "oauth.access_token",
+  });
+  return { application: application!, connection: connection!, accessSecret };
 }
 
 async function createRemoteToolFixture(
@@ -460,6 +531,98 @@ describeEmbeddedPostgres("tool access service", () => {
         outcome: "success",
       }),
     ]));
+  });
+
+  it("denies broker minting when the agent only has a generic connection profile grant", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id);
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id, { brokerMint: false });
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("broker mint should not call upstream"));
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .send({ scope: "pages:publish:ns/dotta" });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ code: "broker_mint_not_granted" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const [issuance] = await db.select().from(connectionTokenIssuances);
+    expect(issuance).toMatchObject({
+      connectionId: connection.id,
+      path: "exchange",
+      outcome: "denied",
+      errorCode: "broker_mint_not_granted",
+      tokenHash: null,
+    });
+  });
+
+  it("does not infer oauth_access for OAuth-backed connections without broker opt-in", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createOAuthConnection(db, company.id);
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("oauth broker refusal should not call upstream"));
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .send({ scope: "channels:write" });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ code: "broker_not_enabled" });
+    expect(JSON.stringify(res.body)).not.toContain("stored-upstream-oauth-access-token");
+    expect(fetchMock).not.toHaveBeenCalled();
+    const [issuance] = await db.select().from(connectionTokenIssuances);
+    expect(issuance).toMatchObject({
+      connectionId: connection.id,
+      path: "static",
+      outcome: "denied",
+      errorCode: "broker_not_enabled",
+      tokenHash: null,
+    });
+    expect(issuance?.path).not.toBe("oauth_access");
+    const secretEvents = await db.select().from(secretAccessEvents).where(eq(secretAccessEvents.consumerId, connection.id));
+    expect(secretEvents).toHaveLength(0);
+  });
+
+  it("refuses explicit oauth_access broker paths without projecting stored OAuth bearers", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createOAuthConnection(db, company.id, {
+      tokenBroker: {
+        enabled: true,
+        path: "oauth_access",
+        parentScopes: ["channels:write"],
+        defaultScopes: ["channels:write"],
+      },
+    });
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("oauth_access refusal should not call upstream"));
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .send({ scope: "channels:write" });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ code: "oauth_access_projection_disabled" });
+    expect(JSON.stringify(res.body)).not.toContain("stored-upstream-oauth-access-token");
+    expect(fetchMock).not.toHaveBeenCalled();
+    const [issuance] = await db.select().from(connectionTokenIssuances);
+    expect(issuance).toMatchObject({
+      connectionId: connection.id,
+      path: "oauth_access",
+      outcome: "denied",
+      errorCode: "oauth_access_projection_disabled",
+      tokenHash: null,
+    });
+    const secretEvents = await db.select().from(secretAccessEvents).where(eq(secretAccessEvents.consumerId, connection.id));
+    expect(secretEvents).toHaveLength(0);
   });
 
   it("returns a typed use_env_lease refusal for static credential delivery", async () => {

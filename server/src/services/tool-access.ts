@@ -352,6 +352,7 @@ const APPROVED_STDIO_TEMPLATES: Record<string, {
 const GOOGLE_SHEETS_GALLERY_KEY = "google-sheets";
 const GOOGLE_SHEETS_TEMPLATE_ID = "paperclip.google-sheets";
 const GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS_ENV = "GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS";
+const CONNECTION_TOKEN_MINT_TOOL_NAME = "connection_token.mint";
 
 type ToolExampleDefinition = {
   id: string;
@@ -1352,6 +1353,15 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return asRecord(config.broker);
   }
 
+  function connectionTokenBrokerEnabled(connection: typeof toolConnections.$inferSelect): boolean {
+    const config = asRecord(connection.config);
+    const tokenBroker = asRecord(config.tokenBroker);
+    if (Object.keys(tokenBroker).length > 0) return tokenBroker.enabled === true;
+    const broker = asRecord(config.broker);
+    if (Object.keys(broker).length > 0) return broker.enabled === true;
+    return false;
+  }
+
   function isPagesTokenConnection(connection: typeof toolConnections.$inferSelect, application?: typeof toolApplications.$inferSelect | null) {
     const config = asRecord(connection.config);
     const broker = tokenBrokerConfig(connection);
@@ -1382,10 +1392,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     if (configuredPath === "exchange" || configuredPath === "oauth_access" || configuredPath === "static") return configuredPath;
     if (isPagesTokenConnection(connection, application)) return "exchange";
     if (readConfigString(broker, "tokenUrl") || readConfigString(asRecord(connection.config), "tokenExchangeUrl")) return "exchange";
-    const oauth = oauthConfig(connection);
-    if (typeof oauth.tokenUrl === "string" || oauthSecretRef(connection, "oauth.refresh_token") || oauthSecretRef(connection, "oauth.access_token")) {
-      return "oauth_access";
-    }
     return "static";
   }
 
@@ -1564,6 +1570,48 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
   }
 
+  async function hasExplicitConnectionTokenMintProfileGrant(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string | null;
+    projectId: string | null;
+    routineId: string | null;
+  }) {
+    const bindings = await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, input.companyId));
+    const matchingBindings = bindings.filter((binding) => {
+      if (binding.targetType === "company") return binding.targetId === input.companyId;
+      if (binding.targetType === "agent") return binding.targetId === input.agentId;
+      if (binding.targetType === "issue") return Boolean(input.issueId && binding.targetId === input.issueId);
+      if (binding.targetType === "project") return Boolean(input.projectId && binding.targetId === input.projectId);
+      if (binding.targetType === "routine") return Boolean(input.routineId && binding.targetId === input.routineId);
+      return false;
+    });
+    const profileIds = profileIdsInBindingOrder(narrowestScopeBindings(matchingBindings));
+    if (profileIds.length === 0) return false;
+    const profiles = await db.select().from(toolProfiles).where(and(
+      eq(toolProfiles.companyId, input.companyId),
+      inArray(toolProfiles.id, profileIds),
+    ));
+    const activeProfileIds = profiles
+      .filter((profile) => profile.status === "active")
+      .map((profile) => profile.id);
+    if (activeProfileIds.length === 0) return false;
+    const entries = await db.select().from(toolProfileEntries).where(and(
+      eq(toolProfileEntries.companyId, input.companyId),
+      inArray(toolProfileEntries.profileId, activeProfileIds),
+    ));
+    return activeProfileIds.some((profileId) => {
+      const profileEntries = entries.filter((entry) => entry.profileId === profileId);
+      const exactBrokerEntries = profileEntries.filter((entry) =>
+        entry.selectorType === "tool_name"
+        && entry.toolName === CONNECTION_TOKEN_MINT_TOOL_NAME
+        && Object.keys(asRecord(entry.conditions)).length === 0
+      );
+      if (exactBrokerEntries.some((entry) => entry.effect === "exclude")) return false;
+      return exactBrokerEntries.some((entry) => entry.effect === "include");
+    });
+  }
+
   function accessContextForBroker(input: {
     connection: typeof toolConnections.$inferSelect;
     agentId: string;
@@ -1731,32 +1779,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       expiresAt,
       scope: responseScope,
     };
-  }
-
-  async function mintOAuthAccessConnectionToken(input: {
-    connection: typeof toolConnections.$inferSelect;
-    agentId: string;
-    runId: string;
-    issueId: string | null;
-    ttlSeconds: number;
-  }) {
-    const refreshed = await maybeRefreshOAuthCredentials(input.connection, { actorType: "agent", actorId: input.agentId }, {
-      actorSource: "agent_jwt",
-      issueId: input.issueId,
-      heartbeatRunId: input.runId,
-    });
-    const accessRef = oauthSecretRef(refreshed, "oauth.access_token");
-    if (!accessRef) {
-      throw unprocessable("OAuth access projection requires a vault-backed access token", { code: "oauth_access_missing" });
-    }
-    const token = await secrets.resolveSecretValue(refreshed.companyId, accessRef.secretId, accessRef.versionSelector ?? "latest", {
-      accessContext: accessContextForBroker({ ...input, connection: refreshed, configPath: "oauth.access_token" }),
-      bindingContext: accessContextForBroker({ ...input, connection: refreshed, configPath: "oauth.access_token" }),
-    });
-    const oauthExpires = oauthExpiresAtMs(refreshed);
-    const maxExpiresAt = new Date(now().getTime() + input.ttlSeconds * 1000);
-    const expiresAt = oauthExpires ? new Date(Math.min(oauthExpires, maxExpiresAt.getTime())) : maxExpiresAt;
-    return { token, tokenType: "Bearer", expiresAt, connection: refreshed };
   }
 
   function runtimeAlert(input: ToolRuntimeAlertRecommendation): ToolRuntimeAlertRecommendation {
@@ -5867,7 +5889,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const runContext = await loadBrokerRunContext({ companyId: input.companyId, agentId: input.agentId, runId: input.runId });
       const connection = await getConnectionRow(input.connectionId, input.companyId);
       const application = await getConnectionApplication(connection);
-      const path = inferConnectionTokenPath(connection, application);
+      const brokerEnabled = connectionTokenBrokerEnabled(connection);
+      const path = brokerEnabled ? inferConnectionTokenPath(connection, application) : "static";
       const requestedScope = normalizeConnectionTokenScopes(input.body.scope);
       const parentScopes = parentScopesForConnection(connection);
       const fallbackScopes = defaultScopesForConnection(connection);
@@ -5934,11 +5957,29 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           healthMessage: connection.healthMessage ?? null,
         });
       }
+      if (!brokerEnabled) {
+        await fail(403, "Connection token broker is not enabled for this connection", "denied", "broker_not_enabled", {
+          reason: "Connections must explicitly opt in with tokenBroker.enabled before agents can request brokered tokens.",
+        });
+      }
       try {
         assertScopeSubset({ requestedScope: issuedScope, parentScopes });
       } catch {
         await fail(403, "Requested token scope exceeds the connection parent scope", "denied", "scope_exceeds_parent", {
           parentScopeCount: parentScopes.length,
+        });
+      }
+
+      const hasBrokerGrant = await hasExplicitConnectionTokenMintProfileGrant({
+        companyId: connection.companyId,
+        agentId: input.agentId,
+        issueId: runContext.issueId,
+        projectId: runContext.projectId,
+        routineId: runContext.routineId,
+      });
+      if (!hasBrokerGrant) {
+        await fail(403, "Connection token minting requires an explicit broker profile grant", "denied", "broker_mint_not_granted", {
+          reason: "A connection-level profile grant is not sufficient for connection_token.mint.",
         });
       }
 
@@ -5960,9 +6001,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           connectionId: connection.id,
           providerType: "connection_token_broker",
           applicationKey: application?.applicationKey ?? null,
-          upstreamToolName: "connection_token.mint",
+          upstreamToolName: CONNECTION_TOKEN_MINT_TOOL_NAME,
           riskLevel: "write",
-          toolName: "connection_token.mint",
+          toolName: CONNECTION_TOKEN_MINT_TOOL_NAME,
           arguments: {
             path,
             scope: issuedScope,
@@ -6011,26 +6052,23 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           attribution,
         };
       }
+      if (path === "oauth_access") {
+        await fail(422, "OAuth access-token projection is disabled; configure a short-lived exchange mint path instead", "denied", "oauth_access_projection_disabled", {
+          reason: "The broker must not return stored upstream OAuth bearer tokens directly.",
+        });
+      }
 
       try {
-        const minted = path === "exchange"
-          ? await mintExchangeConnectionToken({
-              connection,
-              application,
-              agentId: input.agentId,
-              runId: input.runId,
-              issueId: runContext.issueId,
-              responsibleUserId: runContext.responsibleUserId,
-              scope: issuedScope,
-              ttlSeconds,
-            })
-          : await mintOAuthAccessConnectionToken({
-              connection,
-              agentId: input.agentId,
-              runId: input.runId,
-              issueId: runContext.issueId,
-              ttlSeconds,
-            });
+        const minted = await mintExchangeConnectionToken({
+          connection,
+          application,
+          agentId: input.agentId,
+          runId: input.runId,
+          issueId: runContext.issueId,
+          responsibleUserId: runContext.responsibleUserId,
+          scope: issuedScope,
+          ttlSeconds,
+        });
         const expiresAt = minted.expiresAt;
         const mintedScope = "scope" in minted ? minted.scope : issuedScope;
         const effectiveTtlSeconds = Math.max(1, Math.min(900, Math.ceil((expiresAt.getTime() - now().getTime()) / 1000)));
@@ -6065,7 +6103,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         return {
           status: "minted",
           connectionId: connection.id,
-          path,
+          path: "exchange",
           token: minted.token,
           tokenType: minted.tokenType,
           expiresAt: expiresAt.toISOString(),

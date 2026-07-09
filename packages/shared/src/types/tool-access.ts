@@ -160,7 +160,7 @@ export interface ConnectionTokenAttribution {
 export interface ConnectionTokenMintedResponse {
   status: "minted";
   connectionId: string;
-  path: Exclude<ConnectionTokenIssuancePath, "static">;
+  path: "exchange";
   token: string;
   tokenType: "Bearer" | string;
   expiresAt: string;
