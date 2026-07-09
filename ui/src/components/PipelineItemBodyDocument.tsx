@@ -396,7 +396,11 @@ export function PipelineItemBodyDocument({
             id: revision.id,
             revisionNumber: revision.revisionNumber,
             createdAt: revision.createdAt,
-            actorLabel: revision.createdByUserId ? "board" : revision.createdByAgentId ? "agent" : "system",
+            actor: revision.createdByUserId
+              ? { kind: "user", name: "Board" }
+              : revision.createdByAgentId
+              ? { kind: "agent", name: "Agent" }
+              : { kind: "system", name: "System" },
           })),
           selectedRevisionId,
           currentRevisionId: doc?.latestRevisionId ?? null,
