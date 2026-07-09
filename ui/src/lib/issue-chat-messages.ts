@@ -113,6 +113,58 @@ function fingerprintThreadMessage(message: ThreadMessage) {
   return JSON.stringify(message);
 }
 
+function issueChatMessageCustom(message: ThreadMessage): Record<string, unknown> {
+  const custom = message.metadata?.custom;
+  return custom && typeof custom === "object" && !Array.isArray(custom)
+    ? custom as Record<string, unknown>
+    : {};
+}
+
+function isLiveRunThreadMessage(message: ThreadMessage) {
+  return message.role === "assistant"
+    && message.status?.type === "running"
+    && issueChatMessageCustom(message)["kind"] === "live-run";
+}
+
+export function preserveReadableStreamingRetraction(previousText: string, nextText: string) {
+  if (!previousText || !nextText) return nextText;
+  if (nextText.length >= previousText.length || !previousText.startsWith(nextText)) {
+    return nextText;
+  }
+
+  const nextLength = nextText.length;
+  if (previousText[nextLength] === "\n") return nextText;
+
+  const nextLineBreak = previousText.indexOf("\n", nextLength);
+  if (nextLineBreak === -1) return previousText;
+  return previousText.slice(0, nextLineBreak);
+}
+
+function smoothLiveRunRetractions(
+  message: ThreadMessage,
+  previousMessage: ThreadMessage | undefined,
+): ThreadMessage {
+  if (!previousMessage || !isLiveRunThreadMessage(message) || !isLiveRunThreadMessage(previousMessage)) {
+    return message;
+  }
+
+  let changed = false;
+  const content = message.content.map((part, index) => {
+    if (part.type !== "text" && part.type !== "reasoning") return part;
+
+    const previousPart = previousMessage.content[index];
+    if (previousPart?.type !== part.type) return part;
+
+    const text = preserveReadableStreamingRetraction(previousPart.text, part.text);
+    if (text === part.text) return part;
+
+    changed = true;
+    return { ...part, text };
+  });
+
+  return changed ? ({ ...message, content } as ThreadMessage) : message;
+}
+
 export function stabilizeThreadMessages(
   messages: readonly ThreadMessage[],
   previousMessages: readonly ThreadMessage[],
@@ -122,12 +174,13 @@ export function stabilizeThreadMessages(
   let sameSequence = previousMessages.length === messages.length;
 
   const stabilizedMessages = messages.map((message, index) => {
-    const fingerprint = fingerprintThreadMessage(message);
     const cached = previousById.get(message.id);
+    const displayMessage = smoothLiveRunRetractions(message, cached?.message);
+    const fingerprint = fingerprintThreadMessage(displayMessage);
     const stableMessage =
       cached && cached.fingerprint === fingerprint
         ? cached.message
-        : message;
+        : displayMessage;
     nextById.set(message.id, {
       fingerprint,
       message: stableMessage,

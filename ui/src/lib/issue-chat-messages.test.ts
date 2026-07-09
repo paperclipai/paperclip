@@ -4,6 +4,7 @@ import {
   buildAssistantPartsFromTranscript,
   buildIssueChatMessages,
   isCoTSegmentActive,
+  preserveReadableStreamingRetraction,
   stabilizeThreadMessages,
   type IssueChatComment,
   type IssueChatLinkedRun,
@@ -1116,6 +1117,66 @@ describe("buildIssueChatMessages", () => {
 });
 
 describe("stabilizeThreadMessages", () => {
+  it("keeps live streamed retractions readable until a whole line disappears", () => {
+    expect(preserveReadableStreamingRetraction(
+      "First line\nSecond line\nThird line is complete",
+      "First line\nSecond line\nThird line",
+    )).toBe("First line\nSecond line\nThird line is complete");
+    expect(preserveReadableStreamingRetraction(
+      "First line\nSecond line\nThird line is complete",
+      "First line\nSecond line",
+    )).toBe("First line\nSecond line");
+
+    const liveRun: LiveRunForIssue = {
+      id: "run-live-retract",
+      status: "running",
+      invocationSource: "manual",
+      triggerDetail: null,
+      startedAt: "2026-04-06T12:04:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-04-06T12:04:00.000Z",
+      agentId: "agent-1",
+      agentName: "CodexCoder",
+      adapterType: "codex_local",
+    };
+    const buildLiveMessages = (text: string) => buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [liveRun],
+      transcriptsByRunId: new Map([
+        ["run-live-retract", [{ kind: "assistant", ts: "2026-04-06T12:04:01.000Z", text }]],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-live-retract",
+      currentUserId: "user-1",
+    });
+
+    const fullText = "First line\nSecond line\nThird line is complete";
+    const firstStable = stabilizeThreadMessages(buildLiveMessages(fullText), [], new Map());
+    const partialRetractionStable = stabilizeThreadMessages(
+      buildLiveMessages("First line\nSecond line\nThird line"),
+      firstStable.messages,
+      firstStable.cache,
+    );
+
+    expect(partialRetractionStable.messages).toBe(firstStable.messages);
+    expect(partialRetractionStable.messages[0]?.content[0]).toMatchObject({
+      type: "text",
+      text: fullText,
+    });
+
+    const wholeLineRetractionStable = stabilizeThreadMessages(
+      buildLiveMessages("First line\nSecond line"),
+      partialRetractionStable.messages,
+      partialRetractionStable.cache,
+    );
+
+    expect(wholeLineRetractionStable.messages[0]?.content[0]).toMatchObject({
+      type: "text",
+      text: "First line\nSecond line",
+    });
+  });
+
   it("reuses unchanged message objects across rebuilds", () => {
     const firstPass = buildIssueChatMessages({
       comments: [createComment()],

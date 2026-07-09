@@ -175,6 +175,21 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain("--&gt;");
   });
 
+  it("hides incomplete streamed HTML comment placeholders before attachment images", () => {
+    const html = renderMarkdown("\\<!-- ![](/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content)");
+
+    expect(html).toContain('<img src="/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content" alt=""/>');
+    expect(html).not.toContain("&lt;!--");
+  });
+
+  it("hides incomplete encoded HTML comment placeholders", () => {
+    const html = renderMarkdown("&lt;!-- -- ![](/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content)");
+
+    expect(html).toContain('<img src="/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content" alt=""/>');
+    expect(html).not.toContain("&lt;!--");
+    expect(html).not.toContain("&amp;lt;!--");
+  });
+
   it("keeps HTML comment markers when they are literal code content", () => {
     const inlineHtml = renderMarkdown("Use `<!-- -->` as a literal.");
     const blockHtml = renderMarkdown("```html\n<!-- keep this example -->\n```");

@@ -217,7 +217,7 @@ function isHtmlCommentNode(node: MarkdownAstNode) {
 function isEscapedHtmlCommentPlaceholder(node: MarkdownAstNode) {
   if (node.type !== "text" || typeof node.value !== "string") return false;
   const value = node.value.trim();
-  return /^\\?<!--\s*-->$/.test(value) || /^&lt;!--\s*--&gt;$/.test(value);
+  return /^\\?<!--(?:\s*-{0,2}>?)?$/.test(value) || /^&lt;!--(?:\s*-{0,2}(?:&gt;)?)?$/.test(value);
 }
 
 function remarkDropHtmlComments() {
