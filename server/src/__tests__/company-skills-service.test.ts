@@ -1146,8 +1146,6 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const companyId = randomUUID();
     const skillId = randomUUID();
     const skillKey = `company/${companyId}/cache-coach`;
-    const missingSkillDir = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-cache-skill-")), "gone");
-    cleanupDirs.add(path.dirname(missingSkillDir));
 
     await db.insert(companies).values({
       id: companyId,
@@ -1155,6 +1153,10 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
+    // A GitHub-sourced skill is the scenario this cache targets: it has no local
+    // directory, so every run materializes it by fetching from raw.githubusercontent.com,
+    // and its `updatedAt` is stable across listings (unlike local_path skills, which the
+    // inventory reconciler can rewrite). That makes the marker-based reuse deterministic.
     await db.insert(companySkills).values({
       id: skillId,
       companyId,
@@ -1162,50 +1164,56 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       slug: "cache-coach",
       name: "Cache Coach",
       description: null,
-      markdown: "# Cache Coach\n\nRecovered from DB.\n",
-      sourceType: "local_path",
-      sourceLocator: missingSkillDir,
+      markdown: "# Cache Coach (stored)\n",
+      sourceType: "github",
+      sourceLocator: "https://github.com/acme/cache-coach",
+      sourceRef: "main",
       trustLevel: "markdown_only",
       compatibility: "compatible",
       fileInventory: [{ path: "SKILL.md", kind: "skill" }],
-      metadata: { sourceKind: "local_path" },
-    });
-    await db.insert(agents).values({
-      id: randomUUID(),
-      companyId,
-      name: "Runner",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: { paperclipSkillSync: { desiredSkills: [skillKey] } },
+      metadata: { owner: "acme", repo: "cache-coach", ref: "main", repoSkillDir: "." },
     });
 
-    // First listing materializes the skill and writes the .materialized marker.
-    const first = await svc.listRuntimeSkillEntries(companyId);
-    const runtimeDir = first.find((candidate) => candidate.key === skillKey)!.source;
-    await expect(fs.stat(path.join(runtimeDir, ".materialized"))).resolves.toBeTruthy();
+    const requestedUrls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string | URL) => {
+      requestedUrls.push(String(url));
+      return new Response("# Cache Coach (remote)\n", { status: 200 });
+    });
+    try {
+      // First listing materializes the skill (fetches from GitHub) and writes the marker.
+      const first = await svc.listRuntimeSkillEntries(companyId);
+      const runtimeDir = first.find((candidate) => candidate.key === skillKey)!.source;
+      await expect(fs.stat(path.join(runtimeDir, ".materialized"))).resolves.toBeTruthy();
+      const fetchesAfterFirst = requestedUrls.length;
+      expect(fetchesAfterFirst).toBeGreaterThan(0);
 
-    // A sentinel edit lets us detect whether the second listing re-materializes
-    // (which would overwrite it) or reuses the cache (which leaves it intact).
-    const skillFilePath = path.join(runtimeDir, "SKILL.md");
-    await fs.writeFile(skillFilePath, "SENTINEL — cache reuse\n", "utf8");
+      // A sentinel edit lets us detect whether a later listing re-materializes (which
+      // overwrites it) or reuses the cache (which leaves it intact).
+      const skillFilePath = path.join(runtimeDir, "SKILL.md");
+      await fs.writeFile(skillFilePath, "SENTINEL — cache reuse\n", "utf8");
 
-    // Second listing: the marker records the same updatedAt as the skill → reuse, no re-fetch.
-    const second = await svc.listRuntimeSkillEntries(companyId);
-    expect(second.find((candidate) => candidate.key === skillKey)!.source).toBe(runtimeDir);
-    await expect(fs.readFile(skillFilePath, "utf8")).resolves.toBe("SENTINEL — cache reuse\n");
+      // Second listing: the marker records the same updatedAt as the skill → reuse,
+      // no additional fetches, sentinel intact.
+      const second = await svc.listRuntimeSkillEntries(companyId);
+      expect(second.find((candidate) => candidate.key === skillKey)!.source).toBe(runtimeDir);
+      expect(requestedUrls.length).toBe(fetchesAfterFirst);
+      await expect(fs.readFile(skillFilePath, "utf8")).resolves.toBe("SENTINEL — cache reuse\n");
 
-    // Bump the skill's updatedAt into the future so the recorded marker value is stale.
-    await db
-      .update(companySkills)
-      .set({ updatedAt: new Date(Date.now() + 60_000) })
-      .where(eq(companySkills.id, skillId));
+      // Bump the skill's updatedAt into the future so the recorded marker value is stale.
+      await db
+        .update(companySkills)
+        .set({ updatedAt: new Date(Date.now() + 60_000) })
+        .where(eq(companySkills.id, skillId));
 
-    // Third listing: the recorded updatedAt is now older than the skill's → re-materialize
-    // from DB, overwriting the sentinel with the stored markdown.
-    const third = await svc.listRuntimeSkillEntries(companyId);
-    expect(third.find((candidate) => candidate.key === skillKey)!.source).toBe(runtimeDir);
-    await expect(fs.readFile(skillFilePath, "utf8")).resolves.toBe("# Cache Coach\n\nRecovered from DB.\n");
+      // Third listing: the recorded updatedAt is now older than the skill's → re-materialize
+      // (fetches again), overwriting the sentinel with the freshly fetched content.
+      const third = await svc.listRuntimeSkillEntries(companyId);
+      expect(third.find((candidate) => candidate.key === skillKey)!.source).toBe(runtimeDir);
+      expect(requestedUrls.length).toBeGreaterThan(fetchesAfterFirst);
+      await expect(fs.readFile(skillFilePath, "utf8")).resolves.toBe("# Cache Coach (remote)\n");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("falls back to stored markdown when reading SKILL.md from a missing local source", async () => {
