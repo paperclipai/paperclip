@@ -20,7 +20,7 @@ export function goalRoutes(db: Db) {
 
   router.get("/goals/:id", async (req, res) => {
     const id = req.params.id as string;
-    const goal = await svc.getById(id);
+    const goal = await svc.getByIdWithLinkedIssues(id);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });
       return;
