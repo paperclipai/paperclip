@@ -283,6 +283,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     // Heartbeat finalization can emit run-linked activity after the first
     // cleanup pass observes all runs as non-active.
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(issueComments);
     await db.delete(issues);
