@@ -110,6 +110,7 @@ describe("codex remote execution", () => {
       },
       config: {
         command: "codex",
+        engine: "cli",
         env: {
           CODEX_HOME: codexHomeDir,
         },
@@ -162,6 +163,7 @@ describe("codex remote execution", () => {
       },
       config: {
         command: "codex",
+        engine: "cli",
         env: {
           CODEX_HOME: codexHomeDir,
         },
