@@ -1343,6 +1343,15 @@ export function Inbox() {
       return next;
     });
   }, []);
+  const setInboxParentCollapsed = useCallback((parentId: string, collapsed: boolean) => {
+    setCollapsedInboxParents((prev) => {
+      if (prev.has(parentId) === collapsed) return prev;
+      const next = new Set(prev);
+      if (collapsed) next.add(parentId);
+      else next.delete(parentId);
+      return next;
+    });
+  }, []);
 
   // Build flat navigation list from visible rows so keyboard traversal respects collapsed groups.
   const flatNavItems = useMemo((): NavEntry[] => {
@@ -1786,6 +1795,7 @@ export function Inbox() {
     markNonIssueRead: handleMarkNonIssueRead,
     markNonIssueUnread: markItemUnread,
     setGroupCollapsed,
+    setInboxParentCollapsed,
     navigate,
   });
   kbActionsRef.current = {
@@ -1797,6 +1807,7 @@ export function Inbox() {
     markNonIssueRead: handleMarkNonIssueRead,
     markNonIssueUnread: markItemUnread,
     setGroupCollapsed,
+    setInboxParentCollapsed,
     navigate,
   };
 
@@ -1875,9 +1886,22 @@ export function Inbox() {
         case "ArrowRight": {
           if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           const entry = navItems[st.selectedIndex];
-          if (!entry || entry.type !== "group") return;
+          if (!entry) return;
+          if (entry.type === "group") {
+            e.preventDefault();
+            act.setGroupCollapsed(entry.groupKey, e.key === "ArrowLeft");
+            break;
+          }
+          // Parent tasks collapse/expand with the same keys as groups.
+          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          const targetIssue = issue ?? (item?.kind === "issue" ? item.issue : null);
+          if (!targetIssue) return;
+          const hasChildren = st.workItems.some(
+            (group) => (group.childrenByIssueId.get(targetIssue.id)?.length ?? 0) > 0,
+          );
+          if (!hasChildren) return;
           e.preventDefault();
-          act.setGroupCollapsed(entry.groupKey, e.key === "ArrowLeft");
+          act.setInboxParentCollapsed(targetIssue.id, e.key === "ArrowLeft");
           break;
         }
         case "a":
@@ -2574,11 +2598,7 @@ export function Inbox() {
                       <div
                         key={`group-${group.key}`}
                         data-inbox-item
-                        className={cn(
-                          "px-3 sm:px-4",
-                          groupIndex > 0 && "pt-2",
-                          isGroupSelected && "bg-accent/50",
-                        )}
+                        className={cn("px-3 sm:px-4", groupIndex > 0 && "pt-2")}
                         onClick={() => {
                           if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
                         }}
@@ -2586,6 +2606,7 @@ export function Inbox() {
                           if (groupNavIdx >= 0) setSelectedIndexFromPointer(groupNavIdx);
                         }}
                       >
+                        <div className={cn("rounded-lg", isGroupSelected && "bg-accent/50")}>
                         <IssueGroupHeader
                           label={group.label}
                           collapsible
@@ -2607,6 +2628,7 @@ export function Inbox() {
                             </Button>
                           ) : null}
                         />
+                        </div>
                       </div>,
                     );
                   }
