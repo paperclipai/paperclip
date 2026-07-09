@@ -378,9 +378,9 @@ describe("Inbox toolbar", () => {
       true,
     ]);
     expect(apiMocks.issuesList.mock.calls.map((call) => call[1]?.limit)).toEqual([
-      100,
-      100,
-      100,
+      500,
+      500,
+      500,
     ]);
 
     act(() => {

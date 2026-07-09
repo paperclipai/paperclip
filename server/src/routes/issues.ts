@@ -2058,6 +2058,7 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.lastExternalCommentAt !== undefined ? { lastExternalCommentAt: issue.lastExternalCommentAt } : {}),
     ...(issue.lastActivityAt !== undefined ? { lastActivityAt: issue.lastActivityAt } : {}),
     ...(issue.isUnreadForMe !== undefined ? { isUnreadForMe: issue.isUnreadForMe } : {}),
+    activeRecoveryAction: issue.activeRecoveryAction ?? null,
   };
 }
 
@@ -4608,8 +4609,27 @@ export function issueRoutes(
         const result = await actorCanReadCompanyScope(req, companyId)
           ? rawResult
           : await filterIssuesForActor(req, rawResult);
+        const issueIds = result.map((issue) => issue.id);
         if (compactView) {
-          const compactResult = result.map(toCompactIssue);
+          const recoveryActionByIssue = await recoveryActionsSvc.listActiveForIssues(companyId, issueIds);
+          const actor = getActorInfo(req);
+          await Promise.all(result.map(async (issue) => {
+            const activeRecoveryAction = recoveryActionByIssue.get(issue.id) ?? null;
+            if (!activeRecoveryAction) return;
+            const revalidated = await revalidateActiveSourceRecoveryForRead({
+              issue,
+              trigger: "read_projection",
+              actor,
+              activeRecoveryAction,
+            });
+            if (revalidated) recoveryActionByIssue.set(issue.id, revalidated);
+            else recoveryActionByIssue.delete(issue.id);
+          }));
+          const compactResult = result.map((issue) =>
+            toCompactIssue({
+              ...issue,
+              activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+            }));
           return {
             kind: "compact",
             body: compactResult,
@@ -4617,7 +4637,6 @@ export function issueRoutes(
             cacheControl: "private, must-revalidate",
           };
         }
-        const issueIds = result.map((issue) => issue.id);
         const [handoffStates, recoveryActionByIssue] = await Promise.all([
           listSuccessfulRunHandoffStates(db, companyId, issueIds),
           recoveryActionsSvc.listActiveForIssues(companyId, issueIds),

@@ -821,6 +821,7 @@ export type CompactIssue = Pick<
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  activeRecoveryAction: IssueRecoveryAction | null;
 };
 
 /**

@@ -14,6 +14,7 @@ import {
   ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES,
   issueRoutes,
 } from "../routes/issues.js";
+import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -145,8 +146,9 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([unassignedIssueId]);
   });
 
-  it("returns compact issue list rows without detail-only fields", async () => {
+  it("returns compact issue list rows with recovery chips but without detail-only fields", async () => {
     const companyId = randomUUID();
+    const ownerAgentId = randomUUID();
     const issueId = randomUUID();
 
     await db.insert(companies).values({
@@ -156,6 +158,17 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       requireBoardApprovalForNewAgents: false,
     });
     await seedCloudTenantMember(companyId);
+    await db.insert(agents).values({
+      id: ownerAgentId,
+      companyId,
+      name: "Recovery owner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
     await db.insert(issues).values({
       id: issueId,
       companyId,
@@ -164,6 +177,18 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       status: "todo",
       priority: "medium",
       billingCode: "product",
+    });
+    const recoveryAction = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "missing_disposition",
+      ownerType: "agent",
+      ownerAgentId,
+      cause: "successful_run_missing_issue_disposition",
+      fingerprint: "missing-disposition:compact-route",
+      evidence: { sourceRunId: "run-1" },
+      nextAction: "Choose a valid issue disposition.",
+      wakePolicy: { type: "wake_owner" },
     });
 
     const app = createApp(companyId);
@@ -183,11 +208,16 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       status: "todo",
       priority: "medium",
       billingCode: "product",
+      activeRecoveryAction: {
+        id: recoveryAction.id,
+        sourceIssueId: issueId,
+        ownerAgentId,
+        kind: "missing_disposition",
+      },
     });
     expect(res.body[0]).not.toHaveProperty("workProducts");
     expect(res.body[0]).not.toHaveProperty("project");
     expect(res.body[0]).not.toHaveProperty("goal");
-    expect(res.body[0]).not.toHaveProperty("activeRecoveryAction");
     expect(res.body[0]).not.toHaveProperty("successfulRunHandoff");
   });
 
