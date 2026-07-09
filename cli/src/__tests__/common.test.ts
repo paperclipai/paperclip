@@ -195,5 +195,7 @@ describe("apiPath", () => {
   it("rejects empty dynamic path segments", () => {
     expect(() => apiPath`/api/issues/${""}`).toThrow("Cannot build API path with an empty path segment.");
     expect(() => apiPath`/api/issues/${undefined}`).toThrow("Cannot build API path with an empty path segment.");
+    expect(() => apiPath`/api/issues/${null}`).toThrow("Cannot build API path with an empty path segment.");
+    expect(() => apiPath`/api/issues/${" "}`).toThrow("Cannot build API path with an empty path segment.");
   });
 });
