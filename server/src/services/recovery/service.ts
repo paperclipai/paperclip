@@ -740,7 +740,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
-  async function hasSuccessfulIssueRunSince(companyId: string, issueId: string, agentId: string, since: Date) {
+  async function hasSuccessfulIssueRunSince(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+    since: Date,
+    interactionId?: string | null,
+  ) {
     return db
       .select({ id: heartbeatRuns.id })
       .from(heartbeatRuns)
@@ -750,6 +756,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(heartbeatRuns.agentId, agentId),
           eq(heartbeatRuns.status, "succeeded"),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          interactionId
+            ? sql`${heartbeatRuns.contextSnapshot} ->> 'interactionId' = ${interactionId}`
+            : sql`true`,
           or(gte(heartbeatRuns.createdAt, since), gte(heartbeatRuns.finishedAt, since)),
         ),
       )
@@ -3027,6 +3036,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           issue.id,
           agentId,
           acceptedInteractionResolvedAt,
+          acceptedContinuationInteraction.id,
         );
 
         if (!successfulRunSinceResolution) {

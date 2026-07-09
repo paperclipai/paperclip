@@ -9168,7 +9168,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .for("update")
             .then((rows) => rows[0] ?? null);
 
-          if (failedWorkspace) {
+          const workspaceBelongsToIssue =
+            failedWorkspace
+              ? failedWorkspace.sourceIssueId === issueId
+                || issueWorkspace.executionWorkspaceId === failedWorkspace.id
+              : false;
+
+          if (failedWorkspace && workspaceBelongsToIssue) {
             const existingMetadata = parseObject(failedWorkspace.metadata);
             const quarantine = {
               reason: WORKSPACE_VALIDATION_FAILURE_CODE,
@@ -9209,9 +9215,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               entityId: failedWorkspace.id,
               details: quarantine,
             });
+            detachWorkspaceFromIssue = issueWorkspace.executionWorkspaceId === failedExecutionWorkspaceId;
           }
-
-          detachWorkspaceFromIssue = issueWorkspace.executionWorkspaceId === failedExecutionWorkspaceId;
         }
       }
 

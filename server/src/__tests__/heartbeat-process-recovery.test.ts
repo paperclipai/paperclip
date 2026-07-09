@@ -3975,6 +3975,98 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("requeues accepted interaction continuations even when a later successful run is unrelated", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const resolvedAt = new Date("2026-03-19T00:05:00.000Z");
+    const unrelatedRunAt = new Date("2026-03-19T00:06:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Accepted plan masked by unrelated run",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: agentId,
+      resolvedByUserId: "responsible-user",
+      resolvedAt,
+      updatedAt: resolvedAt,
+      payload: { version: 1, prompt: "Approve the plan?" },
+      result: { outcome: "accepted" },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+        source: "unrelated_followup",
+      },
+      startedAt: unrelatedRunAt,
+      finishedAt: unrelatedRunAt,
+      createdAt: unrelatedRunAt,
+      updatedAt: unrelatedRunAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const runs = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const recoveryRun = runs.find(
+      (row) => (row.contextSnapshot as Record<string, unknown> | null)?.source === "issue.interaction_continuation_recovery",
+    );
+    expect(recoveryRun?.contextSnapshot).toMatchObject({
+      issueId,
+      interactionId,
+      interactionStatus: "accepted",
+      source: "issue.interaction_continuation_recovery",
+    });
+  });
+
   // PAP-13314 P5 · Scenario 5: enqueue-failure at accept time is no longer a silent permanent
   // stall. When the accept-time continuation wake is dropped (routes/issues.ts fire-and-forget
   // enqueue swallowed the error), the issue is left in_review with an accepted interaction but
