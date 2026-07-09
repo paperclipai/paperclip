@@ -889,6 +889,9 @@ export function authorizationService(db: Db) {
 
     if (
       input.action === "company_scope:read" ||
+      input.action === "agent_config:read" ||
+      input.action === "agent_config:update" ||
+      input.action === "skill_config:update" ||
       input.action === "runtime:manage" ||
       input.action === "secrets:read"
     ) {

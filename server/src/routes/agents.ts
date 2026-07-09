@@ -839,8 +839,6 @@ export function agentRoutes(
     if (!actorAgent || actorAgent.companyId !== targetAgent.companyId) {
       throw forbidden("Agent key cannot access another company");
     }
-    if (actorAgent.id === targetAgent.id) return;
-
     const decision = await access.decide({
       actor: req.actor,
       action: "agent_config:read",

@@ -717,6 +717,69 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 
+  it("blocks low-trust configuration actions before evaluating explicit change grants", async () => {
+    const company = await createCompany(db, "LowTrustConfigGrants");
+    const project = await createProject(db, company.id, "Allowed");
+    const targetAgent = await createAgent(db, company.id);
+    const actorAgent = await createAgent(db, company.id, {
+      role: "ceo",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [project.id],
+            allowedAgentIds: [targetAgent.id],
+          },
+        },
+      },
+    });
+    await grantAgentPermission(db, company.id, actorAgent.id, "agents:configure");
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      permissionKey: "skills:create",
+      grantedByUserId: null,
+    });
+
+    const authz = authorizationService(db);
+    const actor = { type: "agent" as const, agentId: actorAgent.id, companyId: company.id, source: "agent_key" as const };
+
+    await expect(authz.decide({
+      actor,
+      action: "agent:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_low_trust_boundary" });
+
+    await expect(authz.decide({
+      actor,
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+
+    await expect(authz.decide({
+      actor,
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: company.id, agentId: actorAgent.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+
+    await expect(authz.decide({
+      actor,
+      action: "agent_config:update",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+      scope: { requiresChangeGrant: true, consentedChange: true },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+
+    await expect(authz.decide({
+      actor,
+      action: "skill_config:update",
+      resource: { type: "company", companyId: company.id },
+      scope: { consentedChange: true },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+  });
+
   it("denies simple-mode assignment when the target agent requires protected-assignment approval", async () => {
     const company = await createCompany(db, "ProtectedAssignment");
     const actorAgent = await createAgent(db, company.id, { role: "engineer" });
