@@ -28,6 +28,7 @@ describe("project and goal commands", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
