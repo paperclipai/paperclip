@@ -27,6 +27,12 @@ export const issues = pgTable(
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
+    // Caller-supplied idempotency key scoped to parentId. When set, the partial
+    // unique index below forbids a second *open* subtask with the same
+    // (parentId, dedupeKey) — an atomic backstop against concurrent duplicate
+    // subtask creation (e.g. two pipeline stage subtasks racing). Generic: the
+    // key is opaque to the server; callers choose its meaning (e.g. a stage).
+    dedupeKey: text("dedupe_key"),
     title: text("title").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
@@ -76,6 +82,14 @@ export const issues = pgTable(
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
+    openSubtaskDedupeIdx: uniqueIndex("issues_open_subtask_dedupe_uq")
+      .on(table.parentId, table.dedupeKey)
+      .where(
+        sql`${table.parentId} is not null
+          and ${table.dedupeKey} is not null
+          and ${table.hiddenAt} is null
+          and ${table.status} in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')`,
+      ),
     openRoutineExecutionIdx: uniqueIndex("issues_open_routine_execution_uq")
       .on(table.companyId, table.originKind, table.originId)
       .where(

@@ -330,6 +330,13 @@
       "when": 1778702400000,
       "tag": "0046_board_to_operator_rename",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1783345117412,
+      "tag": "0047_serious_goblin_queen",
+      "breakpoints": true
     }
   ]
 }

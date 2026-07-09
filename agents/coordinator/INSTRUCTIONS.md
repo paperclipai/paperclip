@@ -41,7 +41,8 @@ Human merges. You GC the worktree + branch.
    as:
    - Worker finished (`in_review`, assignee = Worker, work committed) → create the `in_review`
      subtask for Reviewer (include Worker's changed-file list). Idempotent: skip if a Reviewer
-     subtask already exists for that task.
+     subtask already exists for that task. Pass `dedupeKey: "review"` on the create so the DB
+     rejects a concurrent duplicate even if your skip-check races (see §Stage-subtask dedupe).
    - Reviewer done, `needs-build` → assign Architect on the same task branch (Architect runs cargo)
    - Reviewer done, `data-only` → Architect opens PR (no cargo), then mark parent done after merge
    - Architect `done` (branch confirmed on origin → PR exists) → mark parent done after PR merges
@@ -78,6 +79,17 @@ Human merges. You GC the worktree + branch.
 10. Exit.
 
 Review/verify subtasks: `in_review`, not `todo`. Review = file list + "optimize, improve, IP compliance". Verify = `needs-build` + "cargo clippy/test, fix".
+
+### Stage-subtask dedupe
+
+Every stage subtask you create MUST carry a `dedupeKey` naming its stage: `"review"` for
+Reviewer subtasks, `"verify"` for `Verify:` Architect subtasks, `"ci-fix"` for `ci-fix:` ones.
+The server enforces a partial unique index on `(parentId, dedupeKey)` over *open* subtasks
+(`issues_open_subtask_dedupe_uq`): a second create with the same key while the first is still
+open returns the **existing** subtask (idempotent create-or-get), not a duplicate. This is the
+atomic backstop for your prose "skip if a subtask already exists" check — the check can race
+under concurrent fires, the index cannot. Once a subtask reaches `done`/`cancelled` the key
+frees, so a legitimate re-review/re-verify after a fix is still allowed.
 
 ## Task template
 
@@ -141,7 +153,8 @@ and fix what they find.
 When a `Reviewer done, needs-build` task advances, dispatch
 its Architect immediately:
 - Create the verify subtask (`in_review` status, `assigneeAgentId` =
-  Architect, label `needs-build`).
+  Architect, label `needs-build`, `dedupeKey: "verify"` — or `"ci-fix"` for a
+  `ci-fix:` subtask; see §Stage-subtask dedupe).
 - **Title contract**: Architect subtasks must start with `Verify:` or
   `ci-fix:`. Never `Review:`, `Verify+Review:`, `Review and verify:`,
   or anything that asks Architect to evaluate code quality, IP, or

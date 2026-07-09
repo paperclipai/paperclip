@@ -34,7 +34,21 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getDefaultCompanyGoal } from "./goals.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+// Statuses that count as an "open" subtask for the dedupeKey uniqueness rule —
+// must mirror the WHERE clause of issues_open_subtask_dedupe_uq in the schema.
+const OPEN_SUBTASK_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
+
+function isOpenSubtaskDedupeConflict(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: string }).code === "23505" &&
+    "constraint" in error &&
+    (error as { constraint?: string }).constraint === "issues_open_subtask_dedupe_uq"
+  );
+}
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -878,7 +892,7 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+      const runCreate = () => db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let executionWorkspaceSettings =
@@ -958,6 +972,34 @@ export function issueService(db: Db) {
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
       });
+
+      try {
+        return await runCreate();
+      } catch (error) {
+        // Concurrent duplicate creates for the same (parentId, dedupeKey) race the
+        // partial unique index issues_open_subtask_dedupe_uq; the loser gets 23505.
+        // Resolve idempotently: return the open subtask that won the race so the
+        // caller sees a create-or-get, not a 500.
+        if (isOpenSubtaskDedupeConflict(error) && issueData.parentId && issueData.dedupeKey) {
+          const [existing] = await db
+            .select()
+            .from(issues)
+            .where(
+              and(
+                eq(issues.parentId, issueData.parentId),
+                eq(issues.dedupeKey, issueData.dedupeKey),
+                isNull(issues.hiddenAt),
+                inArray(issues.status, [...OPEN_SUBTASK_STATUSES]),
+              ),
+            )
+            .limit(1);
+          if (existing) {
+            const [enriched] = await withIssueLabels(db, [existing]);
+            return enriched;
+          }
+        }
+        throw error;
+      }
     },
 
     update: async (id: string, data: Partial<typeof issues.$inferInsert> & { labelIds?: string[] }) => {
