@@ -2598,7 +2598,7 @@ export function Inbox() {
                       <div
                         key={`group-${group.key}`}
                         data-inbox-item
-                        className={cn("px-3 sm:px-4", groupIndex > 0 && "pt-2")}
+                        className={cn(groupIndex > 0 && "pt-2")}
                         onClick={() => {
                           if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
                         }}
@@ -2606,7 +2606,7 @@ export function Inbox() {
                           if (groupNavIdx >= 0) setSelectedIndexFromPointer(groupNavIdx);
                         }}
                       >
-                        <div className={cn("rounded-lg", isGroupSelected && "bg-accent/50")}>
+                        <div className={cn("rounded-lg px-3 sm:px-4", isGroupSelected && "bg-accent/50")}>
                         <IssueGroupHeader
                           label={group.label}
                           collapsible

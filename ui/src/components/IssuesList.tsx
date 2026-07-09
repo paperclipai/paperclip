@@ -1866,7 +1866,7 @@ export function IssuesList({
             {group.label && (
               <div
                 data-issues-group-key={group.key}
-                className={cn("rounded-lg", selectedNavKey === `group:${group.key}` && "bg-accent/50")}
+                className={cn("rounded-lg px-3 sm:px-4", selectedNavKey === `group:${group.key}` && "bg-accent/50")}
                 onClick={() => setSelectedNavKey(`group:${group.key}`)}
                 onMouseEnter={() => setNavSelectionFromPointer(`group:${group.key}`)}
               >
