@@ -13740,7 +13740,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const continuationAttempt = readContinuationAttempt(enrichedContextSnapshot.livenessContinuationAttempt);
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
-    if (!projectId && issueId) {
+    let resolvedIssueStatus: string | null = null;
+    let resolvedIssueAssigneeAgentId: string | null = null;
+    if (issueId) {
       // Look up by either UUID or identifier (e.g. "ENV-13"), but always scope
       // by companyId so a row from another tenant can never be returned even
       // when identifiers collide across companies. Guard the UUID arm because
@@ -13752,12 +13754,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? or(eq(issues.id, issueId), eq(issues.identifier, issueId.toUpperCase()))
         : eq(issues.identifier, issueId.toUpperCase());
       const resolvedIssue = await db
-        .select({ id: issues.id, projectId: issues.projectId })
+        .select({ id: issues.id, projectId: issues.projectId, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
         .from(issues)
         .where(and(eq(issues.companyId, agent.companyId), idMatch))
         .then((rows) => rows[0] ?? null);
       if (resolvedIssue) {
-        projectId = resolvedIssue.projectId ?? null;
+        resolvedIssueStatus = resolvedIssue.status ?? null;
+        resolvedIssueAssigneeAgentId = resolvedIssue.assigneeAgentId ?? null;
+        if (!projectId) projectId = resolvedIssue.projectId ?? null;
         // Canonicalize context to the UUID so downstream lookups always use UUID
         if (resolvedIssue.id !== issueId) {
           issueId = resolvedIssue.id;
@@ -13806,6 +13810,79 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })();
       return queuedResponsibleUserIdPromise;
     };
+
+    // ── Redundant-wake guards (#9223) ──────────────────────────────────
+    // Three chokepoint guards that kill redundant background wakes at enqueue
+    // time, before they become queued runs. All three share the same pattern:
+    // suppress non-user wakes that would not make progress, writing an
+    // auditable skipped request row. User-requested wakes are always exempt —
+    // the pre-existing claim-time semantics decide what happens to those.
+
+    const wakeReason = readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason;
+    const isUserWake = opts.requestedByActorType === "user";
+    // Mention wakes can legitimately target a non-assignee agent.
+    const isMentionWake = wakeReason === "issue_comment_mentioned";
+    // Interaction-continuation wakes (e.g. request_confirmation responses) can
+    // also target a non-assignee agent.
+    const isInteractionContinuationWake = hasInteractionContinuationWakeContext(enrichedContextSnapshot);
+
+    // Guard 1 — Terminal-status guard (#7841 / #9223 mechanic 1):
+    // Background wakes must not target finished work. Stale wakes for a
+    // done/cancelled issue — comment retries, recovery sweeps, re-queues
+    // after a governor-driven cancellation — make the system busy-loop on
+    // work that is already over. Status comes from the canonicalization
+    // lookup above — no extra query.
+    if (
+      !isUserWake &&
+      (resolvedIssueStatus === "done" || resolvedIssueStatus === "cancelled")
+    ) {
+      await writeSkippedRequest("issue.terminal_status", {
+        error: `Wake suppressed because issue status is ${resolvedIssueStatus}`,
+      });
+      return null;
+    }
+
+    // Guard 2 — Assignee verification (#9223 mechanic 2):
+    // Before dispatching a background wake, verify the agent is still the
+    // assignee of the issue. If the issue has been reassigned, the old
+    // assignee's wake is redundant — the new assignee will be woken by their
+    // own heartbeat schedule or the assignment trigger. Mention and
+    // interaction-continuation wakes are exempt because they can legitimately
+    // target a non-assignee agent.
+    if (
+      !isUserWake &&
+      !isMentionWake &&
+      !isInteractionContinuationWake &&
+      resolvedIssueAssigneeAgentId &&
+      resolvedIssueAssigneeAgentId !== agentId
+    ) {
+      await writeSkippedRequest("issue.assignee_mismatch", {
+        error: `Wake suppressed because issue is assigned to a different agent`,
+      });
+      return null;
+    }
+
+    // Guard 3 — In-review comment wake guard (#9223 mechanic 3):
+    // When an issue is in_review, a plain board comment is typically an
+    // acknowledgment or review note — not new work for the agent. Only wake
+    // the agent for explicit mentions, reviewer change requests, or
+    // comment-triggered reopens. User-requested wakes are already exempt.
+    const IN_REVIEW_EXEMPT_WAKE_REASONS = new Set([
+      "issue_comment_mentioned",
+      "execution_changes_requested",
+      "issue_reopened_via_comment",
+    ]);
+    if (
+      !isUserWake &&
+      resolvedIssueStatus === "in_review" &&
+      wakeReason === "issue_commented" &&
+      !IN_REVIEW_EXEMPT_WAKE_REASONS.has(wakeReason)
+    ) {
+      await writeSkippedRequest("issue.in_review_comment", {
+        error: `Wake suppressed because issue is in_review and the comment is not a mention or change request`,
+      });
+      return null;
+    }
 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
       issueId,
