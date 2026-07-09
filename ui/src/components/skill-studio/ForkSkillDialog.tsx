@@ -65,7 +65,7 @@ export function ForkSkillDialog({
         sourceLocator: skill.sourceLocator,
         sourceRef: skill.sourceRef,
       },
-      agentUsageCount: skill.usedByAgents.length,
+      agentUsageCount: skill.attachedAgentCount,
       usedByAgents: skill.usedByAgents,
       existingForks: skill.existingForks,
     }),
