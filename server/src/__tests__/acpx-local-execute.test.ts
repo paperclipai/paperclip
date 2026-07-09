@@ -297,6 +297,52 @@ describe("acpx_local execute", () => {
     }
   });
 
+  it("continues ACPX when Codex rejects optional reasoning effort config", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-codex-effort-reject-"));
+    try {
+      const runtime = new FakeRuntime({} as AcpRuntimeOptions);
+      runtime.setConfigOption = async (input: { handle: AcpRuntimeHandle; key: string; value: string }) => {
+        runtime.setConfigInputs.push(input);
+        if (input.key === "reasoning_effort") {
+          throw new Error(
+            'Agent rejected session/set_config_option for "reasoning_effort"="low": Invalid params (ACP -32602).',
+          );
+        }
+      };
+      const logs: LogEntry[] = [];
+      const execute = createAcpxLocalExecutor({
+        createRuntime: () => runtime,
+      });
+      const result = await execute(buildContext(root, {
+        config: {
+          agent: "codex",
+          cwd: root,
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+          model: "gpt-5.3-codex-spark",
+          modelReasoningEffort: "low",
+        },
+        onLog: async (stream, chunk) => logs.push({ stream, chunk }),
+      }));
+
+      expect(result.exitCode).toBe(0);
+      expect(result.provider).toBe("acpx");
+      expect(runtime.setConfigInputs).toEqual([
+        expect.objectContaining({ key: "model", value: "gpt-5.3-codex-spark" }),
+        expect.objectContaining({ key: "reasoning_effort", value: "low" }),
+      ]);
+      expect(runtime.startInputs).toHaveLength(1);
+      expect(logs).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          stream: "stderr",
+          chunk: expect.stringContaining("rejected optional config reasoning_effort=low"),
+        }),
+      ]));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("logs a clear error when configured session options need unsupported runtime controls", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-missing-config-controls-"));
     try {

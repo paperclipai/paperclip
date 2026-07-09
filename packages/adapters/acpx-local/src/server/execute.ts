@@ -838,6 +838,10 @@ function sessionConfigOptions(prepared: AcpxPreparedRuntime): Array<{ key: strin
   return options;
 }
 
+function isRequiredSessionConfigOption(option: { key: string; value: string }): boolean {
+  return option.key === "model";
+}
+
 async function applySessionConfigOptions(input: {
   runtime: AcpRuntime;
   handle: AcpRuntimeHandle;
@@ -847,17 +851,34 @@ async function applySessionConfigOptions(input: {
   const options = sessionConfigOptions(input.prepared);
   if (options.length === 0) return;
   if (!input.runtime.setConfigOption) {
+    if (!options.some(isRequiredSessionConfigOption)) {
+      await input.onLog(
+        "stderr",
+        `[paperclip] ACPX runtime does not expose session config controls; continuing without optional ${input.prepared.acpxAgent} config overrides.\n`,
+      );
+      return;
+    }
     const message =
       "ACPX runtime does not expose session config controls; upgrade ACPX or remove configured model, effort, and fast mode overrides.";
     await input.onLog("stderr", `[paperclip] ${message}\n`);
     throw new Error(message);
   }
   for (const option of options) {
-    await input.runtime.setConfigOption({
-      handle: input.handle,
-      key: option.key,
-      value: option.value,
-    });
+    try {
+      await input.runtime.setConfigOption({
+        handle: input.handle,
+        key: option.key,
+        value: option.value,
+      });
+    } catch (err) {
+      if (isRequiredSessionConfigOption(option)) throw err;
+      const reason = err instanceof Error ? err.message : String(err);
+      await input.onLog(
+        "stderr",
+        `[paperclip] ACPX ${input.prepared.acpxAgent} rejected optional config ${option.key}=${option.value}; continuing without it. ${reason}\n`,
+      );
+      continue;
+    }
     await input.onLog(
       "stdout",
       `[paperclip] Applied ACPX ${input.prepared.acpxAgent} config ${option.key}=${option.value}\n`,
