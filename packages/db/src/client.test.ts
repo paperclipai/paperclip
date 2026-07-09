@@ -625,7 +625,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       await applyPendingMigrations(connectionString);
 
       const builtInResourcesHash = await migrationHash(
-        "0137_built_in_managed_resources.sql",
+        "0140_built_in_managed_resources.sql",
       );
       const legacyBuiltInResourcesHash = createHash("sha256")
         .update("legacy 0136_built_in_managed_resources.sql")
@@ -656,7 +656,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const pendingState = await inspectMigrations(connectionString);
       expect(pendingState).toMatchObject({
         status: "needsMigrations",
-        pendingMigrations: ["0137_built_in_managed_resources.sql"],
+        pendingMigrations: ["0140_built_in_managed_resources.sql"],
         reason: "pending-migrations",
       });
 
