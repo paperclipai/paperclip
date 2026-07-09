@@ -791,3 +791,109 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
     });
   });
 });
+
+describe("resolveVisibleIssueRouteContext board-chat", () => {
+  it("resolves Board Operations issue id from React Query board-ops cache", () => {
+    const boardOpsKey = [
+      ...queryKeys.issues.list("company-1"),
+      "board-ops",
+      "conference_room",
+      "company-1",
+    ];
+    const cache = new Map<string, unknown>([
+      [
+        JSON.stringify(boardOpsKey),
+        [
+          {
+            id: "issue-board-ops",
+            title: "Board Operations",
+            status: "in_progress",
+            originKind: "conference_room",
+            originId: "company-1",
+            assigneeAgentId: "agent-ceo",
+          },
+        ],
+      ],
+      [
+        JSON.stringify(queryKeys.issues.liveRuns("issue-board-ops")),
+        [{ id: "run-board-1" }],
+      ],
+    ]);
+
+    const queryClient = {
+      getQueryData: (key: unknown) => cache.get(JSON.stringify(key)),
+      getQueriesData: ({ queryKey }: { queryKey: unknown[] }) => {
+        const prefix = JSON.stringify(queryKey).slice(0, -1);
+        return [...cache.entries()]
+          .filter(([serialized]) => serialized.startsWith(prefix))
+          .map(([serialized, value]) => [JSON.parse(serialized), value] as const);
+      },
+    };
+
+    const context = __liveUpdatesTestUtils.resolveVisibleIssueRouteContext(
+      queryClient as never,
+      "/PAP/board-chat",
+      { isForegrounded: true, companyId: "company-1" },
+    );
+
+    expect(context?.routeIssueRef).toBe("issue-board-ops");
+    expect(context?.issueRefs.has("issue-board-ops")).toBe(true);
+    expect(context?.assigneeAgentId).toBe("agent-ceo");
+    expect(context?.runIds.has("run-board-1")).toBe(true);
+  });
+
+  it("falls back to sessionStorage when board-ops cache is empty", () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        store.set(key, value);
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+    });
+    store.set("paperclip.boardChat.boardIssueId.company-1", "issue-from-session");
+
+    const cache = new Map<string, unknown>();
+    const queryClient = {
+      getQueryData: (key: unknown) => cache.get(JSON.stringify(key)),
+      getQueriesData: () => [],
+    };
+
+    const context = __liveUpdatesTestUtils.resolveVisibleIssueRouteContext(
+      queryClient as never,
+      "/board-chat",
+      { isForegrounded: true, companyId: "company-1" },
+    );
+
+    expect(context?.routeIssueRef).toBe("issue-from-session");
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps /issues/:id resolution unchanged", () => {
+    const cache = new Map<string, unknown>([
+      [
+        JSON.stringify(queryKeys.issues.detail("PAP-759")),
+        {
+          id: "issue-1",
+          identifier: "PAP-759",
+          assigneeAgentId: "agent-1",
+        },
+      ],
+    ]);
+    const queryClient = {
+      getQueryData: (key: unknown) => cache.get(JSON.stringify(key)),
+      getQueriesData: () => [],
+    };
+
+    const context = __liveUpdatesTestUtils.resolveVisibleIssueRouteContext(
+      queryClient as never,
+      "/PAP/issues/PAP-759",
+      { isForegrounded: true, companyId: "company-1" },
+    );
+
+    expect(context?.routeIssueRef).toBe("PAP-759");
+    expect(context?.issueRefs.has("issue-1")).toBe(true);
+  });
+});

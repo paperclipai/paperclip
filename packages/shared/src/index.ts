@@ -916,7 +916,18 @@ export {
   type LowTrustBoundaryInput,
   type TrustAuthorizationPolicyInput,
   boardChatMessageSchema,
+  boardChatMessageResponseSchema,
+  boardChatSilentResponseSchema,
+  boardChatHostRunResponseSchema,
+  boardChatFanoutHostRunSchema,
+  boardChatFanoutResponseSchema,
+  boardChatTurnStatusQuerySchema,
+  boardChatTurnStatusSchema,
+  BOARD_CHAT_TURN_STATUSES,
+  type BoardChatMessage,
   type BoardChatMessageResponse,
+  type BoardChatTurnStatus,
+  type BoardChatTurnStatusResponse,
 } from "./validators/index.js";
 
 export {

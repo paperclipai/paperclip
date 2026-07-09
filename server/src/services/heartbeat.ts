@@ -2319,7 +2319,7 @@ export function stripConfiguredModelFromSessionParams(
   return next;
 }
 
-function shouldAutoCheckoutIssueForWake(input: {
+export function shouldAutoCheckoutIssueForWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   issueStatus: string | null;
   issueAssigneeAgentId: string | null;
@@ -2342,6 +2342,7 @@ function shouldAutoCheckoutIssueForWake(input: {
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   if (!wakeReason) return false;
   if (wakeReason === "issue_comment_mentioned") return false;
+  if (wakeReason === "conference_room_mentioned") return false;
   if (wakeReason === "source_scoped_recovery_action") return false;
   if (wakeReason.startsWith("execution_")) return false;
 

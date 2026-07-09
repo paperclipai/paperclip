@@ -3,6 +3,7 @@ import {
   forwardRef,
   useCallback,
   useEffect,
+  useId,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -637,6 +638,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     (mentionState.trigger === "mention" && Boolean(mentions?.length))
     || (mentionState.trigger === "skill" && slashCommands.length > 0)
   );
+  const mentionListboxId = useId();
   const mentionOptionByKey = useMemo(() => {
     const map = new Map<string, MentionOption>();
     for (const mention of mentions ?? []) {
@@ -683,6 +685,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       .filter((m) => m.name.toLowerCase().includes(q))
       .slice(0, MAX_AUTOCOMPLETE_OPTIONS);
   }, [mentionState, mentions, slashCommands]);
+
+  const mentionOptionDomId = useCallback(
+    (optionId: string) => `${mentionListboxId}-option-${optionId}`,
+    [mentionListboxId],
+  );
+  const mentionActiveDescendantId =
+    mentionActive && filteredMentions.length > 0
+      ? mentionOptionDomId(filteredMentions[Math.min(mentionIndex, filteredMentions.length - 1)]!.id)
+      : undefined;
 
   useImperativeHandle(forwardedRef, () => ({
     focus: () => {
@@ -942,6 +953,36 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     if (mentionActive) return;
     autocompleteSelectionHandledRef.current = false;
   }, [mentionActive]);
+
+  // Combobox/listbox ARIA on the Lexical contenteditable while the mention menu is open.
+  useEffect(() => {
+    const editable = containerRef.current?.querySelector('[contenteditable="true"]');
+    if (!(editable instanceof HTMLElement)) return;
+
+    if (mentionActive && filteredMentions.length > 0) {
+      editable.setAttribute("role", "combobox");
+      editable.setAttribute("aria-autocomplete", "list");
+      editable.setAttribute("aria-expanded", "true");
+      editable.setAttribute("aria-controls", mentionListboxId);
+      if (mentionActiveDescendantId) {
+        editable.setAttribute("aria-activedescendant", mentionActiveDescendantId);
+      } else {
+        editable.removeAttribute("aria-activedescendant");
+      }
+      return;
+    }
+
+    editable.removeAttribute("role");
+    editable.removeAttribute("aria-autocomplete");
+    editable.removeAttribute("aria-expanded");
+    editable.removeAttribute("aria-controls");
+    editable.removeAttribute("aria-activedescendant");
+  }, [
+    filteredMentions.length,
+    mentionActive,
+    mentionActiveDescendantId,
+    mentionListboxId,
+  ]);
 
   useEffect(() => {
     const editable = containerRef.current?.querySelector('[contenteditable="true"]');
@@ -1292,8 +1333,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       {mentionActive && filteredMentions.length > 0 && mentionMenuPosition &&
         createPortal(
           <div
+            id={mentionListboxId}
             data-paperclip-floating-ui=""
             data-testid="mention-autocomplete-menu"
+            role="listbox"
+            aria-label="Menções"
             className="pointer-events-auto fixed z-[9999] min-w-[180px] max-w-[calc(100vw-16px)] max-h-[208px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
             style={{
               top: mentionMenuPosition.top,
@@ -1305,7 +1349,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             {filteredMentions.map((option, i) => (
               <button
                 key={option.id}
+                id={mentionOptionDomId(option.id)}
                 type="button"
+                role="option"
+                aria-selected={i === mentionIndex}
                 tabIndex={-1}
                 ref={(node) => {
                   autocompleteOptionRefs.current[i] = node;

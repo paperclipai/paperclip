@@ -25,6 +25,7 @@ import {
   stripConfiguredModelFromSessionParams,
   normalizeSessionParams,
   shouldResetTaskSessionForWake,
+  shouldAutoCheckoutIssueForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
 import type { TrustPresetResolution } from "../services/trust-preset-resolver.ts";
@@ -792,6 +793,42 @@ describe("stripWorkspaceRuntimeFromExecutionRunConfig", () => {
     expect(input.workspaceRuntime).toEqual({
       services: [{ name: "web" }],
     });
+  });
+});
+
+describe("shouldAutoCheckoutIssueForWake", () => {
+  const base = {
+    issueStatus: "todo",
+    issueAssigneeAgentId: "agent-1",
+    isDependencyReady: true,
+    agentId: "agent-1",
+  };
+
+  it("allows auto-checkout for assigned issue wakes", () => {
+    expect(
+      shouldAutoCheckoutIssueForWake({
+        ...base,
+        contextSnapshot: { wakeReason: "issue_assigned" },
+      }),
+    ).toBe(true);
+  });
+
+  it("skips auto-checkout for issue_comment_mentioned", () => {
+    expect(
+      shouldAutoCheckoutIssueForWake({
+        ...base,
+        contextSnapshot: { wakeReason: "issue_comment_mentioned" },
+      }),
+    ).toBe(false);
+  });
+
+  it("skips auto-checkout for conference_room_mentioned", () => {
+    expect(
+      shouldAutoCheckoutIssueForWake({
+        ...base,
+        contextSnapshot: { wakeReason: "conference_room_mentioned" },
+      }),
+    ).toBe(false);
   });
 });
 

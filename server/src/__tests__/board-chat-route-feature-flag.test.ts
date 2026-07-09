@@ -9,14 +9,26 @@ const mockSpawn = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   instanceSettingsService: () => ({ getExperimental: mockGetExperimental }),
+  issueService: () => ({}),
+  logActivity: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../services/room-message.js", () => ({
   FanoutNotEnabledError: class FanoutNotEnabledError extends Error {
     readonly code = "FANOUT_NOT_ENABLED" as const;
   },
+  TooManyMentionsError: class TooManyMentionsError extends Error {
+    readonly code = "TOO_MANY_MENTIONS" as const;
+    readonly max = 5;
+  },
   roomMessageService: () => ({
-    handle: mockRoomHandle,
+    prepareMentionWake: mockRoomHandle,
+    commit: vi.fn().mockResolvedValue({
+      mode: "silent",
+      issueId: "issue-1",
+      commentId: "comment-1",
+      roomMessageId: "comment-1",
+    }),
   }),
 }));
 
@@ -26,6 +38,7 @@ vi.mock("../services/room-orchestrator.js", () => ({
   },
   roomOrchestratorService: () => ({
     wakeHost: vi.fn(),
+    wakeMentionedAgents: vi.fn(),
   }),
 }));
 
@@ -51,8 +64,6 @@ describe("POST /api/board/chat/stream feature flag guard (PAP-137)", () => {
     mockRoomHandle.mockResolvedValue({
       mode: "silent",
       issueId: "issue-1",
-      commentId: "comment-1",
-      roomMessageId: "comment-1",
     });
   });
 
@@ -90,7 +101,8 @@ describe("POST /api/board/chat/stream feature flag guard (PAP-137)", () => {
     const res = await request(app).post("/api/board/chat/stream").send({});
 
     expect(res.status).toBe(400);
-    expect(res.body).toEqual({ error: "companyId and message are required" });
+    expect(res.body.error).toBe("companyId and message are required");
+    expect(res.body.code).toBe("VALIDATION_ERROR");
   });
 });
 

@@ -99,6 +99,8 @@ interface IssueToastContext {
 
 interface VisibleRouteOptions {
   isForegrounded?: boolean;
+  /** Required for `/board-chat` so Board Operations issue id can be resolved. */
+  companyId?: string | null;
 }
 
 interface VisibleIssueRouteContext {
@@ -177,28 +179,76 @@ function isPageForegrounded(): boolean {
   return true;
 }
 
-function resolveVisibleIssueRouteContext(
+/** Must match `boardIssueCacheKey` in BoardChat.tsx. */
+function boardChatIssueCacheKey(companyId: string) {
+  return `paperclip.boardChat.boardIssueId.${companyId}`;
+}
+
+function isOpenBoardIssueStatus(status: string) {
+  return status !== "done" && status !== "cancelled";
+}
+
+/**
+ * Resolve the Board Operations issue for Conference Room live invalidation.
+ * Prefer React Query board-ops list cache; fall back to sessionStorage id.
+ */
+function resolveBoardChatIssue(
   queryClient: QueryClient,
-  pathname: string,
-  options?: VisibleRouteOptions,
-): VisibleIssueRouteContext | null {
-  const isForegrounded = options?.isForegrounded ?? isPageForegrounded();
-  if (!isForegrounded) return null;
+  companyId: string,
+): Issue | { id: string } | null {
+  const boardOpsEntries = queryClient.getQueriesData<Issue[]>({
+    queryKey: [...queryKeys.issues.list(companyId), "board-ops"],
+  });
+  for (const [, issues] of boardOpsEntries) {
+    if (!Array.isArray(issues) || issues.length === 0) continue;
+    const boardIssue =
+      issues.find(
+        (issue) =>
+          isOpenBoardIssueStatus(issue.status) &&
+          typeof issue.originKind === "string" &&
+          issue.originKind === "conference_room" &&
+          issue.originId === companyId,
+      ) ??
+      issues.find(
+        (issue) =>
+          isOpenBoardIssueStatus(issue.status) && issue.title === "Board Operations",
+      );
+    if (boardIssue?.id) return boardIssue;
+  }
 
-  const relativePath = toCompanyRelativePath(pathname);
-  const segments = relativePath.split("/").filter(Boolean);
-  if (segments[0] !== "issues" || !segments[1]) return null;
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      const cached = sessionStorage.getItem(boardChatIssueCacheKey(companyId));
+      if (cached) return { id: cached };
+    }
+  } catch {
+    // sessionStorage unavailable
+  }
 
-  const issueRef = decodeURIComponent(segments[1]);
-  const issue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueRef)) ?? null;
+  return null;
+}
+
+function buildVisibleIssueContextFromRef(
+  queryClient: QueryClient,
+  issueRef: string,
+  seedIssue?: Issue | null,
+): VisibleIssueRouteContext {
+  const issue =
+    queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueRef)) ??
+    seedIssue ??
+    null;
   const issueRefs = new Set<string>([issueRef]);
   if (issue?.id) issueRefs.add(issue.id);
   if (issue?.identifier) issueRefs.add(issue.identifier);
 
   const runIds = new Set<string>();
-  const activeRun = queryClient.getQueryData<ActiveRunForIssue | null>(queryKeys.issues.activeRun(issueRef));
-  const liveRuns = queryClient.getQueryData<LiveRunForIssue[]>(queryKeys.issues.liveRuns(issueRef)) ?? [];
-  const linkedRuns = queryClient.getQueryData<RunForIssue[]>(queryKeys.issues.runs(issueRef)) ?? [];
+  const activeRun = queryClient.getQueryData<ActiveRunForIssue | null>(
+    queryKeys.issues.activeRun(issueRef),
+  );
+  const liveRuns =
+    queryClient.getQueryData<LiveRunForIssue[]>(queryKeys.issues.liveRuns(issueRef)) ?? [];
+  const linkedRuns =
+    queryClient.getQueryData<RunForIssue[]>(queryKeys.issues.runs(issueRef)) ?? [];
 
   if (activeRun?.id) runIds.add(activeRun.id);
   for (const run of liveRuns) {
@@ -214,6 +264,40 @@ function resolveVisibleIssueRouteContext(
     assigneeAgentId: issue?.assigneeAgentId ?? null,
     runIds,
   };
+}
+
+function resolveVisibleIssueRouteContext(
+  queryClient: QueryClient,
+  pathname: string,
+  options?: VisibleRouteOptions,
+): VisibleIssueRouteContext | null {
+  const isForegrounded = options?.isForegrounded ?? isPageForegrounded();
+  if (!isForegrounded) return null;
+
+  const relativePath = toCompanyRelativePath(pathname);
+  const segments = relativePath.split("/").filter(Boolean);
+
+  if (segments[0] === "board-chat") {
+    const companyId = options?.companyId ?? null;
+    if (!companyId) return null;
+    const boardIssue = resolveBoardChatIssue(queryClient, companyId);
+    if (!boardIssue?.id) return null;
+    const seed = "title" in boardIssue ? boardIssue : null;
+    return buildVisibleIssueContextFromRef(queryClient, boardIssue.id, seed);
+  }
+
+  if (segments[0] !== "issues" || !segments[1]) return null;
+
+  const issueRef = decodeURIComponent(segments[1]);
+  return buildVisibleIssueContextFromRef(queryClient, issueRef);
+}
+
+/** @internal test helper — same resolution as board-chat route. */
+function resolveBoardChatIssueId(
+  queryClient: QueryClient,
+  companyId: string,
+): string | null {
+  return resolveBoardChatIssue(queryClient, companyId)?.id ?? null;
 }
 
 function buildIssueRefsForPayload(entityId: string, details: Record<string, unknown> | null): Set<string> {
@@ -641,7 +725,7 @@ function invalidateActivityQueries(
   companyId: string,
   payload: Record<string, unknown>,
   currentActor: { userId: string | null; agentId: string | null },
-  options?: { pathname?: string; isForegrounded?: boolean },
+  options?: { pathname?: string; isForegrounded?: boolean; companyId?: string | null },
 ) {
   queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
@@ -653,6 +737,10 @@ function invalidateActivityQueries(
   const actorType = readString(payload.actorType);
   const actorId = readString(payload.actorId);
   const details = readRecord(payload.details);
+  const routeOptions: VisibleRouteOptions = {
+    isForegrounded: options?.isForegrounded,
+    companyId: options?.companyId ?? companyId,
+  };
 
   if (action?.startsWith("resource_membership.")) {
     const targetUserId = readString(details?.userId);
@@ -678,7 +766,7 @@ function invalidateActivityQueries(
           queryClient,
           options.pathname,
           payload,
-          { isForegrounded: options.isForegrounded },
+          routeOptions,
         );
       const visibleIssueCommentActivity =
         !!options?.pathname &&
@@ -686,7 +774,7 @@ function invalidateActivityQueries(
           queryClient,
           options.pathname,
           payload,
-          { isForegrounded: options.isForegrounded },
+          routeOptions,
         );
       const issueRefs = resolveIssueQueryRefs(queryClient, companyId, entityId, details);
       for (const ref of issueRefs) {
@@ -821,14 +909,21 @@ function handleLiveEvent(
     return;
   }
 
+  const routeOptions: VisibleRouteOptions = { companyId: expectedCompanyId };
+
   if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
-    invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
+    invalidateVisibleIssueRunQueries(queryClient, pathname, payload, routeOptions);
     if (event.type === "heartbeat.run.status") {
       const toast = buildRunStatusToast(payload, nameOf);
       if (
         toast &&
-        !shouldSuppressRunStatusToastForVisibleIssue(queryClient, pathname, payload)
+        !shouldSuppressRunStatusToastForVisibleIssue(
+          queryClient,
+          pathname,
+          payload,
+          routeOptions,
+        )
       ) {
         gatedPushToast(gate, pushToast, "run-status", toast);
       }
@@ -849,7 +944,12 @@ function handleLiveEvent(
     const toast = buildAgentStatusToast(payload, nameOf, queryClient, expectedCompanyId);
     if (
       toast &&
-      !shouldSuppressAgentStatusToastForVisibleIssue(queryClient, pathname, payload)
+      !shouldSuppressAgentStatusToastForVisibleIssue(
+        queryClient,
+        pathname,
+        payload,
+        routeOptions,
+      )
     ) {
       gatedPushToast(gate, pushToast, "agent-status", toast);
     }
@@ -857,9 +957,14 @@ function handleLiveEvent(
   }
 
   if (event.type === "activity.logged") {
-    invalidateActivityQueries(queryClient, expectedCompanyId, payload, currentActor, { pathname });
-    if (shouldDeferVisibleIssueCommentActivity(queryClient, pathname, payload)) {
-      void hydrateVisibleIssueComment(queryClient, pathname, payload);
+    invalidateActivityQueries(queryClient, expectedCompanyId, payload, currentActor, {
+      pathname,
+      companyId: expectedCompanyId,
+    });
+    if (
+      shouldDeferVisibleIssueCommentActivity(queryClient, pathname, payload, routeOptions)
+    ) {
+      void hydrateVisibleIssueComment(queryClient, pathname, payload, routeOptions);
     }
     const action = readString(payload.action);
     const toast =
@@ -867,7 +972,12 @@ function handleLiveEvent(
       buildJoinRequestToast(payload);
     if (
       toast &&
-      !shouldSuppressActivityToastForVisibleIssue(queryClient, pathname, payload)
+      !shouldSuppressActivityToastForVisibleIssue(
+        queryClient,
+        pathname,
+        payload,
+        routeOptions,
+      )
     ) {
       gatedPushToast(gate, pushToast, `activity:${action ?? "unknown"}`, toast);
     }
@@ -920,7 +1030,9 @@ export const __liveUpdatesTestUtils = {
   hydrateVisibleIssueComment,
   invalidateActivityQueries,
   invalidateVisibleIssueRunQueries,
+  resolveBoardChatIssueId,
   resolveLiveCompanyId,
+  resolveVisibleIssueRouteContext,
   shouldDeferIssueRefetchForVisibleAgentActivity,
   shouldDeferVisibleIssueCommentActivity,
   shouldSuppressActivityToastForVisibleIssue,

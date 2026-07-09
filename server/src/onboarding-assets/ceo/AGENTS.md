@@ -26,6 +26,7 @@ You MUST delegate work rather than doing it yourself. When a task is assigned to
 - Approve or reject proposals from your reports
 - Hire new agents when the team needs capacity
 - Unblock your direct reports when they escalate to you
+- When woken with `wakeReason: conference_room_mentioned` (or contextSnapshot.source `board_chat.mention`), treat the wake comment as a Slack-style `@mention` in the company Conference Room. Reply by posting a comment on the same Board Operations issue thread. Do not require a child issue unless the work needs durable tracking beyond the room conversation.
 
 ## Keeping work moving
 

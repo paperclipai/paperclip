@@ -1,11 +1,11 @@
-import {
-  useEffect,
+import { useEffect,
   useLayoutEffect,
   useState,
   useRef,
   useCallback,
   useMemo,
 } from "react";
+import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AssistantRuntimeProvider,
@@ -28,7 +28,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Activity, ArrowDown, History, MessageSquarePlus } from "lucide-react";
+import { Activity, ArrowDown, History, MessageSquarePlus, Search } from "lucide-react";
 import { ActivityFeed } from "../components/ActivityFeed";
 import {
   type MarkdownEditorRef,
@@ -43,8 +43,16 @@ import { usePaperclipIssueRuntime } from "../hooks/usePaperclipIssueRuntime";
 import { cn, formatDateTime, visibleRunCostUsd } from "../lib/utils";
 import type { FeedbackVoteValue, IssueComment } from "@paperclipai/shared";
 import type { BoardChatMessageResponse } from "@paperclipai/shared";
+import { buildAgentMentionHref } from "@paperclipai/shared";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { BoardChatComposer } from "./board-chat/BoardChatComposer";
+import { BoardChatHitlCards } from "./board-chat/BoardChatHitlCards";
+import {
+  BoardChatTurnNotFoundError,
+  fetchBoardChatTurn,
+  isTerminalHostRunStatus,
+} from "./board-chat/board-chat-turn";
 
 /**
  * Conference Room — issue-backed chat aligned with Issue chat UX
@@ -56,7 +64,8 @@ const SPLIT_MIN_PANE_PX = 280;
 /** Chat pane share of width below the divider (agent feed gets the rest). */
 const DEFAULT_CHAT_FRACTION = 2 / 3;
 
-function boardIssueCacheKey(companyId: string) {
+/** sessionStorage key for the Board Operations issue id (also read by LiveUpdates). */
+export function boardIssueCacheKey(companyId: string) {
   return `paperclip.boardChat.boardIssueId.${companyId}`;
 }
 
@@ -121,7 +130,7 @@ function TypingBubble({ label, elapsedSec }: { label?: string; elapsedSec?: numb
             "bg-card border border-border text-foreground [border-radius:14px_14px_14px_4px]",
           )}
         >
-          <span className="typing-dots" aria-label="typing">
+          <span className="typing-dots" aria-label="digitando">
             <span />
             <span />
             <span />
@@ -277,6 +286,23 @@ export function BoardChat() {
     [containerWidth, leftPaneWidth],
   );
 
+  const handleSplitKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      const step = 0.03;
+      const delta = e.key === "ArrowLeft" ? -step : step;
+      setChatPaneFraction((prev) => {
+        const next = prev + delta;
+        const lower = Math.max(0.2, minChatFraction);
+        const upper = Math.min(0.8, maxChatFraction);
+        if (upper < lower) return 0.5;
+        return Math.min(upper, Math.max(lower, next));
+      });
+    },
+    [maxChatFraction, minChatFraction],
+  );
+
   const [input, setInput] = useState("");
   const inputRef = useRef("");
   /** Guards the draft-persistence effect so it doesn't overwrite a saved
@@ -289,6 +315,13 @@ export function BoardChat() {
   const [statusNotice, setStatusNotice] = useState("");
   const [hostRunId, setHostRunId] = useState<string | null>(null);
   const [hostAgentId, setHostAgentId] = useState<string | null>(null);
+  /** Fan-out MVP: multiple parallel wakes; empty when single host_run / idle. */
+  const [fanoutHostRuns, setFanoutHostRuns] = useState<
+    Array<{ agentId: string; runId: string }>
+  >([]);
+  const [hostRoomMessageId, setHostRoomMessageId] = useState<string | null>(null);
+  const [turnPollAvailable, setTurnPollAvailable] = useState(true);
+  const [turnCostByRunId, setTurnCostByRunId] = useState<Record<string, number>>({});
   const [boardIssueId, setBoardIssueId] = useState<string | null>(null);
   const [optimisticMessage, setOptimisticMessage] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -340,6 +373,7 @@ export function BoardChat() {
     if (prevCompanyRef.current !== selectedCompanyId) {
       if (boardIssueId) {
         queryClient.removeQueries({ queryKey: queryKeys.issues.comments(boardIssueId) });
+        queryClient.removeQueries({ queryKey: queryKeys.issues.interactions(boardIssueId) });
       }
       setBoardIssueId(null);
       setStreamingText("");
@@ -395,6 +429,12 @@ export function BoardChat() {
     [agents],
   );
 
+  /** Agent used to prefix NUX chip prompts with a structured @mention. */
+  const chipMentionAgent = useMemo(() => {
+    if (ceoAgent) return ceoAgent;
+    return agents?.find((a) => a.status !== "terminated") ?? null;
+  }, [agents, ceoAgent]);
+
   // Pull the company's top-level goal so the CEO's welcome can reference
   // the mission verbatim.
   const { data: goals } = useQuery({
@@ -417,19 +457,40 @@ export function BoardChat() {
     } catch { /* sessionStorage unavailable */ }
   }, [selectedCompanyId]);
 
-  // Find Board Operations via title search — prefer exact title match.
+  // Find Board Operations via conference_room origin; fall back to title search.
   const { data: boardOpsIssues } = useQuery({
-    queryKey: queryKeys.issues.search(selectedCompanyId!, "Board Operations", undefined, 50),
-    queryFn: () =>
-      issuesApi.list(selectedCompanyId!, { q: "Board Operations", limit: 50 }),
+    queryKey: [
+      ...queryKeys.issues.list(selectedCompanyId!),
+      "board-ops",
+      "conference_room",
+      selectedCompanyId,
+    ],
+    queryFn: async () => {
+      const byOrigin = await issuesApi.list(selectedCompanyId!, {
+        originKind: "conference_room",
+        originId: selectedCompanyId!,
+        limit: 50,
+      });
+      if (byOrigin.length > 0) return byOrigin;
+      return issuesApi.list(selectedCompanyId!, { q: "Board Operations", limit: 50 });
+    },
     enabled: !!selectedCompanyId,
   });
 
   useEffect(() => {
     if (!selectedCompanyId || !boardOpsIssues) return;
-    const boardIssue = boardOpsIssues.find(
-      (i) => i.title === "Board Operations" && i.status !== "done" && i.status !== "cancelled",
-    );
+    const isOpen = (status: string) => status !== "done" && status !== "cancelled";
+    const boardIssue =
+      boardOpsIssues.find(
+        (i) =>
+          isOpen(i.status) &&
+          typeof i.originKind === "string" &&
+          i.originKind === "conference_room" &&
+          i.originId === selectedCompanyId,
+      ) ??
+      boardOpsIssues.find(
+        (i) => isOpen(i.status) && i.title === "Board Operations",
+      );
     if (boardIssue?.id) {
       setBoardIssueId(boardIssue.id);
       try {
@@ -438,19 +499,62 @@ export function BoardChat() {
     }
   }, [boardOpsIssues, selectedCompanyId]);
 
+  const isFanoutTracking = fanoutHostRuns.length > 0;
+  const trackedRunIds = isFanoutTracking
+    ? fanoutHostRuns.map((run) => run.runId)
+    : hostRunId
+      ? [hostRunId]
+      : [];
+  const hasTrackedRuns = trackedRunIds.length > 0;
+
+  // Fan-out uses liveRuns (turn endpoint returns a single host run).
+  const useTurnPollPath =
+    turnPollAvailable && Boolean(hostRoomMessageId) && !isFanoutTracking;
+
+  const { data: hostTurn, error: hostTurnError } = useQuery({
+    queryKey: ["board-chat-turn", selectedCompanyId, hostRoomMessageId],
+    queryFn: () => fetchBoardChatTurn(hostRoomMessageId!, selectedCompanyId!),
+    enabled: Boolean(
+      selectedCompanyId &&
+        hostRoomMessageId &&
+        hostRunId &&
+        !isFanoutTracking &&
+        turnPollAvailable &&
+        pageVisible,
+    ),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      if (status && isTerminalHostRunStatus(status)) return false;
+      return hostRunId && !isFanoutTracking ? 2000 : false;
+    },
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (hostTurnError instanceof BoardChatTurnNotFoundError) {
+      setTurnPollAvailable(false);
+    }
+  }, [hostTurnError]);
+
   // Fetch comments for the board issue
   const { data: comments } = useQuery({
     queryKey: queryKeys.issues.comments(boardIssueId ?? ""),
-    queryFn: () => issuesApi.listComments(boardIssueId!),
+    queryFn: () => issuesApi.listComments(boardIssueId!, { limit: 100 }),
     enabled: !!boardIssueId,
-    refetchInterval: pageVisible ? (hostRunId ? 2000 : 30000) : false,
+    refetchInterval: pageVisible
+      ? hasTrackedRuns
+        ? useTurnPollPath
+          ? false
+          : 5000
+        : 30000
+      : false,
   });
 
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(boardIssueId ?? ""),
     queryFn: () => heartbeatsApi.liveRunsForIssue(boardIssueId!),
-    enabled: !!boardIssueId && !!hostRunId,
-    refetchInterval: hostRunId ? 2000 : false,
+    enabled: !!boardIssueId && hasTrackedRuns && !useTurnPollPath,
+    refetchInterval: hasTrackedRuns && pageVisible && !useTurnPollPath ? 2000 : false,
   });
 
   const hostLiveRun = useMemo(
@@ -458,12 +562,25 @@ export function BoardChat() {
     [liveRuns, hostRunId],
   );
 
-  const hostRunActive = Boolean(
-    hostLiveRun &&
-      (hostLiveRun.status === "queued" ||
-        hostLiveRun.status === "running" ||
-        hostLiveRun.status === "starting"),
-  );
+  const fanoutLiveById = useMemo(() => {
+    if (!isFanoutTracking) return new Map<string, NonNullable<typeof liveRuns>[number]>();
+    return new Map((liveRuns ?? []).map((run) => [run.id, run] as const));
+  }, [isFanoutTracking, liveRuns]);
+
+  const hostRunActive = useTurnPollPath
+    ? Boolean(hostTurn && !isTerminalHostRunStatus(hostTurn.status))
+    : isFanoutTracking
+      ? fanoutHostRuns.some((tracked) => {
+          const run = fanoutLiveById.get(tracked.runId);
+          if (!run) return true;
+          return !isTerminalHostRunStatus(run.status);
+        })
+      : Boolean(
+          hostLiveRun &&
+            (hostLiveRun.status === "queued" ||
+              hostLiveRun.status === "running" ||
+              hostLiveRun.status === "starting"),
+        );
 
   const sortedComments = useMemo(
     () =>
@@ -490,7 +607,8 @@ export function BoardChat() {
     queryFn: () => activityApi.runsForIssue(boardIssueId!),
     enabled: !!boardIssueId,
     staleTime: 8_000,
-    refetchInterval: hostRunId && pageVisible ? 2000 : false,
+    refetchInterval:
+      hasTrackedRuns && pageVisible && !useTurnPollPath ? 5000 : false,
   });
 
   const runById = useMemo(() => runForIssueToCostLookup(issueRuns), [issueRuns]);
@@ -498,24 +616,34 @@ export function BoardChat() {
   const { data: hostRunDetail } = useQuery({
     queryKey: ["board-chat-host-run", hostRunId],
     queryFn: () => heartbeatsApi.get(hostRunId!),
-    enabled: !!hostRunId,
-    refetchInterval: hostRunId && pageVisible ? 2000 : false,
+    enabled: !!hostRunId && !isFanoutTracking && !useTurnPollPath,
+    refetchInterval:
+      hostRunId && !isFanoutTracking && pageVisible && !useTurnPollPath ? 2000 : false,
   });
 
-  useEffect(() => {
-    if (!hostRunId) return;
-    const trackedRun = hostRunDetail ?? hostLiveRun;
-    if (!trackedRun) return;
-    const terminal = ["succeeded", "failed", "cancelled", "timed_out"].includes(
-      trackedRun.status,
-    );
-    if (terminal) {
-      setHostRunId(null);
-      setSending(false);
-      setStatusText("");
-      if (trackedRun.status !== "succeeded") {
+  const clearTrackedWakeState = useCallback(() => {
+    setHostRunId(null);
+    setHostAgentId(null);
+    setFanoutHostRuns([]);
+    setHostRoomMessageId(null);
+    setSending(false);
+    setStatusText("");
+  }, []);
+
+  const finalizeHostRun = useCallback(
+    (trackedStatus: string, trackedRunId?: string, costUsd?: number | null) => {
+      clearTrackedWakeState();
+      if (
+        trackedRunId &&
+        costUsd != null &&
+        Number.isFinite(costUsd) &&
+        costUsd > 0
+      ) {
+        setTurnCostByRunId((prev) => ({ ...prev, [trackedRunId]: costUsd }));
+      }
+      if (trackedStatus !== "succeeded") {
         setErrorText(
-          `A run do agente terminou com status ${trackedRun.status}. Abra o detalhe da run para mais informações.`,
+          `A run do agente terminou com status ${trackedStatus}. Abra o detalhe da run para mais informações.`,
         );
       }
       if (boardIssueId) {
@@ -526,28 +654,130 @@ export function BoardChat() {
           queryKey: queryKeys.issues.runs(boardIssueId),
         });
       }
-    }
-  }, [hostRunDetail, hostLiveRun, hostRunId, boardIssueId, queryClient]);
+    },
+    [boardIssueId, clearTrackedWakeState, queryClient],
+  );
+
+  const finalizeFanoutRuns = useCallback(
+    (statuses: string[]) => {
+      clearTrackedWakeState();
+      const failed = statuses.filter((status) => status !== "succeeded");
+      if (failed.length > 0 && failed.length < statuses.length) {
+        setErrorText(
+          `${failed.length} de ${statuses.length} agentes terminaram com erro. Veja as runs no feed de atividades.`,
+        );
+      } else if (failed.length === statuses.length) {
+        setErrorText(
+          "As runs dos agentes terminaram com erro. Abra o detalhe das runs para mais informações.",
+        );
+      }
+      if (boardIssueId) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.comments(boardIssueId),
+        });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.runs(boardIssueId),
+        });
+      }
+    },
+    [boardIssueId, clearTrackedWakeState, queryClient],
+  );
 
   useEffect(() => {
-    if (!hostRunId || !sending) return;
+    if (!useTurnPollPath || !hostTurn) return;
+    if (!isTerminalHostRunStatus(hostTurn.status)) return;
+    finalizeHostRun(
+      hostTurn.status,
+      hostTurn.hostRunId,
+      hostTurn.costUsd,
+    );
+  }, [useTurnPollPath, hostTurn, finalizeHostRun]);
+
+  useEffect(() => {
+    if (useTurnPollPath || isFanoutTracking) return;
+    if (!hostRunId) return;
+    const trackedRun = hostRunDetail ?? hostLiveRun;
+    if (!trackedRun) return;
+    if (isTerminalHostRunStatus(trackedRun.status)) {
+      const costUsd =
+        hostRunDetail != null
+          ? visibleRunCostUsd(
+              (hostRunDetail.usageJson as Record<string, unknown> | null) ?? null,
+              (hostRunDetail.resultJson as Record<string, unknown> | null) ?? null,
+            )
+          : null;
+      finalizeHostRun(trackedRun.status, trackedRun.id, costUsd);
+    }
+  }, [
+    useTurnPollPath,
+    isFanoutTracking,
+    hostRunDetail,
+    hostLiveRun,
+    hostRunId,
+    finalizeHostRun,
+  ]);
+
+  useEffect(() => {
+    if (!isFanoutTracking || useTurnPollPath) return;
+    const statuses = fanoutHostRuns.map((tracked) => {
+      const run = fanoutLiveById.get(tracked.runId);
+      return run?.status ?? null;
+    });
+    if (statuses.some((status) => status == null)) return;
+    if (!statuses.every((status) => status != null && isTerminalHostRunStatus(status))) {
+      return;
+    }
+    finalizeFanoutRuns(statuses as string[]);
+  }, [
+    isFanoutTracking,
+    useTurnPollPath,
+    fanoutHostRuns,
+    fanoutLiveById,
+    finalizeFanoutRuns,
+  ]);
+
+  useEffect(() => {
+    if (!hasTrackedRuns || !sending) return;
     const timeoutId = setTimeout(() => {
-      const trackedRun = hostRunDetail ?? hostLiveRun;
-      if (
-        trackedRun &&
-        ["succeeded", "failed", "cancelled", "timed_out"].includes(trackedRun.status)
-      ) {
-        return;
+      if (useTurnPollPath) {
+        if (hostTurn && isTerminalHostRunStatus(hostTurn.status)) return;
+      } else if (isFanoutTracking) {
+        const statuses = fanoutHostRuns.map(
+          (tracked) => fanoutLiveById.get(tracked.runId)?.status,
+        );
+        if (
+          statuses.every(
+            (status) => status != null && isTerminalHostRunStatus(status),
+          )
+        ) {
+          return;
+        }
+      } else {
+        const trackedRun = hostRunDetail ?? hostLiveRun;
+        if (trackedRun && isTerminalHostRunStatus(trackedRun.status)) {
+          return;
+        }
       }
-      setHostRunId(null);
-      setSending(false);
-      setStatusText("");
+      clearTrackedWakeState();
       setErrorText(
-        "A resposta do agente está demorando. Verifique o status da run no feed de atividades.",
+        isFanoutTracking
+          ? "As respostas dos agentes estão demorando. Verifique o status das runs no feed de atividades."
+          : "A resposta do agente está demorando. Verifique o status da run no feed de atividades.",
       );
     }, 90_000);
     return () => clearTimeout(timeoutId);
-  }, [hostRunId, sending, hostRunDetail, hostLiveRun]);
+  }, [
+    hasTrackedRuns,
+    sending,
+    hostRunDetail,
+    hostLiveRun,
+    useTurnPollPath,
+    hostTurn,
+    isFanoutTracking,
+    fanoutHostRuns,
+    fanoutLiveById,
+    clearTrackedWakeState,
+  ]);
 
   const threadMessages = useMemo(
     () => sortedComments.map(commentToThreadMessage),
@@ -630,8 +860,8 @@ export function BoardChat() {
   // Start the typing → welcome timer only once we have the ingredients
   // needed to render the welcome bubble. This guarantees the animation is
   // visible at the moment the user arrives, even if agent/goal queries
-  // take a beat to resolve.
-  const canRenderWelcome = !!ceoAgent && !!selectedCompany;
+  // take a beat to resolve. Prefer CEO; fall back to first active agent.
+  const canRenderWelcome = !!chipMentionAgent && !!selectedCompany;
   useEffect(() => {
     if (!canRenderWelcome) return;
     if (welcomeRevealed) return;
@@ -763,29 +993,65 @@ export function BoardChat() {
       setStatusNotice("");
       setHostRunId(null);
       setHostAgentId(null);
+      setFanoutHostRuns([]);
+      setHostRoomMessageId(null);
+      setTurnPollAvailable(true);
 
       let keepSendingForHostRun = false;
 
       try {
+        const clientMessageId = crypto.randomUUID();
         const res = await fetch("/api/board/chat/stream", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": clientMessageId,
+          },
           body: JSON.stringify({
             companyId: selectedCompanyId,
             message: trimmed,
             taskId: boardIssueId ?? undefined,
+            clientMessageId,
           }),
         });
 
         const payload = (await res.json().catch(() => ({}))) as
           | BoardChatMessageResponse
-          | { error?: string; code?: string; message?: string };
+          | { error?: string; code?: string; message?: string; max?: number };
 
         if (!res.ok) {
           const code = "code" in payload ? payload.code : undefined;
+          if (code === "INVALID_MENTION") {
+            throw new Error(
+              "Menção inválida — use @ e escolha um agente da lista.",
+            );
+          }
+          if (code === "TOO_MANY_MENTIONS") {
+            const max =
+              "max" in payload && typeof payload.max === "number" ? payload.max : 5;
+            throw new Error(
+              `Mencione no máximo ${max} agentes por mensagem.`,
+            );
+          }
           if (code === "FANOUT_NOT_ENABLED") {
             throw new Error(
-              "Mencione um agente por vez. Fan-out @A @B chega na fase P2.",
+              "Por enquanto, mencione um agente por vez.",
+            );
+          }
+          if (code === "RATE_LIMITED" || res.status === 429) {
+            throw new Error(
+              "Muitas solicitações em pouco tempo. Aguarde um momento e tente de novo.",
+            );
+          }
+          if (code === "FEATURE_DISABLED") {
+            throw new Error(
+              "A Conference Room está desativada nesta instância.",
+            );
+          }
+          if (res.status === 403) {
+            throw new Error(
+              ("error" in payload && payload.error) ||
+                "A Conference Room está desativada nesta instância.",
             );
           }
           if (res.status === 409) {
@@ -816,11 +1082,13 @@ export function BoardChat() {
         }
 
         if (result.mode === "silent") {
-          setStatusNotice("Mensagem salva na sala. Use @agente para acordar um agente.");
+          setStatusNotice("Mencione um agente com @ para ele responder.");
         } else if (result.mode === "host_run") {
           keepSendingForHostRun = true;
+          setFanoutHostRuns([]);
           setHostRunId(result.hostRunId);
           setHostAgentId(result.hostAgentId);
+          setHostRoomMessageId(result.roomMessageId);
           setStatusNotice("");
           setStatusText(
             `${agentMap.get(result.hostAgentId)?.name ?? "Agente"} está respondendo…`,
@@ -831,9 +1099,33 @@ export function BoardChat() {
           queryClient.invalidateQueries({
             queryKey: queryKeys.issues.runs(result.issueId),
           });
+        } else if (result.mode === "fanout") {
+          keepSendingForHostRun = true;
+          setHostRunId(null);
+          setHostAgentId(null);
+          setFanoutHostRuns(result.hostRuns);
+          setHostRoomMessageId(result.roomMessageId);
+          setStatusNotice("");
+          const names = result.hostRuns
+            .map((run) => agentMap.get(run.agentId)?.name)
+            .filter((name): name is string => Boolean(name));
+          setStatusText(
+            names.length > 0
+              ? `${names.join(", ")} estão respondendo…`
+              : `${result.hostRuns.length} agentes estão respondendo…`,
+          );
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.issues.liveRuns(result.issueId),
+          });
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.issues.runs(result.issueId),
+          });
         }
       } catch (err) {
         console.error("Board chat error:", err);
+        setOptimisticMessage(null);
+        setInput(trimmed);
+        inputRef.current = trimmed;
         setErrorText(
           err instanceof Error
             ? err.message
@@ -848,6 +1140,15 @@ export function BoardChat() {
     },
     [sending, selectedCompanyId, boardIssueId, queryClient, agentMap],
   );
+
+  const cancelHostRunWait = useCallback(() => {
+    clearTrackedWakeState();
+    setStatusNotice(
+      isFanoutTracking
+        ? "Espera cancelada. As runs no servidor continuam; você pode enviar outra mensagem."
+        : "Espera cancelada. A run no servidor continua; você pode enviar outra mensagem.",
+    );
+  }, [clearTrackedWakeState, isFanoutTracking]);
 
   const handleSend = useCallback(() => {
     sendMessage(inputRef.current);
@@ -896,9 +1197,18 @@ export function BoardChat() {
     },
   });
 
-  const hostAgentName = hostAgentId
-    ? agentMap.get(hostAgentId)?.name ?? "Agente"
-    : ceoAgent?.name ?? "Agente";
+  const hostAgentName = isFanoutTracking
+    ? fanoutHostRuns
+        .map((run) => agentMap.get(run.agentId)?.name)
+        .filter((name): name is string => Boolean(name))
+        .join(", ") || `${fanoutHostRuns.length} agentes`
+    : hostAgentId
+      ? agentMap.get(hostAgentId)?.name ?? "Agente"
+      : ceoAgent?.name ?? "Agente";
+
+  const wakeWaitLabel = isFanoutTracking
+    ? `${hostAgentName} estão respondendo…`
+    : `${hostAgentName} está respondendo…`;
 
   // NOTE: declared before the early return below — all hooks must run on
   // every render (Rules of Hooks). Placing it after the `!selectedCompanyId`
@@ -910,9 +1220,9 @@ export function BoardChat() {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center max-w-sm">
-          <h2 className="text-lg font-semibold">No company selected</h2>
+          <h2 className="text-lg font-semibold">Nenhuma empresa selecionada</h2>
           <p className="text-sm text-muted-foreground mt-2">
-            Select a company to open the Conference Room.
+            Selecione uma empresa para abrir a Conference Room.
           </p>
         </div>
       </div>
@@ -945,7 +1255,7 @@ export function BoardChat() {
                 {ceoAgent?.name ?? "Conference Room"}
               </h3>
               <p className="text-xs text-muted-foreground">
-                {selectedCompany?.name ?? "Your company"}
+                {selectedCompany?.name ?? "Sua empresa"}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-0.5">
@@ -998,42 +1308,48 @@ export function BoardChat() {
                    timer fires, so the animation is guaranteed to be
                    visible even while agent/goal data is still loading. */}
               {!welcomeRevealed && showWelcomeIntro ? (
-                <TypingBubble label={`${ceoAgent?.name ?? "CEO"} está digitando…`} />
+                <TypingBubble label={`${chipMentionAgent?.name ?? "CEO"} está digitando…`} />
               ) : null}
 
-              {welcomeRevealed && showWelcomeIntro && ceoAgent && selectedCompany && (() => {
-                const ceoName = ceoAgent.name;
+              {welcomeRevealed && showWelcomeIntro && chipMentionAgent && selectedCompany && (() => {
+                const hostAgent = chipMentionAgent;
+                const hostName = hostAgent.name;
                 const companyName = selectedCompany.name;
                 const missionLine = missionText
-                  ? ` — your mission is "${missionText}".`
+                  ? ` — sua missão é "${missionText}".`
                   : ".";
+                const roleLine = hostAgent.role === "ceo"
+                  ? `Sou ${hostName}, líder do time.`
+                  : `Sou ${hostName}.`;
                 const welcomeBody =
-                  `Welcome to **${companyName}**! I'm ${ceoName}, your team lead. I've read through what you shared in the wizard${missionLine}\n\n` +
-                  `Here are a few things I can help you put on paper right now. Pick one below and I'll draft it for you using everything you told us.`;
+                  `Bem-vindo(a) à **${companyName}**! ${roleLine} Li o que você compartilhou no assistente${missionLine}\n\n` +
+                  `Algumas coisas com as quais posso ajudar agora. Escolha uma opção abaixo e eu preparo um rascunho com base no que você nos contou.`;
 
+                const mentionPrefix =
+                  `[@${hostAgent.name}](${buildAgentMentionHref(hostAgent.id, hostAgent.icon)}) `;
                 const chips: Array<{ label: string; prompt: string }> = [
                   {
-                    label: "Draft a Company Brief",
-                    prompt: `Draft a one-page Company Brief for ${companyName} — include our mission, team roster, and first priorities.`,
+                    label: "Rascunhar um brief da empresa",
+                    prompt: `${mentionPrefix}Rascunhe um brief de uma página para ${companyName} — inclua missão, time e primeiras prioridades.`,
                   },
                   {
-                    label: "Create a hiring plan",
-                    prompt: `Create a hiring plan for ${companyName}. List the next roles to hire, in priority order, with a short rationale for each.`,
+                    label: "Criar plano de contratação",
+                    prompt: `${mentionPrefix}Crie um plano de contratação para ${companyName}. Liste os próximos cargos em ordem de prioridade, com uma breve justificativa para cada.`,
                   },
                   {
-                    label: "Outline our first 30 days",
-                    prompt: `Outline our first 30 days. Break it into weekly priorities with who owns what.`,
+                    label: "Planejar os primeiros 30 dias",
+                    prompt: `${mentionPrefix}Planeje nossos primeiros 30 dias. Divida em prioridades semanais com responsáveis.`,
                   },
                   {
-                    label: "Write an intro pitch",
-                    prompt: `Write a short intro pitch for ${companyName} that I could reuse for investors, customers, or recruits.`,
+                    label: "Escrever pitch de apresentação",
+                    prompt: `${mentionPrefix}Escreva um pitch curto de apresentação para ${companyName} que eu possa reutilizar com investidores, clientes ou candidatos.`,
                   },
                 ];
 
                 return (
                   <>
                     <div className="flex flex-col items-start">
-                      <AgentBubbleHeader name={ceoName} icon={ceoAgent.icon} />
+                      <AgentBubbleHeader name={hostName} icon={hostAgent.icon} />
                       <div
                         className={cn(
                           boardChatBubbleShell,
@@ -1044,11 +1360,16 @@ export function BoardChat() {
                       </div>
                     </div>
                     {!userHasReplied && chipsRevealed && (
-                      <div className="flex flex-wrap gap-2 pl-1">
+                      <div
+                        className="flex flex-wrap gap-2 pl-1"
+                        role="group"
+                        aria-label="Sugestões de início"
+                      >
                         {chips.map((chip) => (
                           <button
                             key={chip.label}
                             type="button"
+                            data-testid="board-chat-nux-chip"
                             onClick={() => {
                               setInput(chip.prompt);
                               inputRef.current = chip.prompt;
@@ -1093,18 +1414,31 @@ export function BoardChat() {
                 const linkedRun = comment.createdByRunId
                   ? runById?.[comment.createdByRunId] ?? null
                   : null;
+                const turnCostUsd = comment.createdByRunId
+                  ? turnCostByRunId[comment.createdByRunId]
+                  : undefined;
                 const runCostLabel = comment.createdByRunId
                   ? formatCostPill(
-                      linkedRun
-                        ? visibleRunCostUsd(
-                            (linkedRun.usageJson as Record<string, unknown> | null) ?? null,
-                            (linkedRun.resultJson as Record<string, unknown> | null) ?? null,
-                          )
-                        : null,
+                      turnCostUsd ??
+                        (linkedRun
+                          ? visibleRunCostUsd(
+                              (linkedRun.usageJson as Record<string, unknown> | null) ?? null,
+                              (linkedRun.resultJson as Record<string, unknown> | null) ?? null,
+                            )
+                          : null),
                     )
                   : null;
+                const runHref =
+                  comment.authorAgentId && comment.createdByRunId
+                    ? `/agents/${comment.authorAgentId}/runs/${comment.createdByRunId}`
+                    : null;
                 return (
-                  <div key={comment.id} className="flex flex-col items-start" data-testid="board-chat-agent-bubble">
+                  <div
+                    key={comment.id}
+                    id={`comment-${comment.id}`}
+                    className="flex flex-col items-start"
+                    data-testid="board-chat-agent-bubble"
+                  >
                     <AgentBubbleHeader name={agentName} icon={agentIconValue} />
                     <div
                       className={cn(
@@ -1120,7 +1454,7 @@ export function BoardChat() {
                       {runCostLabel ? (
                         <span
                           className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
-                          title="Run cost"
+                          title="Custo da run"
                           data-testid="board-chat-cost-pill"
                         >
                           {runCostLabel}
@@ -1131,6 +1465,16 @@ export function BoardChat() {
                         dateLabel={agentBubbleDateLabel(comment.createdAt)}
                         dateTitle={formatDateTime(comment.createdAt)}
                         anchorHref={`#comment-${comment.id}`}
+                        menuItems={
+                          runHref ? (
+                            <DropdownMenuItem asChild>
+                              <Link to={runHref} target="_blank" rel="noreferrer noopener">
+                                <Search className="mr-2 h-3.5 w-3.5" />
+                                Ver run
+                              </Link>
+                            </DropdownMenuItem>
+                          ) : null
+                        }
                         feedback={
                           boardIssueId
                             ? {
@@ -1186,13 +1530,35 @@ export function BoardChat() {
                    alongside the user's optimistic bubble to make the
                    turn-taking feel alive. */}
               {(sending || hostRunActive) && !streamingText ? (
-                <TypingBubbleWithTimer
-                  active
-                  label={
-                    hostRunActive || hostRunId
-                      ? `${hostAgentName} está respondendo…`
-                      : statusText || "Enviando…"
-                  }
+                <div className="flex flex-col items-start gap-1">
+                  <TypingBubbleWithTimer
+                    active
+                    label={
+                      hostRunActive || hasTrackedRuns
+                        ? wakeWaitLabel
+                        : statusText || "Enviando…"
+                    }
+                  />
+                  {sending && (hostRunActive || hasTrackedRuns) ? (
+                    <button
+                      type="button"
+                      onClick={cancelHostRunWait}
+                      className="pl-1 text-xs text-muted-foreground underline underline-offset-2 transition-colors hover:text-foreground"
+                      data-testid="board-chat-cancel-host-wait"
+                    >
+                      Cancelar espera
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {/* Pending HITL cards (ask_user_questions, confirmations, …)
+                   for the Board Operations issue — same card as IssueChatThread. */}
+              {boardIssueId ? (
+                <BoardChatHitlCards
+                  boardIssueId={boardIssueId}
+                  agentMap={agentMap}
+                  onUploadImage={handleUploadImage}
                 />
               ) : null}
 
@@ -1203,8 +1569,10 @@ export function BoardChat() {
                 data-testid="board-chat-live-status"
               >
                 {sending || hostRunActive
-                  ? hostRunActive || hostRunId
-                    ? `${hostAgentName} está respondendo`
+                  ? hostRunActive || hasTrackedRuns
+                    ? isFanoutTracking
+                      ? `${hostAgentName} estão respondendo`
+                      : `${hostAgentName} está respondendo`
                     : statusText || "Enviando mensagem"
                   : statusNotice ||
                     (!boardIssueId
@@ -1250,7 +1618,7 @@ export function BoardChat() {
             <button
               type="button"
               onClick={() => scrollToLatest("smooth")}
-              aria-label="Jump to latest messages"
+              aria-label="Ir para as mensagens mais recentes"
               className="absolute bottom-24 left-1/2 z-20 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-border bg-card text-foreground shadow-md transition-colors duration-150 hover:bg-accent hover:border-muted-foreground/30"
             >
               <ArrowDown className="h-4 w-4" />
@@ -1289,9 +1657,16 @@ export function BoardChat() {
         <div
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize board chat and agent feed"
-          className="group relative hidden w-3 shrink-0 cursor-col-resize bg-background md:flex"
+          aria-label="Redimensionar chat e feed de agentes"
+          aria-valuenow={Math.round(
+            Math.min(0.8, Math.max(0.2, chatPaneFraction)) * 100,
+          )}
+          aria-valuemin={20}
+          aria-valuemax={80}
+          tabIndex={0}
+          className="group relative hidden w-3 shrink-0 cursor-col-resize bg-background md:flex focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onMouseDown={handleSplitDragStart}
+          onKeyDown={handleSplitKeyDown}
         >
           <div
             className="pointer-events-none absolute top-0 bottom-0 left-0 w-px bg-border transition-colors group-hover:bg-foreground/20"
@@ -1314,7 +1689,7 @@ export function BoardChat() {
               size="icon"
               variant="secondary"
               className="fixed bottom-20 right-4 z-20 h-10 w-10 rounded-full shadow-lg"
-              aria-label="Open agent feed"
+              aria-label="Abrir feed de agentes"
             >
               <Activity className="h-4 w-4" />
             </Button>

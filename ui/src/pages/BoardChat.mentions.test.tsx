@@ -61,6 +61,7 @@ vi.mock("./board-chat/BoardChatComposer", () => ({
         onAttachFile,
         disabled,
         submitting,
+        value,
       }: {
         mentions?: Array<{ name: string }>;
         onChange?: (value: string) => void;
@@ -69,10 +70,15 @@ vi.mock("./board-chat/BoardChatComposer", () => ({
         onAttachFile?: (file: File) => Promise<string>;
         disabled?: boolean;
         submitting?: boolean;
+        value?: string;
       },
       _ref,
     ) => (
-      <div data-testid="markdown-editor" data-disabled={disabled ? "true" : "false"}>
+      <div
+        data-testid="markdown-editor"
+        data-disabled={disabled ? "true" : "false"}
+        data-composer-value={value ?? ""}
+      >
         <span data-testid="composer-placeholder">
           Mensagem à sala… use @ para chamar um agente
         </span>
@@ -149,6 +155,10 @@ describe("BoardChat mentions composer (P0)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    vi.stubGlobal("crypto", {
+      ...globalThis.crypto,
+      randomUUID: vi.fn(() => "client-msg-test-uuid"),
+    });
     mockFetch.mockReset();
     globalThis.fetch = mockFetch as typeof fetch;
     try {
@@ -231,7 +241,18 @@ describe("BoardChat mentions composer (P0)", () => {
     await vi.waitFor(() => {
       expect(mockFetch).toHaveBeenCalledWith(
         "/api/board/chat/stream",
-        expect.objectContaining({ method: "POST" }),
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({
+            "Content-Type": "application/json",
+            "Idempotency-Key": "client-msg-test-uuid",
+          }),
+          body: JSON.stringify({
+            companyId: "company-1",
+            message: "hello room",
+            clientMessageId: "client-msg-test-uuid",
+          }),
+        }),
       );
     });
   });
@@ -261,7 +282,7 @@ describe("BoardChat mentions composer (P0)", () => {
 
     await vi.waitFor(() => {
       const notice = container.querySelector('[data-testid="board-chat-status-notice"]');
-      expect(notice?.textContent).toContain("@agente");
+      expect(notice?.textContent).toContain("Mencione um agente com @");
     });
   });
 
@@ -312,15 +333,27 @@ describe("BoardChat mentions composer (P0)", () => {
         identifier: "PAP-1",
       },
     ]);
-    mockFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        mode: "host_run",
-        issueId: "issue-board-ops",
-        hostRunId: "run-host-1",
-        hostAgentId: "agent-dev",
-      }),
+    mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/board/chat/stream")) {
+        return {
+          ok: true,
+          status: 202,
+          json: async () => ({
+            mode: "host_run",
+            issueId: "issue-board-ops",
+            commentId: "comment-host",
+            roomMessageId: "comment-host",
+            hostRunId: "run-host-1",
+            hostAgentId: "agent-dev",
+            status: "running",
+          }),
+        };
+      }
+      if (url.includes("/api/board/chat/turns/")) {
+        return { ok: false, status: 404, json: async () => ({}) };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
     });
     mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([
       {

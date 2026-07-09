@@ -4,13 +4,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import { boardChatMessageSchema, type BoardChatMessageResponse } from "@paperclipai/shared";
+import {
+  boardChatMessageSchema,
+  boardChatTurnStatusQuerySchema,
+  type BoardChatMessageResponse,
+  type HeartbeatRunStatus,
+} from "@paperclipai/shared";
 import type { DeploymentMode } from "@paperclipai/shared";
-import { instanceSettingsService, issueService } from "../services/index.js";
+import { instanceSettingsService, issueService, logActivity } from "../services/index.js";
 import {
   FanoutNotEnabledError,
+  InvalidMentionError,
   TaskCompanyMismatchError,
   TaskNotFoundError,
+  TooManyMentionsError,
+  TurnNotFoundError,
   roomMessageService,
 } from "../services/room-message.js";
 import {
@@ -24,6 +32,65 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
  * silent-until-@ and uses JSON responses instead of always-on concierge SSE.
  */
 const ENABLE_BOARD_CONCIERGE_CLI = false;
+
+class RateLimitedError extends Error {
+  readonly code = "RATE_LIMITED" as const;
+
+  constructor() {
+    super("Too many host_run wakes — retry shortly");
+    this.name = "RateLimitedError";
+  }
+}
+
+const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
+
+type IdempotencyCacheEntry = {
+  statusCode: number;
+  body: BoardChatMessageResponse;
+  expiresAt: number;
+};
+
+type IdempotencyResult = {
+  statusCode: number;
+  body: BoardChatMessageResponse;
+};
+
+const idempotencyCache = new Map<string, IdempotencyCacheEntry>();
+/** In-flight requests keyed by companyId:actorId:clientMessageId — second caller awaits the first. */
+const idempotencyInFlight = new Map<string, Promise<IdempotencyResult>>();
+
+function idempotencyCacheKey(companyId: string, actorId: string, clientMessageId: string): string {
+  return `${companyId}:${actorId}:${clientMessageId}`;
+}
+
+function getCachedIdempotentResponse(key: string, now = Date.now()): IdempotencyCacheEntry | null {
+  const entry = idempotencyCache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= now) {
+    idempotencyCache.delete(key);
+    return null;
+  }
+  return entry;
+}
+
+function cacheIdempotentResponse(
+  key: string,
+  statusCode: number,
+  body: BoardChatMessageResponse,
+  now = Date.now(),
+): void {
+  idempotencyCache.set(key, {
+    statusCode,
+    body,
+    expiresAt: now + IDEMPOTENCY_TTL_MS,
+  });
+}
+
+/** Clears in-memory idempotency cache and in-flight locks (tests only). */
+export function resetBoardChatIdempotencyForTests(): void {
+  idempotencyCache.clear();
+  idempotencyInFlight.clear();
+}
 
 /**
  * Strip structured action signals (`%%ACTIONS%%{...}%%/ACTIONS%%`) from a
@@ -63,8 +130,11 @@ export function isConciergeReply(comment: {
 /** Max simultaneous `claude` subprocesses across all board-chat requests. */
 const MAX_CONCURRENT_BOARD_CHATS = 3;
 
-/** Rolling 60s in-memory limit: max 3 host_run wakes per (companyId, actorId). */
+/** Rolling 60s in-memory limit: max 3 host_run wakes per (companyId, actorId) for board users. */
 const hostRunWakeTimestamps = new Map<string, number[]>();
+
+/** Rolling 60s in-memory limit: max 1 host_run wake per (companyId, actorId) for agents. */
+const agentHostRunWakeTimestamps = new Map<string, number>();
 
 function hostRunRateLimitKey(companyId: string, actorId: string): string {
   return `${companyId}:${actorId}`;
@@ -75,14 +145,32 @@ function pruneHostRunTimestamps(timestamps: number[], now: number): number[] {
   return timestamps.filter((t) => t > cutoff);
 }
 
-function isHostRunRateLimited(companyId: string, actorId: string, now = Date.now()): boolean {
+function isHostRunRateLimited(
+  companyId: string,
+  actorId: string,
+  actorType: "user" | "agent",
+  now = Date.now(),
+): boolean {
   const key = hostRunRateLimitKey(companyId, actorId);
+  if (actorType === "agent") {
+    const lastWake = agentHostRunWakeTimestamps.get(key);
+    return lastWake !== undefined && now - lastWake < 60_000;
+  }
   const timestamps = pruneHostRunTimestamps(hostRunWakeTimestamps.get(key) ?? [], now);
   return timestamps.length >= 3;
 }
 
-function recordHostRunWake(companyId: string, actorId: string, now = Date.now()): void {
+function recordHostRunWake(
+  companyId: string,
+  actorId: string,
+  actorType: "user" | "agent",
+  now = Date.now(),
+): void {
   const key = hostRunRateLimitKey(companyId, actorId);
+  if (actorType === "agent") {
+    agentHostRunWakeTimestamps.set(key, now);
+    return;
+  }
   const timestamps = pruneHostRunTimestamps(hostRunWakeTimestamps.get(key) ?? [], now);
   timestamps.push(now);
   hostRunWakeTimestamps.set(key, timestamps);
@@ -91,6 +179,43 @@ function recordHostRunWake(companyId: string, actorId: string, now = Date.now())
 /** Clears in-memory host_run rate-limit state (tests only). */
 export function resetHostRunRateLimitForTests(): void {
   hostRunWakeTimestamps.clear();
+  agentHostRunWakeTimestamps.clear();
+}
+
+async function logBoardChatMessage(
+  db: Db,
+  input: {
+    companyId: string;
+    actor: ReturnType<typeof getActorInfo>;
+    commentId: string;
+    issueId: string;
+    roomMessageId: string;
+    mode: BoardChatMessageResponse["mode"];
+    hostRunId?: string;
+    hostAgentId?: string;
+    hostRuns?: Array<{ agentId: string; runId: string }>;
+    delegationStatus?: "pending";
+  },
+): Promise<void> {
+  await logActivity(db, {
+    companyId: input.companyId,
+    actorType: input.actor.agentId ? "agent" : "user",
+    actorId: input.actor.actorId,
+    action: "board_chat.message",
+    entityType: "issue_comment",
+    entityId: input.commentId,
+    agentId: input.actor.agentId ?? null,
+    runId: input.actor.runId ?? null,
+    details: {
+      mode: input.mode,
+      issueId: input.issueId,
+      roomMessageId: input.roomMessageId,
+      ...(input.hostRunId ? { hostRunId: input.hostRunId } : {}),
+      ...(input.hostAgentId ? { hostAgentId: input.hostAgentId } : {}),
+      ...(input.hostRuns ? { hostRuns: input.hostRuns } : {}),
+      ...(input.delegationStatus ? { delegationStatus: input.delegationStatus } : {}),
+    },
+  });
 }
 
 export function boardChatRoutes(
@@ -123,6 +248,45 @@ export function boardChatRoutes(
     }
   }
 
+  router.get("/board/chat/turns/:roomMessageId", async (req, res) => {
+    const experimental = await instanceSettingsService(db).getExperimental();
+    if (experimental.enableConferenceRoomChat !== true) {
+      res.status(403).json({
+        error: "Conference Room Chat is not enabled",
+        code: "FEATURE_DISABLED",
+      });
+      return;
+    }
+
+    const parsed = boardChatTurnStatusQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "companyId is required",
+        code: "VALIDATION_ERROR",
+        details: parsed.error.flatten(),
+      });
+      return;
+    }
+
+    const { companyId } = parsed.data;
+    const { roomMessageId } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    try {
+      const status = await roomSvc.getTurnStatus({ companyId, roomMessageId });
+      res.status(200).json(status);
+    } catch (err) {
+      if (err instanceof TurnNotFoundError) {
+        res.status(404).json({
+          error: err.message,
+          code: err.code,
+        });
+        return;
+      }
+      throw err;
+    }
+  });
+
   router.post("/board/chat/stream", async (req, res) => {
     const experimental = await instanceSettingsService(db).getExperimental();
     if (experimental.enableConferenceRoomChat !== true) {
@@ -135,34 +299,118 @@ export function boardChatRoutes(
 
     const parsed = boardChatMessageSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ error: "companyId and message are required" });
+      res.status(400).json({
+        error: "companyId and message are required",
+        code: "VALIDATION_ERROR",
+        details: parsed.error.flatten(),
+      });
       return;
     }
 
     const { companyId, message, taskId } = parsed.data;
+    const clientMessageId =
+      parsed.data.clientMessageId ??
+      (typeof req.header("Idempotency-Key") === "string"
+        ? req.header("Idempotency-Key")?.trim() || undefined
+        : undefined);
+
     assertCompanyAccess(req, companyId);
     const actor = getActorInfo(req);
+    const actorType = actor.agentId ? "agent" : "user";
+    const roomActor = {
+      agentId: actor.agentId ?? undefined,
+      userId: actor.agentId ? undefined : actor.actorId,
+      runId: actor.runId,
+    };
 
-    try {
-      const result = await roomSvc.handle({
+    const cacheKey = clientMessageId
+      ? idempotencyCacheKey(companyId, actor.actorId, clientMessageId)
+      : null;
+
+    if (cacheKey) {
+      const cached = getCachedIdempotentResponse(cacheKey);
+      if (cached) {
+        res.status(cached.statusCode).json(cached.body);
+        return;
+      }
+    }
+
+    const processMessage = async (): Promise<IdempotencyResult> => {
+      // 1) Resolve issue + mentions without writing
+      const prepared = await roomSvc.prepareMentionWake({
         companyId,
         message,
         taskId,
-        actor: {
-          agentId: actor.agentId ?? undefined,
-          userId: actor.agentId ? undefined : actor.actorId,
-          runId: actor.runId,
-        },
       });
 
-      if (result.mode === "adapter_wake_pending" && result.mentionedAgentIds?.[0]) {
-        if (isHostRunRateLimited(companyId, actor.actorId)) {
-          res.setHeader("Retry-After", "60");
-          res.status(429).json({
-            error: "Too many host_run wakes — retry shortly",
-            code: "RATE_LIMITED",
+      // 2) Rate-limit wake path BEFORE addComment
+      if (prepared.mode === "adapter_wake_pending" && prepared.mentionedAgentIds?.[0]) {
+        if (isHostRunRateLimited(companyId, actor.actorId, actorType)) {
+          throw new RateLimitedError();
+        }
+      }
+
+      // 3) Persist comment only after validation (+ rate limit for wake)
+      const result = await roomSvc.commit({
+        prepared,
+        message,
+        actor: roomActor,
+      });
+
+      if (result.mode === "adapter_wake_pending" && result.mentionedAgentIds?.length) {
+        const mentionedAgentIds = result.mentionedAgentIds;
+        const orchActor = {
+          type: (actor.agentId ? "agent" : "user") as "agent" | "user",
+          id: actor.actorId,
+        };
+
+        if (mentionedAgentIds.length >= 2) {
+          const fanout = await roomOrch.wakeMentionedAgents({
+            companyId,
+            issueId: result.issueId,
+            roomMessageId: result.roomMessageId,
+            commentId: result.commentId,
+            body: message,
+            targetAgentIds: mentionedAgentIds,
+            actor: orchActor,
           });
-          return;
+
+          // One user/agent batch = one rate-limit slot (not N slots for fan-out).
+          recordHostRunWake(companyId, actor.actorId, actorType);
+
+          console.info("[board/chat]", {
+            companyId,
+            issueId: fanout.issueId,
+            commentId: fanout.commentId,
+            mode: fanout.mode,
+            hostRunCount: fanout.hostRuns.length,
+            deploymentMode: opts.deploymentMode,
+          });
+
+          const body: BoardChatMessageResponse = {
+            mode: "fanout",
+            issueId: fanout.issueId,
+            commentId: fanout.commentId,
+            roomMessageId: fanout.roomMessageId,
+            hostRuns: fanout.hostRuns.map((run) => ({
+              agentId: run.agentId,
+              runId: run.runId,
+            })),
+            delegationStatus: "pending",
+          };
+
+          await logBoardChatMessage(db, {
+            companyId,
+            actor,
+            commentId: fanout.commentId,
+            issueId: fanout.issueId,
+            roomMessageId: fanout.roomMessageId,
+            mode: "fanout",
+            hostRuns: body.hostRuns,
+            delegationStatus: "pending",
+          });
+
+          return { statusCode: 202, body };
         }
 
         const host = await roomOrch.wakeHost({
@@ -171,14 +419,11 @@ export function boardChatRoutes(
           roomMessageId: result.roomMessageId,
           commentId: result.commentId,
           body: message,
-          targetAgentId: result.mentionedAgentIds[0],
-          actor: {
-            type: actor.agentId ? "agent" : "user",
-            id: actor.actorId,
-          },
+          targetAgentId: mentionedAgentIds[0]!,
+          actor: orchActor,
         });
 
-        recordHostRunWake(companyId, actor.actorId);
+        recordHostRunWake(companyId, actor.actorId, actorType);
 
         console.info("[board/chat]", {
           companyId,
@@ -196,10 +441,21 @@ export function boardChatRoutes(
           roomMessageId: host.roomMessageId,
           hostAgentId: host.hostAgentId,
           hostRunId: host.hostRunId,
-          status: host.status,
+          status: host.status as HeartbeatRunStatus,
         };
-        res.status(202).json(body);
-        return;
+
+        await logBoardChatMessage(db, {
+          companyId,
+          actor,
+          commentId: host.commentId,
+          issueId: host.issueId,
+          roomMessageId: host.roomMessageId,
+          mode: "host_run",
+          hostRunId: host.hostRunId,
+          hostAgentId: host.hostAgentId,
+        });
+
+        return { statusCode: 202, body };
       }
 
       console.info("[board/chat]", {
@@ -217,8 +473,53 @@ export function boardChatRoutes(
         commentId: result.commentId,
         roomMessageId: result.roomMessageId,
       };
-      res.status(200).json(body);
+
+      await logBoardChatMessage(db, {
+        companyId,
+        actor,
+        commentId: result.commentId,
+        issueId: result.issueId,
+        roomMessageId: result.roomMessageId,
+        mode: "silent",
+      });
+
+      return { statusCode: 200, body };
+    };
+
+    const runWithOptionalIdempotency = async (): Promise<IdempotencyResult> => {
+      if (!cacheKey) {
+        return processMessage();
+      }
+
+      const existing = idempotencyInFlight.get(cacheKey);
+      if (existing) {
+        return existing;
+      }
+
+      const pending = processMessage()
+        .then((result) => {
+          cacheIdempotentResponse(cacheKey, result.statusCode, result.body);
+          return result;
+        })
+        .finally(() => {
+          idempotencyInFlight.delete(cacheKey);
+        });
+      idempotencyInFlight.set(cacheKey, pending);
+      return pending;
+    };
+
+    try {
+      const result = await runWithOptionalIdempotency();
+      res.status(result.statusCode).json(result.body);
     } catch (err) {
+      if (err instanceof RateLimitedError) {
+        res.setHeader("Retry-After", "60");
+        res.status(429).json({
+          error: err.message,
+          code: err.code,
+        });
+        return;
+      }
       if (err instanceof TaskNotFoundError) {
         res.status(404).json({
           error: err.message,
@@ -233,8 +534,23 @@ export function boardChatRoutes(
         });
         return;
       }
+      if (err instanceof TooManyMentionsError) {
+        res.status(400).json({
+          error: err.message,
+          code: err.code,
+          max: err.max,
+        });
+        return;
+      }
       if (err instanceof FanoutNotEnabledError) {
         res.status(400).json({
+          error: err.message,
+          code: err.code,
+        });
+        return;
+      }
+      if (err instanceof InvalidMentionError) {
+        res.status(422).json({
           error: err.message,
           code: err.code,
         });
@@ -263,7 +579,11 @@ export function boardChatRoutes(
 
       const parsed = boardChatMessageSchema.safeParse(req.body);
       if (!parsed.success) {
-        res.status(400).json({ error: "companyId and message are required" });
+        res.status(400).json({
+          error: "companyId and message are required",
+          code: "VALIDATION_ERROR",
+          details: parsed.error.flatten(),
+        });
         return;
       }
 

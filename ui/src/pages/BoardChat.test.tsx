@@ -23,6 +23,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
   listComments: vi.fn(),
   listFeedbackVotes: vi.fn(),
+  listInteractions: vi.fn(),
 }));
 const mockDialogState = vi.hoisted(() => ({ onboardingOpen: false }));
 
@@ -62,7 +63,9 @@ vi.mock("../components/MarkdownEditor", () => ({
   }),
 }));
 vi.mock("./board-chat/BoardChatComposer", () => ({
-  BoardChatComposer: () => <div data-testid="markdown-editor" />,
+  BoardChatComposer: ({ value }: { value?: string }) => (
+    <div data-testid="markdown-editor" data-composer-value={value ?? ""} />
+  ),
 }));
 vi.mock("../hooks/usePaperclipIssueRuntime", () => ({
   usePaperclipIssueRuntime: () => ({}),
@@ -79,6 +82,17 @@ vi.mock("../components/AgentBubbleActionRow", () => ({
 }));
 vi.mock("../components/AgentIconPicker", () => ({
   AgentIcon: () => null,
+}));
+vi.mock("../components/IssueThreadInteractionCard", () => ({
+  IssueThreadInteractionCard: ({
+    interaction,
+  }: {
+    interaction: { id: string; title: string; kind: string };
+  }) => (
+    <div data-testid="issue-thread-interaction-card" data-kind={interaction.kind}>
+      {interaction.title}
+    </div>
+  ),
 }));
 vi.mock("@/components/ui/tooltip", () => ({
   Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -122,11 +136,11 @@ function hasTypingDots(container: HTMLElement) {
 }
 
 function hasWelcome(container: HTMLElement) {
-  return (container.textContent ?? "").includes("Welcome to");
+  return (container.textContent ?? "").includes("Bem-vindo");
 }
 
 function hasChips(container: HTMLElement) {
-  return (container.textContent ?? "").includes("Draft a Company Brief");
+  return (container.textContent ?? "").includes("Rascunhar um brief da empresa");
 }
 
 describe("BoardChat staged typing intro", () => {
@@ -146,6 +160,7 @@ describe("BoardChat staged typing intro", () => {
     mockIssuesApi.list.mockResolvedValue([BOARD_ISSUE]);
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
+    mockIssuesApi.listInteractions.mockResolvedValue([]);
   });
 
   afterEach(async () => {
@@ -235,6 +250,28 @@ describe("BoardChat staged typing intro", () => {
     expect(hasChips(container)).toBe(true);
   });
 
+  it("prefixes NUX chip prompts with a structured CEO agent:// mention", async () => {
+    await render();
+    await advance(2000);
+    expect(hasWelcome(container)).toBe(true);
+    await advance(700);
+    expect(hasChips(container)).toBe(true);
+
+    const chip = container.querySelector<HTMLButtonElement>(
+      '[data-testid="board-chat-nux-chip"]',
+    );
+    expect(chip).toBeTruthy();
+
+    await act(async () => {
+      chip!.click();
+    });
+
+    const composer = container.querySelector("[data-testid='markdown-editor']");
+    const value = composer?.getAttribute("data-composer-value") ?? "";
+    expect(value).toContain("agent://agent-ceo");
+    expect(value).toMatch(/\[@Alex]\(agent:\/\/agent-ceo/);
+  });
+
   it("skips the staged reveal when a user comment already exists", async () => {
     mockIssuesApi.listComments.mockResolvedValue([USER_COMMENT]);
     await render();
@@ -283,6 +320,104 @@ describe("BoardChat staged typing intro", () => {
     await advance(2000);
     expect(hasWelcome(container)).toBe(true);
     expect(hasTypingDots(container)).toBe(false);
+  });
+});
+
+describe("BoardChat HITL cards", () => {
+  let container: HTMLDivElement;
+  let root: Root | null = null;
+  let queryClient: QueryClient | null = null;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    mockDialogState.onboardingOpen = false;
+    mockAgentsApi.list.mockResolvedValue([CEO_AGENT]);
+    mockGoalsApi.list.mockResolvedValue([]);
+    mockIssuesApi.list.mockResolvedValue([BOARD_ISSUE]);
+    mockIssuesApi.listComments.mockResolvedValue([USER_COMMENT]);
+    mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
+    mockIssuesApi.listInteractions.mockResolvedValue([
+      {
+        id: "interaction-questions-1",
+        companyId: "company-1",
+        issueId: BOARD_ISSUE.id,
+        kind: "ask_user_questions",
+        title: "Qual prioridade da sala?",
+        summary: "Escolha uma opção para continuar.",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: "agent-ceo",
+        createdByUserId: null,
+        resolvedByAgentId: null,
+        resolvedByUserId: null,
+        createdAt: new Date("2026-06-10T00:01:00.000Z"),
+        updatedAt: new Date("2026-06-10T00:01:00.000Z"),
+        resolvedAt: null,
+        payload: {
+          version: 1,
+          submitLabel: "Enviar respostas",
+          questions: [
+            {
+              id: "priority",
+              prompt: "Qual prioridade?",
+              selectionMode: "single",
+              required: true,
+              options: [{ id: "high", label: "Alta" }],
+            },
+          ],
+        },
+        result: null,
+      },
+    ]);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root?.unmount();
+    });
+    root = null;
+    container.remove();
+    sessionStorage.clear();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  async function render() {
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient!}>
+          <BoardChat />
+        </QueryClientProvider>,
+      );
+    });
+    for (let i = 0; i < 6; i++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
+  }
+
+  it("busca interactions e renderiza card HITL pendente na thread", async () => {
+    await render();
+
+    expect(mockIssuesApi.listInteractions).toHaveBeenCalledWith(BOARD_ISSUE.id);
+    expect(
+      container.querySelector('[data-testid="board-chat-hitl-cards"]'),
+    ).toBeTruthy();
+    const card = container.querySelector(
+      '[data-testid="issue-thread-interaction-card"]',
+    );
+    expect(card).toBeTruthy();
+    expect(card?.getAttribute("data-kind")).toBe("ask_user_questions");
+    expect(container.textContent).toContain("Qual prioridade da sala?");
   });
 });
 

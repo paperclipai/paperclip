@@ -110,6 +110,12 @@ import {
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   boardChatMessageSchema,
+  boardChatMessageResponseSchema,
+  boardChatSilentResponseSchema,
+  boardChatHostRunResponseSchema,
+  boardChatFanoutResponseSchema,
+  boardChatTurnStatusQuerySchema,
+  boardChatTurnStatusSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   // Resource memberships
   updateResourceMembershipSchema,
@@ -2498,19 +2504,38 @@ registry.registerPath({
   path: "/api/board/chat/stream",
   tags: ["instance"],
   summary:
-    "Post a Conference Room message (silent-until-@; single @mention returns 202 host_run; requires enableConferenceRoomChat)",
+    "Post a Conference Room message (silent-until-@; single @mention → 202 host_run; 2+ mentions → 202 fanout; max 5 mentions; requires enableConferenceRoomChat)",
   request: {
     body: jsonBody(boardChatMessageSchema),
   },
   responses: {
-    200: r.ok(),
-    202: r.ok(),
+    200: r.ok(boardChatSilentResponseSchema),
+    202: r.ok(z.union([boardChatHostRunResponseSchema, boardChatFanoutResponseSchema])),
     400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
     409: r.conflict,
+    422: r.unprocessable,
     429: r.tooManyRequests,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/board/chat/turns/{roomMessageId}",
+  tags: ["instance"],
+  summary: "Get Conference Room turn status for a persisted room message comment",
+  request: {
+    params: z.object({ roomMessageId: z.string() }),
+    query: boardChatTurnStatusQuerySchema,
+  },
+  responses: {
+    200: r.ok(boardChatTurnStatusSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
   },
 });
 

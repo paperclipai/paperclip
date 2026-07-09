@@ -244,6 +244,7 @@ export function IssueChatFeedbackButtons({
         )}
         title="Helpful"
         aria-label="Helpful"
+        aria-pressed={visibleVote === "up"}
         onClick={handleThumbsUp}
       >
         <ThumbsUp className="h-3.5 w-3.5" />
@@ -261,6 +262,7 @@ export function IssueChatFeedbackButtons({
             )}
             title="Needs work"
             aria-label="Needs work"
+            aria-pressed={visibleVote === "down"}
             onClick={handleThumbsDown}
           >
             <ThumbsDown className="h-3.5 w-3.5" />

@@ -199,7 +199,7 @@ export function BoardChatComposer({
               <Paperclip className="h-4 w-4" />
             </span>
             <div className="min-w-0">
-              <div className="text-sm font-medium text-foreground">Drop to upload</div>
+              <div className="text-sm font-medium text-foreground">Solte para anexar</div>
               <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
                 Images insert into the message. Other files attach to the room issue.
               </div>
@@ -287,8 +287,8 @@ export function BoardChatComposer({
                 size="icon-sm"
                 onClick={() => attachInputRef.current?.click()}
                 disabled={disabled || attaching}
-                title="Attach file"
-                aria-label="Attach file"
+                title="Anexar arquivo"
+                aria-label="Anexar arquivo"
               >
                 <Paperclip className="h-4 w-4" />
               </Button>
