@@ -7,12 +7,17 @@ import {
   useMemo,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  AssistantRuntimeProvider,
+  type ThreadMessage,
+} from "@assistant-ui/react";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useDialogState } from "../context/DialogContext";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
 import { goalsApi } from "../api/goals";
+import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { Button } from "@/components/ui/button";
@@ -22,10 +27,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Activity, ArrowDown, History, MessageSquarePlus, X } from "lucide-react";
+import { Activity, ArrowDown, History, MessageSquarePlus } from "lucide-react";
 import { ActivityFeed } from "../components/ActivityFeed";
 import {
-  MarkdownEditor,
   type MarkdownEditorRef,
   type MentionOption,
 } from "../components/MarkdownEditor";
@@ -34,15 +38,16 @@ import {
   agentBubbleDateLabel,
 } from "../components/AgentBubbleActionRow";
 import { AgentIcon } from "../components/AgentIconPicker";
-import { cn, formatDateTime } from "../lib/utils";
-import type { FeedbackVoteValue } from "@paperclipai/shared";
+import { usePaperclipIssueRuntime } from "../hooks/usePaperclipIssueRuntime";
+import { cn, formatDateTime, visibleRunCostUsd } from "../lib/utils";
+import type { FeedbackVoteValue, IssueComment } from "@paperclipai/shared";
 import type { BoardChatMessageResponse } from "@paperclipai/shared";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { BoardChatComposer } from "./board-chat/BoardChatComposer";
 
 /**
- * Conference Room — issue-backed chat with silent-until-@ mentions.
- * Messages without structured agent mentions persist only; mentions return
- * adapter_wake_pending (host run + reply lands in P1).
+ * Conference Room — issue-backed chat aligned with Issue chat UX
+ * (assistant-ui shell + attachments) and silent-until-@ / host_run wake.
  */
 /** Hit zone to the right of the 1px line (line sits on chat pane’s right edge). */
 const SPLIT_DIVIDER_PX = 12;
@@ -86,23 +91,67 @@ function AgentBubbleHeader({ name, icon }: { name: string; icon: string | null }
 }
 
 /** Agent-styled chat bubble containing the three-dot typing indicator. */
-function TypingBubble() {
+function TypingBubble({ label }: { label?: string }) {
   return (
-    <div className="flex justify-start">
-      <div
-        className={cn(
-          boardChatBubbleShell,
-          "bg-card border border-border text-foreground [border-radius:14px_14px_14px_4px]",
-        )}
-      >
-        <span className="typing-dots" aria-label="typing">
-          <span />
-          <span />
-          <span />
-        </span>
+    <div className="flex flex-col items-start gap-1">
+      {label ? (
+        <div className="pl-1 text-xs text-muted-foreground">{label}</div>
+      ) : null}
+      <div className="flex justify-start">
+        <div
+          className={cn(
+            boardChatBubbleShell,
+            "bg-card border border-border text-foreground [border-radius:14px_14px_14px_4px]",
+          )}
+        >
+          <span className="typing-dots" aria-label="typing">
+            <span />
+            <span />
+            <span />
+          </span>
+        </div>
       </div>
     </div>
   );
+}
+
+function commentToThreadMessage(comment: IssueComment): ThreadMessage {
+  const isUser =
+    !comment.authorAgentId && comment.authorUserId !== "board-concierge";
+  const createdAt = new Date(comment.createdAt);
+  if (isUser) {
+    return {
+      id: comment.id,
+      role: "user",
+      createdAt,
+      content: [{ type: "text", text: comment.body ?? "" }],
+      attachments: [],
+      metadata: { custom: {} },
+    } as ThreadMessage;
+  }
+  return {
+    id: comment.id,
+    role: "assistant",
+    createdAt,
+    content: [{ type: "text", text: comment.body ?? "" }],
+    status: { type: "complete", reason: "stop" },
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {
+        authorAgentId: comment.authorAgentId ?? null,
+        runId: comment.createdByRunId ?? null,
+      },
+    },
+  } as ThreadMessage;
+}
+
+function formatCostPill(costUsd: number | null | undefined): string | null {
+  if (costUsd == null || !Number.isFinite(costUsd)) return "n/d";
+  if (costUsd <= 0) return null;
+  return `$${costUsd.toFixed(costUsd < 0.01 ? 4 : 2)}`;
 }
 
 export function BoardChat() {
@@ -196,6 +245,8 @@ export function BoardChat() {
   const [statusText, setStatusText] = useState("");
   const [errorText, setErrorText] = useState("");
   const [statusNotice, setStatusNotice] = useState("");
+  const [hostRunId, setHostRunId] = useState<string | null>(null);
+  const [hostAgentId, setHostAgentId] = useState<string | null>(null);
   const [boardIssueId, setBoardIssueId] = useState<string | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [optimisticMessage, setOptimisticMessage] = useState<string | null>(null);
@@ -329,12 +380,91 @@ export function BoardChat() {
     queryKey: queryKeys.issues.comments(boardIssueId ?? ""),
     queryFn: () => issuesApi.listComments(boardIssueId!),
     enabled: !!boardIssueId,
-    refetchInterval: 3000,
+    refetchInterval: hostRunId ? 2000 : 3000,
   });
+
+  const { data: liveRuns } = useQuery({
+    queryKey: queryKeys.issues.liveRuns(boardIssueId ?? ""),
+    queryFn: () => heartbeatsApi.liveRunsForIssue(boardIssueId!),
+    enabled: !!boardIssueId && !!hostRunId,
+    refetchInterval: hostRunId ? 2000 : false,
+  });
+
+  const hostLiveRun = useMemo(
+    () => (liveRuns ?? []).find((run) => run.id === hostRunId) ?? null,
+    [liveRuns, hostRunId],
+  );
+
+  const hostRunActive = Boolean(
+    hostLiveRun &&
+      (hostLiveRun.status === "queued" ||
+        hostLiveRun.status === "running" ||
+        hostLiveRun.status === "starting"),
+  );
+
+  useEffect(() => {
+    if (!hostRunId) return;
+    if (!hostLiveRun) return;
+    const terminal = ["succeeded", "failed", "cancelled", "timed_out"].includes(
+      hostLiveRun.status,
+    );
+    if (terminal) {
+      setHostRunId(null);
+      setSending(false);
+      setStatusText("");
+      if (hostLiveRun.status !== "succeeded") {
+        setErrorText(
+          `A run do agente terminou com status ${hostLiveRun.status}. Abra o detalhe da run para mais informações.`,
+        );
+      }
+      if (boardIssueId) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.comments(boardIssueId),
+        });
+      }
+      queryClient.invalidateQueries({
+        queryKey: ["board-chat-run-costs", boardIssueId],
+      });
+    }
+  }, [hostLiveRun, hostRunId, boardIssueId, queryClient]);
 
   const sortedComments = (comments ?? [])
     .slice()
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+  const runIdsForCost = useMemo(() => {
+    const ids = new Set<string>();
+    for (const comment of sortedComments) {
+      if (comment.createdByRunId) ids.add(comment.createdByRunId);
+    }
+    if (hostRunId) ids.add(hostRunId);
+    return [...ids].sort();
+  }, [sortedComments, hostRunId]);
+
+  const { data: runById } = useQuery({
+    queryKey: ["board-chat-run-costs", boardIssueId, runIdsForCost.join(",")],
+    queryFn: async () => {
+      const entries = await Promise.all(
+        runIdsForCost.map(async (runId) => {
+          try {
+            const run = await heartbeatsApi.get(runId);
+            return [runId, run] as const;
+          } catch {
+            return [runId, null] as const;
+          }
+        }),
+      );
+      return Object.fromEntries(entries);
+    },
+    enabled: Boolean(boardIssueId) && runIdsForCost.length > 0,
+    staleTime: 8_000,
+    refetchInterval: hostRunActive ? 2_000 : false,
+  });
+
+  const threadMessages = useMemo(
+    () => sortedComments.map(commentToThreadMessage),
+    [sortedComments],
+  );
 
   // Agent lookup so each bubble can show its author's name + icon header.
   const agentMap = useMemo(
@@ -580,6 +710,10 @@ export function BoardChat() {
       setErrorText("");
       setStatusText("");
       setStatusNotice("");
+      setHostRunId(null);
+      setHostAgentId(null);
+
+      let keepSendingForHostRun = false;
 
       try {
         const res = await fetch("/api/board/chat/stream", {
@@ -603,6 +737,12 @@ export function BoardChat() {
               "Mencione um agente por vez. Fan-out @A @B chega na fase P2.",
             );
           }
+          if (res.status === 409) {
+            throw new Error(
+              ("error" in payload && payload.error) ||
+                "Agente indisponível para wake (paused/terminated).",
+            );
+          }
           throw new Error(
             ("error" in payload && payload.error) ||
               "Não foi possível enviar a mensagem para a Conference Room.",
@@ -621,10 +761,20 @@ export function BoardChat() {
           });
         }
 
-        if (result.mode === "adapter_wake_pending") {
-          setStatusNotice(
-            "Menção registrada. O agente será acordado na próxima fase (P1).",
+        if (result.mode === "host_run") {
+          keepSendingForHostRun = true;
+          setHostRunId(result.hostRunId);
+          setHostAgentId(result.hostAgentId);
+          setStatusNotice("");
+          setStatusText(
+            `${agentMap.get(result.hostAgentId)?.name ?? "Agente"} está respondendo…`,
           );
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.issues.liveRuns(result.issueId),
+          });
+          queryClient.invalidateQueries({
+            queryKey: ["board-chat-run-costs", result.issueId],
+          });
         }
       } catch (err) {
         console.error("Board chat error:", err);
@@ -634,11 +784,13 @@ export function BoardChat() {
             : "A Conference Room está indisponível. Tente novamente em instantes.",
         );
       } finally {
-        setSending(false);
+        if (!keepSendingForHostRun) {
+          setSending(false);
+        }
         composerRef.current?.focus();
       }
     },
-    [sending, selectedCompanyId, boardIssueId, queryClient],
+    [sending, selectedCompanyId, boardIssueId, queryClient, agentMap],
   );
 
   const handleSend = useCallback(() => {
@@ -649,6 +801,43 @@ export function BoardChat() {
     inputRef.current = value;
     setInput(value);
   }, []);
+
+  const handleUploadImage = useCallback(
+    async (file: File) => {
+      if (!selectedCompanyId || !boardIssueId) {
+        throw new Error("Sala ainda sem issue Board Operations");
+      }
+      const attachment = await issuesApi.uploadAttachment(
+        selectedCompanyId,
+        boardIssueId,
+        file,
+      );
+      return attachment.contentPath;
+    },
+    [selectedCompanyId, boardIssueId],
+  );
+
+  const handleAttachFile = useCallback(
+    async (file: File) => {
+      if (!selectedCompanyId || !boardIssueId) {
+        throw new Error("Sala ainda sem issue Board Operations");
+      }
+      await issuesApi.uploadAttachment(selectedCompanyId, boardIssueId, file);
+    },
+    [selectedCompanyId, boardIssueId],
+  );
+
+  const runtime = usePaperclipIssueRuntime({
+    messages: threadMessages,
+    isRunning: sending || hostRunActive,
+    onSend: async ({ body }) => {
+      await sendMessage(body);
+    },
+  });
+
+  const hostAgentName = hostAgentId
+    ? agentMap.get(hostAgentId)?.name ?? "Agente"
+    : ceoAgent?.name ?? "Agente";
 
   // NOTE: declared before the early return below — all hooks must run on
   // every render (Rules of Hooks). Placing it after the `!selectedCompanyId`
@@ -670,7 +859,8 @@ export function BoardChat() {
   }
 
   return (
-    <div className="flex h-[calc(100%+3rem)] flex-col -m-6">
+    <AssistantRuntimeProvider runtime={runtime}>
+    <div className="flex h-[calc(100%+3rem)] flex-col -m-6" data-testid="board-chat-root">
       <div
         ref={splitContainerRef}
         className="flex min-h-0 min-w-0 flex-1 flex-row"
@@ -740,7 +930,7 @@ export function BoardChat() {
               {/* Typing bubble — shown unconditionally until the reveal
                    timer fires, so the animation is guaranteed to be
                    visible even while agent/goal data is still loading. */}
-              {!welcomeRevealed && <TypingBubble />}
+              {!welcomeRevealed && <TypingBubble label={`${ceoAgent?.name ?? "CEO"} está digitando…`} />}
 
               {welcomeRevealed && ceoAgent && selectedCompany && (() => {
                 const ceoName = ceoAgent.name;
@@ -833,8 +1023,21 @@ export function BoardChat() {
                   : ceoAgent ?? null;
                 const agentName = agent?.name ?? "Assistant";
                 const agentIconValue = agent?.icon ?? null;
+                const linkedRun = comment.createdByRunId
+                  ? runById?.[comment.createdByRunId] ?? null
+                  : null;
+                const runCostLabel = comment.createdByRunId
+                  ? formatCostPill(
+                      linkedRun
+                        ? visibleRunCostUsd(
+                            (linkedRun.usageJson as Record<string, unknown> | null) ?? null,
+                            (linkedRun.resultJson as Record<string, unknown> | null) ?? null,
+                          )
+                        : null,
+                    )
+                  : null;
                 return (
-                  <div key={comment.id} className="flex flex-col items-start">
+                  <div key={comment.id} className="flex flex-col items-start" data-testid="board-chat-agent-bubble">
                     <AgentBubbleHeader name={agentName} icon={agentIconValue} />
                     <div
                       className={cn(
@@ -846,23 +1049,34 @@ export function BoardChat() {
                         {comment.body ?? ""}
                       </MarkdownBody>
                     </div>
-                    <AgentBubbleActionRow
-                      copyText={comment.body ?? ""}
-                      dateLabel={agentBubbleDateLabel(comment.createdAt)}
-                      dateTitle={formatDateTime(comment.createdAt)}
-                      anchorHref={`#comment-${comment.id}`}
-                      feedback={
-                        boardIssueId
-                          ? {
-                              activeVote: voteByComment.get(comment.id) ?? null,
-                              sharingPreference: "prompt",
-                              termsUrl: null,
-                              onVote: (vote, options) =>
-                                handleCommentVote(comment.id, vote, options),
-                            }
-                          : null
-                      }
-                    />
+                    <div className="mt-1 flex items-center gap-2 pl-1">
+                      {runCostLabel ? (
+                        <span
+                          className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+                          title="Run cost"
+                          data-testid="board-chat-cost-pill"
+                        >
+                          {runCostLabel}
+                        </span>
+                      ) : null}
+                      <AgentBubbleActionRow
+                        copyText={comment.body ?? ""}
+                        dateLabel={agentBubbleDateLabel(comment.createdAt)}
+                        dateTitle={formatDateTime(comment.createdAt)}
+                        anchorHref={`#comment-${comment.id}`}
+                        feedback={
+                          boardIssueId
+                            ? {
+                                activeVote: voteByComment.get(comment.id) ?? null,
+                                sharingPreference: "prompt",
+                                termsUrl: null,
+                                onVote: (vote, options) =>
+                                  handleCommentVote(comment.id, vote, options),
+                              }
+                            : null
+                        }
+                      />
+                    </div>
                   </div>
                 );
               })}
@@ -902,19 +1116,31 @@ export function BoardChat() {
                    is preparing a reply but no text has streamed yet. Shows
                    alongside the user's optimistic bubble to make the
                    turn-taking feel alive. */}
-              {sending && !streamingText && statusText ? <TypingBubble /> : null}
+              {(sending || hostRunActive) && !streamingText ? (
+                <TypingBubble
+                  label={
+                    hostRunActive
+                      ? `${hostAgentName} está respondendo…`
+                      : statusText || undefined
+                  }
+                />
+              ) : null}
 
-              {statusNotice && !sending ? (
+              {statusNotice && !sending && !hostRunActive ? (
                 <div className="pl-1 text-xs text-muted-foreground" role="status">
                   {statusNotice}
                 </div>
               ) : null}
 
               {/* Status bar — always visible while sending, independent from the chat bubble */}
-              {sending && (
+              {(sending || hostRunActive) && (
                 <div className="flex items-center gap-2 pl-1 text-xs text-muted-foreground">
                   <img src="/paperclip-thinking.svg" alt="" className="inline-block shrink-0" style={{ width: 14, height: 14 }} />
-                  <span>{statusText || "Thinking..."}</span>
+                  <span>
+                    {hostRunActive
+                      ? `${hostAgentName} está respondendo…`
+                      : statusText || "Enviando…"}
+                  </span>
                   {elapsedSec > 0 && (
                     <span className="opacity-50">{elapsedSec.toFixed(1)}s</span>
                   )}
@@ -969,17 +1195,16 @@ export function BoardChat() {
                (mirrors IssueChatThread's composer dock). pointer-events pass through
                the fade so the scrollbar stays usable; the composer re-enables them. */}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-background via-background/95 to-background/0 px-6 pt-6 pb-5">
-            <MarkdownEditor
-              ref={composerRef}
+            <BoardChatComposer
+              editorRef={composerRef}
               value={input}
               onChange={handleInputChange}
               onSubmit={handleSend}
-              placeholder="Mensagem à sala… use @ para chamar um agente"
               mentions={mentionOptions}
-              readOnly={sending}
-              bordered={false}
-              contentClassName="max-h-[28dvh] overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
-              className="pointer-events-auto rounded-xl border border-border/80 bg-background/80 backdrop-blur-sm"
+              disabled={sending || hostRunActive}
+              canAttach={Boolean(boardIssueId && selectedCompanyId)}
+              onUploadImage={handleUploadImage}
+              onAttachFile={handleAttachFile}
             />
           </div>
         </div>
@@ -1024,5 +1249,6 @@ export function BoardChat() {
         </Sheet>
       </div>
     </div>
+    </AssistantRuntimeProvider>
   );
 }

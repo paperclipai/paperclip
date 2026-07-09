@@ -2501,7 +2501,14 @@ registry.registerPath({
   request: {
     body: jsonBody(boardChatMessageSchema),
   },
-  responses: { 200: r.ok(), 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  responses: {
+    200: r.ok(),
+    202: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    409: r.conflict,
+  },
 });
 
 // ─── Access / invites / members ───────────────────────────────────────────────

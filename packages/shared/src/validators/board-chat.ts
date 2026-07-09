@@ -30,9 +30,22 @@ export const boardChatAdapterWakePendingResponseSchema = z
   })
   .strict();
 
+export const boardChatHostRunResponseSchema = z
+  .object({
+    mode: z.literal("host_run"),
+    issueId: z.string(),
+    commentId: z.string(),
+    roomMessageId: z.string(),
+    hostAgentId: z.string(),
+    hostRunId: z.string(),
+    status: z.string(),
+  })
+  .strict();
+
 export const boardChatMessageResponseSchema = z.discriminatedUnion("mode", [
   boardChatSilentResponseSchema,
   boardChatAdapterWakePendingResponseSchema,
+  boardChatHostRunResponseSchema,
 ]);
 
 export type BoardChatMessageResponse = z.infer<typeof boardChatMessageResponseSchema>;
