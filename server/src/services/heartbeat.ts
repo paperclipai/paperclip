@@ -362,6 +362,23 @@ const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
+// TWX-1309: a double-limit (both master runtimes cooling down) carries its own
+// expiry, so instead of parking the issue `blocked` (which never auto-resumes
+// without a blocker relation) we queue a durable scheduled retry at the
+// earliest cooldown expiry. Escalation to a real `blocked` park happens only
+// when this bounded budget is exhausted.
+export const MASTER_RUNTIME_ALL_LIMITED_RETRY_REASON = "master_runtime_all_limited_retry";
+const MASTER_RUNTIME_ALL_LIMITED_WAKE_REASON = "master_runtime_all_limited_retry";
+const MASTER_RUNTIME_ALL_LIMITED_RETRY_MAX_ATTEMPTS = 6;
+// A single wait is capped so week-long provider caps re-check periodically
+// instead of sleeping the full window on one attempt.
+const MASTER_RUNTIME_ALL_LIMITED_RETRY_MAX_WAIT_MS = 6 * 60 * 60 * 1000;
+const MASTER_RUNTIME_ALL_LIMITED_RETRY_FALLBACK_DELAY_MS = 5 * 60 * 1000;
+// Grace keeps the retry from firing a hair before the provider actually
+// resets; jitter spreads retries that all saw the same expiry instant so the
+// herd doesn't stampede the freshly reset runtime.
+const MASTER_RUNTIME_ALL_LIMITED_RETRY_GRACE_MS = 15_000;
+const MASTER_RUNTIME_ALL_LIMITED_RETRY_JITTER_MS = 120_000;
 type CodexTransientFallbackMode =
   | "same_session"
   | "safer_invocation"
@@ -2130,6 +2147,26 @@ export function normalizeMasterRuntimeFailoverSettings(
     reason: settings.reason ?? null,
     updatedAt: settings.updatedAt ?? null,
   };
+}
+
+export function computeMasterRuntimeAllLimitedRetryDelayMs(
+  settings: MasterRuntimeFailoverSettings | null | undefined,
+  now = new Date(),
+  random: () => number = Math.random,
+): number {
+  const normalized = normalizeMasterRuntimeFailoverSettings(settings, now);
+  const expiries = [normalized.claudeLimitedUntil, normalized.codexLimitedUntil]
+    .map((value) => (value ? new Date(value).getTime() : Number.NaN))
+    .filter((time) => Number.isFinite(time) && time > now.getTime());
+  // The earlier of the two cooldowns is when a master runtime becomes usable
+  // again (auto mode fails over to whichever side frees up first).
+  const waitMs = expiries.length
+    ? Math.min(Math.min(...expiries) - now.getTime(), MASTER_RUNTIME_ALL_LIMITED_RETRY_MAX_WAIT_MS)
+    : MASTER_RUNTIME_ALL_LIMITED_RETRY_FALLBACK_DELAY_MS;
+  const jitter =
+    MASTER_RUNTIME_ALL_LIMITED_RETRY_GRACE_MS +
+    Math.floor(random() * MASTER_RUNTIME_ALL_LIMITED_RETRY_JITTER_MS);
+  return waitMs + jitter;
 }
 
 function isMasterRuntimeLimited(
@@ -8600,8 +8637,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           details: Record<string, unknown>;
         };
 
+    // Cooldown retries dedupe by issue rather than by failing run: two runs on
+    // the same issue can hit a double-limit milliseconds apart (they raced for
+    // the checkout), and per-run dedupe would still queue one retry each. The
+    // FOR UPDATE row lock below serializes the twins so exactly one live retry
+    // survives per issue.
+    const issueScopedRetryDedupe = retryReason === MASTER_RUNTIME_ALL_LIMITED_RETRY_REASON;
+    const guardedRetryReason =
+      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON || issueScopedRetryDedupe;
+    const suppressionLabel = issueScopedRetryDedupe
+      ? "master-runtime cooldown retry"
+      : "max-turn continuation";
     const scheduleResult = await db.transaction(async (tx): Promise<ScheduledRetryTransactionResult> => {
-      if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
+      if (guardedRetryReason) {
         if (issueId) {
           await tx.execute(
             sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
@@ -8618,13 +8666,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(
             and(
               eq(heartbeatRuns.companyId, run.companyId),
-              eq(heartbeatRuns.retryOfRunId, run.id),
               eq(heartbeatRuns.scheduledRetryReason, retryReason),
-              eq(heartbeatRuns.scheduledRetryAttempt, schedule.attempt),
               inArray(heartbeatRuns.status, [...MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES]),
-              issueId
+              issueScopedRetryDedupe && issueId
                 ? sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`
-                : sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' is null`,
+                : and(
+                    eq(heartbeatRuns.retryOfRunId, run.id),
+                    ...(issueScopedRetryDedupe
+                      ? []
+                      : [eq(heartbeatRuns.scheduledRetryAttempt, schedule.attempt)]),
+                    issueId
+                      ? sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`
+                      : sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' is null`,
+                  ),
             ),
           )
           .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
@@ -8670,7 +8724,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (!lockedIssue) {
             return {
               outcome: "not_scheduled",
-              reason: "Scheduled max-turn continuation suppressed because the target issue no longer exists",
+              reason: `Scheduled ${suppressionLabel} suppressed because the target issue no longer exists`,
               errorCode: "issue_not_found",
               issueId,
               details: { issueId },
@@ -8680,7 +8734,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (lockedIssue.assigneeAgentId !== run.agentId) {
             return {
               outcome: "not_scheduled",
-              reason: "Scheduled max-turn continuation suppressed because issue ownership changed",
+              reason: `Scheduled ${suppressionLabel} suppressed because issue ownership changed`,
               errorCode: "issue_reassigned",
               issueId,
               details: {
@@ -8694,28 +8748,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (lockedIssue.status === "cancelled" || lockedIssue.status === "done") {
             return {
               outcome: "not_scheduled",
-              reason: `Scheduled max-turn continuation suppressed because issue reached terminal status (${lockedIssue.status})`,
+              reason: `Scheduled ${suppressionLabel} suppressed because issue reached terminal status (${lockedIssue.status})`,
               errorCode: lockedIssue.status === "cancelled" ? "issue_cancelled" : "issue_terminal_status",
               issueId,
               details: { issueId, currentStatus: lockedIssue.status },
             };
           }
 
-          if (lockedIssue.status !== "in_progress") {
+          // A cooldown retry only needs the issue to still be workable by this
+          // agent: it may legitimately sit in `in_review`/`todo` when the failed
+          // run was a comment wake rather than a checkout. Max-turn
+          // continuations, by contrast, resume a specific in-flight execution.
+          if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && lockedIssue.status !== "in_progress") {
             return {
               outcome: "not_scheduled",
-              reason: `Scheduled max-turn continuation suppressed because issue is no longer in_progress (current status: ${lockedIssue.status})`,
+              reason: `Scheduled ${suppressionLabel} suppressed because issue is no longer in_progress (current status: ${lockedIssue.status})`,
               errorCode: "issue_not_in_progress",
               issueId,
               details: { issueId, currentStatus: lockedIssue.status, requiredStatus: "in_progress" },
             };
           }
 
-          if (lockedIssue.executionRunId !== run.id) {
+          // Cooldown retries tolerate an unlocked issue (the retry checks out on
+          // dispatch) but must not shadow a lock held by another live run — that
+          // run owns recovery for the issue.
+          const executionLockConflict =
+            retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
+              ? lockedIssue.executionRunId !== run.id
+              : lockedIssue.executionRunId != null && lockedIssue.executionRunId !== run.id;
+          if (executionLockConflict) {
             return {
               outcome: "not_scheduled",
               reason:
-                "Scheduled max-turn continuation suppressed because the issue execution lock belongs to a different run",
+                `Scheduled ${suppressionLabel} suppressed because the issue execution lock belongs to a different run`,
               errorCode: "issue_execution_lock_changed",
               issueId,
               details: {
@@ -8833,7 +8898,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "info",
-        message: `Reused existing max-turn continuation ${retryRun.scheduledRetryAttempt}/${schedule.maxAttempts}`,
+        message: `Reused existing ${suppressionLabel} ${retryRun.scheduledRetryAttempt}/${schedule.maxAttempts}`,
         payload: {
           retryRunId: retryRun.id,
           retryReason,
@@ -8878,6 +8943,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       attempt: schedule.attempt,
       maxAttempts: schedule.maxAttempts,
     };
+  }
+
+  // Terminal escalation for a double-limited master runtime: only reached when
+  // the bounded cooldown-retry budget is exhausted (or force mode disables
+  // fallback), so a human decision is genuinely required.
+  async function parkIssueBlockedForMasterRuntimeExhaustion(input: {
+    issueId: string;
+    agentId: string;
+    runId: string;
+    message: string;
+  }) {
+    await issuesSvc
+      .addComment(input.issueId, input.message, { agentId: input.agentId, runId: input.runId })
+      .catch((err) => {
+        logger.warn(
+          { err, issueId: input.issueId, runId: input.runId },
+          "failed to post master runtime blocked comment",
+        );
+      });
+    await issuesSvc
+      .update(input.issueId, {
+        status: "blocked",
+        actorAgentId: input.agentId,
+        // Runtime-exhaustion parking is a system decision without a blocker issue;
+        // it is exempt from the agent blocked-disposition guard.
+        allowAgentBlockedWithoutLivePath: true,
+      })
+      .catch((err) => {
+        logger.warn(
+          { err, issueId: input.issueId, runId: input.runId },
+          "failed to mark issue blocked after master runtime exhaustion",
+        );
+      });
   }
 
   async function recordMasterRuntimeLimit(input: {
@@ -11037,21 +11135,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         finishedAt: new Date(),
         error: message,
       });
+      // TWX-1309: a double-limit is a transient cooldown with a known expiry,
+      // not a human-attention failure. Queue a durable scheduled retry at the
+      // earliest cooldown expiry (before releasing the execution lock, so the
+      // retry can inherit it atomically) and park the issue `blocked` only once
+      // the bounded retry budget is exhausted.
+      let retryOutcome: Awaited<ReturnType<typeof scheduleBoundedRetryForRun>> | null = null;
       if (failedRun) {
+        retryOutcome = await scheduleBoundedRetryForRun(failedRun, agent, {
+          retryReason: MASTER_RUNTIME_ALL_LIMITED_RETRY_REASON,
+          wakeReason: MASTER_RUNTIME_ALL_LIMITED_WAKE_REASON,
+          maxAttempts: MASTER_RUNTIME_ALL_LIMITED_RETRY_MAX_ATTEMPTS,
+          delayMs: computeMasterRuntimeAllLimitedRetryDelayMs(
+            experimentalSettings.masterRuntimeFailover,
+          ),
+        });
         await releaseIssueExecutionAndPromote(failedRun);
       }
-      if (issueId && issueContext && issueContext.assigneeAgentId === agent.id) {
-        await issuesSvc.addComment(issueId, message, { agentId: agent.id, runId: run.id }).catch((err) => {
-          logger.warn({ err, issueId, runId: run.id }, "failed to post master runtime blocked comment");
-        });
-        await issuesSvc.update(issueId, {
-          status: "blocked",
-          actorAgentId: agent.id,
-          // Runtime-exhaustion parking is a system decision without a blocker issue;
-          // it is exempt from the agent blocked-disposition guard.
-          allowAgentBlockedWithoutLivePath: true,
-        }).catch((err) => {
-          logger.warn({ err, issueId, runId: run.id }, "failed to mark issue blocked after master runtime exhaustion");
+      if (
+        retryOutcome?.outcome === "retry_exhausted" &&
+        issueId &&
+        issueContext &&
+        issueContext.assigneeAgentId === agent.id
+      ) {
+        await parkIssueBlockedForMasterRuntimeExhaustion({
+          issueId,
+          agentId: agent.id,
+          runId: run.id,
+          message: `${message} Automatic cooldown retries are exhausted; parking the issue as blocked.`,
         });
       }
       await finalizeAgentStatus(agent.id, "failed");
@@ -13035,22 +13146,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 maxAttempts: MASTER_RUNTIME_FAILOVER_RETRY_MAX_ATTEMPTS,
                 delayMs: 0,
               });
-            } else if (issueId) {
-              const blockedMessage =
-                limitRecord.fallbackLimited
-                  ? "Both Claude and Codex master runtimes are currently limited. Paperclip stopped this work instead of routing it to a non-master adapter."
-                  : `The ${limitedRuntime} master runtime is limited and instance failover mode is ${limitRecord.settings.mode}; no automatic fallback retry was queued.`;
-              await issuesSvc.addComment(issueId, blockedMessage, { agentId: agent.id, runId: livenessRun.id }).catch((err) => {
-                logger.warn({ err, issueId, runId: livenessRun.id }, "failed to post master runtime limit comment");
+            } else if (limitRecord.fallbackLimited && limitRecord.settings.mode === "auto") {
+              // TWX-1309: both masters cooling down — queue a durable retry at
+              // cooldown expiry instead of parking `blocked`; escalate only
+              // when the bounded budget is exhausted.
+              const cooldownRetry = await scheduleBoundedRetryForRun(livenessRun, executionAgent, {
+                retryReason: MASTER_RUNTIME_ALL_LIMITED_RETRY_REASON,
+                wakeReason: MASTER_RUNTIME_ALL_LIMITED_WAKE_REASON,
+                maxAttempts: MASTER_RUNTIME_ALL_LIMITED_RETRY_MAX_ATTEMPTS,
+                delayMs: computeMasterRuntimeAllLimitedRetryDelayMs(limitRecord.settings),
               });
-              await issuesSvc.update(issueId, {
-                status: "blocked",
-                actorAgentId: agent.id,
-                // Runtime-limit parking is a system decision without a blocker issue;
-                // it is exempt from the agent blocked-disposition guard.
-                allowAgentBlockedWithoutLivePath: true,
-              }).catch((err) => {
-                logger.warn({ err, issueId, runId: livenessRun.id }, "failed to mark issue blocked after master runtime limit");
+              if (cooldownRetry.outcome === "retry_exhausted" && issueId) {
+                await parkIssueBlockedForMasterRuntimeExhaustion({
+                  issueId,
+                  agentId: agent.id,
+                  runId: livenessRun.id,
+                  message:
+                    "Both Claude and Codex master runtimes are currently limited and automatic cooldown retries are exhausted. Paperclip stopped this work instead of routing it to a non-master adapter.",
+                });
+              }
+            } else if (issueId) {
+              await parkIssueBlockedForMasterRuntimeExhaustion({
+                issueId,
+                agentId: agent.id,
+                runId: livenessRun.id,
+                message: limitRecord.fallbackLimited
+                  ? "Both Claude and Codex master runtimes are currently limited. Paperclip stopped this work instead of routing it to a non-master adapter."
+                  : `The ${limitedRuntime} master runtime is limited and instance failover mode is ${limitRecord.settings.mode}; no automatic fallback retry was queued.`,
               });
             }
           }

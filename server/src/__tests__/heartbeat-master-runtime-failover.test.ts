@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_MASTER_RUNTIME_FAILOVER, type MasterRuntimeFailoverSettings } from "@paperclipai/shared";
 import {
   coerceMasterRuntimeFallbackConfig,
+  computeMasterRuntimeAllLimitedRetryDelayMs,
   isHardMasterRuntimeLimitResult,
   normalizeMasterRuntimeFailoverSettings,
   resolveMasterRuntimeAdapter,
@@ -171,6 +172,60 @@ describe("master runtime failover", () => {
       workspaceRuntime: { services: [] },
       timeoutSec: 120,
       graceSec: 5,
+    });
+  });
+
+  describe("computeMasterRuntimeAllLimitedRetryDelayMs", () => {
+    const GRACE_MS = 15_000;
+    const JITTER_MS = 120_000;
+
+    it("targets the earliest cooldown expiry plus grace and jitter", () => {
+      const delay = computeMasterRuntimeAllLimitedRetryDelayMs(
+        settings({
+          claudeLimitedUntil: "2026-06-05T23:00:00.000Z",
+          codexLimitedUntil: "2026-06-06T04:00:00.000Z",
+        }),
+        now,
+        () => 0,
+      );
+      // Claude frees up first, one hour out.
+      expect(delay).toBe(60 * 60 * 1000 + GRACE_MS);
+    });
+
+    it("adds bounded jitter so same-expiry retries do not stampede", () => {
+      const base = computeMasterRuntimeAllLimitedRetryDelayMs(
+        settings({ claudeLimitedUntil: future, codexLimitedUntil: future }),
+        now,
+        () => 0,
+      );
+      const jittered = computeMasterRuntimeAllLimitedRetryDelayMs(
+        settings({ claudeLimitedUntil: future, codexLimitedUntil: future }),
+        now,
+        () => 0.999999,
+      );
+      expect(jittered).toBeGreaterThan(base);
+      expect(jittered - base).toBeLessThanOrEqual(JITTER_MS);
+    });
+
+    it("caps a single wait for far-out expiries so long caps re-check periodically", () => {
+      const delay = computeMasterRuntimeAllLimitedRetryDelayMs(
+        settings({
+          claudeLimitedUntil: "2026-06-12T22:00:00.000Z",
+          codexLimitedUntil: "2026-06-12T22:00:00.000Z",
+        }),
+        now,
+        () => 0,
+      );
+      expect(delay).toBe(6 * 60 * 60 * 1000 + GRACE_MS);
+    });
+
+    it("falls back to a short delay when no future expiry is recorded", () => {
+      const delay = computeMasterRuntimeAllLimitedRetryDelayMs(
+        settings({ claudeLimitedUntil: "2026-06-05T20:00:00.000Z" }),
+        now,
+        () => 0,
+      );
+      expect(delay).toBe(5 * 60 * 1000 + GRACE_MS);
     });
   });
 });
