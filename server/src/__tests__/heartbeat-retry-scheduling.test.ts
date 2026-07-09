@@ -11,10 +11,12 @@ import {
   companySkills,
   createDb,
   environmentLeases,
+  executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   issueRelations,
   issues,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -94,6 +96,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projects);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -580,6 +584,190 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(scheduled.run.id);
+  });
+
+  it.each([
+    {
+      name: "renamed branch",
+      workspaceValidation: (workspaceId: string) => ({
+        reason: "git_worktree_branch_incoherence",
+        fingerprint: "workspace_incoherence:v1:sha256:renamed",
+        executionWorkspaceId: workspaceId,
+        expectedBranch: "PAP-12940-skills-ide-read-this-transcript",
+        actualBranch: "feat/skill-studio-test-runs",
+        cleanliness: "clean",
+      }),
+    },
+    {
+      name: "dirty worktree",
+      workspaceValidation: (workspaceId: string) => ({
+        reason: "git_worktree_branch_incoherence",
+        fingerprint: "workspace_incoherence:v1:sha256:dirty",
+        executionWorkspaceId: workspaceId,
+        expectedBranch: "PAP-12940-skills-ide-read-this-transcript",
+        actualBranch: "feat/skill-studio-test-runs",
+        cleanliness: "dirty",
+        safeRepair: {
+          eligible: false,
+          attempted: false,
+          succeeded: false,
+          reason: "worktree is not clean",
+        },
+      }),
+    },
+  ])("quarantines a failed $name workspace before scheduling the accepted interaction retry", async ({ workspaceValidation }) => {
+    const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture({ issueStatus: "in_review" });
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const validation = workspaceValidation(executionWorkspaceId);
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Paperclip App",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "PAP-12940-skills-ide-read-this-transcript",
+      status: "active",
+      cwd: "/workspace/PAP-12940-skills-ide-read-this-transcript",
+      baseRef: "origin/master",
+      branchName: "PAP-12940-skills-ide-read-this-transcript",
+      providerType: "git_worktree",
+      providerRef: "/workspace/PAP-12940-skills-ide-read-this-transcript",
+      metadata: { existing: true },
+    });
+    await db
+      .update(issues)
+      .set({
+        projectId,
+        executionWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      })
+      .where(eq(issues.id, issueId));
+
+    const interactionId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        error: "workspace validation failed before dispatch",
+        errorCode: "workspace_validation_failed",
+        resultJson: { workspaceValidation: validation },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_commented",
+          mutation: "interaction",
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: 3,
+    });
+
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    const issue = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({
+      executionRunId: scheduled.run.id,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: null,
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+
+    const workspace = await db
+      .select({
+        status: executionWorkspaces.status,
+        closedAt: executionWorkspaces.closedAt,
+        cleanupEligibleAt: executionWorkspaces.cleanupEligibleAt,
+        cleanupReason: executionWorkspaces.cleanupReason,
+        metadata: executionWorkspaces.metadata,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId))
+      .then((rows) => rows[0] ?? null);
+    expect(workspace).toMatchObject({
+      status: "archived",
+      cleanupEligibleAt: null,
+      cleanupReason: "workspace_validation_failed",
+    });
+    expect(workspace?.closedAt?.toISOString()).toBe(now.toISOString());
+    expect(workspace?.metadata).toMatchObject({
+      existing: true,
+      workspaceValidationQuarantine: {
+        reason: "workspace_validation_failed",
+        retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+        sourceRunId: runId,
+        retryRunId: scheduled.run.id,
+        issueId,
+        sourceIssueId: issueId,
+        workspaceValidation: validation,
+      },
+    });
+
+    const retryRun = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      workspaceValidationRecovery: {
+        strategy: "quarantine_failed_workspace_and_retry_clean",
+        sourceRunId: runId,
+        reason: "git_worktree_branch_incoherence",
+        fingerprint: validation.fingerprint,
+        failedExecutionWorkspaceId: executionWorkspaceId,
+      },
+    });
+
+    const activity = await db
+      .select({ action: activityLog.action, entityId: activityLog.entityId, details: activityLog.details })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "execution_workspace.workspace_validation_quarantined"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(activity).toMatchObject({
+      action: "execution_workspace.workspace_validation_quarantined",
+      entityId: executionWorkspaceId,
+      details: expect.objectContaining({
+        retryRunId: scheduled.run.id,
+        workspaceValidation: validation,
+      }),
+    });
+
+    const agent = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(agent?.id).toBe(agentId);
   });
 
   it("does not schedule accepted interaction continuation infra retries after terminal issue status", async () => {
