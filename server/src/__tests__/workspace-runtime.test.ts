@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -4440,6 +4441,62 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
         }),
       }),
     ]));
+  }, 20_000);
+
+  it("quarantines a worktree wedged mid-rebase and clears the interrupted rebase state", async () => {
+    const expectedBranch = "PAP-456-recorded";
+    const repoRoot = await createTempRepo("master");
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, expectedBranch]);
+    await fs.writeFile(path.join(worktreePath, "README.md"), "feature change\n", "utf8");
+    await runGit(worktreePath, ["commit", "-am", "Feature change"]);
+    const expectedBranchHead = await readGit(worktreePath, ["rev-parse", expectedBranch]);
+    await fs.writeFile(path.join(repoRoot, "README.md"), "master change\n", "utf8");
+    await runGit(repoRoot, ["commit", "-am", "Master change"]);
+    await expect(runGit(worktreePath, ["rebase", "master"])).rejects.toThrow();
+    const rebaseStatePath = await readGit(worktreePath, ["rev-parse", "--git-path", "rebase-merge"]);
+    expect(existsSync(path.resolve(worktreePath, rebaseStatePath))).toBe(true);
+    await expect(readGit(worktreePath, ["branch", "--show-current"])).resolves.toBe("");
+
+    const ids = await seedDirtyQuarantineRecords({
+      repoRoot,
+      worktreePath,
+      expectedBranch,
+      actualBranch: "PAP-456-live",
+      sourceIdentifier: "PAP-456",
+      claimant: "none",
+    });
+    const { recorder } = createWorkspaceOperationRecorderDouble();
+
+    const restored = await restoreDirtyQuarantine({
+      repoRoot,
+      worktreePath,
+      expectedBranch,
+      actualBranch: "PAP-456-live",
+      ids,
+      recorder,
+    });
+
+    expect(restored?.branchName).toBe(expectedBranch);
+    const warning = restored?.warnings.find((entry) => entry.includes("dirty worktree state was quarantined"));
+    expect(warning).toContain("An interrupted git rebase was also cleared");
+    const rescueBranch = warning?.match(/"([^"]+)"/)?.[1] ?? "";
+    expect(rescueBranch).toMatch(/^paperclip\/rescue\/PAP-456\/\d{8}T\d{6}Z$/);
+
+    await expect(readGit(worktreePath, ["branch", "--show-current"])).resolves.toBe(expectedBranch);
+    await expect(readGit(worktreePath, ["status", "--porcelain", "--untracked-files=all"])).resolves.toBe("");
+    expect(existsSync(path.resolve(worktreePath, rebaseStatePath))).toBe(false);
+    await expect(readGit(repoRoot, ["rev-parse", expectedBranch])).resolves.toBe(expectedBranchHead);
+    await expect(readGit(repoRoot, ["show", `${rescueBranch}:README.md`])).resolves.toContain("<<<<<<<");
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.companyId, ids.companyId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Interrupted operation: `git rebase`");
   }, 20_000);
 
   it("refuses dirty quarantine repair when the live branch has an active claimant", async () => {

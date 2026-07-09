@@ -12,6 +12,7 @@ import {
   listWorkspaceServiceCommandDefinitions,
   type GitWorktreeBranchAncestryVerdict,
   type GitWorktreeBranchIncoherenceEvidence as SharedGitWorktreeBranchIncoherenceEvidence,
+  type GitWorktreeInProgressOperation,
   type WorkspaceOperationPhase,
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
@@ -676,6 +677,7 @@ type DirtyQuarantineRepairResult = {
   rescueBranch: string;
   rescueCommitSha: string;
   fileCount: number;
+  clearedInProgressOperation: GitWorktreeInProgressOperation | null;
   sourceAuditCommentId: string | null;
   claimantAuditCommentId: string | null;
 };
@@ -689,6 +691,47 @@ export type PendingForwardBranchReconcile = {
 
 function formatBranchForMessage(branch: string | null | undefined) {
   return branch && branch.length > 0 ? branch : "<detached>";
+}
+
+const GIT_IN_PROGRESS_OPERATION_MARKERS: ReadonlyArray<{
+  operation: GitWorktreeInProgressOperation;
+  marker: string;
+}> = [
+  { operation: "rebase", marker: "rebase-merge" },
+  { operation: "rebase", marker: "rebase-apply" },
+  { operation: "merge", marker: "MERGE_HEAD" },
+  { operation: "cherry_pick", marker: "CHERRY_PICK_HEAD" },
+  { operation: "revert", marker: "REVERT_HEAD" },
+  { operation: "bisect", marker: "BISECT_LOG" },
+];
+
+const GIT_IN_PROGRESS_OPERATION_LABELS: Record<GitWorktreeInProgressOperation, string> = {
+  rebase: "rebase",
+  merge: "merge",
+  cherry_pick: "cherry-pick",
+  revert: "revert",
+  bisect: "bisect",
+};
+
+// `--quit` clears the interrupted operation's state directory without touching
+// the working tree or moving HEAD, unlike `--abort` which resets both.
+const GIT_IN_PROGRESS_OPERATION_QUIT_ARGS: Record<GitWorktreeInProgressOperation, string[]> = {
+  rebase: ["rebase", "--quit"],
+  merge: ["merge", "--quit"],
+  cherry_pick: ["cherry-pick", "--quit"],
+  revert: ["revert", "--quit"],
+  bisect: ["bisect", "reset", "HEAD"],
+};
+
+async function detectGitWorktreeInProgressOperation(
+  worktreePath: string,
+): Promise<GitWorktreeInProgressOperation | null> {
+  for (const { operation, marker } of GIT_IN_PROGRESS_OPERATION_MARKERS) {
+    const markerPath = await runGit(["rev-parse", "--git-path", marker], worktreePath).catch(() => null);
+    if (!markerPath) continue;
+    if (existsSync(path.resolve(worktreePath, markerPath))) return operation;
+  }
+  return null;
 }
 
 const DIRTY_PATH_SAMPLE_LIMIT = 5;
@@ -918,6 +961,7 @@ async function inspectGitWorktreeBranchIncoherence(input: {
   const dirtyPathSample = sampleDirtyStatusPaths(statusLines);
   const cleanliness: GitWorktreeCleanliness =
     status === null ? "unknown" : status.trim().length > 0 ? "dirty" : "clean";
+  const inProgressOperation = await detectGitWorktreeInProgressOperation(input.worktreePath);
   const expectedHeadSha = await runGit(
     ["rev-parse", "--verify", `refs/heads/${input.expectedBranchName}^{commit}`],
     input.repoRoot,
@@ -937,7 +981,7 @@ async function inspectGitWorktreeBranchIncoherence(input: {
     expectedHeadSha,
     actualHeadSha,
   });
-  const plainLanguageReason = explainGitWorktreeBranchIncoherence({
+  const basePlainLanguageReason = explainGitWorktreeBranchIncoherence({
     expectedBranchName: input.expectedBranchName,
     actualBranchName: input.actualBranchName,
     expectedHeadSha,
@@ -945,6 +989,9 @@ async function inspectGitWorktreeBranchIncoherence(input: {
     sameHead,
     ancestryVerdict,
   });
+  const plainLanguageReason = inProgressOperation
+    ? `${basePlainLanguageReason} An interrupted git ${GIT_IN_PROGRESS_OPERATION_LABELS[inProgressOperation]} is still in progress in this worktree.`
+    : basePlainLanguageReason;
   const canCheckoutRecordedBranch =
     cleanliness === "clean" && expectedBranchExists && sameHead && registeredBranchMatchesHead;
   const canAdoptForwardActualBranch =
@@ -970,7 +1017,9 @@ async function inspectGitWorktreeBranchIncoherence(input: {
         ? "clean worktree and checked-out branch is forward of the recorded branch"
         : "clean detached worktree HEAD is forward of the recorded branch"
     : cleanliness !== "clean"
-      ? "worktree is not clean"
+      ? inProgressOperation
+        ? `worktree is not clean and a git ${GIT_IN_PROGRESS_OPERATION_LABELS[inProgressOperation]} is in progress`
+        : "worktree is not clean"
       : !registered
         ? "worktree path is not registered"
       : !registeredBranchMatchesHead
@@ -1009,6 +1058,7 @@ async function inspectGitWorktreeBranchIncoherence(input: {
     expectedBranch: input.expectedBranchName,
     actualBranch: input.actualBranchName,
     cleanliness,
+    inProgressOperation,
     statusEntryCount: statusLines?.length ?? null,
     dirtyPathSample,
     contention,
@@ -1087,6 +1137,9 @@ function formatDirtyQuarantineAuditComment(input: {
     `- Rescue commit: \`${input.rescueCommitSha}\``,
     `- Dirty file count: \`${input.fileCount}\``,
     `- Dirty path sample: ${dirtySample}`,
+    ...(input.evidence.inProgressOperation
+      ? [`- Interrupted operation: \`git ${GIT_IN_PROGRESS_OPERATION_LABELS[input.evidence.inProgressOperation]}\` (state cleared after rescue; resolution preserved on the rescue branch)`]
+      : []),
     `- Fingerprint: \`${input.evidence.fingerprint}\``,
     input.claimant
       ? `- Claimant: workspace \`${input.claimant.claimedByWorkspaceId}\` on issue ${formatIssueReference(input.claimant.claimedByIssueId, input.claimant.claimedByIssueIdentifier)}${input.claimant.activeRun ? ` with active run \`${input.claimant.activeRun.id}\`` : " with no active run"}`
@@ -1346,6 +1399,37 @@ async function quarantineDirtyWorktreeBranchIncoherence(input: {
     });
     expectedBranchRestored = true;
 
+    // A run that died mid-rebase (or mid-merge/cherry-pick/revert/bisect)
+    // leaves the operation's state directory behind even after the recorded
+    // branch is checked out, which wedges the next git command in the
+    // worktree. The rescue commit above already preserved the in-flight
+    // resolution, so clearing the state metadata here loses nothing.
+    let clearedInProgressOperation: GitWorktreeInProgressOperation | null = null;
+    const lingeringOperation = await detectGitWorktreeInProgressOperation(input.worktreePath);
+    if (lingeringOperation) {
+      const operationLabel = GIT_IN_PROGRESS_OPERATION_LABELS[lingeringOperation];
+      const quitArgs = GIT_IN_PROGRESS_OPERATION_QUIT_ARGS[lingeringOperation];
+      await recordGitOperation(input.recorder, {
+        phase: input.phase ?? "worktree_prepare",
+        args: quitArgs,
+        cwd: input.worktreePath,
+        metadata: {
+          ...baseMetadata,
+          clearedInProgressOperation: lingeringOperation,
+        },
+        successMessage: `Cleared interrupted git ${operationLabel} state after dirty workspace rescue ${rescueBranch}\n`,
+        failureLabel: `git ${quitArgs.join(" ")}`,
+      });
+      const stillInProgress = await detectGitWorktreeInProgressOperation(input.worktreePath);
+      if (stillInProgress) {
+        input.evidence.safeRepair.succeeded = false;
+        input.evidence.safeRepair.reason =
+          `dirty quarantine repair could not clear the interrupted git ${GIT_IN_PROGRESS_OPERATION_LABELS[stillInProgress]} state`;
+        throw branchIncoherenceValidationFailure(input.evidence);
+      }
+      clearedInProgressOperation = lingeringOperation;
+    }
+
     const repairedBranch = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], input.worktreePath)
       .catch(() => null);
     if (repairedBranch !== input.expectedBranchName) {
@@ -1397,6 +1481,7 @@ async function quarantineDirtyWorktreeBranchIncoherence(input: {
       rescueBranch,
       rescueCommitSha,
       fileCount,
+      clearedInProgressOperation,
       ...comments,
     };
   } catch (error) {
@@ -1639,14 +1724,15 @@ export async function ensureGitWorktreeBranchCoherent(input: {
       recorder: input.recorder ?? null,
     });
     evidence.safeRepair.succeeded = true;
-    evidence.safeRepair.reason =
-      `dirty worktree quarantined on ${result.rescueBranch} at ${formatShortSha(result.rescueCommitSha)}`;
+    evidence.safeRepair.reason = result.clearedInProgressOperation
+      ? `dirty worktree quarantined on ${result.rescueBranch} at ${formatShortSha(result.rescueCommitSha)}; interrupted git ${GIT_IN_PROGRESS_OPERATION_LABELS[result.clearedInProgressOperation]} state cleared`
+      : `dirty worktree quarantined on ${result.rescueBranch} at ${formatShortSha(result.rescueCommitSha)}`;
     return {
       branchName: expectedBranchName,
       reconciledForward: false,
       dirtyQuarantineRepair: result,
       warnings: [
-        `Execution workspace dirty worktree state was quarantined on rescue branch "${result.rescueBranch}" (${formatShortSha(result.rescueCommitSha)}; ${result.fileCount} ${result.fileCount === 1 ? "file" : "files"}) before restoring recorded branch "${expectedBranchName}".`,
+        `Execution workspace dirty worktree state was quarantined on rescue branch "${result.rescueBranch}" (${formatShortSha(result.rescueCommitSha)}; ${result.fileCount} ${result.fileCount === 1 ? "file" : "files"}) before restoring recorded branch "${expectedBranchName}".${result.clearedInProgressOperation ? ` An interrupted git ${GIT_IN_PROGRESS_OPERATION_LABELS[result.clearedInProgressOperation]} was also cleared; its in-flight state is preserved on the rescue branch.` : ""}`,
       ],
     };
   }

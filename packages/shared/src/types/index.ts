@@ -489,6 +489,7 @@ export type {
   AgentWakeupSkipped,
   GitWorktreeBranchAncestryVerdict,
   GitWorktreeBranchIncoherenceEvidence,
+  GitWorktreeInProgressOperation,
   HeartbeatRun,
   HeartbeatRunEvent,
   HeartbeatRunStatusPhase,
