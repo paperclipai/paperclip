@@ -581,6 +581,7 @@ export {
   boardChatMessageResponseSchema,
   boardChatSilentResponseSchema,
   boardChatAdapterWakePendingResponseSchema,
+  boardChatHostRunResponseSchema,
   type BoardChatMessage,
   type BoardChatMessageResponse,
 } from "./board-chat.js";

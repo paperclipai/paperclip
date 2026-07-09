@@ -58,6 +58,18 @@ vi.mock("../components/MarkdownEditor", () => ({
     return <div data-testid="markdown-editor" />;
   }),
 }));
+vi.mock("./board-chat/BoardChatComposer", () => ({
+  BoardChatComposer: () => <div data-testid="markdown-editor" />,
+}));
+vi.mock("../hooks/usePaperclipIssueRuntime", () => ({
+  usePaperclipIssueRuntime: () => ({}),
+}));
+vi.mock("@assistant-ui/react", () => ({
+  AssistantRuntimeProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+}));
+vi.mock("../api/heartbeats", () => ({
+  heartbeatsApi: { liveRunsForIssue: vi.fn().mockResolvedValue([]), get: vi.fn() },
+}));
 vi.mock("../components/AgentBubbleActionRow", () => ({
   AgentBubbleActionRow: () => null,
   agentBubbleDateLabel: () => "",

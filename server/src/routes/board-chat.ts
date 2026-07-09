@@ -8,6 +8,10 @@ import { boardChatMessageSchema, type BoardChatMessageResponse } from "@papercli
 import type { DeploymentMode } from "@paperclipai/shared";
 import { instanceSettingsService, issueService } from "../services/index.js";
 import { FanoutNotEnabledError, roomMessageService } from "../services/room-message.js";
+import {
+  AgentNotInvokableError,
+  roomOrchestratorService,
+} from "../services/room-orchestrator.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 /**
@@ -61,6 +65,7 @@ export function boardChatRoutes(
   const router = Router();
   let liveBoardChats = 0;
   const roomSvc = roomMessageService(db);
+  const roomOrch = roomOrchestratorService(db);
 
   let _boardSkillCache: string | null = null;
 
@@ -115,6 +120,42 @@ export function boardChatRoutes(
         },
       });
 
+      if (result.mode === "adapter_wake_pending" && result.mentionedAgentIds?.[0]) {
+        const host = await roomOrch.wakeHost({
+          companyId,
+          issueId: result.issueId,
+          roomMessageId: result.roomMessageId,
+          commentId: result.commentId,
+          body: message,
+          targetAgentId: result.mentionedAgentIds[0],
+          actor: {
+            type: actor.agentId ? "agent" : "user",
+            id: actor.actorId,
+          },
+        });
+
+        console.info("[board/chat]", {
+          companyId,
+          issueId: host.issueId,
+          commentId: host.commentId,
+          mode: host.mode,
+          hostRunId: host.hostRunId,
+          deploymentMode: opts.deploymentMode,
+        });
+
+        const body: BoardChatMessageResponse = {
+          mode: "host_run",
+          issueId: host.issueId,
+          commentId: host.commentId,
+          roomMessageId: host.roomMessageId,
+          hostAgentId: host.hostAgentId,
+          hostRunId: host.hostRunId,
+          status: host.status,
+        };
+        res.status(202).json(body);
+        return;
+      }
+
       console.info("[board/chat]", {
         companyId,
         issueId: result.issueId,
@@ -124,26 +165,23 @@ export function boardChatRoutes(
         deploymentMode: opts.deploymentMode,
       });
 
-      const statusCode = result.mode === "adapter_wake_pending" ? 202 : 200;
-      const body: BoardChatMessageResponse =
-        result.mode === "adapter_wake_pending"
-          ? {
-              mode: "adapter_wake_pending",
-              issueId: result.issueId,
-              commentId: result.commentId,
-              roomMessageId: result.roomMessageId,
-              mentionedAgentIds: result.mentionedAgentIds ?? [],
-            }
-          : {
-              mode: "silent",
-              issueId: result.issueId,
-              commentId: result.commentId,
-              roomMessageId: result.roomMessageId,
-            };
-      res.status(statusCode).json(body);
+      const body: BoardChatMessageResponse = {
+        mode: "silent",
+        issueId: result.issueId,
+        commentId: result.commentId,
+        roomMessageId: result.roomMessageId,
+      };
+      res.status(200).json(body);
     } catch (err) {
       if (err instanceof FanoutNotEnabledError) {
         res.status(400).json({
+          error: err.message,
+          code: err.code,
+        });
+        return;
+      }
+      if (err instanceof AgentNotInvokableError) {
+        res.status(409).json({
           error: err.message,
           code: err.code,
         });

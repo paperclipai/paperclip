@@ -20,6 +20,15 @@ vi.mock("../services/room-message.js", () => ({
   }),
 }));
 
+vi.mock("../services/room-orchestrator.js", () => ({
+  AgentNotInvokableError: class AgentNotInvokableError extends Error {
+    readonly code = "AGENT_NOT_INVOKABLE" as const;
+  },
+  roomOrchestratorService: () => ({
+    wakeHost: vi.fn(),
+  }),
+}));
+
 vi.mock("node:child_process", () => ({ spawn: mockSpawn }));
 
 vi.mock("../routes/authz.js", () => ({

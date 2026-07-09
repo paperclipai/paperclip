@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockGetExperimental = vi.hoisted(() => vi.fn());
 const mockRoomHandle = vi.hoisted(() => vi.fn());
+const mockWakeHost = vi.hoisted(() => vi.fn());
 const mockSpawn = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
@@ -22,6 +23,18 @@ vi.mock("../services/room-message.js", () => ({
   }),
 }));
 
+vi.mock("../services/room-orchestrator.js", () => ({
+  AgentNotInvokableError: class AgentNotInvokableError extends Error {
+    readonly code = "AGENT_NOT_INVOKABLE" as const;
+    constructor(message: string) {
+      super(message);
+    }
+  },
+  roomOrchestratorService: () => ({
+    wakeHost: mockWakeHost,
+  }),
+}));
+
 vi.mock("node:child_process", () => ({ spawn: mockSpawn }));
 
 vi.mock("../routes/authz.js", () => ({
@@ -37,7 +50,7 @@ async function createApp(deploymentMode: "local_trusted" | "authenticated" = "au
   return app;
 }
 
-describe("POST /api/board/chat/stream silent-until-@ (P0)", () => {
+describe("POST /api/board/chat/stream silent-until-@ + host_run (P0/P1)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
@@ -76,16 +89,26 @@ describe("POST /api/board/chat/stream silent-until-@ (P0)", () => {
       commentId: "comment-1",
       roomMessageId: "comment-1",
     });
+    expect(mockWakeHost).not.toHaveBeenCalled();
     expect(mockSpawn).not.toHaveBeenCalled();
   });
 
-  it("returns 202 adapter_wake_pending for a single mention", async () => {
+  it("returns 202 host_run for a single mention", async () => {
     mockRoomHandle.mockResolvedValue({
       mode: "adapter_wake_pending",
       issueId: "issue-1",
       commentId: "comment-2",
       roomMessageId: "comment-2",
       mentionedAgentIds: ["agent-ceo"],
+    });
+    mockWakeHost.mockResolvedValue({
+      mode: "host_run",
+      issueId: "issue-1",
+      roomMessageId: "comment-2",
+      commentId: "comment-2",
+      hostAgentId: "agent-ceo",
+      hostRunId: "run-9",
+      status: "queued",
     });
     const app = await createApp("authenticated");
 
@@ -97,9 +120,40 @@ describe("POST /api/board/chat/stream silent-until-@ (P0)", () => {
       });
 
     expect(res.status).toBe(202);
-    expect(res.body.mode).toBe("adapter_wake_pending");
-    expect(res.body.mentionedAgentIds).toEqual(["agent-ceo"]);
+    expect(res.body).toEqual({
+      mode: "host_run",
+      issueId: "issue-1",
+      commentId: "comment-2",
+      roomMessageId: "comment-2",
+      hostAgentId: "agent-ceo",
+      hostRunId: "run-9",
+      status: "queued",
+    });
+    expect(mockWakeHost).toHaveBeenCalled();
     expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when host agent is not invokable", async () => {
+    mockRoomHandle.mockResolvedValue({
+      mode: "adapter_wake_pending",
+      issueId: "issue-1",
+      commentId: "comment-2",
+      roomMessageId: "comment-2",
+      mentionedAgentIds: ["agent-ceo"],
+    });
+    const { AgentNotInvokableError } = await import("../services/room-orchestrator.js");
+    mockWakeHost.mockRejectedValue(new AgentNotInvokableError("Agent paused"));
+    const app = await createApp("authenticated");
+
+    const res = await request(app)
+      .post("/api/board/chat/stream")
+      .send({
+        companyId: "company-1",
+        message: "[@CEO](agent://agent-ceo) olá",
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("AGENT_NOT_INVOKABLE");
   });
 
   it("returns 400 FANOUT_NOT_ENABLED for multiple mentions", async () => {

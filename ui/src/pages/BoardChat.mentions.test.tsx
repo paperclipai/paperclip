@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, forwardRef, useImperativeHandle } from "react";
+import { act, forwardRef } from "react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -13,6 +13,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
   listComments: vi.fn(),
   listFeedbackVotes: vi.fn(),
+  uploadAttachment: vi.fn(),
 }));
 const mockDialogState = vi.hoisted(() => ({ onboardingOpen: false }));
 const mockFetch = vi.hoisted(() => vi.fn());
@@ -42,41 +43,64 @@ vi.mock("../components/ActivityFeed", () => ({
 vi.mock("../components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
-vi.mock("../components/MarkdownEditor", () => ({
-  MarkdownEditor: forwardRef(
+vi.mock("./board-chat/BoardChatComposer", () => ({
+  BoardChatComposer: forwardRef(
     (
       {
-        placeholder,
         mentions,
         onChange,
         onSubmit,
+        canAttach,
+        onAttachFile,
       }: {
-        placeholder?: string;
         mentions?: Array<{ name: string }>;
         onChange?: (value: string) => void;
         onSubmit?: () => void;
+        canAttach?: boolean;
+        onAttachFile?: (file: File) => Promise<void>;
       },
-      ref,
-    ) => {
-      useImperativeHandle(ref, () => ({ focus: vi.fn() }));
-      return (
-        <div data-testid="markdown-editor">
-          <span data-testid="composer-placeholder">{placeholder}</span>
-          <span data-testid="mention-count">{mentions?.length ?? 0}</span>
-          <button
-            type="button"
-            data-testid="composer-submit"
-            onClick={() => {
-              onChange?.("hello room");
-              queueMicrotask(() => onSubmit?.());
-            }}
-          >
-            Send
-          </button>
-        </div>
-      );
-    },
+      _ref,
+    ) => (
+      <div data-testid="markdown-editor">
+        <span data-testid="composer-placeholder">
+          Mensagem à sala… use @ para chamar um agente
+        </span>
+        <span data-testid="mention-count">{mentions?.length ?? 0}</span>
+        <button
+          type="button"
+          data-testid="composer-submit"
+          onClick={() => {
+            onChange?.("hello room");
+            queueMicrotask(() => onSubmit?.());
+          }}
+        >
+          Send
+        </button>
+        <button
+          type="button"
+          data-testid="composer-attach"
+          disabled={!canAttach}
+          onClick={() => {
+            void onAttachFile?.(new File(["x"], "note.txt", { type: "text/plain" }));
+          }}
+        >
+          Attach
+        </button>
+      </div>
+    ),
   ),
+}));
+vi.mock("../hooks/usePaperclipIssueRuntime", () => ({
+  usePaperclipIssueRuntime: () => ({}),
+}));
+vi.mock("@assistant-ui/react", () => ({
+  AssistantRuntimeProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+}));
+vi.mock("../api/heartbeats", () => ({
+  heartbeatsApi: {
+    liveRunsForIssue: vi.fn().mockResolvedValue([]),
+    get: vi.fn().mockResolvedValue(null),
+  },
 }));
 vi.mock("../components/AgentBubbleActionRow", () => ({
   AgentBubbleActionRow: () => null,
@@ -191,6 +215,42 @@ describe("BoardChat mentions composer (P0)", () => {
       expect(mockFetch).toHaveBeenCalledWith(
         "/api/board/chat/stream",
         expect.objectContaining({ method: "POST" }),
+      );
+    });
+  });
+
+  it("uploads attachments via issuesApi.uploadAttachment when Board Operations issue exists", async () => {
+    mockIssuesApi.list.mockResolvedValue([
+      {
+        id: "issue-board-ops",
+        title: "Board Operations",
+        status: "todo",
+        identifier: "PAP-1",
+      },
+    ]);
+    mockIssuesApi.uploadAttachment.mockResolvedValue({
+      id: "att-1",
+      contentPath: "/api/attachments/att-1/content",
+    });
+
+    renderBoardChat();
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="composer-attach"]')).toBeTruthy();
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-testid="composer-attach"]')?.disabled,
+      ).toBe(false);
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="composer-attach"]')?.click();
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => {
+      expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledWith(
+        "company-1",
+        "issue-board-ops",
+        expect.any(File),
       );
     });
   });
