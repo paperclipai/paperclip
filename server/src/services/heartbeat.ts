@@ -317,6 +317,9 @@ const TRANSIENT_AGENT_ERROR_CODES = new Set<string>([
   "adapter_failed",
   "codex_transient_upstream",
   "claude_transient_upstream",
+  // Provider cooldowns expire on their own timestamp, so a double-limit is never
+  // a human-attention failure — leaving the agent in `error` strands it forever.
+  "master_runtime_all_limited",
   "timeout",
 ]);
 const HARD_AGENT_ERROR_CODES = new Set<string>([
