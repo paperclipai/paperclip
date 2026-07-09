@@ -1,22 +1,69 @@
 # Paperclip Conference Room (Slack + @agents + A2A) — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan phase-by-phase. Checkboxes (`- [ ]`) in each phase DoD are the tracking surface. **Do not start coding until Cycle 5 tech specs exist** (`docs/research/slack-a2a-room/cycle-5-tech-specs/`). Specs híbridas (P2.5 / dual cost / dual performance) devem seguir Cycle 5B ou extensão das SPECs P1/P4/P5/P6.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan phase-by-phase. Checkboxes (`- [ ]`) in each phase DoD are the tracking surface. **Do not start coding until Cycle 5 / 5B / 5C tech specs exist.** Room: `cycle-5-tech-specs/`. Hybrid `.5`: `cycle-5b-clickup-tech-specs/` (e, quando existir, `cycle-5c-hybrid-tech-specs/`).
 
-**Goal:** Entregar no fork `QuadriniL/paperclip` Path **B+**: Conference Room estilo Slack (silent-until-@, wake real, fan-out/join A2A, HITL) **mais** Hybrid Team & Performance (roster, workload lanes, dual costs, dual performance, Team mgmt) — beachhead Software Houses.
+**Goal:** Entregar no fork `QuadriniL/paperclip` Path **B+** (canônico): Conference Room estilo Slack (silent-until-@, wake real, fan-out/join A2A, HITL) **mais** Hybrid Team & Performance (P1.5 Work Request, P2.5 Team Panel, P4.5 Dual Performance, P5.5 Proactivity Policy) — beachhead Software Houses.
 
-**Architecture:** Path B+ (Slack+@ **+** Team/Insights) só no fork Paperclip (BizCursor desktop pausado). Mentions/Ask orquestram `paperclipDelegate` / `wait:false`+`waitAllSec`; A2A fan-out é app-level. Team Panel unifica humano+AI (gap ClickUp). Feature flag Coolify-safe; DelegationTrace Board-first; performance **fora** do stream.
+**Architecture:** Path **B+** (Slack+@ **+** Team/Insights) só no fork Paperclip (BizCursor desktop pausado). Mentions/Ask orquestram `paperclipDelegate` / `wait:false`+`waitAllSec`; A2A fan-out é app-level. Team Panel unifica humano+AI (gap ClickUp). Feature flag Coolify-safe; DelegationTrace Board-first; performance **fora** do stream.
 
 **Tech Stack:** Paperclip fork (Board Web + control plane), adapters `opencode_local` / `cursor_cloud`, Coolify deploy, A2A task states nativos, cost-events, membership humano+agente.
 
-**Canonical research (Cycle 4 sala):** [`docs/research/slack-a2a-room/cycle-4-plan/00-PRODUCT-PLAN.md`](../research/slack-a2a-room/cycle-4-plan/00-PRODUCT-PLAN.md)  
-**Canonical research (Cycle 4B híbrido — autoritativo para B+):** [`docs/research/slack-a2a-room/cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md`](../research/slack-a2a-room/cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md)
+**Path canônico:** **B+** (D-09…D-13 travadas).  
+**Produto autoritativo (quando existir):** [`docs/research/slack-a2a-room/cycle-4c-hybrid-plan/00-PRODUCT-PLAN-HYBRID-V2.md`](../research/slack-a2a-room/cycle-4c-hybrid-plan/00-PRODUCT-PLAN-HYBRID-V2.md) — *escrito em paralelo; se o arquivo ainda não existir, usar 4B abaixo até o V2 aterrissar.*  
+**Fallback híbrido (4B):** [`docs/research/slack-a2a-room/cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md`](../research/slack-a2a-room/cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md)  
+**Sala (Cycle 4):** [`docs/research/slack-a2a-room/cycle-4-plan/00-PRODUCT-PLAN.md`](../research/slack-a2a-room/cycle-4-plan/00-PRODUCT-PLAN.md)  
+**Nota espelho:** [`docs/research/slack-a2a-room/cycle-4c-hybrid-plan/04-plan-mirror-note.md`](../research/slack-a2a-room/cycle-4c-hybrid-plan/04-plan-mirror-note.md)
+
+---
+
+## UPDATE 2026-07-09 C — Path B+ canônico + fases `.5` + árvore 1c…5c
+
+> **Status:** **Path B+ é canônico** para agentes. Este arquivo é o **plano espelho executável** (checkboxes / DoD).  
+> **Autoridade de produto:** preferir Cycle **4C** V2 quando existir; senão 4B. Em conflito 4C ≻ 4B ≻ 4 (sala).  
+> **Autoridade técnica:** Room P0–P6 → `cycle-5-tech-specs/`; híbrido P1.5 / P2.5 / P4.5 / P5.5 → `cycle-5b-clickup-tech-specs/` (e `cycle-5c-hybrid-tech-specs/` quando existir).
+
+### O que mudou vs UPDATE B+
+
+| Antes (UPDATE B / 4B) | Agora (UPDATE C / alinhado 3C+5B) |
+|---------------------|--------------------------------|
+| Work Request “dentro” de P1 | **P1.5** fase própria (Ask / assign-delegate / templates) |
+| Dual Performance “dentro” de P5 | **P4.5** Dual Performance Dashboard (fora do stream) |
+| Proatividade só como princípio D-10 | **P5.5** Proactivity Policy (whitelist; Room silent) |
+| P2.5 único `.5` explícito | **P1.5 + P2.5 + P4.5 + P5.5** no roadmap |
+| Pesquisa 1–5 + 1B–5B | Árvore completa também com **cycle-1c…5c** |
+| Canônico = 4B | Canônico produto = **4C V2** (path abaixo); espelho = este arquivo |
+
+### Ordem canônica de entrega (agentes)
+
+```text
+P0 → P1 → P1.5 → P2 → P2.5 → P3 → P4 → P4.5 → P5 → P5.5 → P6
+```
+
+Paralelismo permitido (ver DAG 5B): P2.5 ∥ P1.5 após P1; P5.5 pode iniciar após P0; P4.5 espera P4 (+ telemetria P5-R).
+
+### Árvore de pesquisa (três linhas)
+
+| Linha | Pastas | Uso |
+|-------|--------|-----|
+| **A — Room/A2A** | `cycle-1` … `cycle-5-tech-specs` | P0–P6 sala |
+| **B — ClickUp** | `cycle-1b` … `cycle-5b-clickup-tech-specs` | SPECs `.5` atuais |
+| **C — Hybrid consolidado** | `cycle-1c` … `cycle-5c-hybrid-tech-specs` | Discovery→plan V2→specs (4C/5C em escrita) |
+
+**Paths âncora 4C / 5C (podem estar vazios até o parallel land):**
+
+- [`cycle-4c-hybrid-plan/00-PRODUCT-PLAN-HYBRID-V2.md`](../research/slack-a2a-room/cycle-4c-hybrid-plan/00-PRODUCT-PLAN-HYBRID-V2.md)
+- [`cycle-5c-hybrid-tech-specs/`](../research/slack-a2a-room/cycle-5c-hybrid-tech-specs/)
+
+### Remapeamento de conteúdo legado neste arquivo
+
+Seções P1/P4/P5 abaixo ainda descrevem affordances híbridas “embutidas” (UPDATE B). **Para execução, preferir as seções P1.5 / P2.5 / P4.5 / P5.5** e as SPECs 5B. Não apagar o legado — serve de contexto.
 
 ---
 
 ## UPDATE 2026-07-09 B+: Hybrid Team & Performance
 
-> **Status:** merge ativo — este plano operacional agora segue Path **B+** (D-09…D-13).  
-> **Fonte canônica do produto híbrido:** [`docs/research/slack-a2a-room/cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md`](../research/slack-a2a-room/cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md)  
+> **Status:** histórico — merge B+ (D-09…D-13). **Superseded em autoridade por UPDATE C** (fases `.5` explícitas + 4C V2).  
+> **Fonte canônica do produto híbrido (legado 4B):** [`docs/research/slack-a2a-room/cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md`](../research/slack-a2a-room/cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md)  
 > **Descoberta:** [`docs/research/slack-a2a-room/cycle-1b-clickup-discovery/00-INDEX.md`](../research/slack-a2a-room/cycle-1b-clickup-discovery/00-INDEX.md)
 
 ### O que mudou vs Cycle 4 (só sala)
@@ -41,24 +88,27 @@
 | **D-12** | Assign-as-delegate: humano = owner; agente = delegate |
 | **D-13** | Roster AI Hub-like + Workload lanes no mesmo produto |
 
-### Ordem de fases B+
+### Ordem de fases B+ (legado UPDATE B — ver UPDATE C)
 
 ```text
 P0 → P1 (+Work Request) → P2 → P2.5 (Team Panel) → P3 → P4 (dual cost) → P5 (Dual Performance) → P6 (GA + Team mgmt)
 ```
 
-Agentes de implementação: para detalhe de goal / DoD / métricas / cenários SE (EM vê humano+AI), usar o doc Cycle 4B. As seções abaixo foram **estendidas** para refletir B+; em conflito, **4B ganha**.
+> **UPDATE C:** ordem canônica agora inclui **P1.5 / P4.5 / P5.5** explícitos — ver topo do arquivo.
+
+Agentes de implementação: produto → **4C V2** (se existir) senão **4B**; tech → SPECs 5 / 5B / 5C. Em conflito: **4C ≻ 4B ≻ 4**.
 
 ---
 
 # Plano de Produto — Paperclip Path B+ (Room + Hybrid Team)
 
-> **Ciclo:** 4 + **4B** — Planning  
+> **Ciclo:** 4 + 4B + **4C** — Planning  
 > **Data:** 2026-07-09  
-> **Produto:** Conference Room Slack + `@agents` + A2A **e** Hybrid Team & Performance (lente ClickUp)  
+> **Produto:** Conference Room Slack + `@agents` + A2A **e** Hybrid Team & Performance (lente ClickUp / consolidado 1c–5c)  
 > **Repo de implementação:** `QuadriniL/paperclip` (fork-only)  
 > **BizCursor desktop:** **pausado**  
-> **Fonte canônica híbrida:** [`docs/research/slack-a2a-room/cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md`](../research/slack-a2a-room/cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md)  
+> **Fonte canônica híbrida (preferida):** [`docs/research/slack-a2a-room/cycle-4c-hybrid-plan/00-PRODUCT-PLAN-HYBRID-V2.md`](../research/slack-a2a-room/cycle-4c-hybrid-plan/00-PRODUCT-PLAN-HYBRID-V2.md) *(em escrita paralela)*  
+> **Fallback híbrido:** [`docs/research/slack-a2a-room/cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md`](../research/slack-a2a-room/cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md)  
 > **Fonte canônica sala (Cycle 4):** [`docs/research/slack-a2a-room/cycle-4-plan/00-PRODUCT-PLAN.md`](../research/slack-a2a-room/cycle-4-plan/00-PRODUCT-PLAN.md)
 
 **NotebookLM (pré-plano):** overlap Villa CD/Stock/Financial/Sales = **não** · **GO** para planejar fora do processo Villa.
@@ -111,10 +161,12 @@ Construir, no Board do Paperclip (Coolify), um **sistema híbrido** onde:
 | Modelo de sala + peer wait | Ausente | P0–P3 |
 | Cost pill / budget na sala | Parcial (F3-ish no ecossistema) | P1 / P4 |
 | DelegationTrace na sala Board | Ausente (existe rascunho no BizCursor pausado) | P2 no Board UI |
+| Work Request (Ask / assign-delegate) | **Ausente** | **P1.5** |
 | Workforce unificado (humano+AI) | **Ausente** | **P2.5** Team Panel |
-| Dual cost ($ + HITL time) | **Ausente** | **P4 expandido** |
-| Dual Performance Dashboard | **Ausente** | **P5 expandido** |
-| Team management Operator | **Ausente** | **P6 expandido** |
+| Dual cost ($ + HITL time) | **Ausente** | **P4** |
+| Dual Performance Dashboard | **Ausente** | **P4.5** |
+| Proactivity Policy (whitelist) | **Ausente** | **P5.5** |
+| Team management Operator | **Ausente** | **P6** |
 
 ### 1.3 Princípios de entrega (anti-hype)
 
@@ -126,18 +178,19 @@ Construir, no Board do Paperclip (Coolify), um **sistema híbrido** onde:
 
 ---
 
-## 2. Roadmap visual (P0 → P6 + P2.5 B+)
+## 2. Roadmap visual (P0–P6 + P1.5 / P2.5 / P4.5 / P5.5)
 
 ```mermaid
 gantt
-    title Path B+ Room + Hybrid Team — Roadmap
+    title Path B+ Room + Hybrid (.5) — Roadmap
     dateFormat  YYYY-MM-DD
     axisFormat  %b %d
 
     section Room core
     P0 Silent-@ + Coolify-safe           :p0, 2026-07-14, 14d
-    P1 Single @ + Work Request           :p1, after p0, 21d
-    P2 Fan-out + join + Trace UI         :p2, after p1, 21d
+    P1 Single @ wake                     :p1, after p0, 14d
+    P1.5 Work Request Ask/assign         :p15, after p1, 14d
+    P2 Fan-out + join + Trace UI         :p2, after p15, 21d
 
     section Hybrid Team
     P2.5 Team Panel roster + lanes       :p25, after p2, 14d
@@ -145,33 +198,33 @@ gantt
     section Governança
     P3 Peer wait + HITL cards            :p3, after p25, 21d
     P4 Dual costs $ + HITL time          :p4, after p3, 21d
+    P4.5 Dual Performance Dashboard      :p45, after p4, 14d
 
     section Valor contínuo
-    P5 Dual Performance + PARA           :p5, after p4, 21d
-    P6 GA playbooks + Team mgmt          :p6, after p5, 21d
+    P5 PARA light + room metrics         :p5, after p45, 14d
+    P5.5 Proactivity Policy              :p55, after p5, 14d
+    P6 GA playbooks + Team mgmt          :p6, after p55, 21d
 ```
 
 ```text
-P0 Foundation ──► P1 @ + Ask/assign ──► P2 Fan-out/Join ──► P2.5 Team Panel
-                                                                      │
-                         Software House beachhead (EM vê humano+AI) ◄──┤
-                         Support secundário ◄─────────────────────────┤
-                                                                      ▼
-                                              P3 HITL ──► P4 Dual cost ──► P5 Dual Perf ──► P6 GA+Team
+P0 → P1 → P1.5 → P2 → P2.5 → P3 → P4 → P4.5 → P5 → P5.5 → P6
 ```
 
-| Fase | Nome | Duração alvo | Valor de negócio (1 linha) |
-|------|------|--------------|----------------------------|
-| **P0** | Foundation — Silent-until-@ & Coolify path | **2 semanas** | Sala segura sem spam; deploy não quebra |
-| **P1** | Single @ + **Work Request** (Ask / assign-delegate) | **3 semanas** | Pedir trabalho à IA sem fricção; owner humano |
-| **P2** | Fan-out & Join — `@A @B` + DelegationTrace | **3 semanas** | Spike paralelo auditável (diferencial A2A) |
-| **P2.5** | **Team Panel** — roster híbrido + lanes | **2 semanas** | EM vê carga humano+AI no mesmo painel |
-| **P3** | Peer Wait & HITL — quorum + input-required | **3 semanas** | Governança enterprise (approvals no thread) |
-| **P4** | **Dual costs** — $ agentic + tempo HITL + density | **3 semanas** | ROI honesto (máquina + atenção humana) |
-| **P5** | **Dual Performance** + PARA light + weekly | **3 semanas** | Dashboard humano \| agente \| room |
-| **P6** | Polish GA — playbooks + **Team mgmt Sofia** | **3 semanas** | Pacotes vendáveis + gestão de time híbrido |
+| Fase | Nome | Duração alvo | Valor de negócio (1 linha) | SPEC |
+|------|------|--------------|----------------------------|------|
+| **P0** | Foundation — Silent-until-@ & Coolify path | **2 sem** | Sala segura sem spam; deploy não quebra | `cycle-5` P0 |
+| **P1** | Single `@` wake real + cost pill base | **2 sem** | Wake do agente nomeado (não concierge) | `cycle-5` P1 |
+| **P1.5** | **Work Request** — Ask / assign-delegate / templates | **2 sem** | Pedir trabalho à IA sem decorar slug; owner humano | `cycle-5b` P1.5 |
+| **P2** | Fan-out & Join — `@A @B` + DelegationTrace | **3 sem** | Spike paralelo auditável (diferencial A2A) | `cycle-5` P2 |
+| **P2.5** | **Team Panel** — roster híbrido + lanes | **2 sem** | EM vê carga humano+AI no mesmo painel | `cycle-5b` P2.5 |
+| **P3** | Peer Wait & HITL — quorum + input-required | **3 sem** | Governança enterprise (approvals no thread) | `cycle-5` P3 |
+| **P4** | **Dual costs** — $ agentic + tempo HITL + density | **3 sem** | ROI honesto (máquina + atenção humana) | `cycle-5` P4 |
+| **P4.5** | **Dual Performance** — Humano \| Agente \| Room | **2 sem** | Insights fora do stream (D-11) | `cycle-5b` P4.5 |
+| **P5** | PARA light + room metrics / weekly | **2 sem** | Memória scoped + KPIs de sala | `cycle-5` P5 |
+| **P5.5** | **Proactivity Policy** — whitelist; Room silent | **2 sem** | Triggers fora do chat (D-10) | `cycle-5b` P5.5 |
+| **P6** | Polish GA — playbooks + **Team mgmt Sofia** | **3 sem** | Pacotes vendáveis + gestão de time híbrido | `cycle-5` P6 |
 
-**Horizonte total:** ~**20 semanas** (~5 meses) até GA B+ — sujeito a Coolify/ops e design partners.
+**Horizonte total:** ~**22 semanas** (~5,5 meses) até GA B+ com fases `.5` explícitas — sujeito a Coolify/ops e design partners.
 
 ---
 
@@ -256,39 +309,35 @@ Elimina o anti-padrão “concierge responde tudo” e o risco de acordar agente
 
 ---
 
-### P1 — Single @agent + Work Request: Ask / assign-delegate + cost pill
+### P1 — Single @agent wake + cost pill base
 
-**Duração:** 3 semanas  
-**Goal:** Humano acorda agente real **e** pede trabalho com fricção mínima — botão **Ask / Pedir ao agente**, **assign-as-delegate** (D-12: humano owner + agente delegate), cost pill, owner visível.
+**Duração:** 2 semanas  
+**Goal:** Humano acorda agente real via `@mention` — cost pill, cancel, rate limit, owner visível. **Work Request (Ask / assign-delegate / templates) = P1.5.**
 
 #### Business value
-Primeiro “aha” vendável **e** intake híbrido (Cycle 1B): tech lead não precisa lembrar sintaxe `@`; EM vê owner ≠ delegate. Alinha Peng/Copilot **com** METR nuance — pitch honesto.
+Primeiro “aha” técnico: wake do agente nomeado (não concierge). Intake híbrido fácil fica em **P1.5**.
 
 #### Cenários por vertical
 
 | Vertical | Cenário P1 | Valor |
 |----------|------------|-------|
-| **Software House (obrigatório)** | EM/tech lead: **Ask** em issue “checkout 500” → picker `@triage`; assign-delegate: Sofia owner + `@coder` delegate | Time-to-first-triage; carga ownership clara |
-| **Software House** | Ask `@coder` template “implemente spec” → draft + link PR | Time-to-first-diff |
-| **Support** | Ask `@triage-support` no ticket; owner = lead humano | 1ª resposta estruturada |
-| **Content (guardrail)** | Ask `@brief` — **proibido** KPI ROAS | Ops only |
-| **SC early** | Ask `@triage-sc` read-only | Exception triage |
-| **Finance AP** | Ask `@extract` sem approve automático | STP prep |
+| **Software House (obrigatório)** | `@triage` em issue “checkout 500” | Time-to-first-triage |
+| **Software House** | `@coder` “implemente spec” → draft + link PR | Time-to-first-diff |
+| **Support** | `@triage-support` no ticket | 1ª resposta estruturada |
+| **Content (guardrail)** | `@brief` — **proibido** KPI ROAS | Ops only |
+| **SC early** | `@triage-sc` read-only | Exception triage |
+| **Finance AP** | `@extract` sem approve automático | STP prep |
 
 #### Functional scope
 - Resolve mention → `agentId` membership; wake do agente nomeado (não concierge).
 - Resposta no mesmo thread; cost pill; cancel; rate limit; autocomplete `@`.
-- **Ask / Pedir ao agente:** CTA composer/issue → picker → template opcional → wake.
-- **Assign-as-delegate (D-12):** `ownerUserId` + `delegateAgentId` ambos na UI.
-- Templates leves SE: triage bug, implement spec, review draft.
 
 #### Out of scope
-- `@A @B` / join (P2); Team Panel (P2.5); Dual Performance (P5); cards HITL ricos (P3).
+- Ask button / assign-delegate / templates → **P1.5**.
+- `@A @B` / join (P2); Team Panel (P2.5); Dual Performance (P4.5); cards HITL ricos (P3).
 
 #### DoD checklist (testável)
 - [ ] ST: `@ceo` / `@dev` → wake real; concierge **não** responde.
-- [ ] Botão Ask → picker → 1 wake; owner humano gravado.
-- [ ] Assign-delegate: owner humano + delegate agente visíveis.
 - [ ] Cost pill (ou `pending`); cancel < 10s; rate limit 4º wake/min.
 - [ ] ≥5 threads SE staging; messaging sem SWE-Bench 90%.
 
@@ -300,16 +349,64 @@ Primeiro “aha” vendável **e** intake híbrido (Cycle 1B): tech lead não pr
 |-------|-----------|
 | Wake cai no concierge | Assert `agentId` no DoD |
 | Custo indisponível | Pill `pending`; não bloquear P1 |
-| Ask sem adoção | Medir % wakes via Ask; iterar CTA |
 
 #### Success metrics
 | Métrica | Alvo P1 (piloto 2 semanas) |
 |---------|----------------------------|
 | Threads com wake real | ≥ **20** |
-| % wakes via Ask | ≥ **30%** |
-| % delegações com owner+delegate | ≥ **50%** |
 | Mediana time-to-first-agent-message | < **90s** |
 | NPS tech leads (1–5) | ≥ **4** (n≥5) |
+
+---
+
+### P1.5 — Work Request: Ask / assign-as-delegate / templates
+
+**Duração:** 2 semanas  
+**Goal:** Qualquer company member pede trabalho à IA com fricção mínima — botão **Ask / Pedir ao agente**, **assign-as-delegate** (D-12: humano owner + agente delegate), templates (triage / research / draft / review).
+
+**SPEC:** [`cycle-5b-clickup-tech-specs/P1.5-work-request-SPEC.md`](../research/slack-a2a-room/cycle-5b-clickup-tech-specs/P1.5-work-request-SPEC.md)
+
+#### Business value
+Intake híbrido (Cycle 1B/1C): tech lead não precisa lembrar sintaxe `@`; EM vê owner ≠ delegate. Alinha Linear/ClickUp **com** accountability humana.
+
+#### Cenários por vertical
+
+| Vertical | Cenário P1.5 | Valor |
+|----------|--------------|-------|
+| **Software House (obrigatório)** | Ask em issue → picker `@triage`; assign-delegate: Sofia owner + `@coder` delegate | Carga ownership clara |
+| **Support** | Ask `@triage-support`; owner = lead humano | 1ª resposta estruturada |
+| **Content (guardrail)** | Ask `@brief` — **proibido** KPI ROAS | Ops only |
+| **SC / AP** | Ask read-only / extract sem approve auto | Exception / STP prep |
+
+#### Functional scope
+- CTA Ask em Issue / Room / (opcional) Team row.
+- Modal Work Request + templates; `ownerUserId` + `delegateAgentId` na UI.
+- Reusa wake P1 / assignment-wakeup; respeita P5.5 quando existir (sem ambient).
+
+#### Out of scope
+- Fan-out N agentes (P2); Dual Performance (P4.5); ambient Autopilot na Room.
+
+#### DoD checklist (testável)
+- [ ] Botão Ask → picker → 1 wake; owner humano gravado.
+- [ ] Assign-delegate: owner humano + delegate agente visíveis.
+- [ ] Templates triage/research/draft/review disparam wake com prompt preenchido.
+- [ ] Smoke ST-P15 (ver SPEC 5B) verde em staging.
+- [ ] % wakes via Ask medido (telemetria).
+
+#### Dependencies
+- P1 (single wake); opcional P2.5 membership; opcional P5.5 policy gate.
+
+#### Risks
+| Risco | Mitigação |
+|-------|-----------|
+| Ask sem adoção | Medir % wakes via Ask; iterar CTA |
+| Owner some na UI | Assert D-12 no DoD |
+
+#### Success metrics
+| Métrica | Alvo P1.5 (piloto 2 semanas) |
+|---------|------------------------------|
+| % wakes via Ask | ≥ **30%** |
+| % delegações com owner+delegate | ≥ **50%** |
 
 ---
 
@@ -384,6 +481,8 @@ Diferencial competitivo vs. “só chatbot com mentions”: spike paralelo com a
 **Duração:** 2 semanas  
 **Goal:** Aba **Team** com roster híbrido (humanos + agentes) e **lanes de workload** no mesmo painel (D-13), fora do stream (D-11).
 
+**SPEC:** [`cycle-5b-clickup-tech-specs/P2.5-hybrid-team-panel-SPEC.md`](../research/slack-a2a-room/cycle-5b-clickup-tech-specs/P2.5-hybrid-team-panel-SPEC.md)
+
 #### Business value
 Fecha o gap ClickUp (AI Hub ≠ Workload unificado). Diferencial B+: EM responde “quem está carregado — pessoas e agentes?” sem sair do Board.
 
@@ -403,13 +502,14 @@ Fecha o gap ClickUp (AI Hub ≠ Workload unificado). Diferencial B+: EM responde
 - Sem ambient Autopilot na Room (D-10).
 
 #### Out of scope
-- Dual Performance trends (P5); HRIS; capacity drag-and-drop avançado.
+- Dual Performance trends (**P4.5**); HRIS; capacity drag-and-drop avançado.
 
 #### DoD checklist (testável)
 - [ ] Team lista ≥1 humano + ≥1 agente staging.
 - [ ] Lanes alinhadas à API (assert IDs); deep-link correto.
 - [ ] Filtro por canal; stream **sem** widgets de performance.
 - [ ] EM script “quem está saturado?” < **60s**.
+- [ ] Smoke ST-P25 (ver SPEC 5B) verde em staging.
 
 #### Dependencies
 - P2 (runs/delegation reais para popular lanes de agentes).
@@ -418,7 +518,7 @@ Fecha o gap ClickUp (AI Hub ≠ Workload unificado). Diferencial B+: EM responde
 | Risco | Mitigação |
 |-------|-----------|
 | Roster vira página morta | Deep-links + uso semanal no DoD |
-| Confundir com Insights | P2.5 = capacity **agora**; trends = P5 |
+| Confundir com Insights | P2.5 = capacity **agora**; trends = **P4.5** |
 
 #### Success metrics
 | Métrica | Alvo P2.5 |
@@ -535,55 +635,151 @@ Resposta direta ao Gartner (custos / valor unclear). Tokens sozinhos **subestima
 
 ---
 
-### P5 — Dual Performance Dashboard + PARA light + weekly value
+### P4.5 — Dual Performance Dashboard: Humano \| Agente \| Room
 
-**Duração:** 3 semanas  
-**Goal:** Dashboard **Dual Performance** (filtros **Humano \| Agente \| Room**) fora do stream (D-11) + PARA light + weekly value.
+**Duração:** 2 semanas  
+**Goal:** Dashboard **Dual Performance** (filtros **Humano \| Agente \| Room**) fora do stream (D-11) — Insights Board + digest Sofia.
+
+**SPEC:** [`cycle-5b-clickup-tech-specs/P4.5-dual-performance-SPEC.md`](../research/slack-a2a-room/cycle-5b-clickup-tech-specs/P4.5-dual-performance-SPEC.md)
 
 #### Business value
-Sem métricas dual, o EM não governa o sistema híbrido; sem PARA, cada `@` reexplica o repo. Fecha capacidade (P2.5) + custo (P4) + **resultado**.
+Sem métricas dual, o EM não governa o sistema híbrido. Fecha capacidade (P2.5) + custo (P4) + **resultado** sem vanity no stream.
+
+#### Cenários por vertical
+
+| Vertical | Métrica |
+|----------|---------|
+| **Software House (obrigatório)** | Insights: Humano (HITL p50 Sofia) · Agente (`@coder` success/$) · Room (time-to-first-diff, join %, HITL %) |
+| **Support** | KPI 1ª resposta < 2 min (híbrido Klarna) |
+| **Content** | % brand-check — sem ROAS |
+| **SC / AP** | Exceptions / queue time (compliance) |
+
+#### Functional scope
+- Insights: Outcome + Collaboration + Reliance + Agent health + Cost + Human orchestration + Risk — só acionáveis.
+- Digest Sofia (baixa densidade) vs Board (denso); deep-link Team lanes.
+- Empty states honestos (`null`) se P5-R / P1.5 ausentes — nunca inventar `0`.
+- **Proibido:** productivity score único opaco humano+AI; widgets de perf no stream.
+
+#### Out of scope
+- PARA / memória (P5); proactivity editor (P5.5); FinOps multi-cloud.
+
+#### DoD checklist (testável)
+- [ ] Três filtros Humano \| Agente \| Room com dados staging (ou empty honesto).
+- [ ] EM compara Sofia vs `@coder` em < **2 min**.
+- [ ] Sem widgets de perf no stream; smoke ST-P45 verde.
+- [ ] Sem PII Support em agregados.
+
+#### Dependencies
+- P4 (costs) + telemetria P5-R (pode stub); útil P2.5 capacity feed; opcional P1.5 work requests.
+
+#### Risks
+| Risco | Mitigação |
+|-------|-----------|
+| Vanity charts | Só KPIs Cycle 3C/2C CONFIRMED |
+| Dados incompletos | `null` + empty state; não inventar |
+
+#### Success metrics
+| Métrica | Alvo P4.5 (piloto) |
+|---------|---------------------|
+| Weekly Insights aberto pelo EM/Board | ≥ **1×/semana** |
+| Tempo EM comparar humano vs agente | < **2 min** |
+
+---
+
+### P5 — PARA light + room metrics / weekly value
+
+**Duração:** 2 semanas  
+**Goal:** PARA light scoped por canal + métricas de sala / weekly value. **Dual Performance Dashboard = P4.5.**
+
+#### Business value
+Sem PARA, cada `@` reexplica o repo. Room metrics alimentam P4.5 e o weekly.
 
 #### Cenários por vertical
 
 | Vertical | Memória / métrica |
 |----------|-------------------|
-| **Software House (obrigatório)** | Insights: Humano (HITL p50 Sofia) · Agente (`@coder` success/$ ) · Room (time-to-first-diff, join %, HITL %) | Weekly value sem slideware |
-| **Support** | Macros/KB; KPI 1ª resposta < 2 min | Híbrido Klarna |
-| **Content** | Brand voice; % brand-check — sem ROAS | Guardrail |
-| **SC** | Playbook limiares $ | Exceptions |
-| **AP** | Vendor prefs; queue time | Compliance |
+| **Software House (obrigatório)** | PARA no canal eng; weekly value sem slideware |
+| **Support** | Macros/KB; KPI 1ª resposta |
+| **Content** | Brand voice — sem ROAS |
+| **SC / AP** | Playbook limiares $ / vendor prefs |
 
 #### Functional scope
-- Insights: Outcome + Collaboration + Reliance + Agent health + Cost + Human orchestration + Risk — só acionáveis.
 - PARA light scoped por canal; teto tokens; baseline wizard; opt-out.
-- Weekly report exportável; deep-link Team lanes.
-- **Proibido:** productivity score único opaco humano+AI.
+- Weekly report exportável; telemetria room (P5-R) para P4.5.
+- **Proibido:** productivity score único opaco; widgets de perf no stream (já P4.5).
 
 #### Out of scope
-- RAG enterprise completo; auto-tuning; voice memory como claim causal.
+- Dual Performance UI (**P4.5**); RAG enterprise completo; auto-tuning.
 
 #### DoD checklist (testável)
-- [ ] Três filtros Humano \| Agente \| Room com dados staging.
-- [ ] EM compara Sofia vs `@coder` em < **2 min**.
 - [ ] PARA no próximo `@`; opt-out; weekly 1 semana real.
-- [ ] Sem PII Support em agregados; sem widgets de perf no stream.
+- [ ] Telemetria room disponível para Insights (ou stub documentado).
+- [ ] Sem PII Support em agregados.
 
 #### Dependencies
-- P1–P4 + P2.5; design partner SE para baseline.
+- P1–P4 + P2.5; design partner SE para baseline; P4.5 consome métricas.
 
 #### Risks
 | Risco | Mitigação |
 |-------|-----------|
 | Memória polui prompt | Teto tokens + pin manual |
-| Vanity charts | Só KPIs Cycle 3/1B acionáveis |
 
 #### Success metrics
 | Métrica | Alvo P5 (piloto 30–60d) |
 |---------|-------------------------|
 | Time-to-first-diff vs baseline | **−40%** (n≥10) |
 | Handoffs fora do canal | **−50%** |
-| Weekly Insights aberto pelo EM/Board | ≥ **1×/semana** |
 | % PRs com testes citados | ≥ **70%** |
+
+---
+
+### P5.5 — Proactivity Policy: whitelist; Room silent-until-@
+
+**Duração:** 2 semanas  
+**Goal:** `ProactivityPolicyEditor` + whitelist de triggers; Room permanece **silent-until-@** (D-10); routines/webhooks/Autopilot-like **fora** da Room.
+
+**SPEC:** [`cycle-5b-clickup-tech-specs/P5.5-proactivity-policy-SPEC.md`](../research/slack-a2a-room/cycle-5b-clickup-tech-specs/P5.5-proactivity-policy-SPEC.md)
+
+#### Business value
+Anti-spam Gartner: proatividade governada sem ambient chat. Sofia documenta o que pode acordar agentes fora da sala.
+
+#### Cenários por vertical
+
+| Vertical | Policy |
+|----------|--------|
+| **Software House** | Cron nightly triage **fora** da Room; chat só com `@` |
+| **Support** | Webhook ticket → routine; sem auto-reply no canal |
+| **Content** | Brand-check só sob Ask/`@` (gate) |
+| **SC / AP** | Alerta ERP → fila; wake só com limiar + humano |
+
+#### Functional scope
+- Schema + editor de policy; gate Room (nenhum ambient).
+- Deep-links Routines / cron / webhooks; integração com Ask (P1.5) quando existir.
+- Documentação ops Coolify.
+
+#### Out of scope
+- Ambient Autopilot na Room; novos adapters; BizCursor.
+
+#### DoD checklist (testável)
+- [ ] Policy default: Room silent; whitelist vazia ou só routines documentadas.
+- [ ] Tentativa de ambient wake na Room → bloqueada + log.
+- [ ] Editor UX + smoke ST-P55 verde.
+- [ ] Playbook D-10 citado no GA (P6).
+
+#### Dependencies
+- P0 silent-until-@; routines existentes; integração Ask fecha com P1.5.
+
+#### Risks
+| Risco | Mitigação |
+|-------|-----------|
+| Policy ignorada | Gate no room-orchestrator + teste regressão |
+| Over-config | Defaults seguros; YAGNI |
+
+#### Success metrics
+| Métrica | Alvo P5.5 |
+|---------|-----------|
+| False ambient wakes na Room | **0** |
+| % companies piloto com policy documentada | **100%** |
 
 ---
 
@@ -608,8 +804,8 @@ Oferta empacotável: montar **time híbrido** (sala + roster + budgets + Ask tem
 #### Functional scope
 - Onboarding Room + **Team**: membership humano; attach agente; roles (owner, approver, operator).
 - Sofia: budget, quorum, templates Ask; **pausar agente** (no new wakes).
-- Whitelist triggers proativos **fora** da Room (routines/webhooks) — sem ambient chat.
-- A11y AA; i18n PT-BR/EN; ST-ROOM + ST-TEAM no CI; seed JSON executável.
+- Whitelist triggers proativos **fora** da Room (routines/webhooks) — **P5.5** documentada no playbook.
+- A11y AA; i18n PT-BR/EN; ST-ROOM + ST-TEAM + ST-P15/25/45/55 no CI; seed JSON executável.
 - Flag default on novos companies; anti-hype no playbook (D-09…D-13).
 
 #### Out of scope
@@ -645,30 +841,34 @@ Oferta empacotável: montar **time híbrido** (sala + roster + budgets + Ask tem
 | Fase | Software House | Support Ops | Content (guardrails) | SC early | Finance AP |
 |------|----------------|-------------|----------------------|----------|------------|
 | P0 | silent demo | silent fila | silent drafts | alerta passivo | fila passiva |
-| P1 | **@ + Ask + assign-delegate** | Ask triage | brief Ask | triage Ask | extract Ask |
+| P1 | **@ wake real** | triage @ | brief @ | triage @ | extract @ |
+| **P1.5** | **Ask + assign-delegate** | Ask triage | brief Ask | triage Ask | extract Ask |
 | P2 | **spikes paralelos** | L1 multi-agent | brief+copy+brand | triage paralelo | extract+match |
 | **P2.5** | **EM vê humano+AI load** | balance L1/VIP | roles gate | segregação | approver visível |
 | P3 | review gates + lane HITL | **híbrido VIP** | **brand block** | $ cards | **approver cards** |
 | P4 | **dual $ + HITL min** | $/ticket + min | $/campanha ops | $/exception | audit dual |
-| P5 | **Dual Performance** | KPI <2 min | % brand-check | playbooks | queue −30% |
+| **P4.5** | **Dual Performance** | KPI <2 min | % brand-check | playbooks | queue −30% |
+| P5 | PARA + room metrics | macros/KB | brand voice | limiares $ | vendor prefs |
+| **P5.5** | **policy whitelist** | webhook≠ambient | brand só sob @ | alerta→fila | limiar+humano |
 | P6 | **playbook + Team mgmt** | **playbook GA** | appendix guardrail | early appendix | appendix pós-gov |
 
 ---
 
 ## 6. Métricas norte (produto B+)
 
-Alinhadas a Cycle 3 + Cycle 1B/4B — **não** autonomy theater:
+Alinhadas a Cycle 3 / 3C + 1B/1C/4B/4C — **não** autonomy theater:
 
 | Norte | Definição | Onde vive |
 |-------|-----------|-----------|
 | Time-to-first-diff | humano bug → 1º PR link no thread | P5 Room |
 | EM capacity clarity | tempo para “quem está livre (humano+AI)?” | P2.5 |
 | Dual cost coverage | % threads com $ **e** HITL time known | P4 |
+| Dual performance cadence | Insights aberto ≥1×/semana pelo EM | **P4.5** |
 | Human gate integrity | % ações perigosas com approve | P3 |
-| Work request adoption | % wakes via Ask / assign-delegate | P1 |
+| Work request adoption | % wakes via Ask / assign-delegate | **P1.5** |
 | Join reliability | fan-out join ok / tentativas | P2 |
 | False wake rate | wakes sem `@` | P0 |
-| Dual performance cadence | Insights aberto ≥1×/semana pelo EM | P5 |
+| Ambient wake rate | wakes proativos na Room | **P5.5** (= **0**) |
 
 ---
 
@@ -701,19 +901,25 @@ Alinhadas a Cycle 3 + Cycle 1B/4B — **não** autonomy theater:
 
 ---
 
-## 8. Citações de pesquisa (Cycles 1–4B)
+## 8. Citações de pesquisa (Cycles 1–5c)
 
 | Doc | Uso neste plano |
 |-----|-----------------|
-| [`cycle-1b-clickup-discovery/00-INDEX.md`](../research/slack-a2a-room/cycle-1b-clickup-discovery/00-INDEX.md) | D-09…D-13; ClickUp PRIMARY; Ask stack; dual metrics |
-| [`cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md`](../research/slack-a2a-room/cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md) | **Canônico B+** — fases, DoD, métricas híbridas |
+| [`cycle-4c-hybrid-plan/00-PRODUCT-PLAN-HYBRID-V2.md`](../research/slack-a2a-room/cycle-4c-hybrid-plan/00-PRODUCT-PLAN-HYBRID-V2.md) | **Canônico B+ (quando existir)** — produto V2 |
+| [`cycle-4c-hybrid-plan/04-plan-mirror-note.md`](../research/slack-a2a-room/cycle-4c-hybrid-plan/04-plan-mirror-note.md) | Relação espelho ↔ research |
+| [`cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md`](../research/slack-a2a-room/cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md) | Fallback híbrido até 4C V2 |
 | [`cycle-4-plan/00-PRODUCT-PLAN.md`](../research/slack-a2a-room/cycle-4-plan/00-PRODUCT-PLAN.md) | Base sala P0–P6 |
+| [`cycle-1c-hybrid-discovery/00-INDEX.md`](../research/slack-a2a-room/cycle-1c-hybrid-discovery/00-INDEX.md) | Discovery híbrido consolidado |
+| [`cycle-2c-hybrid-confirmation/00-INDEX.md`](../research/slack-a2a-room/cycle-2c-hybrid-confirmation/00-INDEX.md) | Claims híbridos CONFIRMED |
+| [`cycle-3c-hybrid-deep-dive/00-INDEX.md`](../research/slack-a2a-room/cycle-3c-hybrid-deep-dive/00-INDEX.md) | Ordem P0…P6 + `.5`; gap matrix |
+| [`cycle-1b-clickup-discovery/00-INDEX.md`](../research/slack-a2a-room/cycle-1b-clickup-discovery/00-INDEX.md) | D-09…D-13; ClickUp PRIMARY |
+| [`cycle-5-tech-specs/00-INDEX.md`](../research/slack-a2a-room/cycle-5-tech-specs/00-INDEX.md) | SPECs Room P0–P6 |
+| [`cycle-5b-clickup-tech-specs/00-INDEX.md`](../research/slack-a2a-room/cycle-5b-clickup-tech-specs/00-INDEX.md) | SPECs P1.5 / P2.5 / P4.5 / P5.5 |
+| [`cycle-5c-hybrid-tech-specs/`](../research/slack-a2a-room/cycle-5c-hybrid-tech-specs/) | SPECs híbridas V2 (quando existir) |
 | [`cycle-1-discovery/00-INDEX.md`](../research/slack-a2a-room/cycle-1-discovery/00-INDEX.md) | Path B; fork-only; A2A app-level |
-| [`cycle-2-confirmation/00-INDEX.md`](../research/slack-a2a-room/cycle-2-confirmation/00-INDEX.md) | Claims; `waitAllSec`; UX Claude/Linear; quorum |
-| [`cycle-3-deep-dive/03-verticals-and-value.md`](../research/slack-a2a-room/cycle-3-deep-dive/03-verticals-and-value.md) | Beachhead SE; anti-hype; matriz vertical |
 | [`docs/handoffs/2026-07-07-f2-native-delegation.md`](../../handoffs/2026-07-07-f2-native-delegation.md) | Contrato delegation; BizCursor pausado |
 
-**Próximo ciclo sugerido:** Cycle 5 / 5B — tech specs Room + P2.5 Team + dual cost + Dual Performance em `docs/research/slack-a2a-room/cycle-5-tech-specs/` (estender ou pasta `cycle-5b-`).
+**Próximo:** implementar após SPECs 5/5B (e 5C se V2 exigir). Não reabrir D-01…D-13 sem ADR.
 
 ---
 
@@ -722,11 +928,11 @@ Alinhadas a Cycle 3 + Cycle 1B/4B — **não** autonomy theater:
 | Papel | Responsabilidade |
 |-------|------------------|
 | Product / founder | Prioridade B+, design partners, claims |
-| Eng fork Paperclip | P0–P6 + P2.5 no Board; Coolify |
+| Eng fork Paperclip | P0–P6 + P1.5/P2.5/P4.5/P5.5 no Board; Coolify |
 | Ops Coolify | Flags, canary, rollback |
 | Design partner SE (EM) | Baseline carga + Insights semanais |
-| Operator Sofia | Team mgmt no GA; templates Ask |
-| Agentes de implementação | Seguir este plano + Cycle 4B; **não** reabrir D-01…D-13 sem ADR |
+| Operator Sofia | Team mgmt no GA; templates Ask; policy P5.5 |
+| Agentes de implementação | Seguir este espelho + **4C V2** (ou 4B); **não** reabrir D-01…D-13 sem ADR |
 
 **Commits / PRs:** só no fork Paperclip para este roadmap. BizCursor: freeze salvo hotfixes críticos pré-acordados.
 
@@ -735,25 +941,27 @@ Alinhadas a Cycle 3 + Cycle 1B/4B — **não** autonomy theater:
 
 ---
 
-## 10. Veredito Cycle 4 + 4B
+## 10. Veredito Cycle 4 + 4B + 4C
 
-1. Path **B+** (~20 semanas) entrega GA beachhead **Software House** com Room **e** Hybrid Team — playbook Support secundário.
-2. Valor Room em **P1** (Ask); diferencial A2A em **P2**; diferencial ClickUp-gap em **P2.5**; enterprise gate em **P3**; sobrevivência comercial em **P4–P5** dual; Team mgmt em **P6**.
+1. Path **B+** (~22 semanas com `.5`) entrega GA beachhead **Software House** com Room **e** Hybrid Team — playbook Support secundário.
+2. Valor Room em **P1**; intake fácil em **P1.5**; diferencial A2A em **P2**; diferencial ClickUp-gap em **P2.5**; enterprise gate em **P3**; sobrevivência comercial em **P4** + **P4.5**; memória em **P5**; governança proativa em **P5.5**; Team mgmt em **P6**.
 3. BizCursor desktop permanece **pausado**; DelegationTrace e Team/Insights são **Board-first**.
-4. Cycle 5/5B detalha contratos sem reabrir Path B+ / fork-only / app-level fan-out / D-09…D-13.
-5. Em conflito entre Cycle 4 sala e Cycle 4B híbrido → **4B ganha**.
+4. Cycle 5/5B/5C detalha contratos sem reabrir Path B+ / fork-only / app-level fan-out / D-09…D-13.
+5. Em conflito: **4C V2 ≻ 4B ≻ 4 (sala)**; este arquivo = espelho executável.
 
 ---
 
-*Documento atualizado Cycle 4B Hybrid · 2026-07-09 · PT-BR*
+*Documento atualizado UPDATE C · Cycle 4C Hybrid V2 mirror · 2026-07-09 · PT-BR*
 
 ---
 
 ## Execution handoff
 
-**Plan complete (B+).** Duas opções de execução (após Cycle 5/5B tech specs):
+**Plan complete (B+ canônico, UPDATE C).** Duas opções de execução (após Cycle 5/5B/5C tech specs):
 
 1. **Subagent-Driven (recomendado)** — um subagent fresco por fase/tarefa; review entre fases (`superpowers:subagent-driven-development`).
 2. **Inline Execution** — executar na sessão com checkpoints (`superpowers:executing-plans`).
 
-**Ordem:** P0 → P1 → P2 → **P2.5** → P3 → P4 → P5 → P6. Não pular fases. Não reabrir D-01…D-13 sem ADR. Canônico híbrido: `cycle-4b-clickup-plan/00-PRODUCT-PLAN-HYBRID.md`.
+**Ordem:** P0 → P1 → **P1.5** → P2 → **P2.5** → P3 → P4 → **P4.5** → P5 → **P5.5** → P6. Não pular fases. Não reabrir D-01…D-13 sem ADR.  
+**Canônico produto:** `cycle-4c-hybrid-plan/00-PRODUCT-PLAN-HYBRID-V2.md` (quando existir; senão 4B).  
+**Canônico tech `.5`:** `cycle-5b-clickup-tech-specs/` (e 5C quando existir).
