@@ -11,14 +11,12 @@ import {
 } from "drizzle-orm/pg-core";
 import type { EnvironmentCustomImageTemplateStatus } from "@paperclipai/shared";
 import { agents } from "./agents.js";
-import { companies } from "./companies.js";
 import { environments } from "./environments.js";
 
 export const environmentCustomImageTemplates = pgTable(
   "environment_custom_image_templates",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     environmentId: uuid("environment_id").notNull().references(() => environments.id, { onDelete: "cascade" }),
     provider: text("provider").notNull(),
     templateKind: text("template_kind").notNull().default("unknown"),
@@ -37,23 +35,19 @@ export const environmentCustomImageTemplates = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    companyEnvironmentStatusIdx: index("environment_custom_image_templates_company_environment_status_idx").on(
-      table.companyId,
+    environmentStatusIdx: index("environment_custom_image_templates_environment_status_idx").on(
       table.environmentId,
       table.status,
     ),
-    companyProviderStatusIdx: index("environment_custom_image_templates_company_provider_status_idx").on(
-      table.companyId,
+    environmentProviderStatusIdx: index("environment_custom_image_templates_environment_provider_status_idx").on(
+      table.environmentId,
       table.provider,
       table.status,
     ),
-    companyEnvironmentActiveUq: uniqueIndex("environment_custom_image_templates_company_environment_active_uq")
-      .on(table.companyId, table.environmentId)
+    environmentActiveUq: uniqueIndex("environment_custom_image_templates_environment_active_uq")
+      .on(table.environmentId)
       .where(sql`${table.status} = 'active'`),
     supersededByIdx: index("environment_custom_image_templates_superseded_by_idx").on(table.supersededByTemplateId),
-    companyLastUsedIdx: index("environment_custom_image_templates_company_last_used_idx").on(
-      table.companyId,
-      table.lastUsedAt,
-    ),
+    lastUsedIdx: index("environment_custom_image_templates_last_used_idx").on(table.lastUsedAt),
   }),
 );

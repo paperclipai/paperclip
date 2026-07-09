@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { HttpError } from "../errors.js";
 import { assertBoardOrgAccess, assertCompanyAccess, hasBoardOrgAccess } from "../routes/authz.js";
 
 function makeReq(input: {
@@ -99,6 +100,93 @@ describe("assertCompanyAccess", () => {
         userId: "local-board",
         source: "local_implicit",
         isInstanceAdmin: true,
+      },
+    });
+
+    expect(() => assertCompanyAccess(req, "company-1")).not.toThrow();
+  });
+
+  it("fails closed when an on-behalf-of agent lacks a responsible user membership snapshot", () => {
+    const req = makeReq({
+      method: "GET",
+      actor: {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        onBehalfOfUserId: "user-1",
+        onBehalfOfMemberships: [],
+        source: "agent_jwt",
+      },
+    });
+
+    expect(() => assertCompanyAccess(req, "company-1")).toThrow(HttpError);
+    try {
+      assertCompanyAccess(req, "company-1");
+    } catch (err) {
+      expect((err as HttpError).details).toMatchObject({ code: "RESPONSIBLE_USER_UNAVAILABLE" });
+    }
+  });
+
+  it("rejects on-behalf-of agent writes when the responsible user is read-only", () => {
+    const req = makeReq({
+      method: "PATCH",
+      actor: {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        onBehalfOfUserId: "user-1",
+        onBehalfOfMemberships: [
+          { companyId: "company-1", membershipRole: "viewer", status: "active" },
+        ],
+        source: "agent_jwt",
+      },
+    });
+
+    try {
+      assertCompanyAccess(req, "company-1");
+    } catch (err) {
+      expect((err as HttpError).status).toBe(403);
+      expect((err as HttpError).details).toMatchObject({ code: "RESPONSIBLE_USER_UNAUTHORIZED" });
+      return;
+    }
+    throw new Error("Expected responsible-user company access denial");
+  });
+
+  it("logs only in shadow mode for responsible-user company access denials", () => {
+    const previous = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_SHADOW;
+    process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_SHADOW = "true";
+    try {
+      const req = makeReq({
+        method: "PATCH",
+        actor: {
+          type: "agent",
+          agentId: "agent-1",
+          companyId: "company-1",
+          onBehalfOfUserId: "user-1",
+          onBehalfOfMemberships: [],
+          source: "agent_jwt",
+        },
+      });
+
+      expect(() => assertCompanyAccess(req, "company-1")).not.toThrow();
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_SHADOW;
+      else process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_SHADOW = previous;
+    }
+  });
+
+  it("allows on-behalf-of agent writes for active non-viewer responsible users", () => {
+    const req = makeReq({
+      method: "PATCH",
+      actor: {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        onBehalfOfUserId: "user-1",
+        onBehalfOfMemberships: [
+          { companyId: "company-1", membershipRole: "operator", status: "active" },
+        ],
+        source: "agent_jwt",
       },
     });
 

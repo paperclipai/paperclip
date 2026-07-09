@@ -1,15 +1,18 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { inArray } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq, inArray, sql } from "drizzle-orm";
 import {
   companies,
   createDb,
   executionWorkspaces,
+  issueComments,
+  issueRecoveryActions,
   issues,
   projectWorkspaces,
   projects,
@@ -24,6 +27,10 @@ import {
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
 } from "../services/execution-workspaces.ts";
+import {
+  startRuntimeServicesForWorkspaceControl,
+  stopRuntimeServicesForExecutionWorkspace,
+} from "../services/workspace-runtime.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -132,6 +139,11 @@ async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", ["-C", cwd, ...args], { cwd });
 }
 
+async function readGit(cwd: string, args: string[]) {
+  const output = await execFileAsync("git", ["-C", cwd, ...args], { cwd });
+  return output.stdout.trim() || null;
+}
+
 async function createTempRepo() {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-execution-workspace-"));
   await runGit(repoRoot, ["init"]);
@@ -142,6 +154,62 @@ async function createTempRepo() {
   await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
   await runGit(repoRoot, ["branch", "-M", "main"]);
   return repoRoot;
+}
+
+async function waitForPath(filePath: string, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await fs.access(filePath);
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  throw new Error(`Timed out waiting for ${filePath}`);
+}
+
+function stableStringifyForTest(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringifyForTest(entry)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    return `{${Object.keys(rec).sort().map((key) => `${JSON.stringify(key)}:${stableStringifyForTest(rec[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function fingerprintWorkspaceBranchIncoherenceForTest(input: {
+  repoRoot: string;
+  worktreePath: string;
+  sourceIssueId: string;
+  executionWorkspaceId: string;
+  expectedBranch: string;
+  actualBranch: string | null;
+}) {
+  const status = await execFileAsync("git", ["-C", input.worktreePath, "status", "--porcelain", "--untracked-files=all"], {
+    cwd: input.worktreePath,
+  }).then((output) => output.stdout).catch(() => null);
+  const expectedHeadSha = await readGit(input.repoRoot, ["rev-parse", "--verify", `refs/heads/${input.expectedBranch}^{commit}`])
+    .catch(() => null);
+  const actualHeadSha = await readGit(input.worktreePath, ["rev-parse", "HEAD"]).catch(() => null);
+  const cleanliness = status === null ? "unknown" : status.trim().length > 0 ? "dirty" : "clean";
+  const digest = createHash("sha256")
+    .update(stableStringifyForTest({
+      version: 1,
+      reason: "git_worktree_branch_incoherence",
+      sourceIssueId: input.sourceIssueId,
+      executionWorkspaceId: input.executionWorkspaceId,
+      worktreePath: path.resolve(input.worktreePath),
+      expectedBranch: input.expectedBranch,
+      actualBranch: input.actualBranch,
+      cleanliness,
+      expectedHeadSha,
+      actualHeadSha,
+    }))
+    .digest("hex");
+  return `workspace_incoherence:v1:sha256:${digest}`;
 }
 
 describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
@@ -158,6 +226,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
   afterEach(async () => {
     await db.delete(workspaceRuntimeServices);
+    await db.delete(issueRecoveryActions);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -421,6 +491,986 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       }),
     ]);
   });
+
+  it("reconciles a forward branch record, comments on the source issue, and resolves matching workspace recovery", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-reconcile-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+
+    await runGit(repoRoot, ["branch", "feature/recorded"]);
+    await runGit(repoRoot, ["branch", "feature/current", "feature/recorded"]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, "feature/current"]);
+    await fs.writeFile(path.join(worktreePath, "feature.txt"), "current branch\n", "utf8");
+    await runGit(worktreePath, ["add", "feature.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Current branch work"]);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const actualBranch = await readGit(worktreePath, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    const fingerprint = await fingerprintWorkspaceBranchIncoherenceForTest({
+      repoRoot,
+      worktreePath,
+      sourceIssueId: issueId,
+      executionWorkspaceId,
+      expectedBranch: "feature/recorded",
+      actualBranch,
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Branch reconcile",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      identifier: "PAP-123",
+      status: "blocked",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "feature/recorded",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/recorded",
+      baseRef: "main",
+    });
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "workspace_validation",
+      status: "active",
+      ownerType: "board",
+      cause: "workspace_validation_failed",
+      fingerprint,
+      evidence: {
+        workspaceValidation: {
+          fingerprint,
+        },
+      },
+      nextAction: "Repair the source issue workspace link.",
+    });
+
+    const result = await svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+      mode: "forward",
+      reason: null,
+      actor: {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    });
+
+    expect(result.workspace.branchName).toBe("feature/current");
+    expect(result.workspace.name).toBe("feature/current");
+    expect(result.inspection).toMatchObject({
+      fromBranch: "feature/recorded",
+      toBranch: "feature/current",
+      ancestryVerdict: "ancestor",
+      fingerprint,
+    });
+    expect(result.recoveryAction).toMatchObject({
+      kind: "workspace_validation",
+      status: "resolved",
+      outcome: "restored",
+      fingerprint,
+    });
+
+    const [comment] = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comment).toMatchObject({
+      companyId,
+      issueId,
+      authorType: "user",
+      authorUserId: "local-board",
+    });
+    expect(comment?.body).toContain("Execution workspace branch reconciled.");
+    expect(comment?.body).toContain("- Mode: `forward`");
+    expect(comment?.body).toContain("- From branch: `feature/recorded`");
+    expect(comment?.body).toContain("- To branch: `feature/current`");
+    expect(comment?.body).toContain(`- Fingerprint: \`${fingerprint}\``);
+    expect(comment?.body).toContain(`- Recovery action: \`${result.recoveryAction?.id}\``);
+
+    const [recoveryAction] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryAction).toMatchObject({
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: "Execution workspace branch record reconciled from \"feature/recorded\" to \"feature/current\".",
+    });
+  }, 20_000);
+
+  it("rejects branch reconciliation when the worktree is dirty", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-dirty-reconcile-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+
+    await runGit(repoRoot, ["branch", "feature/recorded"]);
+    await runGit(repoRoot, ["branch", "feature/current", "feature/recorded"]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, "feature/current"]);
+    await fs.writeFile(path.join(worktreePath, "feature.txt"), "current branch\n", "utf8");
+    await runGit(worktreePath, ["add", "feature.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Current branch work"]);
+    await fs.writeFile(path.join(worktreePath, "dirty.txt"), "not safe to mutate\n", "utf8");
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Branch reconcile",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      status: "blocked",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Dirty workspace",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/recorded",
+      baseRef: "main",
+    });
+
+    await expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+      mode: "override",
+      reason: "operator override still requires idle clean workspace",
+      actor: {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "Execution workspace branch reconciliation requires a clean worktree",
+      details: {
+        inspection: expect.objectContaining({
+          cleanliness: "dirty",
+          statusEntryCount: 1,
+          fromBranch: "feature/recorded",
+          toBranch: "feature/current",
+        }),
+      },
+    });
+
+    const [workspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    expect(workspace?.branchName).toBe("feature/recorded");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  }, 20_000);
+
+  it("rejects branch reconciliation while the workspace lifecycle is active", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-active-reconcile-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+
+    await runGit(repoRoot, ["branch", "feature/recorded"]);
+    await runGit(repoRoot, ["branch", "feature/current", "feature/recorded"]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, "feature/current"]);
+    await fs.writeFile(path.join(worktreePath, "feature.txt"), "current branch\n", "utf8");
+    await runGit(worktreePath, ["add", "feature.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Current branch work"]);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Branch reconcile",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      status: "blocked",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Active workspace",
+      status: "active",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/recorded",
+      baseRef: "main",
+    });
+
+    await expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+      mode: "override",
+      reason: "operator override still requires idle workspace",
+      actor: {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "Execution workspace branch reconciliation requires the workspace to be idle",
+      details: {
+        workspaceStatus: "active",
+        inspection: expect.objectContaining({
+          cleanliness: "clean",
+          fromBranch: "feature/recorded",
+          toBranch: "feature/current",
+        }),
+      },
+    });
+
+    const [workspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    expect(workspace?.branchName).toBe("feature/recorded");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  }, 20_000);
+
+  it("rejects branch reconciliation if the workspace becomes active before the branch record update", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-race-reconcile-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+
+    await runGit(repoRoot, ["branch", "feature/recorded"]);
+    await runGit(repoRoot, ["branch", "feature/current", "feature/recorded"]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, "feature/current"]);
+    await fs.writeFile(path.join(worktreePath, "feature.txt"), "current branch\n", "utf8");
+    await runGit(worktreePath, ["add", "feature.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Current branch work"]);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Branch reconcile",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      status: "blocked",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Race workspace",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/recorded",
+      baseRef: "main",
+    });
+
+    const originalTransaction = db.transaction.bind(db);
+    const transactionSpy = vi.spyOn(db, "transaction").mockImplementation(
+      (async (...args: Parameters<typeof db.transaction>) => {
+        await db
+          .update(executionWorkspaces)
+          .set({ status: "active", updatedAt: new Date() })
+          .where(eq(executionWorkspaces.id, executionWorkspaceId));
+        return originalTransaction(...args);
+      }) as typeof db.transaction,
+    );
+
+    try {
+      await expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+        mode: "override",
+        reason: "operator override still requires idle workspace at write time",
+        actor: {
+          actorType: "user",
+          actorId: "local-board",
+          agentId: null,
+          runId: null,
+        },
+      })).rejects.toMatchObject({
+        status: 422,
+        message: "Execution workspace branch reconciliation requires the workspace to be idle",
+        details: {
+          workspaceStatus: "active",
+          inspection: expect.objectContaining({
+            cleanliness: "clean",
+            fromBranch: "feature/recorded",
+            toBranch: "feature/current",
+          }),
+        },
+      });
+    } finally {
+      transactionSpy.mockRestore();
+    }
+
+    const [workspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    expect(workspace).toMatchObject({
+      status: "active",
+      branchName: "feature/recorded",
+    });
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  }, 20_000);
+
+  it("rejects branch reconciliation while runtime services are active", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-running-reconcile-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+
+    await runGit(repoRoot, ["branch", "feature/recorded"]);
+    await runGit(repoRoot, ["branch", "feature/current", "feature/recorded"]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, "feature/current"]);
+    await fs.writeFile(path.join(worktreePath, "feature.txt"), "current branch\n", "utf8");
+    await runGit(worktreePath, ["add", "feature.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Current branch work"]);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const runtimeServiceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Branch reconcile",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      status: "blocked",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Runtime workspace",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/recorded",
+      baseRef: "main",
+    });
+    await db.insert(workspaceRuntimeServices).values({
+      id: runtimeServiceId,
+      companyId,
+      projectId,
+      executionWorkspaceId,
+      issueId,
+      scopeType: "execution_workspace",
+      serviceName: "web",
+      status: "running",
+      lifecycle: "shared",
+      command: "pnpm dev",
+      cwd: worktreePath,
+      provider: "local_process",
+      healthStatus: "healthy",
+    });
+
+    await expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+      mode: "override",
+      reason: "operator override still requires stopped services",
+      actor: {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "Execution workspace branch reconciliation requires all runtime services to be stopped",
+      details: {
+        inspection: expect.objectContaining({
+          cleanliness: "clean",
+          fromBranch: "feature/recorded",
+          toBranch: "feature/current",
+        }),
+        runtimeServices: [
+          {
+            id: runtimeServiceId,
+            serviceName: "web",
+            status: "running",
+          },
+        ],
+      },
+    });
+
+    const [workspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    expect(workspace?.branchName).toBe("feature/recorded");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  }, 20_000);
+
+  it("rejects branch reconciliation when a runtime service starts before the locked update", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-raced-service-reconcile-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+
+    await runGit(repoRoot, ["branch", "feature/recorded"]);
+    await runGit(repoRoot, ["branch", "feature/current", "feature/recorded"]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, "feature/current"]);
+    await fs.writeFile(path.join(worktreePath, "feature.txt"), "current branch\n", "utf8");
+    await runGit(worktreePath, ["add", "feature.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Current branch work"]);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const runtimeServiceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Branch reconcile",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      status: "blocked",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Runtime race workspace",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/recorded",
+      baseRef: "main",
+    });
+
+    let releaseBlockingTransaction: (() => void) | null = null;
+    const releaseBlockingTransactionPromise = new Promise<void>((resolve) => {
+      releaseBlockingTransaction = resolve;
+    });
+    let blockingTransactionReadyResolve: (() => void) | null = null;
+    const blockingTransactionReady = new Promise<void>((resolve) => {
+      blockingTransactionReadyResolve = resolve;
+    });
+
+    const blockingTransaction = db.transaction(async (tx) => {
+      await tx.execute(sql`select id from ${executionWorkspaces} where ${executionWorkspaces.id} = ${executionWorkspaceId} for update`);
+      await tx.insert(workspaceRuntimeServices).values({
+        id: runtimeServiceId,
+        companyId,
+        projectId,
+        executionWorkspaceId,
+        issueId,
+        scopeType: "execution_workspace",
+        serviceName: "web",
+        status: "running",
+        lifecycle: "shared",
+        command: "pnpm dev",
+        cwd: worktreePath,
+        provider: "local_process",
+        healthStatus: "healthy",
+      });
+      blockingTransactionReadyResolve?.();
+      await releaseBlockingTransactionPromise;
+    });
+
+    await blockingTransactionReady;
+
+    const reconcileExpectation = expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+      mode: "override",
+      reason: "operator override still requires stopped services",
+      actor: {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "Execution workspace branch reconciliation requires all runtime services to be stopped",
+      details: {
+        inspection: expect.objectContaining({
+          cleanliness: "clean",
+          fromBranch: "feature/recorded",
+          toBranch: "feature/current",
+        }),
+        runtimeServices: [
+          {
+            id: runtimeServiceId,
+            serviceName: "web",
+            status: "running",
+          },
+        ],
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    releaseBlockingTransaction?.();
+    await reconcileExpectation;
+    await blockingTransaction;
+
+    const [workspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    expect(workspace?.branchName).toBe("feature/recorded");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  }, 20_000);
+
+  it("rejects branch reconciliation when runtime service activation is already spawning", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-spawning-service-reconcile-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+
+    await runGit(repoRoot, ["branch", "feature/recorded"]);
+    await runGit(repoRoot, ["branch", "feature/current", "feature/recorded"]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, "feature/current"]);
+    await fs.writeFile(path.join(worktreePath, "feature.txt"), "current branch\n", "utf8");
+    await runGit(worktreePath, ["add", "feature.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Current branch work"]);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const runtimeStartedMarker = path.join(os.tmpdir(), `paperclip-runtime-started-${randomUUID()}.marker`);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Branch reconcile",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      status: "blocked",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Runtime activation race workspace",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/recorded",
+      baseRef: "main",
+    });
+
+    const serverScript = [
+      `require("node:fs").writeFileSync(${JSON.stringify(runtimeStartedMarker)}, "started");`,
+      "setTimeout(() => {",
+      "  require(\"node:http\")",
+      "    .createServer((_req, res) => { res.end(\"ok\"); })",
+      "    .listen(Number(process.env.PORT), \"127.0.0.1\");",
+      "}, 600);",
+      "setInterval(() => {}, 1000);",
+    ].join(" ");
+    const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(serverScript)}`;
+
+    let startedServices: Awaited<ReturnType<typeof startRuntimeServicesForWorkspaceControl>> = [];
+    try {
+      const startPromise = startRuntimeServicesForWorkspaceControl({
+        db,
+        invocationId: randomUUID(),
+        actor: {
+          id: null,
+          name: "Board",
+          companyId,
+        },
+        issue: {
+          id: issueId,
+          identifier: null,
+          title: "Source task",
+        },
+        workspace: {
+          baseCwd: worktreePath,
+          source: "task_session",
+          projectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: "main",
+          strategy: "git_worktree",
+          cwd: worktreePath,
+          branchName: "feature/current",
+          worktreePath,
+          warnings: [],
+          created: false,
+        },
+        executionWorkspaceId,
+        config: {
+          workspaceRuntime: {
+            services: [
+              {
+                name: "web",
+                command,
+                lifecycle: "shared",
+                reuseScope: "execution_workspace",
+                port: { type: "auto", envKey: "PORT" },
+                expose: { urlTemplate: "http://127.0.0.1:{{port}}" },
+                readiness: { type: "http", intervalMs: 50, timeoutSec: 10 },
+              },
+            ],
+          },
+        },
+        adapterEnv: {},
+      });
+
+      await Promise.race([
+        waitForPath(runtimeStartedMarker),
+        startPromise.then(
+          () => {
+            throw new Error("Runtime service activation finished before the process-start marker was observed");
+          },
+          (error) => {
+            throw error;
+          },
+        ),
+      ]);
+
+      const reconcilePromise = svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+        mode: "override",
+        reason: "operator override still requires stopped services",
+        actor: {
+          actorType: "user",
+          actorId: "local-board",
+          agentId: null,
+          runId: null,
+        },
+      });
+
+      startedServices = await startPromise;
+      await expect(reconcilePromise).rejects.toMatchObject({
+        status: 422,
+        message: "Execution workspace branch reconciliation requires all runtime services to be stopped",
+        details: {
+          inspection: expect.objectContaining({
+            cleanliness: "clean",
+            fromBranch: "feature/recorded",
+            toBranch: "feature/current",
+          }),
+          runtimeServices: [
+            expect.objectContaining({
+              id: startedServices[0]?.id,
+              serviceName: "web",
+              status: "running",
+            }),
+          ],
+        },
+      });
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId,
+        workspaceCwd: worktreePath,
+      });
+      await fs.rm(runtimeStartedMarker, { force: true });
+    }
+
+    const [workspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    expect(workspace?.branchName).toBe("feature/recorded");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  }, 20_000);
+
+  it("rejects forward branch reconciliation for diverged branches", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-diverged-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+
+    await runGit(repoRoot, ["checkout", "-b", "feature/recorded"]);
+    await fs.writeFile(path.join(repoRoot, "recorded.txt"), "recorded branch\n", "utf8");
+    await runGit(repoRoot, ["add", "recorded.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Recorded branch work"]);
+    await runGit(repoRoot, ["checkout", "main"]);
+    await runGit(repoRoot, ["checkout", "-b", "feature/current"]);
+    await fs.writeFile(path.join(repoRoot, "current.txt"), "current branch\n", "utf8");
+    await runGit(repoRoot, ["add", "current.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Current branch work"]);
+    await runGit(repoRoot, ["checkout", "main"]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, "feature/current"]);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Branch reconcile",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      status: "blocked",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Diverged workspace",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/recorded",
+      baseRef: "main",
+    });
+
+    await expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+      mode: "forward",
+      reason: null,
+      actor: {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        inspection: expect.objectContaining({
+          ancestryVerdict: "diverged",
+          fromBranch: "feature/recorded",
+          toBranch: "feature/current",
+        }),
+      },
+    });
+
+    const [workspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    expect(workspace?.branchName).toBe("feature/recorded");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  }, 20_000);
+
+  it("rejects forward branch reconciliation when branch ancestry is unknown", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-unknown-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+
+    await runGit(repoRoot, ["branch", "feature/current"]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, "feature/current"]);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Branch reconcile",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      status: "blocked",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Unknown workspace",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/missing-recorded",
+      baseRef: "main",
+    });
+
+    await expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+      mode: "forward",
+      reason: null,
+      actor: {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        inspection: expect.objectContaining({
+          ancestryVerdict: "unknown",
+          fromBranch: "feature/missing-recorded",
+          toBranch: "feature/current",
+          fromSha: null,
+        }),
+      },
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  }, 20_000);
 
   it("returns a bounded company-scoped workspace overview with service and linked issue summaries", async () => {
     const companyId = randomUUID();

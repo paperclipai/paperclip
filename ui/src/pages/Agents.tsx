@@ -13,6 +13,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { MembershipAction } from "../components/MembershipAction";
+import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -23,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import {
+  isStarred,
   resourceMembershipState,
   useResourceMembershipMutation,
   useResourceMemberships,
@@ -271,6 +273,13 @@ export function Agents() {
 
   const renderAgentRow = (agent: Agent) => {
     const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
+    const agentPending =
+      membershipMutation.isPending &&
+      membershipMutation.variables?.resourceType === "agent" &&
+      membershipMutation.variables.resourceId === agent.id;
+    const agentStarPending = agentPending && membershipMutation.variables?.starred !== undefined;
+    const agentJoinLeavePending = agentPending && membershipMutation.variables?.starred === undefined;
+    const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     return (
       <EntityRow
         key={agent.id}
@@ -278,7 +287,7 @@ export function Agents() {
         // Fixed (truncating) title width so the `meta` group starts at a
         // constant x on every row — that's what makes the model + timestamp
         // columns line up vertically. Agent names vary in width, so
-        // a content-sized title (`min-w-[7rem]`) shifted meta's start per row.
+        // a content-sized title (`min-w-(--sz-7rem)`) shifted meta's start per row.
         titleClassName="w-56"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
@@ -343,18 +352,8 @@ export function Agents() {
             </div>
             <MembershipAction
               state={resourceMembershipState(membershipsQuery.data, "agent", agent.id)}
-              pending={
-                membershipMutation.isPending &&
-                membershipMutation.variables?.resourceType === "agent" &&
-                membershipMutation.variables.resourceId === agent.id
-              }
-              pendingState={
-                membershipMutation.isPending &&
-                membershipMutation.variables?.resourceType === "agent" &&
-                membershipMutation.variables.resourceId === agent.id
-                  ? membershipMutation.variables.state
-                  : null
-              }
+              pending={agentJoinLeavePending}
+              pendingState={agentJoinLeavePending ? membershipMutation.variables?.state ?? null : null}
               resourceName={agent.name}
               onJoin={() => membershipMutation.mutate({
                 resourceType: "agent",
@@ -367,6 +366,18 @@ export function Agents() {
                 resourceId: agent.id,
                 resourceName: agent.name,
                 state: "left",
+              })}
+            />
+            <StarToggle
+              size="row"
+              starred={agentStarred}
+              pending={agentStarPending}
+              resourceName={agent.name}
+              onToggle={(next) => membershipMutation.mutate({
+                resourceType: "agent",
+                resourceId: agent.id,
+                resourceName: agent.name,
+                starred: next,
               })}
             />
           </div>
@@ -393,13 +404,16 @@ export function Agents() {
         <div className="flex items-center gap-2">
           {/* View toggle */}
           {!forceListView && (
-            <div className="flex items-center border border-border">
+            <div className="flex items-center border border-border" role="group" aria-label="View mode">
               <button
                 className={cn(
                   "p-1.5 transition-colors",
                   effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
                 onClick={() => setView("list")}
+                title="List view"
+                aria-label="List view"
+                aria-pressed={effectiveView === "list"}
               >
                 <List className="h-3.5 w-3.5" />
               </button>
@@ -409,6 +423,9 @@ export function Agents() {
                   effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
                 onClick={() => setView("org")}
+                title="Org chart view"
+                aria-label="Org chart view"
+                aria-pressed={effectiveView === "org"}
               >
                 <GitBranch className="h-3.5 w-3.5" />
               </button>
@@ -438,7 +455,7 @@ export function Agents() {
 
       {/* List view */}
       {effectiveView === "list" && filtered.length > 0 && (
-        <div className="border border-border">
+        <div>
           {filtered.map(renderAgentRow)}
         </div>
       )}
@@ -451,7 +468,7 @@ export function Agents() {
 
       {/* Org chart view */}
       {effectiveView === "org" && filteredOrg.length > 0 && (
-        <div className="border border-border py-1">
+        <div className="py-1">
           {filteredOrg.map((node) => (
             <OrgTreeNode
               key={node.id}
@@ -514,13 +531,16 @@ function OrgTreeNode({
   const pending = membershipMutation.isPending &&
     membershipMutation.variables?.resourceType === "agent" &&
     membershipMutation.variables.resourceId === node.id;
+  const starPending = pending && membershipMutation.variables?.starred !== undefined;
+  const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
+  const starred = isStarred(memberships, "agent", node.id);
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
       <Link
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
         className={cn(
-          "group flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit",
+          "group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit",
           agent?.pausedAt && tab !== "paused" && "opacity-50",
           membershipState === "left" && "text-foreground/55",
         )}
@@ -530,7 +550,7 @@ function OrgTreeNode({
         ) : (
           <AgentStatusCapsule status={node.status} />
         )}
-        <div className="flex-1 min-w-[7rem]">
+        <div className="flex-1 min-w-(--sz-7rem)">
           <span className="text-sm font-medium">{node.name}</span>
           <span className="text-xs text-muted-foreground ml-2">
             {roleLabels[node.role] ?? node.role}
@@ -576,8 +596,8 @@ function OrgTreeNode({
           </div>
           <MembershipAction
             state={membershipState}
-            pending={pending}
-            pendingState={pending ? membershipMutation.variables?.state : null}
+            pending={joinLeavePending}
+            pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
             resourceName={node.name}
             onJoin={() => membershipMutation.mutate({
               resourceType: "agent",
@@ -592,10 +612,22 @@ function OrgTreeNode({
               state: "left",
             })}
           />
+          <StarToggle
+            size="row"
+            starred={starred}
+            pending={starPending}
+            resourceName={node.name}
+            onToggle={(next) => membershipMutation.mutate({
+              resourceType: "agent",
+              resourceId: node.id,
+              resourceName: node.name,
+              starred: next,
+            })}
+          />
         </div>
       </Link>
       {node.reports && node.reports.length > 0 && (
-        <div className="border-l border-border/50 ml-4">
+        <div className="border-l border-border ml-4">
           {node.reports.map((child) => (
             <OrgTreeNode
               key={child.id}
@@ -644,7 +676,7 @@ function AgentMetaColumns({
         >
           {model ?? "—"}
         </div>
-        <div className="truncate font-mono text-[11px] text-muted-foreground/70" title={adapterLabel}>
+        <div className="truncate font-mono text-(length:--text-micro) text-muted-foreground/70" title={adapterLabel}>
           {adapterLabel}
         </div>
       </div>
@@ -653,7 +685,7 @@ function AgentMetaColumns({
           <div className="truncate text-xs text-muted-foreground" title={environment.title}>
             {environment.label}
           </div>
-          <div className="truncate text-[11px] text-muted-foreground/70">
+          <div className="truncate text-(length:--text-micro) text-muted-foreground/70">
             {environment.detail}
           </div>
         </div>
@@ -684,7 +716,7 @@ function LiveRunIndicator({
         <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
         <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
       </span>
-      <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+      <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">
         Live{liveCount > 1 ? ` (${liveCount})` : ""}
       </span>
     </Link>

@@ -25,6 +25,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { MembershipAction } from "../components/MembershipAction";
+import { StarToggle } from "../components/StarToggle";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { projectRouteRef } from "../lib/utils";
@@ -37,6 +38,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import {
+  isStarred,
   resourceMembershipState,
   useResourceMembershipMutation,
   useResourceMemberships,
@@ -146,7 +148,7 @@ function ProjectTilePicker({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="shrink-0 rounded-lg cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
+          className="shrink-0 rounded-lg cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-(--tp-box-shadow)"
           aria-label="Change project icon and color"
         >
           <ProjectTile color={color} icon={icon} size="md" />
@@ -190,7 +192,7 @@ function ProjectTilePicker({
             <button
               type="button"
               onClick={() => onSelectColor(null)}
-              className={`h-6 w-6 cursor-pointer transition-[transform,box-shadow] duration-150 hover:scale-110 ${
+              className={`h-6 w-6 cursor-pointer transition-(--tp-transform-box-shadow) duration-150 hover:scale-110 ${
                 color === null
                   ? "ring-2 ring-foreground ring-offset-1 ring-offset-background rounded-md"
                   : ""
@@ -205,7 +207,7 @@ function ProjectTilePicker({
                 key={swatch}
                 type="button"
                 onClick={() => onSelectColor(swatch)}
-                className={`h-6 w-6 rounded-md cursor-pointer transition-[transform,box-shadow] duration-150 hover:scale-110 ${
+                className={`h-6 w-6 rounded-md cursor-pointer transition-(--tp-transform-box-shadow) duration-150 hover:scale-110 ${
                   swatch === color
                     ? "ring-2 ring-foreground ring-offset-1 ring-offset-background"
                     : "hover:ring-2 hover:ring-foreground/30"
@@ -696,6 +698,9 @@ export function ProjectDetail() {
     membershipMutation.isPending &&
     membershipMutation.variables?.resourceType === "project" &&
     membershipMutation.variables.resourceId === project.id;
+  const projectStarred = isStarred(membershipsQuery.data, "project", project.id);
+  const projectStarPending = projectMembershipPending && membershipMutation.variables?.starred !== undefined;
+  const projectJoinLeavePending = projectMembershipPending && membershipMutation.variables?.starred === undefined;
 
   const handleTabChange = (tab: ProjectTab) => {
     // Cache the active tab per project
@@ -724,15 +729,15 @@ export function ProjectDetail() {
   return (
     <div className="space-y-6">
       {showLeftProjectNotice ? (
-        <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-100">
+        <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
           <p className="min-w-0 flex-1">
             You left this project. It no longer appears in your sidebar.
           </p>
           <MembershipAction
             compact
             state="left"
-            pending={projectMembershipPending}
-            pendingState={projectMembershipPending ? membershipMutation.variables?.state : null}
+            pending={projectJoinLeavePending}
+            pendingState={projectJoinLeavePending ? membershipMutation.variables?.state : null}
             resourceName={project.name}
             onJoin={() => membershipMutation.mutate({
               resourceType: "project",
@@ -749,7 +754,7 @@ export function ProjectDetail() {
           />
           <button
             type="button"
-            className="h-6 w-6 shrink-0 text-yellow-100/70 hover:text-yellow-100"
+            className="h-6 w-6 shrink-0 text-yellow-900/70 hover:text-yellow-900 dark:text-yellow-100/70 dark:hover:text-yellow-100"
             aria-label="Dismiss project membership notice"
             onClick={() => setDismissedLeftProjectIds((current) => new Set(current).add(project.id))}
           >
@@ -774,17 +779,31 @@ export function ProjectDetail() {
             className="text-xl font-bold"
           />
           {project.pauseReason === "budget" ? (
-            <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
+            <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-(length:--text-micro) font-medium uppercase tracking-(--tracking-caps) text-red-800 dark:text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
               Paused by budget hard stop
             </div>
           ) : null}
           {project.managedByPlugin ? (
-            <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-[11px] font-medium text-muted-foreground">
-              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: project.color ?? "#6366f1" }} />
+            <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-(length:--text-micro) font-medium text-muted-foreground">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: project.color ?? "var(--project-seed)" }} />
               Managed by {project.managedByPlugin.pluginDisplayName}
             </div>
           ) : null}
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <StarToggle
+            size="button"
+            starred={projectStarred}
+            pending={projectStarPending}
+            resourceName={project.name}
+            onToggle={(next) => membershipMutation.mutate({
+              resourceType: "project",
+              resourceId: project.id,
+              resourceName: project.name,
+              starred: next,
+            })}
+          />
         </div>
       </div>
 

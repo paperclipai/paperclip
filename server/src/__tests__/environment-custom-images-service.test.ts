@@ -157,12 +157,10 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
 
   async function seed() {
     const companyId = randomUUID();
-    const otherCompanyId = randomUUID();
     const environmentId = randomUUID();
-    await db.insert(companies).values([
+    await db.insert(companies).values(
       { id: companyId, name: "Acme", issuePrefix: `A${companyId.slice(0, 4)}` },
-      { id: otherCompanyId, name: "Other", issuePrefix: `B${otherCompanyId.slice(0, 4)}` },
-    ]);
+    );
     await db.insert(environments).values({
       id: environmentId,
       name: `Fake ${environmentId.slice(0, 8)}`,
@@ -184,16 +182,15 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
       manifestJson: pluginManifest(),
       status: "ready",
     });
-    return { companyId, otherCompanyId, environmentId };
+    return { companyId, environmentId };
   }
 
   it("starts, refreshes, finishes, refreshes again, and rolls back setup sessions", async () => {
-    const { companyId, environmentId } = await seed();
+    const { environmentId } = await seed();
     const workerManager = createWorkerManager();
     const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
 
     const started = await service.startSetupSession({
-      companyId,
       environmentId,
       actor: { userId: "user-1" },
       ttlSeconds: 600,
@@ -221,25 +218,69 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     });
 
     const refresh = await service.startSetupSession({
-      companyId,
       environmentId,
       actor: { userId: "user-1" },
     });
     const replacement = await service.finishSetupSession({ sessionId: refresh.session.id });
     expect(replacement.template.id).not.toBe(promoted.template.id);
 
-    const rollback = await service.rollbackTemplate({ companyId, environmentId });
+    const rollback = await service.rollbackTemplate({ environmentId });
     expect(rollback.activeTemplate.id).toBe(promoted.template.id);
     expect(rollback.supersededTemplate.id).toBe(replacement.template.id);
   });
 
-  it("revokes the active template before deleting the provider template", async () => {
+  it("reuses the setup provider company context across lifecycle calls", async () => {
     const { companyId, environmentId } = await seed();
     const workerManager = createWorkerManager();
     const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
 
     const started = await service.startSetupSession({
-      companyId,
+      environmentId,
+      actor: { userId: "user-1" },
+      secretContextCompanyId: companyId,
+    });
+    expect(started.session.metadata).toMatchObject({
+      setupRpcCompanyId: companyId,
+    });
+
+    await service.refreshSetupSession({
+      sessionId: started.session.id,
+      includeConnectionPayload: true,
+    });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+
+    const lifecycleCalls = workerManager.call.mock.calls
+      .filter(([, method]) => [
+        "environmentStartInteractiveSetup",
+        "environmentGetInteractiveSetup",
+        "environmentCaptureTemplate",
+        "environmentCancelInteractiveSetup",
+      ].includes(method))
+      .map(([, method, params]) => ({
+        method,
+        companyId: (params as Record<string, unknown>).companyId,
+      }));
+
+    expect(lifecycleCalls).toEqual([
+      { method: "environmentStartInteractiveSetup", companyId },
+      { method: "environmentGetInteractiveSetup", companyId },
+      { method: "environmentCaptureTemplate", companyId },
+      { method: "environmentCancelInteractiveSetup", companyId },
+    ]);
+    expect(promoted.session.metadata).toMatchObject({
+      setupRpcCompanyId: companyId,
+    });
+    expect(promoted.template.metadata).toMatchObject({
+      setupRpcCompanyId: companyId,
+    });
+  });
+
+  it("revokes the active template before deleting the provider template", async () => {
+    const { environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
       environmentId,
       actor: { userId: "user-1" },
     });
@@ -258,7 +299,6 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     });
 
     const disabled = await service.disableTemplate({
-      companyId,
       environmentId,
       deleteProviderTemplate: true,
     });
@@ -276,13 +316,53 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     );
   });
 
-  it("cancels and times out setup sessions without changing the active template", async () => {
-    const { companyId, environmentId } = await seed();
+  it("does not send provider template refs to a different current provider", async () => {
+    const { environmentId } = await seed();
     const workerManager = createWorkerManager();
     const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
 
     const started = await service.startSetupSession({
-      companyId,
+      environmentId,
+      actor: { userId: "user-1" },
+    });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+    const deleteCallsBefore = workerManager.call.mock.calls
+      .filter(([, method]) => method === "environmentDeleteTemplate")
+      .length;
+
+    await db.update(environments)
+      .set({
+        config: {
+          provider: "other-plugin",
+          image: "other:base",
+          reuseLease: false,
+        },
+      })
+      .where(eq(environments.id, environmentId));
+
+    await expect(service.disableTemplate({
+      environmentId,
+      deleteProviderTemplate: true,
+    })).rejects.toThrow("Environment customImage provider changed");
+
+    const deleteCallsAfter = workerManager.call.mock.calls
+      .filter(([, method]) => method === "environmentDeleteTemplate")
+      .length;
+    const [templateRow] = await db
+      .select({ status: environmentCustomImageTemplates.status })
+      .from(environmentCustomImageTemplates)
+      .where(eq(environmentCustomImageTemplates.id, promoted.template.id));
+
+    expect(deleteCallsAfter).toBe(deleteCallsBefore);
+    expect(templateRow?.status).toBe("active");
+  });
+
+  it("cancels and times out setup sessions without changing the active template", async () => {
+    const { environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
       environmentId,
       actor: { userId: "user-1" },
     });
@@ -291,10 +371,9 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
       reason: "user_cancelled",
     });
     expect(cancelled.status).toBe("cancelled");
-    expect(await service.getActiveTemplate({ companyId, environmentId })).toBeNull();
+    expect(await service.getActiveTemplate({ environmentId })).toBeNull();
 
     const expired = await service.startSetupSession({
-      companyId,
       environmentId,
       actor: { userId: "user-1" },
       ttlSeconds: 60,
@@ -308,21 +387,32 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     expect(timedOut?.status).toBe("timed_out");
   });
 
-  it("rejects templates from another company or environment", async () => {
-    const { companyId, otherCompanyId, environmentId } = await seed();
+  it("rejects templates from another environment", async () => {
+    const { environmentId } = await seed();
+    const otherEnvironmentId = randomUUID();
+    await db.insert(environments).values({
+      id: otherEnvironmentId,
+      name: `Other ${otherEnvironmentId.slice(0, 8)}`,
+      driver: "sandbox",
+      status: "active",
+      config: {
+        provider: "fake-plugin",
+        image: "fake:base",
+        reuseLease: false,
+      },
+      envVars: {},
+    });
     const workerManager = createWorkerManager();
     const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
     const [otherTemplate] = await db.insert(environmentCustomImageTemplates).values({
-      companyId: otherCompanyId,
-      environmentId,
+      environmentId: otherEnvironmentId,
       provider: "fake-plugin",
       templateKind: "snapshot",
-      templateRef: "snapshot-other-company",
+      templateRef: "snapshot-other-environment",
       status: "active",
     }).returning();
 
     await expect(service.startSetupSession({
-      companyId,
       environmentId,
       templateId: otherTemplate!.id,
       actor: { userId: "user-1" },
@@ -342,7 +432,6 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     expect(fallback.config).toMatchObject({ image: "fake:base" });
 
     await db.insert(environmentCustomImageTemplates).values({
-      companyId,
       environmentId,
       provider: "fake-plugin",
       templateKind: "snapshot",
@@ -380,7 +469,6 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     const environment = await db.select().from(environments).where(eq(environments.id, environmentId)).then((rows) => rows[0]!);
 
     await db.insert(environmentCustomImageTemplates).values({
-      companyId,
       environmentId,
       provider: "fake-plugin",
       templateKind: "snapshot",
@@ -414,7 +502,6 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
 
     const started = await service.startSetupSession({
-      companyId,
       environmentId,
       actor: { userId: "user-1" },
     });

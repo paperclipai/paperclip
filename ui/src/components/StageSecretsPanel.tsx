@@ -2,7 +2,7 @@ import { KeyRound, Save } from "lucide-react";
 import type { CompanySecret, RoutineEnvConfig } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "./EmptyState";
-import { EnvVarEditor } from "./EnvVarEditor";
+import { EnvironmentVariablesEditor } from "./environment-variables-editor";
 import { AgentIcon } from "./AgentIconPicker";
 
 export interface StageSecretsPanelProps {
@@ -28,8 +28,8 @@ export interface StageSecretsPanelProps {
  * Stage Secrets tab body. Stage secrets are env bindings on the step's backing
  * automation routine — the same company-secret backbone used by routines,
  * agents, and projects. This panel is intentionally dense and reuses
- * `EnvVarEditor` for secret refs, inline secret creation, version selection,
- * and missing/disabled-secret warnings.
+ * `EnvironmentVariablesEditor` for secret refs, inline secret creation, version
+ * selection, and missing/disabled-secret warnings.
  */
 export function StageSecretsPanel({
   hasAutomation,
@@ -59,7 +59,7 @@ export function StageSecretsPanel({
     );
   }
 
-  const displayName = agentName?.trim() || "the assigned agent";
+  const displayName = agentName?.trim() || "the responsible agent";
 
   return (
     <div className="space-y-5">
@@ -80,7 +80,7 @@ export function StageSecretsPanel({
       {secretsLoading ? (
         <p className="text-sm text-muted-foreground">Loading secrets…</p>
       ) : (
-        <EnvVarEditor
+        <EnvironmentVariablesEditor
           value={value}
           secrets={secrets}
           onCreateSecret={onCreateSecret}

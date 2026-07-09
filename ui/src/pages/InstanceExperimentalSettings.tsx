@@ -11,6 +11,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -62,7 +63,7 @@ function RecoveryPreviewDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="max-h-[min(28rem,65vh)] space-y-3 overflow-y-auto pr-1">
+        <div className="max-h-(--sz-calc-36) space-y-3 overflow-y-auto pr-1">
           {preview && preview.items.length === 0 ? (
             <div className="rounded-md border border-border bg-muted/30 px-3 py-4 text-sm text-muted-foreground">
               No recovery tasks would be created right now. Auto-recovery can still run for future liveness incidents in
@@ -71,7 +72,7 @@ function RecoveryPreviewDialog({
           ) : null}
 
           {preview?.items.map((item) => (
-            <div key={item.incidentKey} className="rounded-md border border-border bg-card px-3 py-3">
+            <Card key={item.incidentKey} className="block px-3 py-3">
               <div className="flex flex-wrap items-center gap-2">
                 <a
                   href={issueHref(item.identifier, item.issueId)}
@@ -94,7 +95,7 @@ function RecoveryPreviewDialog({
                   {item.recoveryIdentifier ?? item.recoveryIssueId}
                 </a>
               </div>
-            </div>
+            </Card>
           ))}
         </div>
 
@@ -232,10 +233,8 @@ export function InstanceExperimentalSettings() {
 
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
-  // Default ON: treat anything but an explicit `false` as enabled so
-  // the toggle reflects the streamlined sidebar being the default experience.
-  const enableStreamlinedLeftNavigation =
-    experimentalQuery.data?.enableStreamlinedLeftNavigation !== false;
+  // Streamlined left navigation is now the standard sidebar (PAP-12472); the
+  // experimental opt-out was retired, so it no longer surfaces a toggle here.
   const enableConferenceRoomChat = experimentalQuery.data?.enableConferenceRoomChat === true;
   const enableIssuePlanDecompositions =
     experimentalQuery.data?.enableIssuePlanDecompositions === true;
@@ -244,6 +243,7 @@ export function InstanceExperimentalSettings() {
   const enableTaskWatchdogs = experimentalQuery.data?.enableTaskWatchdogs === true;
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
+  const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
@@ -318,7 +318,7 @@ export function InstanceExperimentalSettings() {
         </div>
       )}
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Enable Environments</h2>
@@ -334,9 +334,9 @@ export function InstanceExperimentalSettings() {
             aria-label="Toggle environments experimental setting"
           />
         </div>
-      </section>
+      </Card>
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Experimental File Viewer</h2>
@@ -355,9 +355,9 @@ export function InstanceExperimentalSettings() {
             aria-label="Toggle experimental file viewer setting"
           />
         </div>
-      </section>
+      </Card>
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Enable External Objects</h2>
@@ -373,9 +373,26 @@ export function InstanceExperimentalSettings() {
             aria-label="Toggle external objects experimental setting"
           />
         </div>
-      </section>
+      </Card>
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Goals Sidebar Link</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Restore the Goals item in the main sidebar while the goals surface is being evaluated.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableGoalsSidebarLink}
+            onCheckedChange={() => toggleMutation.mutate({ enableGoalsSidebarLink: !enableGoalsSidebarLink })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle goals sidebar link experimental setting"
+          />
+        </div>
+      </Card>
+
+      <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Enable Isolated Workspaces</h2>
@@ -391,32 +408,10 @@ export function InstanceExperimentalSettings() {
             aria-label="Toggle isolated workspaces experimental setting"
           />
         </div>
-      </section>
-
-      <section className="rounded-xl border border-border bg-card p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Streamlined Left Navigation Bar</h2>
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              Reduces the maximum number of items in the left navigation bar — nests Projects under Work with a
-              dedicated Projects page, and shows only active agents (max 5 recently-active) in the sidebar.
-            </p>
-          </div>
-          <ToggleSwitch
-            checked={enableStreamlinedLeftNavigation}
-            onCheckedChange={() =>
-              toggleMutation.mutate({
-                enableStreamlinedLeftNavigation: !enableStreamlinedLeftNavigation,
-              })
-            }
-            disabled={toggleMutation.isPending}
-            aria-label="Toggle streamlined left navigation experimental setting"
-          />
-        </div>
-      </section>
+      </Card>
 
       {SHOW_CONFERENCE_ROOM_EXPERIMENTAL_SETTING ? (
-        <section className="rounded-xl border border-border bg-card p-5">
+        <Card className="block p-5">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1.5">
               <h2 className="text-sm font-semibold">Conference Room Chat</h2>
@@ -437,10 +432,10 @@ export function InstanceExperimentalSettings() {
               aria-label="Toggle conference room chat experimental setting"
             />
           </div>
-        </section>
+        </Card>
       ) : null}
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Task Plan Decomposition Panel</h2>
@@ -460,9 +455,9 @@ export function InstanceExperimentalSettings() {
             aria-label="Toggle task plan decomposition panel experimental setting"
           />
         </div>
-      </section>
+      </Card>
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Task Watchdogs</h2>
@@ -482,9 +477,9 @@ export function InstanceExperimentalSettings() {
             aria-label="Toggle task watchdogs experimental setting"
           />
         </div>
-      </section>
+      </Card>
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Cloud Sync</h2>
@@ -500,9 +495,9 @@ export function InstanceExperimentalSettings() {
             aria-label="Toggle cloud sync experimental setting"
           />
         </div>
-      </section>
+      </Card>
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Server Info Debug View</h2>
@@ -521,9 +516,9 @@ export function InstanceExperimentalSettings() {
             aria-label="Toggle server info debug view experimental setting"
           />
         </div>
-      </section>
+      </Card>
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Auto-Restart Dev Server When Idle</h2>
@@ -539,9 +534,9 @@ export function InstanceExperimentalSettings() {
             aria-label="Toggle guarded dev-server auto-restart"
           />
         </div>
-      </section>
+      </Card>
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
         <div className="flex flex-col gap-5">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1.5">
@@ -565,7 +560,7 @@ export function InstanceExperimentalSettings() {
             />
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-[minmax(10rem,14rem)_1fr] sm:items-end">
+          <div className="grid gap-3 sm:grid-cols-(--gtc-35) sm:items-end">
             <label className="space-y-1.5">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 <Clock className="h-3.5 w-3.5" />
@@ -625,7 +620,7 @@ export function InstanceExperimentalSettings() {
             Current window: last {lookbackHours} {lookbackHours === 1 ? "hour" : "hours"}.
           </p>
         </div>
-      </section>
+      </Card>
 
       <RecoveryPreviewDialog
         open={previewDialogOpen}

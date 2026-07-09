@@ -2,6 +2,7 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  authUsers,
   companyMemberships,
   heartbeatRuns,
   instanceUserRoles,
@@ -26,12 +27,15 @@ export type AuthorizationActor =
     userId?: string | null;
     companyIds?: string[];
     memberships?: Array<{ companyId: string; membershipRole?: string | null; status?: string }>;
+    onBehalfOfMemberships?: Array<{ companyId: string; membershipRole?: string | null; status?: string }>;
     isInstanceAdmin?: boolean;
+    ignoreInstanceAdmin?: boolean;
     agentId?: string | null;
     companyId?: string | null;
     keyId?: string | null;
     keyScope?: AgentApiKeyScope | null;
     runId?: string | null;
+    onBehalfOfUserId?: string | null;
     source?:
       | "local_implicit"
       | "session"
@@ -77,6 +81,7 @@ export type AuthorizationDecision = {
   allowed: boolean;
   action: AuthorizationAction;
   explanation: string;
+  code?: "RESPONSIBLE_USER_UNAUTHORIZED" | "RESPONSIBLE_USER_UNAVAILABLE";
   reason:
     | "allow_low_trust_boundary"
     | "allow_local_board"
@@ -407,6 +412,61 @@ function deny(input: Omit<AuthorizationDecision, "allowed">): AuthorizationDecis
   return { ...input, allowed: false };
 }
 
+type ResponsibleUserSnapshot = {
+  userId: string;
+  companyId: string;
+  userExists: boolean;
+  activeMembership: { companyId: string; membershipRole?: string | null; status?: string } | null;
+};
+
+type ResponsibleUserActorWithMemo = AuthorizationActor & {
+  __responsibleUserSnapshotMemo?: Map<string, Promise<ResponsibleUserSnapshot>>;
+};
+
+const responsibleUserSnapshotCache = new Map<
+  string,
+  { expiresAt: number; promise: Promise<ResponsibleUserSnapshot> }
+>();
+
+function responsibleUserSnapshotTtlMs() {
+  const raw = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_CACHE_TTL_MS?.trim();
+  if (!raw) return 5_000;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 5_000;
+}
+
+export function responsibleUserAuthzShadowMode() {
+  const mode = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE?.trim().toLowerCase();
+  const shadow = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_SHADOW?.trim().toLowerCase();
+  return mode === "shadow" || shadow === "1" || shadow === "true" || shadow === "yes";
+}
+
+function activeActorMembership(
+  memberships: Array<{ companyId: string; membershipRole?: string | null; status?: string }> | null | undefined,
+  companyId: string,
+) {
+  return memberships?.find((membership) => membership.companyId === companyId && membership.status === "active") ?? null;
+}
+
+function activeResponsibleUserCanAuthorizeIssueAction(
+  action: AuthorizationAction,
+  membership: ResponsibleUserSnapshot["activeMembership"],
+) {
+  return Boolean(
+    membership &&
+    membership.status === "active" &&
+    membership.membershipRole !== "viewer" &&
+    (action === "issue:comment" || action === "issue:mutate")
+  );
+}
+
+export function authorizationDeniedDetails(decision: AuthorizationDecision) {
+  return {
+    ...(decision.code ? { code: decision.code } : {}),
+    reason: decision.reason,
+  };
+}
+
 export function authorizationService(db: Db) {
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
@@ -439,6 +499,82 @@ export function authorizationService(db: Db) {
         ),
       )
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function loadResponsibleUserSnapshot(companyId: string, userId: string): Promise<ResponsibleUserSnapshot> {
+    const [user, membership] = await Promise.all([
+      db
+        .select({ id: authUsers.id })
+        .from(authUsers)
+        .where(eq(authUsers.id, userId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          companyId: companyMemberships.companyId,
+          membershipRole: companyMemberships.membershipRole,
+          status: companyMemberships.status,
+        })
+        .from(companyMemberships)
+        .where(
+          and(
+            eq(companyMemberships.companyId, companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, userId),
+            eq(companyMemberships.status, "active"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null),
+    ]);
+    return {
+      userId,
+      companyId,
+      userExists: Boolean(user),
+      activeMembership: user ? membership : null,
+    };
+  }
+
+  function getResponsibleUserSnapshot(input: {
+    actor: AuthorizationActor;
+    companyId: string;
+    userId: string;
+  }): Promise<ResponsibleUserSnapshot> {
+    const actorWithMemo = input.actor as ResponsibleUserActorWithMemo;
+    const key = `${input.companyId}:${input.userId}`;
+    actorWithMemo.__responsibleUserSnapshotMemo ??= new Map();
+    const requestMemo = actorWithMemo.__responsibleUserSnapshotMemo.get(key);
+    if (requestMemo) return requestMemo;
+
+    const actorMembership = activeActorMembership(input.actor.onBehalfOfMemberships, input.companyId);
+    if (actorMembership) {
+      const promise = Promise.resolve({
+        userId: input.userId,
+        companyId: input.companyId,
+        userExists: true,
+        activeMembership: actorMembership,
+      });
+      actorWithMemo.__responsibleUserSnapshotMemo.set(key, promise);
+      return promise;
+    }
+
+    const now = Date.now();
+    const cached = responsibleUserSnapshotCache.get(key);
+    if (cached && cached.expiresAt > now) {
+      actorWithMemo.__responsibleUserSnapshotMemo.set(key, cached.promise);
+      return cached.promise;
+    }
+
+    const ttlMs = responsibleUserSnapshotTtlMs();
+    const promise = loadResponsibleUserSnapshot(input.companyId, input.userId);
+    if (ttlMs > 0) {
+      responsibleUserSnapshotCache.set(key, { expiresAt: now + ttlMs, promise });
+      promise.catch(() => {
+        if (responsibleUserSnapshotCache.get(key)?.promise === promise) {
+          responsibleUserSnapshotCache.delete(key);
+        }
+      });
+    }
+    actorWithMemo.__responsibleUserSnapshotMemo.set(key, promise);
+    return promise;
   }
 
   async function findGrant(
@@ -1087,7 +1223,7 @@ export function authorizationService(db: Db) {
     });
   }
 
-  async function decide(input: {
+  async function decideBase(input: {
     actor: AuthorizationActor;
     action: AuthorizationAction;
     resource: AuthorizationResource;
@@ -1164,6 +1300,7 @@ export function authorizationService(db: Db) {
       // elevated — not even via stale instance_admin rows left behind by
       // deployments that ran the pre-hardening cloud_tenant path.
       if (
+        !input.actor.ignoreInstanceAdmin &&
         input.actor.source !== "cloud_tenant" &&
         (input.actor.isInstanceAdmin || await isInstanceAdmin(input.actor.userId))
       ) {
@@ -1502,6 +1639,95 @@ export function authorizationService(db: Db) {
         ? `Missing permission: ${permissionKey}.`
         : `No agent permission mapping exists for ${input.action}.`,
     });
+  }
+
+  async function applyResponsibleUserIntersection(
+    input: {
+      actor: AuthorizationActor;
+      action: AuthorizationAction;
+      resource: AuthorizationResource;
+      scope?: Record<string, unknown> | null;
+    },
+    agentDecision: AuthorizationDecision,
+  ): Promise<AuthorizationDecision> {
+    const responsibleUserId = input.actor.onBehalfOfUserId?.trim();
+    if (input.actor.type !== "agent" || !responsibleUserId || !agentDecision.allowed) {
+      return agentDecision;
+    }
+
+    const companyId = companyIdForResource(input.resource);
+    const snapshot = await getResponsibleUserSnapshot({
+      actor: input.actor,
+      companyId,
+      userId: responsibleUserId,
+    });
+    const denyCode: AuthorizationDecision["code"] =
+      snapshot.userExists && snapshot.activeMembership
+        ? "RESPONSIBLE_USER_UNAUTHORIZED"
+        : "RESPONSIBLE_USER_UNAVAILABLE";
+
+    const userDecision = snapshot.userExists && snapshot.activeMembership
+      ? await decideBase({
+          ...input,
+          actor: {
+            type: "board",
+            userId: responsibleUserId,
+            companyIds: [companyId],
+            memberships: [snapshot.activeMembership],
+            isInstanceAdmin: false,
+            ignoreInstanceAdmin: true,
+            source: "session",
+          },
+        })
+      : deny({
+          action: input.action,
+          reason: "deny_missing_membership",
+          explanation: `Responsible user ${responsibleUserId} is unavailable for company ${companyId}.`,
+        });
+
+    if (
+      !userDecision.allowed &&
+      userDecision.reason === "deny_unsupported_action" &&
+      activeResponsibleUserCanAuthorizeIssueAction(input.action, snapshot.activeMembership)
+    ) {
+      return agentDecision;
+    }
+
+    if (userDecision.allowed) return agentDecision;
+
+    const denied = deny({
+      action: input.action,
+      reason: userDecision.reason,
+      code: denyCode,
+      explanation:
+        denyCode === "RESPONSIBLE_USER_UNAVAILABLE"
+          ? `Responsible user ${responsibleUserId} is unavailable for company ${companyId}.`
+          : `Responsible user ${responsibleUserId} is not authorized for ${input.action}: ${userDecision.explanation}`,
+      grant: userDecision.grant,
+    });
+
+    logger.warn({
+      authzMode: responsibleUserAuthzShadowMode() ? "shadow" : "enforce",
+      code: denied.code,
+      reason: userDecision.reason,
+      action: input.action,
+      resourceType: input.resource.type,
+      companyId,
+      actorAgentId: input.actor.agentId ?? null,
+      responsibleUserId,
+    }, "responsible-user authorization intersection denied");
+
+    return responsibleUserAuthzShadowMode() ? agentDecision : denied;
+  }
+
+  async function decide(input: {
+    actor: AuthorizationActor;
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+    scope?: Record<string, unknown> | null;
+  }): Promise<AuthorizationDecision> {
+    const agentDecision = await decideBase(input);
+    return applyResponsibleUserIntersection(input, agentDecision);
   }
 
   return {

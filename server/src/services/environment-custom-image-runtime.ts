@@ -114,7 +114,6 @@ export function applyCustomImageTemplateToSandboxConfig(
 export function environmentCustomImageTemplateFromRow(row: TemplateRow): EnvironmentCustomImageTemplate {
   return {
     id: row.id,
-    companyId: row.companyId,
     environmentId: row.environmentId,
     provider: row.provider,
     templateKind: readEnvironmentCustomImageTemplateKind(row.templateKind),
@@ -136,7 +135,6 @@ export function environmentCustomImageTemplateFromRow(row: TemplateRow): Environ
 export async function resolveActiveEnvironmentCustomImageTemplateForRuntime(
   db: Db,
   input: {
-    companyId: string;
     environmentId: string;
     baseConfig: SandboxEnvironmentConfig;
     runtimeConfig: SandboxEnvironmentConfig;
@@ -147,7 +145,6 @@ export async function resolveActiveEnvironmentCustomImageTemplateForRuntime(
     .select()
     .from(environmentCustomImageTemplates)
     .where(and(
-      eq(environmentCustomImageTemplates.companyId, input.companyId),
       eq(environmentCustomImageTemplates.environmentId, input.environmentId),
       eq(environmentCustomImageTemplates.provider, input.baseConfig.provider),
       eq(environmentCustomImageTemplates.status, "active"),

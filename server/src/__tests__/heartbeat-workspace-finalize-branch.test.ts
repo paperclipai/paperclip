@@ -152,6 +152,7 @@ async function seedRunTarget(db: Db, repoRoot: string) {
     name: "Acme",
     issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
     status: "active",
+    defaultResponsibleUserId: "responsible-user",
     createdAt: new Date(),
     updatedAt: new Date(),
   });
@@ -238,6 +239,14 @@ async function listFinalizeOperations(db: Db, runId: string) {
     .orderBy(asc(workspaceOperations.startedAt), asc(workspaceOperations.createdAt));
 }
 
+async function listRunWorkspaceOperations(db: Db, runId: string) {
+  return db
+    .select()
+    .from(workspaceOperations)
+    .where(eq(workspaceOperations.heartbeatRunId, runId))
+    .orderBy(asc(workspaceOperations.startedAt), asc(workspaceOperations.createdAt));
+}
+
 describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => {
   let db!: Db;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -271,6 +280,9 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     await db.delete(environmentLeases);
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
+    // Heartbeat finalization can emit run-linked activity after the first
+    // cleanup pass observes all runs as non-active.
+    await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(issueComments);
     await db.delete(issues);
@@ -291,18 +303,20 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     await tempDb?.cleanup();
   });
 
-  it("fails a successful adapter run when the managed worktree branch drift was not recorded", async () => {
+  it("repairs clean unrecorded branch drift before recording workspace finalization", async () => {
     const repoRoot = await createGitRepo();
     tempRoots.push(repoRoot);
     const { agentId, issueId } = await seedRunTarget(db, repoRoot);
     const publishBranch = `publish-${issueId.slice(0, 8)}`;
     let recordedBranch: string | null = null;
     let executionWorkspaceId: string | null = null;
+    let workspaceCwd: string | null = null;
 
     adapterExecute.mockImplementationOnce(async (input) => {
       const workspace = readAdapterWorkspace(input);
       recordedBranch = workspace.branchName;
       executionWorkspaceId = workspace.executionWorkspaceId;
+      workspaceCwd = workspace.cwd;
       await runGit(workspace.cwd, ["checkout", "-b", publishBranch]);
       await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, issueId));
       return {
@@ -321,42 +335,128 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
 
     const finishedRun = await waitForRunToFinish(heartbeat, run!.id);
     expect(finishedRun).toMatchObject({
-      status: "failed",
-      errorCode: "workspace_validation_failed",
-      error: expect.stringContaining("Record a sanctioned execution-workspace branch transition"),
-    });
-    const workspaceValidation = (finishedRun?.resultJson as Record<string, unknown> | null)?.workspaceValidation;
-    expect(workspaceValidation).toMatchObject({
-      reason: "git_worktree_branch_mismatch_after_run",
-      fingerprint: expect.stringMatching(/^workspace_finalize_branch_mismatch:v1:sha256:/),
-      issueId,
-      persistedExecutionWorkspaceId: executionWorkspaceId,
-      managedGitWorktreeBranch: expect.objectContaining({
-        executionWorkspaceId,
-        reasonCode: "branch_mismatch",
-        expectedBranchName: recordedBranch,
-        actualBranchName: publishBranch,
-      }),
+      status: "succeeded",
+      errorCode: null,
+      error: null,
     });
     await waitForRuntimeStateLastRun(db, agentId, run!.id);
     expect(adapterExecute).toHaveBeenCalledTimes(1);
+    await expect(execFileAsync("git", ["branch", "--show-current"], { cwd: workspaceCwd! }))
+      .resolves.toMatchObject({ stdout: `${recordedBranch}\n` });
+
+    const operations = await listRunWorkspaceOperations(db, run!.id);
+    expect(operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "worktree_prepare",
+          command: `git checkout ${recordedBranch}`,
+          status: "succeeded",
+          executionWorkspaceId,
+          metadata: expect.objectContaining({
+            branchIncoherenceRepair: true,
+            expectedBranchName: recordedBranch,
+            actualBranchName: publishBranch,
+            executionWorkspaceId,
+            sourceIssueId: issueId,
+          }),
+        }),
+      ]),
+    );
 
     const finalizeOps = await listFinalizeOperations(db, run!.id);
     expect(finalizeOps).toHaveLength(1);
     expect(finalizeOps[0]).toMatchObject({
-      status: "failed",
+      status: "succeeded",
       executionWorkspaceId,
-      stderrExcerpt: expect.stringContaining("Managed git worktree branch check failed"),
     });
     expect(finalizeOps[0]?.metadata).toMatchObject({
       managedGitWorktreeBranch: {
         executionWorkspaceId,
-        valid: false,
-        reasonCode: "branch_mismatch",
+        valid: true,
+        reasonCode: null,
         expectedBranchName: recordedBranch,
-        actualBranchName: publishBranch,
+        actualBranchName: recordedBranch,
+      },
+      managedGitWorktreeBranchRepair: {
+        attempted: true,
+        succeeded: true,
+        initial: expect.objectContaining({
+          valid: false,
+          reasonCode: "branch_mismatch",
+          expectedBranchName: recordedBranch,
+          actualBranchName: publishBranch,
+        }),
       },
     });
+  }, 20_000);
+
+  it("adopts unrecorded forward branch drift for finalization without persisting it", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { agentId, issueId } = await seedRunTarget(db, repoRoot);
+    const publishBranch = `publish-${issueId.slice(0, 8)}`;
+    let recordedBranch: string | null = null;
+    let executionWorkspaceId: string | null = null;
+
+    adapterExecute.mockImplementationOnce(async (input) => {
+      const workspace = readAdapterWorkspace(input);
+      recordedBranch = workspace.branchName;
+      executionWorkspaceId = workspace.executionWorkspaceId;
+      await runGit(workspace.cwd, ["checkout", "-b", publishBranch]);
+      await writeFile(path.join(workspace.cwd, "publish.txt"), "publish branch work\n", "utf8");
+      await runGit(workspace.cwd, ["add", "publish.txt"]);
+      await runGit(workspace.cwd, ["commit", "-m", "Add publish branch work"]);
+      await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: "Adapter completed after switching to a publish branch with commits.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await wakeIssue(heartbeat, agentId, issueId);
+    expect(run).not.toBeNull();
+
+    const finishedRun = await waitForRunToFinish(heartbeat, run!.id);
+    expect(finishedRun).toMatchObject({
+      status: "succeeded",
+      errorCode: null,
+      error: null,
+    });
+    await waitForRuntimeStateLastRun(db, agentId, run!.id);
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+
+    const finalizedWorkspace = await db
+      .select({ branchName: executionWorkspaces.branchName })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId!))
+      .then((rows) => rows[0] ?? null);
+    expect(finalizedWorkspace?.branchName).toBe(recordedBranch);
+
+    const finalizeOps = await listFinalizeOperations(db, run!.id);
+    expect(finalizeOps).toHaveLength(1);
+    expect(finalizeOps[0]).toMatchObject({
+      status: "succeeded",
+      executionWorkspaceId,
+    });
+    expect(finalizeOps[0]?.metadata).toMatchObject({
+      managedGitWorktreeBranch: expect.objectContaining({
+        executionWorkspaceId,
+        valid: true,
+        reasonCode: null,
+        expectedBranchName: publishBranch,
+        actualBranchName: publishBranch,
+      }),
+      managedGitWorktreeBranchRepair: expect.objectContaining({
+        attempted: true,
+        succeeded: true,
+      }),
+    });
+    expect(recordedBranch).not.toBe(publishBranch);
   }, 20_000);
 
   it("allows a successful adapter run when the branch transition is recorded before finalization", async () => {

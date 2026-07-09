@@ -7,6 +7,7 @@ import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
+  ADAPTER_AGNOSTIC_KEYS,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   createAgentKeySchema,
   createAgentHireSchema,
@@ -68,6 +69,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
+import { authorizationDeniedDetails } from "../services/authorization.js";
 import {
   detectAdapterModel,
   findActiveServerAdapter,
@@ -82,12 +84,6 @@ import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
-import {
-  DEFAULT_ACPX_LOCAL_AGENT,
-  DEFAULT_ACPX_LOCAL_MODE,
-  DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS,
-  DEFAULT_ACPX_LOCAL_PERMISSION_MODE,
-} from "@paperclipai/adapter-acpx-local";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
@@ -135,7 +131,6 @@ export function agentRoutes(
   // Legacy hardcoded maps — used as fallback when adapter module does not
   // declare capability flags explicitly.
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
-    acpx_local: "instructionsFilePath",
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
@@ -169,6 +164,7 @@ export function agentRoutes(
     "instructionsFilePath",
     "agentsMdPath",
   ] as const;
+  const KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET: ReadonlySet<string> = new Set(KNOWN_INSTRUCTIONS_BUNDLE_KEYS);
 
   const router = Router();
   const svc = agentService(db);
@@ -666,7 +662,7 @@ export function agentRoutes(
       resource: { type: "company", companyId },
     });
     if (!decision.allowed) {
-      throw forbidden(decision.explanation);
+      throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     }
     if (req.actor.type !== "agent") return null;
     const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
@@ -685,7 +681,7 @@ export function agentRoutes(
       resource: { type: "company", companyId },
     });
     if (decision.allowed) return;
-    throw forbidden(decision.explanation);
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
   async function assertCanReadConfigurations(req: Request, companyId: string) {
@@ -833,7 +829,7 @@ export function agentRoutes(
       resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
     });
     if (decision.allowed) return;
-    throw forbidden(decision.explanation);
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
   async function assertCanReadAgent(req: Request, targetAgent: { companyId: string }) {
@@ -1192,21 +1188,6 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
     const next = { ...adapterConfig };
-    if (adapterType === "acpx_local") {
-      if (!asNonEmptyString(next.agent)) {
-        next.agent = DEFAULT_ACPX_LOCAL_AGENT;
-      }
-      if (!asNonEmptyString(next.mode)) {
-        next.mode = DEFAULT_ACPX_LOCAL_MODE;
-      }
-      if (!asNonEmptyString(next.permissionMode)) {
-        next.permissionMode = DEFAULT_ACPX_LOCAL_PERMISSION_MODE;
-      }
-      if (!asNonEmptyString(next.nonInteractivePermissions)) {
-        next.nonInteractivePermissions = DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS;
-      }
-      return ensureGatewayDeviceKey(adapterType, next);
-    }
     if (adapterType === "codex_local") {
       const hasBypassFlag =
         typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
@@ -2870,11 +2851,8 @@ export function agentRoutes(
         // Preserve adapter-agnostic keys (env, cwd, etc.) from the existing config
         // when the adapter type changes. Without this, a PATCH that includes
         // adapterConfig but omits these keys would silently drop them.
-        const ADAPTER_AGNOSTIC_KEYS = [
-          "env", "cwd", "timeoutSec", "graceSec",
-          "promptTemplate", "bootstrapPromptTemplate",
-        ] as const;
         for (const key of ADAPTER_AGNOSTIC_KEYS) {
+          if (KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET.has(key)) continue;
           if (rawEffectiveAdapterConfig[key] === undefined && existingAdapterConfig[key] !== undefined) {
             rawEffectiveAdapterConfig = { ...rawEffectiveAdapterConfig, [key]: existingAdapterConfig[key] };
           }
@@ -3205,7 +3183,9 @@ export function agentRoutes(
     if (!agent) {
       return;
     }
-    const key = await svc.createApiKey(id, req.body.name, req.body.scope);
+    const key = await svc.createApiKey(id, req.body.name, req.body.scope, {
+      responsibleUserId: req.actor.userId ?? null,
+    });
 
     await logActivity(db, {
       companyId: agent.companyId,
@@ -3214,7 +3194,12 @@ export function agentRoutes(
       action: "agent.key_created",
       entityType: "agent",
       entityId: agent.id,
-      details: { keyId: key.id, name: key.name, scope: key.scope },
+      details: {
+        keyId: key.id,
+        name: key.name,
+        scope: key.scope,
+        responsibleUserId: key.responsibleUserId,
+      },
     });
 
     res.status(201).json(key);
@@ -3322,7 +3307,7 @@ export function agentRoutes(
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
-      runId: actor.runId,
+      runId: run.id,
       action: "heartbeat.invoked",
       entityType: "heartbeat_run",
       entityId: run.id,
@@ -3413,7 +3398,7 @@ export function agentRoutes(
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
-      runId: actor.runId,
+      runId: run.id,
       action: "heartbeat.invoked",
       entityType: "heartbeat_run",
       entityId: run.id,

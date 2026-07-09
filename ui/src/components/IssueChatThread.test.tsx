@@ -273,7 +273,7 @@ function createExpiredRequestConfirmationInteraction(
     resolvedAt: new Date("2026-04-06T12:05:00.000Z"),
     payload: {
       version: 1,
-      prompt: "Approve the plan and let the assignee start implementation?",
+      prompt: "Approve the plan and let the responsible start implementation?",
       acceptLabel: "Approve plan",
       rejectLabel: "Request revisions",
     },
@@ -347,7 +347,7 @@ describe("IssueChatThread", () => {
     const viewport = container.querySelector('[data-testid="thread-viewport"]') as HTMLDivElement | null;
     expect(viewport).not.toBeNull();
     expect(viewport?.className).not.toContain("overflow-y-auto");
-    expect(viewport?.className).not.toContain("max-h-[70vh]");
+    expect(viewport?.className).not.toContain("max-h-(--sz-70vh)");
 
     act(() => {
       root.unmount();
@@ -1754,10 +1754,10 @@ describe("IssueChatThread", () => {
     );
     expect(bubble).toBeDefined();
     expect(bubble?.textContent).toContain("Here is my agent reply.");
-    expect(bubble?.className).toContain("max-w-[calc(100%-0.5rem)]");
-    expect(bubble?.className).toContain("sm:max-w-[85%]");
-    // Neutral, not the human liveness-blue bubble.
-    expect(bubble?.className).not.toContain("bg-[#2563EB]");
+    expect(bubble?.className).toContain("max-w-(--sz-calc-7)");
+    expect(bubble?.className).toContain("sm:max-w-(--pct-85)");
+    // Neutral, not the human liveness-blue bubble (--liveness-blue, DECISION-SHEET.md A6).
+    expect(bubble?.className).not.toContain("bg-(--liveness-blue)");
 
     act(() => {
       root.unmount();
@@ -2004,7 +2004,7 @@ describe("IssueChatThread", () => {
     });
 
     expect(container.textContent).toContain("Work on this task is blocked by the linked task");
-    expect(container.textContent).toContain("Comments still wake the assignee for questions or triage");
+    expect(container.textContent).toContain("Comments still wake the responsible for questions or triage");
     expect(container.textContent).toContain("PAP-1723");
     expect(container.textContent).toContain("QA the install flow");
     expect(container.querySelector('[data-issue-path-id="PAP-1723"]')).not.toBeNull();
@@ -2067,7 +2067,7 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("shows paused assigned agent context above the composer", () => {
+  it("shows paused responsible agent context above the composer", () => {
     const root = createRoot(container);
     const pausedAgent = {
       id: "agent-1",
@@ -2647,19 +2647,19 @@ describe("IssueChatThread", () => {
     const dock = container.querySelector('[data-testid="issue-chat-composer-dock"]') as HTMLDivElement | null;
     expect(dock).not.toBeNull();
     expect(dock?.className).toContain("sticky");
-    expect(dock?.className).toContain("bottom-[calc(env(safe-area-inset-bottom)+20px)]");
+    expect(dock?.className).toContain("bottom-(--sz-calc-8)");
     expect(dock?.className).toContain("z-20");
 
     const composer = container.querySelector('[data-testid="issue-chat-composer"]') as HTMLDivElement | null;
     expect(composer).not.toBeNull();
     expect(composer?.className).toContain("rounded-md");
     expect(composer?.className).not.toContain("rounded-lg");
-    expect(composer?.className).toContain("p-[15px]");
+    expect(composer?.className).toContain("p-(--sz-15px)");
 
     const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
-    expect(editor?.dataset.contentClassName).toContain("max-h-[28dvh]");
+    expect(editor?.dataset.contentClassName).toContain("max-h-(--sz-28dvh)");
     expect(editor?.dataset.contentClassName).toContain("overflow-y-auto");
-    expect(editor?.dataset.contentClassName).not.toContain("min-h-[72px]");
+    expect(editor?.dataset.contentClassName).not.toContain("min-h-(--sz-72px)");
     expect(editor?.dataset.fileDropTarget).toBe("parent");
 
     act(() => {
@@ -3002,7 +3002,7 @@ describe("IssueChatThread", () => {
             onAdd={async () => {}}
             enableReassign
             reassignOptions={[
-              { id: "", label: "No assignee" },
+              { id: "", label: "No responsible" },
               { id: "agent:agent-1", label: "Agent 1" },
             ]}
             currentAssigneeValue=""
@@ -3036,7 +3036,7 @@ describe("IssueChatThread", () => {
     expect(appendMock).not.toHaveBeenCalled();
     const dialog = document.querySelector('[data-testid="issue-chat-no-assignee-dialog"]');
     expect(dialog).not.toBeNull();
-    expect(dialog?.textContent).toContain("No assignee selected");
+    expect(dialog?.textContent).toContain("No responsible selected");
     expect(dialog?.textContent).toContain("no agent will be woken");
 
     const sendAnyway = document.querySelector(
@@ -3075,7 +3075,7 @@ describe("IssueChatThread", () => {
             onAdd={async () => {}}
             enableReassign
             reassignOptions={[
-              { id: "", label: "No assignee" },
+              { id: "", label: "No responsible" },
               { id: "agent:agent-1", label: "Agent 1" },
             ]}
             currentAssigneeValue=""
@@ -3117,7 +3117,7 @@ describe("IssueChatThread", () => {
 
     expect(appendMock).not.toHaveBeenCalled();
     expect(document.querySelector('[data-testid="issue-chat-no-assignee-dialog"]')).toBeNull();
-    // The composer keeps the draft so the user can pick an assignee and resend.
+    // The composer keeps the draft so the user can pick a responsible and resend.
     const editorAfter = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
     expect(editorAfter?.value).toBe("Reply without assignee");
 
@@ -3140,7 +3140,7 @@ describe("IssueChatThread", () => {
             onAdd={async () => {}}
             enableReassign
             reassignOptions={[
-              { id: "", label: "No assignee" },
+              { id: "", label: "No responsible" },
               { id: "agent:agent-1", label: "Agent 1" },
             ]}
             currentAssigneeValue="agent:agent-1"
@@ -3170,7 +3170,7 @@ describe("IssueChatThread", () => {
     });
 
     expect(appendMock).toHaveBeenCalledTimes(1);
-    expect(document.body.textContent).not.toContain("No assignee selected");
+    expect(document.body.textContent).not.toContain("No responsible selected");
 
     act(() => {
       root.unmount();
@@ -3464,6 +3464,8 @@ describe("IssueChatThread", () => {
               adapterType: "codex_local",
               currentStatusMessage: "Syncing git worktree to sandbox",
               currentStatusUpdatedAt: "2026-04-06T12:00:05.000Z",
+              currentToolName: "bash",
+              lastEventAt: new Date(Date.now() - 2000).toISOString(),
             }}
             onAdd={async () => {}}
             enableLiveTranscriptPolling={false}
@@ -3473,8 +3475,9 @@ describe("IssueChatThread", () => {
     });
 
     expect(container.textContent).toContain("Working...");
-    expect(container.textContent).toContain("Syncing git worktree to sandbox");
-    expect(container.querySelector('[title="Syncing git worktree to sandbox"]')).not.toBeNull();
+    expect(container.textContent).toContain("Using bash");
+    expect(container.textContent).not.toContain("last activity");
+    expect(container.textContent).toMatch(/\d+ seconds? ago/);
 
     act(() => {
       root.unmount();

@@ -123,6 +123,11 @@ describe("mergeCoalescedContextSnapshot", () => {
         interactionKind: "request_confirmation",
         interactionStatus: "accepted",
         continuationPolicy: "wake_assignee_on_accept",
+        checkboxSelection: {
+          prompt: "Delete selected files?",
+          selectedOptionIds: ["file-b"],
+          selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
+        },
         wakeReason: "issue_commented",
       },
       {
@@ -137,11 +142,12 @@ describe("mergeCoalescedContextSnapshot", () => {
     expect(merged.interactionKind).toBeUndefined();
     expect(merged.interactionStatus).toBeUndefined();
     expect(merged.continuationPolicy).toBeUndefined();
+    expect(merged.checkboxSelection).toBeUndefined();
     expect(merged.commentId).toBe("comment-1");
     expect(merged.wakeCommentId).toBe("comment-1");
   });
 
-  it("preserves accepted-plan interaction state for the interaction wake itself", () => {
+  it("preserves resolved interaction state for the interaction wake itself", () => {
     const merged = mergeCoalescedContextSnapshot(
       {
         issueId: "issue-1",
@@ -152,6 +158,11 @@ describe("mergeCoalescedContextSnapshot", () => {
         interactionKind: "request_confirmation",
         interactionStatus: "accepted",
         continuationPolicy: "wake_assignee_on_accept",
+        checkboxSelection: {
+          prompt: "Delete selected files?",
+          selectedOptionIds: ["file-b"],
+          selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
+        },
         wakeReason: "issue_commented",
       },
     );
@@ -160,6 +171,11 @@ describe("mergeCoalescedContextSnapshot", () => {
     expect(merged.interactionKind).toBe("request_confirmation");
     expect(merged.interactionStatus).toBe("accepted");
     expect(merged.continuationPolicy).toBe("wake_assignee_on_accept");
+    expect(merged.checkboxSelection).toEqual({
+      prompt: "Delete selected files?",
+      selectedOptionIds: ["file-b"],
+      selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
+    });
   });
 });
 

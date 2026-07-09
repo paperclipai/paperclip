@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  authUsers,
   companies,
   companyMemberships,
   createDb,
@@ -119,6 +120,47 @@ async function grantAgentPermission(
   });
 }
 
+async function createUser(
+  db: ReturnType<typeof createDb>,
+  input: { id?: string; email?: string } = {},
+) {
+  const id = input.id ?? `user-${randomUUID()}`;
+  await db.insert(authUsers).values({
+    id,
+    name: `User ${id}`,
+    email: input.email ?? `${id}@example.com`,
+    emailVerified: true,
+    image: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+  return id;
+}
+
+async function grantUserPermission(
+  db: ReturnType<typeof createDb>,
+  companyId: string,
+  userId: string,
+  permissionKey: "tasks:assign" | "tasks:assign_scope",
+  scope: Record<string, unknown> | null = null,
+) {
+  await db.insert(companyMemberships).values({
+    companyId,
+    principalType: "user",
+    principalId: userId,
+    status: "active",
+    membershipRole: "operator",
+  });
+  await db.insert(principalPermissionGrants).values({
+    companyId,
+    principalType: "user",
+    principalId: userId,
+    permissionKey,
+    scope,
+    grantedByUserId: "owner",
+  });
+}
+
 describeEmbeddedPostgres("authorization service", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -137,6 +179,7 @@ describeEmbeddedPostgres("authorization service", () => {
     await db.delete(agents);
     await db.delete(projects);
     await db.delete(companies);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -252,6 +295,179 @@ describeEmbeddedPostgres("authorization service", () => {
       reason: "allow_simple_company_member",
     });
     expect(decision.explanation).toContain("simple mode");
+  });
+
+  it("denies delegated protected assignment when the responsible user lacks matching authority", async () => {
+    const company = await createCompany(db, "ResponsibleUserDenied");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const ceoAgent = await createAgent(db, company.id, {
+      role: "ceo",
+      permissions: {
+        authorizationPolicy: {
+          assignmentPolicy: { mode: "protected" },
+        },
+      },
+    });
+    const responsibleUserId = await createUser(db);
+    await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign");
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: ceoAgent.id },
+      scope: { assigneeAgentId: ceoAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAUTHORIZED",
+    });
+  });
+
+  it("allows active non-viewer responsible users to authorize assigned agent issue mutations", async () => {
+    const company = await createCompany(db, "ResponsibleUserIssueMutation");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Assigned issue mutation",
+      assigneeAgentId: actorAgent.id,
+    });
+    const responsibleUserId = await createUser(db);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+
+    await expect(authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: actorAgent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_self",
+    });
+  });
+
+  it("keeps responsible-user issue mutations denied for viewer memberships", async () => {
+    const company = await createCompany(db, "ResponsibleUserIssueViewerDenied");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Assigned viewer-denied mutation",
+      assigneeAgentId: actorAgent.id,
+    });
+    const responsibleUserId = await createUser(db);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "viewer",
+    });
+
+    await expect(authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: actorAgent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAUTHORIZED",
+      reason: "deny_unsupported_action",
+    });
+  });
+
+  it("fails closed when the responsible user is unavailable", async () => {
+    const company = await createCompany(db, "ResponsibleUserUnavailable");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: `missing-${randomUUID()}`,
+        source: "agent_jwt",
+      },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAVAILABLE",
+    });
+  });
+
+  it("allows delegated protected assignment when both agent and responsible user are authorized", async () => {
+    const company = await createCompany(db, "ResponsibleUserAllowed");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const ceoAgent = await createAgent(db, company.id, {
+      role: "ceo",
+      permissions: {
+        authorizationPolicy: {
+          assignmentPolicy: { mode: "protected" },
+        },
+      },
+    });
+    const responsibleUserId = await createUser(db);
+    await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign");
+    await grantUserPermission(db, company.id, responsibleUserId, "tasks:assign");
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: ceoAgent.id },
+      scope: { assigneeAgentId: ceoAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_explicit_grant",
+    });
   });
 
   it("limits low-trust issue reads to the configured project and root issue boundary", async () => {

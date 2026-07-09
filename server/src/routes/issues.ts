@@ -64,10 +64,25 @@ import {
   type CompanySearchQuery,
   type CompanySearchResponse,
   type ExecutionWorkspace,
+  type IssueBlockerDiagnosticFlag,
+  type IssueBlockerDiagnosticIssueSummary,
+  type IssueBlockerDiagnosticNode,
+  type IssueBlockerDiagnosticsReadiness,
+  type IssueBlockerDiagnosticsResponse,
+  type IssueSubtreeDiagnosticEdge,
+  type IssueSubtreeDiagnosticNode,
+  type IssueSubtreeDiagnosticsResponse,
+  type IssueWakeDiagnosticActivityRecord,
+  type IssueWakeDiagnosticEvent,
+  type IssueWakeDiagnosticWakeFailureClass,
+  type IssueWakeDiagnosticWakeRequest,
+  type IssueWakeDiagnosticsResponse,
   type IssueRelationIssueSummary,
   type IssueWatchdogDiscoveryKind,
+  type ProjectWorkspace,
   type SourceTrustMetadata,
   type SuccessfulRunHandoffState,
+  type WorkspaceRuntimeService,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -119,11 +134,23 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import {
+  ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+  buildIssueBlockersResolvedWakeIdempotencyKey,
+  findExistingIssueBlockersResolvedWake,
+} from "../services/issue-dependency-wakeups.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
+import {
+  ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
+  ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
+  ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
+  ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
+  readAcceptedPlanConfirmationTarget,
+} from "../services/issues.js";
+import { authorizationDeniedDetails } from "../services/authorization.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -392,6 +419,89 @@ function readObject(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+function hasOwn(record: Record<string, unknown>, key: string) {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+async function auditAgentIssueCreateAttributionSpoof(input: {
+  db: Db;
+  req: Request;
+  companyId: string;
+  entityId?: string | null;
+  surface: string;
+  field: "responsibleUserId" | "createdByUserId";
+  action: "rejected" | "stripped";
+  requestedValue: string | null;
+}) {
+  const actor = getActorInfo(input.req);
+  await logActivity(input.db, {
+    companyId: input.companyId,
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    agentId: actor.agentId,
+    runId: actor.runId,
+    action: input.action === "rejected"
+      ? "issue.attribution_spoof_rejected"
+      : "issue.attribution_spoof_stripped",
+    entityType: input.entityId ? "issue" : "company",
+    entityId: input.entityId ?? input.companyId,
+    details: {
+      surface: input.surface,
+      field: input.field,
+      requestedValue: input.requestedValue,
+      derivedFrom: "authenticated_actor",
+    },
+  });
+}
+
+async function sanitizeIssueCreateAttribution<T extends object>(
+  db: Db,
+  req: Request,
+  res: Response,
+  companyId: string,
+  input: T,
+  options: { surface: string; entityId?: string | null },
+) {
+  const sanitized = { ...input } as T & Record<string, unknown>;
+  if (req.actor.type !== "agent") return sanitized;
+
+  if (hasOwn(sanitized, "responsibleUserId") && sanitized.responsibleUserId != null) {
+    await auditAgentIssueCreateAttributionSpoof({
+      db,
+      req,
+      companyId,
+      entityId: options.entityId,
+      surface: options.surface,
+      field: "responsibleUserId",
+      action: "rejected",
+      requestedValue: readNonEmptyString(sanitized.responsibleUserId),
+    });
+    res.status(422).json({ error: "Agent-created issues cannot set responsibleUserId" });
+    return null;
+  }
+
+  if (hasOwn(sanitized, "createdByUserId") && sanitized.createdByUserId != null) {
+    await auditAgentIssueCreateAttributionSpoof({
+      db,
+      req,
+      companyId,
+      entityId: options.entityId,
+      surface: options.surface,
+      field: "createdByUserId",
+      action: "stripped",
+      requestedValue: readNonEmptyString(sanitized.createdByUserId),
+    });
+    delete sanitized.createdByUserId;
+  }
+
+  delete sanitized.responsibleUserId;
+  return sanitized;
+}
+
+function authenticatedActorResponsibleUserId(req: Request) {
+  return req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
+}
+
 function readPlanConfirmationTargetForIssue(payload: unknown, issueId: string) {
   const target = readObject(readObject(payload).target);
   if (target.type !== "issue_document" || target.key !== "plan") return null;
@@ -461,7 +571,7 @@ function summarizeIssueWorkspaceForActivity(
   issue: IssueWorkspaceAuditInput,
   names: WorkspaceNameMaps,
 ) {
-  const settings = parseIssueExecutionWorkspaceSettings(issue.executionWorkspaceSettings);
+  const settings = parseIssueExecutionWorkspaceSettings(issue.executionWorkspaceSettings, { includeEnvironmentId: true });
   const mode = settings?.mode ?? issue.executionWorkspacePreference ?? null;
   const executionWorkspaceId = issue.executionWorkspaceId ?? null;
   const projectWorkspaceId = issue.projectWorkspaceId ?? null;
@@ -668,6 +778,725 @@ function withRecoveryActionsOnRelationSummaries(
   };
 }
 
+type IssueBlockerDiagnosticReadableIssue = {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+};
+
+type IssueBlockerDiagnosticAuthzIssue = IssueBlockerDiagnosticReadableIssue & {
+  companyId: string;
+  projectId: string | null;
+  parentId: string | null;
+};
+
+function toIssueBlockerDiagnosticSummary(
+  issue: IssueBlockerDiagnosticReadableIssue,
+): IssueBlockerDiagnosticIssueSummary {
+  return {
+    id: issue.id,
+    identifier: issue.identifier,
+    title: issue.title,
+    status: issue.status as IssueBlockerDiagnosticIssueSummary["status"],
+    priority: issue.priority as IssueBlockerDiagnosticIssueSummary["priority"],
+    assigneeAgentId: issue.assigneeAgentId,
+    assigneeUserId: issue.assigneeUserId,
+  };
+}
+
+function blockerDiagnosticLabel(issue: IssueBlockerDiagnosticIssueSummary) {
+  return issue.identifier ?? issue.title;
+}
+
+function buildIssueBlockerDiagnosticsResponse(input: {
+  issue: IssueBlockerDiagnosticReadableIssue;
+  blockers: IssueBlockerDiagnosticAuthzIssue[];
+  visibleBlockers: IssueBlockerDiagnosticAuthzIssue[];
+  readiness: {
+    allBlockersDone: boolean;
+    isDependencyReady: boolean;
+    unresolvedBlockerIssueIds: string[];
+    pendingFinalizeBlockerIssueIds: string[];
+  };
+  truncated: boolean;
+  maxBlockers?: number;
+}): IssueBlockerDiagnosticsResponse {
+  const issue = toIssueBlockerDiagnosticSummary(input.issue);
+  const visibleBlockerIds = new Set(input.visibleBlockers.map((blocker) => blocker.id));
+  const omittedUnauthorizedBlockerCount = input.blockers.filter(
+    (blocker) => !visibleBlockerIds.has(blocker.id),
+  ).length;
+  const completeVisibleSet = !input.truncated && omittedUnauthorizedBlockerCount === 0;
+  const unresolvedIds = new Set(input.readiness.unresolvedBlockerIssueIds);
+  const pendingFinalizeIds = new Set(input.readiness.pendingFinalizeBlockerIssueIds);
+
+  const blockers: IssueBlockerDiagnosticNode[] = input.visibleBlockers.map((blockerRow) => {
+    const blocker = toIssueBlockerDiagnosticSummary(blockerRow);
+    const isPendingFinalize = pendingFinalizeIds.has(blocker.id);
+    const isUnresolved = unresolvedIds.has(blocker.id);
+    const flags: IssueBlockerDiagnosticFlag[] = [];
+    if (issue.status === "blocked" && blocker.status === "done") flags.push("done_but_blocking");
+    if (blocker.status === "cancelled") flags.push("cancelled_blocker_in_set");
+    if (isPendingFinalize) flags.push("workspace_finalize_pending");
+
+    return {
+      ...blocker,
+      isUnresolved,
+      isPendingFinalize,
+      isDependencyReady: blocker.status === "done" && !isPendingFinalize,
+      flags,
+    };
+  });
+
+  const readiness: IssueBlockerDiagnosticsReadiness | null = completeVisibleSet
+    ? {
+        allBlockersDone: input.readiness.allBlockersDone,
+        isDependencyReady: input.readiness.isDependencyReady,
+        unresolvedBlockerCount: input.readiness.unresolvedBlockerIssueIds.length,
+        pendingFinalizeBlockerCount: input.readiness.pendingFinalizeBlockerIssueIds.length,
+      }
+    : null;
+  const reportedOmittedUnauthorizedBlockerCount = input.truncated
+    ? null
+    : omittedUnauthorizedBlockerCount;
+
+  return {
+    issue,
+    diagnosis: buildIssueBlockerDiagnosis({
+      issue,
+      blockers,
+      readiness,
+      omittedUnauthorizedBlockerCount: reportedOmittedUnauthorizedBlockerCount,
+      truncated: input.truncated,
+      maxBlockers: input.maxBlockers ?? ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
+    }),
+    readiness,
+    blockers,
+    omittedUnauthorizedBlockerCount: reportedOmittedUnauthorizedBlockerCount,
+    truncated: input.truncated,
+    caps: {
+      maxBlockers: input.maxBlockers ?? ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
+    },
+  };
+}
+
+function buildIssueBlockerDiagnosis(input: {
+  issue: IssueBlockerDiagnosticIssueSummary;
+  blockers: IssueBlockerDiagnosticNode[];
+  readiness: IssueBlockerDiagnosticsReadiness | null;
+  omittedUnauthorizedBlockerCount: number | null;
+  truncated: boolean;
+  maxBlockers: number;
+}) {
+  if (input.truncated) {
+    return `Blocker diagnostics for ${blockerDiagnosticLabel(input.issue)} are truncated at ${
+      input.maxBlockers
+    } blockers, so readiness is not reported.`;
+  }
+  const omittedUnauthorizedBlockerCount = input.omittedUnauthorizedBlockerCount ?? 0;
+  if (omittedUnauthorizedBlockerCount > 0) {
+    return `One or more blockers for ${blockerDiagnosticLabel(
+      input.issue,
+    )} are outside this actor's authorization boundary, so this diagnosis only covers visible blockers.`;
+  }
+  if (input.blockers.length === 0) {
+    return input.issue.status === "blocked"
+      ? `${blockerDiagnosticLabel(input.issue)} is blocked but has no first-class blocker relations.`
+      : null;
+  }
+
+  const pendingFinalize = input.blockers.find((blocker) => blocker.isPendingFinalize);
+  if (pendingFinalize) {
+    return `${blockerDiagnosticLabel(input.issue)} is waiting for ${blockerDiagnosticLabel(
+      pendingFinalize,
+    )} to finish workspace finalization.`;
+  }
+
+  const cancelled = input.blockers.find((blocker) => blocker.status === "cancelled");
+  if (cancelled) {
+    return `${blockerDiagnosticLabel(input.issue)} is blocked by ${blockerDiagnosticLabel(
+      cancelled,
+    )}, which is cancelled; cancelled blockers do not resolve until the blocker relation is removed or replaced.`;
+  }
+
+  const unresolved = input.blockers.find((blocker) => blocker.isUnresolved);
+  if (unresolved) {
+    return `${blockerDiagnosticLabel(input.issue)} is blocked by ${blockerDiagnosticLabel(
+      unresolved,
+    )}, which is ${unresolved.status}.`;
+  }
+
+  if (input.readiness?.isDependencyReady && input.issue.status === "blocked") {
+    return `All blockers for ${blockerDiagnosticLabel(
+      input.issue,
+    )} are resolved, but the issue is still blocked; this is likely a stale blocker hold.`;
+  }
+  if (input.readiness?.isDependencyReady) {
+    return `All blockers for ${blockerDiagnosticLabel(input.issue)} are resolved.`;
+  }
+
+  return null;
+}
+
+const ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES = new Set([
+  "timer",
+  "assignment",
+  "on_demand",
+  "automation",
+]);
+
+const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
+  "issue_assigned",
+  "issue_blockers_resolved",
+  "issue_commented",
+  "issue_comment_mentioned",
+  "issue_dependencies_blocked",
+  "issue_tree_hold_active",
+  "missing_issue_comment",
+  "process_lost_retry",
+  "run_liveness_continuation",
+  "heartbeat.disabled",
+  "heartbeat.timer.no_actionable_work",
+  "heartbeat.wakeOnDemand.disabled",
+]);
+
+const ISSUE_WAKE_DIAGNOSTIC_KNOWN_STATUSES = new Set([
+  "queued",
+  "claimed",
+  "coalesced",
+  "skipped",
+  "completed",
+  "failed",
+  "cancelled",
+  "deferred_issue_execution",
+]);
+
+function dateToIso(value: Date | string | null | undefined) {
+  if (!value) return null;
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function projectWakeDiagnosticSource(value: string | null) {
+  if (!value) return null;
+  return ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES.has(value) ? value : "other";
+}
+
+function projectWakeDiagnosticReason(value: string | null) {
+  if (!value) return null;
+  return ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS.has(value) ? value : "other";
+}
+
+function projectWakeDiagnosticStatus(value: string) {
+  return ISSUE_WAKE_DIAGNOSTIC_KNOWN_STATUSES.has(value) ? value : "other";
+}
+
+function wakeFailureClass(
+  status: string,
+  rawError: string | null,
+): IssueWakeDiagnosticWakeFailureClass | null {
+  if (status === "failed" || rawError) return "failed";
+  if (status === "cancelled") return "cancelled";
+  if (status === "skipped") return "skipped";
+  return null;
+}
+
+function projectIssueWakeRequest(row: {
+  agentId: string;
+  source: string;
+  reason: string | null;
+  status: string;
+  coalescedCount: number;
+  runId: string | null;
+  requestedAt: Date | string;
+  claimedAt: Date | string | null;
+  finishedAt: Date | string | null;
+  error: string | null;
+}, options: { includeInternalIds: boolean }): IssueWakeDiagnosticWakeRequest {
+  const status = projectWakeDiagnosticStatus(row.status);
+  return {
+    kind: "wake_request",
+    agentId: options.includeInternalIds ? row.agentId : null,
+    source: projectWakeDiagnosticSource(row.source) ?? "other",
+    reason: projectWakeDiagnosticReason(row.reason),
+    status,
+    coalescedCount: row.coalescedCount,
+    runId: options.includeInternalIds ? row.runId : null,
+    requestedAt: dateToIso(row.requestedAt)!,
+    claimedAt: dateToIso(row.claimedAt),
+    finishedAt: dateToIso(row.finishedAt),
+    failureClass: wakeFailureClass(status, row.error),
+  };
+}
+
+function wakeDiagnosticActivityAction(action: string) {
+  return action === "issue.tree_hold_wakeup_deferred" ? action : "other";
+}
+
+function wakeDiagnosticActivityEntityType(entityType: string) {
+  return entityType === "issue" || entityType === "agent_wakeup_request" ? entityType : "other";
+}
+
+function projectIssueWakeActivityRecord(
+  row: {
+    action: string;
+    entityType: string;
+    entityId: string;
+    agentId: string | null;
+    runId: string | null;
+    details: Record<string, unknown> | null;
+    createdAt: Date | string;
+  },
+  issueId: string,
+  options: { includeInternalIds: boolean },
+): IssueWakeDiagnosticActivityRecord {
+  const details = row.details && typeof row.details === "object" ? row.details : {};
+  const action = wakeDiagnosticActivityAction(row.action);
+  const rootIssueId = readNonEmptyString(details["rootIssueId"]);
+  const detailIssueId = readNonEmptyString(details["issueId"]);
+  const projectedRootIssueId =
+    rootIssueId === issueId || detailIssueId === issueId || (row.entityType === "issue" && row.entityId === issueId)
+      ? issueId
+      : null;
+
+  return {
+    kind: "activity",
+    action,
+    entityType: wakeDiagnosticActivityEntityType(row.entityType),
+    agentId: options.includeInternalIds ? row.agentId ?? readNonEmptyString(details["agentId"]) : null,
+    runId: options.includeInternalIds ? row.runId : null,
+    createdAt: dateToIso(row.createdAt)!,
+    source: projectWakeDiagnosticSource(readNonEmptyString(details["source"])),
+    requestedReason: projectWakeDiagnosticReason(readNonEmptyString(details["requestedReason"])),
+    previousReason: projectWakeDiagnosticReason(readNonEmptyString(details["previousReason"])),
+    rootIssueId: projectedRootIssueId,
+    holdId: options.includeInternalIds ? readNonEmptyString(details["holdId"]) : null,
+    summary: action === "issue.tree_hold_wakeup_deferred"
+      ? "Wake was deferred because an active issue-tree hold was present."
+      : "Wake-related activity was recorded.",
+  };
+}
+
+function issueWakeDiagnosticEventTimestamp(event: IssueWakeDiagnosticEvent) {
+  const timestamp = event.kind === "wake_request" ? event.requestedAt : event.createdAt;
+  return new Date(timestamp).getTime();
+}
+
+function wakeDiagnosticReasonPhrase(reason: string | null) {
+  return reason ? ` for ${reason}` : "";
+}
+
+function buildIssueWakeDiagnosis(input: {
+  issue: IssueBlockerDiagnosticIssueSummary;
+  events: IssueWakeDiagnosticEvent[];
+  blockerDiagnostics: IssueBlockerDiagnosticsResponse;
+  truncated: boolean;
+  maxWakeRequests: number;
+  maxActivityRecords: number;
+  lookbackDays: number;
+}) {
+  if (input.truncated) {
+    return `Wake diagnostics for ${blockerDiagnosticLabel(input.issue)} are truncated to ${
+      input.maxWakeRequests
+    } wake requests and ${input.maxActivityRecords} activity records over ${
+      input.lookbackDays
+    } days, so the diagnosis only covers returned records.`;
+  }
+
+  const latest = input.events[0];
+  if (latest?.kind === "activity" && latest.action === "issue.tree_hold_wakeup_deferred") {
+    return `The most recent wake-related activity for ${blockerDiagnosticLabel(
+      input.issue,
+    )} was deferred by an active issue-tree hold.`;
+  }
+  if (latest?.kind === "wake_request") {
+    if (latest.status === "deferred_issue_execution") {
+      return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} is deferred${wakeDiagnosticReasonPhrase(
+        latest.reason,
+      )}.`;
+    }
+    if (latest.status === "failed") {
+      return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} failed${wakeDiagnosticReasonPhrase(
+        latest.reason,
+      )}; raw error text is withheld.`;
+    }
+    if (latest.status === "skipped" || latest.status === "cancelled" || latest.status === "coalesced") {
+      const coalesced =
+        latest.coalescedCount > 0 ? ` and coalesced ${latest.coalescedCount} additional request(s)` : "";
+      return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} was ${latest.status}${wakeDiagnosticReasonPhrase(
+        latest.reason,
+      )}${coalesced}.`;
+    }
+    if (latest.status === "queued" || latest.status === "claimed") {
+      return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} is currently ${latest.status}${wakeDiagnosticReasonPhrase(
+        latest.reason,
+      )}.`;
+    }
+    if (latest.status === "completed") {
+      return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} completed${wakeDiagnosticReasonPhrase(
+        latest.reason,
+      )}.`;
+    }
+  }
+
+  if (input.events.length > 0) return null;
+
+  const blockerDiagnostics = input.blockerDiagnostics;
+  if (blockerDiagnostics.truncated) {
+    return `No wake rows are visible for ${blockerDiagnosticLabel(
+      input.issue,
+    )} in the bounded window, and blocker diagnostics are truncated, so no wake cause is inferred.`;
+  }
+  if ((blockerDiagnostics.omittedUnauthorizedBlockerCount ?? 0) > 0) {
+    return `No wake rows are visible for ${blockerDiagnosticLabel(
+      input.issue,
+    )} in the bounded window, and one or more blockers are outside this actor's authorization boundary.`;
+  }
+  if (input.issue.status !== "blocked" || blockerDiagnostics.blockers.length === 0) return null;
+
+  const pendingFinalize = blockerDiagnostics.blockers.find((blocker) => blocker.isPendingFinalize);
+  if (pendingFinalize) {
+    return `No wake row exists for ${blockerDiagnosticLabel(input.issue)} in the bounded window. ${blockerDiagnosticLabel(
+      input.issue,
+    )} is waiting for ${blockerDiagnosticLabel(pendingFinalize)} to finish workspace finalization, so issue_blockers_resolved has not fired.`;
+  }
+
+  const cancelled = blockerDiagnostics.blockers.find((blocker) => blocker.status === "cancelled");
+  if (cancelled) {
+    return `No wake row exists for ${blockerDiagnosticLabel(input.issue)} in the bounded window. ${blockerDiagnosticLabel(
+      input.issue,
+    )} is blocked by ${blockerDiagnosticLabel(cancelled)}, which is cancelled; cancelled blockers do not fire issue_blockers_resolved.`;
+  }
+
+  const unresolved = blockerDiagnostics.blockers.find((blocker) => blocker.isUnresolved);
+  if (unresolved) {
+    return `No wake row exists for ${blockerDiagnosticLabel(input.issue)} in the bounded window. ${blockerDiagnosticLabel(
+      input.issue,
+    )} is blocked by ${blockerDiagnosticLabel(unresolved)}, which is ${unresolved.status}, so issue_blockers_resolved has not fired.`;
+  }
+
+  if (blockerDiagnostics.readiness?.isDependencyReady) {
+    return `No wake row exists for ${blockerDiagnosticLabel(
+      input.issue,
+    )} in the bounded window. All visible blockers are resolved, but the issue is still blocked; this is likely a stale blocker hold or an older wake outside the lookback window.`;
+  }
+
+  return null;
+}
+
+function buildIssueWakeDiagnosticsResponse(input: {
+  issue: IssueBlockerDiagnosticReadableIssue;
+  wakeRequests: Array<{
+    agentId: string;
+    source: string;
+    reason: string | null;
+    status: string;
+    coalescedCount: number;
+    runId: string | null;
+    requestedAt: Date | string;
+    claimedAt: Date | string | null;
+    finishedAt: Date | string | null;
+    error: string | null;
+  }>;
+  activityRecords: Array<{
+    action: string;
+    entityType: string;
+    entityId: string;
+    agentId: string | null;
+    runId: string | null;
+    details: Record<string, unknown> | null;
+    createdAt: Date | string;
+  }>;
+  blockerDiagnostics: IssueBlockerDiagnosticsResponse;
+  truncatedWakeRequests: boolean;
+  truncatedActivityRecords: boolean;
+  includeInternalIds: boolean;
+  maxWakeRequests?: number;
+  maxActivityRecords?: number;
+  lookbackDays?: number;
+}): IssueWakeDiagnosticsResponse {
+  const issue = toIssueBlockerDiagnosticSummary(input.issue);
+  const events: IssueWakeDiagnosticEvent[] = [
+    ...input.wakeRequests.map((record) =>
+      projectIssueWakeRequest(record, { includeInternalIds: input.includeInternalIds }),
+    ),
+    ...input.activityRecords.map((record) =>
+      projectIssueWakeActivityRecord(record, issue.id, { includeInternalIds: input.includeInternalIds }),
+    ),
+  ].sort((left, right) => issueWakeDiagnosticEventTimestamp(right) - issueWakeDiagnosticEventTimestamp(left));
+  const truncated = input.truncatedWakeRequests || input.truncatedActivityRecords;
+  const maxWakeRequests = input.maxWakeRequests ?? ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS;
+  const maxActivityRecords = input.maxActivityRecords ?? ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS;
+  const lookbackDays = input.lookbackDays ?? ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS;
+  const diagnosis = buildIssueWakeDiagnosis({
+    issue,
+    events,
+    blockerDiagnostics: input.blockerDiagnostics,
+    truncated,
+    maxWakeRequests,
+    maxActivityRecords,
+    lookbackDays,
+  });
+
+  return {
+    issue,
+    diagnosis,
+    likelyReason: diagnosis,
+    events,
+    wakeRequestCount: input.wakeRequests.length,
+    activityRecordCount: input.activityRecords.length,
+    truncated,
+    truncatedSections: {
+      wakeRequests: input.truncatedWakeRequests,
+      activityRecords: input.truncatedActivityRecords,
+    },
+    caps: {
+      maxWakeRequests,
+      maxActivityRecords,
+      lookbackDays,
+    },
+  };
+}
+
+type IssueSubtreeDiagnosticAuthzNode = IssueBlockerDiagnosticAuthzIssue & {
+  depth: number;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+};
+
+type IssueSubtreeDiagnosticBlockerAuthzRow = IssueBlockerDiagnosticAuthzIssue & {
+  blockedIssueId: string;
+  relationCreatedAt: Date | string;
+};
+
+type IssueSubtreeDiagnosticWakeRequestRow = {
+  issueId: string;
+  agentId: string;
+  source: string;
+  reason: string | null;
+  status: string;
+  coalescedCount: number;
+  runId: string | null;
+  requestedAt: Date | string;
+  claimedAt: Date | string | null;
+  finishedAt: Date | string | null;
+  error: string | null;
+};
+
+type IssueSubtreeDiagnosticActivityRow = {
+  issueId: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  agentId: string | null;
+  runId: string | null;
+  details: Record<string, unknown> | null;
+  createdAt: Date | string;
+};
+
+function groupByIssueId<T extends { issueId: string }>(rows: T[]) {
+  const map = new Map<string, T[]>();
+  for (const row of rows) {
+    const issueRows = map.get(row.issueId) ?? [];
+    issueRows.push(row);
+    map.set(row.issueId, issueRows);
+  }
+  return map;
+}
+
+function groupBlockersByBlockedIssueId(rows: IssueSubtreeDiagnosticBlockerAuthzRow[]) {
+  const map = new Map<string, IssueSubtreeDiagnosticBlockerAuthzRow[]>();
+  for (const row of rows) {
+    const issueRows = map.get(row.blockedIssueId) ?? [];
+    issueRows.push(row);
+    map.set(row.blockedIssueId, issueRows);
+  }
+  return map;
+}
+
+function issueSubtreeEdgeTimestamp(edge: IssueSubtreeDiagnosticEdge) {
+  return edge.timestamp ? new Date(edge.timestamp).getTime() : 0;
+}
+
+function buildIssueSubtreeDiagnosis(input: {
+  issue: IssueBlockerDiagnosticIssueSummary;
+  nodes: IssueSubtreeDiagnosticNode[];
+  omittedUnauthorizedNodeCount: number | null;
+  truncated: boolean;
+  caps: IssueSubtreeDiagnosticsResponse["caps"];
+}) {
+  if (input.truncated) {
+    return `Subtree diagnostics for ${blockerDiagnosticLabel(input.issue)} are bounded to depth ${
+      input.caps.maxDepth
+    } and ${input.caps.maxNodes} nodes, so the diagnosis only covers returned visible nodes.`;
+  }
+  if ((input.omittedUnauthorizedNodeCount ?? 0) > 0) {
+    return `One or more subtree nodes under ${blockerDiagnosticLabel(
+      input.issue,
+    )} are outside this actor's authorization boundary, so this diagnosis only covers visible nodes.`;
+  }
+
+  const blockedNodeWithDiagnosis = input.nodes.find((node) => node.issue.status === "blocked" && node.diagnosis);
+  const firstNodeWithDiagnosis = blockedNodeWithDiagnosis ?? input.nodes.find((node) => node.diagnosis);
+  if (!firstNodeWithDiagnosis?.diagnosis) return null;
+
+  return `${blockerDiagnosticLabel(firstNodeWithDiagnosis.issue)} appears to be the subtree stall point: ${
+    firstNodeWithDiagnosis.diagnosis
+  }`;
+}
+
+function buildIssueSubtreeDiagnosticsResponse(input: {
+  issue: IssueBlockerDiagnosticReadableIssue;
+  nodes: IssueSubtreeDiagnosticAuthzNode[];
+  visibleNodes: IssueSubtreeDiagnosticAuthzNode[];
+  blockersByIssueId: Map<string, IssueSubtreeDiagnosticBlockerAuthzRow[]>;
+  visibleBlockers: IssueSubtreeDiagnosticBlockerAuthzRow[];
+  readinessByIssueId: Map<string, {
+    allBlockersDone: boolean;
+    isDependencyReady: boolean;
+    unresolvedBlockerIssueIds: string[];
+    pendingFinalizeBlockerIssueIds: string[];
+  }>;
+  wakeRequestsByIssueId: Map<string, IssueSubtreeDiagnosticWakeRequestRow[]>;
+  activityRecordsByIssueId: Map<string, IssueSubtreeDiagnosticActivityRow[]>;
+  truncatedNodes: boolean;
+  truncatedDepth: boolean;
+  truncatedBlockerIssueIds: Set<string>;
+  truncatedWakeIssueIds: Set<string>;
+  truncatedActivityIssueIds: Set<string>;
+  includeInternalIds: boolean;
+  caps: IssueSubtreeDiagnosticsResponse["caps"];
+}): IssueSubtreeDiagnosticsResponse {
+  const issue = toIssueBlockerDiagnosticSummary(input.issue);
+  const visibleNodeIds = new Set(input.visibleNodes.map((node) => node.id));
+  const visibleBlockerIdsByIssueId = groupBlockersByBlockedIssueId(input.visibleBlockers);
+  const omittedUnauthorizedNodeCount = input.truncatedNodes || input.truncatedDepth
+    ? null
+    : input.nodes.filter((node) => !visibleNodeIds.has(node.id)).length;
+  const nodeResponses: IssueSubtreeDiagnosticNode[] = [];
+  const edges: IssueSubtreeDiagnosticEdge[] = [];
+
+  for (const node of input.visibleNodes) {
+    const rawBlockers = input.blockersByIssueId.get(node.id) ?? [];
+    const visibleBlockers = visibleBlockerIdsByIssueId.get(node.id) ?? [];
+    const blockerResponse = buildIssueBlockerDiagnosticsResponse({
+      issue: node,
+      blockers: rawBlockers,
+      visibleBlockers,
+      readiness: input.readinessByIssueId.get(node.id) ?? {
+        allBlockersDone: true,
+        isDependencyReady: true,
+        unresolvedBlockerIssueIds: [],
+        pendingFinalizeBlockerIssueIds: [],
+      },
+      truncated: input.truncatedBlockerIssueIds.has(node.id),
+      maxBlockers: input.caps.maxBlockersPerNode,
+    });
+    const wakeResponse = buildIssueWakeDiagnosticsResponse({
+      issue: node,
+      wakeRequests: input.wakeRequestsByIssueId.get(node.id) ?? [],
+      activityRecords: input.activityRecordsByIssueId.get(node.id) ?? [],
+      blockerDiagnostics: blockerResponse,
+      truncatedWakeRequests: input.truncatedWakeIssueIds.has(node.id),
+      truncatedActivityRecords: input.truncatedActivityIssueIds.has(node.id),
+      includeInternalIds: input.includeInternalIds,
+      maxWakeRequests: input.caps.maxWakeRequestsPerNode,
+      maxActivityRecords: input.caps.maxActivityRecordsPerNode,
+      lookbackDays: input.caps.lookbackDays,
+    });
+    const nodeDiagnosis = wakeResponse.diagnosis ?? blockerResponse.diagnosis;
+
+    if (node.parentId && visibleNodeIds.has(node.parentId)) {
+      edges.push({
+        kind: "parent",
+        fromIssueId: node.parentId,
+        toIssueId: node.id,
+        timestamp: dateToIso(node.createdAt),
+      });
+    }
+    for (const blocker of visibleBlockers) {
+      edges.push({
+        kind: "blocks",
+        fromIssueId: blocker.id,
+        toIssueId: node.id,
+        timestamp: dateToIso(blocker.relationCreatedAt),
+      });
+    }
+    for (const event of wakeResponse.events) {
+      if (event.kind === "wake_request") {
+        edges.push({
+          kind: "wake_request",
+          issueId: node.id,
+          agentId: event.agentId,
+          reason: event.reason,
+          status: event.status,
+          timestamp: event.requestedAt,
+        });
+      } else {
+        edges.push({
+          kind: "activity",
+          issueId: node.id,
+          action: event.action,
+          timestamp: event.createdAt,
+        });
+      }
+    }
+
+    nodeResponses.push({
+      issue: toIssueBlockerDiagnosticSummary(node),
+      parentId: node.parentId && visibleNodeIds.has(node.parentId) ? node.parentId : null,
+      depth: node.depth,
+      diagnosis: nodeDiagnosis,
+      likelyReason: nodeDiagnosis,
+      blockers: blockerResponse.blockers,
+      blockerReadiness: blockerResponse.readiness,
+      omittedUnauthorizedBlockerCount: blockerResponse.omittedUnauthorizedBlockerCount,
+      wakeEvents: wakeResponse.events,
+      wakeRequestCount: wakeResponse.wakeRequestCount,
+      activityRecordCount: wakeResponse.activityRecordCount,
+      truncated: blockerResponse.truncated || wakeResponse.truncated,
+      truncatedSections: {
+        blockers: blockerResponse.truncated,
+        wakeRequests: wakeResponse.truncatedSections.wakeRequests,
+        activityRecords: wakeResponse.truncatedSections.activityRecords,
+      },
+    });
+  }
+
+  edges.sort((left, right) => issueSubtreeEdgeTimestamp(right) - issueSubtreeEdgeTimestamp(left));
+  const truncatedSections = {
+    nodes: input.truncatedNodes,
+    depth: input.truncatedDepth,
+    blockers: input.truncatedBlockerIssueIds.size > 0,
+    wakeRequests: input.truncatedWakeIssueIds.size > 0,
+    activityRecords: input.truncatedActivityIssueIds.size > 0,
+  };
+  const truncated = Object.values(truncatedSections).some(Boolean);
+  const diagnosis = buildIssueSubtreeDiagnosis({
+    issue,
+    nodes: nodeResponses,
+    omittedUnauthorizedNodeCount,
+    truncated,
+    caps: input.caps,
+  });
+
+  return {
+    issue,
+    diagnosis,
+    likelyReason: diagnosis,
+    nodes: nodeResponses,
+    edges,
+    nodeCount: nodeResponses.length,
+    omittedUnauthorizedNodeCount,
+    truncated,
+    truncatedSections,
+    caps: input.caps,
+  };
+}
+
 const ACTIVE_REVIEW_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
 
 const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
@@ -812,7 +1641,7 @@ async function assertCanManageIssueMonitor(
     resource: { type: "company", companyId },
   });
   if (!runtimeDecision.allowed) {
-    throw forbidden(runtimeDecision.explanation);
+    throw forbidden(runtimeDecision.explanation, authorizationDeniedDetails(runtimeDecision));
   }
   if (req.actor.type === "agent" && req.actor.agentId && req.actor.agentId === assigneeAgentId) return;
   throw forbidden("Only the assignee agent or a board user can manage issue monitors");
@@ -967,6 +1796,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
   const workspaceRefreshReason = readNonEmptyString(input.workspaceRefreshReason);
   const planTarget = readPlanConfirmationTargetForIssue(input.interaction.payload, input.issue.id);
   const interactionResult = readConfirmationResultForWake(input.interaction.result);
+  const checkboxSelection = readCheckboxSelectionForWake(input.interaction);
   const planReviewInteraction =
     planTarget && input.interaction.kind === "request_confirmation"
       ? {
@@ -990,6 +1820,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
       ...(planReviewInteraction ? { planReviewInteraction } : {}),
+      ...(checkboxSelection ? { checkboxSelection } : {}),
       mutation: "interaction",
     },
     requestedByActorType: input.actor.actorType,
@@ -1003,6 +1834,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
       ...(planReviewInteraction ? { planReviewInteraction } : {}),
+      ...(checkboxSelection ? { checkboxSelection } : {}),
       wakeReason: "issue_commented",
       source: input.source,
       ...(forceFreshSession ? { forceFreshSession: true } : {}),
@@ -1014,6 +1846,41 @@ function queueResolvedInteractionContinuationWakeup(input: {
     interactionId: input.interaction.id,
     agentId: input.issue.assigneeAgentId,
   }, "failed to wake assignee on issue interaction resolution"));
+}
+
+function readCheckboxSelectionForWake(input: {
+  kind: string;
+  payload?: unknown;
+  result?: unknown;
+}) {
+  if (input.kind !== "request_checkbox_confirmation") return null;
+  const result = readObject(input.result);
+  if (result.outcome !== "accepted") return null;
+  const selectedOptionIds = Array.isArray(result.selectedOptionIds)
+    ? result.selectedOptionIds.filter((value): value is string => typeof value === "string" && value.length > 0)
+    : [];
+  const payload = readObject(input.payload);
+  const options = Array.isArray(payload.options)
+    ? payload.options
+        .map((value) => {
+          const option = readObject(value);
+          const id = readNonEmptyString(option.id);
+          if (!id) return null;
+          return {
+            id,
+            label: readNonEmptyString(option.label) ?? id,
+            description: readNonEmptyString(option.description),
+          };
+        })
+        .filter((value): value is { id: string; label: string; description: string | null } => Boolean(value))
+    : [];
+  const optionById = new Map(options.map((option) => [option.id, option]));
+
+  return {
+    prompt: readNonEmptyString(payload.prompt),
+    selectedOptionIds,
+    selectedOptions: selectedOptionIds.map((id) => optionById.get(id) ?? { id, label: id, description: null }),
+  };
 }
 
 function diffExecutionParticipants(
@@ -1931,7 +2798,7 @@ export function issueRoutes(
       scope: assignmentScope ?? null,
     });
     if (decision.allowed) return;
-    throw forbidden(decision.explanation);
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
   function isTaskBridgeKeyActor(req: Request) {
@@ -2972,6 +3839,137 @@ export function issueRoutes(
     return { project, goal: null };
   }
 
+  function compactIssueProjectWorkspace(workspace: ProjectWorkspace | null | undefined) {
+    if (!workspace) return null;
+    return {
+      id: workspace.id,
+      companyId: workspace.companyId,
+      projectId: workspace.projectId,
+      name: workspace.name,
+      sourceType: workspace.sourceType,
+      cwd: workspace.cwd,
+      repoUrl: workspace.repoUrl,
+      repoRef: workspace.repoRef,
+      defaultRef: workspace.defaultRef,
+      visibility: workspace.visibility,
+      setupCommand: workspace.setupCommand,
+      cleanupCommand: workspace.cleanupCommand,
+      remoteProvider: workspace.remoteProvider,
+      remoteWorkspaceRef: workspace.remoteWorkspaceRef,
+      sharedWorkspaceKey: workspace.sharedWorkspaceKey,
+      runtimeConfig: workspace.runtimeConfig,
+      isPrimary: workspace.isPrimary,
+      createdAt: workspace.createdAt,
+      updatedAt: workspace.updatedAt,
+    };
+  }
+
+  function compactIssueProject(project: Awaited<ReturnType<typeof resolveIssueProjectAndGoal>>["project"]) {
+    if (!project) return null;
+    return {
+      id: project.id,
+      companyId: project.companyId,
+      urlKey: project.urlKey,
+      goalId: project.goalId,
+      goalIds: project.goalIds,
+      goals: project.goals,
+      name: project.name,
+      description: project.description,
+      status: project.status,
+      leadAgentId: project.leadAgentId,
+      targetDate: project.targetDate,
+      color: project.color,
+      icon: project.icon,
+      env: null,
+      pauseReason: project.pauseReason,
+      pausedAt: project.pausedAt,
+      executionWorkspacePolicy: project.executionWorkspacePolicy,
+      codebase: project.codebase,
+      workspaces: (project.workspaces ?? []).map(compactIssueProjectWorkspace),
+      primaryWorkspace: compactIssueProjectWorkspace(project.primaryWorkspace),
+      managedByPlugin: project.managedByPlugin ?? null,
+      taskCount: project.taskCount,
+      budget: project.budget,
+      archivedAt: project.archivedAt,
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+    };
+  }
+
+  function compactIssueRuntimeService(service: WorkspaceRuntimeService) {
+    return {
+      id: service.id,
+      companyId: service.companyId,
+      projectId: service.projectId,
+      projectWorkspaceId: service.projectWorkspaceId,
+      executionWorkspaceId: service.executionWorkspaceId,
+      issueId: service.issueId,
+      scopeType: service.scopeType,
+      scopeId: service.scopeId,
+      serviceName: service.serviceName,
+      status: service.status,
+      lifecycle: service.lifecycle,
+      reuseKey: service.reuseKey,
+      command: service.command,
+      cwd: service.cwd,
+      port: service.port,
+      url: service.url,
+      provider: service.provider,
+      providerRef: service.providerRef,
+      ownerAgentId: service.ownerAgentId,
+      startedByRunId: service.startedByRunId,
+      lastUsedAt: service.lastUsedAt,
+      startedAt: service.startedAt,
+      stoppedAt: service.stoppedAt,
+      healthStatus: service.healthStatus,
+      configIndex: service.configIndex ?? null,
+    };
+  }
+
+  function compactIssueExecutionWorkspace(workspace: ExecutionWorkspace | null) {
+    if (!workspace) return null;
+    return {
+      id: workspace.id,
+      companyId: workspace.companyId,
+      projectId: workspace.projectId,
+      projectWorkspaceId: workspace.projectWorkspaceId,
+      sourceIssueId: workspace.sourceIssueId,
+      mode: workspace.mode,
+      strategyType: workspace.strategyType,
+      name: workspace.name,
+      status: workspace.status,
+      cwd: workspace.cwd,
+      repoUrl: workspace.repoUrl,
+      baseRef: workspace.baseRef,
+      branchName: workspace.branchName,
+      providerType: workspace.providerType,
+      providerRef: workspace.providerRef,
+      derivedFromExecutionWorkspaceId: workspace.derivedFromExecutionWorkspaceId,
+      lastUsedAt: workspace.lastUsedAt,
+      openedAt: workspace.openedAt,
+      closedAt: workspace.closedAt,
+      cleanupEligibleAt: workspace.cleanupEligibleAt,
+      cleanupReason: workspace.cleanupReason,
+      config: workspace.config
+        ? {
+            environmentId: workspace.config.environmentId,
+            provisionCommand: workspace.config.provisionCommand,
+            teardownCommand: workspace.config.teardownCommand,
+            cleanupCommand: workspace.config.cleanupCommand,
+            workspaceRuntime: workspace.config.workspaceRuntime,
+            desiredState: workspace.config.desiredState,
+            serviceStates: workspace.config.serviceStates,
+          }
+        : null,
+      metadata: null,
+      runtimeServices: (workspace.runtimeServices ?? [])
+        .filter((service) => service.status === "starting" || service.status === "running")
+        .map(compactIssueRuntimeService),
+      createdAt: workspace.createdAt,
+      updatedAt: workspace.updatedAt,
+    };
+  }
+
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
   router.param("id", async (req, res, next, rawId) => {
     try {
@@ -3067,6 +4065,7 @@ export function issueRoutes(
     const sortField = req.query.sortField as string | undefined;
     const sortDir = req.query.sortDir as string | undefined;
     const hasPlanDocument = parseOptionalBooleanQuery(req.query.hasPlanDocument);
+    const includeLiveDescendantSummary = parseOptionalBooleanQuery(req.query.includeLiveDescendantSummary);
     const assigneeAgentFilterRaw = req.query.assigneeAgentId;
     let assigneeAgentId: string | null | undefined;
 
@@ -3108,6 +4107,10 @@ export function issueRoutes(
     }
     if (hasPlanDocument === null) {
       res.status(400).json({ error: "hasPlanDocument must be true or false when provided" });
+      return;
+    }
+    if (includeLiveDescendantSummary === null) {
+      res.status(400).json({ error: "includeLiveDescendantSummary must be true or false when provided" });
       return;
     }
     if (assigneeAgentFilterRaw !== undefined) {
@@ -3156,6 +4159,7 @@ export function issueRoutes(
       includeBlockedBy: req.query.includeBlockedBy === "true" || req.query.includeBlockedBy === "1",
       includeBlockedInboxAttention:
         req.query.includeBlockedInboxAttention === "true" || req.query.includeBlockedInboxAttention === "1",
+      includeLiveDescendantSummary: includeLiveDescendantSummary === true,
       hasPlanDocument,
       q: req.query.q as string | undefined,
       limit,
@@ -3487,6 +4491,144 @@ export function issueRoutes(
     });
   });
 
+  router.get("/issues/:id/diagnostics/blockers", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    const diagnostic = await svc.getBlockerDiagnostics(issue.id);
+    const visibleBlockers = await filterIssuesForActor(req, diagnostic.blockers);
+    const response = buildIssueBlockerDiagnosticsResponse({
+      issue,
+      blockers: diagnostic.blockers,
+      visibleBlockers,
+      readiness: diagnostic.readiness,
+      truncated: diagnostic.truncated,
+    });
+
+    logger.info(
+      {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        actorType: req.actor.type,
+        visibleBlockerCount: response.blockers.length,
+        omittedUnauthorizedBlockerCount: response.omittedUnauthorizedBlockerCount,
+        truncated: response.truncated,
+      },
+      "issue blocker diagnostics read",
+    );
+
+    res.json(response);
+  });
+
+  router.get("/issues/:id/diagnostics/wakes", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    const [wakeDiagnostic, blockerDiagnostic, includeInternalIds] = await Promise.all([
+      svc.getWakeDiagnostics(issue.id),
+      svc.getBlockerDiagnostics(issue.id),
+      actorCanReadCompanyScope(req, issue.companyId),
+    ]);
+    const visibleBlockers = await filterIssuesForActor(req, blockerDiagnostic.blockers);
+    const blockerResponse = buildIssueBlockerDiagnosticsResponse({
+      issue,
+      blockers: blockerDiagnostic.blockers,
+      visibleBlockers,
+      readiness: blockerDiagnostic.readiness,
+      truncated: blockerDiagnostic.truncated,
+    });
+    const response = buildIssueWakeDiagnosticsResponse({
+      issue,
+      wakeRequests: wakeDiagnostic.wakeRequests,
+      activityRecords: wakeDiagnostic.activityRecords,
+      blockerDiagnostics: blockerResponse,
+      truncatedWakeRequests: wakeDiagnostic.truncatedWakeRequests,
+      truncatedActivityRecords: wakeDiagnostic.truncatedActivityRecords,
+      includeInternalIds,
+    });
+
+    logger.info(
+      {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        actorType: req.actor.type,
+        wakeRequestCount: response.wakeRequestCount,
+        activityRecordCount: response.activityRecordCount,
+        internalIdsIncluded: includeInternalIds,
+        truncated: response.truncated,
+      },
+      "issue wake diagnostics read",
+    );
+
+    res.json(response);
+  });
+
+  router.get("/issues/:id/diagnostics/subtree", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    const [diagnostic, includeInternalIds] = await Promise.all([
+      svc.getSubtreeDiagnostics(issue.id),
+      actorCanReadCompanyScope(req, issue.companyId),
+    ]);
+    const allBlockers = [...diagnostic.blockersByIssueId.values()].flat();
+    const [visibleNodes, visibleBlockers] = await Promise.all([
+      filterIssuesForActor(req, diagnostic.nodes),
+      filterIssuesForActor(req, allBlockers),
+    ]);
+    const response = buildIssueSubtreeDiagnosticsResponse({
+      issue,
+      nodes: diagnostic.nodes,
+      visibleNodes,
+      blockersByIssueId: diagnostic.blockersByIssueId,
+      visibleBlockers,
+      readinessByIssueId: diagnostic.readinessByIssueId,
+      wakeRequestsByIssueId: diagnostic.wakeRequestsByIssueId,
+      activityRecordsByIssueId: diagnostic.activityRecordsByIssueId,
+      truncatedNodes: diagnostic.truncatedNodes,
+      truncatedDepth: diagnostic.truncatedDepth,
+      truncatedBlockerIssueIds: diagnostic.truncatedBlockerIssueIds,
+      truncatedWakeIssueIds: diagnostic.truncatedWakeIssueIds,
+      truncatedActivityIssueIds: diagnostic.truncatedActivityIssueIds,
+      includeInternalIds,
+      caps: diagnostic.caps,
+    });
+
+    logger.info(
+      {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        actorType: req.actor.type,
+        nodeCount: response.nodeCount,
+        omittedUnauthorizedNodeCount: response.omittedUnauthorizedNodeCount,
+        edgeCount: response.edges.length,
+        internalIdsIncluded: includeInternalIds,
+        truncated: response.truncated,
+      },
+      "issue subtree diagnostics read",
+    );
+
+    res.json(response);
+  });
+
   router.get("/issues/:id", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -3559,10 +4701,10 @@ export function issueRoutes(
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
       ...documentPayload,
-      project: project ?? null,
+      project: compactIssueProject(project),
       goal: goal ?? null,
       mentionedProjects,
-      currentExecutionWorkspace,
+      currentExecutionWorkspace: compactIssueExecutionWorkspace(currentExecutionWorkspace),
       workProducts,
       linkedCases,
     });
@@ -5119,7 +6261,11 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     if (await assertLowTrustControlPlaneDenied(req, res, companyId, null)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    const { watchdogDiscovery: rawWatchdogDiscovery, ...rawCreateBody } = req.body;
+    const sanitizedBody = await sanitizeIssueCreateAttribution(db, req, res, companyId, req.body, {
+      surface: "issues.create",
+    });
+    if (!sanitizedBody) return;
+    const { watchdogDiscovery: rawWatchdogDiscovery, ...rawCreateBody } = sanitizedBody;
     const watchdogDiscovery = normalizeWatchdogDiscovery(rawWatchdogDiscovery);
     const watchdogProductBugFollowUp = await resolveTaskWatchdogProductBugFollowUp(
       req,
@@ -5229,6 +6375,9 @@ export function issueRoutes(
       ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      actorRunId: actor.runId,
+      actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+      trustExplicitResponsibleUserId: actor.actorType === "user",
       watchdogActorRunId: actor.runId,
     });
     await issueReferencesSvc.syncIssue(issue.id);
@@ -5345,12 +6494,17 @@ export function issueRoutes(
     if (!(await assertTaskWatchdogCreateIssueAllowed(req, res, parent.companyId, parent))) return;
     if (await assertLowTrustControlPlaneDenied(req, res, parent.companyId, parent)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    const sanitizedBody = await sanitizeIssueCreateAttribution(db, req, res, parent.companyId, req.body, {
+      surface: "issues.children.create",
+      entityId: parent.id,
+    });
+    if (!sanitizedBody) return;
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       parent.companyId,
-      req.body.assigneeAgentId as string | null | undefined,
+      sanitizedBody.assigneeAgentId as string | null | undefined,
     );
     const createBody = {
-      ...req.body,
+      ...sanitizedBody,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
@@ -5361,7 +6515,7 @@ export function issueRoutes(
       assigneeUserId: createBody.assigneeUserId ?? null,
     };
     await assertTaskBridgeCreateAllowed(req, parent.companyId, childAssignmentScope);
-    if (req.body.assigneeAgentId || req.body.assigneeUserId) {
+    if (sanitizedBody.assigneeAgentId || sanitizedBody.assigneeUserId) {
       await assertCanAssignTasks(req, parent.companyId, childAssignmentScope);
     }
     await assertIssueEnvironmentSelection(parent.companyId, createBody.executionWorkspaceSettings?.environmentId);
@@ -5397,6 +6551,9 @@ export function issueRoutes(
       ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      actorRunId: actor.runId,
+      actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+      trustExplicitResponsibleUserId: actor.actorType === "user",
       actorAgentId: actor.agentId,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
       watchdogActorRunId: actor.runId,
@@ -5518,12 +6675,17 @@ export function issueRoutes(
 
     const requestedChildren = [];
     for (const child of req.body.children as Array<typeof req.body.children[number]>) {
+      const sanitizedChild = await sanitizeIssueCreateAttribution(db, req, res, sourceIssue.companyId, child, {
+        surface: "issues.accepted_plan_decomposition",
+        entityId: sourceIssue.id,
+      });
+      if (!sanitizedChild) return;
       const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
         sourceIssue.companyId,
-        child.assigneeAgentId as string | null | undefined,
+        sanitizedChild.assigneeAgentId as string | null | undefined,
       );
       const childBody = {
-        ...child,
+        ...sanitizedChild,
         ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
       };
       requestedChildren.push(childBody);
@@ -5562,6 +6724,9 @@ export function issueRoutes(
         ...(sourceTrust ? { sourceTrust } : {}),
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        actorRunId: actor.runId,
+        actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+        trustExplicitResponsibleUserId: actor.actorType === "user",
         actorAgentId: actor.agentId,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
       });
@@ -6572,6 +7737,10 @@ export function issueRoutes(
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
+      type DependencyReadinessProvider = {
+        getDependencyReadiness?: typeof svc.getDependencyReadiness;
+      };
+      const dependencyReadinessSvc = svc as DependencyReadinessProvider;
       const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
       const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
         const wakeIssueId =
@@ -6579,6 +7748,53 @@ export function issueRoutes(
             ? wakeup.payload.issueId
             : issue.id;
         wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
+      };
+      const addDependencyResolvedWakeup = async (input: {
+        agentId: string;
+        dependentIssueId: string;
+        resolvedBlockerIssueId: string;
+        blockerIssueIds: string[];
+        source: string;
+        mutation: string;
+      }) => {
+        const idempotencyKey = buildIssueBlockersResolvedWakeIdempotencyKey({
+          dependentIssueId: input.dependentIssueId,
+          resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+        });
+        try {
+          const existingWake = await findExistingIssueBlockersResolvedWake(db, {
+            companyId: issue.companyId,
+            idempotencyKey,
+          });
+          if (existingWake) return;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: input.dependentIssueId, idempotencyKey },
+            "failed to check existing dependency wake before issue update wake",
+          );
+        }
+        addWakeup(input.agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+          payload: {
+            issueId: input.dependentIssueId,
+            resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+            blockerIssueIds: input.blockerIssueIds,
+            mutation: input.mutation,
+          },
+          idempotencyKey,
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: input.dependentIssueId,
+            taskId: input.dependentIssueId,
+            wakeReason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+            source: input.source,
+            resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+            blockerIssueIds: input.blockerIssueIds,
+          },
+        });
       };
 
       if (executionStageWakeup) {
@@ -6706,25 +7922,40 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
-          addWakeup(dependent.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_blockers_resolved",
-            payload: {
-              issueId: dependent.id,
-              resolvedBlockerIssueId: issue.id,
-              blockerIssueIds: dependent.blockerIssueIds,
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: dependent.id,
-              taskId: dependent.id,
-              wakeReason: "issue_blockers_resolved",
-              source: "issue.blockers_resolved",
-              resolvedBlockerIssueId: issue.id,
-              blockerIssueIds: dependent.blockerIssueIds,
-            },
+          await addDependencyResolvedWakeup({
+            agentId: dependent.assigneeAgentId,
+            dependentIssueId: dependent.id,
+            resolvedBlockerIssueId: issue.id,
+            blockerIssueIds: dependent.blockerIssueIds,
+            source: "issue.blockers_resolved",
+            mutation: "blocker_done",
+          });
+        }
+      }
+
+      const restoredBlockedReadyDependency =
+        issue.status === "blocked" &&
+        issue.assigneeAgentId &&
+        (
+          existing.status !== "blocked" ||
+          Array.isArray(req.body.blockedByIssueIds) ||
+          existing.assigneeAgentId !== issue.assigneeAgentId
+        );
+      if (restoredBlockedReadyDependency && typeof dependencyReadinessSvc.getDependencyReadiness === "function") {
+        const readiness = await dependencyReadinessSvc.getDependencyReadiness(issue.id);
+        const resolvedBlockerIssueId = readiness.blockerIssueIds[0] ?? null;
+        if (
+          resolvedBlockerIssueId &&
+          readiness.isDependencyReady &&
+          readiness.blockerIssueIds.length > 0
+        ) {
+          await addDependencyResolvedWakeup({
+            agentId: issue.assigneeAgentId!,
+            dependentIssueId: issue.id,
+            resolvedBlockerIssueId,
+            blockerIssueIds: readiness.blockerIssueIds,
+            source: "issue.blockers_restored",
+            mutation: "blocked_dependency_restored",
           });
         }
       }
@@ -6767,6 +7998,30 @@ export function issueRoutes(
       for (const { agentId, wakeup } of wakeups.values()) {
         heartbeat
           .wakeup(agentId, wakeup)
+          .then((wakeRun) => {
+            if (wakeup.reason !== ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) return;
+            const payload = wakeup.payload && typeof wakeup.payload === "object" ? wakeup.payload : {};
+            const dependentIssueId = typeof payload.issueId === "string" ? payload.issueId : issue.id;
+            return logActivity(db, {
+              companyId: issue.companyId,
+              actorType: "system",
+              actorId: "issue_update",
+              agentId,
+              runId: actor.runId,
+              action: "issue.blockers_resolved_wake_emitted",
+              entityType: "issue",
+              entityId: dependentIssueId,
+              details: {
+                source: wakeup.contextSnapshot?.source ?? "issue.update",
+                wakeupRunId: wakeRun?.id ?? null,
+                idempotencyKey: wakeup.idempotencyKey ?? null,
+                resolvedBlockerIssueId: typeof payload.resolvedBlockerIssueId === "string"
+                  ? payload.resolvedBlockerIssueId
+                  : null,
+                blockerIssueIds: Array.isArray(payload.blockerIssueIds) ? payload.blockerIssueIds : [],
+              },
+            });
+          })
           .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
       }
     })();
@@ -8005,6 +9260,51 @@ export function issueRoutes(
         if (wakeups.has(key)) return;
         wakeups.set(key, { agentId, wakeup });
       };
+      const addDependencyResolvedWakeup = async (input: {
+        agentId: string;
+        dependentIssueId: string;
+        resolvedBlockerIssueId: string;
+        blockerIssueIds: string[];
+      }) => {
+        const idempotencyKey = buildIssueBlockersResolvedWakeIdempotencyKey({
+          dependentIssueId: input.dependentIssueId,
+          resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+        });
+        try {
+          const existingWake = await findExistingIssueBlockersResolvedWake(db, {
+            companyId: currentIssue.companyId,
+            idempotencyKey,
+          });
+          if (existingWake) return;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: input.dependentIssueId, idempotencyKey },
+            "failed to check existing dependency wake before issue comment wake",
+          );
+        }
+        addWakeup(input.agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+          payload: {
+            issueId: input.dependentIssueId,
+            resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+            blockerIssueIds: input.blockerIssueIds,
+            mutation: "comment",
+          },
+          idempotencyKey,
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: input.dependentIssueId,
+            taskId: input.dependentIssueId,
+            wakeReason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+            source: "issue.blockers_resolved",
+            resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+            blockerIssueIds: input.blockerIssueIds,
+          },
+        });
+      };
 
       if (commentDecisionStageWakeup) {
         addWakeup(commentDecisionStageWakeup.agentId, commentDecisionStageWakeup.wakeup);
@@ -8104,25 +9404,11 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(currentIssue.id);
         for (const dependent of dependents) {
-          addWakeup(dependent.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_blockers_resolved",
-            payload: {
-              issueId: dependent.id,
-              resolvedBlockerIssueId: currentIssue.id,
-              blockerIssueIds: dependent.blockerIssueIds,
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: dependent.id,
-              taskId: dependent.id,
-              wakeReason: "issue_blockers_resolved",
-              source: "issue.blockers_resolved",
-              resolvedBlockerIssueId: currentIssue.id,
-              blockerIssueIds: dependent.blockerIssueIds,
-            },
+          await addDependencyResolvedWakeup({
+            agentId: dependent.assigneeAgentId,
+            dependentIssueId: dependent.id,
+            resolvedBlockerIssueId: currentIssue.id,
+            blockerIssueIds: dependent.blockerIssueIds,
           });
         }
       }
@@ -8166,6 +9452,30 @@ export function issueRoutes(
       for (const { agentId, wakeup } of wakeups.values()) {
         heartbeat
           .wakeup(agentId, wakeup)
+          .then((wakeRun) => {
+            if (wakeup.reason !== ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) return;
+            const payload = wakeup.payload && typeof wakeup.payload === "object" ? wakeup.payload : {};
+            const dependentIssueId = typeof payload.issueId === "string" ? payload.issueId : currentIssue.id;
+            return logActivity(db, {
+              companyId: currentIssue.companyId,
+              actorType: "system",
+              actorId: "issue_comment",
+              agentId,
+              runId: actor.runId,
+              action: "issue.blockers_resolved_wake_emitted",
+              entityType: "issue",
+              entityId: dependentIssueId,
+              details: {
+                source: wakeup.contextSnapshot?.source ?? "issue.comment",
+                wakeupRunId: wakeRun?.id ?? null,
+                idempotencyKey: wakeup.idempotencyKey ?? null,
+                resolvedBlockerIssueId: typeof payload.resolvedBlockerIssueId === "string"
+                  ? payload.resolvedBlockerIssueId
+                  : null,
+                blockerIssueIds: Array.isArray(payload.blockerIssueIds) ? payload.blockerIssueIds : [],
+              },
+            });
+          })
           .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
       }
     })();

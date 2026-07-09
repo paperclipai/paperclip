@@ -161,8 +161,8 @@ export const queryKeys = {
   environments: {
     list: (companyId: string) => ["environments", companyId] as const,
     capabilities: (companyId: string) => ["environment-capabilities", companyId] as const,
-    customImageTemplate: (companyId: string, environmentId: string) =>
-      ["environments", companyId, environmentId, "custom-image-template"] as const,
+    customImageTemplate: (environmentId: string) =>
+      ["environments", environmentId, "custom-image-template"] as const,
     customImageSetupSession: (sessionId: string) =>
       ["environment-custom-image-setup-sessions", sessionId] as const,
   },
@@ -245,12 +245,17 @@ export const queryKeys = {
     providerConfigs: (companyId: string) => ["secret-provider-configs", companyId] as const,
     usage: (secretId: string) => ["secrets", "usage", secretId] as const,
     accessEvents: (secretId: string) => ["secrets", "access-events", secretId] as const,
+    userDefinitions: (companyId: string) => ["user-secret-definitions", companyId] as const,
+    userDefinitionCoverage: (companyId: string, definitionId: string) =>
+      ["user-secret-definitions", companyId, definitionId, "coverage"] as const,
+    myUserSecrets: (companyId: string) => ["my-user-secrets", companyId] as const,
   },
   companySearch: {
     search: (companyId: string, q: string, scope: string, limit: number, offset: number) =>
       ["company-search", companyId, q, scope, limit, offset] as const,
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
+  workTimeline: (companyId: string, lens?: string) => ["work-timeline", companyId, lens ?? "all"] as const,
   userProfile: (companyId: string, userSlug: string) =>
     ["user-profile", companyId, userSlug] as const,
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,

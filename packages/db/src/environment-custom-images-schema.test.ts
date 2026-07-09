@@ -14,33 +14,33 @@ function indexWhere(table: Parameters<typeof getTableConfig>[0], indexName: stri
 }
 
 describe("environment customImage schema", () => {
-  it("scopes template lookup and active uniqueness by company and environment", () => {
+  it("scopes template lookup and active uniqueness by environment", () => {
     expect(indexColumns(
       environmentCustomImageTemplates,
-      "environment_custom_image_templates_company_environment_status_idx",
-    )).toEqual(["company_id", "environment_id", "status"]);
+      "environment_custom_image_templates_environment_status_idx",
+    )).toEqual(["environment_id", "status"]);
     expect(indexColumns(
       environmentCustomImageTemplates,
-      "environment_custom_image_templates_company_environment_active_uq",
-    )).toEqual(["company_id", "environment_id"]);
+      "environment_custom_image_templates_environment_active_uq",
+    )).toEqual(["environment_id"]);
     expect(indexWhere(
       environmentCustomImageTemplates,
-      "environment_custom_image_templates_company_environment_active_uq",
+      "environment_custom_image_templates_environment_active_uq",
     )).toBeDefined();
   });
 
-  it("scopes setup-session lookup and active uniqueness by company and environment", () => {
+  it("scopes setup-session lookup and active uniqueness by environment", () => {
     expect(indexColumns(
       environmentCustomImageSetupSessions,
-      "environment_custom_image_setup_sessions_company_environment_status_idx",
-    )).toEqual(["company_id", "environment_id", "status"]);
+      "environment_custom_image_setup_sessions_environment_status_idx",
+    )).toEqual(["environment_id", "status"]);
     expect(indexColumns(
       environmentCustomImageSetupSessions,
-      "environment_custom_image_setup_sessions_company_environment_active_uq",
-    )).toEqual(["company_id", "environment_id"]);
+      "environment_custom_image_setup_sessions_environment_active_uq",
+    )).toEqual(["environment_id"]);
     expect(indexWhere(
       environmentCustomImageSetupSessions,
-      "environment_custom_image_setup_sessions_company_environment_active_uq",
+      "environment_custom_image_setup_sessions_environment_active_uq",
     )).toBeDefined();
   });
 });

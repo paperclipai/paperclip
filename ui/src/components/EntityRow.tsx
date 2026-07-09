@@ -50,7 +50,7 @@ export function EntityRow({
       <div className={cn("min-w-0", !meta && "flex-1", titleClassName)}>
         <div className="flex items-center gap-2">
           {identifier && (
-            <span className="text-xs text-muted-foreground font-mono shrink-0 relative top-[1px]">
+            <span className="text-xs text-muted-foreground font-mono shrink-0 relative top-(--sz-1px)">
               {identifier}
             </span>
           )}

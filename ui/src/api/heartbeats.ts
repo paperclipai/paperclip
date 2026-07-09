@@ -38,6 +38,9 @@ export interface ActiveRunForIssue {
   outputSilence?: HeartbeatRun["outputSilence"];
   currentStatusMessage?: string | null;
   currentStatusUpdatedAt?: string | Date | null;
+  currentToolName?: string | null;
+  lastAssistantSnippet?: string | null;
+  lastEventAt?: string | Date | null;
 }
 
 export interface LiveRunForIssue {
@@ -64,6 +67,9 @@ export interface LiveRunForIssue {
   outputSilence?: HeartbeatRun["outputSilence"];
   currentStatusMessage?: string | null;
   currentStatusUpdatedAt?: string | null;
+  currentToolName?: string | null;
+  lastAssistantSnippet?: string | null;
+  lastEventAt?: string | null;
 }
 
 export interface WatchdogDecisionInput {

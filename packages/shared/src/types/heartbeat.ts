@@ -8,6 +8,42 @@ import type {
   WakeupRequestStatus,
 } from "../constants.js";
 
+export type GitWorktreeBranchAncestryVerdict = "ancestor" | "diverged" | "unknown";
+
+export interface GitWorktreeBranchIncoherenceEvidence {
+  reason: "git_worktree_branch_incoherence";
+  fingerprint: string;
+  sourceIssueId: string | null;
+  sourceIdentifier: string | null;
+  executionWorkspaceId: string | null;
+  worktreePath: string;
+  repoRoot: string;
+  expectedBranch: string;
+  actualBranch: string | null;
+  cleanliness: "clean" | "dirty" | "unknown";
+  statusEntryCount: number | null;
+  provenance: {
+    expectedBranchRef: string;
+    actualBranchRef: string | null;
+    registeredBranchRef: string | null;
+    registeredPathFound: boolean;
+    registeredBranchMatchesHead: boolean;
+    expectedBranchExists: boolean;
+    actualBranchExists: boolean | null;
+    expectedHeadSha: string | null;
+    actualHeadSha: string | null;
+    sameHead: boolean;
+    ancestryVerdict: GitWorktreeBranchAncestryVerdict;
+    plainLanguageReason: string;
+  };
+  safeRepair: {
+    eligible: boolean;
+    attempted: boolean;
+    succeeded: boolean;
+    reason: string;
+  };
+}
+
 export interface HeartbeatRun {
   id: string;
   companyId: string;
@@ -15,6 +51,7 @@ export interface HeartbeatRun {
   invocationSource: HeartbeatInvocationSource;
   triggerDetail: WakeupTriggerDetail | null;
   status: HeartbeatRunStatus;
+  responsibleUserId: string | null;
   startedAt: Date | null;
   finishedAt: Date | null;
   error: string | null;
@@ -64,6 +101,9 @@ export interface HeartbeatRun {
    */
   currentStatusMessage?: string | null;
   currentStatusUpdatedAt?: Date | string | null;
+  currentToolName?: string | null;
+  lastAssistantSnippet?: string | null;
+  lastEventAt?: Date | string | null;
 }
 
 /**
@@ -77,7 +117,8 @@ export type HeartbeatRunStatusPhase =
   | "adapter_startup"
   | "restore"
   | "export"
-  | "finalize";
+  | "finalize"
+  | "run_activity";
 
 export type HeartbeatRunOutputSilenceLevel =
   | "not_applicable"

@@ -44,13 +44,22 @@ export {
 } from "./external-objects.js";
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
+export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
+export type {
+  WorkTimelineActor,
+  WorkTimelineEdge,
+  WorkTimelineEvent,
+  WorkTimelineQuery,
+  WorkTimelineResult,
+  WorkTimelineSpan,
+} from "./work-timeline.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
-export { heartbeatService } from "./heartbeat.js";
+export { heartbeatService, resolveHeartbeatSchedulingSuppression } from "./heartbeat.js";
 export {
   productivityReviewService,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
@@ -89,6 +98,17 @@ export {
 export {
   environmentCustomImageService,
 } from "./environment-custom-images.js";
+export {
+  environmentCustomImageTerminalConnectionRegistry,
+  environmentCustomImageTerminalSessionStore,
+  EnvironmentCustomImageTerminalConnectionRegistry,
+  EnvironmentCustomImageTerminalSessionStore,
+  parseCustomImageSetupSshCommand,
+  type EnvironmentCustomImageTerminalConnectionClose,
+  type EnvironmentCustomImageTerminalSessionRecord,
+  type MintedEnvironmentCustomImageTerminalSession,
+  type ParsedCustomImageSetupSshCommand,
+} from "./environment-custom-image-terminal-sessions.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
 export { workspaceOperationService } from "./workspace-operations.js";
 export { workspaceFileResourceService } from "./workspace-file-resources.js";

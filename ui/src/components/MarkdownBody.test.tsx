@@ -283,7 +283,7 @@ describe("MarkdownBody", () => {
     expect(html).toContain('data-workspace-file-link="true"');
     expect(html).toContain('data-workspace-file-path="videos/90-days-paperclip/out/90-days-paperclip-1x1.mp4"');
     expect(html).toContain("videos/90-days-paperclip/out/90-days-paperclip-1x1.mp4");
-    expect(html).not.toContain("max-w-[38ch]");
+    expect(html).not.toContain("max-w-(--sz-38ch)");
     expect(html).not.toContain("paperclip-markdown-issue-ref");
     expect(html).not.toContain('href="/issues/PAP-10306"');
   });
@@ -433,7 +433,7 @@ describe("MarkdownBody", () => {
     const html = renderMarkdown("[https://github.com/paperclipai/paperclip/pull/4099](https://github.com/paperclipai/paperclip/pull/4099)");
 
     expect(html).toContain('<a href="https://github.com/paperclipai/paperclip/pull/4099"');
-    expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-[-0.125em]"');
+    expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)"');
     // The icon and first character "h" must sit in a no-wrap span so the
     // icon can never be orphaned on the previous line from the URL text.
     expect(html).toMatch(/<span style="white-space:nowrap">.*lucide-github.*?<\/svg>h<\/span>/);
@@ -445,7 +445,7 @@ describe("MarkdownBody", () => {
     const html = renderMarkdown("See https://github.com/paperclipai/paperclip/issues/1778");
 
     expect(html).toContain('<a href="https://github.com/paperclipai/paperclip/issues/1778"');
-    expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-[-0.125em]"');
+    expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)"');
   });
 
   it("does not prefix non-GitHub markdown links with the GitHub icon", () => {
@@ -559,7 +559,7 @@ describe("MarkdownBody", () => {
     // PAP-243b: the lg glyph is optically centered to the body text
     // (vertical-align: middle + a 1px lift), not floating off the baseline.
     expect(html).toContain("align-middle");
-    expect(html).not.toContain("align-[-0.125em]");
+    expect(html).not.toContain("align-(--va-0_125em)");
     // Legacy h-3 w-3 sizing is gone.
     expect(html).not.toContain("mr-1 h-3 w-3");
   });

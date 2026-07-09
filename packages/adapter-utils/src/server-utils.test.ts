@@ -643,6 +643,82 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("named unblock owner/action");
   });
 
+  it("renders resolved checkbox selections in scoped wake prompts", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1581",
+        title: "Delete selected files",
+        status: "in_progress",
+      },
+      interactionKind: "request_checkbox_confirmation",
+      interactionStatus: "accepted",
+      checkboxSelection: {
+        prompt: "Delete selected files?",
+        selectedOptionIds: ["file-b"],
+        selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("- checkbox prompt: Delete selected files?");
+    expect(prompt).toContain("- checkbox selection ids: file-b");
+    expect(prompt).toContain("- checkbox selection options: file-b (b.txt) - Generated build output");
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      checkboxSelection: {
+        prompt: "Delete selected files?",
+        selectedOptionIds: ["file-b"],
+        selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
+      },
+    });
+  });
+
+  it("renders accepted empty checkbox selections explicitly", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1581",
+        title: "Delete selected files",
+        status: "in_progress",
+      },
+      interactionKind: "request_checkbox_confirmation",
+      interactionStatus: "accepted",
+      checkboxSelection: {
+        prompt: "Delete selected files?",
+        selectedOptionIds: [],
+        selectedOptions: [],
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("- checkbox prompt: Delete selected files?");
+    expect(prompt).toContain("- checkbox selection ids: (none)");
+    expect(prompt).toContain("- checkbox selection options: (none)");
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      checkboxSelection: {
+        prompt: "Delete selected files?",
+        selectedOptionIds: [],
+        selectedOptions: [],
+      },
+    });
+  });
+
   it("preserves Chinese, Japanese, and Hindi issue and comment text in scoped wake prompts", () => {
     const title = "验证中文任务";
     const commentBody = [

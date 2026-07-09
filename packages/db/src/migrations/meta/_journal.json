@@ -883,6 +883,69 @@
       "when": 1782440100000,
       "tag": "0125_environment_custom_image_templates",
       "breakpoints": true
+    },
+    {
+      "idx": 127,
+      "version": "7",
+      "when": 1782526500000,
+      "tag": "0127_environment_custom_images_instance_scoped",
+      "breakpoints": true
+    },
+    {
+      "idx": 128,
+      "version": "7",
+      "when": 1782923938661,
+      "tag": "0128_user_specific_secrets",
+      "breakpoints": true
+    },
+    {
+      "idx": 129,
+      "version": "7",
+      "when": 1783025124120,
+      "tag": "0129_agent_api_key_responsible_user",
+      "breakpoints": true
+    },
+    {
+      "idx": 131,
+      "version": "7",
+      "when": 1783025324120,
+      "tag": "0131_repair_run_responsible_user_context_refs",
+      "breakpoints": true
+    },
+    {
+      "idx": 132,
+      "version": "7",
+      "when": 1783025424120,
+      "tag": "0132_issue_comment_derived_attribution_fast",
+      "breakpoints": true
+    },
+    {
+      "idx": 133,
+      "version": "7",
+      "when": 1783034521000,
+      "tag": "0133_resource_membership_stars",
+      "breakpoints": true
+    },
+    {
+      "idx": 134,
+      "version": "7",
+      "when": 1783025624120,
+      "tag": "0134_run_responsible_user_invariant",
+      "breakpoints": true
+    },
+    {
+      "idx": 135,
+      "version": "7",
+      "when": 1783025724120,
+      "tag": "0135_repair_run_responsible_user_updated_at_sweep",
+      "breakpoints": true
+    },
+    {
+      "idx": 136,
+      "version": "7",
+      "when": 1783555200000,
+      "tag": "0136_acpx_default_engine_migration",
+      "breakpoints": true
     }
   ]
 }
