@@ -1304,6 +1304,9 @@ export function agentRoutes(
 
   async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
+    if (req.actor.type === "agent" && req.actor.agentId === targetAgent.id) {
+      return;
+    }
     if (req.actor.type !== "board") {
       throw forbidden(
         "Only board-authenticated callers can manage instructions path or bundle configuration",
