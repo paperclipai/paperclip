@@ -591,13 +591,19 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
 
     await approvalService(db).approve(approval.id, "board-user", "Approved Reflection Coach");
-    await expect(builtInAgentService(db).get(companyId, "reflection-coach")).resolves.toMatchObject({
+    const approvedState = await builtInAgentService(db).get(companyId, "reflection-coach");
+    expect(approvedState).toMatchObject({
       agent: {
         permissions: {
           builtInMutationPolicy: mutationPolicy,
         },
       },
     });
+    expect(approvedState.resources.map((resource) => resource.stockStatus)).toEqual([
+      "stock_current",
+      "stock_current",
+      "stock_current",
+    ]);
 
     await reconcileBuiltInAgentsOnStartup(db);
     const agentRows = await db.select().from(agents).where(eq(agents.companyId, companyId));
