@@ -16,6 +16,8 @@ import {
 } from "@paperclipai/db";
 import { costService } from "../services/costs.ts";
 import { financeService } from "../services/finance.ts";
+import { setPluginEventBus } from "../services/activity-log.ts";
+import type { PluginEventBus } from "../services/plugin-event-bus.ts";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -806,6 +808,74 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     // 120s + 30s = 150s + ~5s live run
     expect(descendantsOnly.runtimeMs).toBeGreaterThanOrEqual(150_000 + 4_000);
     expect(descendantsOnly.runtimeMs).toBeLessThan(150_000 + 60_000);
+  });
+
+  it("emits a cost_event.created plugin domain event when a cost event is created", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const emitted: any[] = [];
+    let resolveEmit: () => void;
+    const emittedOnce = new Promise<void>((resolve) => {
+      resolveEmit = resolve;
+    });
+    const fakeBus: Pick<PluginEventBus, "emit"> = {
+      async emit(event) {
+        emitted.push(event);
+        resolveEmit();
+        return { errors: [] };
+      },
+    };
+    setPluginEventBus(fakeBus as PluginEventBus);
+
+    const created = await costs.createEvent(companyId, {
+      agentId,
+      provider: "aws_bedrock",
+      biller: "aws_bedrock",
+      billingType: "metered_api",
+      model: "claude-opus-4-8",
+      inputTokens: 1200,
+      cachedInputTokens: 0,
+      outputTokens: 800,
+      costCents: 4242,
+      occurredAt: new Date("2026-04-10T00:00:00.000Z"),
+    } as any);
+
+    // Emission is fire-and-forget; wait for the bus to receive it.
+    await emittedOnce;
+
+    const costEvent = emitted.find((e) => e.eventType === "cost_event.created");
+    expect(costEvent).toBeDefined();
+    expect(costEvent.companyId).toBe(companyId);
+    expect(costEvent.entityType).toBe("cost_event");
+    expect(costEvent.entityId).toBe(created.id);
+    expect(costEvent.payload).toMatchObject({
+      companyId,
+      agentId,
+      provider: "aws_bedrock",
+      model: "claude-opus-4-8",
+      inputTokens: 1200,
+      outputTokens: 800,
+      costCents: 4242,
+    });
   });
 
   it("aggregates finance event sums above int32 without raising Postgres integer overflow", async () => {
