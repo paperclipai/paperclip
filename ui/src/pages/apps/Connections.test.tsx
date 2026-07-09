@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Apps } from "./Apps";
+import { Connections } from "./Connections";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listApplicationsMock = vi.hoisted(() => vi.fn());
@@ -25,6 +25,9 @@ vi.mock("@/api/tools", () => ({
 
 vi.mock("@/lib/router", () => ({
   useNavigate: () => mockNavigate,
+  Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
+    <a href={to}>{children}</a>
+  ),
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -40,6 +43,16 @@ vi.mock("@/context/BreadcrumbContext", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+// React 19 does not export a usable `act` in this vitest/jsdom setup; use the
+// flushSync-based helper the sibling apps tests use (PAP-12371 gotcha).
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
 
 async function flushReact() {
   await act(async () => {
@@ -124,7 +137,7 @@ function profile(connectionId: string, includedEntryIds: string[]) {
   };
 }
 
-describe("Apps table (M1b)", () => {
+describe("Connections table (M1b / PAP-13254 door 2)", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
 
@@ -150,7 +163,7 @@ describe("Apps table (M1b)", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={client}>
-          <Apps />
+          <Connections />
         </QueryClientProvider>,
       );
     });
@@ -165,7 +178,7 @@ describe("Apps table (M1b)", () => {
     await renderApps();
 
     const text = container.textContent ?? "";
-    expect(text).toContain("1 app");
+    expect(text).toContain("All (1)");
     expect(text).toContain("GitHub");
     expect(text).toContain("Not connected");
     expect(text).toContain("Connect it so agents can use it.");
@@ -241,9 +254,10 @@ describe("Apps table (M1b)", () => {
     // 2. Attention + Paused rows keep their explanatory hint.
     expect(text).toContain("The key stopped working");
     expect(text).toContain("Paused — agents can");
-    // 3. Count line and attention banner are application-counted, not connection-counted.
-    expect(text).toContain("3 apps");
-    expect(text).toContain("1 needs attention");
+    // 3. Filter chips and attention banner are application-counted, not connection-counted.
+    expect(text).toContain("All (3)");
+    expect(text).toContain("Needs attention (1)");
+    expect(text).toContain("1 app needs attention");
     // 3. New header columns are present.
     const headers = Array.from(container.querySelectorAll("th")).map((th) => th.textContent?.trim());
     expect(headers).toEqual(["App", "Status", "Actions", "Last used", ""]);
@@ -269,7 +283,12 @@ describe("Apps table (M1b)", () => {
     expect(rowButtonLabel("Notion")).toBe("Open");
   });
 
-  it("labels a healthy app that still needs review as Review, not Reconnect", async () => {
+  // F6 (PAP-13254 §4): the row highlight and the Status pill derive from ONE
+  // health signal, so they can never disagree. A healthy connection stays
+  // "Healthy" / "Open" and is not amber-highlighted, even if the broader
+  // attention endpoint would once have flagged it (quarantine/new-tools review
+  // now live on the app detail + Review door, not the Connections highlight).
+  it("keeps a healthy app un-highlighted and Open — pill and highlight agree (F6)", async () => {
     listApplicationsMock.mockResolvedValue({
       applications: [application({ id: "app-github", name: "GitHub" })],
     });
@@ -291,10 +310,15 @@ describe("Apps table (M1b)", () => {
     await renderApps();
 
     expect(container.textContent).toContain("Healthy");
-    const button = Array.from(container.querySelectorAll("tbody tr"))
-      .find((tr) => tr.textContent?.includes("GitHub"))
-      ?.querySelector("td:last-child button");
-    expect(button?.textContent).toBe("Review");
+    // No attention: the danger banner and attention filter chip are inert.
+    expect(container.textContent).not.toContain("needs attention");
+    expect(container.textContent).toContain("Needs attention (0)");
+    const row = Array.from(container.querySelectorAll("tbody tr")).find((tr) =>
+      tr.textContent?.includes("GitHub"),
+    );
+    expect(row?.className).not.toContain("amber");
+    const button = row?.querySelector("td:last-child button");
+    expect(button?.textContent).toBe("Open");
     button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(mockNavigate).toHaveBeenCalledWith("/apps/c-healthy");
   });

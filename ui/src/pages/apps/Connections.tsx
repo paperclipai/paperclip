@@ -1,6 +1,6 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link2, ServerCog, ShieldAlert, ShieldQuestion, Wrench } from "lucide-react";
+import { AppWindow, ShieldAlert, ShieldQuestion } from "lucide-react";
 import type {
   AppGalleryEntry,
   ToolApplication,
@@ -11,7 +11,7 @@ import {
   humanizeConnectionDisplayName,
   isToolConnectionAttentionHealth as isAttentionHealthStatus,
 } from "@paperclipai/shared";
-import { Link, useNavigate } from "@/lib/router";
+import { useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { queryKeys } from "@/lib/queryKeys";
@@ -20,12 +20,13 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
-import { advancedTabHref } from "@/pages/tools/tool-tabs";
 import { AppLogo } from "./AppLogo";
 import { useReviewCount } from "./useReviewCount";
+import { AdvancedToolsLink } from "./store-cards";
 
-const POPULAR_KEYS = ["zapier", "github", "slack", "notion", "linear"];
-const BYO_CONNECT_HREF = "/apps/connect?byo=1";
+const BROWSE_HREF = "/apps/browse";
+
+type StatusFilter = "all" | "attention";
 
 type AppStatus = {
   label: "Healthy" | "Needs attention" | "Paused" | "Not connected";
@@ -41,6 +42,11 @@ type AppRow = {
   logoUrl?: string | null;
 };
 
+/**
+ * F6 (PAP-13254 / U3 §4): a single health signal is the source of truth for
+ * BOTH the row highlight and the Status pill so they can never disagree. The
+ * pill's `attention` tone and the row highlight are now the *same* predicate.
+ */
 function statusFor(application: ToolApplication, connections: ToolConnection[]): AppStatus {
   if (connections.length === 0) {
     return { label: "Not connected", tone: "not_connected" };
@@ -58,6 +64,11 @@ function statusFor(application: ToolApplication, connections: ToolConnection[]):
   return { label: "Healthy", tone: "connected" };
 }
 
+/** The single health-derived predicate that drives highlight, pill, banner, filter (F6). */
+function rowNeedsAttention(row: AppRow): boolean {
+  return row.status.tone === "attention";
+}
+
 const STATUS_CLASS: Record<AppStatus["tone"], string> = {
   connected: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
   attention: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
@@ -65,16 +76,18 @@ const STATUS_CLASS: Record<AppStatus["tone"], string> = {
   not_connected: "border-border bg-background text-muted-foreground",
 };
 
-export function Apps() {
+export function Connections() {
   const navigate = useNavigate();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const reviewCount = useReviewCount();
+  const [filter, setFilter] = useState<StatusFilter>("all");
 
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Apps" },
+      { label: "Apps", href: "/apps" },
+      { label: "Connections" },
     ]);
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs, selectedCompany?.name]);
@@ -93,12 +106,6 @@ export function Apps() {
     queryKey: queryKeys.tools.connections(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listConnections(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-  });
-  const attentionQuery = useQuery({
-    queryKey: queryKeys.apps.attention(selectedCompanyId ?? "__none__"),
-    queryFn: () => toolsApi.listAppsAttention(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-    refetchInterval: 30_000,
   });
   const profilesQuery = useQuery({
     queryKey: queryKeys.tools.profiles(selectedCompanyId ?? "__none__"),
@@ -171,14 +178,8 @@ export function Apps() {
     });
   }, [actionCountByConnection, applications, connectionsByApplication, logoByKey, logoByName]);
 
-  const attentionApplicationIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const item of attentionQuery.data?.apps ?? []) ids.add(item.connection.applicationId);
-    return ids;
-  }, [attentionQuery.data]);
-  const rowsNeedingAttention = rows.filter((row) => (
-    row.status.tone === "attention" || attentionApplicationIds.has(row.application.id)
-  ));
+  const rowsNeedingAttention = rows.filter(rowNeedsAttention);
+  const visibleRows = filter === "attention" ? rowsNeedingAttention : rows;
 
   if (!selectedCompanyId) {
     return <div className="p-6 text-sm text-muted-foreground">Select a company to manage apps.</div>;
@@ -194,28 +195,31 @@ export function Apps() {
           <Skeleton className="h-64 w-full" />
         </div>
       ) : rows.length === 0 ? (
-        <EmptyApps
-          gallery={gallery}
-          onConnect={() => navigate("/apps/connect")}
-          onConnectByo={() => navigate(BYO_CONNECT_HREF)}
-        />
+        <EmptyConnections onBrowse={() => navigate(BROWSE_HREF)} />
       ) : (
         <div className="space-y-5">
           <header className="flex flex-wrap items-end justify-between gap-3">
             <div>
-              <h1 className="text-2xl font-bold tracking-tight">Apps</h1>
-              <p className="mt-1 text-sm text-muted-foreground">Tools your agents can use.</p>
+              <h1 className="text-2xl font-bold tracking-tight">Connections</h1>
+              <p className="mt-1 text-sm text-muted-foreground">
+                The tools you’ve connected, and whether they’re working.
+              </p>
             </div>
-            <Button onClick={() => navigate("/apps/connect")}>Connect an app</Button>
+            <Button onClick={() => navigate(BROWSE_HREF)}>Connect an app</Button>
           </header>
 
-          <div className="text-sm">
-            <span className="font-medium">
-              {rows.length} {rows.length === 1 ? "app" : "apps"}
-            </span>
-            {rowsNeedingAttention.length > 0 && (
-              <span className="text-amber-600 dark:text-amber-400"> · {rowsNeedingAttention.length} needs attention</span>
-            )}
+          <div className="flex flex-wrap items-center gap-2">
+            <FilterChip active={filter === "all"} onClick={() => setFilter("all")}>
+              All ({rows.length})
+            </FilterChip>
+            <FilterChip
+              active={filter === "attention"}
+              tone="danger"
+              disabled={rowsNeedingAttention.length === 0}
+              onClick={() => setFilter("attention")}
+            >
+              Needs attention ({rowsNeedingAttention.length})
+            </FilterChip>
           </div>
 
           {reviewCount > 0 && (
@@ -240,7 +244,7 @@ export function Apps() {
           {rowsNeedingAttention.length > 0 && (
             <button
               type="button"
-              onClick={() => navigate("/apps/attention")}
+              onClick={() => setFilter("attention")}
               className="flex w-full items-center gap-3 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-left transition-colors hover:bg-red-500/15"
             >
               <ShieldAlert className="h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
@@ -268,9 +272,9 @@ export function Apps() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => {
+                {visibleRows.map((row) => {
                   const { application, primaryConnection, status } = row;
-                  const attention = rowsNeedingAttention.some((attentionRow) => attentionRow.application.id === application.id);
+                  const attention = rowNeedsAttention(row);
                   const hint =
                     status.tone === "attention"
                       ? "The key stopped working — reconnect to fix."
@@ -286,9 +290,7 @@ export function Apps() {
                     ? "Connect"
                     : status.tone === "attention"
                       ? "Reconnect"
-                      : attention
-                        ? "Review"
-                        : "Open";
+                      : "Open";
                   return (
                     <tr
                       key={application.id}
@@ -352,8 +354,6 @@ export function Apps() {
             </table>
           </div>
 
-          <ByoConnectCard onConnect={() => navigate(BYO_CONNECT_HREF)} />
-
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs text-muted-foreground">
               Apps you connect become available to every agent unless you change “Who can use it”.
@@ -366,45 +366,36 @@ export function Apps() {
   );
 }
 
-/**
- * First-class "Connect your own MCP server" card (PAP-12371, Finding C). BYO
- * used to be reachable only via the Connect wizard's side-doors into the
- * Advanced setup surface. This promotes it into the gallery + empty state and
- * launches the same guided in-wizard connect → quarantine review flow
- * (`?byo=1`) instead of bouncing to the developer door mid-task.
- */
-function ByoConnectCard({ onConnect }: { onConnect: () => void }) {
+function FilterChip({
+  active,
+  tone = "default",
+  disabled = false,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  tone?: "default" | "danger";
+  disabled?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
   return (
     <button
       type="button"
-      onClick={onConnect}
-      className="flex w-full items-center gap-4 rounded-xl border border-dashed border-border bg-card px-4 py-4 text-left transition-colors hover:border-foreground/30 hover:bg-accent/40"
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+        disabled && "cursor-not-allowed opacity-50",
+        active
+          ? tone === "danger"
+            ? "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-300"
+            : "border-foreground/30 bg-foreground/[0.06] text-foreground"
+          : "border-border bg-background text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+      )}
     >
-      <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
-        <ServerCog className="h-5 w-5 text-muted-foreground" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-semibold text-foreground">Connect your own tool</div>
-        <div className="text-xs text-muted-foreground">
-          Have a custom or self-hosted tool? Paste its URL and we’ll walk you through it — same
-          guided setup and review as any app in the store.
-        </div>
-      </div>
-      <span className="shrink-0 text-xs font-semibold text-primary">Connect →</span>
+      {children}
     </button>
-  );
-}
-
-/** Labeled door to the developer control-plane (PAP-12371, Finding A cross-link). */
-function AdvancedToolsLink() {
-  return (
-    <Link
-      to={advancedTabHref("run-your-own")}
-      className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-    >
-      <Wrench className="h-3.5 w-3.5" />
-      Developer tools (advanced)
-    </Link>
   );
 }
 
@@ -422,69 +413,28 @@ function floatSummary(rows: AppRow[]): string {
   return `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
 }
 
-function EmptyApps({
-  gallery,
-  onConnect,
-  onConnectByo,
-}: {
-  gallery: AppGalleryEntry[];
-  onConnect: () => void;
-  onConnectByo: () => void;
-}) {
-  const popular = POPULAR_KEYS
-    .map((key) => gallery.find((entry) => entry.key === key))
-    .filter((entry): entry is AppGalleryEntry => Boolean(entry));
-
+function EmptyConnections({ onBrowse }: { onBrowse: () => void }) {
   return (
-    <div className="space-y-10">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Apps</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Give your agents access to the tools they need.</p>
-      </div>
-
-      <div className="rounded-2xl border border-border bg-card p-10">
-        <h2 className="text-2xl font-bold tracking-tight">Connect the apps your agents can use.</h2>
-        <p className="mt-3 max-w-xl text-[15px] text-muted-foreground">
-          Give your agents access to Zapier, GitHub, Slack and thousands more. It usually takes about a minute per app.
+    <div className="space-y-6">
+      <header>
+        <h1 className="text-2xl font-bold tracking-tight">Connections</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          The tools you’ve connected, and whether they’re working.
         </p>
-        <div className="mt-6 flex flex-wrap items-center gap-4">
-          <Button size="lg" className="h-12 px-6 text-base" onClick={onConnect}>
-            Connect an app
-          </Button>
-          <span className="text-xs text-muted-foreground">No setup needed for the first app.</span>
-        </div>
+      </header>
 
-        {popular.length > 0 && (
-          <div className="mt-10">
-            <div className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Popular apps
-            </div>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-              {popular.map((entry) => (
-                <button
-                  key={entry.key}
-                  type="button"
-                  onClick={onConnect}
-                  className="flex flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center transition-colors hover:border-foreground/30 hover:bg-accent/40"
-                >
-                  <AppLogo name={entry.name} logoUrl={entry.logoUrl} size={36} />
-                  <span className="text-xs font-medium text-foreground">{entry.name}</span>
-                </button>
-              ))}
-            </div>
-            <p className="mt-4 flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Link2 className="h-3.5 w-3.5" />
-              …and more. Or paste a link to any tool’s website.
-            </p>
-          </div>
-        )}
-      </div>
-
-      <div className="space-y-3">
-        <ByoConnectCard onConnect={onConnectByo} />
-        <div className="flex justify-end">
-          <AdvancedToolsLink />
+      <div className="rounded-2xl border border-dashed border-border bg-card p-10 text-center">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+          <AppWindow className="h-6 w-6 text-muted-foreground" />
         </div>
+        <p className="mt-4 text-sm font-medium text-foreground">No connections yet.</p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Add one from <span className="font-medium text-foreground">Apps</span> to give your agents
+          the tools they need.
+        </p>
+        <Button className="mt-6" onClick={onBrowse}>
+          Browse apps
+        </Button>
       </div>
     </div>
   );

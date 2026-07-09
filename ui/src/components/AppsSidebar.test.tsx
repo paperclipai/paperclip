@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +9,7 @@ import { AppsSidebar } from "./AppsSidebar";
 const sidebarNavItemMock = vi.hoisted(() => vi.fn());
 const mockToolsApi = vi.hoisted(() => ({
   listRuntimeSlots: vi.fn(),
-  listAppsAttention: vi.fn(),
+  listActionRequests: vi.fn(),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -64,10 +64,22 @@ vi.mock("./SidebarNavItem", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+// React 19 does not export a usable `act` in this vitest/jsdom setup; use a
+// flushSync-based helper (PAP-12371 gotcha).
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
+
 async function flushReact() {
-  for (let i = 0; i < 3; i += 1) {
-    await Promise.resolve();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  for (let i = 0; i < 5; i += 1) {
+    await act(async () => {
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
   }
 }
 
@@ -77,13 +89,13 @@ describe("AppsSidebar", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    mockToolsApi.listAppsAttention.mockResolvedValue({ apps: [] });
     mockToolsApi.listRuntimeSlots.mockResolvedValue({
       runtimeSlots: [
         { id: "slot-1", status: "running" },
         { id: "slot-2", status: "stopped" },
       ],
     });
+    mockToolsApi.listActionRequests.mockResolvedValue({ actionRequests: [] });
   });
 
   afterEach(() => {
@@ -109,14 +121,24 @@ describe("AppsSidebar", () => {
 
     expect(container.textContent).toContain("Apps");
     expect(container.textContent).toContain("Developer");
-    // "Run your own" / "Paste a config" moved to the Connect-an-app page (PAP-10922).
-    expect(container.textContent).not.toContain("Advanced setup");
+    // The Developer boundary caption frames who the door is for (PAP-13241 §5).
+    expect(container.textContent).toContain("Advanced setup for developers");
+    // "Run your own" / "Paste a config" moved to the Connect-an-app page (PAP-10922);
+    // assert their absence at the item level below.
 
+    // Three peer consumer doors: Browse (store) · Connections · Review (PAP-13254).
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps", label: "All apps", end: true }),
+      expect.objectContaining({ to: "/apps/browse", label: "Browse" }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/attention", label: "Needs attention" }),
+      expect.objectContaining({ to: "/apps", label: "Connections", end: true }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/apps/review", label: "Review" }),
+    );
+    // "Needs attention" is no longer a top-level door — it folds into Connections.
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ label: "Needs attention" }),
     );
     expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
       expect.objectContaining({ label: "Run your own" }),
@@ -131,10 +153,10 @@ describe("AppsSidebar", () => {
       expect.objectContaining({ to: "/apps/advanced/profiles", label: "Profiles", end: true }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/advanced/runtime", label: "Runtime", end: true, liveCount: 1 }),
+      expect.objectContaining({ to: "/apps/advanced/runtime", label: "Health", end: true, liveCount: 1 }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/advanced/audit", label: "Audit", end: true }),
+      expect.objectContaining({ to: "/apps/advanced/audit", label: "Activity", end: true }),
     );
 
     await act(async () => {

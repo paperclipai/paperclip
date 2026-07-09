@@ -54,7 +54,7 @@ export const TOOL_APP_GALLERY = [
     key: "zapier",
     name: "Zapier",
     logoUrl: favicon("zapier.com"),
-    tagline: "Connect Zapier-hosted MCP actions to Paperclip agents.",
+    tagline: "Connect Zapier-hosted actions to your Paperclip agents.",
     description: "Let agents use Zapier automations across the apps your business already runs. Good for handoffs, lightweight operations, and cross-app updates that should stay visible in Paperclip.",
     authKind: "api_key",
     transportTemplate: {
@@ -82,7 +82,7 @@ export const TOOL_APP_GALLERY = [
     key: "github",
     name: "GitHub",
     logoUrl: favicon("github.com"),
-    tagline: "Read and manage GitHub work through the hosted MCP server.",
+    tagline: "Read and manage GitHub issues and pull requests.",
     description: "Give agents a governed way to inspect repositories, issues, and pull requests. Useful when engineering work needs GitHub context or small updates without leaving Paperclip.",
     authKind: "api_key",
     transportTemplate: {
@@ -200,7 +200,7 @@ export const TOOL_APP_GALLERY = [
     key: "context7",
     name: "Context7",
     logoUrl: favicon("context7.com"),
-    tagline: "Fetch current library documentation through Context7 MCP.",
+    tagline: "Fetch up-to-date library documentation with Context7.",
     description: "Let agents pull current library documentation while they work. It is a low-risk reference app for coding and research tasks.",
     authKind: "none",
     transportTemplate: {

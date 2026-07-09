@@ -1,4 +1,4 @@
-import { ChevronLeft, AppWindow, ShieldAlert, ShieldQuestion } from "lucide-react";
+import { ChevronLeft, AppWindow, Store, ShieldQuestion } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
@@ -10,30 +10,27 @@ import { useReviewCount } from "@/pages/apps/useReviewCount";
 import { SidebarNavItem } from "./SidebarNavItem";
 
 /**
- * Secondary sidebar for the prosumer Apps area (PAP-10856, v1.1).
+ * Secondary sidebar for the prosumer Apps area (PAP-10856; three-door IA
+ * PAP-13254 / U3).
  *
- *   ← Back · APPS: All apps / Review (n) / Needs attention (n)
+ *   ← Back · APPS: Browse / Connections / Review (n)
  *   DEVELOPER: Gateways / Profiles / Rules / Health / Activity
  *
- * "Review" (PAP-12371, Finding B) is the decisions-waiting-on-you inbox with a
- * live pending Ask-first count; "Needs attention" (M9, PAP-10859) stays scoped
- * to health/error triage so approvals are never buried behind an error label.
- * The Developer section was folded in from the retired ToolsSidebar
- * (PAP-10915) so the whole Apps area shares one sidebar; a one-line caption
- * frames who it's for (Finding A). "Run your own" and "Paste a config" moved
- * out of the sidebar into rows on the Connect-an-app page (PAP-10922).
+ * The three consumer doors are peers: "Browse" (the store — discover + add),
+ * "Connections" (your connected tools + health), and "Review" (PAP-12371,
+ * Finding B — decisions waiting on your OK, with a live pending count).
+ * "Needs attention" is no longer a door: health/error triage folds into
+ * Connections as a status filter + banner, so approvals are never buried
+ * behind an error label. The Developer section was folded in from the retired
+ * ToolsSidebar (PAP-10915) so the whole Apps area shares one sidebar; a
+ * one-line caption frames who it's for (Finding A). "Run your own" and "Paste a
+ * config" moved out of the sidebar into rows on the Connect-an-app page
+ * (PAP-10922).
  */
 export function AppsSidebar() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
 
-  const attentionQuery = useQuery({
-    queryKey: queryKeys.apps.attention(selectedCompanyId ?? "__none__"),
-    queryFn: () => toolsApi.listAppsAttention(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-    refetchInterval: 30_000,
-  });
-  const attentionCount = attentionQuery.data?.apps.length ?? 0;
   const reviewCount = useReviewCount();
 
   const runtimeSlots = useQuery({
@@ -69,6 +66,7 @@ export function AppsSidebar() {
           Apps
         </div>
         <div className="flex flex-col gap-0.5">
+          <SidebarNavItem to="/apps/browse" label="Browse" icon={Store} />
           <SidebarNavItem to="/apps" label="Connections" icon={AppWindow} end />
           <SidebarNavItem
             to="/apps/review"
@@ -77,14 +75,6 @@ export function AppsSidebar() {
             badge={reviewCount > 0 ? reviewCount : undefined}
             badgeTone="warning"
             badgeLabel="waiting for your OK"
-          />
-          <SidebarNavItem
-            to="/apps/attention"
-            label="Needs attention"
-            icon={ShieldAlert}
-            badge={attentionCount > 0 ? attentionCount : undefined}
-            badgeTone="danger"
-            badgeLabel="needing attention"
           />
         </div>
         <div className="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
