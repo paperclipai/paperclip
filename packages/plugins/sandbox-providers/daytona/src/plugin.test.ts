@@ -1031,7 +1031,7 @@ describe("Daytona sandbox provider plugin", () => {
     expect(command).toMatch(/\/etc\/profile/);
     expect(command).toMatch(/"\$HOME\/\.profile"/);
     expect(command).toMatch(/cd '\/workspace'/);
-    expect(command).toMatch(/&& env GIT_TERMINAL_PROMPT='0' GCM_INTERACTIVE='Never' GIT_ASKPASS='echo' SSH_ASKPASS='echo' FOO='bar' 'printf' 'hello'$/);
+    expect(command).toMatch(/&& env GIT_TERMINAL_PROMPT='0' GCM_INTERACTIVE='Never' GIT_ASKPASS='echo' SSH_ASKPASS='echo' SSH_ASKPASS_REQUIRE='force' FOO='bar' 'printf' 'hello'$/);
     expect(command).not.toMatch(/(?:^|&& )exec /);
     // cwd/env are baked into the login-shell command itself; we pass undefined
     // to the SDK so it doesn't run the cd before profile sourcing.
@@ -1156,6 +1156,7 @@ describe("Daytona sandbox provider plugin", () => {
     expect(command).toContain("GCM_INTERACTIVE='Never'");
     expect(command).toContain("GIT_ASKPASS='echo'");
     expect(command).toContain("SSH_ASKPASS='echo'");
+    expect(command).toContain("SSH_ASKPASS_REQUIRE='force'");
   });
 
   it("caps git network commands at 120 s and returns an actionable message on timeout", async () => {
