@@ -29,6 +29,9 @@ const mockDialogState = vi.hoisted(() => ({ onboardingOpen: false }));
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
+vi.mock("../api/activity", () => ({
+  activityApi: { runsForIssue: vi.fn().mockResolvedValue([]) },
+}));
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
@@ -85,7 +88,8 @@ vi.mock("@/components/ui/tooltip", () => ({
 vi.mock("@/components/ui/sheet", () => ({
   Sheet: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SheetTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
-  SheetContent: () => null,
+  SheetContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  SheetTitle: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -235,9 +239,10 @@ describe("BoardChat staged typing intro", () => {
     mockIssuesApi.listComments.mockResolvedValue([USER_COMMENT]);
     await render();
 
-    // Fast-forwarded: no dots, welcome immediately, no timer needed.
+    // With history, skip typing intro and hide the persistent welcome bubble.
     expect(hasTypingDots(container)).toBe(false);
-    expect(hasWelcome(container)).toBe(true);
+    expect(hasWelcome(container)).toBe(false);
+    expect(hasChips(container)).toBe(false);
   });
 
   it("holds the dots while the onboarding wizard overlay is open (PAP-134)", async () => {

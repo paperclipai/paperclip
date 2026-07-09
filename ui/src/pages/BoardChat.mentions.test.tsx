@@ -21,6 +21,9 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForIssue: vi.fn().mockResolvedValue([]),
   get: vi.fn().mockResolvedValue(null),
 }));
+const mockActivityApi = vi.hoisted(() => ({
+  runsForIssue: vi.fn().mockResolvedValue([]),
+}));
 
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
@@ -57,13 +60,15 @@ vi.mock("./board-chat/BoardChatComposer", () => ({
         canAttach,
         onAttachFile,
         disabled,
+        submitting,
       }: {
         mentions?: Array<{ name: string }>;
         onChange?: (value: string) => void;
         onSubmit?: () => void;
         canAttach?: boolean;
-        onAttachFile?: (file: File) => Promise<void>;
+        onAttachFile?: (file: File) => Promise<string>;
         disabled?: boolean;
+        submitting?: boolean;
       },
       _ref,
     ) => (
@@ -106,6 +111,9 @@ vi.mock("@assistant-ui/react", () => ({
 vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: mockHeartbeatsApi,
 }));
+vi.mock("../api/activity", () => ({
+  activityApi: mockActivityApi,
+}));
 vi.mock("../components/AgentBubbleActionRow", () => ({
   AgentBubbleActionRow: () => null,
   agentBubbleDateLabel: () => "",
@@ -121,7 +129,8 @@ vi.mock("@/components/ui/tooltip", () => ({
 vi.mock("@/components/ui/sheet", () => ({
   Sheet: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SheetTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
-  SheetContent: () => null,
+  SheetContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  SheetTitle: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -142,6 +151,9 @@ describe("BoardChat mentions composer (P0)", () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
     mockFetch.mockReset();
     globalThis.fetch = mockFetch as typeof fetch;
+    try {
+      sessionStorage.removeItem("paperclip.boardChat.boardIssueId.company-1");
+    } catch { /* ignore */ }
     mockAgentsApi.list.mockResolvedValue([
       { id: "agent-ceo", name: "CEO", role: "ceo", status: "idle", icon: null },
       { id: "agent-dev", name: "Dev", role: "engineer", status: "idle", icon: null },
@@ -158,6 +170,7 @@ describe("BoardChat mentions composer (P0)", () => {
       },
     ]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
+    mockActivityApi.runsForIssue.mockResolvedValue([]);
     mockDialogState.onboardingOpen = false;
 
     container = document.createElement("div");
@@ -220,6 +233,35 @@ describe("BoardChat mentions composer (P0)", () => {
         "/api/board/chat/stream",
         expect.objectContaining({ method: "POST" }),
       );
+    });
+  });
+
+  it("shows silent notice after silent mode post", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        mode: "silent",
+        issueId: "issue-1",
+        commentId: "comment-2",
+        roomMessageId: "comment-2",
+      }),
+    });
+
+    renderBoardChat();
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="composer-submit"]')).toBeTruthy();
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="composer-submit"]')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => {
+      const notice = container.querySelector('[data-testid="board-chat-status-notice"]');
+      expect(notice?.textContent).toContain("@agente");
     });
   });
 

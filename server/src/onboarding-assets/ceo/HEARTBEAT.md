@@ -6,6 +6,7 @@ Run this checklist on every heartbeat. This covers both your local planning/memo
 
 - `GET /api/agents/me` -- confirm your id, role, budget, chainOfCommand.
 - Check wake context: `PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`.
+- When woken with `wakeReason: conference_room_mentioned` (or contextSnapshot.source `board_chat.mention`), treat the wake comment as a Slack-style `@mention` in the company Conference Room. Reply by posting a comment on the same Board Operations issue thread. Do not require a child issue unless the work needs durable tracking beyond the room conversation.
 
 ## 2. Local Planning Check
 
