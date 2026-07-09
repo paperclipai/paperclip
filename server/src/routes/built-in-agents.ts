@@ -237,7 +237,6 @@ export function builtInAgentRoutes(db: Db) {
       const routineKey = req.params.routineKey as string;
       await assertBuiltInAgentsEnabled();
       assertCompanyAccess(req, companyId);
-      const current = await svc.get(companyId, key);
       await assertCanControlBuiltInRoutine(req, companyId);
       const actor = getActorInfo(req);
       const state = await svc.enableRoutineSchedule(companyId, key, routineKey, {
@@ -266,7 +265,6 @@ export function builtInAgentRoutes(db: Db) {
       const routineKey = req.params.routineKey as string;
       await assertBuiltInAgentsEnabled();
       assertCompanyAccess(req, companyId);
-      const current = await svc.get(companyId, key);
       await assertCanControlBuiltInRoutine(req, companyId);
       const actor = getActorInfo(req);
       const state = await svc.disableRoutineSchedule(companyId, key, routineKey, {
