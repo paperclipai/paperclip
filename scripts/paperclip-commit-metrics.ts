@@ -1,5 +1,9 @@
 #!/usr/bin/env npx tsx
 
+// Note: this script counts commits via the `Co-Authored-By: Paperclip <noreply@paperclip.ing>`
+// trailer. Operators who set `attribution.commit: false` in their instance config will have
+// agent commits without the trailer, and they will not appear in this metric.
+
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";

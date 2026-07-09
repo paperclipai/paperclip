@@ -32,7 +32,7 @@ import {
   joinPromptSections,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
-  ensurePaperclipSkillSymlink,
+  materializePaperclipSkill,
   ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
   renderTemplate,
@@ -178,7 +178,7 @@ async function ensureOpenCodeSkillsInjected(
     const target = path.join(skillsHome, entry.runtimeName);
 
     try {
-      const result = await ensurePaperclipSkillSymlink(entry.source, target);
+      const result = await materializePaperclipSkill(entry.source, target);
       if (result === "skipped") continue;
       await onLog(
         "stderr",

@@ -107,6 +107,10 @@ function configWithSecretsProvider(provider: PaperclipConfig["secrets"]["provide
     telemetry: {
       enabled: true,
     },
+    attribution: {
+      commit: true,
+      pr: true,
+    },
     storage: {
       provider: "local_disk",
       localDisk: {

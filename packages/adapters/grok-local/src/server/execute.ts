@@ -27,8 +27,10 @@ import {
   ensureAbsoluteDirectory,
   ensurePathInEnv,
   joinPromptSections,
+  applyAttributionPreferenceToSkillMarkdown,
   materializePaperclipSkillCopy,
   parseObject,
+  readPaperclipAttributionPreferenceFromEnv,
   readPaperclipIssueWorkModeFromContext,
   readPaperclipRuntimeSkillEntries,
   renderTemplate,
@@ -153,6 +155,7 @@ async function stageGrokProjectAssets(input: {
       ensureCleanupDir(skillsRoot);
     }
 
+    const attributionPreference = readPaperclipAttributionPreferenceFromEnv();
     for (const skill of selectedSkills) {
       const target = path.join(skillsRoot, skill.runtimeName);
       if (await pathExists(target)) {
@@ -162,7 +165,9 @@ async function stageGrokProjectAssets(input: {
         );
         continue;
       }
-      await materializePaperclipSkillCopy(skill.source, target);
+      await materializePaperclipSkillCopy(skill.source, target, attributionPreference.commit ? undefined : {
+        transformSkillMarkdown: (content) => applyAttributionPreferenceToSkillMarkdown(content, attributionPreference),
+      });
       ensureCleanupDir(target);
       stagedSkillsCount += 1;
     }
