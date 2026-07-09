@@ -201,7 +201,7 @@ function WaitingOnLiveWorkNotice({
       if (rank !== 0) return rank;
       const aKey = a.blocker.identifier ?? a.blocker.id;
       const bKey = b.blocker.identifier ?? b.blocker.id;
-      return aKey.localeCompare(bKey);
+      return aKey.localeCompare(bKey, undefined, { numeric: true });
     });
   const total = steps.length;
   const doneCount = steps.filter((step) => step.status === "done").length;
@@ -450,10 +450,14 @@ export function IssueBlockedNotice({
   // task's own finished run, so it always keeps its amber priority styling.
   const liveIds = liveIssueIds ?? EMPTY_LIVE_IDS;
   const chainBlockers = allBlockers ?? blockers;
+  const hasLiveWaitingBlocker = [...chainBlockers, ...terminalBlockers].some((blocker) => (
+    liveIds.has(blocker.id)
+  ));
   const waitingOnLiveWork =
     !showSuccessfulRunHandoff
     && blockerAttention?.state === "covered"
-    && chainBlockers.length > 0;
+    && chainBlockers.length > 0
+    && hasLiveWaitingBlocker;
 
   if (waitingOnLiveWork) {
     return (
