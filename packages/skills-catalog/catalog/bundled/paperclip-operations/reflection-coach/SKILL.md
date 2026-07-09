@@ -164,13 +164,12 @@ From a reflection issue (assigned to the target's manager or the requester):
 
 Server-enforced mutation target keys:
 
-- Agent instructions: `reflection-coach:agent-instructions:<agentId>`
-- Agent/tool description fields: `reflection-coach:agent-description:<agentId>`
-- Existing company skill: `reflection-coach:company-skill:<skillId>`
-- New local company skill by slug: `reflection-coach:company-skill-slug:<slug>`
-- Imported skill source: `reflection-coach:company-skill-import:<source>`
-- Catalog skill install/update: `reflection-coach:company-skill-catalog:<catalogSkillId>`
-- Project workspace skill scan: `reflection-coach:company-skills:scan-projects`
+- Agent instructions: `agent:<agentId>:instructions`
+- Agent/tool description fields: `agent:<agentId>:profile`
+- Existing company skill: `skill:<skillId>`
+- New local company skill by slug: `skill-slug:<slug>`
+- Imported or catalog skill source: `skill-import:<source>`
+- Project workspace skill scan: `skills:scan-projects`
 
 ### 10) Apply only after acceptance, in a follow-up run
 

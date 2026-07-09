@@ -1,36 +1,39 @@
 import type { Db } from "@paperclipai/db";
-import { agents, issueThreadInteractions } from "@paperclipai/db";
+import { issueThreadInteractions } from "@paperclipai/db";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import type { RequestConfirmationPayload, RequestConfirmationResult } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
-import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 
-export function reflectionCoachAgentInstructionsTargetKey(agentId: string) {
-  return `reflection-coach:agent-instructions:${agentId}`;
+export const AGENT_PROFILE_CHANGE_CONSENT_FIELDS = ["name", "role", "title", "capabilities"] as const;
+
+export function agentInstructionsChangeTargetKey(agentId: string) {
+  return `agent:${agentId}:instructions`;
 }
 
-export function reflectionCoachAgentDescriptionTargetKey(agentId: string) {
-  return `reflection-coach:agent-description:${agentId}`;
+export function agentProfileChangeTargetKey(agentId: string) {
+  return `agent:${agentId}:profile`;
 }
 
-export function reflectionCoachCompanySkillTargetKey(skillId: string) {
-  return `reflection-coach:company-skill:${skillId}`;
+export function skillChangeTargetKey(skillId: string) {
+  return `skill:${skillId}`;
 }
 
-export function reflectionCoachCompanySkillSlugTargetKey(slug: string) {
-  return `reflection-coach:company-skill-slug:${slug}`;
+export function skillSlugChangeTargetKey(slug: string) {
+  return `skill-slug:${slug}`;
 }
 
-export function reflectionCoachCompanySkillImportTargetKey(source: string) {
-  return `reflection-coach:company-skill-import:${source}`;
+export function skillImportChangeTargetKey(source: string) {
+  return `skill-import:${source}`;
 }
 
-export function reflectionCoachCompanySkillCatalogTargetKey(catalogSkillId: string) {
-  return `reflection-coach:company-skill-catalog:${catalogSkillId}`;
+export function skillsScanProjectsChangeTargetKey() {
+  return "skills:scan-projects";
 }
 
-export function reflectionCoachCompanySkillScanTargetKey() {
-  return "reflection-coach:company-skills:scan-projects";
+export function touchesAgentProfileChangeConsentFields(patchData: Record<string, unknown>) {
+  return AGENT_PROFILE_CHANGE_CONSENT_FIELDS.some((key) =>
+    Object.prototype.hasOwnProperty.call(patchData, key),
+  );
 }
 
 function readNonEmptyString(value: unknown) {
@@ -44,9 +47,52 @@ function payloadHasDisplayedDiff(payload: RequestConfirmationPayload) {
   return /(^|\n)[+-][^\n]+/.test(details);
 }
 
-export function reflectionCoachMutationGateService(db: Db) {
+function legacyTargetKeysFor(targetKey: string) {
+  if (targetKey.startsWith("agent:") && targetKey.endsWith(":instructions")) {
+    const agentId = targetKey.slice("agent:".length, -":instructions".length);
+    if (agentId) return [`reflection-coach:agent-instructions:${agentId}`];
+  }
+  if (targetKey.startsWith("agent:") && targetKey.endsWith(":profile")) {
+    const agentId = targetKey.slice("agent:".length, -":profile".length);
+    if (agentId) return [`reflection-coach:agent-description:${agentId}`];
+  }
+  if (targetKey.startsWith("skill:")) {
+    const skillId = targetKey.slice("skill:".length);
+    if (skillId) return [`reflection-coach:company-skill:${skillId}`];
+  }
+  if (targetKey.startsWith("skill-slug:")) {
+    const slug = targetKey.slice("skill-slug:".length);
+    if (slug) return [`reflection-coach:company-skill-slug:${slug}`];
+  }
+  if (targetKey.startsWith("skill-import:")) {
+    const source = targetKey.slice("skill-import:".length);
+    if (source) {
+      return [
+        `reflection-coach:company-skill-import:${source}`,
+        `reflection-coach:company-skill-catalog:${source}`,
+      ];
+    }
+  }
+  if (targetKey === "skills:scan-projects") {
+    return ["reflection-coach:company-skills:scan-projects"];
+  }
+  return [];
+}
+
+function expandTargetKeysForLegacyCompatibility(targetKeys: string[]) {
+  const expanded = new Set<string>();
+  for (const targetKey of targetKeys) {
+    expanded.add(targetKey);
+    for (const legacyTargetKey of legacyTargetKeysFor(targetKey)) {
+      expanded.add(legacyTargetKey);
+    }
+  }
+  return [...expanded];
+}
+
+export function changeConsentGateService(db: Db) {
   return {
-    assertAllowed: async (input: {
+    assertConsented: async (input: {
       companyId: string;
       actorAgentId: string | null | undefined;
       actorRunId: string | null | undefined;
@@ -54,23 +100,6 @@ export function reflectionCoachMutationGateService(db: Db) {
     }): Promise<boolean> => {
       const actorAgentId = readNonEmptyString(input.actorAgentId);
       if (!actorAgentId) return false;
-
-      const actorAgent = await db
-        .select({
-          id: agents.id,
-          companyId: agents.companyId,
-          metadata: agents.metadata,
-        })
-        .from(agents)
-        .where(eq(agents.id, actorAgentId))
-        .then((rows) => rows[0] ?? null);
-
-      if (!actorAgent || actorAgent.companyId !== input.companyId) {
-        throw forbidden("Agent key cannot access another company");
-      }
-
-      const marker = readBuiltInAgentMarker(actorAgent.metadata);
-      if (marker?.key !== "reflection-coach") return false;
 
       const actorRunId = readNonEmptyString(input.actorRunId);
       if (!actorRunId) {
@@ -85,9 +114,10 @@ export function reflectionCoachMutationGateService(db: Db) {
           code: "reflection_coach_mutation_target_required",
         });
       }
+      const queryTargetKeys = expandTargetKeysForLegacyCompatibility(targetKeys);
 
       const targetKeyPredicate = or(
-        ...targetKeys.map((targetKey) =>
+        ...queryTargetKeys.map((targetKey) =>
           sql`${issueThreadInteractions.payload}->'target'->>'key' = ${targetKey}`,
         ),
       );
@@ -114,7 +144,7 @@ export function reflectionCoachMutationGateService(db: Db) {
         const payload = row.payload as RequestConfirmationPayload;
         const result = row.result as RequestConfirmationResult | null;
         return payload.target?.type === "custom"
-          && targetKeys.includes(payload.target.key)
+          && queryTargetKeys.includes(payload.target.key)
           && result?.outcome === "accepted"
           && payloadHasDisplayedDiff(payload)
           && Boolean(row.sourceRunId)

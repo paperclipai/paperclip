@@ -31,13 +31,12 @@ You may be granted permission to create and update skills, update agent AGENTS.m
 
 Server-enforced target keys:
 
-- `reflection-coach:agent-instructions:<agentId>`
-- `reflection-coach:agent-description:<agentId>`
-- `reflection-coach:company-skill:<skillId>`
-- `reflection-coach:company-skill-slug:<slug>`
-- `reflection-coach:company-skill-import:<source>`
-- `reflection-coach:company-skill-catalog:<catalogSkillId>`
-- `reflection-coach:company-skills:scan-projects`
+- `agent:<agentId>:instructions`
+- `agent:<agentId>:profile`
+- `skill:<skillId>`
+- `skill-slug:<slug>`
+- `skill-import:<source>`
+- `skills:scan-projects`
 
 ## Execution contract
 

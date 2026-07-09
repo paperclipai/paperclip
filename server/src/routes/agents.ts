@@ -101,10 +101,11 @@ import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
 import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
 import {
-  reflectionCoachAgentDescriptionTargetKey,
-  reflectionCoachAgentInstructionsTargetKey,
-  reflectionCoachMutationGateService,
-} from "../services/reflection-coach-mutation-gate.js";
+  agentInstructionsChangeTargetKey,
+  agentProfileChangeTargetKey,
+  changeConsentGateService,
+  touchesAgentProfileChangeConsentFields,
+} from "../services/change-consent-gate.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -1335,35 +1336,41 @@ export function agentRoutes(
       return;
     }
 
-    const allowedByReflectionCoachGate = await reflectionCoachMutationGateService(db).assertAllowed({
-      companyId: targetAgent.companyId,
-      actorAgentId: req.actor.agentId,
-      actorRunId: req.actor.runId ?? null,
-      targetKeys: [reflectionCoachAgentInstructionsTargetKey(targetAgent.id)],
-    });
-    if (allowedByReflectionCoachGate) return;
+    if (await isReflectionCoachActor(req, targetAgent.companyId)) {
+      const allowedByReflectionCoachGate = await changeConsentGateService(db).assertConsented({
+        companyId: targetAgent.companyId,
+        actorAgentId: req.actor.agentId,
+        actorRunId: req.actor.runId ?? null,
+        targetKeys: [agentInstructionsChangeTargetKey(targetAgent.id)],
+      });
+      if (allowedByReflectionCoachGate) return;
+    }
 
     throw forbidden(
       "Only board-authenticated callers can manage instructions path or bundle configuration",
     );
   }
 
+  async function isReflectionCoachActor(req: Request, companyId: string) {
+    if (req.actor.type !== "agent" || !req.actor.agentId) return false;
+    const actorAgent = await svc.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== companyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+    return readBuiltInAgentMarker(actorAgent.metadata)?.key === "reflection-coach";
+  }
+
   async function assertReflectionCoachAgentDescriptionMutationGate(
     req: Request,
     targetAgent: { id: string; companyId: string },
   ) {
-    await reflectionCoachMutationGateService(db).assertAllowed({
+    if (!(await isReflectionCoachActor(req, targetAgent.companyId))) return;
+    await changeConsentGateService(db).assertConsented({
       companyId: targetAgent.companyId,
       actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
       actorRunId: req.actor.runId ?? null,
-      targetKeys: [reflectionCoachAgentDescriptionTargetKey(targetAgent.id)],
+      targetKeys: [agentProfileChangeTargetKey(targetAgent.id)],
     });
-  }
-
-  function touchesAgentDescription(patchData: Record<string, unknown>) {
-    return ["name", "role", "title", "capabilities"].some((key) =>
-      Object.prototype.hasOwnProperty.call(patchData, key),
-    );
   }
 
   function assertNoAgentInstructionsConfigMutation(
@@ -2966,7 +2973,7 @@ export function agentRoutes(
         },
       );
     }
-    if (touchesAgentDescription(patchData)) {
+    if (touchesAgentProfileChangeConsentFields(patchData)) {
       await assertReflectionCoachAgentDescriptionMutationGate(req, existing);
     }
 

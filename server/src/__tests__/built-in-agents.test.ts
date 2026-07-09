@@ -947,7 +947,7 @@ describeEmbeddedPostgres("built-in agents", () => {
         ].join("\n"),
         target: {
           type: "custom",
-          key: `reflection-coach:agent-instructions:${target.id}`,
+          key: `agent:${target.id}:instructions`,
           revisionId: "proposal-v1",
           label: "Target Coder AGENTS.md diff",
         },
@@ -1003,7 +1003,7 @@ describeEmbeddedPostgres("built-in agents", () => {
         ].join("\n"),
         target: {
           type: "custom",
-          key: `reflection-coach:agent-instructions:${target.id}`,
+          key: `agent:${target.id}:instructions`,
           revisionId: "proposal-v2",
           label: "Target Coder AGENTS.md rejected diff",
         },

@@ -13,14 +13,14 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
-  reflectionCoachCompanySkillTargetKey,
-  reflectionCoachMutationGateService,
-} from "../services/reflection-coach-mutation-gate.js";
+  changeConsentGateService,
+  skillChangeTargetKey,
+} from "../services/change-consent-gate.js";
 
 const embeddedPostgresSupport = getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-describeEmbeddedPostgres("reflectionCoachMutationGateService", () => {
+describeEmbeddedPostgres("changeConsentGateService", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
@@ -47,7 +47,7 @@ describeEmbeddedPostgres("reflectionCoachMutationGateService", () => {
     const sourceRunId = randomUUID();
     const proposalIssueId = randomUUID();
     const skillId = randomUUID();
-    const targetKey = reflectionCoachCompanySkillTargetKey(skillId);
+    const targetKey = skillChangeTargetKey(skillId);
 
     await db.insert(companies).values({
       id: companyId,
@@ -64,12 +64,6 @@ describeEmbeddedPostgres("reflectionCoachMutationGateService", () => {
       adapterConfig: {},
       runtimeConfig: {},
       permissions: { canCreateSkills: true },
-      metadata: {
-        paperclipBuiltInAgent: {
-          key: "reflection-coach",
-          featureKeys: ["reflection-coach"],
-        },
-      },
     });
     await db.insert(heartbeatRuns).values({
       id: sourceRunId,
@@ -94,7 +88,7 @@ describeEmbeddedPostgres("reflectionCoachMutationGateService", () => {
   it("rejects Reflection Coach skill mutation without an accepted bound interaction", async () => {
     const { companyId, coachId, targetKey } = await seedGateFixture();
 
-    await expect(reflectionCoachMutationGateService(db).assertAllowed({
+    await expect(changeConsentGateService(db).assertConsented({
       companyId,
       actorAgentId: coachId,
       actorRunId: randomUUID(),
@@ -127,7 +121,7 @@ describeEmbeddedPostgres("reflectionCoachMutationGateService", () => {
       resolvedAt: new Date(),
     });
 
-    await expect(reflectionCoachMutationGateService(db).assertAllowed({
+    await expect(changeConsentGateService(db).assertConsented({
       companyId,
       actorAgentId: coachId,
       actorRunId: sourceRunId,
@@ -160,7 +154,37 @@ describeEmbeddedPostgres("reflectionCoachMutationGateService", () => {
       resolvedAt: new Date(),
     });
 
-    await expect(reflectionCoachMutationGateService(db).assertAllowed({
+    await expect(changeConsentGateService(db).assertConsented({
+      companyId,
+      actorAgentId: coachId,
+      actorRunId: randomUUID(),
+      targetKeys: [targetKey],
+    })).resolves.toBe(true);
+  });
+
+  it("allows legacy Reflection Coach target keys for durable accepted interactions", async () => {
+    const { companyId, coachId, sourceRunId, proposalIssueId, skillId, targetKey } = await seedGateFixture();
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId: proposalIssueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      sourceRunId,
+      createdByAgentId: coachId,
+      payload: {
+        version: 1,
+        prompt: "Apply this Reflection Coach skill diff?",
+        detailsMarkdown: "```diff\n+Tighten the workflow.\n```",
+        target: { type: "custom", key: `reflection-coach:company-skill:${skillId}`, revisionId: "proposal-v1" },
+      },
+      result: { version: 1, outcome: "accepted" },
+      resolvedByUserId: "board-user",
+      resolvedAt: new Date(),
+    });
+
+    await expect(changeConsentGateService(db).assertConsented({
       companyId,
       actorAgentId: coachId,
       actorRunId: randomUUID(),
