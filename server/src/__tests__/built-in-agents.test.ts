@@ -509,6 +509,44 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(coachGrantKeys).not.toContain("skills:create");
   });
 
+  it("recreates missing managed resource bindings idempotently during concurrent reconcile", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    await agentService(db).create(companyId, {
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const builtIns = builtInAgentService(db);
+    await builtIns.ensure(companyId, "reflection-coach");
+    await db.delete(builtInManagedResources).where(eq(builtInManagedResources.companyId, companyId));
+
+    const states = await Promise.all([
+      builtIns.ensure(companyId, "reflection-coach"),
+      builtIns.ensure(companyId, "reflection-coach"),
+    ]);
+
+    expect(states).toHaveLength(2);
+    for (const state of states) {
+      expect(state.resources.map((resource) => [resource.resourceKind, resource.stockStatus])).toEqual([
+        ["instructions", "stock_current"],
+        ["skill", "stock_current"],
+        ["routine", "stock_current"],
+      ]);
+    }
+    const bindings = await db
+      .select()
+      .from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+    expect(bindings).toHaveLength(3);
+    expect(new Set(bindings.map((binding) =>
+      `${binding.bundleKey}:${binding.resourceKind}:${binding.resourceKey}`
+    )).size).toBe(3);
+  });
+
   it("preserves new-agent approval gates during automatic Reflection Coach provisioning", async () => {
     const companyId = await seedCompany({ requireApproval: true });
     const mutationPolicy = {

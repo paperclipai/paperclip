@@ -662,29 +662,25 @@ export function builtInAgentService(db: Db) {
     stockHash: string;
     defaultsJson: Record<string, unknown>;
   }) {
-    const existing = await getManagedResourceBinding(
-      input.companyId,
-      input.bundleKey,
-      input.resourceKind,
-      input.resourceKey,
-    );
-    if (existing) {
-      return db
-        .update(builtInManagedResources)
-        .set({
+    const now = new Date();
+    return db
+      .insert(builtInManagedResources)
+      .values(input)
+      .onConflictDoUpdate({
+        target: [
+          builtInManagedResources.companyId,
+          builtInManagedResources.bundleKey,
+          builtInManagedResources.resourceKind,
+          builtInManagedResources.resourceKey,
+        ],
+        set: {
           resourceId: input.resourceId,
           stockVersion: input.stockVersion,
           stockHash: input.stockHash,
           defaultsJson: input.defaultsJson,
-          updatedAt: new Date(),
-        })
-        .where(eq(builtInManagedResources.id, existing.id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-    }
-    return db
-      .insert(builtInManagedResources)
-      .values(input)
+          updatedAt: now,
+        },
+      })
       .returning()
       .then((rows) => rows[0] ?? null);
   }
