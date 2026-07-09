@@ -89,9 +89,16 @@ import {
   startEnvironmentCustomImageSetupSessionSchema,
   // Company skills
   companySkillCreateSchema,
+  companySkillFileDeleteSchema,
   companySkillFileUpdateSchema,
   companySkillImportSchema,
   companySkillProjectScanRequestSchema,
+  companySkillTestInputCreateSchema,
+  companySkillTestInputUpdateSchema,
+  companySkillTestRunCreateSchema,
+  companySkillTestRunListQuerySchema,
+  companySkillTestRunTemplateCreateSchema,
+  companySkillTestRunTemplateUpdateSchema,
   // Issue tree
   createIssueTreeHoldSchema,
   previewIssueTreeControlSchema,
@@ -3524,6 +3531,153 @@ registry.registerPath({
     body: jsonBody(companySkillFileUpdateSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/skills/{skillId}/files",
+  tags: ["skills"],
+  summary: "Delete a skill file or folder",
+  request: {
+    params: z.object({ companyId: z.string(), skillId: z.string() }),
+    body: jsonBody(companySkillFileDeleteSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-inputs",
+  tags: ["skills"],
+  summary: "List skill test inputs",
+  request: { params: z.object({ companyId: z.string(), skillId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-inputs",
+  tags: ["skills"],
+  summary: "Create a skill test input",
+  request: {
+    params: z.object({ companyId: z.string(), skillId: z.string() }),
+    body: jsonBody(companySkillTestInputCreateSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-inputs/{inputId}",
+  tags: ["skills"],
+  summary: "Update a skill test input",
+  request: {
+    params: z.object({ companyId: z.string(), skillId: z.string(), inputId: z.string() }),
+    body: jsonBody(companySkillTestInputUpdateSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-inputs/{inputId}",
+  tags: ["skills"],
+  summary: "Delete a skill test input",
+  request: { params: z.object({ companyId: z.string(), skillId: z.string(), inputId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/skill-test-run-templates",
+  tags: ["skills"],
+  summary: "List skill test-run templates",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skill-test-run-templates",
+  tags: ["skills"],
+  summary: "Create a skill test-run template",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companySkillTestRunTemplateCreateSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/companies/{companyId}/skill-test-run-templates/{templateId}",
+  tags: ["skills"],
+  summary: "Update a skill test-run template",
+  request: {
+    params: z.object({ companyId: z.string(), templateId: z.string() }),
+    body: jsonBody(companySkillTestRunTemplateUpdateSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/skill-test-run-templates/{templateId}",
+  tags: ["skills"],
+  summary: "Delete a skill test-run template",
+  request: { params: z.object({ companyId: z.string(), templateId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-runs",
+  tags: ["skills"],
+  summary: "List skill test runs",
+  request: {
+    params: z.object({ companyId: z.string(), skillId: z.string() }),
+    query: companySkillTestRunListQuerySchema,
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-runs/{runId}",
+  tags: ["skills"],
+  summary: "Get a skill test run",
+  request: { params: z.object({ companyId: z.string(), skillId: z.string(), runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-runs",
+  tags: ["skills"],
+  summary: "Create a skill test run",
+  request: {
+    params: z.object({ companyId: z.string(), skillId: z.string() }),
+    body: jsonBody(companySkillTestRunCreateSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-runs/{runId}/cancel",
+  tags: ["skills"],
+  summary: "Cancel a skill test run",
+  request: { params: z.object({ companyId: z.string(), skillId: z.string(), runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-runs/{runId}",
+  tags: ["skills"],
+  summary: "Delete a skill test run",
+  request: { params: z.object({ companyId: z.string(), skillId: z.string(), runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
 registry.registerPath({

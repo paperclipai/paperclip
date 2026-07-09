@@ -27,6 +27,7 @@ import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@pap
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
@@ -890,7 +891,7 @@ export function executionWorkspaceService(db: Db) {
           .where(
             and(
               eq(issues.companyId, companyId),
-              isNull(issues.hiddenAt),
+              visibleIssueCondition(),
               inArray(issues.executionWorkspaceId, workspaceIds),
             ),
           )

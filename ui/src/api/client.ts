@@ -151,4 +151,6 @@ export const api = {
     request<T>(path, { method: "PATCH", body: JSON.stringify(body), signal: options?.signal }),
   delete: <T>(path: string, options?: RequestOptions) =>
     request<T>(path, { method: "DELETE", signal: options?.signal }),
+  deleteWithBody: <T>(path: string, body: unknown, options?: RequestOptions) =>
+    request<T>(path, { method: "DELETE", body: JSON.stringify(body), signal: options?.signal }),
 };

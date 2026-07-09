@@ -23,6 +23,22 @@ describe("instance experimental settings validators", () => {
     expect(settings.enableGoalsSidebarLink).toBe(false);
   });
 
+  it("defaults worktree run execution off", () => {
+    const settings = instanceExperimentalSettingsSchema.parse({});
+
+    expect(settings.enableWorktreeRunExecution).toBe(false);
+  });
+
+  it("accepts worktree run execution patches", () => {
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({
+        enableWorktreeRunExecution: true,
+      }),
+    ).toEqual({
+      enableWorktreeRunExecution: true,
+    });
+  });
+
   it("accepts server info debug view patches", () => {
     expect(
       patchInstanceExperimentalSettingsSchema.parse({

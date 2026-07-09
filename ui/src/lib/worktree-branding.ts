@@ -51,6 +51,16 @@ function pickReadableTextColor(background: string): string {
   return whiteContrast >= blackContrast ? READABLE_TEXT_LIGHT : READABLE_TEXT_DARK;
 }
 
+/**
+ * True when the UI is served by an isolated git-worktree preview instance
+ * (`PAPERCLIP_IN_WORKTREE=true` on the server). Unlike {@link getWorktreeUiBranding}
+ * this only depends on the enabled flag, so it stays reliable even if the
+ * worktree name/color branding is absent.
+ */
+export function isWorktreeRuntime(): boolean {
+  return readMetaContent("paperclip-worktree-enabled") === "true";
+}
+
 export function getWorktreeUiBranding(): WorktreeUiBranding | null {
   if (readMetaContent("paperclip-worktree-enabled") !== "true") return null;
 

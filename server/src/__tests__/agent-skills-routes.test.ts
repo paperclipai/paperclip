@@ -275,11 +275,13 @@ describe.sequential("agent skill routes", () => {
         ),
     );
     mockCompanySkillService.resolveRequestedSkillEntries.mockImplementation(
-      async (_companyId: string, requested: Array<{ key: string; versionId?: string | null }>) =>
-        requested.map((entry) => ({
+      async (_companyId: string, requested: Array<{ key: string; versionId?: string | null }>) => ({
+        resolved: requested.map((entry) => ({
           key: entry.key === "paperclip" ? "paperclipai/paperclip/paperclip" : entry.key,
           versionId: entry.versionId ?? null,
         })),
+        unresolved: [],
+      }),
     );
     mockAdapter.listSkills.mockResolvedValue({
       adapterType: "claude_local",
@@ -491,6 +493,61 @@ describe.sequential("agent skill routes", () => {
       }),
       ["paperclipai/paperclip/paperclip"],
     );
+  });
+
+  it("preserves stale desired keys instead of 422-ing when syncing (PAP-13222)", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent("acpx_local"));
+    // The agent already carries a stale desired key that no longer resolves to a
+    // company-library skill. Toggling a resolvable skill must still succeed and
+    // keep the stale key so it stays visible/removable in the UI.
+    mockCompanySkillService.resolveRequestedSkillEntries.mockImplementationOnce(
+      async (
+        _companyId: string,
+        requested: Array<{ key: string; versionId?: string | null }>,
+        options?: { tolerateUnknownReferences?: boolean },
+      ) => {
+        expect(options?.tolerateUnknownReferences).toBe(true);
+        const resolved: Array<{ key: string; versionId: string | null }> = [];
+        const unresolved: string[] = [];
+        for (const entry of requested) {
+          if (entry.key === "stale/removed/skill") {
+            unresolved.push(entry.key);
+          } else {
+            resolved.push({
+              key: entry.key === "paperclip" ? "paperclipai/paperclip/paperclip" : entry.key,
+              versionId: entry.versionId ?? null,
+            });
+          }
+        }
+        return { resolved, unresolved };
+      },
+    );
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+      .send({ desiredSkills: ["paperclip", "stale/removed/skill"] }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // Stale key preserved in the persisted config alongside the resolved skill.
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          paperclipSkillSync: expect.objectContaining({
+            desiredSkills: ["paperclipai/paperclip/paperclip", "stale/removed/skill"],
+          }),
+        }),
+      }),
+      expect.any(Object),
+    );
+    // Runtime version selection only considers resolvable keys.
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ versionSelections: expect.any(Map) }),
+    );
+    const versionSelections = mockCompanySkillService.listRuntimeSkillEntries.mock.calls.at(-1)?.[1]
+      ?.versionSelections as Map<string, unknown> | undefined;
+    expect(versionSelections?.has("stale/removed/skill")).toBe(false);
   });
 
   it("skips runtime materialization when listing persistent skill adapters", async () => {

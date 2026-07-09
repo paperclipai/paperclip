@@ -6,11 +6,15 @@ export const queryKeys = {
   },
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,
+    listRecent: (companyId: string) =>
+      ["company-skills", companyId, "recent-updated"] as const,
     detail: (companyId: string, skillId: string) => ["company-skills", companyId, skillId] as const,
     versions: (companyId: string, skillId: string) => ["company-skills", companyId, skillId, "versions"] as const,
     comments: (companyId: string, skillId: string) => ["company-skills", companyId, skillId, "comments"] as const,
     updateStatus: (companyId: string, skillId: string) =>
       ["company-skills", companyId, skillId, "update-status"] as const,
+    forkPrecheck: (companyId: string, skillId: string) =>
+      ["company-skills", companyId, skillId, "fork-precheck"] as const,
     file: (companyId: string, skillId: string, relativePath: string) =>
       ["company-skills", companyId, skillId, "file", relativePath] as const,
     catalog: (filters: { kind?: string; category?: string; q?: string } = {}) =>
@@ -18,6 +22,14 @@ export const queryKeys = {
     catalogDetail: (catalogRef: string) => ["company-skills", "catalog", "detail", catalogRef] as const,
     catalogFile: (catalogRef: string, relativePath: string) =>
       ["company-skills", "catalog", "file", catalogRef, relativePath] as const,
+    testInputs: (companyId: string, skillId: string) =>
+      ["company-skills", companyId, skillId, "test-inputs"] as const,
+    testRunTemplates: (companyId: string) =>
+      ["company-skills", companyId, "test-run-templates"] as const,
+    testRuns: (companyId: string, skillId: string, inputId?: string | null) =>
+      ["company-skills", companyId, skillId, "test-runs", inputId ?? "__all-inputs__"] as const,
+    testRunDetail: (companyId: string, skillId: string, runId: string) =>
+      ["company-skills", companyId, skillId, "test-run", runId] as const,
   },
   teamCatalog: {
     catalog: (filters: { kind?: string; category?: string; q?: string } = {}) =>

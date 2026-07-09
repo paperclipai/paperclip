@@ -5,6 +5,7 @@ import {
   companySkillCommentCreateSchema,
   companySkillCommentUpdateSchema,
   companySkillCreateSchema,
+  companySkillFileDeleteSchema,
   companySkillFileUpdateSchema,
   companySkillForkSchema,
   companySkillImportSchema,
@@ -13,12 +14,18 @@ import {
   companySkillListQuerySchema,
   companySkillProjectScanRequestSchema,
   companySkillResetSchema,
+  companySkillTestInputCreateSchema,
+  companySkillTestInputUpdateSchema,
+  companySkillTestRunTemplateCreateSchema,
+  companySkillTestRunTemplateUpdateSchema,
+  companySkillTestRunCreateSchema,
+  companySkillTestRunListQuerySchema,
   companySkillUpdateSchema,
   companySkillVersionCreateSchema,
 } from "@paperclipai/shared";
 import { trackSkillImported } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { accessService, agentService, companySkillService, logActivity } from "../services/index.js";
+import { accessService, agentService, companySkillService, heartbeatService, issueService, logActivity } from "../services/index.js";
 import {
   getCatalogSkillOrThrow,
   listCatalogSkillsOrEmpty,
@@ -41,6 +48,8 @@ export function companySkillRoutes(db: Db) {
   const agents = agentService(db);
   const access = accessService(db);
   const svc = companySkillService(db);
+  const issues = issueService(db);
+  const heartbeat = heartbeatService(db);
 
   function canCreateSkills(agent: { permissions: Record<string, unknown> | null | undefined }) {
     if (!agent.permissions || typeof agent.permissions !== "object") return true;
@@ -122,6 +131,32 @@ export function companySkillRoutes(db: Db) {
     throw forbidden("Missing permission: skills:create");
   }
 
+  async function assertCanStartSkillTestRuns(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+
+    if (req.actor.type === "board") {
+      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+      const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
+      if (!allowed) {
+        throw forbidden("Missing permission: tasks:assign");
+      }
+      return;
+    }
+
+    if (!req.actor.agentId) {
+      throw forbidden("Agent authentication required");
+    }
+
+    const actorAgent = await agents.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== companyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "tasks:assign");
+    if (!allowedByGrant) {
+      throw forbidden("Missing permission: tasks:assign");
+    }
+  }
+
   router.get("/skills/catalog", async (req, res) => {
     assertAuthenticated(req);
     const query = catalogSkillListQuerySchema.parse({
@@ -157,6 +192,10 @@ export function companySkillRoutes(db: Db) {
         ...queryStringArray(req.query["categories[]"]),
       ],
       scope: firstQueryString(req.query.scope),
+      include: [
+        ...queryStringArray(req.query.include),
+        ...queryStringArray(req.query["include[]"]),
+      ],
     }));
     res.json(result);
   });
@@ -208,6 +247,358 @@ export function companySkillRoutes(db: Db) {
       res.status(404).json({ error: "Skill version not found" });
       return;
     }
+    res.json(result);
+  });
+
+  router.get("/companies/:companyId/skills/:skillId/test-inputs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.listTestInputs(companyId, skillId));
+  });
+
+  router.post(
+    "/companies/:companyId/skills/:skillId/test-inputs",
+    validate(companySkillTestInputCreateSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const result = await svc.createTestInput(companyId, skillId, req.body, skillActor(req));
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_test_input_created",
+        entityType: "company_skill_test_input",
+        entityId: result.id,
+        details: { skillId, name: result.name },
+      });
+      res.status(201).json(result);
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/skills/:skillId/test-inputs/:inputId",
+    validate(companySkillTestInputUpdateSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      const inputId = req.params.inputId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const result = await svc.updateTestInput(companyId, skillId, inputId, req.body);
+      if (!result) {
+        res.status(404).json({ error: "Test input not found" });
+        return;
+      }
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_test_input_updated",
+        entityType: "company_skill_test_input",
+        entityId: result.id,
+        details: { skillId, changedKeys: Object.keys(req.body).sort() },
+      });
+      res.json(result);
+    },
+  );
+
+  router.delete("/companies/:companyId/skills/:skillId/test-inputs/:inputId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    const inputId = req.params.inputId as string;
+    await assertCanMutateCompanySkills(req, companyId);
+    const result = await svc.deleteTestInput(companyId, skillId, inputId);
+    if (!result) {
+      res.status(404).json({ error: "Test input not found" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.skill_test_input_deleted",
+      entityType: "company_skill_test_input",
+      entityId: result.id,
+      details: { skillId, name: result.name },
+    });
+    res.json(result);
+  });
+
+  router.get("/companies/:companyId/skill-test-run-templates", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.listTestRunTemplates(companyId));
+  });
+
+  router.post(
+    "/companies/:companyId/skill-test-run-templates",
+    validate(companySkillTestRunTemplateCreateSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const result = await svc.createTestRunTemplate(companyId, req.body, skillActor(req));
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_test_run_template_created",
+        entityType: "company_skill_test_run_template",
+        entityId: result.id,
+        details: { name: result.name },
+      });
+      res.status(201).json(result);
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/skill-test-run-templates/:templateId",
+    validate(companySkillTestRunTemplateUpdateSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const templateId = req.params.templateId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const result = await svc.updateTestRunTemplate(companyId, templateId, req.body, skillActor(req));
+      if (!result) {
+        res.status(404).json({ error: "Test run template not found" });
+        return;
+      }
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_test_run_template_updated",
+        entityType: "company_skill_test_run_template",
+        entityId: result.id,
+        details: { changedKeys: Object.keys(req.body).sort() },
+      });
+      res.json(result);
+    },
+  );
+
+  router.delete("/companies/:companyId/skill-test-run-templates/:templateId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const templateId = req.params.templateId as string;
+    await assertCanMutateCompanySkills(req, companyId);
+    const result = await svc.deleteTestRunTemplate(companyId, templateId);
+    if (!result) {
+      res.status(404).json({ error: "Test run template not found" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.skill_test_run_template_deleted",
+      entityType: "company_skill_test_run_template",
+      entityId: result.id,
+      details: { name: result.name },
+    });
+    res.json(result);
+  });
+
+  router.get("/companies/:companyId/skills/:skillId/test-runs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    assertCompanyAccess(req, companyId);
+    const query = companySkillTestRunListQuerySchema.parse({
+      inputId: firstQueryString(req.query.inputId),
+    });
+    res.json(await svc.listTestRuns(companyId, skillId, query));
+  });
+
+  router.get("/companies/:companyId/skills/:skillId/test-runs/:runId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    const runId = req.params.runId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.getTestRunDetail(companyId, skillId, runId);
+    if (!result) {
+      res.status(404).json({ error: "Test run not found" });
+      return;
+    }
+    res.json(result);
+  });
+
+  router.post(
+    "/companies/:companyId/skills/:skillId/test-runs",
+    validate(companySkillTestRunCreateSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      await assertCanStartSkillTestRuns(req, companyId);
+      const actor = getActorInfo(req);
+      const result = await svc.createTestRun(companyId, skillId, req.body, skillActor(req), {
+        createHarnessIssue: async (harnessIssue) => {
+          const created = await issues.create(companyId, {
+            ...harnessIssue,
+            priority: "medium",
+            createdByAgentId: actor.agentId,
+            createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+            actorRunId: actor.runId,
+          });
+          await logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.created",
+            entityType: "issue",
+            entityId: created.id,
+            details: {
+              title: created.title,
+              identifier: created.identifier,
+              harnessKind: "skill_test",
+              source: "company_skill_test_run",
+              skillId,
+            },
+          });
+          return { id: created.id };
+        },
+        wakeHarnessIssue: async (issueId, agentId) => heartbeat.wakeup(agentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "skill_test_run_created",
+          payload: { issueId, skillId },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: { issueId, source: "company.skill_test_run" },
+        }),
+        cleanupHarnessIssue: async (issueId) => {
+          const issue = await issues.getById(issueId);
+          if (!issue || issue.companyId !== companyId) return;
+          await issues.update(issueId, {
+            status: "cancelled",
+            hiddenAt: new Date(),
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          });
+          await logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "company.skill_test_harness_issue_cleaned_up",
+            entityType: "issue",
+            entityId: issueId,
+            details: { skillId },
+          });
+        },
+      });
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_test_run_created",
+        entityType: "company_skill_test_run",
+        entityId: result.id,
+        details: {
+          skillId,
+          inputId: result.inputId,
+          skillVersionId: result.skillVersionId,
+          agentId: result.agentId,
+          issueId: result.issueId,
+        },
+      });
+      res.status(201).json(result);
+    },
+  );
+
+  router.post("/companies/:companyId/skills/:skillId/test-runs/:runId/cancel", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    const runId = req.params.runId as string;
+    await assertCanStartSkillTestRuns(req, companyId);
+    const actor = getActorInfo(req);
+    const result = await svc.cancelTestRun(companyId, skillId, runId, {
+      cancelHarnessIssue: async (issueId) => {
+        const issue = await issues.getById(issueId);
+        if (!issue || issue.companyId !== companyId) return;
+        if (issue.executionRunId) {
+          await heartbeat.cancelRun(issue.executionRunId, "Cancelled by skill test run request");
+        }
+        if (issue.status !== "done" && issue.status !== "cancelled") {
+          await issues.update(issueId, {
+            status: "cancelled",
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          });
+        }
+      },
+    });
+    if (!result) {
+      res.status(404).json({ error: "Test run not found" });
+      return;
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.skill_test_run_cancelled",
+      entityType: "company_skill_test_run",
+      entityId: result.id,
+      details: { skillId, issueId: result.issueId },
+    });
+    res.json(result);
+  });
+
+  router.delete("/companies/:companyId/skills/:skillId/test-runs/:runId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    const runId = req.params.runId as string;
+    await assertCanStartSkillTestRuns(req, companyId);
+    const actor = getActorInfo(req);
+    const result = await svc.deleteTestRun(companyId, skillId, runId, {
+      hideHarnessIssue: async (issueId) => {
+        const issue = await issues.getById(issueId);
+        if (!issue || issue.companyId !== companyId) return;
+        await issues.update(issueId, {
+          hiddenAt: new Date(),
+          actorAgentId: actor.agentId ?? null,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        });
+      },
+    });
+    if (!result) {
+      res.status(404).json({ error: "Test run not found" });
+      return;
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.skill_test_run_deleted",
+      entityType: "company_skill_test_run",
+      entityId: result.id,
+      details: { skillId, issueId: result.issueId },
+    });
     res.json(result);
   });
 
@@ -496,6 +887,36 @@ export function companySkillRoutes(db: Db) {
         details: {
           path: result.path,
           markdown: result.markdown,
+        },
+      });
+
+      res.json(result);
+    },
+  );
+
+  router.delete(
+    "/companies/:companyId/skills/:skillId/files",
+    validate(companySkillFileDeleteSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const result = await svc.deleteFile(companyId, skillId, req.body, skillActor(req));
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_file_deleted",
+        entityType: "company_skill",
+        entityId: skillId,
+        details: {
+          path: result.path,
+          target: result.target,
+          deletedPaths: result.deletedPaths,
         },
       });
 

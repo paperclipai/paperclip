@@ -6,6 +6,7 @@ export const companySkillCompatibilitySchema = z.enum(["compatible", "unknown", 
 export const companySkillSourceBadgeSchema = z.enum(["paperclip", "github", "local", "url", "catalog", "skills_sh"]);
 export const companySkillSharingScopeSchema = z.enum(["private", "company", "public_link"]);
 export const companySkillListSortSchema = z.enum(["alphabetical", "recent", "installs", "stars", "agents", "forks"]);
+export const companySkillListIncludeSchema = z.enum(["lastEditor"]);
 
 export const companySkillFileInventoryEntrySchema = z.object({
   path: z.string().min(1),
@@ -59,6 +60,12 @@ export const companySkillListItemSchema = companySkillSchema.extend({
   originHash: z.string().nullable(),
   packageName: z.string().nullable(),
   packageVersion: z.string().nullable(),
+  lastEditor: z.object({
+    kind: z.enum(["user", "agent"]),
+    id: z.string().min(1),
+    name: z.string().nullable(),
+    imageUrl: z.string().nullable(),
+  }).nullable().optional(),
 });
 
 export const companySkillUsageAgentSchema = z.object({
@@ -98,6 +105,7 @@ export const companySkillListQuerySchema = z.object({
   sort: companySkillListSortSchema.optional(),
   categories: z.array(z.string().min(1)).optional(),
   scope: companySkillSharingScopeSchema.optional(),
+  include: z.array(companySkillListIncludeSchema).optional(),
 });
 
 export const companySkillCategoryCountSchema = z.object({
@@ -319,6 +327,132 @@ export const companySkillFileUpdateSchema = z.object({
   content: z.string(),
 });
 
+export const companySkillFileDeleteSchema = z.object({
+  path: z.string().min(1),
+  target: z.enum(["file", "folder"]),
+});
+
+export const companySkillTestRunStatusSchema = z.enum(["queued", "running", "succeeded", "failed", "cancelled"]);
+
+export const companySkillTestInputSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  skillId: z.string().uuid(),
+  name: z.string().min(1),
+  content: z.string(),
+  createdBy: z.string().nullable(),
+  deletedAt: z.coerce.date().nullable(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+});
+
+export const companySkillTestInputCreateSchema = z.object({
+  name: z.string().trim().min(1),
+  content: z.string().min(1),
+});
+
+export const companySkillTestInputUpdateSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  content: z.string().min(1).optional(),
+}).refine((value) => value.name !== undefined || value.content !== undefined, {
+  message: "At least one field is required",
+});
+
+export const companySkillTestRunTemplateSchema = z.object({
+  id: z.string().min(1),
+  companyId: z.string().uuid(),
+  name: z.string().min(1),
+  description: z.string().nullable(),
+  body: z.string().min(1),
+  builtIn: z.boolean(),
+  createdByAgentId: z.string().uuid().nullable(),
+  createdByUserId: z.string().nullable(),
+  updatedByAgentId: z.string().uuid().nullable(),
+  updatedByUserId: z.string().nullable(),
+  deletedAt: z.coerce.date().nullable(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+});
+
+export const companySkillTestRunTemplateCreateSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).nullable().optional(),
+  body: z.string().min(1).max(20_000),
+});
+
+export const companySkillTestRunTemplateUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  description: z.string().trim().max(500).nullable().optional(),
+  body: z.string().min(1).max(20_000).optional(),
+}).refine(
+  (value) => value.name !== undefined || value.description !== undefined || value.body !== undefined,
+  { message: "At least one field is required" },
+);
+
+export const companySkillTestRunTemplateSnapshotSchema = z.object({
+  templateId: z.string().min(1).nullable(),
+  templateName: z.string().min(1).nullable(),
+  templateBody: z.string().min(1).max(20_000).nullable(),
+}).refine(
+  (value) =>
+    (value.templateId === null && value.templateName === null && value.templateBody === null)
+    || (value.templateId !== null && value.templateName !== null && value.templateBody !== null),
+  { message: "Template snapshot must be all null or include id, name, and body" },
+);
+
+export const companySkillTestRunCostSummarySchema = z.object({
+  costCents: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  cachedInputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+});
+
+export const companySkillTestRunSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  skillId: z.string().uuid(),
+  inputId: z.string().uuid().nullable(),
+  inputSnapshot: z.string(),
+  skillVersionId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  agentConfigSnapshot: z.record(z.string(), z.unknown()),
+  issueId: z.string().uuid(),
+  templateId: z.string().nullable(),
+  templateName: z.string().nullable(),
+  templateBody: z.string().nullable(),
+  renderedTemplateBody: z.string().nullable(),
+  harnessIssueDescription: z.string(),
+  status: companySkillTestRunStatusSchema,
+  outputDocumentKey: z.string().min(1),
+  outputSnapshot: z.string(),
+  error: z.string().nullable(),
+  deletedAt: z.coerce.date().nullable(),
+  supersededAt: z.coerce.date().nullable(),
+  harnessIssueExpiresAt: z.coerce.date().nullable(),
+  harnessIssueDeletedAt: z.coerce.date().nullable(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+  cost: companySkillTestRunCostSummarySchema,
+  taskExpired: z.boolean(),
+});
+
+export const companySkillTestRunCreateSchema = z.object({
+  inputId: z.string().uuid().nullable().optional(),
+  content: z.string().min(1).nullable().optional(),
+  agentId: z.string().uuid(),
+  templateId: z.string().min(1).nullable().optional(),
+  templateSnapshot: companySkillTestRunTemplateSnapshotSchema.nullable().optional(),
+  // Re-run pins the viewed run's skill version instead of the live head, so the
+  // new run reproduces the same snapshots (golden-path step 5).
+  skillVersionId: z.string().uuid().nullable().optional(),
+}).refine((value) => Boolean(value.inputId) || Boolean(value.content?.trim()), {
+  message: "inputId or content is required",
+});
+
+export const companySkillTestRunListQuerySchema = z.object({
+  inputId: z.string().uuid().optional(),
+});
+
 export const catalogSkillKindSchema = z.enum(["bundled", "optional"]);
 
 export const catalogSkillFileSchema = z.object({
@@ -397,6 +531,13 @@ export type CompanySkillListQuery = z.infer<typeof companySkillListQuerySchema>;
 export type CompanySkillProjectScan = z.infer<typeof companySkillProjectScanRequestSchema>;
 export type CompanySkillCreate = z.infer<typeof companySkillCreateSchema>;
 export type CompanySkillFileUpdate = z.infer<typeof companySkillFileUpdateSchema>;
+export type CompanySkillFileDelete = z.infer<typeof companySkillFileDeleteSchema>;
+export type CompanySkillTestInputCreate = z.infer<typeof companySkillTestInputCreateSchema>;
+export type CompanySkillTestInputUpdate = z.infer<typeof companySkillTestInputUpdateSchema>;
+export type CompanySkillTestRunTemplateCreate = z.infer<typeof companySkillTestRunTemplateCreateSchema>;
+export type CompanySkillTestRunTemplateUpdate = z.infer<typeof companySkillTestRunTemplateUpdateSchema>;
+export type CompanySkillTestRunCreate = z.infer<typeof companySkillTestRunCreateSchema>;
+export type CompanySkillTestRunListQuery = z.infer<typeof companySkillTestRunListQuerySchema>;
 export type CompanySkillVersionCreate = z.infer<typeof companySkillVersionCreateSchema>;
 export type CompanySkillCommentCreate = z.infer<typeof companySkillCommentCreateSchema>;
 export type CompanySkillCommentUpdate = z.infer<typeof companySkillCommentUpdateSchema>;

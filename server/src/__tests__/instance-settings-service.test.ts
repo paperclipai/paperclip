@@ -33,6 +33,7 @@ describe("instance settings service", () => {
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
+      enableWorktreeRunExecution: false,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
     });
   });

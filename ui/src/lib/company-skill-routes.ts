@@ -187,6 +187,15 @@ export function skillRoute(
   return effectiveFilePath ? `${basePath}/files/${encodeSkillFilePath(effectiveFilePath)}` : basePath;
 }
 
+export function skillStudioRoute(skillId: string) {
+  return `/skills/studio/${encodeURIComponent(skillId)}`;
+}
+
+export function skillStudioNewRoute(forkFromSkillId?: string | null) {
+  const basePath = "/skills/studio/new";
+  return forkFromSkillId ? `${basePath}?forkFrom=${encodeURIComponent(forkFromSkillId)}` : basePath;
+}
+
 export function withRouteSkill(
   skills: CompanySkillRouteSubject[],
   skill: CompanySkillRouteSubject,
