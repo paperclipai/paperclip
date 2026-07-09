@@ -31,9 +31,10 @@ import {
   listCatalogSkillsOrEmpty,
   readCatalogSkillFile,
 } from "../services/skills-catalog.js";
-import { forbidden } from "../errors.js";
+import { forbidden, HttpError } from "../errors.js";
 import { assertAuthenticated, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { authorizationDeniedDetails } from "../services/authorization.js";
 import {
   changeConsentGateService,
   skillChangeTargetKey,
@@ -139,8 +140,11 @@ export function companySkillRoutes(db: Db) {
           actorRunId: req.actor.runId ?? null,
           targetKeys,
         });
-      } catch {
-        throw forbidden(decision.explanation, { reason: decision.reason });
+      } catch (err) {
+        if (err instanceof HttpError && err.status === 403) {
+          throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+        }
+        throw err;
       }
 
       const consentedDecision = await access.decide({

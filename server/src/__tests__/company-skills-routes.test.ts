@@ -1234,6 +1234,33 @@ describe("company skill mutation permissions", () => {
     expect(mockCompanySkillService.createLocalSkill).not.toHaveBeenCalled();
   });
 
+  it("does not convert consent gate service failures into authorization denials", async () => {
+    mockAccessService.decide.mockResolvedValue(denySkillChangeDecision(
+      "deny_missing_consent",
+      "Permission skills:suggest-changes requires accepted change consent before applying this mutation.",
+    ));
+    mockReflectionCoachMutationGate.assertConsented.mockRejectedValue(new Error("database unavailable"));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "reflection-coach",
+      companyId: "company-1",
+      runId: "run-apply",
+    }))
+      .post("/api/companies/company-1/skills")
+      .send({ name: "Reflection Draft", slug: "reflection-draft", markdown: "# Draft" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(500);
+    expect(res.body.error).toBe("Internal server error");
+    expect(mockReflectionCoachMutationGate.assertConsented).toHaveBeenCalledWith({
+      companyId: "company-1",
+      actorAgentId: "reflection-coach",
+      actorRunId: "run-apply",
+      targetKeys: ["skill-slug:reflection-draft"],
+    });
+    expect(mockCompanySkillService.createLocalSkill).not.toHaveBeenCalled();
+  });
+
   it("allows suggest-tier skill mutations after accepted change consent", async () => {
     mockAccessService.decide
       .mockResolvedValueOnce(denySkillChangeDecision(
