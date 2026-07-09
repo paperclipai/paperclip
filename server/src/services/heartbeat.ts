@@ -107,12 +107,14 @@ import {
   formatManagedGitWorktreeBranchInspection,
   inspectManagedGitWorktreeBranch,
   persistAdapterManagedRuntimeServices,
+  preserveGitHandoffHeadRef,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
+import { mergeGitHandoffRefMetadata } from "./git-handoff-refs.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import {
@@ -1335,6 +1337,123 @@ function fingerprintFinalizeWorkspaceBranchValidation(input: {
     }))
     .digest("hex");
   return `workspace_finalize_branch_mismatch:v1:sha256:${digest}`;
+}
+
+const GIT_HANDOFF_TEXT_PATTERNS = [
+  /^##\s+Git handoff block\b/im,
+  /\bBranch HEAD at submit\s*:/i,
+  /\bRequested GitHub operation\s*:/i,
+];
+const TERMINAL_ISSUE_STATUSES_FOR_GIT_HANDOFF = new Set(["done", "cancelled"]);
+const TERMINAL_WORK_PRODUCT_STATUSES_FOR_GIT_HANDOFF = new Set(["merged", "closed", "failed", "archived"]);
+
+function hasGitHandoffTextSignal(value: unknown) {
+  const text = readNonEmptyString(value);
+  if (!text) return false;
+  return GIT_HANDOFF_TEXT_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+async function findPendingGitHandoffSignalsForFinalize(
+  db: Db,
+  input: {
+    companyId: string;
+    issueId: string | null;
+    executionWorkspaceId: string | null;
+    runId: string;
+  },
+): Promise<{
+  signalKinds: string[];
+  relatedIssueIds: string[];
+  workProductIds: string[];
+} | null> {
+  const issuePredicates = [];
+  if (input.issueId) {
+    issuePredicates.push(eq(issues.id, input.issueId));
+    issuePredicates.push(eq(issues.parentId, input.issueId));
+  }
+  if (input.executionWorkspaceId) {
+    issuePredicates.push(eq(issues.executionWorkspaceId, input.executionWorkspaceId));
+  }
+  if (issuePredicates.length === 0) return null;
+
+  const candidateIssues = await db
+    .select({
+      id: issues.id,
+      status: issues.status,
+      title: issues.title,
+      description: issues.description,
+    })
+    .from(issues)
+    .where(and(
+      eq(issues.companyId, input.companyId),
+      or(...issuePredicates),
+    ));
+  const candidateIssueIds = [...new Set(candidateIssues.map((issue) => issue.id))];
+  if (candidateIssueIds.length === 0) return null;
+
+  const issueStatusById = new Map(candidateIssues.map((issue) => [issue.id, issue.status]));
+  const signalKinds = new Set<string>();
+  const relatedIssueIds = new Set<string>();
+  const workProductIds = new Set<string>();
+
+  for (const issue of candidateIssues) {
+    if (TERMINAL_ISSUE_STATUSES_FOR_GIT_HANDOFF.has(issue.status)) continue;
+    if (hasGitHandoffTextSignal(issue.title) || hasGitHandoffTextSignal(issue.description)) {
+      signalKinds.add("issue_handoff_block");
+      relatedIssueIds.add(issue.id);
+    }
+  }
+
+  const comments = await db
+    .select({
+      issueId: issueComments.issueId,
+      body: issueComments.body,
+      createdByRunId: issueComments.createdByRunId,
+    })
+    .from(issueComments)
+    .where(and(
+      eq(issueComments.companyId, input.companyId),
+      inArray(issueComments.issueId, candidateIssueIds),
+      isNull(issueComments.deletedAt),
+    ));
+  for (const comment of comments) {
+    if (!hasGitHandoffTextSignal(comment.body)) continue;
+    const issueIsOpen = !TERMINAL_ISSUE_STATUSES_FOR_GIT_HANDOFF.has(issueStatusById.get(comment.issueId) ?? "");
+    if (!issueIsOpen && comment.createdByRunId !== input.runId) continue;
+    signalKinds.add(comment.createdByRunId === input.runId ? "run_comment_handoff_block" : "issue_comment_handoff_block");
+    relatedIssueIds.add(comment.issueId);
+  }
+
+  const productPredicates = [inArray(issueWorkProducts.issueId, candidateIssueIds)];
+  if (input.executionWorkspaceId) {
+    productPredicates.push(eq(issueWorkProducts.executionWorkspaceId, input.executionWorkspaceId));
+  }
+  const workProducts = await db
+    .select({
+      id: issueWorkProducts.id,
+      issueId: issueWorkProducts.issueId,
+      type: issueWorkProducts.type,
+      status: issueWorkProducts.status,
+    })
+    .from(issueWorkProducts)
+    .where(and(
+      eq(issueWorkProducts.companyId, input.companyId),
+      or(...productPredicates),
+      inArray(issueWorkProducts.type, ["commit", "branch"]),
+    ));
+  for (const product of workProducts) {
+    if (TERMINAL_WORK_PRODUCT_STATUSES_FOR_GIT_HANDOFF.has(product.status)) continue;
+    signalKinds.add(product.type === "commit" ? "commit_work_product" : "branch_work_product");
+    relatedIssueIds.add(product.issueId);
+    workProductIds.add(product.id);
+  }
+
+  if (signalKinds.size === 0) return null;
+  return {
+    signalKinds: [...signalKinds].sort(),
+    relatedIssueIds: [...relatedIssueIds].sort(),
+    workProductIds: [...workProductIds].sort(),
+  };
 }
 
 function isConfigurationIncompleteFailure(error: unknown): error is ConfigurationIncompleteFailure {
@@ -11986,6 +12105,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (adapterFinalizeOutcome) return;
         let finalizeBranchMetadata: Record<string, unknown> | null = null;
         let finalizeBranchRepairMetadata: Record<string, unknown> | null = null;
+        let durableGitHandoffRefMetadata: Record<string, unknown> | null = null;
         if (status === "succeeded") {
           const branchInspection = await inspectFinalizeWorkspaceBranch();
           if (branchInspection) {
@@ -12112,6 +12232,50 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 },
               );
             }
+            const handoffSignal = await findPendingGitHandoffSignalsForFinalize(db, {
+              companyId: run.companyId,
+              issueId: issueRef?.id ?? null,
+              executionWorkspaceId: branchInspection.workspaceRecord.id,
+              runId: run.id,
+            });
+            if (handoffSignal) {
+              const handoffRef = await preserveGitHandoffHeadRef({
+                worktreePath: inspection.worktreePath,
+                issueId: issueRef?.id ?? null,
+                issueIdentifier: issueRef?.identifier ?? null,
+                executionWorkspaceId: branchInspection.workspaceRecord.id,
+                runId: run.id,
+                branchName:
+                  readNonEmptyString(inspection.actualBranchName) ??
+                  readNonEmptyString(inspection.expectedBranchName) ??
+                  readNonEmptyString(branchInspection.workspaceRecord.branchName),
+                baseRef: branchInspection.workspaceRecord.baseRef ?? null,
+                relatedIssueIds: handoffSignal.relatedIssueIds,
+                workProductIds: handoffSignal.workProductIds,
+                signalKinds: handoffSignal.signalKinds,
+                recorder: workspaceOperationRecorder,
+              });
+              const latestWorkspaceRecord =
+                await executionWorkspacesSvc.getById(branchInspection.workspaceRecord.id)
+                ?? branchInspection.workspaceRecord;
+              const nextMetadata = mergeGitHandoffRefMetadata(
+                latestWorkspaceRecord.metadata as Record<string, unknown> | null,
+                handoffRef,
+              );
+              await executionWorkspacesSvc.update(branchInspection.workspaceRecord.id, {
+                metadata: nextMetadata,
+              });
+              durableGitHandoffRefMetadata = {
+                ref: handoffRef.ref,
+                sha: handoffRef.sha,
+                shortSha: handoffRef.shortSha,
+                issueId: handoffRef.issueId,
+                issueIdentifier: handoffRef.issueIdentifier,
+                relatedIssueIds: handoffRef.relatedIssueIds,
+                workProductIds: handoffRef.workProductIds,
+                signalKinds: handoffRef.signalKinds,
+              };
+            }
           }
         }
         await workspaceOperationRecorder.recordOperation({
@@ -12123,6 +12287,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ...metadata,
             ...(finalizeBranchMetadata ? { managedGitWorktreeBranch: finalizeBranchMetadata } : {}),
             ...(finalizeBranchRepairMetadata ? { managedGitWorktreeBranchRepair: finalizeBranchRepairMetadata } : {}),
+            ...(durableGitHandoffRefMetadata ? { durableGitHandoffRef: durableGitHandoffRefMetadata } : {}),
           },
           run: async () => ({ status }),
         });

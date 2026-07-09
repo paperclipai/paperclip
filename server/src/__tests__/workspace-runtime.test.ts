@@ -46,6 +46,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { buildGitHandoffRefName, type GitHandoffRefMetadata } from "../services/git-handoff-refs.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -120,6 +121,40 @@ async function createTempRepo(defaultBranch = "main") {
   await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
   await runGit(repoRoot, ["checkout", "-B", defaultBranch]);
   return repoRoot;
+}
+
+function gitHandoffRefRecord(input: {
+  issueId: string;
+  issueIdentifier?: string | null;
+  executionWorkspaceId: string;
+  runId: string;
+  branchName: string;
+  baseRef?: string | null;
+  sha: string;
+  relatedIssueIds?: string[];
+  workProductIds?: string[];
+}): GitHandoffRefMetadata {
+  return {
+    version: 1,
+    ref: buildGitHandoffRefName({
+      issueId: input.issueId,
+      runId: input.runId,
+      sha: input.sha,
+    }),
+    sha: input.sha,
+    shortSha: input.sha.slice(0, 12),
+    issueId: input.issueId,
+    issueIdentifier: input.issueIdentifier ?? null,
+    executionWorkspaceId: input.executionWorkspaceId,
+    runId: input.runId,
+    branchName: input.branchName,
+    baseRef: input.baseRef ?? "HEAD",
+    relatedIssueIds: input.relatedIssueIds ?? [input.issueId],
+    workProductIds: input.workProductIds ?? [],
+    signalKinds: ["issue_handoff_block"],
+    status: "pending",
+    createdAt: new Date().toISOString(),
+  };
 }
 
 async function expectPersistedBranchMismatchRejected(input: {
@@ -2269,6 +2304,139 @@ describe("realizeExecutionWorkspace", () => {
     expect(actualHead).toBe(expectedHead);
   }, 15_000);
 
+  it("restores a missing persisted worktree from a durable Git handoff ref", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-1942-preserve-handoff-sha";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["worktree", "add", "-b", branchName, worktreePath, "HEAD"]);
+    await fs.writeFile(path.join(worktreePath, "handoff.txt"), "local handoff commit\n", "utf8");
+    await runGit(worktreePath, ["add", "handoff.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Add local handoff commit"]);
+    const handoffSha = await readGit(worktreePath, ["rev-parse", "HEAD"]);
+    const handoffRef = gitHandoffRefRecord({
+      issueId: "issue-handoff",
+      issueIdentifier: "PAP-1942",
+      executionWorkspaceId: "execution-workspace-handoff",
+      runId: "run-handoff",
+      branchName,
+      sha: handoffSha,
+    });
+    await runGit(repoRoot, ["update-ref", handoffRef.ref, handoffSha]);
+    await runGit(repoRoot, ["worktree", "remove", "--force", worktreePath]);
+    await runGit(repoRoot, ["branch", "-D", branchName]);
+
+    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        id: "execution-workspace-handoff",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName,
+        metadata: {
+          gitHandoffRefs: [handoffRef],
+        },
+      },
+      issue: {
+        id: "issue-handoff",
+        identifier: "PAP-1942",
+        title: "Push local handoff commit",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(restored?.cwd).toBe(worktreePath);
+    await expect(readGit(worktreePath, ["branch", "--show-current"])).resolves.toBe(branchName);
+    await expect(readGit(worktreePath, ["rev-parse", "HEAD"])).resolves.toBe(handoffSha);
+    await expect(readGit(repoRoot, ["rev-parse", "--verify", `${handoffRef.ref}^{commit}`])).resolves.toBe(handoffSha);
+  }, 15_000);
+
+  it("fails closed instead of recreating a missing handoff worktree from base when the durable ref is gone", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-1942-missing-handoff-ref";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["worktree", "add", "-b", branchName, worktreePath, "HEAD"]);
+    await fs.writeFile(path.join(worktreePath, "handoff.txt"), "local handoff commit\n", "utf8");
+    await runGit(worktreePath, ["add", "handoff.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Add local handoff commit"]);
+    const handoffSha = await readGit(worktreePath, ["rev-parse", "HEAD"]);
+    const handoffRef = gitHandoffRefRecord({
+      issueId: "issue-missing-ref",
+      issueIdentifier: "PAP-1942",
+      executionWorkspaceId: "execution-workspace-missing-ref",
+      runId: "run-missing-ref",
+      branchName,
+      sha: handoffSha,
+    });
+    await runGit(repoRoot, ["worktree", "remove", "--force", worktreePath]);
+    await runGit(repoRoot, ["branch", "-D", branchName]);
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        id: "execution-workspace-missing-ref",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName,
+        metadata: {
+          gitHandoffRefs: [handoffRef],
+        },
+      },
+      issue: {
+        id: "issue-missing-ref",
+        identifier: "PAP-1942",
+        title: "Push missing local handoff commit",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_handoff_ref_missing",
+          worktreePath,
+          branchName,
+          executionWorkspaceId: "execution-workspace-missing-ref",
+        }),
+      },
+    });
+    await expect(fs.stat(worktreePath)).rejects.toThrow();
+  }, 15_000);
+
   it("repairs a clean persisted git worktree branch mismatch when both branches point at the same commit", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-454-repair-clean-branch-mismatch";
@@ -3126,6 +3294,83 @@ describe("realizeExecutionWorkspace", () => {
       stdout: "",
     });
   });
+
+  it("does not remove a git worktree or runtime branch while a durable Git handoff ref is recorded", async () => {
+    const repoRoot = await createTempRepo();
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1942",
+        title: "Cleanup workspace with handoff ref",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await fs.writeFile(path.join(workspace.cwd, "handoff.txt"), "preserved\n", "utf8");
+    await runGit(workspace.cwd, ["add", "handoff.txt"]);
+    await runGit(workspace.cwd, ["commit", "-m", "Add preserved handoff work"]);
+    const handoffSha = await readGit(workspace.cwd, ["rev-parse", "HEAD"]);
+    const handoffRef = gitHandoffRefRecord({
+      issueId: "issue-1",
+      issueIdentifier: "PAP-1942",
+      executionWorkspaceId: "execution-workspace-1",
+      runId: "run-1",
+      branchName: workspace.branchName!,
+      sha: handoffSha,
+    });
+    await runGit(repoRoot, ["update-ref", handoffRef.ref, handoffSha]);
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      workspace: {
+        id: "execution-workspace-1",
+        cwd: workspace.cwd,
+        providerType: "git_worktree",
+        providerRef: workspace.worktreePath,
+        branchName: workspace.branchName,
+        repoUrl: workspace.repoUrl,
+        baseRef: workspace.repoRef,
+        projectId: workspace.projectId,
+        projectWorkspaceId: workspace.workspaceId,
+        sourceIssueId: "issue-1",
+        metadata: {
+          createdByRuntime: true,
+          gitHandoffRefs: [handoffRef],
+        },
+      },
+      projectWorkspace: {
+        cwd: repoRoot,
+        cleanupCommand: null,
+      },
+    });
+
+    expect(cleanup.cleaned).toBe(false);
+    expect(cleanup.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("Skipped removing git worktree"),
+      expect.stringContaining("Skipped deleting branch"),
+    ]));
+    await expect(fs.stat(workspace.cwd)).resolves.toBeTruthy();
+    await expect(readGit(repoRoot, ["branch", "--list", workspace.branchName!])).resolves.toContain(workspace.branchName!);
+    await expect(readGit(repoRoot, ["rev-parse", "--verify", `${handoffRef.ref}^{commit}`])).resolves.toBe(handoffSha);
+  }, 10_000);
 
   it("keeps an unmerged runtime-created branch and warns instead of force deleting it", async () => {
     const repoRoot = await createTempRepo();
