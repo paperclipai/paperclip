@@ -6265,7 +6265,7 @@ export function issueRoutes(
       surface: "issues.create",
     });
     if (!sanitizedBody) return;
-    const { watchdogDiscovery: rawWatchdogDiscovery, ...rawCreateBody } = sanitizedBody;
+    const { watchdogDiscovery: rawWatchdogDiscovery, triggerAt: createTriggerAtRaw, ...rawCreateBody } = sanitizedBody;
     const watchdogDiscovery = normalizeWatchdogDiscovery(rawWatchdogDiscovery);
     const watchdogProductBugFollowUp = await resolveTaskWatchdogProductBugFollowUp(
       req,
@@ -6310,6 +6310,9 @@ export function issueRoutes(
     const createBody = {
       ...rawCreateBody,
       parentId: effectiveParentId,
+      ...(createTriggerAtRaw !== undefined
+        ? { triggerAt: createTriggerAtRaw ? new Date(createTriggerAtRaw) : null }
+        : {}),
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
       ...(runWorkspaceInheritanceSourceIssueId
         ? { inheritExecutionWorkspaceFromIssueId: runWorkspaceInheritanceSourceIssueId }
@@ -6954,6 +6957,7 @@ export function issueRoutes(
       resume: resumeRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      triggerAt: triggerAtRaw,
       ...updateFields
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
@@ -7101,6 +7105,9 @@ export function issueRoutes(
 
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
+    }
+    if (triggerAtRaw !== undefined) {
+      updateFields.triggerAt = triggerAtRaw ? new Date(triggerAtRaw) : null;
     }
     if (
       commentBody &&

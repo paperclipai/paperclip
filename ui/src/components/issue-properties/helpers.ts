@@ -44,7 +44,7 @@ export function isMainIssueWorkspace(input: {
   return linkedProjectWorkspaceId === primaryWorkspaceId;
 }
 
-export function toDateTimeLocalValue(value: string | null | undefined) {
+export function toDateTimeLocalValue(value: string | Date | null | undefined) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";

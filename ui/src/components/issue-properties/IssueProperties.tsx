@@ -181,6 +181,8 @@ export function IssueProperties({
   const [newLabelName, setNewLabelName] = useState("");
   // token-extraction: allowlisted — color-picker seed state, persisted into label-create payload; a var() string would break that payload.
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
+  const [triggerAtOpen, setTriggerAtOpen] = useState(false);
+  const [triggerAtInput, setTriggerAtInput] = useState(() => toDateTimeLocalValue(issue.triggerAt));
   const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
   const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
@@ -745,6 +747,9 @@ export function IssueProperties({
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
   useEffect(() => {
+    setTriggerAtInput(toDateTimeLocalValue(issue.triggerAt));
+  }, [issue.triggerAt]);
+  useEffect(() => {
     setMonitorAtInput(toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
     setMonitorNotesInput(issue.executionPolicy?.monitor?.notes ?? "");
     setMonitorServiceInput(issue.executionPolicy?.monitor?.serviceName ?? "");
@@ -998,6 +1003,45 @@ export function IssueProperties({
     </span>
   ) : null;
 
+  const saveTriggerAt = () => {
+    if (!triggerAtInput) return;
+    const triggerAt = new Date(triggerAtInput);
+    if (Number.isNaN(triggerAt.getTime())) return;
+    onUpdate({ triggerAt: triggerAt.toISOString() });
+    setTriggerAtOpen(false);
+  };
+  const clearTriggerAt = () => {
+    onUpdate({ triggerAt: null });
+    setTriggerAtOpen(false);
+  };
+  const triggerAtIso = issue.triggerAt ? new Date(issue.triggerAt).toISOString() : null;
+  const triggerAtInFuture = triggerAtIso ? new Date(triggerAtIso).getTime() > Date.now() : false;
+  const triggerAtTrigger = (
+    <span className="inline-flex min-w-0 items-center gap-1.5">
+      {triggerAtIso ? (
+        <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      ) : null}
+      <span
+        className={cn(
+          "min-w-0 truncate text-sm",
+          triggerAtIso ? "text-foreground" : "text-muted-foreground",
+        )}
+        title={triggerAtIso ? formatDateTime(triggerAtIso) : undefined}
+      >
+        {triggerAtIso
+          ? triggerAtInFuture
+            ? `Starts ${formatMonitorOffset(triggerAtIso)}`
+            : "Trigger date passed"
+          : "Not scheduled"}
+      </span>
+      {triggerAtIso ? (
+        <span className="shrink-0 text-xs text-muted-foreground" title={formatDateTime(triggerAtIso)}>
+          {formatDate(new Date(triggerAtIso))}
+        </span>
+      ) : null}
+    </span>
+  );
+
   const scheduledRetry = issue.scheduledRetry ?? null;
   const retryNow = useRetryNowMutation(issue.id);
   const showScheduledRetryRow = scheduledRetry && scheduledRetry.status === "scheduled_retry";
@@ -1199,6 +1243,40 @@ export function IssueProperties({
               type="button"
               className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
               onClick={clearMonitor}
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+  const triggerAtContent = (
+    <div className="flex w-full flex-col gap-2">
+      <span className="text-xs text-muted-foreground">
+        Agents will not pick up this task until the scheduled time.
+      </span>
+      <div className="flex flex-col gap-2 md:flex-row md:items-center">
+        <input
+          type="datetime-local"
+          className="rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          value={triggerAtInput}
+          onChange={(e) => setTriggerAtInput(e.target.value)}
+        />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:opacity-50"
+            disabled={!triggerAtInput}
+            onClick={saveTriggerAt}
+          >
+            Schedule
+          </button>
+          {issue.triggerAt ? (
+            <button
+              type="button"
+              className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+              onClick={clearTriggerAt}
             >
               Clear
             </button>
@@ -2150,6 +2228,18 @@ export function IssueProperties({
             {scheduledRetryContent}
           </PropertyPicker>
         ) : null}
+
+        <PropertyPicker
+          inline={inline}
+          label="Scheduled"
+          open={triggerAtOpen}
+          onOpenChange={setTriggerAtOpen}
+          triggerContent={triggerAtTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-(--sz-32rem)")}
+        >
+          {triggerAtContent}
+        </PropertyPicker>
 
         <PropertyPicker
           inline={inline}

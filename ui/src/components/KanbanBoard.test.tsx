@@ -59,6 +59,7 @@ function createIssue(index: number, status: IssueStatus): Issue {
     executionRunId: null,
     executionAgentNameKey: null,
     executionLockedAt: null,
+    triggerAt: null,
     startedAt: null,
     completedAt: null,
     cancelledAt: null,
