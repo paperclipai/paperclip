@@ -10,6 +10,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.ts";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -170,6 +171,8 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       "",
       `# ${name}`,
     ].join("\n");
+    const catalogRoot = path.resolve(resolvePaperclipInstanceRoot(), "skills", companyId, "__catalog__");
+    await fs.rm(catalogRoot, { recursive: true, force: true });
 
     await expect(svc.importPackageFiles(companyId, {
       "first/SKILL.md": skillMarkdown("First Duplicate"),
@@ -185,6 +188,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       .from(companySkills)
       .where(eq(companySkills.key, duplicateKey));
     expect(rows).toHaveLength(0);
+    await expect(fs.stat(catalogRoot)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("prevents deleting bundled Paperclip skills even when no agent uses them", async () => {
