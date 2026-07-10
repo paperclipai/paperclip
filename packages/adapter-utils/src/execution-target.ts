@@ -1211,6 +1211,7 @@ async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: n
 
 const PROCESS_SESSION_PROXY_SCRIPT = "paperclip-process-session-proxy.mjs";
 const PROCESS_SESSION_REMOTE_SCRIPT = "paperclip-process-session-remote.mjs";
+const PROCESS_SESSION_AUTH_TIMEOUT_MS = 5_000;
 
 function jsonLine(value: unknown): string {
   return `${JSON.stringify(value)}\n`;
@@ -1339,7 +1340,6 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   }
 
   let socket: net.Socket | null = null;
-  let socketBuffer = "";
   let stopping = false;
   let stdinSeq = 0;
   let pollTimer: NodeJS.Timeout | null = null;
@@ -1386,26 +1386,51 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     }
   };
 
+  const liveSockets = new Set<net.Socket>();
   const server = net.createServer((nextSocket) => {
-    if (socket) {
-      nextSocket.destroy();
-      return;
-    }
-    socket = nextSocket;
+    liveSockets.add(nextSocket);
     nextSocket.setEncoding("utf8");
-    flushPendingRemoteEvents();
+    nextSocket.on("error", () => undefined);
+    let connectionBuffer = "";
+    let authenticated = false;
+    // Connections own the session (and receive buffered process output) only
+    // after presenting the bridge token; idle unauthenticated peers are dropped.
+    const authTimer = setTimeout(() => {
+      if (!authenticated) nextSocket.destroy();
+    }, PROCESS_SESSION_AUTH_TIMEOUT_MS);
+    authTimer.unref?.();
+    nextSocket.on("close", () => {
+      clearTimeout(authTimer);
+      liveSockets.delete(nextSocket);
+    });
     nextSocket.on("data", (chunk) => {
-      socketBuffer += chunk;
-      const split = splitJsonLines(socketBuffer);
-      socketBuffer = split.rest;
+      connectionBuffer += chunk;
+      const split = splitJsonLines(connectionBuffer);
+      connectionBuffer = split.rest;
       for (const line of split.lines) {
         if (!line.trim()) continue;
-        void (async () => {
-          const message = JSON.parse(line) as { token?: string; type?: string; data?: string };
-          if (message.token !== token) {
+        let message: { token?: string; type?: string; data?: string };
+        try {
+          message = JSON.parse(line) as { token?: string; type?: string; data?: string };
+        } catch {
+          nextSocket.destroy();
+          return;
+        }
+        if (message.token !== token) {
+          nextSocket.destroy();
+          return;
+        }
+        if (!authenticated) {
+          if (socket) {
             nextSocket.destroy();
             return;
           }
+          authenticated = true;
+          clearTimeout(authTimer);
+          socket = nextSocket;
+          flushPendingRemoteEvents();
+        }
+        void (async () => {
           if (message.type === "stdin" && typeof message.data === "string") {
             stdinSeq += 1;
             const name = `${String(stdinSeq).padStart(12, "0")}.json`;
@@ -1462,7 +1487,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     stop: async () => {
       stopping = true;
       if (pollTimer) clearTimeout(pollTimer);
-      socket?.destroy();
+      for (const liveSocket of liveSockets) liveSocket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
       await client.writeTextFile(
         path.posix.join(stdinDir, `${String(stdinSeq + 1).padStart(12, "0")}.json`),
@@ -1487,6 +1512,7 @@ function send(message) {
   socket.write(JSON.stringify({ token, ...message }) + "\\n");
 }
 
+socket.on("connect", () => send({ type: "hello" }));
 process.stdin.on("data", (chunk) => send({ type: "stdin", data: Buffer.from(chunk).toString("base64") }));
 process.stdin.on("end", () => send({ type: "stdinEnd" }));
 process.stdin.resume();
@@ -1538,11 +1564,17 @@ const config = JSON.parse(Buffer.from(commandPayload, "base64").toString("utf8")
 await fs.mkdir(stdinDir, { recursive: true });
 await fs.mkdir(eventsDir, { recursive: true });
 
-async function writeEvent(event) {
+let writeChain = Promise.resolve();
+
+function writeEvent(event) {
   seq += 1;
   const file = path.posix.join(eventsDir, String(seq).padStart(12, "0") + ".json");
-  await fs.writeFile(file + ".tmp", JSON.stringify(event) + "\\n", "utf8");
-  await fs.rename(file + ".tmp", file);
+  const write = writeChain.then(async () => {
+    await fs.writeFile(file + ".tmp", JSON.stringify(event) + "\\n", "utf8");
+    await fs.rename(file + ".tmp", file);
+  });
+  writeChain = write.catch(() => undefined);
+  return write;
 }
 
 const child = spawn(config.command, Array.isArray(config.args) ? config.args : [], {
@@ -1554,7 +1586,9 @@ const child = spawn(config.command, Array.isArray(config.args) ? config.args : [
 child.stdout.on("data", (chunk) => void writeEvent({ type: "data", stream: "stdout", data: Buffer.from(chunk).toString("base64") }));
 child.stderr.on("data", (chunk) => void writeEvent({ type: "data", stream: "stderr", data: Buffer.from(chunk).toString("base64") }));
 child.on("error", (error) => void writeEvent({ type: "error", message: error.message }));
-child.on("exit", (code, signal) => void writeEvent({ type: "exit", code, signal }));
+// "close" (not "exit") so stdout/stderr fully drain before the exit event;
+// the write chain then guarantees the exit file lands after every data file.
+child.on("close", (code, signal) => void writeEvent({ type: "exit", code, signal }));
 
 async function pollStdin() {
   while (!stdinClosed) {

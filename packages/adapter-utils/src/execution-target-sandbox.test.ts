@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import net from "node:net";
 import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -283,6 +284,117 @@ describe("sandbox adapter execution targets", () => {
       expect(result.stdout).toBe("early-out\n");
       expect(result.stderr).toBe("early-err\n");
     } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("delivers full output when the sandbox child exits immediately after writing", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-fast-exit-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "instant-exit-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdout.write('final-out\\n');",
+        "process.stderr.write('final-err\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-fast-exit",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("final-out\n");
+      expect(result.stderr).toBe("final-err\n");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("ignores unauthenticated connections to the process session bridge", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-auth-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "guarded-acp-child.mjs");
+    await writeFile(childPath, "process.stdout.write('guarded-out\\n');", "utf8");
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-auth",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    let squatter: net.Socket | null = null;
+    try {
+      const proxySource = await readFile(bridge!.agentCommand, "utf8");
+      const port = Number(/port: (\d+)/.exec(proxySource)?.[1] ?? Number.NaN);
+      expect(Number.isFinite(port)).toBe(true);
+
+      // An idle local connection must not claim the session or see buffered output.
+      const squatterSocket = net.createConnection({ host: "127.0.0.1", port });
+      squatter = squatterSocket;
+      let squatterReceived = "";
+      squatterSocket.setEncoding("utf8");
+      squatterSocket.on("data", (chunk: string) => {
+        squatterReceived += chunk;
+      });
+      squatterSocket.on("error", () => undefined);
+      await new Promise<void>((resolve, reject) => {
+        squatterSocket.once("connect", () => resolve());
+        squatterSocket.once("error", reject);
+      });
+
+      // A peer presenting the wrong token is disconnected outright.
+      const badPeer = net.createConnection({ host: "127.0.0.1", port });
+      badPeer.on("error", () => undefined);
+      const badPeerClosed = new Promise<void>((resolve) => badPeer.once("close", () => resolve()));
+      badPeer.once("connect", () => badPeer.write(`${JSON.stringify({ token: "wrong-token", type: "stdinEnd" })}\n`));
+      await badPeerClosed;
+
+      // The authenticated proxy still attaches and receives the buffered output.
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("guarded-out\n");
+      expect(squatterReceived).toBe("");
+    } finally {
+      squatter?.destroy();
       await bridge?.stop();
     }
   });
