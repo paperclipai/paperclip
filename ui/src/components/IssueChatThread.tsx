@@ -55,6 +55,7 @@ import {
   stabilizeThreadMessages,
   type IssueChatComment,
   type IssueChatLinkedRun,
+  type IssueChatThreadOrder,
   type StableThreadMessageCacheEntry,
   type IssueChatTranscriptEntry,
   type SegmentTiming,
@@ -481,6 +482,7 @@ interface IssueChatThreadProps {
   showComposer?: boolean;
   showJumpToLatest?: boolean;
   autoScrollToLatestOnInitialLoad?: boolean;
+  threadOrder?: IssueChatThreadOrder;
   emptyMessage?: string;
   footer?: ReactNode;
   variant?: "full" | "embedded";
@@ -3009,7 +3011,17 @@ function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: st
   return messages.findIndex((message) => issueChatMessageAnchorId(message) === anchorId);
 }
 
-export function findLatestCommentMessageIndex(messages: readonly ThreadMessage[]): number {
+export function findLatestCommentMessageIndex(
+  messages: readonly ThreadMessage[],
+  threadOrder: IssueChatThreadOrder = "oldest_first",
+): number {
+  if (threadOrder === "newest_first") {
+    for (let index = 0; index < messages.length; index += 1) {
+      const anchorId = issueChatMessageAnchorId(messages[index]);
+      if (anchorId && anchorId.startsWith("comment-")) return index;
+    }
+    return -1;
+  }
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const anchorId = issueChatMessageAnchorId(messages[index]);
     if (anchorId && anchorId.startsWith("comment-")) return index;
@@ -4217,6 +4229,7 @@ export function IssueChatThread({
   showComposer = true,
   showJumpToLatest,
   autoScrollToLatestOnInitialLoad = true,
+  threadOrder = "oldest_first",
   emptyMessage,
   footer,
   variant = "full",
@@ -4345,6 +4358,7 @@ export function IssueChatThread({
         transcriptsByRunId: resolvedTranscriptByRun,
         hasOutputForRun: resolvedHasOutputForRun,
         includeSucceededRunsWithoutOutput,
+        threadOrder,
         companyId,
         projectId,
         agentMap,
@@ -4361,6 +4375,7 @@ export function IssueChatThread({
       resolvedTranscriptByRun,
       resolvedHasOutputForRun,
       includeSucceededRunsWithoutOutput,
+      threadOrder,
       companyId,
       projectId,
       agentMap,
@@ -4575,12 +4590,24 @@ export function IssueChatThread({
     // we resolve and scroll to the latest comment's anchor.
     const frame = requestAnimationFrame(() => scrollToLatestCommentWithSettle(latestMessagesRef.current));
     return () => cancelAnimationFrame(frame);
-  }, [autoScrollToLatestOnInitialLoad, messages, variant, location.hash]);
+  }, [autoScrollToLatestOnInitialLoad, messages, variant, location.hash, threadOrder]);
 
   function jumpToLatestFallback() {
     if (useVirtualizedThread) {
+      if (threadOrder === "newest_first") {
+        virtualizedThreadRef.current?.scrollToIndex(0, { align: "start", behavior: "smooth" });
+        return;
+      }
       virtualizedThreadRef.current?.scrollToLatest({ behavior: "smooth" });
       return;
+    }
+    if (threadOrder === "newest_first") {
+      const firstAnchor = messages[0] ? issueChatMessageAnchorId(messages[0]) : null;
+      const el = firstAnchor ? document.getElementById(firstAnchor) : null;
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
     }
     bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }
@@ -4598,7 +4625,7 @@ export function IssueChatThread({
   // that element is at the scroll container's bottom (or scroll position
   // and content height stop changing).
   function scrollToLatestCommentWithSettle(messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current) {
-    const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
+    const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot, threadOrder);
     if (latestCommentIndex < 0) {
       jumpToLatestFallback();
       return;
@@ -4609,9 +4636,10 @@ export function IssueChatThread({
       return;
     }
 
+    const latestAlign = threadOrder === "newest_first" ? "start" : "end";
     const initial = scrollToThreadAnchor(
       latestCommentAnchor,
-      { align: "end", behavior: "smooth" },
+      { align: latestAlign, behavior: "smooth" },
       messageSnapshot,
     );
     if (!initial) {
@@ -4683,7 +4711,7 @@ export function IssueChatThread({
         // Row hasn't been rendered into the virtualizer's buffer yet — nudge
         // the offset (instant) so it gets mounted, then keep settling.
         virtualizedThreadRef.current?.scrollToIndex(latestCommentIndex, {
-          align: "end",
+          align: latestAlign,
           behavior: "auto",
         });
         scheduleTick(TICK_MS);
@@ -4691,22 +4719,23 @@ export function IssueChatThread({
       }
 
       const container = resolveScrollContainer();
-      const containerBottom = container
-        ? container.getBoundingClientRect().bottom
-        : window.innerHeight;
-      const elBottom = el.getBoundingClientRect().bottom;
-      const offBottom = elBottom - containerBottom;
+      const containerRect = container?.getBoundingClientRect() ?? { top: 0, bottom: window.innerHeight };
+      const elRect = el.getBoundingClientRect();
+      const offTarget =
+        threadOrder === "newest_first"
+          ? elRect.top - containerRect.top
+          : elRect.bottom - containerRect.bottom;
 
-      if (Math.abs(offBottom) > TOLERANCE_PX) {
-        el.scrollIntoView({ behavior: "smooth", block: "end" });
+      if (Math.abs(offTarget) > TOLERANCE_PX) {
+        el.scrollIntoView({ behavior: "smooth", block: latestAlign });
       }
 
       const currentScrollTop = container?.scrollTop ?? window.scrollY;
       const currentScrollHeight = container?.scrollHeight ?? document.documentElement.scrollHeight;
       const scrollStable = Math.abs(currentScrollTop - lastScrollTop) < 1;
       const heightStable = currentScrollHeight === lastScrollHeight;
-      const atBottom = Math.abs(offBottom) <= TOLERANCE_PX;
-      if (scrollStable && heightStable && atBottom) {
+      const atTarget = Math.abs(offTarget) <= TOLERANCE_PX;
+      if (scrollStable && heightStable && atTarget) {
         stableTicks += 1;
         if (stableTicks >= 3) {
           finish();
