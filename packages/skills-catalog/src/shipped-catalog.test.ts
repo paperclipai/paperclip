@@ -26,8 +26,12 @@ const EXPECTED_OPTIONAL_KEYS = [
 const MAX_FRONTMATTER_DESCRIPTION_LENGTH = 300;
 const REPO_ROOT = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const SKILL_FRONTMATTER_ROOTS = [
-  path.join(REPO_ROOT, ".agents/skills"),
+  path.join(REPO_ROOT, ".agents"),
+  path.join(REPO_ROOT, "skills"),
+  path.join(REPO_ROOT, "packages/adapters"),
+  path.join(REPO_ROOT, "packages/plugins"),
   path.join(REPO_ROOT, "packages/skills-catalog/catalog"),
+  path.join(REPO_ROOT, "packages/teams-catalog/catalog"),
 ];
 
 function listSkillFiles(dir: string): string[] {
