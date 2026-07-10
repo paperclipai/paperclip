@@ -114,9 +114,6 @@ export function OnboardingWizard() {
   const location = useLocation();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
 
-  // Sync disabled adapter types from server so the adapter grid filters them out.
-  const disabledTypes = useDisabledAdaptersSync();
-
   // Support opening the wizard from a route (e.g. /onboarding or an existing
   // company's "add agent" entry point) in addition to the dialog context.
   const routeOnboardingOptions =
@@ -132,6 +129,11 @@ export function OnboardingWizard() {
   const effectiveOnboardingOptions = onboardingOpen
     ? onboardingOptions
     : routeOnboardingOptions ?? {};
+
+  // Sync disabled adapter types only when the wizard is visible. The wizard is
+  // mounted globally, including on /auth, where protected adapter routes are
+  // expected to reject signed-out browsers.
+  const disabledTypes = useDisabledAdaptersSync({ enabled: effectiveOnboardingOpen });
 
   const initialStep = effectiveOnboardingOptions.initialStep ?? 0;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
