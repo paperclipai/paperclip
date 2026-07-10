@@ -208,6 +208,9 @@ describe("AttentionQueueRow", () => {
     expect(decisionActions?.textContent).toContain("Approve");
     expect(decisionActions?.textContent).toContain("Reject");
 
+    const actionArea = decisionActions?.closest('[data-attention-actions="true"]');
+    expect(actionArea?.getAttribute("class")).toContain("self-end");
+
     const buttons = Array.from(decisionActions?.querySelectorAll("button") ?? []);
     expect(buttons.find((button) => button.textContent === "Approve")?.getAttribute("data-variant")).toBe(
       "default",

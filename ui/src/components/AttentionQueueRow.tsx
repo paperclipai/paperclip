@@ -241,7 +241,7 @@ export function AttentionQueueRow({
 
         {/* Controls: kept as siblings (not inside the clickable header) so they
             never toggle expand and stay valid interactive targets. */}
-        <div className="flex shrink-0 flex-col items-end gap-1">
+        <div className="flex shrink-0 flex-col items-end self-end gap-1" data-attention-actions="true">
           {expandable && !expanded && verbs.length > 0 && (
             <div className="flex flex-wrap justify-end gap-1" aria-label="Decision actions">
               {verbs.map((verb) => (
