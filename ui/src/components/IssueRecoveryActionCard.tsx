@@ -12,10 +12,12 @@ import {
   GitBranch,
   GitBranchPlus,
   Loader2,
+  Lock,
   OctagonAlert,
   RefreshCw,
   Sparkles,
   TriangleAlert,
+  Wrench,
 } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -90,10 +92,25 @@ export interface IssueRecoveryActionCardProps {
    * not rendered at all — a non-permitted user never sees the "reconcile anyway" affordance.
    */
   canBreakGlass?: boolean;
-  /** Whether a reconcile (forward or override) is currently in flight (disables both actions). */
+  /**
+   * Handler for the lossless repair — "Repair workspace — quarantine changes & restore branch"
+   * (workspace_validation only). Rendered only for a *dirty* divergence; the caller invokes the S4
+   * reconcile op in `quarantine_restore` mode, which quarantines the dirty worktree onto a rescue
+   * branch and restores the recorded branch. If omitted, the repair action is not shown.
+   */
+  onQuarantineRestore?: () => void;
+  /** Whether a quarantine-restore repair is currently in flight (shares the reconcile spinner). */
+  quarantineRestorePending?: boolean;
+  /** Whether a reconcile (forward, override, or quarantine-restore) is currently in flight. */
   reconcilePending?: boolean;
   /** Whether the viewer can run destructive board-only actions (e.g. false-positive dismissal). */
   canFalsePositive?: boolean;
+  /**
+   * Rendering density. `full` (default) shows the complete metadata table; `compact` drops the
+   * metadata rows for embedding beside a run on the agent run page, keeping the header, divergence
+   * diagnosis, and action footer.
+   */
+  variant?: "full" | "compact";
   className?: string;
 }
 
@@ -248,6 +265,13 @@ function formatShortSha(sha: string | null): string | null {
  * live ("actual"/checked-out) branch, both HEAD shas, and a server-computed ancestry verdict +
  * plain-language explanation of why the run was declined.
  */
+interface WorkspaceContention {
+  claimedByIssueId: string | null;
+  claimedByIssueIdentifier: string | null;
+  /** True when the claiming workspace has a queued/running run (not just a stale claim). */
+  hasActiveRun: boolean;
+}
+
 interface WorkspaceDivergence {
   expectedBranch: string | null;
   liveBranch: string | null;
@@ -256,8 +280,58 @@ interface WorkspaceDivergence {
   ancestryVerdict: GitWorktreeBranchAncestryVerdict | null;
   plainLanguageReason: string | null;
   cleanliness: "clean" | "dirty" | "unknown" | null;
+  /** Number of dirty (uncommitted) status entries in the live worktree, when known. */
+  dirtyFileCount: number | null;
+  /** Sample of dirty paths (already truncated server-side) for the confirm step. */
+  dirtyPathSample: string[];
+  /**
+   * Another workspace is holding the live branch. When present, the lossless quarantine repair is
+   * refused server-side — re-issuing on an isolated workspace is the recommended path instead.
+   */
+  contention: WorkspaceContention | null;
+  /**
+   * Preview of the rescue branch the quarantine repair will create. The server appends a UTC
+   * timestamp at repair time, so this is the stable prefix only (rendered with a trailing marker).
+   */
+  rescueBranchPreview: string;
   /** Ref a re-issue should base off — the live branch when known, else the live HEAD sha. */
   reissueBaseRef: string | null;
+}
+
+/** Mirrors the server's `sanitizeBranchName` for a faithful rescue-branch preview. */
+function sanitizeBranchComponent(value: string): string {
+  return (
+    value
+      .trim()
+      .replace(/[^A-Za-z0-9._/-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^[-/.]+|[-/.]+$/g, "")
+      .slice(0, 120) || "issue"
+  );
+}
+
+function buildRescueBranchPreview(sourceIdentifier: string | null): string {
+  return `paperclip/rescue/${sanitizeBranchComponent(sourceIdentifier ?? "issue")}/`;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+}
+
+function asNonNegativeInt(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : null;
+}
+
+function readContention(value: unknown): WorkspaceContention | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const activeRun = asRecord(record.activeRun);
+  return {
+    claimedByIssueId: asNonEmptyString(record.claimedByIssueId),
+    claimedByIssueIdentifier: asNonEmptyString(record.claimedByIssueIdentifier),
+    hasActiveRun: activeRun !== null,
+  };
 }
 
 function readWorkspaceDivergence(action: IssueRecoveryAction): WorkspaceDivergence | null {
@@ -275,6 +349,7 @@ function readWorkspaceDivergence(action: IssueRecoveryAction): WorkspaceDivergen
     cleanlinessRaw === "clean" || cleanlinessRaw === "dirty" || cleanlinessRaw === "unknown"
       ? cleanlinessRaw
       : null;
+  const sourceIdentifier = asNonEmptyString(workspaceValidation.sourceIdentifier);
   return {
     expectedBranch,
     liveBranch,
@@ -283,6 +358,10 @@ function readWorkspaceDivergence(action: IssueRecoveryAction): WorkspaceDivergen
     ancestryVerdict: asAncestryVerdict(provenance.ancestryVerdict),
     plainLanguageReason: asNonEmptyString(provenance.plainLanguageReason),
     cleanliness,
+    dirtyFileCount: asNonNegativeInt(workspaceValidation.statusEntryCount),
+    dirtyPathSample: asStringArray(workspaceValidation.dirtyPathSample),
+    contention: readContention(workspaceValidation.contention),
+    rescueBranchPreview: buildRescueBranchPreview(sourceIdentifier),
     reissueBaseRef: liveBranch ?? liveHeadSha,
   };
 }
@@ -380,7 +459,28 @@ function DivergenceDiagnosis({
       {divergence.plainLanguageReason ? (
         <p className="text-xs leading-5 text-foreground/80">{divergence.plainLanguageReason}</p>
       ) : null}
+      {divergence.contention ? (
+        <p
+          data-testid="recovery-contention-notice"
+          className="flex items-start gap-1.5 rounded-md border border-amber-400/40 bg-amber-500/5 px-2.5 py-1.5 text-xs leading-5 text-amber-900 dark:text-amber-200"
+        >
+          <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>
+            Worktree claimed by{" "}
+            <code className="font-mono text-foreground/90">{contentionLabel(divergence.contention)}</code>{" "}
+            {divergence.contention.hasActiveRun ? "(active run)" : "(claim held)"} — the lossless repair
+            can&apos;t run while another workspace holds the live branch.
+          </span>
+        </p>
+      ) : null}
     </div>
+  );
+}
+
+function contentionLabel(contention: WorkspaceContention): string {
+  return (
+    contention.claimedByIssueIdentifier ??
+    (contention.claimedByIssueId ? `issue ${contention.claimedByIssueId.slice(0, 8)}` : "another task")
   );
 }
 
@@ -492,6 +592,138 @@ function BreakGlassOverride({
           }}
         >
           {pending ? "Reconciling…" : "Reconcile anyway (break-glass)"}
+        </Button>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
+ * The lossless repair — quarantine the dirty worktree onto a rescue branch, then restore the
+ * recorded branch. Unlike break-glass, this is *non-destructive* (no work is lost, so no reason is
+ * required): the confirm popover simply restates what will happen — the dirty file count, that the
+ * live branch is left untouched, the rescue branch that will hold the changes, and the recorded
+ * branch to be restored. Disabled (with an inline explanation, no popover) when the live branch is
+ * contended by another workspace, since the server refuses the repair in that case.
+ */
+function RepairWorkspace({
+  divergence,
+  onConfirm,
+  pending,
+  disabled,
+  disabledReason,
+}: {
+  divergence: WorkspaceDivergence;
+  onConfirm: () => void;
+  pending: boolean;
+  disabled: boolean;
+  disabledReason: string | null;
+}) {
+  const dirtyCount = divergence.dirtyFileCount;
+  const dirtyLabel =
+    dirtyCount === null
+      ? "Uncommitted changes"
+      : `${dirtyCount} uncommitted ${dirtyCount === 1 ? "change" : "changes"}`;
+  const trigger = (
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      disabled={pending || disabled}
+      data-testid="recovery-action-repair-trigger"
+      className="border-sky-400/50 text-sky-700 hover:bg-sky-500/10 dark:border-sky-500/40 dark:text-sky-300"
+    >
+      {pending ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+      ) : (
+        <Wrench className="h-3.5 w-3.5" aria-hidden />
+      )}
+      Repair workspace — quarantine changes &amp; restore branch
+    </Button>
+  );
+  if (disabled) {
+    // Contended: the server refuses the repair, so render a plainly disabled control with the reason
+    // inline rather than a popover the operator can't act on.
+    return (
+      <div className="flex flex-col gap-1" data-testid="recovery-action-repair-disabled">
+        {trigger}
+        {disabledReason ? (
+          <span className="text-(length:--text-nano) leading-4 text-muted-foreground">
+            {disabledReason}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
+  return (
+    <Popover>
+      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+      <PopoverContent
+        align="start"
+        sideOffset={6}
+        aria-labelledby="recovery-repair-title"
+        className="w-96 max-w-(--sz-calc-4) space-y-3 p-3"
+      >
+        <div className="space-y-1">
+          <div
+            id="recovery-repair-title"
+            className="flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-sky-700 dark:text-sky-300"
+          >
+            <Wrench className="h-3.5 w-3.5" aria-hidden />
+            Repair workspace
+          </div>
+          <p className="text-xs leading-5 text-muted-foreground">
+            This is lossless — no reason required. Your uncommitted changes are committed onto a fresh
+            rescue branch, then the recorded branch is restored so the task can resume. The live branch
+            is left exactly as it is.
+          </p>
+        </div>
+        <dl
+          data-testid="recovery-repair-restated"
+          className="space-y-1.5 rounded-md border border-sky-400/30 bg-sky-500/5 px-2.5 py-2 text-(length:--text-micro)"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Dirty changes</dt>
+            <dd data-testid="recovery-repair-dirty-count" className="font-medium text-foreground/90">
+              {dirtyLabel}
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Live branch</dt>
+            <dd className="min-w-0 truncate font-mono text-foreground/90">
+              {divergence.liveBranch ?? "detached"}
+              <span className="ml-1 font-sans text-muted-foreground">(left untouched)</span>
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Rescue branch</dt>
+            <dd
+              data-testid="recovery-repair-rescue-branch"
+              className="min-w-0 truncate font-mono text-foreground/90"
+            >
+              {divergence.rescueBranchPreview}
+              <span className="text-muted-foreground">&lt;timestamp&gt;</span>
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Restore to</dt>
+            <dd className="min-w-0 truncate font-mono text-foreground/90">
+              {divergence.expectedBranch ?? "recorded branch"}
+            </dd>
+          </div>
+        </dl>
+        <Button
+          type="button"
+          size="sm"
+          className="w-full"
+          disabled={pending}
+          data-testid="recovery-action-repair-confirm"
+          onClick={() => {
+            if (pending) return;
+            onConfirm();
+          }}
+        >
+          {pending ? "Repairing…" : "Quarantine changes & restore branch"}
         </Button>
       </PopoverContent>
     </Popover>
@@ -671,9 +903,12 @@ export function IssueRecoveryActionCard({
   reissuePending = false,
   onReconcileForward,
   onBreakGlassOverride,
+  onQuarantineRestore,
+  quarantineRestorePending = false,
   canBreakGlass = false,
   reconcilePending = false,
   canFalsePositive = false,
+  variant = "full",
   className,
 }: IssueRecoveryActionCardProps) {
   const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action);
@@ -741,8 +976,27 @@ export function IssueRecoveryActionCard({
     cardState !== "resolved" &&
     divergence !== null &&
     canBreakGlass;
+  // The lossless repair — offered only for a *dirty* divergence (a clean one reconciles forward or
+  // via break-glass, with nothing to quarantine). Disabled when the live branch is contended by an
+  // active claimant, since the server refuses `quarantine_restore` in that case.
+  const repairContention = divergence?.contention ?? null;
+  const showRepairAction =
+    onQuarantineRestore !== undefined &&
+    cardState !== "resolved" &&
+    divergence !== null &&
+    divergence.cleanliness === "dirty";
+  const repairDisabledReason = repairContention
+    ? `Held by ${contentionLabel(repairContention)} — re-issue on an isolated workspace instead.`
+    : null;
+  // When contended, the re-issue is the recommended path, so it takes the primary emphasis and a
+  // "Recommended" hint while the repair button is disabled.
+  const reissueRecommended = showRepairAction && repairContention !== null;
   const showFooter =
-    showResolveActions || showReissueAction || showReconcileForward || showBreakGlass;
+    showResolveActions ||
+    showReissueAction ||
+    showReconcileForward ||
+    showBreakGlass ||
+    showRepairAction;
 
   return (
     <section
@@ -785,6 +1039,7 @@ export function IssueRecoveryActionCard({
           <p className="mt-1 text-sm leading-6">{headline}</p>
         </div>
       </header>
+      {variant === "compact" ? null : (
       <dl className={cn("border-t bg-background/40 dark:bg-background/20", tone.divider)}>
         <MetadataRow label="Owner">
           <span className="inline-flex flex-wrap items-center gap-1.5">
@@ -852,6 +1107,7 @@ export function IssueRecoveryActionCard({
           </MetadataRow>
         ) : null}
       </dl>
+      )}
       {divergence ? <DivergenceDiagnosis divergence={divergence} dividerClass={tone.divider} /> : null}
       {showFooter ? (
         <div className={cn("flex flex-wrap items-center gap-2 border-t px-3 py-2.5 sm:px-4", tone.divider)}>
@@ -913,15 +1169,25 @@ export function IssueRecoveryActionCard({
               Reconcile forward &amp; continue
             </Button>
           ) : null}
+          {showRepairAction && divergence ? (
+            <RepairWorkspace
+              divergence={divergence}
+              pending={quarantineRestorePending}
+              disabled={repairContention !== null}
+              disabledReason={repairDisabledReason}
+              onConfirm={() => onQuarantineRestore?.()}
+            />
+          ) : null}
           {showReissueAction && divergence && reissueBaseRef ? (
             <Popover>
               <PopoverTrigger asChild>
                 <Button
                   type="button"
                   size="sm"
-                  variant="outline"
+                  variant={reissueRecommended ? "default" : "outline"}
                   disabled={reissuePending}
                   data-testid="recovery-action-reissue-trigger"
+                  data-recommended={reissueRecommended ? "true" : undefined}
                 >
                   {reissuePending ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
@@ -929,6 +1195,14 @@ export function IssueRecoveryActionCard({
                     <GitBranchPlus className="h-3.5 w-3.5" aria-hidden />
                   )}
                   Re-issue on isolated workspace
+                  {reissueRecommended ? (
+                    <span
+                      data-testid="recovery-reissue-recommended"
+                      className="ml-1 rounded-sm bg-background/25 px-1.5 py-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-label)"
+                    >
+                      Recommended
+                    </span>
+                  ) : null}
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="start" sideOffset={6} className="w-80 space-y-3 p-3">

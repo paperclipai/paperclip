@@ -433,6 +433,8 @@ interface IssueChatThreadProps {
   reissueIsolatedRecoveryActionPending?: boolean;
   onReconcileForwardRecoveryAction?: () => void;
   onBreakGlassOverrideRecoveryAction?: (reason: string) => void;
+  onQuarantineRestoreRecoveryAction?: () => void;
+  quarantineRestoreRecoveryActionPending?: boolean;
   canBreakGlassRecoveryAction?: boolean;
   reconcileRecoveryActionPending?: boolean;
   canFalsePositiveRecoveryAction?: boolean;
@@ -4176,6 +4178,8 @@ export function IssueChatThread({
   reissueIsolatedRecoveryActionPending = false,
   onReconcileForwardRecoveryAction,
   onBreakGlassOverrideRecoveryAction,
+  onQuarantineRestoreRecoveryAction,
+  quarantineRestoreRecoveryActionPending = false,
   canBreakGlassRecoveryAction = false,
   reconcileRecoveryActionPending = false,
   canFalsePositiveRecoveryAction = false,
@@ -4895,6 +4899,8 @@ export function IssueChatThread({
                       reissuePending={reissueIsolatedRecoveryActionPending}
                       onReconcileForward={onReconcileForwardRecoveryAction}
                       onBreakGlassOverride={onBreakGlassOverrideRecoveryAction}
+                      onQuarantineRestore={onQuarantineRestoreRecoveryAction}
+                      quarantineRestorePending={quarantineRestoreRecoveryActionPending}
                       canBreakGlass={canBreakGlassRecoveryAction}
                       reconcilePending={reconcileRecoveryActionPending}
                       canFalsePositive={canFalsePositiveRecoveryAction}

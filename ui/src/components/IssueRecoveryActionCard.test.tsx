@@ -502,3 +502,163 @@ describe("IssueRecoveryActionCard W7 reconcile actions", () => {
     expect(node.querySelector("[data-testid='recovery-action-breakglass-trigger']")).toBeNull();
   });
 });
+
+function buildDirtyDivergenceAction(
+  overrides: {
+    action?: Partial<IssueRecoveryAction>;
+    provenance?: Record<string, unknown>;
+    workspaceValidation?: Record<string, unknown>;
+  } = {},
+): IssueRecoveryAction {
+  return buildWorkspaceValidationAction({
+    ...overrides,
+    workspaceValidation: {
+      cleanliness: "dirty",
+      statusEntryCount: 3,
+      dirtyPathSample: ["src/app.ts", "README.md"],
+      sourceIdentifier: "PAP-1405",
+      ...overrides.workspaceValidation,
+    },
+  });
+}
+
+describe("IssueRecoveryActionCard repair workspace (quarantine_restore)", () => {
+  it("offers the repair action only for a dirty divergence", () => {
+    const cleanNode = render(
+      <IssueRecoveryActionCard
+        action={buildWorkspaceValidationAction({ workspaceValidation: { cleanliness: "clean" } })}
+        onQuarantineRestore={() => {}}
+      />,
+    );
+    expect(cleanNode.querySelector("[data-testid='recovery-action-repair-trigger']")).toBeNull();
+
+    const dirtyNode = render(
+      <IssueRecoveryActionCard action={buildDirtyDivergenceAction()} onQuarantineRestore={() => {}} />,
+    );
+    expect(dirtyNode.querySelector("[data-testid='recovery-action-repair-trigger']")).not.toBeNull();
+  });
+
+  it("does not offer the repair action without a handler or for non-workspace kinds", () => {
+    const noHandler = render(<IssueRecoveryActionCard action={buildDirtyDivergenceAction()} />);
+    expect(noHandler.querySelector("[data-testid='recovery-action-repair-trigger']")).toBeNull();
+
+    const nonWorkspace = render(
+      <IssueRecoveryActionCard action={buildAction()} onQuarantineRestore={() => {}} />,
+    );
+    expect(nonWorkspace.querySelector("[data-testid='recovery-action-repair-trigger']")).toBeNull();
+  });
+
+  it("confirm popover restates the dirty count, live branch, rescue branch and recorded branch, then fires the handler", () => {
+    const onQuarantineRestore = vi.fn();
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildDirtyDivergenceAction()}
+        onQuarantineRestore={onQuarantineRestore}
+      />,
+    );
+    click(node.querySelector("[data-testid='recovery-action-repair-trigger']"));
+    const restated = document.body.querySelector("[data-testid='recovery-repair-restated']");
+    const text = restated?.textContent ?? "";
+    expect(text).toContain("3 uncommitted changes");
+    // live branch is explicitly left untouched
+    expect(text).toContain("nleach/PAP-1405-live");
+    expect(text).toContain("left untouched");
+    // rescue branch preview mirrors the server naming (prefix + timestamp marker)
+    expect(
+      document.body.querySelector("[data-testid='recovery-repair-rescue-branch']")?.textContent,
+    ).toContain("paperclip/rescue/PAP-1405/");
+    // recorded branch to be restored
+    expect(text).toContain("PAP-522-recorded");
+
+    // No reason field is present — the operation is lossless.
+    expect(document.body.querySelector("textarea")).toBeNull();
+
+    click(document.body.querySelector("[data-testid='recovery-action-repair-confirm']"));
+    expect(onQuarantineRestore).toHaveBeenCalledTimes(1);
+  });
+
+  it("singularizes the dirty change count", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildDirtyDivergenceAction({ workspaceValidation: { statusEntryCount: 1 } })}
+        onQuarantineRestore={() => {}}
+      />,
+    );
+    click(node.querySelector("[data-testid='recovery-action-repair-trigger']"));
+    expect(
+      document.body.querySelector("[data-testid='recovery-repair-dirty-count']")?.textContent,
+    ).toBe("1 uncommitted change");
+  });
+
+  it("disables the repair trigger while a quarantine-restore is pending", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildDirtyDivergenceAction()}
+        onQuarantineRestore={() => {}}
+        quarantineRestorePending
+      />,
+    );
+    expect(
+      node.querySelector<HTMLButtonElement>("[data-testid='recovery-action-repair-trigger']")?.disabled,
+    ).toBe(true);
+  });
+
+  it("in the contended case disables repair, explains the claimant, and recommends re-issue", () => {
+    const onQuarantineRestore = vi.fn();
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildDirtyDivergenceAction({
+          workspaceValidation: {
+            contention: {
+              claimedByWorkspaceId: "ws-99",
+              claimedByIssueId: "issue-99",
+              claimedByIssueIdentifier: "PAP-9001",
+              activeRun: { id: "run-9001", status: "running", issueId: "issue-99", issueIdentifier: "PAP-9001" },
+            },
+          },
+        })}
+        onQuarantineRestore={onQuarantineRestore}
+        onReissueIsolated={() => {}}
+      />,
+    );
+    // Diagnosis gains a claimant line naming the issue + active run.
+    const notice = node.querySelector("[data-testid='recovery-contention-notice']");
+    expect(notice?.textContent).toContain("PAP-9001");
+    expect(notice?.textContent).toContain("active run");
+
+    // The repair control is present but disabled, with the claimant as the explanation.
+    const disabled = node.querySelector("[data-testid='recovery-action-repair-disabled']");
+    expect(disabled).not.toBeNull();
+    const trigger = disabled?.querySelector<HTMLButtonElement>(
+      "[data-testid='recovery-action-repair-trigger']",
+    );
+    expect(trigger?.disabled).toBe(true);
+    expect(disabled?.textContent).toContain("PAP-9001");
+    // Clicking the disabled control never fires the repair.
+    click(trigger ?? null);
+    expect(onQuarantineRestore).not.toHaveBeenCalled();
+
+    // Re-issue is surfaced as the recommended action.
+    expect(node.querySelector("[data-testid='recovery-reissue-recommended']")).not.toBeNull();
+    expect(
+      node
+        .querySelector("[data-testid='recovery-action-reissue-trigger']")
+        ?.getAttribute("data-recommended"),
+    ).toBe("true");
+  });
+
+  it("compact variant drops the metadata table but keeps the diagnosis and repair action", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildDirtyDivergenceAction()}
+        onQuarantineRestore={() => {}}
+        variant="compact"
+      />,
+    );
+    // Metadata rows (e.g. the Owner/Next action table) are dropped in compact mode.
+    expect(node.textContent).not.toContain("Choose and record a valid issue disposition.");
+    // The divergence diagnosis and repair action still render.
+    expect(node.querySelector("[data-testid='recovery-divergence-diagnosis']")).not.toBeNull();
+    expect(node.querySelector("[data-testid='recovery-action-repair-trigger']")).not.toBeNull();
+  });
+});

@@ -62,6 +62,7 @@ vi.mock("../api/execution-workspaces", () => ({
 vi.mock("../api/issues", () => ({
   issuesApi: {
     list: apiMocks.issuesList,
+    listCompact: apiMocks.issuesList,
     count: apiMocks.issuesCount,
     listLabels: apiMocks.issueLabels,
     markRead: vi.fn(),
@@ -375,6 +376,11 @@ describe("Inbox toolbar", () => {
       true,
       true,
       true,
+    ]);
+    expect(apiMocks.issuesList.mock.calls.map((call) => call[1]?.limit)).toEqual([
+      500,
+      500,
+      500,
     ]);
 
     act(() => {

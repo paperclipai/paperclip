@@ -318,6 +318,7 @@ export type {
   ExternalObjectSummaryItem,
 } from "./external-object.js";
 export type {
+  CompactIssue,
   Issue,
   IssueWorkMode,
   IssueAssigneeAdapterOverrides,
@@ -515,6 +516,7 @@ export type {
   AgentWakeupSkipped,
   GitWorktreeBranchAncestryVerdict,
   GitWorktreeBranchIncoherenceEvidence,
+  GitWorktreeInProgressOperation,
   HeartbeatRun,
   HeartbeatRunEvent,
   HeartbeatRunStatusPhase,

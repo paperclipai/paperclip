@@ -34,7 +34,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Check, Copy, Diff, Download, FilePenLine, FileText, Lock, MoreHorizontal, Plus, Trash2, Unlock, X } from "lucide-react";
 import { DocumentDiffModal } from "./DocumentDiffModal";
-import { DocumentFrameHeader } from "./DocumentFrameHeader";
+import { DocumentFrameHeader, type DocumentFrameHeaderRevisionActor } from "./DocumentFrameHeader";
 import { SourceTrustBadge } from "./SourceTrustBadge";
 import { Badge } from "@/components/ui/badge";
 
@@ -116,10 +116,30 @@ function downloadDocumentFile(key: string, body: string) {
   URL.revokeObjectURL(url);
 }
 
-function getRevisionActorLabel(revision: DocumentRevision) {
-  if (revision.createdByUserId) return "board";
-  if (revision.createdByAgentId) return "agent";
-  return "system";
+function getRevisionActor(
+  revision: DocumentRevision,
+  maps: {
+    agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+    userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
+  },
+): DocumentFrameHeaderRevisionActor {
+  if (revision.createdByAgentId) {
+    const agent = maps.agentMap?.get(revision.createdByAgentId);
+    return {
+      kind: "agent",
+      name: agent?.name ?? revision.createdByAgentId.slice(0, 8),
+      agentIcon: agent?.icon ?? null,
+    };
+  }
+  if (revision.createdByUserId) {
+    const profile = maps.userProfileMap?.get(revision.createdByUserId);
+    return {
+      kind: "user",
+      name: profile?.label ?? (revision.createdByUserId === "local-board" ? "Board" : revision.createdByUserId.slice(0, 8)),
+      imageUrl: profile?.image ?? null,
+    };
+  }
+  return { kind: "system", name: "System" };
 }
 
 function documentHasUnsavedChanges(doc: IssueDocument, draft: DraftState | null) {
@@ -182,7 +202,7 @@ export function IssueDocumentsSection({
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
   extraActions?: ReactNode;
-  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name">>;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   /**
    * Seed which document annotation panels are open on first render. Mostly useful
@@ -939,7 +959,7 @@ export function IssueDocumentsSection({
                     id: revision.id,
                     revisionNumber: revision.revisionNumber,
                     createdAt: revision.createdAt,
-                    actorLabel: getRevisionActorLabel(revision),
+                    actor: getRevisionActor(revision, { agentMap, userProfileMap }),
                   })),
                   selectedRevisionId,
                   currentRevisionId: currentRevision.id,

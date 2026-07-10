@@ -97,6 +97,21 @@ async function deleteHeartbeatRunsAndWakeupsAfterActivityLogDrains(db: Db) {
   }
 }
 
+async function deleteCompanySkillsAfterLateHeartbeatWritesDrain(db: Db) {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await db.delete(companySkills);
+    try {
+      await db.delete(companies);
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  throw lastError;
+}
+
 function expectNoCanary(value: unknown, ...markers: string[]) {
   const serialized = JSON.stringify(value);
   for (const marker of markers) expect(serialized).not.toContain(marker);
@@ -660,8 +675,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(projects);
-    await db.delete(companySkills);
-    await db.delete(companies);
+    await deleteCompanySkillsAfterLateHeartbeatWritesDrain(db);
   });
 
   afterAll(async () => {
@@ -1198,6 +1212,11 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       });
       expectNoCanary(bogusRunContext.body, fixture.canaries.raw);
 
+      await db.update(heartbeatRuns).set({
+        status: "succeeded",
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(eq(heartbeatRuns.id, fixture.runs.standard.id));
       await db.update(agents).set({
         status: "idle",
         adapterType: "openclaw_gateway",
@@ -1211,6 +1230,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
           },
           waitTimeoutMs: 2_000,
         },
+        runtimeConfig: { heartbeat: { wakeOnDemand: true } },
       }).where(eq(agents.id, fixture.agents.standard.id));
       await db.update(heartbeatRuns).set({
         status: "succeeded",

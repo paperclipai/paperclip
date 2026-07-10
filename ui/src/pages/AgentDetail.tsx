@@ -101,6 +101,7 @@ import {
   responsibleUserLabel,
 } from "@paperclipai/shared";
 import { ResponsibleUserDenialNotice } from "../components/ResponsibleUserDenialNotice";
+import { RunWorkspaceRecoverySurface } from "../components/RunWorkspaceRecoverySurface";
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
@@ -3049,6 +3050,10 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 
   return (
     <div className="space-y-4 min-w-0">
+      {/* Workspace-validation recovery: surfaces the recovery card when this run was declined over a
+          git workspace it could not validate, wired to the same reconcile / repair / re-issue /
+          break-glass handlers as the task detail page. */}
+      <RunWorkspaceRecoverySurface run={run} />
       {/* Run summary card */}
       <div className="border border-border rounded-lg overflow-hidden">
         <div className="flex flex-col sm:flex-row">

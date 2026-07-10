@@ -160,6 +160,10 @@ export const reconcileExecutionWorkspaceBranchSchema = z.discriminatedUnion("mod
     mode: z.literal("override"),
     reason: branchReconcileReasonSchema,
   }).strict(),
+  z.object({
+    mode: z.literal("quarantine_restore"),
+    reason: branchReconcileReasonSchema.optional().nullable(),
+  }).strict(),
 ]);
 
 export type UpdateExecutionWorkspace = z.infer<typeof updateExecutionWorkspaceSchema>;

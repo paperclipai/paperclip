@@ -21,6 +21,9 @@ const mockResourceMembershipsApi = vi.hoisted(() => ({
   listMine: vi.fn(),
   updateProject: vi.fn(),
 }));
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
 
 const mockOpenNewProject = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
@@ -87,6 +90,14 @@ vi.mock("../context/ToastContext", () => ({
 
 vi.mock("../api/projects", () => ({
   projectsApi: mockProjectsApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("../api/auth", () => ({
@@ -279,6 +290,9 @@ describe("SidebarProjects", () => {
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },
       user: { id: "user-1" },
+    });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
     });
     memberships = {
       projectMemberships: {},

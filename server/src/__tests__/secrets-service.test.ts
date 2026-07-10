@@ -616,6 +616,71 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(events)).not.toContain("user-one-secret");
   });
 
+  it("can skip user-secret refs while resolving adapter config for non-runtime skill discovery", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+    const companySecret = await svc.create(companyId, {
+      name: `company-token-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "company-secret-value",
+    });
+    const adapterConfig = {
+      apiBaseUrl: "http://127.0.0.1:9119/api",
+      apiKey: {
+        type: "user_secret_ref" as const,
+        key: "github_token",
+        version: "latest" as const,
+        required: true,
+      },
+      env: {
+        HOME: "/home/agent",
+        COMPANY_TOKEN: {
+          type: "secret_ref" as const,
+          secretId: companySecret.id,
+          version: "latest" as const,
+        },
+        GH_TOKEN: {
+          type: "user_secret_ref" as const,
+          key: "github_token",
+          version: "latest" as const,
+          required: true,
+        },
+      },
+    };
+
+    await expect(
+      svc.resolveAdapterConfigForRuntime(companyId, adapterConfig, undefined, { adapterType: "hermes_gateway" }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "responsible_user_missing" },
+    });
+
+    const resolved = await svc.resolveAdapterConfigForRuntime(
+      companyId,
+      adapterConfig,
+      undefined,
+      { adapterType: "hermes_gateway", skipUserSecrets: true },
+    );
+
+    expect(resolved.config).not.toHaveProperty("apiKey");
+    expect(resolved.config.env).toEqual({
+      HOME: "/home/agent",
+      COMPANY_TOKEN: "company-secret-value",
+    });
+    expect(resolved.secretKeys).toEqual(new Set(["COMPANY_TOKEN"]));
+    expect(resolved.manifest).toEqual([
+      expect.objectContaining({
+        secretId: companySecret.id,
+        outcome: "success",
+      }),
+    ]);
+  });
+
   it("returns conflict when concurrent user secret value creation races the unique index", async () => {
     const companyId = await seedCompany();
     await seedCompanyMember(companyId, "user-1", "owner");

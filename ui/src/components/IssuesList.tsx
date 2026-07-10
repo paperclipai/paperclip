@@ -1,5 +1,6 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
+import { useVisibilityRefetchInterval } from "@/lib/polling";
 import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -522,11 +523,12 @@ function SubIssueProgressSummaryStrip({
   // Refresh fast enough that the runtime ticks up while a sub-issue is still
   // running, but slow enough not to hammer the recursive CTE on idle trees.
   const hasInProgress = summary.inProgressCount > 0;
+  const costRefetchInterval = useVisibilityRefetchInterval({ visibleMs: 5_000 });
   const { data: costSummary } = useQuery({
     queryKey: queryKeys.issues.costSummary(parentIssueIdForCostSummary ?? "pending", { excludeRoot: true }),
     queryFn: () => issuesApi.getCostSummary(parentIssueIdForCostSummary!, { excludeRoot: true }),
     enabled: !!parentIssueIdForCostSummary,
-    refetchInterval: hasInProgress ? 5_000 : false,
+    refetchInterval: hasInProgress ? costRefetchInterval : false,
   });
 
   const totalTokens = costSummary
@@ -767,17 +769,18 @@ export function IssuesList({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
       searchFilters ?? {},
+      "compact",
       ISSUE_SEARCH_RESULT_LIMIT,
       enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
     ],
-    queryFn: () =>
-      issuesApi.list(selectedCompanyId!, {
+    queryFn: ({ signal }) =>
+      issuesApi.listCompact(selectedCompanyId!, {
         q: normalizedIssueSearch,
         projectId,
         limit: ISSUE_SEARCH_RESULT_LIMIT,
         ...searchFilters,
         ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
-      }),
+      }, { signal }).then((rows) => rows as Issue[]),
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues,
     placeholderData: (previousData) => previousData,
   });
@@ -790,18 +793,19 @@ export function IssuesList({
         normalizedIssueSearch,
         projectId ?? "__all-projects__",
         searchFilters ?? {},
+        "compact",
         ISSUE_BOARD_COLUMN_RESULT_LIMIT,
         enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
       ],
-      queryFn: () =>
-        issuesApi.list(selectedCompanyId!, {
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        issuesApi.listCompact(selectedCompanyId!, {
           ...searchFilters,
           ...(normalizedIssueSearch.length > 0 ? { q: normalizedIssueSearch } : {}),
           projectId,
           status,
           limit: ISSUE_BOARD_COLUMN_RESULT_LIMIT,
           ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
-        }),
+        }, { signal }).then((rows) => rows as Issue[]),
       enabled: !!selectedCompanyId && viewState.viewMode === "board" && !searchWithinLoadedIssues,
       placeholderData: (previousData: Issue[] | undefined) => previousData,
     })),
@@ -1443,9 +1447,7 @@ export function IssuesList({
   const loadMoreIssueRows = useCallback(() => {
     if (viewState.viewMode !== "list") return;
     if (hasMoreRenderedRows) {
-      startTransition(() => {
-        setRenderedIssueRowLimit((current) => Math.min(filtered.length, current + ISSUE_ROW_RENDER_BATCH_SIZE));
-      });
+      setRenderedIssueRowLimit((current) => Math.min(filtered.length, current + ISSUE_ROW_RENDER_BATCH_SIZE));
       return;
     }
     if (hasMoreIssues && !isLoadingMoreIssues) {

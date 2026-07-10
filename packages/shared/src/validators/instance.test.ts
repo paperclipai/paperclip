@@ -11,10 +11,11 @@ describe("instance experimental settings validators", () => {
     expect(settings.enableServerInfoDebugView).toBe(false);
   });
 
-  it("defaults workspace branch forward reconciliation off", () => {
+  it("defaults workspace branch repair settings on", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 
-    expect(settings.enableWorkspaceBranchReconcileForward).toBe(false);
+    expect(settings.enableWorkspaceBranchReconcileForward).toBe(true);
+    expect(settings.enableWorkspaceDirtyQuarantineRepair).toBe(true);
   });
 
   it("defaults the goals sidebar link off", () => {
@@ -58,10 +59,12 @@ describe("instance experimental settings validators", () => {
   it("accepts workspace branch forward reconciliation patches", () => {
     expect(
       patchInstanceExperimentalSettingsSchema.parse({
-        enableWorkspaceBranchReconcileForward: true,
+        enableWorkspaceBranchReconcileForward: false,
+        enableWorkspaceDirtyQuarantineRepair: false,
       }),
     ).toEqual({
-      enableWorkspaceBranchReconcileForward: true,
+      enableWorkspaceBranchReconcileForward: false,
+      enableWorkspaceDirtyQuarantineRepair: false,
     });
   });
 

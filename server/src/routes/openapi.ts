@@ -1637,8 +1637,12 @@ registry.registerPath({
   path: "/api/companies/{companyId}/issues",
   tags: ["issues"],
   summary: "List issues in a company",
-  request: { params: z.object({ companyId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  description: "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ view: z.enum(["compact"]).optional() }).passthrough(),
+  },
+  responses: { 200: r.ok(), 304: { description: "Not Modified" }, 401: r.unauthorized },
 });
 
 registry.registerPath({

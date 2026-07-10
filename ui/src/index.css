@@ -1586,8 +1586,6 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-9: min(80vh,42rem); /* Extracted from ui/src/components/IssueFiltersPopover.test.tsx (max-h-[min(80vh,42rem)]). */
   --sz-calc-10: min(780px,calc(100vw - 2rem)); /* Extracted from ui/src/components/IssueFiltersPopover.tsx (w-[min(780px,calc(100vw-2rem))]). */
   --sz-24ch: 24ch; /* Extracted from ui/src/components/IssuePlanDecompositionsSection.tsx (max-w-[24ch]). */
-  --sz-calc-11: calc(0.5rem - 2px); /* Extracted from ui/src/components/IssueRow.tsx (pl-[calc(theme(spacing.2)-2px)]). */
-  --sz-calc-12: calc(0.25rem - 2px); /* Extracted from ui/src/components/IssueRow.tsx (pl-[calc(theme(spacing.1)-2px)]). */
   --sz-calc-13: calc(0.75rem + 0.5rem); /* Extracted from ui/src/components/IssueRow.tsx (ml-[calc(theme(spacing.3)+theme(spacing.2))]). */
   --sz-140px: 140px; /* Extracted from ui/src/components/JsonSchemaForm.tsx (min-h-[140px]). */
   --sz-52px: 52px; /* Extracted from ui/src/components/KanbanBoard.tsx (w-[52px]). */

@@ -87,7 +87,8 @@ describe("instance settings routes", () => {
         enableServerInfoDebugView: false,
         autoRestartDevServerWhenIdle: false,
         enableIssueGraphLivenessAutoRecovery: true,
-        enableWorkspaceBranchReconcileForward: false,
+        enableWorkspaceBranchReconcileForward: true,
+        enableWorkspaceDirtyQuarantineRepair: true,
         issueGraphLivenessAutoRecoveryLookbackHours: 24,
       },
       createdAt: "2026-06-20T00:00:00.000Z",
@@ -111,7 +112,8 @@ describe("instance settings routes", () => {
       enableServerInfoDebugView: false,
       autoRestartDevServerWhenIdle: false,
       enableIssueGraphLivenessAutoRecovery: true,
-      enableWorkspaceBranchReconcileForward: false,
+      enableWorkspaceBranchReconcileForward: true,
+      enableWorkspaceDirtyQuarantineRepair: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 24,
     });
     mockInstanceSettingsService.update.mockResolvedValue({
@@ -134,7 +136,8 @@ describe("instance settings routes", () => {
         enableServerInfoDebugView: false,
         autoRestartDevServerWhenIdle: false,
         enableIssueGraphLivenessAutoRecovery: true,
-        enableWorkspaceBranchReconcileForward: false,
+        enableWorkspaceBranchReconcileForward: true,
+        enableWorkspaceDirtyQuarantineRepair: true,
         issueGraphLivenessAutoRecoveryLookbackHours: 24,
       },
       createdAt: "2026-06-20T00:00:00.000Z",
@@ -163,7 +166,8 @@ describe("instance settings routes", () => {
         enableServerInfoDebugView: true,
         autoRestartDevServerWhenIdle: false,
         enableIssueGraphLivenessAutoRecovery: true,
-        enableWorkspaceBranchReconcileForward: false,
+        enableWorkspaceBranchReconcileForward: true,
+        enableWorkspaceDirtyQuarantineRepair: true,
         issueGraphLivenessAutoRecoveryLookbackHours: 24,
       },
     });
@@ -220,7 +224,8 @@ describe("instance settings routes", () => {
       enableServerInfoDebugView: false,
       autoRestartDevServerWhenIdle: false,
       enableIssueGraphLivenessAutoRecovery: true,
-      enableWorkspaceBranchReconcileForward: false,
+      enableWorkspaceBranchReconcileForward: true,
+      enableWorkspaceDirtyQuarantineRepair: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 24,
     });
 

@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act as reactAct } from "react";
 import type { ComponentProps } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { DocumentRevision, Issue, IssueDocument } from "@paperclipai/shared";
@@ -24,6 +25,24 @@ const mockIssuesApi = vi.hoisted(() => ({
 const markdownEditorMockState = vi.hoisted(() => ({
   emitMountEmptyChange: false,
 }));
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+async function act<T>(callback: () => T | Promise<T>): Promise<T> {
+  if (typeof reactAct === "function") {
+    return await (reactAct(callback) as T | Promise<T>);
+  }
+
+  let result: T | Promise<T> | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  const resolved = await result;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  flushSync(() => {});
+  return resolved as T;
+}
 
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
@@ -418,6 +437,86 @@ describe("IssueDocumentsSection", () => {
     expect(container.textContent).not.toContain("Edit document");
     expect(container.textContent).not.toContain("Delete document");
     expect(container.querySelector('button[title="Unlock document"]')).toBeTruthy();
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("shows revision authors with names and avatars in the revision history menu", async () => {
+    const currentDocument = createIssueDocument({
+      body: "Current plan body",
+      latestRevisionId: "revision-agent",
+      latestRevisionNumber: 4,
+      updatedByAgentId: "agent-1",
+      updatedByUserId: null,
+      updatedAt: new Date("2026-03-31T12:05:00.000Z"),
+    });
+    const issue = createIssue();
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+        mutations: {
+          retry: false,
+        },
+      },
+    });
+
+    mockIssuesApi.listDocuments.mockResolvedValue([currentDocument]);
+    queryClient.setQueryData(
+      queryKeys.issues.documentRevisions(issue.id, "plan"),
+      [
+        createRevision({
+          id: "revision-agent",
+          revisionNumber: 4,
+          body: "Current plan body",
+          createdByAgentId: "agent-1",
+          createdByUserId: null,
+          createdAt: new Date("2026-03-31T12:05:00.000Z"),
+        }),
+        createRevision({
+          id: "revision-user",
+          revisionNumber: 3,
+          body: "Board-written plan body",
+          createdByAgentId: null,
+          createdByUserId: "user-1",
+          createdAt: new Date("2026-03-31T11:00:00.000Z"),
+        }),
+      ],
+    );
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection
+            issue={issue}
+            canDeleteDocuments={false}
+            agentMap={new Map([["agent-1", { id: "agent-1", name: "CodexCoder", icon: "code" }]])}
+            userProfileMap={new Map([["user-1", { label: "Dotta", image: "https://example.test/dotta.png" }]])}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const revisionButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("rev 4"));
+    expect(revisionButton).toBeTruthy();
+
+    await act(async () => {
+      revisionButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(document.body.textContent).toContain("CodexCoder");
+    expect(document.body.textContent).toContain("Dotta");
+    expect(document.body.textContent).not.toContain("• agent");
+    expect(document.body.querySelectorAll('[data-slot="avatar"]').length).toBeGreaterThanOrEqual(2);
 
     await act(async () => {
       root.unmount();

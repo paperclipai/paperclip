@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act as reactAct } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +28,15 @@ vi.mock("@/lib/router", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+function act(callback: () => void) {
+  if (typeof reactAct === "function") {
+    reactAct(callback);
+    return;
+  }
+
+  flushSync(callback);
+}
 
 function createIssue(overrides: Partial<Issue> = {}): Issue {
   return {
@@ -245,6 +255,31 @@ describe("IssueRow", () => {
 
     expect(metaRow).not.toBeUndefined();
     expect(metaRow?.textContent?.replace(/\s+/g, "")).toContain("2.1.PAP-42");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("marks the current checklist step without adding a left border", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={createIssue({ identifier: "PAP-42" })}
+          checklistStepNumber="2.1"
+          checklistCurrentStep
+        />,
+      );
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("aria-current")).toBe("step");
+    expect(link?.className).toContain("bg-primary/5");
+    expect(link?.className).not.toContain("border-l-");
 
     act(() => {
       root.unmount();

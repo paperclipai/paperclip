@@ -31,6 +31,7 @@ import {
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
@@ -251,12 +252,22 @@ export function Agents() {
     enabled: !!selectedCompanyId && environmentsEnabled,
   });
 
-  const { data: runs } = useQuery({
-    queryKey: [...queryKeys.liveRuns(selectedCompanyId!), "agents-page"],
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+  const runsQueryKey = [...queryKeys.liveRuns(selectedCompanyId!), "agents-page"] as const;
+  const sharedRuns = useSharedPollingQuery({
+    companyId: selectedCompanyId,
+    resourceKey: "live-runs:agents-page",
+    queryKey: runsQueryKey,
     enabled: !!selectedCompanyId,
     refetchInterval: 15_000,
+    leaderOnly: true,
   });
+  const { data: runs, dataUpdatedAt: runsUpdatedAt } = useQuery({
+    queryKey: runsQueryKey,
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+    enabled: sharedRuns.enabled,
+    refetchInterval: sharedRuns.refetchInterval,
+  });
+  usePublishSharedQueryData(sharedRuns, runs, runsUpdatedAt);
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
   const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
 

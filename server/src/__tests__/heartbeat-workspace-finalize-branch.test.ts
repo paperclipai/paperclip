@@ -124,6 +124,23 @@ async function waitForRuntimeStateLastRun(db: Db, agentId: string, runId: string
   }
 }
 
+async function deleteHeartbeatRowsAfterActivityLogDrains(db: Db) {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
+    try {
+      await db.delete(heartbeatRuns);
+      await db.delete(agentWakeupRequests);
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  throw lastError;
+}
+
 function readAdapterWorkspace(input: unknown) {
   const context = (input as { context?: Record<string, unknown> }).context ?? {};
   const workspace = context.paperclipWorkspace as Record<string, unknown> | undefined;
@@ -278,12 +295,8 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     await db.delete(documents);
     await db.delete(agentTaskSessions);
     await db.delete(environmentLeases);
-    await db.delete(activityLog);
-    await db.delete(heartbeatRunEvents);
-    // Heartbeat finalization can emit run-linked activity after the first
-    // cleanup pass observes all runs as non-active.
-    await db.delete(activityLog);
-    await db.delete(heartbeatRuns);
+    await db.delete(workspaceOperations);
+    await deleteHeartbeatRowsAfterActivityLogDrains(db);
     await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(projectWorkspaces);
@@ -291,7 +304,6 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
-    await db.delete(workspaceOperations);
     await db.delete(executionWorkspaces);
     await db.delete(environments);
     await db.delete(companySkills);

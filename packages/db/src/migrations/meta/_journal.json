@@ -978,8 +978,15 @@
     {
       "idx": 141,
       "version": "7",
-      "when": 1783555300100,
-      "tag": "0141_company_search_sort_indexes",
+      "when": 1783555301000,
+      "tag": "0141_heartbeat_runs_company_created_at_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 142,
+      "version": "7",
+      "when": 1783555301100,
+      "tag": "0142_company_search_sort_indexes",
       "breakpoints": true
     }
   ]
