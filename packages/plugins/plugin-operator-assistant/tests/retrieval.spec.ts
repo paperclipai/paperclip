@@ -35,6 +35,9 @@ describe("assistant retrieval planning", () => {
       "mapping",
       "decision",
     ]);
+    expect(extractSearchTerms(
+      "Hey, what did we work on in the last 1 hour? Give me the main work, outcomes, blockers, and cite the relevant issue IDs.",
+    )).toEqual([]);
   });
 
   it("puts only retrieved evidence into the model prompt", () => {

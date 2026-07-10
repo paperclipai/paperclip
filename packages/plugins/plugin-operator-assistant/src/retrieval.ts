@@ -3,9 +3,10 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 const DEFAULT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 const STOP_WORDS = new Set([
-  "about", "after", "again", "against", "also", "and", "been", "before", "being", "between", "could",
-  "does", "doing", "during", "from", "have", "hour", "hours", "into", "last", "latest", "more",
-  "most", "over", "past", "please", "recent", "show", "some", "than", "that", "their", "there",
+  "about", "after", "again", "against", "also", "and", "been", "before", "being", "between", "blockers", "could",
+  "cite", "did", "does", "doing", "during", "from", "have", "hour", "hours", "ids", "into", "last",
+  "latest", "main", "more", "most", "outcomes", "over", "past", "please", "recent", "relevant", "show",
+  "some", "than", "that", "their", "there",
   "the", "these", "they", "this", "those", "through", "today", "under", "very", "want", "were", "what",
   "when", "where", "which", "while", "with", "work", "worked", "working", "would", "yesterday",
   "your", "ours", "paperclip", "issue", "issues", "tell", "give", "hey", "wahat",
@@ -351,10 +352,12 @@ export async function retrieveEvidence(
           WHERE i.company_id = $1
             AND i.hidden_at IS NULL
             AND (${search.sql})
-          ORDER BY CASE WHEN lower(coalesce(i.identifier, '')) = ANY($${search.params.length + 2}::text[]) THEN 0 ELSE 1 END,
+          ORDER BY CASE WHEN ${search.identifiers.length > 0
+            ? `(${search.identifiers.map((_, index) => `lower(coalesce(i.identifier, '')) = $${index + 2}`).join(" OR ")})`
+            : "false"} THEN 0 ELSE 1 END,
                    i.updated_at DESC
           LIMIT 12`,
-        [companyId, ...search.params, search.identifiers.map((value) => value.toLowerCase())],
+        [companyId, ...search.params],
       );
 
   const relevantIds = [...new Set([
@@ -375,10 +378,13 @@ export async function retrieveEvidence(
            JOIN issues blocked ON blocked.id = rel.related_issue_id AND blocked.company_id = rel.company_id
           WHERE rel.company_id = $1
             AND rel.type = 'blocks'
-            AND (rel.issue_id = ANY($2::uuid[]) OR rel.related_issue_id = ANY($2::uuid[]))
+            AND (
+              rel.issue_id IN (${relevantIds.map((_, index) => `$${index + 2}`).join(", ")})
+              OR rel.related_issue_id IN (${relevantIds.map((_, index) => `$${index + 2}`).join(", ")})
+            )
           ORDER BY rel.created_at DESC
           LIMIT 24`,
-        [companyId, relevantIds],
+        [companyId, ...relevantIds],
       );
 
   const sourceMap = new Map<string, EvidenceSource>();
