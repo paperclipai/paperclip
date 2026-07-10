@@ -1829,4 +1829,35 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(runsAfterResume).toHaveLength(2);
     expect(runsAfterResume.some((run) => run.status === "issue_created")).toBe(true);
   });
+
+  it("persists explicit variables on PATCH even when not referenced in the template", async () => {
+    const { routine, svc } = await seedFixture();
+    // routine title is "ascii frog" — no {{shadow_mode}} template reference
+    const updated = await svc.update(
+      routine.id,
+      {
+        variables: [
+          {
+            name: "shadow_mode",
+            label: "Shadow Mode",
+            type: "text",
+            defaultValue: "false",
+            required: false,
+            options: [],
+          },
+        ],
+      },
+      {},
+    );
+    expect(updated?.variables).toHaveLength(1);
+    expect(updated?.variables[0]).toMatchObject({
+      name: "shadow_mode",
+      label: "Shadow Mode",
+      defaultValue: "false",
+    });
+
+    // PATCH again with empty variables array should clear them
+    const cleared = await svc.update(routine.id, { variables: [] }, {});
+    expect(cleared?.variables).toHaveLength(0);
+  });
 });

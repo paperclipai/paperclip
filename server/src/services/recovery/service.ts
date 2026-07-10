@@ -23,6 +23,8 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -2872,6 +2874,57 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ),
       );
 
+    // Pre-fetch all candidate issue IDs that have an active routine with a future
+    // scheduled fire. Single bulk query eliminates per-issue N+1 fan-out.
+    const candidateIds = candidates.map((c) => c.id);
+    const now = new Date();
+    const issueIdsWithFutureRoutineFire = new Set<string>(
+      candidateIds.length > 0
+        ? (
+            await db
+              .selectDistinct({ issueId: routines.parentIssueId })
+              .from(routineTriggers)
+              .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+              .where(
+                and(
+                  inArray(routines.parentIssueId, candidateIds),
+                  eq(routines.status, "active"),
+                  eq(routineTriggers.enabled, true),
+                  gt(routineTriggers.nextRunAt, now),
+                ),
+              )
+          )
+            .map((row) => row.issueId)
+            .filter((id): id is string => id !== null)
+        : [],
+    );
+
+    // Skip children whose parent is `in_review` — that is a deliberate waiting
+    // state, not a blocker. Flipping such children to `blocked` just creates
+    // churn (the sentinel agent immediately restores `in_progress`).
+    const issueIdsWithInReviewParent = new Set<string>(
+      candidateIds.length > 0
+        ? (
+            await db
+              .select({ id: issues.id })
+              .from(issues)
+              .where(
+                and(
+                  inArray(issues.id, candidateIds),
+                  sql`${issues.parentId} is not null`,
+                  sql`exists (
+                    select 1 from issues parent_issue
+                    where parent_issue.id = ${issues.parentId}
+                      and parent_issue.company_id = ${issues.companyId}
+                      and parent_issue.status = 'in_review'
+                  )`,
+                ),
+              )
+          )
+            .map((row) => row.id)
+        : [],
+    );
+
     const result = {
       assignmentDispatched: 0,
       dispatchRequeued: 0,
@@ -2929,6 +2982,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (issueIdsWithInReviewParent.has(issue.id)) {
         result.skipped += 1;
         continue;
       }
@@ -3124,6 +3182,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.skipped += 1;
         continue;
       }
+
+      if (issueIdsWithFutureRoutineFire.has(issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
       const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
       if (handoffEvidence) {
         if (!handoffEvidence.exhausted) {

@@ -5321,6 +5321,13 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "get",
+  path: "/api/issues/{id}/queued-wakes",
+  tags: ["issues"],
+  summary: "List queued wakes for an issue",
+});
+
+registerCurrentRoute({
   method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/cancel",
   tags: ["issues"],

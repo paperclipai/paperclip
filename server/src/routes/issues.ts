@@ -6768,6 +6768,24 @@ export function issueRoutes(
     res.json(approvals);
   });
 
+  // Mirrors the server-side `successful_run_missing_state` skip in
+  // services/recovery/successful-run-handoff.ts (`hasQueuedWake`). A
+  // queued or deferred wake on the issue IS a valid live continuation
+  // path, so the pre-exit disposition gate probes this endpoint to
+  // avoid blocking agents that are correctly polling via ScheduleWakeup.
+  // SPC-7996.
+  router.get("/issues/:id/queued-wakes", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const wakes = await svc.listQueuedWakesForIssue(issue.companyId, issue.id);
+    res.json({ wakes });
+  });
+
   router.post("/issues/:id/approvals", validate(linkIssueApprovalSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
