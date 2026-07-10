@@ -15,10 +15,10 @@ import { Download, Maximize2, Minus, Network, Plus, Upload } from "lucide-react"
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 
 // Layout constants
-const CARD_W = 200;
-const CARD_H = 100;
-const GAP_X = 32;
-const GAP_Y = 80;
+const CARD_W = 220;
+const CARD_H = 88;
+const GAP_X = 40;
+const GAP_Y = 72;
 const PADDING = 60;
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 2;
@@ -157,8 +157,6 @@ function touchCenter(a: React.Touch, b: React.Touch, container: HTMLDivElement):
 
 // ── Status dot colors (raw hex for SVG) ─────────────────────────────────
 
-import { getAdapterLabel } from "../adapters/adapter-display-registry";
-
 const statusDotColor: Record<string, string> = {
   running: "var(--hex-22d3ee)",
   active: "var(--hex-4ade80)",
@@ -168,6 +166,34 @@ const statusDotColor: Record<string, string> = {
   terminated: "var(--hex-a3a3a3)",
 };
 const defaultDotColor = "var(--hex-a3a3a3)";
+
+const roleLabels: Record<string, string> = AGENT_ROLE_LABELS;
+
+function roleLabel(role: string): string {
+  return roleLabels[role] ?? role;
+}
+
+const rolePillStyles: Record<string, { label: string; className: string }> = {
+  ceo: { label: "Executive", className: "bg-sky-500/8 text-sky-700/80 dark:bg-sky-400/10 dark:text-sky-300/90" },
+  cto: { label: "Engineering", className: "bg-indigo-500/8 text-indigo-700/80 dark:bg-indigo-400/10 dark:text-indigo-300/90" },
+  cmo: { label: "Marketing", className: "bg-rose-500/8 text-rose-700/80 dark:bg-rose-400/10 dark:text-rose-300/90" },
+  cfo: { label: "Finance", className: "bg-emerald-500/8 text-emerald-700/80 dark:bg-emerald-400/10 dark:text-emerald-300/90" },
+  security: { label: "Security", className: "bg-red-500/8 text-red-700/80 dark:bg-red-400/10 dark:text-red-300/90" },
+  engineer: { label: "Engineering", className: "bg-indigo-500/8 text-indigo-700/80 dark:bg-indigo-400/10 dark:text-indigo-300/90" },
+  designer: { label: "Design", className: "bg-violet-500/8 text-violet-700/80 dark:bg-violet-400/10 dark:text-violet-300/90" },
+  pm: { label: "Product", className: "bg-cyan-500/8 text-cyan-700/80 dark:bg-cyan-400/10 dark:text-cyan-300/90" },
+  qa: { label: "Quality", className: "bg-amber-500/8 text-amber-700/80 dark:bg-amber-400/10 dark:text-amber-300/90" },
+  devops: { label: "Operations", className: "bg-slate-500/8 text-slate-600/80 dark:bg-slate-400/10 dark:text-slate-300/90" },
+  researcher: { label: "Research", className: "bg-teal-500/8 text-teal-700/80 dark:bg-teal-400/10 dark:text-teal-300/90" },
+  general: { label: "General", className: "bg-muted/50 text-muted-foreground/80" },
+};
+
+function rolePill(role: string) {
+  const known = rolePillStyles[role];
+  if (known) return known;
+  const label = roleLabel(role);
+  return { label, className: "bg-muted/50 text-muted-foreground/80" };
+}
 
 // ── Main component ──────────────────────────────────────────────────────
 
@@ -561,17 +587,19 @@ export function OrgChart() {
           {allNodes.map((node) => {
             const agent = agentMap.get(node.id);
             const dotColor = statusDotColor[node.status] ?? defaultDotColor;
+            const pill = rolePill(node.role);
+            const subtitle = agent?.title ?? roleLabel(node.role);
 
             return (
               <Card
                 key={node.id}
                 data-org-card
-                className="block absolute py-0 hover:shadow-md hover:border-foreground/20 transition-(--tp-box-shadow-border-color) duration-150 cursor-pointer select-none"
+                className="absolute block gap-0 overflow-hidden rounded-xl border-border/80 bg-card py-0 shadow-sm transition-(--tp-box-shadow-border-color) duration-150 hover:border-foreground/20 hover:shadow-md cursor-pointer select-none"
                 style={{
                   left: node.x,
                   top: node.y,
                   width: CARD_W,
-                  minHeight: CARD_H,
+                  height: CARD_H,
                 }}
                 onClick={() => navigate(agent ? agentUrl(agent) : `/agents/${node.id}`)}
                 onClickCapture={(e) => {
@@ -581,35 +609,28 @@ export function OrgChart() {
                   e.stopPropagation();
                 }}
               >
-                <div className="flex items-center px-4 py-3 gap-3">
-                  {/* Agent icon + status dot */}
+                <div className="flex h-full items-center gap-3 px-3">
                   <div className="relative shrink-0">
-                    <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center">
-                      <AgentIcon icon={agent?.icon} className="h-4.5 w-4.5 text-foreground/70" />
+                    <div className="flex size-10 items-center justify-center rounded-lg bg-muted">
+                      <AgentIcon icon={agent?.icon} className="size-4.5 text-foreground/70" />
                     </div>
                     <span
-                      className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card"
+                      className="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-card"
                       style={{ backgroundColor: dotColor }}
                     />
                   </div>
-                  {/* Name + role + adapter type */}
-                  <div className="flex flex-col items-start min-w-0 flex-1">
-                    <span className="text-sm font-semibold text-foreground leading-tight">
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="truncate text-sm font-semibold leading-tight text-foreground">
                       {node.name}
                     </span>
-                    <span className="text-(length:--text-micro) text-muted-foreground leading-tight mt-0.5">
-                      {agent?.title ?? roleLabel(node.role)}
+                    <span className="truncate text-(length:--text-micro) leading-tight text-muted-foreground">
+                      {subtitle}
                     </span>
-                    {agent && (
-                      <span className="text-(length:--text-nano) text-muted-foreground/60 font-mono leading-tight mt-1">
-                        {getAdapterLabel(agent.adapterType)}
-                      </span>
-                    )}
-                    {agent && agent.capabilities && (
-                      <span className="text-(length:--text-nano) text-muted-foreground/80 leading-tight mt-1 line-clamp-2">
-                        {agent.capabilities}
-                      </span>
-                    )}
+                    <span
+                      className={`mt-1 w-fit max-w-full truncate rounded-full px-1.5 py-px text-[10px] font-medium uppercase leading-none tracking-[0.06em] ${pill.className}`}
+                    >
+                      {pill.label}
+                    </span>
                   </div>
                 </div>
               </Card>
@@ -619,10 +640,4 @@ export function OrgChart() {
       </div>
     </div>
   );
-}
-
-const roleLabels: Record<string, string> = AGENT_ROLE_LABELS;
-
-function roleLabel(role: string): string {
-  return roleLabels[role] ?? role;
 }
