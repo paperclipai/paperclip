@@ -127,8 +127,11 @@ export function WhatNeedsMe() {
   const isServerHidden = (item: AttentionItem) => item.dismissal != null && item.dismissal.isActive;
 
   const activeItems = useMemo(
-    () => allItems.filter((item) => !isServerHidden(item) && !pendingHide.has(item.id)),
-    [allItems, pendingHide],
+    () =>
+      allItems.filter(
+        (item) => (!isServerHidden(item) || pendingRestore.has(item.id)) && !pendingHide.has(item.id),
+      ),
+    [allItems, pendingHide, pendingRestore],
   );
   const snoozedItems = useMemo(
     () =>
