@@ -174,10 +174,15 @@ curl -sS -X POST \
   --data-binary '{"workspaceCommandId":"service:paperclip-dev"}'
 ```
 
-4. If two workspaces genuinely need to run at the same time, they cannot share
-   a pinned port. Stop the one that is not needed, say in your issue comment
-   which workspace now owns the port, and escalate the pinned-port collision
-   as a product issue instead of looping restarts.
+4. A restart only holds if the squatting process is actually gone. If the
+   squatter belongs to a live agent run or managed service on the sibling
+   workspace, it will respawn and re-take the pinned port; do not loop
+   restarts against it.
+5. If two workspaces genuinely need to run at the same time, they cannot share
+   a pinned port. Stop the one that is not needed (through its own workspace's
+   managed stop, or by ending the run that keeps respawning it), say in your
+   issue comment which workspace now owns the port, and escalate the
+   pinned-port collision as a product issue instead of looping restarts.
 
 Before declaring success, also fetch the sibling workspaces you suspect and
 compare their `runtimeServices[].port` values: more than one `running` row
