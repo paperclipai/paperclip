@@ -5,7 +5,7 @@ export const label = "Codex";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 
-export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.5";
+export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.6";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.5", "gpt-5.4"] as const;
 
@@ -28,9 +28,8 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
   if (isCodexLocalManualModel(model)) return true;
   const normalizedModel = typeof model === "string" ? model.trim() : "";
   // Empty means we're omitting --model so the Codex CLI picks its own default.
-  // On subscription auth that's gpt-5.5 (fast-mode capable); manual model IDs
-  // are also treated as supported. Match that policy: pass the fast-mode
-  // overrides through and let the CLI reject them if the chosen model can't use them.
+  // Manual model IDs are also treated as supported: pass the fast-mode overrides
+  // through and let the CLI reject them if the chosen model can't use them.
   if (!normalizedModel) return true;
   return CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.includes(
     normalizedModel as (typeof CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS)[number],
@@ -39,6 +38,9 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
 
 export const models = [
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
+  { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+  { id: "gpt-5.6-terra", label: "gpt-5.6-terra" },
+  { id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
   { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
