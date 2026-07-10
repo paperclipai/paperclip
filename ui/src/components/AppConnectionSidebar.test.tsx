@@ -203,4 +203,29 @@ describe("AppConnectionSidebar", () => {
     expect(container.querySelector('[data-to="/apps/app/app-1/test"]')).toBeNull();
     expect(container.querySelectorAll("[data-to]").length).toBe(5);
   });
+
+  it("keeps rendering a connection sidebar when its connection is unavailable", async () => {
+    mockToolsApi.getConnection.mockResolvedValue(undefined);
+    mockToolsApi.listGallery.mockResolvedValue({ apps: [] });
+    mockToolsApi.listAppsAttention.mockResolvedValue({ apps: [], totals: {} });
+
+    await renderSidebar();
+
+    expect(container.textContent).toContain("App");
+    expect(container.querySelector('a[href="/apps"]')?.textContent).toContain("All apps");
+    expect(container.querySelectorAll("[data-to]").length).toBe(6);
+  });
+
+  it("keeps rendering an application sidebar when its application is unavailable", async () => {
+    mockToolsApi.listApplications.mockResolvedValue({ applications: [] });
+    mockToolsApi.listConnections.mockResolvedValue({ connections: [] });
+    mockToolsApi.listGallery.mockResolvedValue({ apps: [] });
+    mockToolsApi.listAppsAttention.mockResolvedValue({ apps: [], totals: {} });
+
+    await renderSidebar(<AppDetailSidebar kind="application" applicationId="missing-app" />);
+
+    expect(container.textContent).toContain("App");
+    expect(container.querySelector('a[href="/apps"]')?.textContent).toContain("All apps");
+    expect(container.querySelectorAll("[data-to]").length).toBe(5);
+  });
 });

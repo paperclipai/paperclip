@@ -576,11 +576,10 @@ describe("Layout", () => {
     });
   });
 
-  // PAP-12735: `review` and `gateways` are real reserved Apps subroutes, not app
-  // connection ids. They must keep the top-level Apps sidebar, never mount the
-  // per-app detail sidebar scoped to a phantom "review"/"gateways" app.
-  it("keeps the Apps sidebar on the Review IA surface", async () => {
-    currentPathname = "/PAP/apps/review";
+  // Reserved Apps subroutes are not connection ids. They must keep the
+  // top-level Apps sidebar, never mount a detail sidebar for a phantom app.
+  it.each(["browse", "review"])("keeps the Apps sidebar on the %s surface", async (route) => {
+    currentPathname = `/PAP/apps/${route}`;
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
