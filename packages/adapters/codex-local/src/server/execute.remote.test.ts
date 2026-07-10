@@ -262,6 +262,10 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--model",
+      "gpt-5.6-terra",
+      "-c",
+      'model_reasoning_effort="xhigh"',
       "-",
     ]);
   });
@@ -333,6 +337,10 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--model",
+      "gpt-5.6-terra",
+      "-c",
+      'model_reasoning_effort="xhigh"',
       "resume",
       "session-123",
       "-",
@@ -412,6 +420,10 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--model",
+      "gpt-5.6-terra",
+      "-c",
+      'model_reasoning_effort="xhigh"',
       "resume",
       "session-123",
       "-",

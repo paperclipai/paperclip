@@ -70,21 +70,17 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
-  it("enables Codex fast mode overrides when model is omitted (CLI default)", () => {
+  it("ignores fast mode when model is omitted because the worker default is Terra", () => {
     const result = buildCodexExecArgs({
       fastMode: true,
     });
 
     expect(result.fastModeRequested).toBe(true);
-    expect(result.fastModeApplied).toBe(true);
-    expect(result.fastModeIgnoredReason).toBeNull();
+    expect(result.fastModeApplied).toBe(false);
+    expect(result.fastModeIgnoredReason).toContain("model (default)");
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'service_tier="fast"',
-      "-c",
-      "features.fast_mode=true",
       "-",
     ]);
   });

@@ -57,7 +57,10 @@ import {
 import { prepareCodexRuntimeConfig } from "./runtime-config.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import {
+  applyCodexLocalWorkerDefaults,
+  SANDBOX_INSTALL_COMMAND,
+} from "../index.js";
 import {
   CODEX_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS,
   createCodexOutputInactivityMonitor,
@@ -328,10 +331,14 @@ export async function ensureCodexSkillsInjected(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
+  const effectiveCtx = {
+    ...ctx,
+    config: applyCodexLocalWorkerDefaults(ctx.config),
+  };
+  const engineSelection = await resolveCodexExecutionEngineForRun(effectiveCtx);
   if (engineSelection.engine === "acp") {
     try {
-      return await executeCodexAcp(ctx);
+      return await executeCodexAcp(effectiveCtx);
     } catch (err) {
       if (engineSelection.explicit) throw err;
       const reason = err instanceof Error ? err.message : String(err);
@@ -345,7 +352,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await ctx.onLog("stderr", formatCodexAcpFallbackMessage(engineSelection.fallbackReason));
   }
 
-  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = effectiveCtx;
 
   const promptTemplate = asString(
     config.promptTemplate,
