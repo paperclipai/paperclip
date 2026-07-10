@@ -299,7 +299,7 @@ function SidebarAgentItem({
 export function SidebarAgents({ streamlined = false }: { streamlined?: boolean } = {}) {
   const [open, setOpen] = useState(true);
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(() => new Set());
-  const [, setLiveLingerVersion] = useState(0);
+  const [liveLingerVersion, setLiveLingerVersion] = useState(0);
   const lastSeenLiveAtRef = useRef<Map<string, number>>(new Map());
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
@@ -418,12 +418,15 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
   // to up to RECENT_AGENT_LIMIT agents. Either way a "See all agents" link is
   // shown so the full list is always reachable.
   // Classic mode (PAP-89, flag OFF) restores the show-all behavior.
-  const nowForLiveLinger = Date.now();
-  const runningAgents = sortedAgents.filter((agent: Agent) => {
-    if ((liveCountByAgent.get(agent.id) ?? 0) > 0) return true;
-    const lastSeenLiveAt = lastSeenLiveAtRef.current.get(agent.id);
-    return lastSeenLiveAt !== undefined && nowForLiveLinger - lastSeenLiveAt <= LIVE_AGENT_LINGER_MS;
-  });
+  const runningAgents = useMemo(() => {
+    const nowForLiveLinger = Date.now();
+    const lastSeenLiveAtByAgent = lastSeenLiveAtRef.current;
+    return sortedAgents.filter((agent: Agent) => {
+      if ((liveCountByAgent.get(agent.id) ?? 0) > 0) return true;
+      const lastSeenLiveAt = lastSeenLiveAtByAgent.get(agent.id);
+      return lastSeenLiveAt !== undefined && nowForLiveLinger - lastSeenLiveAt <= LIVE_AGENT_LINGER_MS;
+    });
+  }, [liveCountByAgent, liveLingerVersion, sortedAgents]);
   const hasActiveAgents = runningAgents.length > 0;
   const displayedAgents = !streamlined
     ? sortedAgents
@@ -490,7 +493,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [streamlined, sortedAgents, liveCountByAgent]);
+  }, [streamlined, sortedAgents, liveCountByAgent, liveLingerVersion]);
 
   const persistSortMode = useCallback(
     (value: string) => {
