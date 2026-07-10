@@ -11,9 +11,8 @@ describe("server package build script", () => {
     };
     const buildScript = packageJson.scripts?.build ?? "";
 
-    expect(buildScript).toContain("dist/onboarding-assets");
+    expect(buildScript).toContain("mkdir -p dist/onboarding-assets dist/built-ins");
     expect(buildScript).toContain("cp -R src/onboarding-assets/. dist/onboarding-assets/");
-    expect(buildScript).toContain("dist/built-ins");
     expect(buildScript).toContain("cp -R src/built-ins/. dist/built-ins/");
   });
 });
