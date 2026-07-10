@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type QueryKey, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, type QueryKey, useQueryClient } from "@tanstack/react-query";
 import {
   SharedPollingCoordinator,
+  type SharedMessage,
   type SharedPollingSnapshot,
 } from "../lib/cross-tab-poll";
 
@@ -26,7 +27,7 @@ export interface SharedPollingQueryState<TData> {
   isLeader: boolean;
   enabled: boolean;
   refetchInterval: RefetchInterval;
-  publish: (data: TData | undefined) => void;
+  publish: (data: TData | undefined, dataUpdatedAt: number) => void;
 }
 
 type RegistryEntry = {
@@ -61,6 +62,20 @@ function resourceKey(companyId: string, key: string, queryKeyHash: string): stri
   return `${companyId}:${key}:${queryKeyHash}`;
 }
 
+export function applySharedPollingResult<TData>(
+  queryClient: Pick<QueryClient, "getQueryState" | "setQueryData">,
+  queryKey: QueryKey,
+  message: SharedMessage,
+): boolean {
+  if (message.type !== "result") return false;
+  const incomingUpdatedAt = message.dataUpdatedAt ?? message.at;
+  if (incomingUpdatedAt <= 0) return false;
+  const localUpdatedAt = queryClient.getQueryState(queryKey)?.dataUpdatedAt ?? 0;
+  if (localUpdatedAt >= incomingUpdatedAt) return false;
+  queryClient.setQueryData(queryKey, message.data as TData, { updatedAt: incomingUpdatedAt });
+  return true;
+}
+
 export function useSharedPollingQuery<TData>({
   companyId,
   resourceKey: rawResourceKey,
@@ -89,8 +104,7 @@ export function useSharedPollingQuery<TData>({
     const coordinator = acquireCoordinator(activeCompanyId);
     const unsubscribeState = coordinator.subscribe(setSnapshot);
     const unsubscribeResource = coordinator.subscribeResource(fullResourceKey, (message) => {
-      if (message.type !== "result") return;
-      queryClient.setQueryData(queryKeyRef.current, message.data as TData);
+      applySharedPollingResult(queryClient, queryKeyRef.current, message);
     });
     coordinator.request(fullResourceKey);
 
@@ -105,10 +119,10 @@ export function useSharedPollingQuery<TData>({
   const queryEnabled = enabled && (!leaderOnly || snapshot.isLeader);
   const coordinatedInterval = leaderOnly && !snapshot.isLeader ? false : refetchInterval;
 
-  const publish = useCallback((data: TData | undefined) => {
+  const publish = useCallback((data: TData | undefined, dataUpdatedAt: number) => {
     if (!activeCompanyId || !fullResourceKey || data === undefined) return;
     const entry = coordinators.get(activeCompanyId);
-    entry?.coordinator.publish(fullResourceKey, data);
+    entry?.coordinator.publish(fullResourceKey, data, dataUpdatedAt);
   }, [activeCompanyId, fullResourceKey]);
 
   return useMemo(
@@ -129,6 +143,6 @@ export function usePublishSharedQueryData<TData>(
 ): void {
   useEffect(() => {
     if (!shared.isLeader || dataUpdatedAt <= 0) return;
-    shared.publish(data);
+    shared.publish(data, dataUpdatedAt);
   }, [data, dataUpdatedAt, shared]);
 }
