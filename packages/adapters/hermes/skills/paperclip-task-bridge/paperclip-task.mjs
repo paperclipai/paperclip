@@ -11,6 +11,7 @@ const HELP = `Paperclip task bridge for Hermes
 
 Usage:
   paperclip-task.mjs list-assigned [--status todo,in_progress,in_review,blocked] [--limit 20]
+  paperclip-task.mjs get-task --issue <id|identifier>
   paperclip-task.mjs create-task --title <title> [--description <text>|--description-file <path|->] [options]
   paperclip-task.mjs comment --issue <id|identifier> (--body <text>|--body-file <path|->) [--resume|--reopen]
   paperclip-task.mjs update-status --issue <id|identifier> --status <status> [--comment <text>|--comment-file <path|->]
@@ -30,6 +31,7 @@ create-task options:
   --parent-id <uuid>              Parent issue id.
   --goal-id <uuid>                Goal id.
   --project-id <uuid>             Project id.
+  --blocked-by-issue-id <uuid[,uuid]>  Block until one or more issue ids are done.
   --priority <critical|high|medium|low>
   --status <backlog|todo|in_progress|in_review|done|blocked|cancelled>
   --work-mode <standard|ask|planning>
@@ -219,6 +221,16 @@ function parseLimit(args) {
   return value;
 }
 
+function parseUuidListFlag(args, name) {
+  const raw = readStringFlag(args, name);
+  if (!raw) return [];
+  const values = [...new Set(raw.split(",").map((value) => value.trim()).filter(Boolean))];
+  if (values.some((value) => !UUID_RE.test(value))) {
+    throw new UsageError(`--${name} must contain one or more comma-separated UUIDs`);
+  }
+  return values;
+}
+
 async function listAssigned(config, args) {
   const identity = await resolveIdentity(config);
   const status = readStringFlag(args, "status") || "todo,in_progress,in_review,blocked";
@@ -234,6 +246,19 @@ async function listAssigned(config, args) {
     agentId: identity.agentId,
     count: filteredIssues.length,
     issues: filteredIssues.map(issueSummary),
+  });
+}
+
+async function getTask(config, args) {
+  const issueRef = requireStringFlag(args, "issue");
+  const issue = await apiFetch(config, `/issues/${encodeURIComponent(issueRef)}`);
+  printJson({
+    command: "get-task",
+    issue: {
+      ...issueSummary(issue),
+      description: issue?.description ?? null,
+      blockedByIssueIds: Array.isArray(issue?.blockedByIssueIds) ? issue.blockedByIssueIds : [],
+    },
   });
 }
 
@@ -270,6 +295,8 @@ async function createTask(config, args) {
     const value = readStringFlag(args, flag);
     if (value) body[field] = value;
   }
+  const blockedByIssueIds = parseUuidListFlag(args, "blocked-by-issue-id");
+  if (blockedByIssueIds.length > 0) body.blockedByIssueIds = blockedByIssueIds;
   const status = readStringFlag(args, "status");
   if (status) body.status = validateEnum(status, STATUSES, "status");
 
@@ -302,12 +329,20 @@ async function updateStatus(config, args) {
   const issueRef = requireStringFlag(args, "issue");
   const status = validateEnum(requireStringFlag(args, "status"), STATUSES, "status");
   const commentText = await readBody(args, "comment", "comment-file");
-  const body = {
-    status,
-    ...(commentText && commentText.trim().length > 0 ? { comment: commentText } : {}),
-    ...(boolFlag(args, "resume") ? { resume: true } : {}),
-    ...(boolFlag(args, "reopen") ? { reopen: true } : {}),
-  };
+  const resume = boolFlag(args, "resume");
+  if (resume && status !== "todo") {
+    throw new UsageError("--resume is only valid with --status todo");
+  }
+  if (resume && (!commentText || commentText.trim().length === 0)) {
+    throw new UsageError("--resume requires --comment or --comment-file");
+  }
+  const body = resume
+    ? { resume: true, comment: commentText }
+    : {
+        status,
+        ...(commentText && commentText.trim().length > 0 ? { comment: commentText } : {}),
+        ...(boolFlag(args, "reopen") ? { reopen: true } : {}),
+      };
   const issue = await apiFetch(config, `/issues/${encodeURIComponent(issueRef)}`, {
     method: "PATCH",
     mutating: true,
@@ -325,6 +360,7 @@ async function main() {
   }
   const config = getConfig();
   if (command === "list-assigned") return listAssigned(config, args);
+  if (command === "get-task") return getTask(config, args);
   if (command === "create-task") return createTask(config, args);
   if (command === "comment") return comment(config, args);
   if (command === "update-status") return updateStatus(config, args);

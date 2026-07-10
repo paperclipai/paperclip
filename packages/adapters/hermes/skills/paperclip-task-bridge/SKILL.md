@@ -54,12 +54,14 @@ Commands:
 
 ```sh
 node ./paperclip-task.mjs list-assigned
+node ./paperclip-task.mjs get-task --issue PAP-123
 node ./paperclip-task.mjs create-task --parent-id "00000000-0000-4000-8000-000000000000" --title "Investigate checkout failures" --description "Capture failing request and root cause."
+node ./paperclip-task.mjs create-task --parent-id "00000000-0000-4000-8000-000000000000" --project-id "00000000-0000-4000-8000-000000000000" --assignee-agent-id "00000000-0000-4000-8000-000000000000" --title "Hand off evidence" --description "Use a project-scoped bridge key."
 node ./paperclip-task.mjs comment --issue PAP-123 --body "Found the failing request path."
 node ./paperclip-task.mjs update-status --issue PAP-123 --status in_review --comment "Ready for review."
 ```
 
-`create-task` defaults to assigning the task to the authenticated Hermes agent so the work is immediately actionable. Use `--unassigned` to create backlog work instead. Use `--assignee-agent-id <uuid>` only when the Paperclip API key has permission to assign work to that agent.
+`create-task` defaults to assigning the task to the authenticated Hermes agent so the work is immediately actionable. Use `--unassigned` to create backlog work instead. Use `--assignee-agent-id <uuid>` only when the Paperclip API key has permission to assign work to that agent. Use `get-task` only for an assigned or bridge-created task. `--blocked-by-issue-id <uuid[,uuid]>` records native Paperclip dependencies; it is appropriate when the creating bridge key will not need to mutate the downstream task.
 
 For multiline bodies, prefer files or stdin:
 
