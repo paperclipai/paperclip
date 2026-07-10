@@ -271,6 +271,19 @@ describe("agent test-environment route", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(testEnvironmentSpy).toHaveBeenCalledTimes(1);
+    // Test leases boot fresh and stay debuggable: never resume a retained
+    // agent lease, archive (not delete) the sandbox on release.
+    expect(mockEnvironmentRuntime.acquireRunLease).toHaveBeenCalledWith(
+      expect.objectContaining({
+        applyCustomImageTemplate: true,
+        environment: expect.objectContaining({
+          config: expect.objectContaining({
+            reuseLease: false,
+            archiveOnRelease: true,
+          }),
+        }),
+      }),
+    );
     expect(testEnvironmentSpy.mock.calls[0]?.[0]).toMatchObject({
       executionTarget: expect.objectContaining({
         kind: "remote",

@@ -69,6 +69,10 @@ export async function probeEnvironment(
           // Test probes should prove a fresh provider boot, not resume a retained
           // agent lease and report success without provider-side activity.
           reuseLease: false,
+          // Keep the probe sandbox inspectable in the provider dashboard
+          // (archived, provider-side expiry) instead of deleting it the moment
+          // the probe finishes.
+          archiveOnRelease: true,
         },
       };
       let leaseRecord: Awaited<ReturnType<typeof runtime.acquireRunLease>> | null = null;

@@ -972,7 +972,7 @@ function EnvironmentImageTemplatePanel({
   }
 
   if (activeTemplate) {
-    const shortTemplateId = formatShortId(activeTemplate.id);
+    const templateRef = activeTemplate.templateRef?.trim() || null;
     return (
       <div className="mt-3 border-t border-border/60 pt-3" data-testid={`custom-image-template-state-${environment.id}`}>
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -980,9 +980,14 @@ function EnvironmentImageTemplatePanel({
             <div className="text-xs font-medium">Active template</div>
             <div className="text-xs text-muted-foreground">
               {providerDisplayName} · {activeTemplate.templateKind}
-              {" · id "}
-              <span className="font-mono text-foreground" title={activeTemplate.id}>
-                {shortTemplateId}
+              {" · "}
+              <span
+                className="break-all font-mono text-foreground"
+                title={templateRef
+                  ? `Provider ${activeTemplate.templateKind} ref ${templateRef} (Paperclip template ${activeTemplate.id})`
+                  : activeTemplate.id}
+              >
+                {templateRef ?? `id ${formatShortId(activeTemplate.id)}`}
               </span>
               {capturedAt ? ` · captured ${capturedAt}` : ""}
               {lastUsedAt ? ` · last used ${lastUsedAt}` : ""}
@@ -1166,7 +1171,7 @@ export function CompanyEnvironments() {
   });
 
   const environmentProbeMutation = useMutation({
-    mutationFn: async (environmentId: string) => await environmentsApi.probe(environmentId),
+    mutationFn: async (environmentId: string) => await environmentsApi.probe(environmentId, selectedCompanyId),
     onMutate: (environmentId) => {
       setTestingEnvironmentId(environmentId);
     },

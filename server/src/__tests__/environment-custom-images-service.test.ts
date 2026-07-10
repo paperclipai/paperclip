@@ -647,4 +647,56 @@ describe("environmentCustomImageTemplateMatchesBaseConfig", () => {
       },
     })).toBe(false);
   });
+
+  it("matches configs carrying a secret-ref credential when the capture excluded that path", () => {
+    // Capture-time fingerprints exclude the provider's secret-ref paths (e.g.
+    // daytona apiKey). The runtime re-check must exclude the same paths or a
+    // config with any credential never matches and the template is dropped.
+    const baseConfig = {
+      provider: "daytona",
+      image: "daytonaio/sandbox:0.8.0",
+      apiKey: "raw-api-key-value",
+    } as any;
+    const template = {
+      id: "template-1",
+      environmentId: "env-1",
+      provider: "daytona",
+      templateKind: "snapshot",
+      templateRef: "snapshot-active",
+      sourceTemplateRef: "daytonaio/sandbox:0.8.0",
+      sourceEnvironmentConfigFingerprint: fingerprintEnvironmentSandboxProviderConfig(baseConfig, {
+        excludePaths: [
+          ...ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
+          "apiKey",
+        ],
+      }),
+      status: "active",
+      createdByUserId: null,
+      createdByAgentId: null,
+      capturedAt: null,
+      lastUsedAt: null,
+      supersededByTemplateId: null,
+      metadata: null,
+      createdAt: new Date("2026-07-09T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-09T00:00:00.000Z"),
+    } as const;
+
+    expect(environmentCustomImageTemplateMatchesBaseConfig({
+      template,
+      baseConfig,
+      secretRefExcludePaths: ["apiKey"],
+    })).toBe(true);
+    // A rotated credential still matches — credentials are not part of the
+    // captured image identity.
+    expect(environmentCustomImageTemplateMatchesBaseConfig({
+      template,
+      baseConfig: { ...baseConfig, apiKey: "rotated-key" },
+      secretRefExcludePaths: ["apiKey"],
+    })).toBe(true);
+    // Without the exclusion the same config fails to match (the pre-fix bug).
+    expect(environmentCustomImageTemplateMatchesBaseConfig({
+      template,
+      baseConfig,
+    })).toBe(false);
+  });
 });

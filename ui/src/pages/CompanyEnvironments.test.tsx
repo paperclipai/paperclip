@@ -1117,8 +1117,13 @@ describe("CompanyEnvironments — test provider button", () => {
     await waitForAssertion(() => {
       const dialog = getOpenDialog();
       expect(dialog?.textContent).toContain("Active template");
-      expect(dialog?.textContent).toContain("id 12345678-90a");
-      expect(dialog?.querySelector("[title='12345678-90ab-cdef-1234-567890abcdef']")).toBeTruthy();
+      expect(dialog?.textContent).toContain("redacted-template-ref");
+      expect(dialog?.textContent).not.toContain("id 12345678-90a");
+      expect(
+        dialog?.querySelector(
+          "[title='Provider snapshot ref redacted-template-ref (Paperclip template 12345678-90ab-cdef-1234-567890abcdef)']",
+        ),
+      ).toBeTruthy();
       expect(findButton(dialog!, "Refresh")).toBeTruthy();
       expect(findButton(dialog!, "Rollback")).toBeTruthy();
       expect(findButton(dialog!, "Disable")).toBeTruthy();

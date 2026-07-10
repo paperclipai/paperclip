@@ -255,6 +255,7 @@ describe("probeEnvironment", () => {
       provider: "daytona",
       image: "daytonaio/sandbox:0.8.0",
       reuseLease: false,
+      archiveOnRelease: true,
     });
     expect(mockRuntimeReleaseRunLease).toHaveBeenCalledWith(expect.objectContaining({
       lease: expect.objectContaining({ id: "lease-1" }),

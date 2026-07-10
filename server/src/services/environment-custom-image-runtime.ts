@@ -17,6 +17,7 @@ export const ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS = [
   "timeoutMs",
   "reuseLease",
   "streamRunLogs",
+  "archiveOnRelease",
   "cpu",
   "memory",
   "disk",
@@ -126,16 +127,28 @@ export function applyCustomImageTemplateToSandboxConfig(
 export function environmentCustomImageTemplateMatchesBaseConfig(input: {
   template: EnvironmentCustomImageTemplate;
   baseConfig: SandboxEnvironmentConfig;
+  secretRefExcludePaths?: Iterable<string>;
 }): boolean {
   const expectedFingerprint = input.template.sourceEnvironmentConfigFingerprint;
   if (!expectedFingerprint) return true;
+  // Capture-time fingerprints exclude both runtime-only fields and the
+  // provider's secret-ref paths (see finishSetupSession); the runtime match
+  // must exclude the same set or configs that carry a secret ref can never
+  // match and the active template gets silently dropped.
+  const secretRefExcludePaths = [...(input.secretRefExcludePaths ?? [])];
   const normalizedFingerprint = fingerprintEnvironmentSandboxProviderConfig(input.baseConfig, {
-    excludePaths: ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
+    excludePaths: [
+      ...ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
+      ...secretRefExcludePaths,
+    ],
   });
   if (normalizedFingerprint === expectedFingerprint) return true;
   // Backward compatibility for templates captured before runtime-only fields
-  // were excluded from the source fingerprint.
-  return fingerprintEnvironmentSandboxProviderConfig(input.baseConfig) === expectedFingerprint;
+  // were excluded from the source fingerprint (secret-ref paths have always
+  // been excluded at capture time).
+  return fingerprintEnvironmentSandboxProviderConfig(input.baseConfig, {
+    excludePaths: secretRefExcludePaths,
+  }) === expectedFingerprint;
 }
 
 export function environmentCustomImageTemplateFromRow(row: TemplateRow): EnvironmentCustomImageTemplate {
@@ -165,6 +178,7 @@ export async function resolveActiveEnvironmentCustomImageTemplateForRuntime(
     environmentId: string;
     baseConfig: SandboxEnvironmentConfig;
     runtimeConfig: SandboxEnvironmentConfig;
+    secretRefExcludePaths?: Iterable<string>;
     now?: Date;
   },
 ): Promise<SandboxEnvironmentConfig> {
@@ -182,7 +196,11 @@ export async function resolveActiveEnvironmentCustomImageTemplateForRuntime(
 
   const active = environmentCustomImageTemplateFromRow(row);
   if (!active.templateRef) return input.runtimeConfig;
-  if (!environmentCustomImageTemplateMatchesBaseConfig({ template: active, baseConfig: input.baseConfig })) {
+  if (!environmentCustomImageTemplateMatchesBaseConfig({
+    template: active,
+    baseConfig: input.baseConfig,
+    secretRefExcludePaths: input.secretRefExcludePaths,
+  })) {
     return input.runtimeConfig;
   }
 
