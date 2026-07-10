@@ -148,6 +148,9 @@ async function sendChatMessage(ctx: PluginContext, input: {
   const session = sessions[0];
   if (!session) throw new Error("Chat session not found or no longer active.");
 
+  // Retrieve first so a database/search failure cannot leave a dangling user
+  // message with no corresponding assistant response.
+  const evidence = await retrieveEvidence(ctx, input.companyId, input.question);
   const questionId = randomUUID();
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "assistant_chat_messages")}
@@ -163,7 +166,6 @@ async function sendChatMessage(ctx: PluginContext, input: {
     [input.companyId, input.chatSessionId, input.question],
   );
 
-  const evidence = await retrieveEvidence(ctx, input.companyId, input.question);
   const prompt = buildGroundedPrompt(input.question, evidence);
   const channel = streamChannel(input.chatSessionId);
   ctx.streams.open(channel, input.companyId);
