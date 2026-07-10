@@ -117,6 +117,7 @@ const INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running"]);
 // interaction still remains pending for the responder, but liveness recovery is
 // allowed to surface the missing handoff through its normal escalation path.
 export const ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+export const ISSUE_LIVENESS_PENDING_INTERACTION_CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
 
 function issueLabel(issue: IssueLivenessIssueInput) {
   return issue.identifier ?? issue.id;
@@ -168,8 +169,18 @@ function hasCurrentPendingInteractionPath(
     const createdAtMs = readDateMs(entry.createdAt);
     if (createdAtMs === null) return false;
     const ageMs = nowMs - createdAtMs;
-    return ageMs >= 0 && ageMs <= ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS;
+    return ageMs >= -ISSUE_LIVENESS_PENDING_INTERACTION_CLOCK_SKEW_TOLERANCE_MS &&
+      ageMs <= ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS;
   });
+}
+
+export function issueLivenessPendingInteractionExpiresAt(
+  createdAt: Date | string | null,
+) {
+  const createdAtMs = readDateMs(createdAt);
+  return createdAtMs === null
+    ? null
+    : new Date(createdAtMs + ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS);
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {

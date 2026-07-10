@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -374,6 +374,13 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       createdAt: staleAt,
       updatedAt: staleAt,
     });
+    // Interaction creation normally touches the issue. Backdate the complete
+    // dependency path to reproduce a periodic reconciliation after both that
+    // touch and the response lease have aged past the default 24-hour lookback.
+    await db
+      .update(issues)
+      .set({ updatedAt: staleAt })
+      .where(inArray(issues.id, [blockedIssueId, blockerIssueId]));
 
     const result = await heartbeatService(db).reconcileIssueGraphLiveness();
 

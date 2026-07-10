@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyIssueGraphLiveness,
+  ISSUE_LIVENESS_PENDING_INTERACTION_CLOCK_SKEW_TOLERANCE_MS,
   ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS,
 } from "../services/issue-liveness.ts";
 
@@ -460,6 +461,18 @@ describe("issue graph liveness classifier", () => {
         }],
       },
       {
+        name: "pending interaction within database clock skew tolerance",
+        issue: baseReviewIssue,
+        pendingInteractions: [{
+          companyId,
+          issueId: reviewIssueId,
+          status: "pending",
+          createdAt: new Date(
+            now.getTime() + ISSUE_LIVENESS_PENDING_INTERACTION_CLOCK_SKEW_TOLERANCE_MS,
+          ),
+        }],
+      },
+      {
         name: "pending approval",
         issue: baseReviewIssue,
         pendingApprovals: [{ companyId, issueId: reviewIssueId, status: "pending" }],
@@ -508,7 +521,9 @@ describe("issue graph liveness classifier", () => {
       { name: "missing creation time", createdAt: null, status: "pending" },
       {
         name: "future creation time",
-        createdAt: new Date(now.getTime() + 1),
+        createdAt: new Date(
+          now.getTime() + ISSUE_LIVENESS_PENDING_INTERACTION_CLOCK_SKEW_TOLERANCE_MS + 1,
+        ),
         status: "pending",
       },
       {
@@ -567,6 +582,7 @@ describe("issue graph liveness classifier", () => {
 
   it("ignores cross-company waiting paths for stalled in_review issues", () => {
     const reviewIssueId = "review-1";
+    const now = new Date("2026-07-10T12:00:00.000Z");
 
     const findings = classifyIssueGraphLiveness({
       issues: [
@@ -581,8 +597,14 @@ describe("issue graph liveness classifier", () => {
       ],
       relations: [],
       agents: [agent(), manager],
-      pendingInteractions: [{ companyId: "other-company", issueId: reviewIssueId, status: "pending" }],
+      pendingInteractions: [{
+        companyId: "other-company",
+        issueId: reviewIssueId,
+        status: "pending",
+        createdAt: new Date(now.getTime() - 60 * 60 * 1000),
+      }],
       openRecoveryIssues: [{ companyId: "other-company", issueId: reviewIssueId, status: "todo" }],
+      now,
     });
 
     expect(findings).toHaveLength(1);
