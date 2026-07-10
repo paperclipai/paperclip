@@ -14,6 +14,7 @@ describe("Operator Assistant manifest", () => {
     expect(manifest.capabilities.some((capability) => capability.startsWith("issues.update"))).toBe(false);
     expect(manifest.capabilities.some((capability) => capability.startsWith("issue.comments.create"))).toBe(false);
     expect(manifest.agents?.[0]?.executionAccess).toBe("readOnly");
+    expect(manifest.agents?.[0]?.adapterConfig?.promptTemplate).toBe("{{context.paperclipSessionMessageMarkdown}}");
   });
 
   it("whitelists only the core tables needed for bounded retrieval", () => {

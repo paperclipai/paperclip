@@ -2042,6 +2042,7 @@ export function buildHostServices(
             taskKey: session.taskKey,
             wakeSource: "automation",
             wakeTriggerDetail: "system",
+            paperclipSessionMessageMarkdown: params.prompt,
           },
           requestedByActorType: "system",
           requestedByActorId: pluginId,

@@ -53,6 +53,7 @@ const manifest: PaperclipPluginManifestV1 = {
       adapterPreference: ["codex_local"],
       adapterConfig: {
         modelReasoningEffort: "medium",
+        promptTemplate: "{{context.paperclipSessionMessageMarkdown}}",
         dangerouslyBypassApprovalsAndSandbox: false,
         extraArgs: ["--skip-git-repo-check", "--sandbox", "read-only"],
         paperclipSkillSync: { desiredSkills: [] },
