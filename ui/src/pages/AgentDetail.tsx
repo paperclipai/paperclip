@@ -187,7 +187,7 @@ function shouldUseMarkdownInstructionsEditor(input: {
 }) {
   const metadataMarkdown = input.detail?.markdown ?? input.summary?.markdown;
   if (typeof metadataMarkdown === "boolean") return metadataMarkdown;
-  return !input.selectedFileExists && isMarkdown(input.selectedPath);
+  return isMarkdown(input.selectedPath);
 }
 
 function formatEnvForDisplay(envValue: unknown, censorUsernameInLogs: boolean): string {

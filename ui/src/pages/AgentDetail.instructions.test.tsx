@@ -353,6 +353,24 @@ describe("PromptsTab instruction editor", () => {
     expect(mockAgentsApi.instructionsFile).not.toHaveBeenCalledWith("agent-1", "notes.md", "company-1");
   });
 
+  it("falls back to extension detection for existing .md files when metadata is missing", async () => {
+    const summary = makeSummary("FALLBACK.md", "FALLBACK.md", {
+      language: "text",
+      markdown: undefined,
+    });
+    await renderPromptsTab(
+      makeBundle("FALLBACK.md", [summary]),
+      { "FALLBACK.md": makeDetail(summary, "# Fallback", { markdown: undefined }) },
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("[data-testid=\"markdown-editor\"]")).not.toBeNull();
+      expect(markdownEditorRenderMock).toHaveBeenLastCalledWith(expect.objectContaining({
+        value: "# Fallback",
+      }));
+    });
+  });
+
   it("keeps the raw textarea when server metadata marks an .md file as non-Markdown", async () => {
     const summary = makeSummary("NOTES.md", "NOTES.md", {
       language: "text",
