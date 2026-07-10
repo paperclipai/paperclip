@@ -8,6 +8,7 @@ import type {
   CatalogSkillFileDetail,
   CatalogSkillSource,
   CompanySkillCompatibility,
+  CompanySkillCreateRequest,
   CompanySkillDetail,
   CompanySkillFileDetail,
   CompanySkillFileInventoryEntry,
@@ -73,8 +74,15 @@ import {
   type CompanySkillRouteSubject,
 } from "../lib/company-skill-routes";
 import {
+  SKILL_CREATE_ACCENTS,
+  buildBlankSkillDraft,
+  buildForkSkillDraft,
+  defaultSkillMarkdown,
   normalizeSkillDraftSlug,
+  skillAccentColor,
+  skillCreateDraftToPayload,
   splitCategoryDraft,
+  type SkillCreateDraft,
 } from "../lib/skill-create";
 import { SkillCardIcon } from "../components/SkillCardIcon";
 import { Button } from "@/components/ui/button";
@@ -1151,52 +1159,6 @@ export function DiscoveryGrid({
   );
 }
 
-type SkillCreateDraft = {
-  name: string;
-  slug: string;
-  tagline: string;
-  description: string;
-  color: string;
-  categories: string[];
-  markdown: string;
-  sharingScope: Exclude<CompanySkillSharingScope, "public_link">;
-  forkedFromSkillId: string | null;
-  forkedFromName: string | null;
-};
-
-function buildBlankSkillDraft(): SkillCreateDraft {
-  return {
-    name: "",
-    slug: "",
-    tagline: "",
-    description: "",
-    color: DISCOVERY_ACCENTS[0]!,
-    categories: [],
-    markdown: defaultSkillMarkdown("", ""),
-    sharingScope: "company",
-    forkedFromSkillId: null,
-    forkedFromName: null,
-  };
-}
-
-function buildForkSkillDraft(skill: CompanySkillDetail): SkillCreateDraft {
-  const name = `${skill.name} Fork`;
-  const slug = normalizeSkillDraftSlug(`${skill.slug}-fork`);
-  return {
-    name,
-    slug,
-    tagline: skill.tagline ?? "",
-    description: skill.description ?? "",
-    color: skill.color ?? skillAccentColor(skill.key, null),
-    categories: skill.categories,
-    markdown: skill.markdown.replace(/^name:\s*.*$/m, `name: ${name}`),
-    sharingScope: "company",
-    forkedFromSkillId: skill.id,
-    forkedFromName: skill.name,
-  };
-}
-
-
 function NewSkillWizard({
   initialDraft,
   onCreate,
@@ -1228,22 +1190,8 @@ function NewSkillWizard({
 
   const nameValid = draft.name.trim().length > 0;
   const effectiveSlug = draft.slug.trim() || normalizeSkillDraftSlug(draft.name);
-  const effectiveMarkdown = draft.markdown.trim().length > 0
-    ? draft.markdown
-    : defaultSkillMarkdown(draft.name, draft.tagline);
-
   function submit() {
-    onCreate({
-      name: draft.name.trim(),
-      slug: effectiveSlug || null,
-      description: draft.description.trim() || draft.tagline.trim() || null,
-      markdown: effectiveMarkdown,
-      color: draft.color,
-      tagline: draft.tagline.trim() || null,
-      categories: draft.categories,
-      sharingScope: draft.sharingScope,
-      forkedFromSkillId: draft.forkedFromSkillId,
-    });
+    onCreate(skillCreateDraftToPayload(draft));
   }
 
   return (
@@ -1321,24 +1269,10 @@ function NewSkillWizard({
               size={48}
               card={{
                 key: effectiveSlug || draft.name || "new-skill",
-                skillId: null,
-                catalogRef: null,
                 name: draft.name || "New Skill",
                 slug: effectiveSlug || "skill",
-                author: "you",
-                version: null,
-                tagline: draft.tagline || null,
-                description: draft.tagline,
-                categories: draft.categories,
                 iconUrl: null,
                 color: draft.color,
-                starCount: 0,
-                agentCount: 0,
-                forkCount: 0,
-                installed: false,
-                required: false,
-                forkedFrom: Boolean(draft.forkedFromSkillId),
-                updatedAt: Date.now(),
               }}
             />
             <div className="min-w-0">
@@ -1349,7 +1283,7 @@ function NewSkillWizard({
           <div>
             <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted-foreground">Color</label>
             <div className="flex flex-wrap gap-2">
-              {DISCOVERY_ACCENTS.map((color) => (
+              {SKILL_CREATE_ACCENTS.map((color) => (
                 <button
                   key={color}
                   type="button"
@@ -3672,6 +3606,7 @@ export function CompanySkills() {
   }>({ open: false, catalogSkill: null, conflict: null, defaultSlug: null, defaultForce: false, defaultAction: "install", error: null });
   const [discoverySearch, setDiscoverySearch] = useState("");
   const [discoverySort, setDiscoverySort] = useState<DiscoverySort>("agents");
+  const [createError, setCreateError] = useState<string | null>(null);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const parsedRoute = useMemo(() => parseSkillRoute(routePath), [routePath]);
   const isStudioNew = routePath === "studio/new";
@@ -3974,6 +3909,30 @@ export function CompanySkills() {
         tone: "error",
         title: "Project skill scan failed",
         body: error instanceof Error ? error.message : "Failed to scan project workspaces.",
+      });
+    },
+  });
+
+
+  const createSkill = useMutation({
+    mutationFn: (payload: CompanySkillCreateRequest) => companySkillsApi.create(selectedCompanyId!, payload),
+    onSuccess: async (skill) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
+      navigate(routeForSkill(skill));
+      setCreateError(null);
+      pushToast({
+        tone: "success",
+        title: skill.forkedFromSkillId ? "Skill fork created" : "Skill created",
+        body: `${skill.name} is now editable in the Paperclip workspace.`,
+      });
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Failed to create skill.";
+      setCreateError(message);
+      pushToast({
+        tone: "error",
+        title: "Skill creation failed",
+        body: message,
       });
     },
   });
