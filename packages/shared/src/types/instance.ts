@@ -71,6 +71,8 @@ export interface InstanceExperimentalSettings {
    */
   enableWorktreeRunExecution: boolean;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
+  enableStrandedIssueRecovery: boolean;
+  enableIssueProductivityReview: boolean;
 }
 
 export interface InstanceSettings {
