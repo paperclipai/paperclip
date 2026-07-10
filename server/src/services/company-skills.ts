@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, companySkills, pluginManagedResources } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
@@ -153,6 +153,17 @@ type RuntimeSkillEntryOptions = {
 };
 
 const skillInventoryRefreshPromises = new Map<string, Promise<void>>();
+const skillInventoryRefreshState = new Map<string, {
+  freshUntil: number;
+  bundledContentVersion: string | null;
+}>();
+const DEFAULT_SKILL_INVENTORY_REFRESH_TTL_MS = 60_000;
+
+export type CompanySkillServiceOptions = {
+  inventoryRefreshTtlMs?: number;
+  now?: () => number;
+  onInventoryScan?: (companyId: string) => void;
+};
 
 function selectCompanySkillColumns() {
   return {
@@ -723,6 +734,27 @@ function resolveBundledSkillsRoot() {
 function readBundledSkillRequired(markdown: string) {
   const { frontmatter } = parseFrontmatterMarkdown(markdown);
   return frontmatter.required !== false;
+}
+
+function bundledSkillContentVersion(skills: ImportedSkill[]) {
+  const hash = createHash("sha256");
+  for (const skill of [...skills].sort((left, right) => left.key.localeCompare(right.key))) {
+    hash.update(JSON.stringify({
+      key: skill.key,
+      slug: skill.slug,
+      name: skill.name,
+      description: skill.description,
+      markdown: skill.markdown,
+      sourceType: skill.sourceType,
+      sourceLocator: skill.sourceLocator,
+      sourceRef: skill.sourceRef,
+      trustLevel: skill.trustLevel,
+      compatibility: skill.compatibility,
+      fileInventory: skill.fileInventory,
+      metadata: skill.metadata,
+    }));
+  }
+  return hash.digest("hex");
 }
 
 function matchesRequestedSkill(relativeSkillPath: string, requestedSkillSlug: string | null) {
@@ -1566,11 +1598,19 @@ function toCompanySkillListItem(skill: CompanySkillListRow, attachedAgentCount: 
   };
 }
 
-export function companySkillService(db: Db) {
+export function companySkillService(db: Db, options: CompanySkillServiceOptions = {}) {
   const agents = agentService(db);
   const projects = projectService(db);
+  const inventoryRefreshTtlMs = Math.max(
+    1,
+    options.inventoryRefreshTtlMs ?? DEFAULT_SKILL_INVENTORY_REFRESH_TTL_MS,
+  );
+  const now = options.now ?? Date.now;
 
-  async function ensureBundledSkills(companyId: string) {
+  async function ensureBundledSkills(companyId: string, input: {
+    previousContentVersion: string | null;
+    force: boolean;
+  }) {
     for (const skillsRoot of resolveBundledSkillsRoot()) {
       const stats = await fs.stat(skillsRoot).catch(() => null);
       if (!stats?.isDirectory()) continue;
@@ -1592,9 +1632,16 @@ export function companySkillService(db: Db) {
         })))
         .catch(() => [] as ImportedSkill[]);
       if (bundledSkills.length === 0) continue;
-      return upsertImportedSkills(companyId, bundledSkills);
+      const contentVersion = bundledSkillContentVersion(bundledSkills);
+      if (!input.force && input.previousContentVersion === contentVersion) {
+        return { contentVersion, skills: [] as CompanySkill[] };
+      }
+      return {
+        contentVersion,
+        skills: await upsertImportedSkills(companyId, bundledSkills),
+      };
     }
-    return [];
+    return { contentVersion: null, skills: [] as CompanySkill[] };
   }
 
   async function pruneMissingLocalPathSkills(companyId: string) {
@@ -1624,11 +1671,15 @@ export function companySkillService(db: Db) {
     }
   }
 
-  async function ensureSkillInventoryCurrent(companyId: string) {
+  async function ensureSkillInventoryCurrent(companyId: string, input: { force?: boolean } = {}) {
+    const force = input.force === true;
+    const cachedState = skillInventoryRefreshState.get(companyId);
+    if (!force && cachedState && cachedState.freshUntil > now()) return;
+
     const existingRefresh = skillInventoryRefreshPromises.get(companyId);
     if (existingRefresh) {
       await existingRefresh;
-      return;
+      if (!force) return;
     }
 
     const refreshPromise = (async () => {
@@ -1640,8 +1691,17 @@ export function companySkillService(db: Db) {
       if (!companyExists) {
         throw notFound("Company not found");
       }
-      await ensureBundledSkills(companyId);
+      options.onInventoryScan?.(companyId);
+      const previousState = skillInventoryRefreshState.get(companyId);
+      const bundled = await ensureBundledSkills(companyId, {
+        previousContentVersion: previousState?.bundledContentVersion ?? null,
+        force,
+      });
       await pruneMissingLocalPathSkills(companyId);
+      skillInventoryRefreshState.set(companyId, {
+        freshUntil: now() + inventoryRefreshTtlMs,
+        bundledContentVersion: bundled.contentVersion,
+      });
     })();
 
     skillInventoryRefreshPromises.set(companyId, refreshPromise);
@@ -1652,6 +1712,11 @@ export function companySkillService(db: Db) {
         skillInventoryRefreshPromises.delete(companyId);
       }
     }
+  }
+
+  async function refreshInventory(companyId: string) {
+    await ensureSkillInventoryCurrent(companyId, { force: true });
+    return list(companyId);
   }
 
   async function list(companyId: string): Promise<CompanySkillListItem[]> {
@@ -2364,8 +2429,23 @@ export function companySkillService(db: Db) {
 
   async function upsertImportedSkills(companyId: string, imported: ImportedSkill[]): Promise<CompanySkill[]> {
     const out: CompanySkill[] = [];
+    if (imported.length === 0) return out;
+    const importedKeys = Array.from(new Set(imported.map((skill) => skill.key)));
+    const existingByKey = new Map(
+      (await db
+        .select(selectCompanySkillColumns())
+        .from(companySkills)
+        .where(and(
+          eq(companySkills.companyId, companyId),
+          inArray(companySkills.key, importedKeys),
+        )))
+        .map((row) => {
+          const skill = toCompanySkill(row);
+          return [skill.key, skill] as const;
+        }),
+    );
     for (const skill of imported) {
-      const existing = await getByKey(companyId, skill.key);
+      const existing = existingByKey.get(skill.key) ?? null;
       const existingMeta = existing ? getSkillMeta(existing) : {};
       const incomingMeta = skill.metadata && isPlainRecord(skill.metadata) ? skill.metadata : {};
       const incomingOwner = asString(incomingMeta.owner);
@@ -2562,5 +2642,6 @@ export function companySkillService(db: Db) {
     importPackageFiles,
     installUpdate,
     listRuntimeSkillEntries,
+    refreshInventory,
   };
 }

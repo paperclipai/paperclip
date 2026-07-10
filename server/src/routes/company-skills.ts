@@ -88,6 +88,25 @@ export function companySkillRoutes(db: Db) {
     res.json(result);
   });
 
+  router.post("/companies/:companyId/skills/refresh", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanMutateCompanySkills(req, companyId);
+    const result = await svc.refreshInventory(companyId);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.skills_inventory_refreshed",
+      entityType: "company",
+      entityId: companyId,
+      details: { skillCount: result.length },
+    });
+    res.json(result);
+  });
+
   router.get("/companies/:companyId/skills/:skillId", async (req, res) => {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;

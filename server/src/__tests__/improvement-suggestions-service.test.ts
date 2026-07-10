@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  companyMemberships,
   companies,
   createDb,
   heartbeatRuns,
   improvementSuggestions,
+  instanceUserRoles,
   issues,
 } from "@paperclipai/db";
 import {
@@ -34,6 +36,8 @@ describeEmbeddedPostgres("improvement suggestion governance workflow", () => {
 
   afterEach(async () => {
     await db.delete(improvementSuggestions);
+    await db.delete(instanceUserRoles);
+    await db.delete(companyMemberships);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(agents);
@@ -49,6 +53,8 @@ describeEmbeddedPostgres("improvement suggestion governance workflow", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const runId = randomUUID();
+    const otherAgentId = randomUUID();
+    const otherRunId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
@@ -58,6 +64,15 @@ describeEmbeddedPostgres("improvement suggestion governance workflow", () => {
       id: agentId,
       companyId,
       name: "Governance Auditor",
+      role: "general",
+      adapterType: "codex_local",
+      status: "idle",
+      adapterConfig: {},
+    });
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "Other Agent",
       role: "general",
       adapterType: "codex_local",
       status: "idle",
@@ -78,7 +93,14 @@ describeEmbeddedPostgres("improvement suggestion governance workflow", () => {
       status: "succeeded",
       contextSnapshot: { issueId },
     });
-    return { companyId, agentId, issueId, runId };
+    await db.insert(heartbeatRuns).values({
+      id: otherRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "succeeded",
+      contextSnapshot: { issueId },
+    });
+    return { companyId, agentId, issueId, runId, otherAgentId, otherRunId };
   }
 
   it("keeps agent-detected suggestions pending until a board decision", async () => {
@@ -106,10 +128,24 @@ describeEmbeddedPostgres("improvement suggestion governance workflow", () => {
       reviewedAt: null,
     });
 
+    await expect(svc.create(seeded.companyId, {
+      targetLayer: "company_skill",
+      title: "Spoofed run provenance",
+      summary: "An agent must not cite another agent's run as its authenticated source run.",
+      proposedChange: "Reject cross-agent source run attribution.",
+      evidence: [{ kind: "run", ref: seeded.otherRunId, note: null }],
+      sourceIssueId: seeded.issueId,
+    }, {
+      type: "agent",
+      agentId: seeded.agentId,
+      runId: seeded.otherRunId,
+    })).rejects.toMatchObject({ status: 422 });
+
+    await db.insert(instanceUserRoles).values({ userId: "board-user", role: "instance_admin" });
     const reviewed = await svc.review(seeded.companyId, created.id, {
       decision: "accept",
       note: "Evidence supports making this a universal handoff guardrail.",
-    }, "board-user");
+    }, { userId: "board-user" });
     expect(reviewed).toMatchObject({
       status: "accepted",
       reviewedByUserId: "board-user",
@@ -118,12 +154,19 @@ describeEmbeddedPostgres("improvement suggestion governance workflow", () => {
     await expect(svc.review(seeded.companyId, created.id, {
       decision: "reject",
       note: "A second decision must not overwrite the audit trail.",
-    }, "other-board-user")).rejects.toMatchObject({ status: 409 });
+    }, { userId: "board-user" })).rejects.toMatchObject({ status: 409 });
   });
 
   it("records board-directed changes as accepted directives, not agent suggestions", async () => {
     const seeded = await seed();
     const svc = improvementSuggestionService(db);
+    await db.insert(companyMemberships).values({
+      companyId: seeded.companyId,
+      principalType: "user",
+      principalId: "board-user",
+      status: "active",
+      membershipRole: "owner",
+    });
     const created = await svc.create(seeded.companyId, {
       targetLayer: "company_sop",
       title: "Adopt a weekly incident review",
@@ -134,7 +177,8 @@ describeEmbeddedPostgres("improvement suggestion governance workflow", () => {
     }, {
       type: "board",
       userId: "board-user",
-    });
+      runId: seeded.runId,
+    } as any);
 
     expect(created).toMatchObject({
       originKind: "board_directed",
@@ -142,10 +186,96 @@ describeEmbeddedPostgres("improvement suggestion governance workflow", () => {
       createdByUserId: "board-user",
       reviewedByUserId: "board-user",
       reviewNote: "Recorded as a board-directed change.",
+      sourceRunId: null,
     });
     await expect(svc.review(seeded.companyId, created.id, {
       decision: "reject",
       note: "Directives do not enter the suggestion review queue.",
-    }, "board-user")).rejects.toMatchObject({ status: 409 });
+    }, { userId: "board-user" })).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("reserves root-level directives and reviews for instance administrators", async () => {
+    const seeded = await seed();
+    const svc = improvementSuggestionService(db);
+    await db.insert(companyMemberships).values([
+      {
+        companyId: seeded.companyId,
+        principalType: "user",
+        principalId: "owner-user",
+        status: "active",
+        membershipRole: "owner",
+      },
+      {
+        companyId: seeded.companyId,
+        principalType: "user",
+        principalId: "admin-user",
+        status: "active",
+        membershipRole: "admin",
+      },
+      {
+        companyId: seeded.companyId,
+        principalType: "user",
+        principalId: "operator-user",
+        status: "active",
+        membershipRole: "operator",
+      },
+    ]);
+
+    const companyInput = {
+      targetLayer: "company_skill" as const,
+      title: "Improve local triage",
+      summary: "The company needs a stronger triage procedure.",
+      proposedChange: "Add a company-specific triage checklist.",
+      evidence: [{ kind: "issue" as const, ref: seeded.issueId, note: null }],
+      sourceIssueId: seeded.issueId,
+    };
+    await expect(svc.create(seeded.companyId, companyInput, {
+      type: "board",
+      userId: "operator-user",
+    })).rejects.toMatchObject({ status: 403 });
+
+    const companyDirective = await svc.create(seeded.companyId, companyInput, {
+      type: "board",
+      userId: "owner-user",
+    });
+    expect(companyDirective.originKind).toBe("board_directed");
+    const adminDirective = await svc.create(seeded.companyId, {
+      ...companyInput,
+      title: "Admin-directed local triage",
+    }, {
+      type: "board",
+      userId: "admin-user",
+    });
+    expect(adminDirective.originKind).toBe("board_directed");
+
+    await expect(svc.create(seeded.companyId, {
+      ...companyInput,
+      targetLayer: "orchestration_code",
+      title: "Change the root harness",
+    }, {
+      type: "board",
+      userId: "owner-user",
+    })).rejects.toMatchObject({ status: 403 });
+
+    const pendingRoot = await svc.create(seeded.companyId, {
+      ...companyInput,
+      targetLayer: "root_skill",
+      title: "Agent-detected root change",
+    }, {
+      type: "agent",
+      agentId: seeded.agentId,
+      runId: seeded.runId,
+    });
+    await expect(svc.review(seeded.companyId, pendingRoot.id, {
+      decision: "accept",
+      note: "Company owners cannot approve root changes.",
+    }, { userId: "owner-user" })).rejects.toMatchObject({ status: 403 });
+
+    await db.insert(instanceUserRoles).values({ userId: "instance-admin", role: "instance_admin" });
+    const accepted = await svc.review(seeded.companyId, pendingRoot.id, {
+      decision: "accept",
+      note: "Instance administrator accepts the root-level improvement.",
+    }, { userId: "instance-admin" });
+    expect(accepted.status).toBe("accepted");
   });
 });

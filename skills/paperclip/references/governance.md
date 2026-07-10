@@ -78,8 +78,8 @@ Post the classification as a comment on the failed issue. Then record an evidenc
 }
 ```
 
-Board review payloads use `{ "decision": "accept | reject", "note": "decision rationale" }`. A suggestion can be decided only once; later review attempts fail instead of rewriting the original decision.
+Board review payloads use `{ "decision": "accept | reject", "note": "decision rationale" }`. A suggestion can be decided only once; later review attempts fail instead of rewriting the original decision. Company owners and admins may record directives and review company-level targets. Root-level targets (`root_skill`, `orchestration_code`, `qa_gate`, and `workspace_guard`) require instance-admin authority. Operators, viewers, and ordinary members are not governance authorities.
 
-Board-created records are stored separately as `board_directed` changes and are accepted at creation. They do not masquerade as agent-detected suggestions and cannot be sent through the suggestion review queue. This preserves the difference between an operator directive and an agent's recommendation in the audit trail.
+Authorized board-created records are stored separately as `board_directed` changes and are accepted at creation. They do not masquerade as agent-detected suggestions and cannot be sent through the suggestion review queue. This preserves the difference between an operator directive and an agent's recommendation in the audit trail. Board-created directives do not attach a `sourceRunId`; authenticated agent suggestions may attach only the creating agent's own run from the same company.
 
 Create the follow-up improvement issue when `should_create_followup_issue` is true (respect the two-level topology: improvement issues are new parent issues or lanes under an ops/governance parent, never grandchildren). Link that issue in the suggestion evidence. For `durable_fix_target: root_skill` or `orchestration_code`, the follow-up issue and suggestion should request board/instance-owner review since the fix lives outside the company.

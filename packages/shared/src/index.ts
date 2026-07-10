@@ -3,7 +3,9 @@ export {
   IMPROVEMENT_SUGGESTION_ORIGIN_KINDS,
   IMPROVEMENT_SUGGESTION_STATUSES,
   IMPROVEMENT_TARGET_LAYERS,
+  ROOT_LEVEL_IMPROVEMENT_TARGET_LAYERS,
   IMPROVEMENT_EVIDENCE_KINDS,
+  isRootLevelImprovementTarget,
 } from "./types/improvement-suggestion.js";
 export type {
   ImprovementSuggestion,

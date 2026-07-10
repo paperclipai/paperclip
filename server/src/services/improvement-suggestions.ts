@@ -2,8 +2,10 @@ import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companyMemberships,
   heartbeatRuns,
   improvementSuggestions,
+  instanceUserRoles,
   issues,
 } from "@paperclipai/db";
 import type {
@@ -14,6 +16,7 @@ import type {
   ImprovementTargetLayer,
   ReviewImprovementSuggestion,
 } from "@paperclipai/shared";
+import { isRootLevelImprovementTarget } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 
 type ImprovementSuggestionRow = typeof improvementSuggestions.$inferSelect;
@@ -39,14 +42,22 @@ export function improvementSuggestionService(db: Db) {
     if (!issue) throw unprocessable("Source issue does not belong to this company");
   }
 
-  async function assertActorRun(companyId: string, runId: string | null | undefined) {
+  async function assertActorRun(
+    companyId: string,
+    agentId: string,
+    runId: string | null | undefined,
+  ) {
     if (!runId) return;
     const run = await db
       .select({ id: heartbeatRuns.id })
       .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)))
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.agentId, agentId),
+        eq(heartbeatRuns.id, runId),
+      ))
       .then((rows) => rows[0] ?? null);
-    if (!run) throw unprocessable("Actor run does not belong to this company");
+    if (!run) throw unprocessable("Actor run does not belong to the authenticated agent in this company");
   }
 
   async function assertAgent(companyId: string, agentId: string | null | undefined) {
@@ -57,6 +68,55 @@ export function improvementSuggestionService(db: Db) {
       .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)))
       .then((rows) => rows[0] ?? null);
     if (!agent) throw forbidden("Agent key cannot access another company");
+  }
+
+  async function resolveBoardAuthority(
+    companyId: string,
+    actor: { userId: string; localImplicit?: boolean },
+  ): Promise<"instance_admin" | "company_governance"> {
+    if (actor.localImplicit) return "instance_admin";
+    const [instanceAdmin, membership] = await Promise.all([
+      db
+        .select({ id: instanceUserRoles.id })
+        .from(instanceUserRoles)
+        .where(and(
+          eq(instanceUserRoles.userId, actor.userId),
+          eq(instanceUserRoles.role, "instance_admin"),
+        ))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          status: companyMemberships.status,
+          membershipRole: companyMemberships.membershipRole,
+        })
+        .from(companyMemberships)
+        .where(and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, actor.userId),
+        ))
+        .then((rows) => rows[0] ?? null),
+    ]);
+    if (instanceAdmin) return "instance_admin";
+    if (
+      membership?.status === "active"
+      && (membership.membershipRole === "owner" || membership.membershipRole === "admin")
+    ) {
+      return "company_governance";
+    }
+    throw forbidden("Company owner or admin authority required for improvement governance");
+  }
+
+  async function assertBoardAuthority(
+    companyId: string,
+    targetLayer: ImprovementTargetLayer,
+    actor: { userId: string; localImplicit?: boolean },
+  ) {
+    const authority = await resolveBoardAuthority(companyId, actor);
+    if (isRootLevelImprovementTarget(targetLayer) && authority !== "instance_admin") {
+      throw forbidden(`Instance admin authority required for ${targetLayer} improvements`);
+    }
+    return authority;
   }
 
   async function get(companyId: string, suggestionId: string) {
@@ -96,12 +156,16 @@ export function improvementSuggestionService(db: Db) {
       companyId: string,
       input: CreateImprovementSuggestion,
       actor:
-        | { type: "board"; userId: string; runId?: string | null }
+        | { type: "board"; userId: string; localImplicit?: boolean }
         | { type: "agent"; agentId: string; runId?: string | null },
     ) {
       await assertSourceIssue(companyId, input.sourceIssueId);
-      await assertActorRun(companyId, actor.runId);
-      if (actor.type === "agent") await assertAgent(companyId, actor.agentId);
+      if (actor.type === "agent") {
+        await assertAgent(companyId, actor.agentId);
+        await assertActorRun(companyId, actor.agentId, actor.runId);
+      } else {
+        await assertBoardAuthority(companyId, input.targetLayer, actor);
+      }
 
       const now = new Date();
       const boardDirected = actor.type === "board";
@@ -117,7 +181,7 @@ export function improvementSuggestionService(db: Db) {
           proposedChange: input.proposedChange,
           evidence: input.evidence.map((entry) => ({ ...entry, note: entry.note ?? null })),
           sourceIssueId: input.sourceIssueId ?? null,
-          sourceRunId: actor.runId ?? null,
+          sourceRunId: actor.type === "agent" ? actor.runId ?? null : null,
           createdByAgentId: actor.type === "agent" ? actor.agentId : null,
           createdByUserId: actor.type === "board" ? actor.userId : null,
           reviewedByUserId: boardDirected ? actor.userId : null,
@@ -135,15 +199,17 @@ export function improvementSuggestionService(db: Db) {
       companyId: string,
       suggestionId: string,
       input: ReviewImprovementSuggestion,
-      reviewerUserId: string,
+      reviewer: { userId: string; localImplicit?: boolean },
     ) {
+      const current = await get(companyId, suggestionId);
+      await assertBoardAuthority(companyId, current.targetLayer, reviewer);
       const now = new Date();
       const status = input.decision === "accept" ? "accepted" : "rejected";
       const row = await db
         .update(improvementSuggestions)
         .set({
           status,
-          reviewedByUserId: reviewerUserId,
+          reviewedByUserId: reviewer.userId,
           reviewNote: input.note,
           reviewedAt: now,
           updatedAt: now,

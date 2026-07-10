@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   IMPROVEMENT_SUGGESTION_ORIGIN_KINDS,
@@ -9,6 +9,7 @@ import {
   type ImprovementSuggestionOriginKind,
   type ImprovementSuggestionStatus,
   type ImprovementTargetLayer,
+  isRootLevelImprovementTarget,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -17,6 +18,25 @@ import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 function enumQueryValue<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
   return typeof value === "string" && allowed.includes(value as T) ? value as T : undefined;
+}
+
+function assertImprovementGovernanceBoard(
+  req: Request,
+  companyId: string,
+  targetLayer?: ImprovementTargetLayer,
+) {
+  assertBoard(req);
+  const instanceAuthority = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
+  if (instanceAuthority) return;
+  const membership = req.actor.memberships?.find((entry) => entry.companyId === companyId);
+  const companyAuthority = membership?.status === "active"
+    && (membership.membershipRole === "owner" || membership.membershipRole === "admin");
+  if (!companyAuthority) {
+    throw forbidden("Company owner or admin authority required for improvement governance");
+  }
+  if (targetLayer && isRootLevelImprovementTarget(targetLayer)) {
+    throw forbidden(`Instance admin authority required for ${targetLayer} improvements`);
+  }
 }
 
 export function improvementSuggestionRoutes(db: Db) {
@@ -56,10 +76,13 @@ export function improvementSuggestionRoutes(db: Db) {
           ? {
               type: "board" as const,
               userId: req.actor.userId ?? "board",
-              runId: req.actor.runId ?? null,
+              localImplicit: req.actor.source === "local_implicit",
             }
           : null;
       if (!actor) throw forbidden("Board or agent authentication required");
+      if (actor.type === "board") {
+        assertImprovementGovernanceBoard(req, companyId, req.body.targetLayer);
+      }
 
       const suggestion = await svc.create(companyId, req.body, actor);
       await logActivity(db, {
@@ -92,13 +115,16 @@ export function improvementSuggestionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
-      assertBoard(req);
+      assertImprovementGovernanceBoard(req, companyId);
       const actor = getActorInfo(req);
       const suggestion = await svc.review(
         companyId,
         req.params.suggestionId as string,
         req.body,
-        req.actor.userId ?? "board",
+        {
+          userId: req.actor.userId ?? "board",
+          localImplicit: req.actor.source === "local_implicit",
+        },
       );
       await logActivity(db, {
         companyId,

@@ -23,13 +23,19 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("companySkillService.list", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof companySkillService>;
+  let inventoryScanCount = 0;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const cleanupDirs = new Set<string>();
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-skills-service-");
     db = createDb(tempDb.connectionString);
-    svc = companySkillService(db);
+    svc = companySkillService(db, {
+      inventoryRefreshTtlMs: 60_000,
+      onInventoryScan: () => {
+        inventoryScanCount += 1;
+      },
+    });
   }, 20_000);
 
   afterEach(async () => {
@@ -37,6 +43,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await db.delete(companies);
     await Promise.all(Array.from(cleanupDirs, (dir) => fs.rm(dir, { recursive: true, force: true })));
     cleanupDirs.clear();
+    inventoryScanCount = 0;
   });
 
   afterAll(async () => {
@@ -132,6 +139,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       .then((rows) => rows[0] ?? null);
 
     expect(refreshed?.updatedAt.toISOString()).toBe(sentinelUpdatedAt.toISOString());
+    expect(inventoryScanCount).toBe(1);
     expect(runtimeEntries.find((entry) => entry.key === paperclipDev!.key)).toMatchObject({
       required: false,
       requiredReason: null,
@@ -139,6 +147,9 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(runtimeEntries.find((entry) => entry.key === "paperclipai/paperclip/paperclip")).toMatchObject({
       required: true,
     });
+
+    await svc.refreshInventory(companyId);
+    expect(inventoryScanCount).toBe(2);
   });
 
   it("prevents deleting bundled Paperclip skills even when no agent uses them", async () => {

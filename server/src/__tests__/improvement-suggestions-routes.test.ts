@@ -116,6 +116,11 @@ describe("improvement suggestion routes", () => {
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "improvement.board_directive.recorded",
     }));
+    expect(mockService.create).toHaveBeenCalledWith("company-1", payload, {
+      type: "board",
+      userId: "board-user",
+      localImplicit: true,
+    });
 
     const rejected = await request(await createApp({
       type: "agent",
@@ -146,11 +151,76 @@ describe("improvement suggestion routes", () => {
       "company-1",
       suggestionId,
       { decision: "accept", note: "Evidence is sufficient." },
-      "board-user",
+      { userId: "board-user", localImplicit: true },
     );
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "improvement.suggestion.accepted",
       entityId: suggestionId,
     }));
+  });
+
+  it("rejects ordinary company members as board governance authority", async () => {
+    const operator = {
+      type: "board",
+      userId: "operator-user",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "operator" }],
+      source: "session",
+      isInstanceAdmin: false,
+    };
+    const createResponse = await request(await createApp(operator))
+      .post("/api/companies/company-1/improvement-suggestions")
+      .send({ ...payload, targetLayer: "company_sop" });
+    expect(createResponse.status).toBe(403);
+    expect(mockService.create).not.toHaveBeenCalled();
+
+    const reviewResponse = await request(await createApp(operator))
+      .post(`/api/companies/company-1/improvement-suggestions/${suggestionId}/review`)
+      .send({ decision: "accept", note: "Operators cannot review governance suggestions." });
+    expect(reviewResponse.status).toBe(403);
+    expect(mockService.review).not.toHaveBeenCalled();
+  });
+
+  it("allows company owners for company-level targets but reserves root targets for instance admins", async () => {
+    const owner = {
+      type: "board",
+      userId: "owner-user",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "owner" }],
+      source: "session",
+      isInstanceAdmin: false,
+    };
+    mockService.create.mockResolvedValue({
+      ...suggestion("board_directed", "accepted"),
+      targetLayer: "company_sop",
+    });
+    const companyResponse = await request(await createApp(owner))
+      .post("/api/companies/company-1/improvement-suggestions")
+      .send({ ...payload, targetLayer: "company_sop" });
+    expect(companyResponse.status).toBe(201);
+
+    mockService.create.mockClear();
+    const rootResponse = await request(await createApp(owner))
+      .post("/api/companies/company-1/improvement-suggestions")
+      .send(payload);
+    expect(rootResponse.status).toBe(403);
+    expect(mockService.create).not.toHaveBeenCalled();
+
+    mockService.create.mockResolvedValue(suggestion("board_directed", "accepted"));
+    const instanceAdminResponse = await request(await createApp({
+      type: "board",
+      userId: "instance-admin",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: true,
+    }))
+      .post("/api/companies/company-1/improvement-suggestions")
+      .send(payload);
+    expect(instanceAdminResponse.status).toBe(201);
+    expect(mockService.create).toHaveBeenCalledWith("company-1", payload, {
+      type: "board",
+      userId: "instance-admin",
+      localImplicit: false,
+    });
   });
 });

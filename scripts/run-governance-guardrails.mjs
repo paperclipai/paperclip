@@ -33,6 +33,7 @@ for (const [index, suite] of suites.entries()) {
       "--project",
       "@paperclipai/server",
       suite,
+      "--silent=passed-only",
       "--pool=forks",
       "--poolOptions.forks.isolate=true",
     ],

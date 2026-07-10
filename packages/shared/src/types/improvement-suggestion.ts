@@ -22,6 +22,19 @@ export const IMPROVEMENT_TARGET_LAYERS = [
 ] as const;
 export type ImprovementTargetLayer = (typeof IMPROVEMENT_TARGET_LAYERS)[number];
 
+export const ROOT_LEVEL_IMPROVEMENT_TARGET_LAYERS = [
+  "root_skill",
+  "orchestration_code",
+  "qa_gate",
+  "workspace_guard",
+] as const satisfies readonly ImprovementTargetLayer[];
+
+export function isRootLevelImprovementTarget(
+  targetLayer: ImprovementTargetLayer,
+): targetLayer is (typeof ROOT_LEVEL_IMPROVEMENT_TARGET_LAYERS)[number] {
+  return (ROOT_LEVEL_IMPROVEMENT_TARGET_LAYERS as readonly string[]).includes(targetLayer);
+}
+
 export const IMPROVEMENT_EVIDENCE_KINDS = [
   "issue",
   "comment",

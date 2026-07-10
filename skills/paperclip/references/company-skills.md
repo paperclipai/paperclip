@@ -23,6 +23,7 @@ The canonical model is:
 ## Core Endpoints
 
 - `GET /api/companies/:companyId/skills`
+- `POST /api/companies/:companyId/skills/refresh`
 - `GET /api/companies/:companyId/skills/:skillId`
 - `POST /api/companies/:companyId/skills/import`
 - `POST /api/companies/:companyId/skills/scan-projects`
@@ -183,6 +184,8 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agents"
 ## Notes
 
 - Built-in Paperclip runtime skills are still added automatically when required by the adapter.
+- Normal inventory reads use a short bounded cache and content fingerprint so repeated heartbeats do not rescan and rewrite every bundled skill. After changing skill files on disk, an authorized operator can call `POST /api/companies/:companyId/skills/refresh` for an immediate content-aware refresh.
+- Heartbeat run context records `paperclipSkillTelemetry` with distinct `requestedKeys`, effective `desiredKeys`, inventory `availableKeys`, and the available `preparedKeys` intersection. `unavailableDesiredKeys` stays visible. This pre-adapter telemetry does not claim a skill was activated or invoked.
 - If a reference is missing or ambiguous, the API returns `422`.
 - Prefer linking back to the relevant issue, approval, and agent when you comment about skill changes.
 - Use company portability routes when you need whole-package import/export, not just a skill:

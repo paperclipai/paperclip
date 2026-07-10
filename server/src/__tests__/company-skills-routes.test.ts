@@ -14,6 +14,7 @@ const mockAccessService = vi.hoisted(() => ({
 const mockCompanySkillService = vi.hoisted(() => ({
   importFromSource: vi.fn(),
   deleteSkill: vi.fn(),
+  refreshInventory: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -97,6 +98,7 @@ describe("company skill mutation permissions", () => {
       slug: "find-skills",
       name: "Find Skills",
     });
+    mockCompanySkillService.refreshInventory.mockResolvedValue([]);
     mockLogActivity.mockResolvedValue(undefined);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(false);
@@ -118,6 +120,25 @@ describe("company skill mutation permissions", () => {
       imported: [],
       warnings: [],
     });
+  });
+
+  it("lets authorized operators explicitly refresh the cached skill inventory", async () => {
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/refresh")
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanySkillService.refreshInventory).toHaveBeenCalledWith("company-1");
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.skills_inventory_refreshed",
+      entityId: "company-1",
+    }));
   });
 
   it("tracks public GitHub skill imports with an explicit skill reference", async () => {
