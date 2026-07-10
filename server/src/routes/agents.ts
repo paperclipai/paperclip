@@ -3665,11 +3665,18 @@ export function agentRoutes(
     } else if (providedContextSnapshot && req.actor.type === "agent") {
       const contextIssueId = asNonEmptyString(providedContextSnapshot.issueId) ?? asNonEmptyString(payloadRecord?.issueId);
       const contextChildIssueId = asNonEmptyString(providedContextSnapshot.childIssueId) ?? asNonEmptyString(payloadRecord?.childIssueId);
-      const safeChildBlockedManagerWake =
+      const currentChildBlockedManagerWake =
+        req.body.reason === "child_blocked_manager_escalation" &&
+        asNonEmptyString(providedContextSnapshot.wakeReason) === "child_blocked_manager_escalation" &&
+        asNonEmptyString(providedContextSnapshot.source) === "issue.child_blocked_manager_escalation" &&
+        asNonEmptyString(payloadRecord?.mutation) === "child_blocked_manager_escalation";
+      const legacyChildBlockedManagerWake =
         req.body.reason === "child_blocked_without_first_class_blocker" &&
         asNonEmptyString(providedContextSnapshot.wakeReason) === "child_blocked_without_first_class_blocker" &&
         asNonEmptyString(providedContextSnapshot.source) === "issue.child_blocked_escalation" &&
-        asNonEmptyString(payloadRecord?.mutation) === "child_blocked_escalation" &&
+        asNonEmptyString(payloadRecord?.mutation) === "child_blocked_escalation";
+      const safeChildBlockedManagerWake =
+        (currentChildBlockedManagerWake || legacyChildBlockedManagerWake) &&
         Boolean(contextIssueId) &&
         Boolean(contextChildIssueId);
       if (safeChildBlockedManagerWake && contextIssueId && contextChildIssueId) {
@@ -3677,7 +3684,15 @@ export function agentRoutes(
           issuesSvc.getById(contextIssueId),
           issuesSvc.getById(contextChildIssueId),
         ]);
-        if (contextIssue?.assigneeAgentId === id && contextChildIssue?.parentId === contextIssueId) {
+        const childAssignee = contextChildIssue?.assigneeAgentId
+          ? await svc.getById(contextChildIssue.assigneeAgentId)
+          : null;
+        const isChildManager = asNonEmptyString(childAssignee?.reportsTo) === id;
+        const isParentAssigneeFallback = contextIssue?.assigneeAgentId === id;
+        if (
+          contextChildIssue?.parentId === contextIssueId &&
+          (isChildManager || isParentAssigneeFallback)
+        ) {
           callerProvidedContextSnapshot = providedContextSnapshot;
         }
       }

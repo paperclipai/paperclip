@@ -547,6 +547,9 @@ describe("issue dependency wakeups in issue routes", () => {
     mockIssueService.addComment
       .mockResolvedValueOnce({ id: "child-comment-1", body: "QA failed; FE needs to repair the visible hero.", issueId: "child-1" })
       .mockResolvedValueOnce({ id: "parent-comment-1", body: "Paperclip escalated a blocked child lane.", issueId: "parent-1" });
+    mockAgentService.getById.mockImplementation(async (agentId: string) => agentId === "ceo-agent"
+      ? { id: agentId, companyId: "company-1", name: "CEO", status: "idle", reportsTo: null }
+      : null);
 
     const app = await createApp({
       type: "agent",
@@ -563,7 +566,7 @@ describe("issue dependency wakeups in issue routes", () => {
     await vi.waitFor(() => {
       expect(mockIssueService.addComment).toHaveBeenCalledWith(
         "parent-1",
-        expect.stringContaining("Child blocked escalation: `child-1:no-blocker`"),
+        expect.stringContaining("Child blocked escalation: `child-1:blocked`"),
         {},
         expect.objectContaining({
           authorType: "system",
@@ -573,11 +576,11 @@ describe("issue dependency wakeups in issue routes", () => {
               expect.objectContaining({
                 title: "Escalation",
                 rows: expect.arrayContaining([
-                  expect.objectContaining({ type: "key_value", label: "kind", value: "child_blocked_without_first_class_blocker" }),
+                  expect.objectContaining({ type: "key_value", label: "kind", value: "child_blocked_manager_escalation" }),
                   expect.objectContaining({ type: "key_value", label: "childIssueId", value: "child-1" }),
                   expect.objectContaining({ type: "key_value", label: "sourceCommentId", value: "child-comment-1" }),
                   expect.objectContaining({ type: "key_value", label: "sourceCommentExcerpt", value: "QA failed; FE needs to repair the visible hero." }),
-                  expect.objectContaining({ type: "key_value", label: "dedupeKey", value: "parent-1:child-1:no-blocker" }),
+                  expect.objectContaining({ type: "key_value", label: "dedupeKey", value: "parent-1:child-1:blocked" }),
                   expect.objectContaining({ type: "key_value", label: "cooldownMinutes", value: "60" }),
                 ]),
               }),
@@ -588,8 +591,8 @@ describe("issue dependency wakeups in issue routes", () => {
       expect(mockWakeup).toHaveBeenCalledWith(
         "ceo-agent",
         expect.objectContaining({
-          reason: "child_blocked_without_first_class_blocker",
-          idempotencyKey: "child_blocked_without_first_class_blocker:parent-1:child-1:no-blocker",
+          reason: "child_blocked_manager_escalation",
+          idempotencyKey: "child_blocked_manager_escalation:parent-1:child-1:blocked",
           payload: expect.objectContaining({
             issueId: "parent-1",
             childIssueId: "child-1",
@@ -598,7 +601,7 @@ describe("issue dependency wakeups in issue routes", () => {
           }),
           contextSnapshot: expect.objectContaining({
             issueId: "parent-1",
-            wakeReason: "child_blocked_without_first_class_blocker",
+            wakeReason: "child_blocked_manager_escalation",
             childIssueId: "child-1",
           }),
         }),
@@ -700,7 +703,7 @@ describe("issue dependency wakeups in issue routes", () => {
       expect(mockWakeup).toHaveBeenCalledWith(
         "cto-agent",
         expect.objectContaining({
-          reason: "child_blocked_without_first_class_blocker",
+          reason: "child_blocked_manager_escalation",
           payload: expect.objectContaining({
             issueId: "parent-1",
             childIssueId: "child-1",
@@ -718,7 +721,7 @@ describe("issue dependency wakeups in issue routes", () => {
     });
     expect(mockWakeup).not.toHaveBeenCalledWith(
       "ceo-agent",
-      expect.objectContaining({ reason: "child_blocked_without_first_class_blocker" }),
+      expect.objectContaining({ reason: "child_blocked_manager_escalation" }),
     );
   });
 
@@ -787,6 +790,9 @@ describe("issue dependency wakeups in issue routes", () => {
         createdAt: new Date(),
       },
     ]);
+    mockAgentService.getById.mockImplementation(async (agentId: string) => agentId === "ceo-agent"
+      ? { id: agentId, companyId: "company-1", name: "CEO", status: "idle", reportsTo: null }
+      : null);
 
     const app = await createApp({
       type: "agent",
@@ -805,32 +811,50 @@ describe("issue dependency wakeups in issue routes", () => {
       expect(mockWakeup).toHaveBeenCalledWith(
         "ceo-agent",
         expect.objectContaining({
-          idempotencyKey: "child_blocked_without_first_class_blocker:parent-1:child-1:no-blocker",
-          reason: "child_blocked_without_first_class_blocker",
+          idempotencyKey: "child_blocked_manager_escalation:parent-1:child-1:blocked",
+          reason: "child_blocked_manager_escalation",
         }),
       );
     });
     expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
   });
 
-  it("does not escalate a blocked child lane that has a real unresolved blocker", async () => {
-    mockIssueService.getById.mockResolvedValue({
-      id: "child-1",
-      companyId: "company-1",
-      identifier: "PAP-211",
-      title: "QA lane",
-      description: null,
-      status: "blocked",
-      priority: "medium",
-      parentId: "parent-1",
-      assigneeAgentId: "cmo-agent",
-      assigneeUserId: null,
-      createdByAgentId: null,
-      createdByUserId: null,
-      executionWorkspaceId: null,
-      labels: [],
-      labelIds: [],
-    });
+  it("escalates a blocked child lane even when it has a real unresolved blocker", async () => {
+    mockIssueService.getById
+      .mockResolvedValueOnce({
+        id: "child-1",
+        companyId: "company-1",
+        identifier: "PAP-211",
+        title: "QA lane",
+        description: null,
+        status: "blocked",
+        priority: "medium",
+        parentId: "parent-1",
+        assigneeAgentId: "cmo-agent",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      })
+      .mockResolvedValueOnce({
+        id: "parent-1",
+        companyId: "company-1",
+        identifier: "PAP-210",
+        title: "Parent delivery",
+        description: null,
+        status: "in_progress",
+        priority: "medium",
+        parentId: null,
+        assigneeAgentId: "ceo-agent",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      });
     mockIssueService.update.mockResolvedValue({
       id: "child-1",
       companyId: "company-1",
@@ -853,12 +877,24 @@ describe("issue dependency wakeups in issue routes", () => {
       unresolvedBlockerCount: 1,
       unresolvedBlockerIssueIds: ["blocker-1"],
     });
-    mockIssueService.addComment.mockResolvedValueOnce({
-      id: "child-comment-1",
-      body: "Blocked by blocker-1.",
-      issueId: "child-1",
-    });
-
+    mockAgentService.getById.mockImplementation(async (agentId: string) => ({
+      id: agentId,
+      companyId: "company-1",
+      name: agentId === "cmo-agent" ? "CMO" : "CEO",
+      status: "idle",
+      reportsTo: agentId === "cmo-agent" ? "ceo-agent" : null,
+    }));
+    mockIssueService.addComment
+      .mockResolvedValueOnce({
+        id: "child-comment-1",
+        body: "Blocked by blocker-1.",
+        issueId: "child-1",
+      })
+      .mockResolvedValueOnce({
+        id: "parent-comment-1",
+        body: "Paperclip escalated a blocked child lane.",
+        issueId: "parent-1",
+      });
     const app = await createApp({
       type: "agent",
       agentId: "cmo-agent",
@@ -873,12 +909,24 @@ describe("issue dependency wakeups in issue routes", () => {
     expect(res.status).toBe(200);
     await vi.waitFor(() => {
       expect(mockIssueService.getDependencyReadiness).toHaveBeenCalledWith("child-1");
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "ceo-agent",
+        expect.objectContaining({
+          reason: "child_blocked_manager_escalation",
+          payload: expect.objectContaining({
+            unresolvedBlockerCount: 1,
+            unresolvedBlockerIssueIds: ["blocker-1"],
+            escalationTargetSource: "child_assignee_reports_to",
+          }),
+          contextSnapshot: expect.objectContaining({
+            wakeReason: "child_blocked_manager_escalation",
+            source: "issue.child_blocked_manager_escalation",
+            unresolvedBlockerIssueIds: ["blocker-1"],
+          }),
+        }),
+      );
     });
-    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
-    expect(mockWakeup).not.toHaveBeenCalledWith(
-      "ceo-agent",
-      expect.objectContaining({ reason: "child_blocked_without_first_class_blocker" }),
-    );
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(2);
   });
 
   it("escalates a self-owned child review lane to the parent manager", async () => {

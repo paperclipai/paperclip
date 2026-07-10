@@ -18,7 +18,7 @@ There are no execution grandchildren.
 - An execution lane is any issue with `parentId` set.
 - Execution lanes must not create child issues.
 - Engineer, QA, fix, and review loops stay inside the same execution-lane issue thread.
-- Hard blockers are reported in the execution lane and escalated to the PM, execution manager, CEO, or board through comments, status, blockers, review, approval, or issue-thread interactions.
+- Hard blockers are reported in the execution lane. When any child lane becomes `blocked`, Paperclip writes a durable parent escalation and wakes the child assignee's `reportsTo` manager, even when first-class blocker edges exist. The manager escalates through its own reporting chain to CEO/board when needed.
 - Parent issues can set `budgetLimits.issueTreeCents` to cap the parent plus direct lanes, and `budgetLimits.childIssuesCents` to cap execution lanes only.
 
 ## Role Rules
@@ -32,8 +32,9 @@ There are no execution grandchildren.
 
 - Parent issue plans up to 10 parallel deliverables and creates direct child execution lanes.
 - Engineer completes implementation in an execution lane, then QA comments or review stages drive fixes inside that same lane.
-- A blocker appears in an execution lane; the lane is marked blocked with a named unblock owner/action.
-- PM reviews blocked lanes from the parent issue and decides whether to revise scope, create another sibling lane, or escalate to board.
+- A blocker appears in an execution lane; the lane is marked blocked with a named unblock owner/action and `blockedByIssueIds` when another issue is the blocker.
+- The blocked agent's manager receives `PAPERCLIP_WAKE_REASON=child_blocked_manager_escalation`, reviews the child from the parent issue, proposes concrete recovery options, and decides whether to revise scope, reassign, create another sibling lane, resolve the blocker, or escalate through `reportsTo` to CEO/board.
+- Agent mentions are reference-only. Assignment, comments to the current assignee, `Next owner:` assignment handoffs, issue-thread interactions, and reporting-chain escalation are the actionable coordination paths.
 
 ## Incorrect Patterns
 

@@ -587,7 +587,7 @@ const REVIEW_REQUIRED_COMPLETION_MESSAGE =
   "This agent is configured to require review before it can mark issue work done.";
 
 function buildChildBlockedEscalationMarker(input: { childIssueId: string }) {
-  return `${CHILD_BLOCKED_ESCALATION_MARKER}: \`${input.childIssueId}:no-blocker\``;
+  return `${CHILD_BLOCKED_ESCALATION_MARKER}: \`${input.childIssueId}:blocked\``;
 }
 
 function buildChildReviewEscalationMarker(input: { childIssueId: string; sourceCommentId?: string | null }) {
@@ -687,13 +687,23 @@ function buildChildBlockedEscalationComment(input: {
   };
   actorAgentId: string | null;
   childComment: { id: string; body: string } | null;
+  unresolvedBlockerIssueIds: string[];
+  escalationAgentId: string | null;
+  escalationTargetSource: string;
   marker: string;
 }) {
+  const blockerSummary = input.unresolvedBlockerIssueIds.length > 0
+    ? `${input.unresolvedBlockerIssueIds.length} unresolved blocker edge(s): ${input.unresolvedBlockerIssueIds.join(", ")}`
+    : "no unresolved blocker edges";
   return [
-    "Paperclip found a blocked child with no blocker edge.",
+    "Paperclip raised a blocked child execution lane for manager action.",
     `Child: ${issueLabel(input.child)} ${input.child.title}`,
     `Parent: ${issueLabel(input.parent)} ${input.parent.title}`,
-    "Action needed: add a real blocker, convert to review/owner decision, reassign, or resolve manually.",
+    `Dependency state: ${blockerSummary}.`,
+    input.escalationAgentId
+      ? `Escalation target: ${input.escalationAgentId} (${input.escalationTargetSource}).`
+      : "Escalation target: board visibility because no live manager or parent assignee was available.",
+    "Manager action required: inspect the lane, propose concrete recovery options, resolve or reassign when authorized, and escalate through reportsTo to the board when a decision is needed.",
     input.marker,
   ].join("\n");
 }
@@ -5118,36 +5128,9 @@ export function issueRoutes(
           });
         }
 
-        let mentionedIds: string[] = [];
-        try {
-          mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
-        } catch (err) {
-          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
-        }
-
-        for (const mentionedId of mentionedIds) {
-          if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
-          addWakeup(mentionedId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_comment_mentioned",
-            payload: { issueId: id, commentId: comment.id },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: id,
-              taskId: id,
-              commentId: comment.id,
-              wakeCommentId: comment.id,
-              wakeReason: "issue_comment_mentioned",
-              source: "comment.mention",
-            },
-          });
-        }
       }
 
-      const agentLeftChildBlocked =
-        actor.actorType === "agent" &&
+      const childNeedsBlockedEscalation =
         issue.parentId &&
         issue.status === "blocked" &&
         issueAllowsAgentWakeups(issue) &&
@@ -5157,138 +5140,169 @@ export function issueRoutes(
           Array.isArray(req.body.blockedByIssueIds) ||
           Boolean(comment)
         );
-      if (agentLeftChildBlocked) {
+      if (childNeedsBlockedEscalation) {
         try {
-          const readiness = await svc.getDependencyReadiness(issue.id);
-          if (readiness.unresolvedBlockerCount === 0) {
-            const parent = await svc.getById(issue.parentId!);
-            const parentAssigneeAgentId = readNonEmptyString(parent?.assigneeAgentId);
-            if (
-              parent &&
-              parentAssigneeAgentId &&
-              issueAllowsAgentWakeups(parent) &&
-              !["done", "cancelled"].includes(parent.status)
-            ) {
-              let escalationAgentId = parentAssigneeAgentId;
-              let escalationTargetSource = "parent_assignee";
-              const childAssigneeAgentId = readNonEmptyString(issue.assigneeAgentId) ?? readNonEmptyString(actor.agentId);
-              const childAssignee = childAssigneeAgentId ? await agentsSvc.getById(childAssigneeAgentId) : null;
-              const childManagerAgentId = readNonEmptyString(readRecord(childAssignee)?.reportsTo);
-              if (childManagerAgentId && childManagerAgentId !== actor.agentId) {
-                const childManager = await agentsSvc.getById(childManagerAgentId);
-                if (isAssignableReviewAgent(childManager, issue.companyId)) {
-                  escalationAgentId = childManagerAgentId;
-                  escalationTargetSource = "child_assignee_reports_to";
-                }
-              }
-              const marker = buildChildBlockedEscalationMarker({ childIssueId: issue.id });
-              const recentParentComments = await svc.listComments(parent.id, { order: "desc", limit: 50 });
-              const now = new Date();
-              const alreadyEscalated = recentParentComments.some((candidate) =>
-                childBlockedEscalationCommentMatches({
-                  comment: candidate,
-                  childIssueId: issue.id,
-                  now,
-                }),
-              );
-              let escalationCommentId: string | null = null;
-              if (!alreadyEscalated) {
-                const sourceCommentExcerpt = comment ? collapseWhitespace(comment.body).slice(0, 500) : null;
-                const escalationComment = await svc.addComment(
-                  parent.id,
-                  buildChildBlockedEscalationComment({
-                    child: {
-                      id: issue.id,
-                      identifier: issue.identifier,
-                      title: issue.title,
-                      assigneeAgentId: issue.assigneeAgentId,
-                    },
-                    parent: {
-                      id: parent.id,
-                      identifier: parent.identifier,
-                      title: parent.title,
-                      assigneeAgentId: parent.assigneeAgentId,
-                    },
-                    actorAgentId: actor.agentId,
-                    childComment: comment ? { id: comment.id, body: comment.body } : null,
-                    marker,
-                  }),
-                  {},
-                  {
-                    authorType: "system",
-                    metadata: {
-                      version: 1,
-                      sections: [
-                        {
-                          title: "Escalation",
-                          rows: [
-                            { type: "key_value", label: "kind", value: "child_blocked_without_first_class_blocker" },
-                            { type: "key_value", label: "childIssueId", value: issue.id },
-                            { type: "key_value", label: "childIdentifier", value: issue.identifier ?? issue.id },
-                            { type: "key_value", label: "sourceCommentId", value: comment?.id ?? "none" },
-                            { type: "key_value", label: "sourceCommentExcerpt", value: sourceCommentExcerpt ?? "none" },
-                            { type: "key_value", label: "actorAgentId", value: actor.agentId ?? "unknown" },
-                            { type: "key_value", label: "dedupeKey", value: `${parent.id}:${issue.id}:no-blocker` },
-                            { type: "key_value", label: "cooldownMinutes", value: "60" },
-                          ],
-                        },
-                      ],
-                    },
-                  },
-                );
-                escalationCommentId = escalationComment.id;
-                await logActivity(db, {
-                  companyId: issue.companyId,
-                  actorType: "system",
-                  actorId: "system",
-                  agentId: actor.agentId,
-                  runId: actor.runId,
-                  action: "issue.child_blocked_escalated",
-                  entityType: "issue",
-                  entityId: parent.id,
-                  details: {
-                    identifier: parent.identifier,
-                    childIssueId: issue.id,
-                    childIdentifier: issue.identifier,
-                    childAssigneeAgentId: issue.assigneeAgentId,
-                    parentAssigneeAgentId,
-                    escalationAgentId,
-                    escalationTargetSource,
-                    escalationCommentId,
-                    sourceCommentId: comment?.id ?? null,
-                    reason: "child_blocked_without_first_class_blocker",
-                  },
-                });
-              }
+          const [readiness, parent] = await Promise.all([
+            svc.getDependencyReadiness(issue.id),
+            svc.getById(issue.parentId!),
+          ]);
+          if (parent) {
+            const parentAssigneeAgentId = readNonEmptyString(parent.assigneeAgentId);
+            const childAssigneeAgentId = readNonEmptyString(issue.assigneeAgentId);
+            const childAssignee = childAssigneeAgentId ? await agentsSvc.getById(childAssigneeAgentId) : null;
+            const childManagerAgentId = readNonEmptyString(readRecord(childAssignee)?.reportsTo);
 
+            let escalationAgentId: string | null = null;
+            let escalationTargetSource = "board_visibility";
+            if (childManagerAgentId && childManagerAgentId !== childAssigneeAgentId) {
+              const childManager = await agentsSvc.getById(childManagerAgentId);
+              if (isAssignableReviewAgent(childManager, issue.companyId)) {
+                escalationAgentId = childManagerAgentId;
+                escalationTargetSource = "child_assignee_reports_to";
+              }
+            }
+            if (
+              !escalationAgentId &&
+              parentAssigneeAgentId &&
+              parentAssigneeAgentId !== childAssigneeAgentId
+            ) {
+              const parentAssignee = await agentsSvc.getById(parentAssigneeAgentId);
+              if (isAssignableReviewAgent(parentAssignee, issue.companyId)) {
+                escalationAgentId = parentAssigneeAgentId;
+                escalationTargetSource = "parent_assignee_fallback";
+              }
+            }
+
+            const marker = buildChildBlockedEscalationMarker({ childIssueId: issue.id });
+            const recentParentComments = await svc.listComments(parent.id, { order: "desc", limit: 50 });
+            const now = new Date();
+            const existingEscalation = recentParentComments.find((candidate) =>
+              childBlockedEscalationCommentMatches({
+                comment: candidate,
+                childIssueId: issue.id,
+                now,
+              }),
+            );
+            let escalationCommentId = readNonEmptyString(existingEscalation?.id);
+            if (!existingEscalation) {
+              const sourceCommentExcerpt = comment ? collapseWhitespace(comment.body).slice(0, 500) : null;
+              const escalationComment = await svc.addComment(
+                parent.id,
+                buildChildBlockedEscalationComment({
+                  child: {
+                    id: issue.id,
+                    identifier: issue.identifier,
+                    title: issue.title,
+                    assigneeAgentId: issue.assigneeAgentId,
+                  },
+                  parent: {
+                    id: parent.id,
+                    identifier: parent.identifier,
+                    title: parent.title,
+                    assigneeAgentId: parent.assigneeAgentId,
+                  },
+                  actorAgentId: actor.agentId,
+                  childComment: comment ? { id: comment.id, body: comment.body } : null,
+                  unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+                  escalationAgentId,
+                  escalationTargetSource,
+                  marker,
+                }),
+                {},
+                {
+                  authorType: "system",
+                  metadata: {
+                    version: 1,
+                    sections: [
+                      {
+                        title: "Escalation",
+                        rows: [
+                          { type: "key_value", label: "kind", value: "child_blocked_manager_escalation" },
+                          { type: "key_value", label: "childIssueId", value: issue.id },
+                          { type: "key_value", label: "childIdentifier", value: issue.identifier ?? issue.id },
+                          { type: "key_value", label: "childAssigneeAgentId", value: childAssigneeAgentId ?? "none" },
+                          { type: "key_value", label: "managerAgentId", value: childManagerAgentId ?? "none" },
+                          { type: "key_value", label: "escalationAgentId", value: escalationAgentId ?? "none" },
+                          { type: "key_value", label: "escalationTargetSource", value: escalationTargetSource },
+                          { type: "key_value", label: "unresolvedBlockerCount", value: String(readiness.unresolvedBlockerCount) },
+                          { type: "key_value", label: "unresolvedBlockerIssueIds", value: readiness.unresolvedBlockerIssueIds.join(",") || "none" },
+                          { type: "key_value", label: "sourceCommentId", value: comment?.id ?? "none" },
+                          { type: "key_value", label: "sourceCommentExcerpt", value: sourceCommentExcerpt ?? "none" },
+                          { type: "key_value", label: "actorAgentId", value: actor.agentId ?? "board" },
+                          { type: "key_value", label: "dedupeKey", value: `${parent.id}:${issue.id}:blocked` },
+                          { type: "key_value", label: "cooldownMinutes", value: "60" },
+                        ],
+                      },
+                    ],
+                  },
+                },
+              );
+              escalationCommentId = escalationComment.id;
+              await logActivity(db, {
+                companyId: issue.companyId,
+                actorType: "system",
+                actorId: "system",
+                agentId: actor.agentId,
+                runId: actor.runId,
+                action: "issue.child_blocked_escalated",
+                entityType: "issue",
+                entityId: parent.id,
+                details: {
+                  identifier: parent.identifier,
+                  childIssueId: issue.id,
+                  childIdentifier: issue.identifier,
+                  childAssigneeAgentId,
+                  childManagerAgentId,
+                  parentAssigneeAgentId,
+                  escalationAgentId,
+                  escalationTargetSource,
+                  escalationCommentId,
+                  unresolvedBlockerCount: readiness.unresolvedBlockerCount,
+                  unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+                  sourceCommentId: comment?.id ?? null,
+                  reason: "child_blocked_manager_escalation",
+                },
+              });
+            }
+
+            if (escalationAgentId && issueAllowsAgentWakeups(parent)) {
               addWakeup(escalationAgentId, {
                 source: "automation",
                 triggerDetail: "system",
-                reason: "child_blocked_without_first_class_blocker",
-                idempotencyKey: `child_blocked_without_first_class_blocker:${parent.id}:${issue.id}:no-blocker`,
+                reason: "child_blocked_manager_escalation",
+                idempotencyKey: `child_blocked_manager_escalation:${parent.id}:${issue.id}:blocked`,
                 payload: {
                   issueId: parent.id,
                   childIssueId: issue.id,
                   childIdentifier: issue.identifier,
+                  childAssigneeAgentId,
+                  childManagerAgentId,
                   sourceCommentId: comment?.id ?? null,
                   escalationCommentId,
                   escalationAgentId,
                   escalationTargetSource,
-                  mutation: "child_blocked_escalation",
+                  unresolvedBlockerCount: readiness.unresolvedBlockerCount,
+                  unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+                  mutation: "child_blocked_manager_escalation",
                 },
                 requestedByActorType: actor.actorType,
                 requestedByActorId: actor.actorId,
                 contextSnapshot: {
                   issueId: parent.id,
                   taskId: parent.id,
-                  wakeReason: "child_blocked_without_first_class_blocker",
-                  source: "issue.child_blocked_escalation",
+                  ...(escalationCommentId ? { commentId: escalationCommentId, wakeCommentId: escalationCommentId } : {}),
+                  wakeReason: "child_blocked_manager_escalation",
+                  source: "issue.child_blocked_manager_escalation",
                   childIssueId: issue.id,
                   childIdentifier: issue.identifier,
+                  childAssigneeAgentId,
+                  childManagerAgentId,
                   sourceCommentId: comment?.id ?? null,
                   escalationCommentId,
                   escalationAgentId,
                   escalationTargetSource,
+                  unresolvedBlockerCount: readiness.unresolvedBlockerCount,
+                  unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
                 },
               });
             }
@@ -6727,36 +6741,6 @@ export function issueRoutes(
             },
           });
         }
-      }
-
-      let mentionedIds: string[] = [];
-      if (allowDirectAgentWakeups) {
-        try {
-          mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
-        } catch (err) {
-          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
-        }
-      }
-
-      for (const mentionedId of mentionedIds) {
-        if (wakeups.has(mentionedId)) continue;
-        if (actorIsAgent && actor.actorId === mentionedId) continue;
-        wakeups.set(mentionedId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "issue_comment_mentioned",
-          payload: { issueId: id, commentId: comment.id },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: id,
-            taskId: id,
-            commentId: comment.id,
-            wakeCommentId: comment.id,
-            wakeReason: "issue_comment_mentioned",
-            source: "comment.mention",
-          },
-        });
       }
 
       for (const [agentId, wakeup] of wakeups.entries()) {

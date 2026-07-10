@@ -68,7 +68,7 @@ describe("company-members helpers", () => {
     ]);
   });
 
-  it("includes human users in markdown mention options", () => {
+  it("includes human users and projects but excludes AI agents from markdown mention options", () => {
     const options = buildMarkdownMentionOptions({
       members: [activeMember({ principalId: "user-1", user: { id: "user-1", name: "Taylor", email: "taylor@example.com", image: null } })],
       agents: [{ id: "agent-1", name: "CodexCoder", status: "active", icon: "code" }],
@@ -77,7 +77,6 @@ describe("company-members helpers", () => {
 
     expect(options).toEqual([
       { id: "user:user-1", name: "Taylor", kind: "user", userId: "user-1" },
-      { id: "agent:agent-1", name: "CodexCoder", kind: "agent", agentId: "agent-1", agentIcon: "code" },
       { id: "project:project-1", name: "Paperclip App", kind: "project", projectId: "project-1", projectColor: "#336699" },
     ]);
   });

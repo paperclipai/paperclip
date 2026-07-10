@@ -187,8 +187,10 @@ const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
-const CHILD_BLOCKED_MANAGER_WAKE_REASON = "child_blocked_without_first_class_blocker";
-const CHILD_BLOCKED_MANAGER_WAKE_SOURCE = "issue.child_blocked_escalation";
+const CHILD_BLOCKED_MANAGER_WAKE_REASON = "child_blocked_manager_escalation";
+const CHILD_BLOCKED_MANAGER_WAKE_SOURCE = "issue.child_blocked_manager_escalation";
+const LEGACY_CHILD_BLOCKED_MANAGER_WAKE_REASON = "child_blocked_without_first_class_blocker";
+const LEGACY_CHILD_BLOCKED_MANAGER_WAKE_SOURCE = "issue.child_blocked_escalation";
 
 export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   summary: string,
@@ -2058,6 +2060,17 @@ export function shouldResetTaskSessionForWake(
   return false;
 }
 
+export function isMentionTriggeredWake(
+  reason: string | null | undefined,
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  return (
+    reason === "issue_comment_mentioned" ||
+    readNonEmptyString(contextSnapshot?.wakeReason) === "issue_comment_mentioned" ||
+    readNonEmptyString(contextSnapshot?.source) === "comment.mention"
+  );
+}
+
 function shouldRequireIssueCommentForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -2067,7 +2080,8 @@ function shouldRequireIssueCommentForWake(
     wakeReason === "execution_review_requested" ||
     wakeReason === "execution_approval_requested" ||
     wakeReason === "execution_changes_requested" ||
-    wakeReason === CHILD_BLOCKED_MANAGER_WAKE_REASON
+    wakeReason === CHILD_BLOCKED_MANAGER_WAKE_REASON ||
+    wakeReason === LEGACY_CHILD_BLOCKED_MANAGER_WAKE_REASON
   );
 }
 
@@ -2077,11 +2091,12 @@ function allowsChildBlockedManagerWake(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   const source = readNonEmptyString(contextSnapshot?.source);
   const childIssueId = readNonEmptyString(contextSnapshot?.childIssueId);
-  return (
-    wakeReason === CHILD_BLOCKED_MANAGER_WAKE_REASON &&
-    source === CHILD_BLOCKED_MANAGER_WAKE_SOURCE &&
-    Boolean(childIssueId)
-  );
+  const currentContract =
+    wakeReason === CHILD_BLOCKED_MANAGER_WAKE_REASON && source === CHILD_BLOCKED_MANAGER_WAKE_SOURCE;
+  const legacyContract =
+    wakeReason === LEGACY_CHILD_BLOCKED_MANAGER_WAKE_REASON &&
+    source === LEGACY_CHILD_BLOCKED_MANAGER_WAKE_SOURCE;
+  return Boolean(childIssueId) && (currentContract || legacyContract);
 }
 
 function allowsIssueInteractionWake(
@@ -6549,6 +6564,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const context = parseObject(run.contextSnapshot);
+    if (isMentionTriggeredWake(null, context)) {
+      await cancelRunInternal(
+        run.id,
+        "Cancelled because agent mentions are reference-only and cannot wake agents",
+        {
+          suppressImmediateRecovery: true,
+          errorCode: "mention_wake_disabled",
+        },
+      );
+      logger.info(
+        { runId: run.id, agentId: run.agentId },
+        "claimQueuedRun: cancelled legacy mention-triggered wake",
+      );
+      return null;
+    }
     const issueId = readNonEmptyString(context.issueId);
     let projectId = readNonEmptyString(context.projectId);
     if (issueId) {
@@ -9947,6 +9977,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     };
 
+    if (isMentionTriggeredWake(reason, enrichedContextSnapshot)) {
+      await writeSkippedRequest("comment.mention_wake_disabled");
+      logger.info(
+        { agentId, issueId, source, reason },
+        "Skipped mention-triggered wake because agent mentions are reference-only",
+      );
+      return null;
+    }
+
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
     if (issueId) {
       const issueScope = await db
@@ -10060,9 +10099,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issueId) {
-      // Mention-triggered wakes can request input from another agent, but they must
-      // still respect the issue execution lock so a second agent cannot start on the
-      // same issue workspace while the assignee already has a live run.
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const outcome = await db.transaction(async (tx) => {

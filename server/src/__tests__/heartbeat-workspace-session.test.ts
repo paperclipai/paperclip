@@ -15,6 +15,7 @@ import {
   ensureProjectWorkspacePath,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
+  isMentionTriggeredWake,
   isProjectWorkspaceFilesystemPermissionError,
   isProjectWorkspaceRepoAccessError,
   mergeExecutionWorkspaceMetadataForPersistence,
@@ -523,6 +524,13 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeCommentId: "comment-1",
       }),
     ).toBe(false);
+  });
+
+  it("recognizes every legacy mention-wake signal for hard rejection", () => {
+    expect(isMentionTriggeredWake("issue_comment_mentioned", {})).toBe(true);
+    expect(isMentionTriggeredWake(null, { wakeReason: "issue_comment_mentioned" })).toBe(true);
+    expect(isMentionTriggeredWake(null, { source: "comment.mention" })).toBe(true);
+    expect(isMentionTriggeredWake("issue_commented", { source: "issue.comment" })).toBe(false);
   });
 
   it("does not reset session context when commentId is present", () => {

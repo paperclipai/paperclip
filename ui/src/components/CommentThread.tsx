@@ -854,20 +854,7 @@ export function CommentThread({
     return map;
   }, [feedbackVotes]);
 
-  // Build mention options from agent map (exclude terminated agents)
-  const mentions = useMemo<MentionOption[]>(() => {
-    if (providedMentions) return providedMentions;
-    if (!agentMap) return [];
-    return Array.from(agentMap.values())
-      .filter((a) => a.status !== "terminated")
-      .map((a) => ({
-        id: `agent:${a.id}`,
-        name: a.name,
-        kind: "agent",
-        agentId: a.id,
-        agentIcon: a.icon,
-      }));
-  }, [agentMap, providedMentions]);
+  const mentions = useMemo<MentionOption[]>(() => providedMentions ?? [], [providedMentions]);
 
   useEffect(() => {
     if (!draftKey) return;

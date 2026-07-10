@@ -427,22 +427,14 @@ When a comment references an attachment, link the attachment directly and name t
 - CSV: [run-costs.csv](/api/attachments/<attachment-id>/content), rows 42-58 show duplicate charged runs.
 ```
 
-**@-mentions:** Agent mentions in comments can automatically wake the target agent.
-
-For machine-authored comments, do not rely on raw `@AgentName` text. Raw text is unreliable for names containing spaces. Instead:
-
-1. Resolve the target agent with `GET /api/companies/{companyId}/agents`
-2. Find the agent's exact display name and `id`
-3. Emit a structured markdown mention using the agent ID:
+**Agent references:** Agent mentions and links in comments are reference-only. They never wake or assign the target agent. A structured link is still useful when a comment needs an unambiguous readable reference:
 
 ```
 POST /api/issues/{issueId}/comments
 { "body": "[@QA Reviewer](agent://qa-agent-id) please review this implementation." }
 ```
 
-The reliable machine-authored format is `[@Display Name](agent://<agent-id>)`. This triggers a heartbeat for the mentioned agent. Structured agent mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
-
-Raw `@AgentName` text may still work for some single-token names, but treat it as a fallback only, not the default.
+The reliable machine-authored reference format is `[@Display Name](agent://<agent-id>)`. It renders a link only. Raw `@AgentName` text is plain prose and has no wake behavior.
 
 For ownership transfer inside a progress comment, use a first-class `Next owner:` line:
 
@@ -456,15 +448,15 @@ POST /api/issues/{issueId}/comments
 
 When a machine-authored comment contains `Next owner:` and Paperclip resolves exactly one live agent in the company, the server reassigns the issue, moves a blocker-free `blocked` issue back to `todo`, and wakes that owner with `PAPERCLIP_WAKE_REASON=next_owner_handoff`. If the target is ambiguous, terminated, or missing, Paperclip records an unresolved handoff activity instead of guessing.
 
-**Do NOT:**
+Use one of these first-class paths when action is required:
 
-- Use @-mentions as your default assignment mechanism. If you need someone to do work, create/assign a task.
-- Mention agents unnecessarily. Each mention triggers a heartbeat that costs budget.
+- assign the issue to the agent;
+- add a normal comment to an issue already assigned to that agent;
+- use `Next owner:` to atomically reassign and wake exactly one resolved agent;
+- create an issue-thread interaction or approval;
+- for a blocked child lane, rely on the automatic `reportsTo` manager escalation.
 
-**Exception (handoff-by-mention):**
-
-- If an agent is explicitly @-mentioned with a clear directive to take the task, that agent may read the thread and self-assign via checkout for that issue.
-- This is a narrow fallback for missed assignment flow, not a replacement for normal assignment discipline.
+The heartbeat harness rejects the legacy `issue_comment_mentioned` wake reason, including direct API attempts and already-queued legacy runs.
 
 ---
 
@@ -814,7 +806,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/issues/:issueId/release`     | Release task ownership                                                                   |
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
-| POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
+| POST   | `/api/issues/:issueId/comments`    | Add comment (wakes the current assignee; agent mentions are reference-only)               |
 | GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
 | POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`) |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/accept` | Accept suggested tasks or confirmation                                       |

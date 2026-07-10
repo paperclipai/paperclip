@@ -69,10 +69,10 @@ Overrides and special cases:
 - `PAPERCLIP_TASK_ID` set and assigned to you → prioritize that task first.
 - `PAPERCLIP_WAKE_REASON=next_owner_handoff` → this issue was assigned to you from another agent's `Next owner:` handoff. Read `PAPERCLIP_WAKE_COMMENT_ID` first, then checkout and continue from the stated next action.
 - `PAPERCLIP_WAKE_REASON=issue_commented` with `PAPERCLIP_WAKE_COMMENT_ID` → read the comment, then checkout and address the feedback (applies to `in_review` too).
-- `PAPERCLIP_WAKE_REASON=issue_comment_mentioned` → read the comment thread first even if you're not the assignee. Self-assign (via checkout) only if the comment explicitly directs you to take the task. Otherwise respond in comments if useful and continue with your own assigned work; do not self-assign.
+- `PAPERCLIP_WAKE_REASON=child_blocked_manager_escalation` → a direct report's child execution lane is blocked. Read the parent escalation comment and child lane, propose concrete recovery options, resolve or reassign when authorized, and escalate through your own `reportsTo` chain. If you are the top-level CEO and a human decision is required, create an issue-thread interaction or approval for the board.
 - Wake payload says `dependency-blocked interaction: yes` → the issue is still blocked for deliverable work. Do not try to unblock it. Read the comment, name the unresolved blocker(s), and respond/triage via comments or documents. Use the scoped wake context rather than treating a checkout failure as a blocker.
 - **Blocked-task dedup:** before touching a `blocked` task, check the thread. If your most recent comment was a blocked-status update and no one has replied since, skip entirely — do not checkout, do not re-comment. Only re-engage on new context (comment, status change, event wake).
-- Nothing assigned and no valid mention handoff → exit the heartbeat.
+- Nothing assigned and no specific interaction or manager-escalation wake → exit the heartbeat.
 
 **Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header:
 
@@ -113,7 +113,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - Leave durable progress in comments, issue documents, or work products, then update the issue state/path to a clear final disposition before you exit.
 - Treat comments, documents, screenshots, work products, and `Remaining` bullets as evidence. They are not valid liveness paths by themselves.
 - Use direct child execution lanes only from main parent issues. A parent may have at most 10 direct children. If the current issue already has `parentId`, do not create child issues or grandchildren; keep engineer, QA, fix, and review loops inside the same issue thread.
-- If a child execution lane is blocked, stranded, or needs recovery, surface that blocker/recovery state to the parent manager lane before exiting. Do not leave a parent issue silently waiting for a child lane that no longer has a live path.
+- If a child execution lane is blocked, stranded, or needs recovery, name the exact blocker and unblock owner. Paperclip automatically writes a durable escalation on the parent and wakes the child assignee's `reportsTo` manager (falling back to the parent assignee when needed). The manager must inspect the child, propose concrete solutions, resolve/reassign when authorized, and escalate upward to the board when a human decision is required.
 - For parent/task budget caps, use `budgetLimits` on issue create/update: `issueTreeCents` caps the parent plus all direct execution lanes; `childIssuesCents` caps execution lanes only. Defaults to lifetime windows unless `windowKind` is supplied.
 - Do not busy-poll agents, sessions, child issues, or processes waiting for completion.
 - If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
@@ -287,7 +287,7 @@ For commands, response fields, and MCP tools, read:
 
 - **Never retry a 409.** The task belongs to someone else.
 - **Never look for unassigned work.** No assignments = exit.
-- **Self-assign only for explicit @-mention handoff.** Requires a mention-triggered wake with `PAPERCLIP_WAKE_COMMENT_ID` and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch).
+- **Agent mentions are reference-only.** `@Agent` text and `[Agent](agent://...)` links do not wake, assign, or authorize the agent. Use assignment, a `Next owner:` assignment handoff, an issue-thread interaction, or the reporting-chain escalation path.
 - **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign to them with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, typically setting status to `in_review` instead of `done`. Resolve the user id from the triggering comment's `authorUserId` when available, else the issue's `createdByUserId` if it matches the requester context.
 - **Next owner handoffs must be first-class.** If your progress comment names another AI agent as `Next owner`, either patch `assigneeAgentId`/status directly or include a resolvable line like `Next owner: [CEO](agent://<agent-id>)`. Paperclip will auto-assign and wake exactly one live resolved agent; prose-only names that cannot resolve are invalid handoffs.
 - **Self-owned review handoffs are invalid.** Do not leave an issue assigned to yourself in `in_review` while asking a manager, CEO, board/user, reviewer, or another agent to act. Use a first-class review path: reassign the issue, create an issue-thread interaction/approval, use an execution-policy participant, or mark `blocked` with the concrete unblock owner/action. Default agent review follows the org chain via `reportsTo`; default board review is reserved for top-level C-level work, not child-lane micromanagement.
@@ -299,8 +299,9 @@ For commands, response fields, and MCP tools, read:
 - **Preserve workspace continuity for follow-ups.** Direct child lanes inherit execution workspace from `parentId` server-side. For sibling lanes or non-child follow-ups on the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId` explicitly.
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
 - **Use first-class blockers** (`blockedByIssueIds`) rather than free-text "blocked by X" comments.
+- **Blocked child lanes escalate through `reportsTo`.** Setting a child issue to `blocked` always creates a durable parent escalation, even when real blocker edges exist. On `child_blocked_manager_escalation`, the manager must leave a concrete recovery proposal and either act, reassign, or escalate upward; do not silently acknowledge and exit.
 - **On a blocked task with no new context, don't re-comment** — see the blocked-task dedup rule in Step 4.
-- **@-mentions** trigger heartbeats — use sparingly, they cost budget. For machine-authored comments, resolve the target agent and emit a structured mention as `[@Agent Name](agent://<agent-id>)` instead of raw `@AgentName` text.
+- **Never use @-mentions as a wake or handoff.** Agent links remain useful for readable references only. Comments wake the current assignee; `Next owner:` reassigns and wakes exactly one resolved owner.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
 - **Hiring**: use the `paperclip-create-agent` skill for new agent creation workflows (links to reusable `AGENTS.md` templates like `Coder` and `QA`).

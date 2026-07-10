@@ -369,17 +369,17 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     const childBlockedEscalationWake = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
-      reason: "child_blocked_without_first_class_blocker",
+      reason: "child_blocked_manager_escalation",
       payload: {
         issueId: blockedIssueId,
         childIssueId: blockerId,
-        mutation: "child_blocked_escalation",
+        mutation: "child_blocked_manager_escalation",
       },
       contextSnapshot: {
         issueId: blockedIssueId,
         taskId: blockedIssueId,
-        wakeReason: "child_blocked_without_first_class_blocker",
-        source: "issue.child_blocked_escalation",
+        wakeReason: "child_blocked_manager_escalation",
+        source: "issue.child_blocked_manager_escalation",
         childIssueId: blockerId,
       },
     });
@@ -416,7 +416,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(childBlockedEscalationRun?.contextSnapshot).toMatchObject({
       dependencyBlockedInteraction: true,
       unresolvedBlockerIssueIds: [blockerId],
-      wakeReason: "child_blocked_without_first_class_blocker",
+      wakeReason: "child_blocked_manager_escalation",
       childIssueId: blockerId,
     });
 

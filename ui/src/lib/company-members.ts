@@ -85,22 +85,14 @@ export function buildCompanyUserMentionOptions(
 }
 
 export function buildMarkdownMentionOptions(args: {
+  // Kept in the call contract for compatibility with existing consumers. AI
+  // agents are intentionally excluded: mentions and links alone never wake or assign.
   agents?: Array<Pick<Agent, "id" | "name" | "status" | "icon">> | null | undefined;
   projects?: Array<Pick<Project, "id" | "name" | "color">> | null | undefined;
   members?: CompanyUserRecord[] | null | undefined;
 }): MentionOption[] {
   const options: MentionOption[] = [
     ...buildCompanyUserMentionOptions(args.members),
-    ...[...(args.agents ?? [])]
-      .filter((agent) => agent.status !== "terminated")
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .map((agent) => ({
-        id: `agent:${agent.id}`,
-        name: agent.name,
-        kind: "agent" as const,
-        agentId: agent.id,
-        agentIcon: agent.icon,
-      })),
     ...[...(args.projects ?? [])]
       .sort((left, right) => left.name.localeCompare(right.name))
       .map((project) => ({

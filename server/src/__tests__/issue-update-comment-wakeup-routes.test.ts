@@ -383,6 +383,75 @@ describe("issue update comment wakeups", () => {
     );
   });
 
+  it("treats AI agent mentions as references and wakes only the current assignee", async () => {
+    const mentionedAgentId = "33333333-3333-4333-8333-333333333333";
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue({ ...existing });
+    mockIssueService.findMentionedAgents.mockResolvedValue([mentionedAgentId]);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-mention-reference",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: `[@Reviewer](agent://${mentionedAgentId}) for context; assignee please continue.`,
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        comment: `[@Reviewer](agent://${mentionedAgentId}) for context; assignee please continue.`,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.findMentionedAgents).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        reason: "issue_commented",
+        contextSnapshot: expect.objectContaining({ source: "issue.comment" }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      mentionedAgentId,
+      expect.anything(),
+    );
+  });
+
+  it("does not turn AI agent references in a posted comment into extra wakes", async () => {
+    const mentionedAgentId = "33333333-3333-4333-8333-333333333333";
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.findMentionedAgents.mockResolvedValue([mentionedAgentId]);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "posted-comment-mention-reference",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: `[@Reviewer](agent://${mentionedAgentId}) is referenced for context.`,
+    });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({ body: `[@Reviewer](agent://${mentionedAgentId}) is referenced for context.` });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.findMentionedAgents).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({ reason: "issue_commented" }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(mentionedAgentId, expect.anything());
+  });
+
   it("applies agent Next owner comments as assignment handoffs and wakes the resolved owner", async () => {
     const authorAgentId = "44444444-4444-4444-8444-444444444444";
     const ceoAgentId = "55555555-5555-4555-8555-555555555555";
