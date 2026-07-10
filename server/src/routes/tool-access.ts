@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { agents } from "@paperclipai/db";
+import { agents, companies } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import {
   TOOL_APP_GALLERY,
@@ -294,7 +294,13 @@ export function toolAccessRoutes(
       },
     });
     if (req.get("accept")?.includes("text/html")) {
-      res.redirect(303, `/apps/${result.connection.id}/setup?oauth=connected`);
+      const [company] = await db
+        .select({ issuePrefix: companies.issuePrefix })
+        .from(companies)
+        .where(eq(companies.id, result.connection.companyId))
+        .limit(1);
+      if (!company) throw new Error("OAuth callback connection belongs to a missing company");
+      res.redirect(303, `/${company.issuePrefix}/apps/${result.connection.id}/setup?oauth=connected`);
       return;
     }
     res.json(result);

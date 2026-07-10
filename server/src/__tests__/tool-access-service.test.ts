@@ -2754,8 +2754,25 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(callbackRes.body.actions.canMakeChanges).toEqual([
       expect.objectContaining({ toolName: "send_message", riskLevel: "write" }),
     ]);
+
+    const redirectConnectRes = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ galleryKey: "slack", name: "Slack redirect" })
+      .expect(201);
+    const redirectState = new URL(redirectConnectRes.body.auth.startUrl).searchParams.get("state");
+    expect(redirectState).toBeTruthy();
+    const redirectCallbackRes = await request(app)
+      .get("/api/tools/oauth/callback")
+      .set("Accept", "text/html")
+      .query({ state: redirectState, code: "oauth-code" });
+
+    expect(redirectCallbackRes.status).toBe(303);
+    expect(redirectCallbackRes.headers.location).toBe(
+      `/${company.issuePrefix}/apps/${redirectConnectRes.body.connectionId}/setup?oauth=connected`,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(6);
     await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
-    await expect(db.select().from(companySecretBindings)).resolves.toHaveLength(3);
+    await expect(db.select().from(companySecretBindings)).resolves.toHaveLength(6);
     const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectRes.body.connectionId));
     expect(JSON.stringify(connection.config)).not.toContain("access-token");
     expect(JSON.stringify(connection.config)).not.toContain("refresh-token");
