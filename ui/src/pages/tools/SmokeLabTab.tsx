@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  BookOpen,
   Check,
   CircleSlash,
   FlaskConical,
@@ -194,16 +195,33 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
   return (
     <div className="flex flex-col gap-6" data-testid="smoke-lab-tab">
       <header>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <FlaskConical className="h-5 w-5 text-muted-foreground" />
           <h1 className="text-xl font-bold text-foreground">Smoke Lab</h1>
           <Badge variant="outline">Experimental</Badge>
+          <a
+            href="https://github.com/paperclipai/paperclip/blob/master/doc/connections/SMOKE-LAB-TUTORIAL.md"
+            target="_blank"
+            rel="noreferrer"
+            className="ml-auto inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+          >
+            <BookOpen className="h-4 w-4" /> Hands-on tutorial
+          </a>
         </div>
         <p className="mt-1.5 max-w-3xl text-sm text-muted-foreground">
           Exercise every integration path (P1–P7) end-to-end against deterministic local fixtures —
           a fake OAuth provider and loopback MCP servers. Nothing here touches a real vendor or a
           real credential. Start the services, install the fixture apps, then drive the governed
-          lifecycle from a browser smoke run.
+          lifecycle from a browser smoke run. New here? Follow the{" "}
+          <a
+            href="https://github.com/paperclipai/paperclip/blob/master/doc/connections/SMOKE-LAB-TUTORIAL.md"
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-primary hover:underline"
+          >
+            hands-on tutorial
+          </a>
+          .
         </p>
       </header>
 
