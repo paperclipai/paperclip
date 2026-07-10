@@ -302,6 +302,10 @@ function readAdapterWorkspace(input: unknown) {
   if (!cwd || !branchName || !executionWorkspaceId) {
     throw new Error("Adapter input is missing execution workspace context");
   }
+  const wake = context.paperclipWake as { executionWorkspace?: { branchName?: string } } | undefined;
+  if (wake?.executionWorkspace?.branchName !== branchName) {
+    throw new Error("Adapter wake payload is missing the execution workspace branch pin");
+  }
   return { cwd, branchName, executionWorkspaceId };
 }
 

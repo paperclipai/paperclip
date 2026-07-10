@@ -587,6 +587,13 @@ const ROUTINE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
   "routine.document_annotation_thread_reopened",
   "routine.document_annotation_remapped",
 ]);
+const CASE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
+  "case.document_annotation_thread_created",
+  "case.document_annotation_comment_added",
+  "case.document_annotation_thread_resolved",
+  "case.document_annotation_thread_reopened",
+  "case.document_annotation_remapped",
+]);
 const AGENT_TOAST_STATUSES = new Set(["error"]);
 const RUN_TOAST_STATUSES = new Set(["failed", "timed_out", "cancelled"]);
 
@@ -810,17 +817,12 @@ function invalidateHeartbeatQueries(
 
 function invalidateHeartbeatProgressQueries(
   queryClient: ReturnType<typeof useQueryClient>,
-  companyId: string,
+  _companyId: string,
   payload: Record<string, unknown>,
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
-
   const agentId = readString(payload.agentId);
   if (agentId) {
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
   }
 }
 
@@ -971,6 +973,25 @@ function invalidateActivityQueries(
         queryKey: ["routines", "document-annotations", entityId, documentKey],
         ...routineInvalidationOptions,
       });
+    }
+    return;
+  }
+
+  if (entityType === "case") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.cases.list(companyId) });
+    if (entityId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.cases.detail(entityId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.cases.events(entityId) });
+      if (action && CASE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS.has(action)) {
+        const documentKey = readString(details?.key) ?? readString(details?.documentKey);
+        const caseInvalidationOptions = ownActorActivity ? { refetchType: "inactive" as const } : undefined;
+        queryClient.invalidateQueries({
+          queryKey: documentKey
+            ? ["cases", "document-annotations", entityId, documentKey]
+            : ["cases", "document-annotations", entityId],
+          ...caseInvalidationOptions,
+        });
+      }
     }
     return;
   }

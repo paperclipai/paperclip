@@ -6,11 +6,15 @@ export const queryKeys = {
   },
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,
+    listRecent: (companyId: string) =>
+      ["company-skills", companyId, "recent-updated"] as const,
     detail: (companyId: string, skillId: string) => ["company-skills", companyId, skillId] as const,
     versions: (companyId: string, skillId: string) => ["company-skills", companyId, skillId, "versions"] as const,
     comments: (companyId: string, skillId: string) => ["company-skills", companyId, skillId, "comments"] as const,
     updateStatus: (companyId: string, skillId: string) =>
       ["company-skills", companyId, skillId, "update-status"] as const,
+    forkPrecheck: (companyId: string, skillId: string) =>
+      ["company-skills", companyId, skillId, "fork-precheck"] as const,
     file: (companyId: string, skillId: string, relativePath: string) =>
       ["company-skills", companyId, skillId, "file", relativePath] as const,
     catalog: (filters: { kind?: string; category?: string; q?: string } = {}) =>
@@ -18,6 +22,14 @@ export const queryKeys = {
     catalogDetail: (catalogRef: string) => ["company-skills", "catalog", "detail", catalogRef] as const,
     catalogFile: (catalogRef: string, relativePath: string) =>
       ["company-skills", "catalog", "file", catalogRef, relativePath] as const,
+    testInputs: (companyId: string, skillId: string) =>
+      ["company-skills", companyId, skillId, "test-inputs"] as const,
+    testRunTemplates: (companyId: string) =>
+      ["company-skills", companyId, "test-run-templates"] as const,
+    testRuns: (companyId: string, skillId: string, inputId?: string | null) =>
+      ["company-skills", companyId, skillId, "test-runs", inputId ?? "__all-inputs__"] as const,
+    testRunDetail: (companyId: string, skillId: string, runId: string) =>
+      ["company-skills", companyId, skillId, "test-run", runId] as const,
   },
   teamCatalog: {
     catalog: (filters: { kind?: string; category?: string; q?: string } = {}) =>
@@ -44,6 +56,9 @@ export const queryKeys = {
       ["agents", companyId, "adapter-model-profiles", adapterType] as const,
     detectModel: (companyId: string, adapterType: string) =>
       ["agents", companyId, "detect-model", adapterType] as const,
+  },
+  builtInAgents: {
+    list: (companyId: string) => ["built-in-agents", companyId] as const,
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
@@ -169,6 +184,17 @@ export const queryKeys = {
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
+  },
+  cases: {
+    list: (companyId: string) => ["cases", companyId] as const,
+    detail: (id: string) => ["cases", "detail", id] as const,
+    documents: (id: string) => ["cases", "documents", id] as const,
+    documentAnnotations: (caseId: string, key: string, status: "open" | "resolved" | "all" = "all") =>
+      ["cases", "document-annotations", caseId, key, status] as const,
+    events: (id: string) => ["cases", "events", id] as const,
+    children: (parentId: string) => ["cases", "children", parentId] as const,
+    revisions: (id: string, key: string) => ["cases", "revisions", id, key] as const,
+    forIssue: (issueId: string) => ["cases", "for-issue", issueId] as const,
   },
   externalObjects: {
     byIssue: (issueId: string) => ["external-objects", "by-issue", issueId] as const,

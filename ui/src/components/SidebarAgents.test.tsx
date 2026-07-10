@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, ResourceMemberships } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarAgents } from "./SidebarAgents";
+import { queryKeys } from "../lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mockAgentsApi = vi.hoisted(() => ({
@@ -267,6 +268,7 @@ describe("SidebarAgents", () => {
         currentRoot.unmount();
       });
     }
+    vi.useRealTimers();
     queryClient.clear();
     container.remove();
     document.body.innerHTML = "";
@@ -300,6 +302,23 @@ describe("SidebarAgents", () => {
       );
     });
     await flushReact();
+  }
+
+  async function renderSidebarAgentsWithFakeTimers() {
+    const currentRoot = createRoot(container);
+    root = currentRoot;
+
+    await act(async () => {
+      currentRoot.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAgents streamlined />
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+    });
   }
 
   async function renderRailSidebarAgents() {
@@ -645,7 +664,111 @@ describe("SidebarAgents", () => {
     expect(seeAllAgentsLink(container)?.getAttribute("href")).toBe("/agents/all");
   });
 
-  it("shows up to 5 recently-active agents plus a See all link when none are running", async () => {
+  it("keeps formerly live agents visible for the streamlined linger window", async () => {
+    vi.useFakeTimers({ now: new Date("2026-01-01T00:00:00Z") });
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
+      makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
+      makeAgent({ id: "agent-c", name: "Charlie", urlKey: "charlie" }),
+      makeAgent({ id: "agent-d", name: "Delta", urlKey: "delta" }),
+    ]);
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      { id: "run-1", agentId: "agent-a", status: "running" },
+    ]);
+
+    await renderSidebarAgentsWithFakeTimers();
+
+    let labels = agentLinkLabels(container);
+    expect(labels).toHaveLength(1);
+    expect(labels[0]).toContain("Alpha");
+    expect(labels[0]).toContain("1 live");
+
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.liveRuns("company-1"), []);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    labels = agentLinkLabels(container);
+    expect(labels).toEqual(["Alpha"]);
+    expect(labels.join(" ")).not.toContain("live");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    expect(agentLinkLabels(container)).toEqual(["Alpha"]);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(agentLinkLabels(container)).toEqual(["Alpha", "Bravo", "Charlie"]);
+  });
+
+  it("expires staggered lingering agents without unrelated sidebar updates", async () => {
+    vi.useFakeTimers({ now: new Date("2026-01-01T00:00:00Z") });
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
+      makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
+      makeAgent({ id: "agent-c", name: "Charlie", urlKey: "charlie" }),
+      makeAgent({ id: "agent-d", name: "Delta", urlKey: "delta" }),
+    ]);
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      { id: "run-1", agentId: "agent-a", status: "running" },
+    ]);
+
+    await renderSidebarAgentsWithFakeTimers();
+    expect(agentLinkLabels(container)[0]).toContain("Alpha");
+
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.liveRuns("company-1"), []);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(agentLinkLabels(container)).toEqual(["Alpha"]);
+
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      { id: "run-2", agentId: "agent-b", status: "running" },
+    ]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+      queryClient.setQueryData(queryKeys.liveRuns("company-1"), [
+        { id: "run-2", agentId: "agent-b", status: "running" },
+      ]);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(agentLinkLabels(container).join(" ")).toContain("Bravo");
+
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.liveRuns("company-1"), []);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(agentLinkLabels(container)).toEqual(["Alpha", "Bravo"]);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_001);
+    });
+    expect(agentLinkLabels(container)).toEqual(["Bravo"]);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(agentLinkLabels(container)).toEqual(["Alpha", "Bravo", "Charlie"]);
+  });
+
+  it("shows up to 3 recently-active agents plus a See all link when none are running", async () => {
     mockAgentsApi.list.mockResolvedValue(
       Array.from({ length: 7 }, (_, index) =>
         makeAgent({
@@ -659,7 +782,7 @@ describe("SidebarAgents", () => {
 
     await renderSidebarAgents();
 
-    expect(agentLinkLabels(container)).toHaveLength(5);
+    expect(agentLinkLabels(container)).toHaveLength(3);
     expect(seeAllAgentsLink(container)?.getAttribute("href")).toBe("/agents/all");
   });
 

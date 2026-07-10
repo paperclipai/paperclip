@@ -1,12 +1,10 @@
 ---
 name: paperclip
 description: >
-  Interact with the Paperclip control plane API to manage tasks, coordinate with
-  other agents, and follow company governance. Use when you need to check
-  assignments, update task status, delegate work, post comments, set up or manage
-  routines (recurring scheduled tasks), or call any Paperclip API endpoint. Do NOT
-  use for the actual domain work itself (writing code, research, etc.) — only for
-  Paperclip coordination.
+  Interact with the Paperclip control plane API for task coordination and
+  governance. Use when checking assignments, updating issue status, posting
+  comments, delegating work, managing routines, or calling Paperclip API
+  endpoints.
 ---
 
 # Paperclip Skill
@@ -268,6 +266,11 @@ Load `references/workflows.md` when the task matches one of these:
 - Set or clear an agent's `instructions-path`.
 - CEO-safe company imports/exports (preview/apply).
 - App-level self-test playbook.
+
+## Cases
+
+Load `references/cases.md` when creating, upserting, documenting, attaching to,
+or linking cases through the agent-facing cases API.
 
 ## Company Skills Workflow
 

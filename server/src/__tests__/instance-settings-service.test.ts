@@ -10,11 +10,13 @@ describe("instance settings service", () => {
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
       enableCloudSync: true,
+      enableBuiltInAgents: true,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
+      enableWorkspaceDirtyQuarantineRepair: false,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
       enableNewestFirstIssueThread: true,
     })).toEqual({
@@ -24,15 +26,19 @@ describe("instance settings service", () => {
       enableConferenceRoomChat: false,
       enableExternalObjects: false,
       enablePipelines: false,
+      enableCases: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
       enableCloudSync: true,
+      enableBuiltInAgents: true,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
+      enableWorkspaceDirtyQuarantineRepair: false,
+      enableWorktreeRunExecution: false,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
     });
   });
@@ -70,13 +76,19 @@ describe("instance settings service", () => {
     ).toBe(false);
   });
 
-  it("defaults enableWorkspaceBranchReconcileForward to false for empty and legacy stored settings", () => {
-    expect(normalizeExperimentalSettings(undefined).enableWorkspaceBranchReconcileForward).toBe(false);
-    expect(normalizeExperimentalSettings({}).enableWorkspaceBranchReconcileForward).toBe(false);
+  it("defaults workspace branch repair settings to true for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableWorkspaceBranchReconcileForward).toBe(true);
+    expect(normalizeExperimentalSettings({}).enableWorkspaceBranchReconcileForward).toBe(true);
     expect(
       normalizeExperimentalSettings({ enableIssueGraphLivenessAutoRecovery: true })
         .enableWorkspaceBranchReconcileForward,
-    ).toBe(false);
+    ).toBe(true);
+    expect(normalizeExperimentalSettings(undefined).enableWorkspaceDirtyQuarantineRepair).toBe(true);
+    expect(normalizeExperimentalSettings({}).enableWorkspaceDirtyQuarantineRepair).toBe(true);
+    expect(
+      normalizeExperimentalSettings({ enableWorkspaceBranchReconcileForward: false })
+        .enableWorkspaceDirtyQuarantineRepair,
+    ).toBe(true);
   });
 
   it("round-trips an enableConferenceRoomChat patch through the update merge", () => {
@@ -96,5 +108,11 @@ describe("instance settings service", () => {
     expect(
       normalizeExperimentalSettings({ enableConferenceRoomChat: "yes" }).enableConferenceRoomChat,
     ).toBe(false);
+  });
+
+  it("defaults enableBuiltInAgents to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableBuiltInAgents).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableBuiltInAgents).toBe(false);
+    expect(normalizeExperimentalSettings({ enableExternalObjects: true }).enableBuiltInAgents).toBe(false);
   });
 });

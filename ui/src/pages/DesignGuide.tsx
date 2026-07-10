@@ -24,11 +24,18 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { InlineBanner } from "@/components/InlineBanner";
+import { BuiltInAgentBadge, BuiltInLifecycleChip } from "@/components/BuiltInAgentBadges";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable-panels";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
@@ -403,8 +410,8 @@ export function DesignGuide() {
             <div className="flex flex-wrap gap-2">
               {[
                 "avatar", "badge", "breadcrumb", "button", "card", "checkbox", "collapsible",
-                "command", "dialog", "dropdown-menu", "input", "label", "popover", "scroll-area",
-                "select", "separator", "sheet", "skeleton", "tabs", "textarea", "tooltip",
+                "command", "dialog", "dropdown-menu", "input", "label", "popover", "resizable-panels",
+                "scroll-area", "select", "separator", "sheet", "skeleton", "tabs", "textarea", "tooltip",
               ].map((name) => (
                 <Badge key={name} variant="outline" className="font-mono text-(length:--text-nano)">
                   {name}
@@ -418,6 +425,7 @@ export function DesignGuide() {
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
                 "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
                 "PropertiesPanel", "Sidebar", "CommandPalette", "EnvironmentVariablesEditor",
+                "InlineBanner", "BuiltInAgentGate", "BuiltInAgentBadge",
               ].map((name) => (
                 <Badge key={name} variant="ghost" className="font-mono text-(length:--text-nano)">
                   {name}
@@ -1779,6 +1787,102 @@ export function DesignGuide() {
           for all 10 states.
         </p>
         <EnvironmentVariablesEditorShowcase />
+      </Section>
+
+      <Section title="Resizable Panels">
+        <p className="text-sm text-muted-foreground">
+          Design-system wrapper over <span className="font-mono">react-resizable-panels</span>{" "}
+          (Skill Studio D2). Drag a handle to resize; panels accept percentage or pixel
+          (<span className="font-mono">minSize="240px"</span>) constraints and the middle panel is
+          collapsible. Use anywhere a split view is needed.
+        </p>
+        <div className="h-48 max-w-2xl overflow-hidden rounded-md border border-border">
+          <ResizablePanelGroup>
+            <ResizablePanel id="a" minSize="120px" className="bg-muted/30">
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                Panel A
+              </div>
+            </ResizablePanel>
+            <ResizableHandle />
+            <ResizablePanel id="b" minSize="120px" collapsible collapsedSize="40px" className="bg-muted/10">
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                Panel B (collapsible)
+              </div>
+            </ResizablePanel>
+            <ResizableHandle />
+            <ResizablePanel id="c" minSize="120px" className="bg-muted/30">
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                Panel C
+              </div>
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        </div>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  INLINE BANNER + BUILT-IN AGENTS                              */}
+      {/* ============================================================ */}
+      <Section title="Inline Banner">
+        <p className="text-sm text-muted-foreground">
+          Token-backed full-width notice (<span className="font-mono">brandBanner</span> tones). Use{" "}
+          <span className="font-mono">info</span> for provenance/context and{" "}
+          <span className="font-mono">warning</span> for paused/attention. Supports an optional bold
+          title and a trailing actions slot. Replaces hand-rolled{" "}
+          <span className="font-mono">bg-yellow-*</span>/<span className="font-mono">bg-blue-*</span>{" "}
+          banners.
+        </p>
+        <div className="space-y-3">
+          <InlineBanner
+            tone="info"
+            title="Built-in agent"
+            actions={<Button variant="outline" size="sm">Reset to defaults</Button>}
+          >
+            Ships with Paperclip and powers <strong>Briefs</strong>. It can be paused but not deleted.
+          </InlineBanner>
+          <InlineBanner
+            tone="warning"
+            title="Briefs is paused."
+            actions={
+              <>
+                <Button variant="ghost" size="sm">View agent</Button>
+                <Button size="sm">Resume agent</Button>
+              </>
+            }
+          >
+            Its built-in agent was paused 2 days ago, so new briefs aren't being generated.
+          </InlineBanner>
+          <InlineBanner tone="info" compact>
+            Compact variant for embedding inside dialogs and modals.
+          </InlineBanner>
+        </div>
+      </Section>
+
+      <Section title="Built-in Agent Badges">
+        <p className="text-sm text-muted-foreground">
+          Provenance badge (constant, blue) plus a derived lifecycle chip (amber) for attention
+          states. The lifecycle chip is separate from the agent status vocabulary and only shows for{" "}
+          <span className="font-mono">needs_setup</span> / <span className="font-mono">pending_approval</span>.
+        </p>
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-1.5">
+            <BuiltInAgentBadge />
+            <BuiltInLifecycleChip status="needs_setup" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <BuiltInAgentBadge />
+            <BuiltInLifecycleChip status="pending_approval" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <BuiltInAgentBadge compact />
+            <BuiltInLifecycleChip status="needs_setup" compact />
+          </div>
+        </div>
+        <p className="mt-3 text-sm text-muted-foreground">
+          <span className="font-mono">&lt;BuiltInAgentGate agentKey&gt;</span> composes{" "}
+          <span className="font-mono">PageSkeleton</span> + <span className="font-mono">EmptyState</span>{" "}
+          + <span className="font-mono">InlineBanner</span> to render the loading / setup /
+          pending-approval / paused / ready states of a feature that depends on a built-in agent.
+        </p>
       </Section>
     </div>
   );

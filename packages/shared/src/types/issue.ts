@@ -13,6 +13,7 @@ import type {
   IssueReferenceSourceKind,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
+  IssueHarnessKind,
   IssueOriginKind,
   IssuePriority,
   IssueRecoveryActionKind,
@@ -146,6 +147,7 @@ export interface AcceptedPlanDecompositionChild {
   description?: string | null;
   status: IssueStatus;
   workMode: IssueWorkMode;
+  harnessKind?: IssueHarnessKind | null;
   priority: IssuePriority;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
@@ -774,6 +776,57 @@ export interface Issue {
   updatedAt: Date;
 }
 
+export type CompactIssue = Pick<
+  Issue,
+  | "id"
+  | "companyId"
+  | "projectId"
+  | "projectWorkspaceId"
+  | "goalId"
+  | "parentId"
+  | "title"
+  | "description"
+  | "status"
+  | "workMode"
+  | "priority"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "checkoutRunId"
+  | "executionRunId"
+  | "executionAgentNameKey"
+  | "executionLockedAt"
+  | "createdByAgentId"
+  | "createdByUserId"
+  | "issueNumber"
+  | "identifier"
+  | "originKind"
+  | "originId"
+  | "originRunId"
+  | "requestDepth"
+  | "billingCode"
+  | "executionWorkspaceId"
+  | "startedAt"
+  | "completedAt"
+  | "cancelledAt"
+  | "createdAt"
+  | "updatedAt"
+> & {
+  labelIds?: string[];
+  labels?: IssueLabel[];
+  blockedBy?: IssueRelationIssueSummary[];
+  blockerAttention?: IssueBlockerAttention;
+  blockedInboxAttention?: IssueBlockedInboxAttention | null;
+  productivityReview?: IssueProductivityReview | null;
+  scheduledRetry?: IssueScheduledRetry | null;
+  liveDescendantCount?: number;
+  myLastTouchAt?: Date | null;
+  lastExternalCommentAt?: Date | null;
+  lastActivityAt?: Date | null;
+  isUnreadForMe?: boolean;
+  activeRecoveryAction: IssueRecoveryAction | null;
+  successfulRunHandoff: SuccessfulRunHandoffState | null;
+};
+
 /**
  * Where a comment's derived (non-stored-author) agent attribution came from,
  * in descending confidence:
@@ -1035,6 +1088,16 @@ export interface RequestConfirmationResult {
   reason?: string | null;
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
+  resumeFailure?: {
+    status: "retrying" | "needs_attention";
+    errorCode: string | null;
+    attempt: number;
+    maxAttempts: number;
+    runId?: string | null;
+    retryRunId?: string | null;
+    recoveryActionId?: string | null;
+    updatedAt?: string | null;
+  } | null;
 }
 
 export interface RequestCheckboxConfirmationResult extends RequestConfirmationResult {

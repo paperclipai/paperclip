@@ -44,6 +44,7 @@ import {
 } from "@/lib/company-members";
 import { collectLiveIssueIds } from "@/lib/liveIssueIds";
 import { useProjectOrder } from "@/hooks/useProjectOrder";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import {
   assigneeValueFromSelection,
   currentUserAssigneeOption,
@@ -270,12 +271,22 @@ function PluginSdkIssuesList({
     queryFn: () => projectsApi.list(companyId!),
     enabled: !!companyId,
   });
-  const { data: liveRuns } = useQuery({
-    queryKey: queryKeys.liveRuns(companyId ?? "__no-company__"),
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId!),
+  const liveRunsQueryKey = queryKeys.liveRuns(companyId ?? "__no-company__");
+  const sharedLiveRuns = useSharedPollingQuery({
+    companyId,
+    resourceKey: "live-runs",
+    queryKey: liveRunsQueryKey,
     enabled: !!companyId,
     refetchInterval: 5000,
+    leaderOnly: true,
   });
+  const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
+    queryKey: liveRunsQueryKey,
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId!),
+    enabled: sharedLiveRuns.enabled,
+    refetchInterval: sharedLiveRuns.refetchInterval,
+  });
+  usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
 
   const { data: issues, isLoading, error } = useQuery({

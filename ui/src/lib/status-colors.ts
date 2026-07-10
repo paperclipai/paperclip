@@ -95,12 +95,19 @@ export const statusBadge: Record<string, string> = {
   info: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
   terminated: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   pending: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
+  // Skill Studio test-run "queued" aligns with pending (yellow). PAP-12962 D6.
+  queued: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
 
   // Approval statuses
   pending_approval: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
   revision_requested: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
   approved: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   rejected: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+
+  // Case statuses (PAP-12968 E3) — `draft` is the neutral pre-work state,
+  // rendered as a muted gray alias of `backlog`/`planned`. The other case
+  // statuses (in_progress/in_review/approved/done/cancelled) already map above.
+  draft: "bg-muted text-muted-foreground",
 
   // Issue statuses — consistent hues with issueStatusIcon above (PAP-75 brand
   // mapping: todo → amber, in_progress → blue "liveness").
@@ -165,6 +172,24 @@ export const runningLabelText = "text-[#1D4ED8] dark:text-[#2563EB]";
  * (liveness), `todo` amber (queued), `in_review` violet (awaiting review),
  * `done` green, `blocked` red, `backlog`/`cancelled` gray (inert).
  */
+
+// ---------------------------------------------------------------------------
+// Inline banner tones (built-in agents provenance / paused notices)
+//
+// Softer, full-width banner surface derived from the same brand hue anchors as
+// `brandChipBadge`. `info` (blue) carries provenance/informational context;
+// `warning` (amber) carries paused/attention context. Consumed by
+// `<InlineBanner>` so feature banners stay token-backed instead of hand-rolling
+// per-instance `bg-yellow-*`/`bg-blue-*` recipes.
+// ---------------------------------------------------------------------------
+
+export type BannerTone = "info" | "warning";
+
+export const brandBanner: Record<BannerTone, string> = {
+  info: "border-[#2563EB]/40 bg-[#DBEAFE]/50 text-[#1D4ED8] dark:border-[#2563eb59] dark:bg-[#2563eb14] dark:text-[#93C5FD]",
+  warning: "border-[#F59E0B]/50 bg-[#FEF3C7]/60 text-[#B45309] dark:border-[#f59e0b59] dark:bg-[#f59e0b12] dark:text-[#F59E0B]",
+};
+
 export const issueStatusColor: Record<string, BrandChipColor> = {
   backlog: "gray",
   todo: "amber",

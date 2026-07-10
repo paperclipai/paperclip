@@ -110,11 +110,11 @@ export function RoutineSubSidebar({
   return (
     <nav
       aria-label="Routine sections"
-      className="sticky top-0 hidden max-h-(--sz-100dvh) w-52 shrink-0 flex-col gap-4 self-start overflow-y-auto border-r border-border bg-sidebar/30 px-3 py-4 md:flex"
+      className="hidden h-full w-52 shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-background px-3 py-4 md:flex"
     >
       {NAV_GROUPS.map((group) => (
         <div key={group.label} className="flex flex-col gap-0.5">
-          <p className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground/80">
+          <p className="mx-2 px-2 pb-1 text-(length:--text-nano) font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
             {group.label}
           </p>
           {group.items.map((item) => {
@@ -138,13 +138,15 @@ export function RoutineSubSidebar({
                 onKeyDown={(event) => handleKeyDown(event, index)}
                 onClick={() => onNavigate(item.key)}
                 className={cn(
-                  "flex h-9 items-center gap-2 rounded-md px-3 text-sm transition-colors motion-safe:duration-150",
+                  // Match the primary nav rows (SidebarNavItem): same rhythm,
+                  // inset pill, type scale, and icon size.
+                  "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium transition-colors motion-safe:duration-150",
                   isActive
-                    ? "bg-accent text-accent-foreground"
-                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                    ? "bg-accent text-foreground"
+                    : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
                 )}
               >
-                <Icon className="h-3.5 w-3.5 shrink-0" />
+                <Icon className="h-4 w-4 shrink-0" />
                 <span className="truncate">{item.label}</span>
                 {showLiveDot ? (
                   <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500 motion-safe:animate-pulse" />

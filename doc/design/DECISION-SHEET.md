@@ -66,6 +66,10 @@ User rulings from the tune-session gallery review; all intentionally visible, sn
 - `pnpm typecheck` + full `pnpm test:storybook-visual` — re-running independently (in progress).
 - Eyeball-pass note: the Phase 0 baseline was captured at the master fork point before any change, and the suite compares current rendering to it at `maxDiffPixels: 0` — pixel-equality with master-at-fork is machine-proven; side-by-side Storybook remains available on request (`pnpm storybook` here + `-p 6007` on master).
 
+## List-interaction parity policy (Run 3 follow-up, Jul 9 2026)
+
+**Policy (human-directed):** the inbox and tasks lists render the same material (task rows, status icons, parent/child trees, workspace groups), so their interactivity is the same by default — hover treatment (rounded `bg-accent/50` band), hover-follows-selection with the pointer-moved guard, j/k + arrow-key traversal that includes group headers, ArrowLeft/ArrowRight collapse/expand on both group headers and parent tasks, and Enter to open. View-specific capabilities stay view-specific (inbox: archive/read shortcuts on the archivable tab; tasks: kanban view). New list surfaces should adopt this contract rather than invent their own.
+
 ## Baseline reconcile — Run 3 setup (Jul 7, 2026)
 
 Fresh worktree from origin/master (3b16ac380) on `design/component-convergence`. The baseline-manifest archive is still unpublished (placeholder URL), so the 510 local baselines were seeded from the Run 1 worktree (`~/Projects/DEV/paperclip-design-simplify`, `tests/storybook-visual/__snapshots__/`, branch head 44ab1ad17) into gitignored `tests/storybook-visual/.snapshots/`. First run: 497/510 green; 6 stories (12 snapshots, both themes) diffed, each verified against a specific master commit that postdates the baselines, then re-baselined — nothing else touched:

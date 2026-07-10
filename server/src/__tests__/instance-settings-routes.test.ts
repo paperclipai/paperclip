@@ -82,11 +82,13 @@ describe("instance settings routes", () => {
         enableExperimentalFileViewer: false,
         enableCloudSync: false,
         enableExternalObjects: false,
+        enableBuiltInAgents: false,
         enableGoalsSidebarLink: false,
         enableServerInfoDebugView: false,
         autoRestartDevServerWhenIdle: false,
         enableIssueGraphLivenessAutoRecovery: true,
-        enableWorkspaceBranchReconcileForward: false,
+        enableWorkspaceBranchReconcileForward: true,
+        enableWorkspaceDirtyQuarantineRepair: true,
         issueGraphLivenessAutoRecoveryLookbackHours: 24,
       },
       createdAt: "2026-06-20T00:00:00.000Z",
@@ -105,11 +107,13 @@ describe("instance settings routes", () => {
       enableTaskWatchdogs: false,
       enableCloudSync: false,
       enableExternalObjects: false,
+      enableBuiltInAgents: false,
       enableGoalsSidebarLink: false,
       enableServerInfoDebugView: false,
       autoRestartDevServerWhenIdle: false,
       enableIssueGraphLivenessAutoRecovery: true,
-      enableWorkspaceBranchReconcileForward: false,
+      enableWorkspaceBranchReconcileForward: true,
+      enableWorkspaceDirtyQuarantineRepair: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 24,
     });
     mockInstanceSettingsService.update.mockResolvedValue({
@@ -127,11 +131,13 @@ describe("instance settings routes", () => {
         enableExperimentalFileViewer: true,
         enableCloudSync: true,
         enableExternalObjects: false,
+        enableBuiltInAgents: false,
         enableGoalsSidebarLink: false,
         enableServerInfoDebugView: false,
         autoRestartDevServerWhenIdle: false,
         enableIssueGraphLivenessAutoRecovery: true,
-        enableWorkspaceBranchReconcileForward: false,
+        enableWorkspaceBranchReconcileForward: true,
+        enableWorkspaceDirtyQuarantineRepair: true,
         issueGraphLivenessAutoRecoveryLookbackHours: 24,
       },
       createdAt: "2026-06-20T00:00:00.000Z",
@@ -155,11 +161,13 @@ describe("instance settings routes", () => {
         enableTaskWatchdogs: true,
         enableCloudSync: true,
         enableExternalObjects: false,
+        enableBuiltInAgents: true,
         enableGoalsSidebarLink: false,
         enableServerInfoDebugView: true,
         autoRestartDevServerWhenIdle: false,
         enableIssueGraphLivenessAutoRecovery: true,
-        enableWorkspaceBranchReconcileForward: false,
+        enableWorkspaceBranchReconcileForward: true,
+        enableWorkspaceDirtyQuarantineRepair: true,
         issueGraphLivenessAutoRecoveryLookbackHours: 24,
       },
     });
@@ -211,11 +219,13 @@ describe("instance settings routes", () => {
       enableTaskWatchdogs: false,
       enableCloudSync: false,
       enableExternalObjects: false,
+      enableBuiltInAgents: false,
       enableGoalsSidebarLink: false,
       enableServerInfoDebugView: false,
       autoRestartDevServerWhenIdle: false,
       enableIssueGraphLivenessAutoRecovery: true,
-      enableWorkspaceBranchReconcileForward: false,
+      enableWorkspaceBranchReconcileForward: true,
+      enableWorkspaceDirtyQuarantineRepair: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 24,
     });
 
@@ -306,6 +316,24 @@ describe("instance settings routes", () => {
 
     expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
       enableExternalObjects: true,
+    });
+  });
+
+  it("allows local board users to update built-in agents", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ enableBuiltInAgents: true })
+      .expect(200);
+
+    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+      enableBuiltInAgents: true,
     });
   });
 

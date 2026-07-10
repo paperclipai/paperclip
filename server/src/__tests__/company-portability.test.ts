@@ -480,6 +480,55 @@ describe("company portability", () => {
     expect(exported.warnings).toContain("Agent claudecoder PATH override was omitted from export because it is system-dependent.");
   });
 
+  it("exports agent permission grants through the Paperclip extension and manifest", async () => {
+    const db = {
+      select: vi.fn((selection: Record<string, unknown>) => ({
+        from: vi.fn(() => ({
+          where: vi.fn(async () => {
+            if (!selection.permissionKey) return [];
+            return [
+              {
+                principalId: "agent-1",
+                permissionKey: "agents:suggest-changes",
+                scope: null,
+              },
+              {
+                principalId: "agent-1",
+                permissionKey: "skills:create",
+                scope: { targetAgentIds: ["agent-1"] },
+              },
+            ];
+          }),
+        })),
+      })),
+    };
+    const portability = companyPortabilityService(db as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+    });
+
+    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    expect(extension).toContain("permissionGrants:");
+    expect(extension).toContain('permissionKey: "agents:suggest-changes"');
+    expect(extension).toContain('permissionKey: "skills:create"');
+    expect(exported.manifest.agents.find((agent) => agent.slug === "claudecoder")?.permissionGrants).toEqual([
+      {
+        permissionKey: "agents:suggest-changes",
+        scope: null,
+      },
+      {
+        permissionKey: "skills:create",
+        scope: { targetAgentIds: ["agent-1"] },
+      },
+    ]);
+  });
+
   it("exports hire approval policy only when approval is required", async () => {
     const portability = companyPortabilityService({} as any);
 
@@ -1559,6 +1608,90 @@ describe("company portability", () => {
     );
   });
 
+  it("imports agent permission grants from package metadata", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-imported",
+      name: input.name,
+      adapterType: input.adapterType,
+      adapterConfig: input.adapterConfig,
+      runtimeConfig: input.runtimeConfig,
+      status: input.status,
+    }));
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        files: {
+          "COMPANY.md": [
+            "---",
+            "name: Import",
+            "includes:",
+            "  - agents/coder/AGENTS.md",
+            "---",
+            "",
+          ].join("\n"),
+          "agents/coder/AGENTS.md": [
+            "---",
+            "name: Coder",
+            "slug: coder",
+            "kind: agent",
+            "---",
+            "",
+            "# Coder",
+            "",
+          ].join("\n"),
+          ".paperclip.yaml": [
+            "schema: paperclip/v1",
+            "agents:",
+            "  coder:",
+            "    adapter:",
+            "      type: process",
+            "      config: {}",
+            "    permissionGrants:",
+            "      - permissionKey: agents:suggest-changes",
+            "      - permissionKey: skills:create",
+            "        scope:",
+            "          targetAgentIds:",
+            "            - agent-imported",
+            "",
+          ].join("\n"),
+        },
+      },
+      include: {
+        company: false,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "existing_company",
+        companyId: "company-1",
+      },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(accessSvc.setPrincipalPermission).toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-imported",
+      "agents:suggest-changes",
+      true,
+      "user-1",
+      null,
+    );
+    expect(accessSvc.setPrincipalPermission).toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-imported",
+      "skills:create",
+      true,
+      "user-1",
+      { targetAgentIds: ["agent-imported"] },
+    );
+  });
+
   it("removes import secrets created before a later import failure", async () => {
     const portability = companyPortabilityService({} as any);
     agentSvc.list.mockResolvedValue([]);
@@ -1957,6 +2090,123 @@ describe("company portability", () => {
         }),
       }),
     ]);
+  });
+
+  it("skips built-in managed agents and routines during export", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    agentSvc.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "ClaudeCoder",
+        status: "idle",
+        role: "engineer",
+        title: "Software Engineer",
+        icon: "code",
+        reportsTo: null,
+        capabilities: "Writes code",
+        adapterType: "claude_local",
+        adapterConfig: { promptTemplate: "You are ClaudeCoder." },
+        runtimeConfig: { heartbeat: { intervalSec: 3600 } },
+        budgetMonthlyCents: 0,
+        permissions: { canCreateAgents: false },
+        metadata: null,
+      },
+      {
+        id: "agent-built-in",
+        name: "Reflection Coach",
+        status: "paused",
+        role: "coach",
+        title: "Reflection Coach",
+        icon: "sparkles",
+        reportsTo: null,
+        capabilities: "Reviews trajectories",
+        adapterType: "codex_local",
+        adapterConfig: { promptTemplate: "You coach agents." },
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+        permissions: {},
+        metadata: {
+          paperclipBuiltInAgent: {
+            key: "reflection-coach",
+            featureKeys: ["recent-agent-reflection"],
+          },
+        },
+      },
+    ]);
+    routineSvc.list.mockResolvedValue([
+      {
+        id: "routine-built-in",
+        companyId: "company-1",
+        projectId: null,
+        goalId: null,
+        parentIssueId: null,
+        title: "Review recent agent trajectories for coaching proposals",
+        description: "Review recent agent work and propose coaching follow-ups.",
+        assigneeAgentId: "agent-built-in",
+        priority: "medium",
+        status: "paused",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        createdByAgentId: null,
+        createdByUserId: null,
+        updatedByAgentId: null,
+        updatedByUserId: null,
+        lastTriggeredAt: null,
+        lastEnqueuedAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        originKind: "built_in_agent_bundle",
+        originId: "reflection-coach:recent-agent-reflection",
+        originFingerprint: null,
+        triggers: [
+          {
+            id: "trigger-built-in",
+            companyId: "company-1",
+            routineId: "routine-built-in",
+            kind: "schedule",
+            label: "Weekly review",
+            enabled: false,
+            cronExpression: "0 9 * * 1",
+            timezone: "UTC",
+            nextRunAt: null,
+            lastFiredAt: null,
+            publicId: "public-built-in",
+            secretId: "secret-built-in",
+            signingMode: null,
+            replayWindowSec: null,
+            lastRotatedAt: null,
+            lastResult: null,
+            createdByAgentId: null,
+            createdByUserId: null,
+            updatedByAgentId: null,
+            updatedByUserId: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        ],
+        lastRun: null,
+        activeIssue: null,
+      },
+    ]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: true,
+        issues: true,
+        skills: false,
+      },
+    });
+
+    expect(exported.files["agents/claudecoder/AGENTS.md"]).toBeDefined();
+    expect(exported.files["agents/reflection-coach/AGENTS.md"]).toBeUndefined();
+    expect(exported.files["tasks/review-recent-agent-trajectories-for-coaching-proposals/TASK.md"]).toBeUndefined();
+    expect(exported.manifest.agents.map((agent) => agent.slug)).toEqual(["claudecoder"]);
+    expect(exported.manifest.issues).toEqual([]);
+    expect(exported.warnings).toContain("Skipped 1 built-in managed agent from export.");
+    expect(exported.warnings).toContain("Skipped 1 built-in managed routine from export.");
   });
 
   it("imports recurring task packages as routines instead of one-time issues", async () => {

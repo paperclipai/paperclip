@@ -462,6 +462,24 @@ export const planApprovalAcceptedRequestConfirmationInteraction = createRequestC
   },
 });
 
+export const planApprovalResumeFailedRequestConfirmationInteraction = createRequestConfirmationInteraction({
+  ...planApprovalAcceptedRequestConfirmationInteraction,
+  id: "interaction-confirmation-plan-resume-failed",
+  result: {
+    version: 1,
+    outcome: "accepted",
+    resumeFailure: {
+      status: "needs_attention",
+      errorCode: "adapter_failed",
+      attempt: 3,
+      maxAttempts: 3,
+      runId: "11111111-1111-4111-8111-222222222222",
+      recoveryActionId: "33333333-3333-4333-8333-333333333333",
+      updatedAt: "2026-04-20T14:45:00.000Z",
+    },
+  },
+});
+
 export const rejectedRequestConfirmationInteraction = createRequestConfirmationInteraction({
   id: "interaction-confirmation-rejected",
   status: "rejected",

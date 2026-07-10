@@ -26,6 +26,7 @@ import {
   pendingRequestConfirmationInteraction,
   pendingSuggestedTasksInteraction,
   planApprovalAcceptedRequestConfirmationInteraction,
+  planApprovalResumeFailedRequestConfirmationInteraction,
   rejectedNoReasonRequestConfirmationInteraction,
   rejectedRequestCheckboxConfirmationInteraction,
   rejectedRequestConfirmationInteraction,
@@ -543,6 +544,24 @@ export const RequestConfirmationPlanApprovalConfirmed: Story = {
       >
         <IssueThreadInteractionCard
           interaction={planApprovalAcceptedRequestConfirmationInteraction}
+          agentMap={storybookAgentMap}
+          currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+          userLabelMap={boardUserLabels}
+        />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const RequestConfirmationPlanApprovalResumeFailed: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Plan approval resume failed"
+        description="The approval remains accepted, but the failed continuation is visibly amber and needs attention."
+      >
+        <IssueThreadInteractionCard
+          interaction={planApprovalResumeFailedRequestConfirmationInteraction}
           agentMap={storybookAgentMap}
           currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
           userLabelMap={boardUserLabels}

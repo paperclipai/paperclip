@@ -10,6 +10,8 @@ import type {
 
 export type GitWorktreeBranchAncestryVerdict = "ancestor" | "diverged" | "unknown";
 
+export type GitWorktreeInProgressOperation = "rebase" | "merge" | "cherry_pick" | "revert" | "bisect";
+
 export interface GitWorktreeBranchIncoherenceEvidence {
   reason: "git_worktree_branch_incoherence";
   fingerprint: string;
@@ -21,7 +23,25 @@ export interface GitWorktreeBranchIncoherenceEvidence {
   expectedBranch: string;
   actualBranch: string | null;
   cleanliness: "clean" | "dirty" | "unknown";
+  /**
+   * Interrupted git operation (rebase/merge/cherry-pick/revert/bisect) whose
+   * state directory is still present in the worktree. Optional so previously
+   * persisted evidence payloads stay valid.
+   */
+  inProgressOperation?: GitWorktreeInProgressOperation | null;
   statusEntryCount: number | null;
+  dirtyPathSample: string[];
+  contention: {
+    claimedByWorkspaceId: string;
+    claimedByIssueId: string | null;
+    claimedByIssueIdentifier: string | null;
+    activeRun: {
+      id: string;
+      status: "queued" | "running";
+      issueId: string | null;
+      issueIdentifier: string | null;
+    } | null;
+  } | null;
   provenance: {
     expectedBranchRef: string;
     actualBranchRef: string | null;
