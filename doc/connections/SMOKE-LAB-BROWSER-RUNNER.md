@@ -15,25 +15,29 @@ shows up in the **Smoke Lab tab** and the **dashboard "Integration smoke" card**
 
 ## 0. The one hard prerequisite: a `local_trusted`, non-production instance
 
-The Smoke Lab feature **fail-closes** unless all three hold
+The Smoke Lab feature **fail-closes** on public exposure only
 (`server/src/services/smoke-lab.ts` → `assertEnabled()`):
 
 | Requirement | Why |
 |---|---|
 | `experimental.enableSmokeLab = true` | feature flag (board experimental settings) |
-| `PAPERCLIP_DEPLOYMENT_MODE = local_trusted` (not `authenticated`) and exposure ≠ `public` | fixtures + fake OAuth only run on a trusted loopback deployment |
-| `NODE_ENV !== production` | never expose the fake OAuth provider / loopback MCP sidecars in prod |
+| deployment exposure ≠ `public` | never expose the fake OAuth provider / loopback MCP sidecars to the open internet |
 
-Every smoke-lab service method calls `assertEnabled()`, so if any of these fail
-you get `403 {"error":"Smoke lab is only available in non-production local_trusted deployments"}`
+The auth mode (`local_trusted` vs `authenticated`) and `NODE_ENV` do **not** gate
+the Smoke Lab — a private box is a private box. Every smoke-lab service method calls
+`assertEnabled()`, so on a `public` instance you get
+`403 {"error":"Smoke lab is only available on private (non-public) deployments"}`
 (or `404 Smoke lab is disabled` when the flag is off).
 
-**Gotcha — the shared dev worktree service will NOT work as-is.** The
-Paperclip-managed dev service (`pnpm dev --bind lan`) runs
-`PAPERCLIP_DEPLOYMENT_MODE=authenticated` + `NODE_ENV=production`, and the
-installed package on `:3100` doesn't ship the smoke-lab routes at all (404). So
-boot a dedicated throwaway instance exactly the way the e2e config does
-(`tests/e2e/playwright.config.ts`):
+**The shared dev worktree service works as-is now.** The Paperclip-managed dev
+service (`pnpm dev`, `PAPERCLIP_DEPLOYMENT_MODE=authenticated` + `NODE_ENV=production`,
+e.g. `http://paperclip-dev:45439`) is private, so it can run the Smoke Lab directly —
+just turn the flag on. (Historically it was blocked because the gate required
+`local_trusted` + non-`production`; that restriction was removed in PAP-13351.) The
+installed package on `:3100` still may not ship the smoke-lab routes (404).
+
+If you prefer an isolated, no-login throwaway instance, boot one exactly the way the
+e2e config does (`tests/e2e/playwright.config.ts`):
 
 ```bash
 export NODE_ENV=test PORT=3211 \
@@ -48,11 +52,12 @@ pnpm paperclipai onboard --yes --run    # serves http://127.0.0.1:3211, own embe
 ```
 
 In `local_trusted` mode there is **no auth wall** — board access is implicit, so
-plain `curl`/`fetch` with an `Origin: <base>` header is a board actor. (On an
-`authenticated` instance you would instead log in — `POST /api/auth/sign-in/email`
-with QA creds — and carry the `*.session_token` cookie; board **mutations** also
-require the `Origin` header. A control-plane **run JWT is NOT accepted by a
-separate worktree instance's DB** — cross-instance tokens 403.)
+plain `curl`/`fetch` with an `Origin: <base>` header is a board actor. On an
+`authenticated` instance (Tailscale dev, `:45439`) you instead log in —
+`POST /api/auth/sign-in/email` with QA creds — and carry the `*.session_token`
+cookie; board **mutations** also require the `Origin` header. A control-plane **run
+JWT is NOT accepted by a separate worktree instance's DB** — cross-instance tokens
+403.
 
 ---
 

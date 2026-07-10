@@ -188,7 +188,7 @@ async function cpAttach(issueId: string, file: string): Promise<boolean> {
   }
 }
 
-// ---- precondition: is a local_trusted, non-prod instance reachable + can we enable the flag? ----
+// ---- precondition: is a private (non-public) instance reachable + can we enable the flag? ----
 async function precondition(): Promise<{ ok: true } | { ok: false; reason: string }> {
   let health: Json;
   try {
@@ -198,13 +198,16 @@ async function precondition(): Promise<{ ok: true } | { ok: false; reason: strin
   } catch (e: any) {
     return { ok: false, reason: `instance unreachable at ${SMOKE_BASE} (${e?.message ?? e})` };
   }
-  if (health.deploymentMode !== "local_trusted") {
-    return { ok: false, reason: `deploymentMode=${health.deploymentMode} (need local_trusted)` };
-  }
+  // The Smoke Lab gate only blocks public exposure — any private instance works,
+  // including an `authenticated` dev server behind Tailscale + login. Match that
+  // here so the routine runs on the everyday dev box, not just a throwaway
+  // `local_trusted` instance.
   if (health.deploymentExposure === "public") {
     return { ok: false, reason: `exposure=public (need private/loopback)` };
   }
-  // Enable the flag (idempotent). In local_trusted, board access is implicit with the Origin header.
+  // Enable the flag (idempotent). On a `local_trusted` box board access is implicit
+  // with the Origin header; on an `authenticated` instance this PATCH needs a board
+  // session, so if it 403s the run degrades to amber/skipped rather than failing.
   try {
     const res = await fetch(`${SMOKE_BASE}/api/instance/settings/experimental`, {
       method: "PATCH",
@@ -277,7 +280,7 @@ async function recordAmber(reason: string) {
     `- **Target:** \`${SMOKE_BASE}\``,
     `- **Reason:** ${reason}`,
     ``,
-    `This is expected when no \`local_trusted\`, non-production instance is available for the smoke (see \`doc/connections/SMOKE-LAB-BROWSER-RUNNER.md\` §0). No product issue was filed — an amber/skipped run is not a defect.`,
+    `This is expected when no private instance is reachable or the flag can't be enabled for the smoke (see \`doc/connections/SMOKE-LAB-BROWSER-RUNNER.md\` §0). No product issue was filed — an amber/skipped run is not a defect.`,
   ].join("\n");
   await cpComment(ROUTINE_ISSUE_ID, body);
 }

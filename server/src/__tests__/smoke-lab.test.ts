@@ -129,17 +129,26 @@ describeEmbeddedPostgres("smoke lab service pack and results API", () => {
     await tempDb?.cleanup();
   });
 
-  it("gates all smoke lab routes behind the experimental flag and local trusted mode", async () => {
+  it("gates smoke lab behind the experimental flag and public exposure, not auth mode or NODE_ENV", async () => {
     const company = await createCompany(db);
 
+    // Flag off -> hidden (404) regardless of deployment.
     await request(createRouteApp(db, boardActor(company.id)))
       .get(`/api/companies/${company.id}/smoke-lab/services`)
       .expect(404);
 
     await enableSmokeLab(db);
-    await request(createRouteApp(db, boardActor(company.id), { deploymentMode: "authenticated", deploymentExposure: "private" }))
+
+    // Public exposure is the only disallowed deployment -> 403.
+    await request(createRouteApp(db, boardActor(company.id), { deploymentMode: "authenticated", deploymentExposure: "public" }))
       .get(`/api/companies/${company.id}/smoke-lab/services`)
       .expect(403);
+
+    // Authenticated + private (e.g. a Tailscale dev box) is allowed, even when the
+    // instance runs a production Node build.
+    await request(createRouteApp(db, boardActor(company.id), { deploymentMode: "authenticated", deploymentExposure: "private", nodeEnv: "production" }))
+      .get(`/api/companies/${company.id}/smoke-lab/services`)
+      .expect(200);
   });
 
   it("runs the deterministic fake OAuth code, refresh, userinfo, and revoke flow", async () => {

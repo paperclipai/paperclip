@@ -15,39 +15,31 @@ MCP servers are local fakes.
 
 ---
 
-## 0. Prerequisite: a `local_trusted`, non-production instance
+## 0. Prerequisite: any private (non-public) instance
 
-The Smoke Lab **fail-closes** unless all three hold:
+The Smoke Lab **fail-closes** on public deployments. It runs anywhere else — you do
+**not** need a special `local_trusted` box or any extra environment variables.
+Turning on the flag is all the setup there is.
 
 | Requirement | Where |
 |---|---|
 | `Smoke Lab` experimental flag ON | Instance settings → Experimental |
-| deployment mode `local_trusted` (not `authenticated`), exposure not `public` | how the instance was started |
-| `NODE_ENV` ≠ `production` | how the instance was started |
+| deployment exposure **not** `public` (i.e. not internet-facing) | how the instance was started |
 
-If any is missing you'll see the tab say *"Smoke Lab is turned off"*, or API calls
-return `403 "Smoke lab is only available in non-production local_trusted
-deployments"`. The everyday dev server (`pnpm dev`, authenticated + production) and
-the installed package on `:3100` **cannot** run the Smoke Lab. Boot a dedicated
-throwaway instance exactly as `tests/e2e/playwright.config.ts` does:
+That's it. The everyday dev server works as-is: a `local_trusted` localhost box, an
+**`authenticated` instance behind Tailscale + login** (e.g.
+`http://paperclip-dev:45439`), and a `pnpm dev` server built with
+`NODE_ENV=production` are all fine — those are private, so the Smoke Lab is
+available. The auth mode and the Node build target no longer matter; only public
+exposure is disallowed (the fake OAuth provider and fixture sidecars must never be
+reachable from the open internet).
 
-```bash
-export NODE_ENV=test PORT=3251 \
-  PAPERCLIP_HOME=$(mktemp -d) \
-  PAPERCLIP_INSTANCE_ID=smoke-lab \
-  PAPERCLIP_CONFIG=$PAPERCLIP_HOME/instances/smoke-lab/config.json \
-  PAPERCLIP_BIND=loopback \
-  PAPERCLIP_DEPLOYMENT_MODE=local_trusted \
-  PAPERCLIP_DEPLOYMENT_EXPOSURE=private
-pnpm paperclipai onboard --yes --run   # serves http://127.0.0.1:3251
-```
-
-Wait for `GET http://127.0.0.1:3251/api/health` to return `200`, then open
-`http://127.0.0.1:3251` in your browser. In `local_trusted` mode there is no login
-wall — you're the board.
+If the flag is off you'll see the tab say *"Smoke Lab is turned off"*. If you're on a
+`public` instance, API calls return `403 "Smoke lab is only available on private
+(non-public) deployments"` — move to a private instance.
 
 Throughout this tutorial, `{PREFIX}` is your company's short issue prefix (shown in
-the URL bar, e.g. `SMO`). Replace it in the example paths.
+the URL bar, e.g. `PAP`). Replace it in the example paths.
 
 ---
 
@@ -76,8 +68,9 @@ the URL bar, e.g. `SMO`). Replace it in the example paths.
    installed: a **remote HTTP** fixture (used by P1, P2, P5, P6, P7) and a **local
    stdio** fixture (used by P3, P4). Installing again is safe — it's idempotent.
 
-> If **Start services** errors, re-check §0 — you're almost certainly on an
-> `authenticated`/production instance.
+> If **Start services** errors with a `403`, re-check §0 — you're on a `public`
+> (internet-facing) instance. Any private instance works, including the everyday
+> authenticated dev server.
 
 ---
 
@@ -218,8 +211,8 @@ runs the browser smoke for you every day and:
 - **records** each run to the results API (matrix + dashboard);
 - on a real **failure**, files a `high`-priority issue with the failing step and a
   screenshot, assigned to the owning coder, and links it back to the run;
-- when no `local_trusted` instance is available, records an **amber/skipped** run
-  instead of failing silently.
+- when the flag is off or the instance is unreachable, records an **amber/skipped**
+  run instead of failing silently.
 
 It's driven by `tests/e2e/smoke-lab-routine.mts`. See that file's header and the
 routine's own description for the runbook.

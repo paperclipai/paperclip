@@ -1,6 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -32,6 +34,25 @@ export const SMOKE_LAB_DEMO_PASSWORD = "smoke-password";
 export const SMOKE_LAB_BANNER = "SMOKE TEST - not a real provider";
 export const SMOKE_LAB_OAUTH_SCOPES = ["smoke:openid", "smoke:profile", "smoke:email"] as const;
 export const SMOKE_LAB_OAUTH_SCOPE = SMOKE_LAB_OAUTH_SCOPES.join(" ");
+
+// The fixture servers live at repo-root scripts/mcp-fixtures/servers. Resolve them
+// relative to this module, NOT process.cwd(): the workspace runtime boots the server
+// with cwd=<repo>/server, so a cwd-relative path points at <repo>/server/scripts/... —
+// which does not exist — and the spawned sidecar exits code=1 ("Cannot find module").
+// This module sits at server/src/services (and server/dist/services in a build), so the
+// repo root is three levels up in both layouts. A cwd fallback keeps other layouts working.
+const SMOKE_LAB_FIXTURES_DIR = (() => {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.resolve(moduleDir, "../../../scripts/mcp-fixtures/servers"),
+    path.resolve(process.cwd(), "scripts/mcp-fixtures/servers"),
+  ];
+  return candidates.find((dir) => existsSync(dir)) ?? candidates[0];
+})();
+
+function smokeLabFixturePath(fixtureFile: string) {
+  return path.join(SMOKE_LAB_FIXTURES_DIR, fixtureFile);
+}
 
 const HTTP_APP_KEY = "paperclip.smoke-lab.http-fixture";
 const STDIO_APP_KEY = "paperclip.smoke-lab.stdio-fixture";
@@ -392,11 +413,18 @@ export function smokeLabService(db: Db, options: {
   async function assertEnabled() {
     const experimental = await settings.getExperimental();
     if (!experimental.enableSmokeLab) throw notFound("Smoke lab is disabled");
-    const deploymentMode = options.deploymentMode ?? "local_trusted";
+    // The smoke lab boots a fake OAuth provider + loopback fixture sidecars, so it
+    // must never be reachable from a public, internet-facing instance. The real
+    // security boundary is *exposure*, not the auth mode or the Node build target:
+    // a private deployment behind Tailscale + login ("authenticated" mode) is just
+    // as safe as a bare "local_trusted" localhost box. Private dev instances also
+    // legitimately run NODE_ENV=production (build optimization), so gating on that
+    // would wrongly lock them out. Only public exposure is disallowed; the
+    // experimental `enableSmokeLab` flag (checked above, off by default) is the
+    // second layer of defense.
     const deploymentExposure = options.deploymentExposure ?? "private";
-    const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV;
-    if (deploymentMode !== "local_trusted" || deploymentExposure === "public" || nodeEnv === "production") {
-      throw forbidden("Smoke lab is only available in non-production local_trusted deployments");
+    if (deploymentExposure === "public") {
+      throw forbidden("Smoke lab is only available on private (non-public) deployments");
     }
   }
 
@@ -685,7 +713,7 @@ export function smokeLabService(db: Db, options: {
       description: "Approved deterministic stdio command template for Smoke Lab scenarios.",
       status: "active" as const,
       command: process.execPath,
-      args: [path.resolve(process.cwd(), "scripts/mcp-fixtures/servers/stdio-fixture.mjs")],
+      args: [smokeLabFixturePath("stdio-fixture.mjs")],
       envKeys: [] as string[],
       tools,
       disabledAt: null,
@@ -867,7 +895,7 @@ export function smokeLabService(db: Db, options: {
   async function startHttpSidecar(companyId?: string) {
     if (httpSidecar && !httpSidecar.child.killed) return httpSidecar;
     httpSidecarError = null;
-    const fixturePath = path.resolve(process.cwd(), "scripts/mcp-fixtures/servers/http-fixture.mjs");
+    const fixturePath = smokeLabFixturePath("http-fixture.mjs");
     const child = spawn(process.execPath, [fixturePath], {
       env: { ...process.env, HOST: "127.0.0.1", PORT: "0" },
       stdio: ["ignore", "pipe", "pipe"],
@@ -1014,7 +1042,7 @@ export function smokeLabService(db: Db, options: {
         transport: "local_stdio",
         config: {
           command: process.execPath,
-          args: [path.resolve(process.cwd(), "scripts/mcp-fixtures/servers/stdio-fixture.mjs")],
+          args: [smokeLabFixturePath("stdio-fixture.mjs")],
           templateId: STDIO_TEMPLATE_KEY,
         },
         transportConfig: { managedBy: "smoke-lab" },
