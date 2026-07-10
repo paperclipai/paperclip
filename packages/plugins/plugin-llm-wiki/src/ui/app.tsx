@@ -26,6 +26,8 @@ import {
   forceLink,
   forceManyBody,
   forceSimulation,
+  forceX,
+  forceY,
   type SimulationLinkDatum,
   type SimulationNodeDatum,
 } from "d3-force";
@@ -1906,6 +1908,14 @@ type KnowledgeGraphLayout = {
   visibleKindCounts: Partial<Record<KnowledgeGraphNodeKind, number>>;
 };
 
+type KnowledgeGraphMode = "brain" | "operations";
+
+type KnowledgeGraphConnectionStats = {
+  incoming: number;
+  outgoing: number;
+  neighbors: number;
+};
+
 type KnowledgeGraphViewport = {
   x: number;
   y: number;
@@ -1949,23 +1959,21 @@ type KnowledgeGraphDragState =
     startOffset: KnowledgeGraphPoint;
   };
 
-const GRAPH_FILTER_KINDS: ReadonlyArray<KnowledgeGraphNodeKind> = [
+const OPERATIONS_GRAPH_FILTER_KINDS: ReadonlyArray<KnowledgeGraphNodeKind> = [
   "project",
   "issue",
-  "wiki_page",
   "agent",
   "document",
   "work_product",
-  "source",
 ];
 
-const DEFAULT_GRAPH_FILTER_KINDS: ReadonlyArray<KnowledgeGraphNodeKind> = [
+const DEFAULT_OPERATIONS_GRAPH_FILTER_KINDS: ReadonlyArray<KnowledgeGraphNodeKind> = [
   "project",
   "issue",
-  "wiki_page",
   "agent",
-  "source",
 ];
+const BRAIN_GRAPH_FILTER_KINDS: ReadonlyArray<KnowledgeGraphNodeKind> = ["wiki_page", "source"];
+const DEFAULT_BRAIN_GRAPH_FILTER_KINDS: ReadonlyArray<KnowledgeGraphNodeKind> = ["wiki_page"];
 const GRAPH_ANCHOR_KINDS: ReadonlySet<KnowledgeGraphNodeKind> = new Set(["company", "space"]);
 const GRAPH_VIEWBOX_SIZE = 100;
 const GRAPH_MIN_SCALE = 0.12;
@@ -1986,13 +1994,49 @@ const graphKindLabels: Record<KnowledgeGraphNodeKind, string> = {
   company: "Company",
   space: "Space",
   project: "Projects",
-  wiki_page: "Wiki",
+  wiki_page: "Pages",
   source: "Sources",
   issue: "Issues",
   agent: "Agents",
   document: "Docs",
   work_product: "Work",
 };
+
+function graphKindsForMode(mode: KnowledgeGraphMode): ReadonlyArray<KnowledgeGraphNodeKind> {
+  return mode === "brain" ? BRAIN_GRAPH_FILTER_KINDS : OPERATIONS_GRAPH_FILTER_KINDS;
+}
+
+function defaultGraphKindsForMode(mode: KnowledgeGraphMode): KnowledgeGraphNodeKind[] {
+  return [...(mode === "brain" ? DEFAULT_BRAIN_GRAPH_FILTER_KINDS : DEFAULT_OPERATIONS_GRAPH_FILTER_KINDS)];
+}
+
+function isKnowledgeGraphEdgeAllowedInMode(edge: KnowledgeGraphEdge, mode: KnowledgeGraphMode): boolean {
+  if (mode === "brain") return edge.kind === "wiki_link";
+  return edge.kind !== "wiki_link";
+}
+
+function getKnowledgeGraphConnectionStats(
+  edges: ReadonlyArray<KnowledgeGraphEdge>,
+  nodeId: string | null,
+  mode: KnowledgeGraphMode,
+): KnowledgeGraphConnectionStats {
+  if (!nodeId) return { incoming: 0, outgoing: 0, neighbors: 0 };
+  const neighbors = new Set<string>();
+  let incoming = 0;
+  let outgoing = 0;
+  for (const edge of edges) {
+    if (!isKnowledgeGraphEdgeAllowedInMode(edge, mode)) continue;
+    if (edge.to === nodeId) {
+      incoming += 1;
+      neighbors.add(edge.from);
+    }
+    if (edge.from === nodeId) {
+      outgoing += 1;
+      neighbors.add(edge.to);
+    }
+  }
+  return { incoming, outgoing, neighbors: neighbors.size };
+}
 
 function hashString(value: string): number {
   let hash = 0;
@@ -2100,8 +2144,8 @@ function knowledgeNodeColor(node: Pick<KnowledgeGraphNode, "kind" | "status">): 
   if (node.kind === "space") return "oklch(0.84 0.12 260)";
   if (node.kind === "project") return "oklch(0.72 0.16 250)";
   if (node.kind === "issue") return "oklch(0.74 0.11 20)";
-  if (node.kind === "wiki_page") return "oklch(0.74 0.13 320)";
-  if (node.kind === "source") return "oklch(0.73 0.12 180)";
+  if (node.kind === "wiki_page") return "oklch(0.82 0.105 174)";
+  if (node.kind === "source") return "oklch(0.79 0.12 82)";
   if (node.kind === "agent") return "oklch(0.74 0.13 145)";
   if (node.kind === "document") return "oklch(0.76 0.1 70)";
   return "oklch(0.78 0.05 0)";
@@ -2111,7 +2155,7 @@ function knowledgeEdgeColor(edgeOrKind: KnowledgeGraphEdgeKind | Pick<KnowledgeG
   const kind = typeof edgeOrKind === "string" ? edgeOrKind : edgeOrKind.kind;
   if (kind === "blocks") return "oklch(0.72 0.2 25 / 0.76)";
   if (kind === "mentions") return "oklch(0.82 0.045 255 / 0.42)";
-  if (kind === "wiki_link") return "oklch(0.84 0.075 315 / 0.56)";
+  if (kind === "wiki_link") return "oklch(0.82 0.085 174 / 0.58)";
   if (kind === "source_ref") return "oklch(0.8 0.08 180 / 0.54)";
   if (kind === "assigned_to") return "oklch(0.78 0.09 145 / 0.52)";
   if (kind === "documents" || kind === "produces") return "oklch(0.82 0.07 75 / 0.42)";
@@ -2278,6 +2322,7 @@ function runKnowledgeGraphForceLayout(
   nodes: KnowledgeGraphLayoutNode[],
   edges: KnowledgeGraphEdge[],
   settings: KnowledgeGraphSettings,
+  mode: KnowledgeGraphMode,
 ): KnowledgeGraphLayoutNode[] {
   if (nodes.length < 2) return nodes;
 
@@ -2314,6 +2359,20 @@ function runKnowledgeGraphForceLayout(
     .alphaDecay(0.035)
     .stop();
 
+  if (mode === "brain") {
+    simulation
+      .force(
+        "brain-lobes",
+        forceX<KnowledgeGraphForceNode>((node) => node.kind === "source" ? 50 : hashString(node.id) % 2 === 0 ? 41 : 59)
+          .strength((node) => node.kind === "source" ? 0.02 : 0.055),
+      )
+      .force(
+        "brain-axis",
+        forceY<KnowledgeGraphForceNode>((node) => node.kind === "source" ? 72 : 50)
+          .strength((node) => node.kind === "source" ? 0.045 : 0.075),
+      );
+  }
+
   const tickCount = Math.min(220, Math.max(120, Math.round(220 - Math.log2(nodes.length + 1) * 12)));
   simulation.tick(tickCount);
   simulation.stop();
@@ -2333,9 +2392,12 @@ function buildKnowledgeGraphLayout(
     selectedNodeId: string | null;
     showHistory: boolean;
     settings?: Partial<KnowledgeGraphSettings>;
+    mode?: KnowledgeGraphMode;
   },
 ): KnowledgeGraphLayout {
   if (!data) return { nodes: [], edges: [], selectedNode: null, visibleKindCounts: {} };
+  const mode = input.mode ?? "operations";
+  const includesAnchors = mode === "operations";
   const settings = normalizeKnowledgeGraphSettings(input.settings);
   const normalizedQuery = input.query.trim().toLowerCase();
   const baseNodeIds = new Set<string>();
@@ -2343,7 +2405,8 @@ function buildKnowledgeGraphLayout(
   const visibleKindCounts: Partial<Record<KnowledgeGraphNodeKind, number>> = {};
   const adjacency = new Map<string, Set<string>>();
 
-  for (const edge of data.edges) {
+  const modeEdges = data.edges.filter((edge) => isKnowledgeGraphEdgeAllowedInMode(edge, mode));
+  for (const edge of modeEdges) {
     if (!adjacency.has(edge.from)) adjacency.set(edge.from, new Set());
     if (!adjacency.has(edge.to)) adjacency.set(edge.to, new Set());
     adjacency.get(edge.from)?.add(edge.to);
@@ -2351,7 +2414,7 @@ function buildKnowledgeGraphLayout(
   }
 
   for (const node of data.nodes) {
-    const kindVisible = GRAPH_ANCHOR_KINDS.has(node.kind) || input.enabledKinds.has(node.kind);
+    const kindVisible = (includesAnchors && GRAPH_ANCHOR_KINDS.has(node.kind)) || input.enabledKinds.has(node.kind);
     if (!kindVisible) continue;
     if (!input.showHistory && isKnowledgeGraphHistoricalNode(node)) continue;
     if (normalizedQuery && !graphSearchText(node).includes(normalizedQuery)) continue;
@@ -2364,17 +2427,17 @@ function buildKnowledgeGraphLayout(
     for (const id of baseNodeIds) {
       for (const neighbor of adjacency.get(id) ?? []) {
         const neighborNode = data.nodes.find((node) => node.id === neighbor);
-        if (neighborNode && (GRAPH_ANCHOR_KINDS.has(neighborNode.kind) || input.enabledKinds.has(neighborNode.kind))) {
+        if (neighborNode && ((includesAnchors && GRAPH_ANCHOR_KINDS.has(neighborNode.kind)) || input.enabledKinds.has(neighborNode.kind))) {
           visibleNodeIds.add(neighbor);
         }
       }
     }
     for (const node of data.nodes) {
-      if (GRAPH_ANCHOR_KINDS.has(node.kind)) visibleNodeIds.add(node.id);
+      if (includesAnchors && GRAPH_ANCHOR_KINDS.has(node.kind)) visibleNodeIds.add(node.id);
     }
   }
 
-  const visibleEdges = data.edges.filter((edge) => visibleNodeIds.has(edge.from) && visibleNodeIds.has(edge.to));
+  const visibleEdges = modeEdges.filter((edge) => visibleNodeIds.has(edge.from) && visibleNodeIds.has(edge.to));
   for (const edge of visibleEdges) {
     visibleNodeIds.add(edge.from);
     visibleNodeIds.add(edge.to);
@@ -2431,6 +2494,18 @@ function buildKnowledgeGraphLayout(
       const projectCenter = projectId ? projectCenters.get(projectId) : undefined;
       const hash = hashString(node.id);
       const position = (() => {
+        if (mode === "brain" && node.kind === "wiki_page") {
+          const hemisphereCenter = hash % 2 === 0 ? { x: 41, y: 49 } : { x: 59, y: 49 };
+          return knowledgeGraphClusterPoint(
+            hemisphereCenter,
+            nextClusterIndex(`brain:${hash % 2}`),
+            hash,
+            1.22,
+          );
+        }
+        if (mode === "brain" && node.kind === "source") {
+          return knowledgeGraphClusterPoint({ x: 50, y: 78 }, nextClusterIndex("brain:sources"), hash, 1.1);
+        }
         if (node.kind === "company") return { x: 50, y: 50 };
         if (node.kind === "space") {
           return knowledgeGraphClusterPoint({ x: 50, y: 44 }, nextClusterIndex("space"), hash, 1.35);
@@ -2459,10 +2534,16 @@ function buildKnowledgeGraphLayout(
       };
     });
 
-  const forceLayoutNodes = runKnowledgeGraphForceLayout(layoutNodes, visibleEdges, settings);
+  const forceLayoutNodes = runKnowledgeGraphForceLayout(layoutNodes, visibleEdges, settings, mode);
 
+  const mostConnectedBrainPage = mode === "brain"
+    ? [...forceLayoutNodes]
+      .filter((node) => node.kind === "wiki_page")
+      .sort((a, b) => b.degree - a.degree || b.weight - a.weight || a.label.localeCompare(b.label))[0]
+    : undefined;
   const selectedNode = forceLayoutNodes.find((node) => node.id === input.selectedNodeId)
-    ?? forceLayoutNodes.find((node) => matchingIds.has(node.id))
+    ?? (normalizedQuery ? forceLayoutNodes.find((node) => matchingIds.has(node.id)) : undefined)
+    ?? mostConnectedBrainPage
     ?? forceLayoutNodes.find((node) => node.kind === "project")
     ?? forceLayoutNodes[0]
     ?? null;
@@ -2474,6 +2555,7 @@ function buildKnowledgeGraphLayout(
 export const knowledgeGraphTestUtils = {
   buildKnowledgeGraphLayout,
   fitKnowledgeGraphViewport,
+  getKnowledgeGraphConnectionStats,
   isKnowledgeGraphHistoricalNode,
   knowledgeGraphLabelVisualScale,
   knowledgeGraphNodeVisualScale,
@@ -2497,10 +2579,9 @@ function GraphStat({ label, value }: { label: string; value: number }) {
   return (
     <div style={{
       minWidth: 92,
-      padding: "8px 10px",
-      borderRadius: 6,
-      border: `1px solid ${tokens.border}`,
-      background: "oklch(0.18 0.01 260)",
+      padding: "9px 2px 8px",
+      borderTop: `1px solid ${tokens.border}`,
+      background: "transparent",
     }}>
       <div style={{ fontSize: 17, fontWeight: 650, lineHeight: 1.1 }}>{value.toLocaleString()}</div>
       <Tiny>{label}</Tiny>
@@ -2551,10 +2632,11 @@ function KnowledgeGraphView({
   error: { message: string } | null;
   onOpenNode: (node: KnowledgeGraphNode) => void;
 }) {
+  const [mode, setMode] = useState<KnowledgeGraphMode>("brain");
   const [query, setQuery] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
-  const [enabledKinds, setEnabledKinds] = useState<KnowledgeGraphNodeKind[]>([...DEFAULT_GRAPH_FILTER_KINDS]);
+  const [enabledKinds, setEnabledKinds] = useState<KnowledgeGraphNodeKind[]>(() => defaultGraphKindsForMode("brain"));
   const [showHistory, setShowHistory] = useState(false);
   const [graphSettingsOpen, setGraphSettingsOpen] = useState(false);
   const [graphSettings, setGraphSettings] = useState<KnowledgeGraphSettings>(DEFAULT_KNOWLEDGE_GRAPH_SETTINGS);
@@ -2582,8 +2664,9 @@ function KnowledgeGraphView({
       selectedNodeId: null,
       showHistory,
       settings: deferredGraphSettings,
+      mode,
     }),
-    [data, deferredGraphSettings, enabledKindSet, deferredQuery, showHistory],
+    [data, deferredGraphSettings, enabledKindSet, deferredQuery, mode, showHistory],
   );
   const graph = useMemo((): KnowledgeGraphLayout => {
     const selectedNode = layoutGraph.nodes.find((node) => node.id === selectedNodeId)
@@ -2617,8 +2700,9 @@ function KnowledgeGraphView({
       deferredGraphSettings.linkForce,
       deferredGraphSettings.linkDistance,
       deferredGraphSettings.nodeScale,
+      mode,
     ].join(":"),
-    [data?.checkedAt, deferredGraphSettings, deferredQuery, enabledKinds, showHistory],
+    [data?.checkedAt, deferredGraphSettings, deferredQuery, enabledKinds, mode, showHistory],
   );
   const positionedNodes = useMemo(
     () => graph.nodes.map((node) => {
@@ -2630,6 +2714,21 @@ function KnowledgeGraphView({
   );
   const nodeById = useMemo(() => new Map(positionedNodes.map((node) => [node.id, node])), [positionedNodes]);
   const selectedNode = graph.selectedNode ? nodeById.get(graph.selectedNode.id) ?? graph.selectedNode : null;
+  const brainStats = useMemo(() => {
+    const pageNodeIds = new Set((data?.nodes ?? []).filter((node) => node.kind === "wiki_page").map((node) => node.id));
+    const brainEdges = (data?.edges ?? []).filter((edge) => edge.kind === "wiki_link" && pageNodeIds.has(edge.from) && pageNodeIds.has(edge.to));
+    const linkedPageIds = new Set(brainEdges.flatMap((edge) => [edge.from, edge.to]));
+    return {
+      pages: pageNodeIds.size,
+      links: brainEdges.length,
+      orphans: Math.max(0, pageNodeIds.size - linkedPageIds.size),
+      sources: (data?.nodes ?? []).filter((node) => node.kind === "source").length,
+    };
+  }, [data?.edges, data?.nodes]);
+  const selectedConnectionStats = useMemo(
+    () => getKnowledgeGraphConnectionStats(data?.edges ?? [], selectedNode?.id ?? null, mode),
+    [data?.edges, mode, selectedNode?.id],
+  );
 
   useEffect(() => {
     if (selectedNodeId && graph.nodes.some((node) => node.id === selectedNodeId)) return;
@@ -2670,6 +2769,16 @@ function KnowledgeGraphView({
 
   const updateGraphSetting = (key: keyof KnowledgeGraphSettings, value: number) => {
     setGraphSettings((current) => ({ ...current, [key]: value }));
+  };
+  const selectGraphMode = (nextMode: KnowledgeGraphMode) => {
+    if (nextMode === mode) return;
+    setMode(nextMode);
+    setEnabledKinds(defaultGraphKindsForMode(nextMode));
+    setSelectedNodeId(null);
+    setHoveredNodeId(null);
+    setShowHistory(false);
+    setQuery("");
+    setGraphSettingsOpen(false);
   };
   const toggleKind = (kind: KnowledgeGraphNodeKind) => {
     setEnabledKinds((current) => {
@@ -2789,6 +2898,26 @@ function KnowledgeGraphView({
     const to = nodeById.get(edge.to);
     if (!from || !to) return null;
     const focused = isKnowledgeGraphEdgeFocused(edge, focusedNodeIdForEdges);
+    if (mode === "brain") {
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+      const direction = hashString(edge.id) % 2 === 0 ? 1 : -1;
+      const bend = Math.min(2.7, distance * 0.085) * direction;
+      const controlX = (from.x + to.x) / 2 - (dy / distance) * bend;
+      const controlY = (from.y + to.y) / 2 + (dx / distance) * bend;
+      return (
+        <path
+          key={edge.id}
+          className={`pc-knowledge-edge ${focused ? "pc-knowledge-edge-focus" : ""}`}
+          d={`M ${from.x} ${from.y} Q ${controlX} ${controlY} ${to.x} ${to.y}`}
+          fill="none"
+          stroke={knowledgeEdgeColor(edge)}
+          strokeWidth={knowledgeEdgeWidth(edge, focused) * graphSettings.linkScale}
+          opacity={hoveredNodeId && !focused ? 0.08 : knowledgeEdgeOpacity(edge, focused)}
+        />
+      );
+    }
     return (
       <line
         key={edge.id}
@@ -2806,10 +2935,16 @@ function KnowledgeGraphView({
 
   return (
     <div style={{ padding: 18, display: "grid", gap: 12, minWidth: 0 }}>
-      <Card style={{ background: "oklch(0.15 0.01 260)" }}>
+      <Card style={{ background: "oklch(0.135 0.009 245)", borderColor: "oklch(0.28 0.018 230 / 0.72)" }}>
         <CardHeader
-          title={data.scope.kind === "project" && data.scope.projectName ? `${data.scope.projectName} Knowledge Graph` : "Company Knowledge Graph"}
-          badges={<><Badge>{graph.nodes.length.toLocaleString()} visible</Badge><Badge>{visibleEdgeCount.toLocaleString()} connections</Badge></>}
+          title={mode === "brain"
+            ? "Second brain"
+            : data.scope.kind === "project" && data.scope.projectName
+              ? `${data.scope.projectName} Operations Map`
+              : "Operations map"}
+          badges={mode === "brain"
+            ? <><Badge>{brainStats.pages.toLocaleString()} notes</Badge><Badge>{brainStats.links.toLocaleString()} links</Badge></>
+            : <><Badge>{graph.nodes.length.toLocaleString()} visible</Badge><Badge>{visibleEdgeCount.toLocaleString()} connections</Badge></>}
           right={<Tiny>{data.space.displayName} · {data.checkedAt.slice(0, 10)}</Tiny>}
         />
         <CardBody padding={0}>
@@ -2819,15 +2954,60 @@ function KnowledgeGraphView({
             minHeight: isMobile ? "auto" : 560,
           }}>
             <div style={{ minWidth: 0, borderRight: isMobile ? undefined : `1px solid ${tokens.border}`, borderBottom: isMobile ? `1px solid ${tokens.border}` : undefined }}>
-              <div style={{ padding: 12, display: "grid", gap: 10, borderBottom: `1px solid ${tokens.border}` }}>
+              <div style={{ padding: 12, display: "grid", gap: 10, borderBottom: `1px solid ${tokens.border}`, background: "oklch(0.145 0.01 245)" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                  <div
+                    role="tablist"
+                    aria-label="Knowledge graph mode"
+                    style={{
+                      display: "inline-flex",
+                      gap: 3,
+                      padding: 3,
+                      border: `1px solid ${tokens.border}`,
+                      borderRadius: 7,
+                      background: "oklch(0.115 0.007 245)",
+                    }}
+                  >
+                    {([
+                      ["brain", "Second brain"],
+                      ["operations", "Operations"],
+                    ] as const).map(([value, label]) => {
+                      const selected = value === mode;
+                      return (
+                        <button
+                          key={value}
+                          type="button"
+                          role="tab"
+                          aria-selected={selected}
+                          onClick={() => selectGraphMode(value)}
+                          style={{
+                            minHeight: 28,
+                            padding: "4px 10px",
+                            border: 0,
+                            borderRadius: 5,
+                            background: selected ? "oklch(0.26 0.035 177)" : "transparent",
+                            color: selected ? "oklch(0.94 0.03 174)" : tokens.muted,
+                            fontSize: 11,
+                            fontWeight: selected ? 650 : 500,
+                            fontFamily: fontStack,
+                            cursor: "pointer",
+                          }}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <Tiny>{mode === "brain" ? "Notes become important through links and backlinks" : "Projects, work, ownership, and dependencies"}</Tiny>
+                </div>
                 <TextInput
                   value={query}
                   onChange={(event) => setQuery(event.currentTarget.value)}
-                  placeholder="Search nodes"
+                  placeholder={mode === "brain" ? "Search your knowledge" : "Search operational nodes"}
                   aria-label="Search knowledge graph nodes"
                 />
                 <div aria-label="Graph node types" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {GRAPH_FILTER_KINDS.map((kind) => {
+                  {graphKindsForMode(mode).map((kind) => {
                     const selected = enabledKinds.includes(kind);
                     return (
                       <button
@@ -2857,28 +3037,32 @@ function KnowledgeGraphView({
                   })}
                 </div>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    aria-pressed={showHistory}
-                    onClick={() => setShowHistory((current) => !current)}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "4px 8px",
-                      borderRadius: 6,
-                      border: `1px solid ${showHistory ? tokens.fg : tokens.border}`,
-                      background: showHistory ? "oklch(0.23 0.01 260)" : "transparent",
-                      color: showHistory ? tokens.fg : tokens.muted,
-                      fontSize: 11,
-                      fontFamily: fontStack,
-                      cursor: "pointer",
-                    }}
-                  >
-                    <HistoryIcon size={13} />
-                    <span>{showHistory ? "Hide history" : "Include history"}</span>
-                    <span style={{ color: tokens.muted }}>{hiddenHistoryCount.toLocaleString()}</span>
-                  </button>
+                  {mode === "operations" ? (
+                    <button
+                      type="button"
+                      aria-pressed={showHistory}
+                      onClick={() => setShowHistory((current) => !current)}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "4px 8px",
+                        borderRadius: 6,
+                        border: `1px solid ${showHistory ? tokens.fg : tokens.border}`,
+                        background: showHistory ? "oklch(0.23 0.01 260)" : "transparent",
+                        color: showHistory ? tokens.fg : tokens.muted,
+                        fontSize: 11,
+                        fontFamily: fontStack,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <HistoryIcon size={13} />
+                      <span>{showHistory ? "Hide history" : "Include history"}</span>
+                      <span style={{ color: tokens.muted }}>{hiddenHistoryCount.toLocaleString()}</span>
+                    </button>
+                  ) : (
+                    <Tiny>{brainStats.orphans.toLocaleString()} unlinked notes · {brainStats.sources.toLocaleString()} sources indexed</Tiny>
+                  )}
                   <Tiny>{contentNodeCount.toLocaleString()} matching nodes</Tiny>
                 </div>
               </div>
@@ -2887,7 +3071,9 @@ function KnowledgeGraphView({
                   position: "relative",
                   minHeight: isMobile ? 360 : 500,
                   overflow: "hidden",
-                  background: "radial-gradient(circle at 46% 42%, oklch(0.19 0.012 260), oklch(0.115 0.006 260) 70%, oklch(0.095 0.004 260))",
+                  background: mode === "brain"
+                    ? "radial-gradient(ellipse at 33% 48%, oklch(0.255 0.043 176 / 0.33), transparent 38%), radial-gradient(ellipse at 67% 48%, oklch(0.235 0.036 190 / 0.29), transparent 38%), linear-gradient(90deg, transparent 49.7%, oklch(0.68 0.05 180 / 0.055) 50%, transparent 50.3%), radial-gradient(circle at 50% 48%, oklch(0.17 0.016 220), oklch(0.095 0.006 245) 76%)"
+                    : "radial-gradient(circle at 46% 42%, oklch(0.19 0.012 260), oklch(0.115 0.006 260) 70%, oklch(0.095 0.004 260))",
                 }}
               >
                 <div
@@ -2990,7 +3176,7 @@ function KnowledgeGraphView({
                   ref={graphSvgRef}
                   viewBox="0 0 100 100"
                   role="img"
-                  aria-label="Interactive company knowledge graph"
+                  aria-label={mode === "brain" ? "Interactive second brain note graph" : "Interactive company operations graph"}
                   onWheel={handleGraphWheel}
                   onPointerDown={handleGraphPointerDown}
                   onPointerMove={handleGraphPointerMove}
@@ -3009,7 +3195,8 @@ function KnowledgeGraphView({
                 >
                   <style>{`
                     .pc-knowledge-edge { vector-effect: non-scaling-stroke; stroke-linecap: round; pointer-events: none; }
-                    .pc-knowledge-node { transform-box: fill-box; transform-origin: center; }
+                    .pc-knowledge-node { transform-box: fill-box; transform-origin: center; transition: opacity 140ms ease, stroke-width 140ms ease; }
+                    @media (prefers-reduced-motion: reduce) { .pc-knowledge-node { transition: none; } }
                   `}</style>
                   <rect x="0" y="0" width="100" height="100" fill="transparent" />
                   <g transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.scale})`}>
@@ -3053,13 +3240,22 @@ function KnowledgeGraphView({
                           <title>{`${node.label}${node.sublabel ? ` · ${node.sublabel}` : ""}`}</title>
                           <g transform={`scale(${nodeVisualScale})`}>
                             <circle r={Math.max(1.65, node.radius + 0.9)} fill="transparent" />
+                            {mode === "brain" && node.kind === "wiki_page" ? (
+                              <circle
+                                r={node.radius + 0.46 + Math.min(0.28, Math.log2(node.degree + 1) * 0.07)}
+                                fill={selected || hovered ? "oklch(0.76 0.11 174 / 0.11)" : "transparent"}
+                                stroke={node.color}
+                                strokeWidth={selected || hovered ? 0.16 : 0.07}
+                                opacity={dimmed ? 0.08 : selected || hovered ? 0.76 : Math.min(0.34, 0.1 + node.degree * 0.018)}
+                              />
+                            ) : null}
                             <circle
                               className="pc-knowledge-node"
                               r={selected ? node.radius + 0.22 : hovered ? node.radius + 0.13 : node.radius}
                               fill={node.kind === "company" ? "transparent" : node.color}
                               stroke={selected || hovered ? tokens.primary : node.color}
                               strokeWidth={selected ? 0.24 : hovered ? 0.18 : node.kind === "company" ? 0.2 : 0.09}
-                              opacity={dimmed ? 0.16 : selected || hovered ? 1 : node.kind === "document" || node.kind === "work_product" ? 0.54 : 0.8}
+                              opacity={dimmed ? 0.16 : selected || hovered ? 1 : node.kind === "document" || node.kind === "work_product" ? 0.54 : mode === "brain" ? 0.88 : 0.8}
                             />
                           </g>
                           {labelVisible ? (
@@ -3089,7 +3285,9 @@ function KnowledgeGraphView({
                 {contentNodeCount === 0 ? (
                   <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", pointerEvents: "none" }}>
                     <div style={{ maxWidth: 260, padding: 16, textAlign: "center", color: tokens.muted, fontSize: 12, lineHeight: 1.5 }}>
-                      No nodes match these filters. Enable another type or include history.
+                      {mode === "brain"
+                        ? "No notes match. Try another search or enable sources."
+                        : "No operational nodes match. Enable another type or include history."}
                     </div>
                   </div>
                 ) : null}
@@ -3097,10 +3295,21 @@ function KnowledgeGraphView({
             </div>
             <aside style={{ padding: 14, display: "grid", gap: 12, alignContent: "start", minWidth: 0 }}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <GraphStat label="Issues" value={data.stats.issues} />
-                <GraphStat label="Wiki" value={data.stats.wikiPages} />
-                <GraphStat label="Projects" value={data.stats.projects} />
-                <GraphStat label="Refs" value={data.stats.references} />
+                {mode === "brain" ? (
+                  <>
+                    <GraphStat label="Notes" value={brainStats.pages} />
+                    <GraphStat label="Links" value={brainStats.links} />
+                    <GraphStat label="Unlinked" value={brainStats.orphans} />
+                    <GraphStat label="Sources" value={brainStats.sources} />
+                  </>
+                ) : (
+                  <>
+                    <GraphStat label="Issues" value={data.stats.issues} />
+                    <GraphStat label="Agents" value={data.stats.agents} />
+                    <GraphStat label="Projects" value={data.stats.projects} />
+                    <GraphStat label="Refs" value={data.stats.references} />
+                  </>
+                )}
               </div>
               {selectedNode ? (
                 <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
@@ -3109,21 +3318,40 @@ function KnowledgeGraphView({
                     <strong style={{ fontSize: 14, overflowWrap: "anywhere" }}>{selectedNode.label}</strong>
                   </div>
                   <Tiny>{graphNodeSubtitle(selectedNode)}</Tiny>
+                  {mode === "brain" && selectedNode.kind === "wiki_page" ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, padding: "6px 0" }}>
+                      <div><div style={{ fontSize: 16, fontWeight: 650 }}>{selectedConnectionStats.incoming}</div><Tiny>Backlinks</Tiny></div>
+                      <div><div style={{ fontSize: 16, fontWeight: 650 }}>{selectedConnectionStats.outgoing}</div><Tiny>Links out</Tiny></div>
+                      <div><div style={{ fontSize: 16, fontWeight: 650 }}>{selectedConnectionStats.neighbors}</div><Tiny>Neighbors</Tiny></div>
+                    </div>
+                  ) : null}
                   {metadataString(selectedNode.metadata, "priority") ? (
                     <Badge tone="default" style={{ justifySelf: "start" }}>{metadataString(selectedNode.metadata, "priority")}</Badge>
                   ) : null}
                   {selectedNode.href ? (
                     <Button variant="primary" onClick={() => onOpenNode(selectedNode)}>{graphOpenLabel(selectedNode)}</Button>
                   ) : null}
-                  <div style={{ display: "grid", gap: 4 }}>
-                    {Object.entries(selectedNode.metadata).slice(0, 8).map(([key, value]) => (
-                      <PropRow
-                        key={key}
-                        label={key}
-                        value={<Mono>{typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : JSON.stringify(value)}</Mono>}
-                      />
-                    ))}
-                  </div>
+                  {mode === "brain" ? (
+                    <div style={{ display: "grid", gap: 4 }}>
+                      {([
+                        ["Path", metadataString(selectedNode.metadata, "path") ?? metadataString(selectedNode.metadata, "rawPath")],
+                        ["Type", metadataString(selectedNode.metadata, "pageType") ?? selectedNode.kind.replace(/_/g, " ")],
+                        ["Updated", selectedNode.updatedAt?.slice(0, 10) ?? null],
+                      ] as const).map(([label, value]) => value ? (
+                        <PropRow key={label} label={label} value={<Mono>{value}</Mono>} />
+                      ) : null)}
+                    </div>
+                  ) : (
+                    <div style={{ display: "grid", gap: 4 }}>
+                      {Object.entries(selectedNode.metadata).slice(0, 8).map(([key, value]) => (
+                        <PropRow
+                          key={key}
+                          label={key}
+                          value={<Mono>{typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : JSON.stringify(value)}</Mono>}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               ) : (
                 <Tiny>Select a node to inspect it.</Tiny>
@@ -3132,11 +3360,13 @@ function KnowledgeGraphView({
                 <Callout tone="warn">{data.warnings.slice(0, 3).join(" ")}</Callout>
               ) : null}
               <div style={{ display: "grid", gap: 5 }}>
-                <Tiny>Edges</Tiny>
-                {(["blocks", "mentions", "wiki_link", "source_ref", "assigned_to"] as KnowledgeGraphEdgeKind[]).map((kind) => (
+                <Tiny>{mode === "brain" ? "Relationship" : "Edges"}</Tiny>
+                {((mode === "brain"
+                  ? ["wiki_link"]
+                  : ["blocks", "mentions", "source_ref", "assigned_to"]) as KnowledgeGraphEdgeKind[]).map((kind) => (
                   <div key={kind} style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                     <span style={{ width: 22, height: 2, background: knowledgeEdgeColor(kind), flexShrink: 0 }} />
-                    <Tiny>{kind.replace(/_/g, " ")}</Tiny>
+                    <Tiny>{kind === "wiki_link" ? "note link" : kind.replace(/_/g, " ")}</Tiny>
                   </div>
                 ))}
               </div>

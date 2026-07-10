@@ -200,6 +200,97 @@ const PAGES = {
   ],
 };
 
+const GRAPH_PAGE_FIXTURES = [
+  ["wiki/index.md", "Knowledge home", "index"],
+  ["wiki/concepts/managed-resources.md", "Managed resources", "concepts"],
+  ["wiki/concepts/origin-kind.md", "Origin kind", "concepts"],
+  ["wiki/concepts/heartbeat.md", "Agent heartbeat", "concepts"],
+  ["wiki/concepts/ownership.md", "Resource ownership", "concepts"],
+  ["wiki/concepts/delegation.md", "Delegation model", "concepts"],
+  ["wiki/areas/control-plane.md", "Control plane", "areas"],
+  ["wiki/areas/plugin-runtime.md", "Plugin runtime", "areas"],
+  ["wiki/areas/agent-runtime.md", "Agent runtime", "areas"],
+  ["wiki/areas/security.md", "Security boundaries", "areas"],
+  ["wiki/projects/llm-wiki/index.md", "LLM Wiki", "projects"],
+  ["wiki/projects/control-plane/index.md", "Control plane project", "projects"],
+  ["wiki/projects/billing/index.md", "Billing architecture", "projects"],
+  ["wiki/policies/secret-access.md", "Secret access", "policies"],
+  ["wiki/policies/plugin-trust.md", "Plugin trust", "policies"],
+  ["wiki/synthesis/runtime-model.md", "Runtime model", "synthesis"],
+  ["wiki/synthesis/resource-lifecycle.md", "Resource lifecycle", "synthesis"],
+  ["wiki/sources/paperclip-spec.md", "Paperclip spec notes", "sources"],
+] as const;
+
+const GRAPH_LINK_PAIRS = [
+  [0, 1], [0, 6], [0, 10], [0, 15],
+  [1, 2], [1, 4], [1, 7], [1, 16],
+  [2, 4], [2, 7], [2, 10],
+  [3, 5], [3, 8], [3, 15],
+  [4, 5], [4, 13], [4, 16],
+  [5, 8], [5, 10], [5, 15],
+  [6, 7], [6, 9], [6, 11], [6, 15],
+  [7, 8], [7, 9], [7, 10], [7, 15], [7, 17],
+  [8, 9], [8, 15],
+  [9, 13], [9, 14],
+  [10, 11], [10, 12], [10, 16], [10, 17],
+  [11, 15], [12, 16], [13, 14], [15, 16], [15, 17], [16, 17],
+] as const;
+
+const KNOWLEDGE_GRAPH = {
+  status: "ok",
+  checkedAt: NOW,
+  wikiId: "default",
+  space: { id: "space-default", slug: "default", displayName: "Company wiki", bindingKind: "company", projectId: null },
+  scope: { kind: "company", projectId: null, projectName: null },
+  nodes: [
+    ...GRAPH_PAGE_FIXTURES.map(([path, title, pageType], index) => ({
+      id: `wiki_page:${path}`,
+      kind: "wiki_page",
+      label: title,
+      sublabel: path,
+      status: null,
+      group: pageType,
+      href: `/PAP/wiki?path=${encodeURIComponent(path)}`,
+      weight: 1 + GRAPH_LINK_PAIRS.filter(([from, to]) => from === index || to === index).length,
+      updatedAt: NOW,
+      metadata: { path, pageType },
+    })),
+    ...PAGES.sources.slice(0, 2).map((source) => ({
+      id: `source:${source.rawPath}`,
+      kind: "source",
+      label: source.title,
+      sublabel: source.rawPath,
+      status: source.status,
+      group: "sources",
+      href: `/PAP/wiki?path=${encodeURIComponent(source.rawPath)}`,
+      weight: 1,
+      updatedAt: source.createdAt,
+      metadata: { rawPath: source.rawPath, sourceType: source.sourceType },
+    })),
+  ],
+  edges: GRAPH_LINK_PAIRS.map(([from, to], index) => ({
+    id: `wiki-link-${index}`,
+    from: `wiki_page:${GRAPH_PAGE_FIXTURES[from][0]}`,
+    to: `wiki_page:${GRAPH_PAGE_FIXTURES[to][0]}`,
+    kind: "wiki_link",
+    label: "wiki link",
+    weight: 1.4,
+    metadata: {},
+  })),
+  stats: {
+    nodes: GRAPH_PAGE_FIXTURES.length + 2,
+    edges: GRAPH_LINK_PAIRS.length,
+    wikiPages: GRAPH_PAGE_FIXTURES.length,
+    issues: 0,
+    projects: 0,
+    agents: 0,
+    documents: 0,
+    workProducts: 0,
+    references: 0,
+  },
+  warnings: [],
+};
+
 const PAGE_CONTENT = {
   wikiId: "default",
   path: "wiki/concepts/managed-resources.md",
@@ -575,6 +666,7 @@ function dataResolver(key: string, params?: Record<string, unknown>) {
     });
   }
   if (key === "pages") return fakeData(PAGES);
+  if (key === "knowledge-graph") return fakeData(KNOWLEDGE_GRAPH);
   if (key === "page-content") return fakeData(PAGE_CONTENT);
   if (key === "operations") {
     const opType = typeof params?.operationType === "string" ? params.operationType : null;

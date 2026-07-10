@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdirSync, copyFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, copyFileSync, readFileSync } from "node:fs";
 import { dirname, resolve, extname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import http from "node:http";
@@ -16,8 +16,8 @@ mkdirSync(screensDir, { recursive: true });
 const entry = resolve(__dirname, "entry.tsx");
 
 const repoRoot = resolve(pkgRoot, "..", "..", "..");
-const reactPath = resolve(repoRoot, "node_modules/.pnpm/react@19.2.4/node_modules/react");
-const reactDomPath = resolve(repoRoot, "node_modules/.pnpm/react-dom@19.2.4_react@19.2.4/node_modules/react-dom");
+const reactPath = resolve(pkgRoot, "node_modules/react");
+const reactDomPath = resolve(pkgRoot, "node_modules/react-dom");
 
 console.log("Bundling screenshot harness…");
 await esbuild.build({
@@ -51,6 +51,7 @@ const desktopTargets = [
   { slug: "04-wiki-lint", view: "wiki-sidebar", section: "lint" },
   { slug: "05-wiki-history", view: "wiki-sidebar", section: "history" },
   { slug: "06-wiki-settings", view: "wiki-sidebar", section: "settings" },
+  { slug: "08-second-brain", view: "wiki-sidebar", section: "graph" },
   { slug: "07-host-settings", view: "settings" },
   { slug: "09-sidebar-link", view: "sidebar" },
   { slug: "11-wiki-distillation-settings", view: "wiki-sidebar", section: "settings/distillation" },
@@ -79,17 +80,12 @@ const targets = [
   ...desktopTargets.map((target) => ({ ...target, viewport: desktopViewport })),
   ...mobileTargets,
 ];
+const requestedSlugs = new Set(process.argv.slice(2));
+const selectedTargets = requestedSlugs.size > 0
+  ? targets.filter((target) => requestedSlugs.has(target.slug))
+  : targets;
 
-const playwrightUrl = pathToFileURL(resolve(pkgRoot, "node_modules/playwright/index.mjs")).href;
-const playwrightFallback = resolve(pkgRoot, "..", "..", "..", "node_modules", ".pnpm", "playwright@1.58.2", "node_modules", "playwright", "index.mjs");
-let playwrightModuleHref = playwrightUrl;
-if (!existsSync(resolve(pkgRoot, "node_modules/playwright/index.mjs"))) {
-  if (existsSync(playwrightFallback)) {
-    playwrightModuleHref = pathToFileURL(playwrightFallback).href;
-  } else {
-    throw new Error("Cannot locate playwright module");
-  }
-}
+const playwrightModuleHref = pathToFileURL(resolve(repoRoot, "node_modules/@playwright/test/index.mjs")).href;
 const { chromium } = await import(playwrightModuleHref);
 
 const mimeFor = (ext) => ({
@@ -124,7 +120,7 @@ const page = await context.newPage();
 page.on("console", (msg) => console.log(`  [console.${msg.type()}]`, msg.text()));
 page.on("pageerror", (err) => console.error("  [pageerror]", err.message));
 
-for (const target of targets) {
+for (const target of selectedTargets) {
   const sectionPath = target.section ? `/${target.section}` : "";
   const search = target.search ? `?${target.search}` : "";
   const url = `${baseUrl}/PAP/wiki${sectionPath}${search}#${target.view}`;

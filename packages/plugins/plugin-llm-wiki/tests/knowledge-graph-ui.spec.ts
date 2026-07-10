@@ -3,7 +3,7 @@ import { knowledgeGraphTestUtils } from "../src/ui/app.js";
 
 const node = (
   id: string,
-  kind: "company" | "space" | "project" | "issue" | "agent" | "document" | "wiki_page",
+  kind: "company" | "space" | "project" | "issue" | "agent" | "document" | "wiki_page" | "source",
   status: string | null,
   metadata: Record<string, unknown> = {},
 ) => ({
@@ -41,11 +41,15 @@ const graphData = {
     node("agent:former", "agent", "terminated"),
     node("document:1", "document", null, { projectId: "1" }),
     node("wiki:1", "wiki_page", null),
+    node("wiki:2", "wiki_page", null),
+    node("source:1", "source", "indexed"),
   ],
   edges: [
     { id: "edge:active", from: "project:1", to: "issue:active", kind: "project_issue" as const, label: null, weight: 1, metadata: {} },
     { id: "edge:done", from: "project:1", to: "issue:done", kind: "project_issue" as const, label: null, weight: 1, metadata: {} },
     { id: "edge:doc", from: "issue:active", to: "document:1", kind: "documents" as const, label: null, weight: 1, metadata: {} },
+    { id: "edge:wiki-1", from: "wiki:1", to: "wiki:2", kind: "wiki_link" as const, label: null, weight: 1, metadata: {} },
+    { id: "edge:wiki-2", from: "wiki:2", to: "wiki:1", kind: "wiki_link" as const, label: null, weight: 1, metadata: {} },
   ],
   stats: {
     nodes: 9,
@@ -100,6 +104,27 @@ describe("knowledge graph layout", () => {
       "document:1",
     ]));
     expect(layout.edges.every((edge) => graphData.edges.some((sourceEdge) => sourceEdge.id === edge.id))).toBe(true);
+  });
+
+  it("uses linked notes as the default second-brain topology without operational anchors", () => {
+    const layout = knowledgeGraphTestUtils.buildKnowledgeGraphLayout(graphData, {
+      enabledKinds: new Set(["wiki_page"]),
+      query: "",
+      selectedNodeId: null,
+      showHistory: false,
+      mode: "brain",
+    });
+
+    expect(layout.nodes.map((entry) => entry.id).sort()).toEqual(["wiki:1", "wiki:2"]);
+    expect(layout.edges.map((edge) => edge.id).sort()).toEqual(["edge:wiki-1"]);
+    expect(layout.selectedNode?.kind).toBe("wiki_page");
+    expect(layout.nodes.every((entry) => entry.degree === 2)).toBe(true);
+  });
+
+  it("counts directional note links as outgoing links and incoming backlinks", () => {
+    const stats = knowledgeGraphTestUtils.getKnowledgeGraphConnectionStats(graphData.edges, "wiki:1", "brain");
+
+    expect(stats).toEqual({ incoming: 1, outgoing: 1, neighbors: 1 });
   });
 
   it("fits visible nodes inside the graph viewport with stable padding", () => {
