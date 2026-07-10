@@ -620,6 +620,35 @@ describe("reconcileManagedCodexHome", () => {
       await fs.rm(fx.root, { recursive: true, force: true });
     }
   });
+
+  it("migrates a legacy key-only auth.json (no auth_mode) to the canonical apikey shape", async () => {
+    const fx = await makeFixture();
+    try {
+      // Written by a pre-auth_mode Paperclip version: the key matches, but the
+      // codex CLI (>= 0.122) ignores the file without `auth_mode: "apikey"`.
+      await fs.mkdir(fx.agentHome, { recursive: true });
+      await fs.writeFile(
+        fx.agentAuth,
+        JSON.stringify({ OPENAI_API_KEY: "sk-reconcile-1" }),
+        { mode: 0o600 },
+      );
+
+      const result = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        apiKey: "sk-reconcile-1",
+        env: fx.env,
+      });
+
+      expect(result.status).toBe("seeded");
+      expect(JSON.parse(await fs.readFile(fx.agentAuth, "utf8"))).toEqual({
+        auth_mode: "apikey",
+        OPENAI_API_KEY: "sk-reconcile-1",
+      });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("evaluateCodexCredentialReadiness", () => {

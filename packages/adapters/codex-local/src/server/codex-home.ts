@@ -104,6 +104,13 @@ export async function codexHomeHasUsableAuth(home: string): Promise<boolean> {
   }
 }
 
+/**
+ * True only when `auth.json` already carries the canonical API-key shape for
+ * this key: a regular file with both `auth_mode: "apikey"` and a matching
+ * `OPENAI_API_KEY`. A legacy file holding just the key (no `auth_mode`) does
+ * NOT match — the codex CLI (>= 0.122) ignores it, so reconciliation must
+ * fall through and rewrite it via `buildApiKeyAuthContents`.
+ */
 async function codexHomeHasMatchingApiKeyAuth(home: string, apiKey: string): Promise<boolean> {
   const authPath = path.join(home, "auth.json");
   const existing = await fs.lstat(authPath).catch(() => null);
@@ -111,6 +118,7 @@ async function codexHomeHasMatchingApiKeyAuth(home: string, apiKey: string): Pro
   try {
     const raw = await fs.readFile(authPath, "utf8");
     const parsed = JSON.parse(raw);
+    if ((parsed as Record<string, unknown> | null)?.auth_mode !== "apikey") return false;
     return readApiKeyFromAuthPayload(parsed) === apiKey.trim();
   } catch {
     return false;
