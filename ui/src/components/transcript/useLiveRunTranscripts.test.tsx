@@ -329,6 +329,52 @@ describe("useLiveRunTranscripts", () => {
     container.remove();
   });
 
+  it("keeps repeated unsequenced structured text deltas instead of content-deduping tokens", async () => {
+    const ts = "2026-04-20T00:00:00.000Z";
+    const tokenRow = JSON.stringify({
+      ts,
+      stream: "stdout",
+      chunk: '{"type":"acpx.text_delta","text":" the"}\n',
+    });
+    logMock.mockImplementationOnce(async () => ({
+      runId: "run-1",
+      store: "memory",
+      logRef: "log-1",
+      content: `${tokenRow}\n${tokenRow}\n${tokenRow}\n`,
+      nextOffset: 300,
+    }));
+
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "running", adapterType: "gemini_local" }],
+        enableRealtimeUpdates: false,
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    const lastCall = buildTranscriptMock.mock.calls.at(-1) as unknown[] | undefined;
+    expect(lastCall?.[0]).toEqual([
+      { ts, stream: "stdout", chunk: '{"type":"acpx.text_delta","text":" the"}\n', seq: undefined },
+      { ts, stream: "stdout", chunk: '{"type":"acpx.text_delta","text":" the"}\n', seq: undefined },
+      { ts, stream: "stdout", chunk: '{"type":"acpx.text_delta","text":" the"}\n', seq: undefined },
+    ]);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
   it("orders and dedupes sequenced chunks across websocket and persisted-log delivery", async () => {
     type RunLogResult = { runId: string; store: string; logRef: string; content: string; nextOffset: number };
     let resolveLog: ((value: RunLogResult) => void) | null = null;

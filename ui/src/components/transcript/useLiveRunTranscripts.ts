@@ -55,6 +55,10 @@ function readChunkSeq(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function isStructuredStreamingTextDelta(chunk: string) {
+  return /"type"\s*:\s*"(?:acpx\.text_delta|text)"/.test(chunk);
+}
+
 function parsePersistedLogContent(
   runId: string,
   content: string,
@@ -192,8 +196,10 @@ export function useLiveRunTranscripts({
           continue;
         }
 
-        if (seenChunkKeysRef.current.has(chunk.dedupeKey)) continue;
-        seenChunkKeysRef.current.add(chunk.dedupeKey);
+        if (!isStructuredStreamingTextDelta(chunk.chunk)) {
+          if (seenChunkKeysRef.current.has(chunk.dedupeKey)) continue;
+          seenChunkKeysRef.current.add(chunk.dedupeKey);
+        }
         existing.push({ ts: chunk.ts, stream: chunk.stream, chunk: chunk.chunk });
         changed = true;
       }
