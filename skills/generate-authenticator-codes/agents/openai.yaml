@@ -1,0 +1,4 @@
+interface:
+  display_name: "Authenticator Codes"
+  short_description: "Generate TOTP codes safely from QR screenshots"
+  default_prompt: "Use $generate-authenticator-codes to read the attached authenticator QR screenshot and complete the 2FA step safely."
