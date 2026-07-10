@@ -184,6 +184,13 @@ export function resolveRegisteredPluginComponent(
 
 type PluginLoadState = "idle" | "loading" | "loaded" | "error";
 
+function shouldSubscribeToPluginModuleLoad(state: PluginLoadState | undefined): boolean {
+  // A second slot host can arrive while another host is already importing the
+  // same plugin. It still needs to await that shared promise so it rerenders
+  // when the registry is populated.
+  return state !== "loaded";
+}
+
 /**
  * Tracks the load state for each plugin's UI module by contribution cache key.
  *
@@ -592,16 +599,18 @@ function usePluginModuleLoader(contributions: PluginUiContribution[] | undefined
   useEffect(() => {
     if (!contributions || contributions.length === 0) return;
 
-    // Filter to contributions that haven't been loaded yet.
-    const unloaded = contributions.filter((c) => {
+    // Include modules already loading in another slot host. loadPluginModule
+    // will reuse the in-flight promise, and this hook must subscribe to its
+    // completion so every page/sidebar surface rerenders together.
+    const pending = contributions.filter((c) => {
       const state = pluginLoadStates.get(buildPluginModuleKey(c));
-      return state !== "loaded" && state !== "loading";
+      return shouldSubscribeToPluginModuleLoad(state);
     });
 
-    if (unloaded.length === 0) return;
+    if (pending.length === 0) return;
 
     let cancelled = false;
-    void ensurePluginModulesLoaded(unloaded).then(() => {
+    void ensurePluginModulesLoaded(pending).then(() => {
       // Re-render so the slot mount can resolve the newly-registered components.
       if (!cancelled) setTick((t) => t + 1);
     });
@@ -955,5 +964,6 @@ export function _getReactShimSourceForTests(): string {
   return buildReactShimSource();
 }
 
+export const _shouldSubscribeToPluginModuleLoadForTests = shouldSubscribeToPluginModuleLoad;
 export const _applyJsxRuntimeKeyForTests = applyJsxRuntimeKey;
 export const _rewriteBareSpecifiersForTests = rewriteBareSpecifiers;

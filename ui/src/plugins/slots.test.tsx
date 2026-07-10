@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import {
   _getReactShimSourceForTests,
+  _shouldSubscribeToPluginModuleLoadForTests,
   PluginSlotMount,
   type ResolvedPluginSlot,
 } from "./slots";
@@ -15,6 +16,16 @@ describe("plugin UI compatibility shims", () => {
 
     expect(source).toMatch(/const \{[^}]*useDeferredValue[^}]*\} = R;/s);
     expect(source).toMatch(/export \{[^}]*useDeferredValue[^}]*\};/s);
+  });
+});
+
+describe("plugin module load subscriptions", () => {
+  it("keeps a second slot host subscribed while the shared module is loading", () => {
+    expect(_shouldSubscribeToPluginModuleLoadForTests(undefined)).toBe(true);
+    expect(_shouldSubscribeToPluginModuleLoadForTests("idle")).toBe(true);
+    expect(_shouldSubscribeToPluginModuleLoadForTests("loading")).toBe(true);
+    expect(_shouldSubscribeToPluginModuleLoadForTests("error")).toBe(true);
+    expect(_shouldSubscribeToPluginModuleLoadForTests("loaded")).toBe(false);
   });
 });
 
