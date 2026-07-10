@@ -13106,10 +13106,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       companyId: string,
       agentId?: string,
       limit?: number,
-      options: { summary?: boolean } = {},
+      options: { summary?: boolean; from?: Date; to?: Date } = {},
     ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
+      const conditions = [eq(heartbeatRuns.companyId, companyId)];
+      if (agentId) conditions.push(eq(heartbeatRuns.agentId, agentId));
+      if (options.from) conditions.push(gte(heartbeatRuns.createdAt, options.from));
+      if (options.to) conditions.push(lte(heartbeatRuns.createdAt, options.to));
       const query = db
         .select(
           summary
@@ -13130,11 +13134,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
         )
         .from(heartbeatRuns)
-        .where(
-          agentId
-            ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
-            : eq(heartbeatRuns.companyId, companyId),
-        )
+        .where(and(...conditions))
         .orderBy(desc(heartbeatRuns.createdAt));
 
       const rows = limit ? await query.limit(limit) : await query;

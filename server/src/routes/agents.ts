@@ -120,6 +120,17 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   return Math.min(max, Math.trunc(parsed));
 }
 
+function readOptionalDateQuery(value: unknown, name: string, res: Response) {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (raw == null || raw === "") return null;
+  const date = new Date(String(raw));
+  if (!Number.isFinite(date.getTime())) {
+    res.status(400).json({ error: `invalid '${name}' date` });
+    return false;
+  }
+  return date;
+}
+
 function readRunIssueId(context: Record<string, unknown> | null) {
   const directIssueId = context?.issueId;
   if (typeof directIssueId === "string" && isUuidLike(directIssueId)) return directIssueId;
@@ -3462,7 +3473,15 @@ export function agentRoutes(
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
+    const from = readOptionalDateQuery(req.query.from, "from", res);
+    if (from === false) return;
+    const to = readOptionalDateQuery(req.query.to, "to", res);
+    if (to === false) return;
+    const runs = await heartbeat.list(companyId, agentId, limit, {
+      summary,
+      from: from ?? undefined,
+      to: to ?? undefined,
+    });
     res.json(runs);
   });
 

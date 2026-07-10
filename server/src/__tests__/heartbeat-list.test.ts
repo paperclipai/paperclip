@@ -224,6 +224,59 @@ describeEmbeddedPostgres("heartbeat list", () => {
     });
   });
 
+  it("filters company run lists by created date range", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const oldRunId = randomUUID();
+    const newRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: oldRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        createdAt: new Date("2026-04-10T00:00:00.000Z"),
+      },
+      {
+        id: newRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        createdAt: new Date("2026-04-11T00:00:00.000Z"),
+      },
+    ]);
+
+    const runs = await heartbeatService(db).list(companyId, undefined, 10, {
+      from: new Date("2026-04-10T12:00:00.000Z"),
+      to: new Date("2026-04-11T12:00:00.000Z"),
+      summary: true,
+    });
+
+    expect(runs.map((run) => run.id)).toEqual([newRunId]);
+  });
+
   it("bounds oversized legacy result json payloads on getRun", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
