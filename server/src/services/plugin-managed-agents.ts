@@ -51,6 +51,7 @@ function managedMetadata(
       pluginKey,
       agentKey: declaration.agentKey,
       displayName: declaration.displayName,
+      executionAccess: declaration.executionAccess ?? "readWrite",
       instructions: declaration.instructions ?? null,
     },
   };

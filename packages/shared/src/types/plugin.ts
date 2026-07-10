@@ -157,6 +157,12 @@ export interface PluginManagedAgentDeclaration {
   runtimeConfig?: Record<string, unknown>;
   /** Suggested permissions object. Normalized by the host on create/reset. */
   permissions?: Record<string, unknown>;
+  /**
+   * Restricts the API identity injected into managed-agent runs. Read-only
+   * agents may use safe GET/HEAD/OPTIONS routes but every mutation is denied
+   * by the host before route handlers run.
+   */
+  executionAccess?: "readWrite" | "readOnly";
   /** Suggested starting status when no board approval is required. */
   status?: Extract<AgentStatus, "idle" | "paused">;
   /** Suggested monthly budget in cents. */

@@ -36,6 +36,7 @@ COPY packages/plugins/examples/plugin-kitchen-sink-example/package.json packages
 COPY --parents packages/plugins/sandbox-providers/./*/package.json packages/plugins/sandbox-providers/
 COPY packages/plugins/paperclip-plugin-fake-sandbox/package.json packages/plugins/paperclip-plugin-fake-sandbox/
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
+COPY packages/plugins/plugin-operator-assistant/package.json packages/plugins/plugin-operator-assistant/
 
 RUN pnpm install
 
@@ -52,6 +53,7 @@ RUN rm -rf ui/dist server/ui-dist server/dist \
 RUN pnpm --filter "@paperclipai/server..." build
 RUN pnpm --filter "@paperclipai/mcp-server" build
 RUN pnpm --filter "@paperclipai/plugin-llm-wiki" build
+RUN pnpm --filter "@paperclipai/plugin-operator-assistant" build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 RUN test -f packages/mcp-server/dist/stdio.js || (echo "ERROR: Paperclip MCP build output missing" && exit 1)
 RUN node --import ./server/node_modules/tsx/dist/loader.mjs -e "import('./packages/mcp-server/dist/tools.js')"

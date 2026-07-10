@@ -146,6 +146,7 @@ export const pluginManagedAgentDeclarationSchema = z.object({
   adapterConfig: z.record(z.unknown()).optional(),
   runtimeConfig: z.record(z.unknown()).optional(),
   permissions: z.record(z.unknown()).optional(),
+  executionAccess: z.enum(["readWrite", "readOnly"]).optional(),
   status: z.enum(["idle", "paused"]).optional(),
   budgetMonthlyCents: z.number().int().min(0).optional(),
   instructions: z.object({

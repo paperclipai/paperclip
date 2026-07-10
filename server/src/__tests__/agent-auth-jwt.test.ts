@@ -55,6 +55,24 @@ describe("agent local JWT", () => {
     });
   });
 
+  it("round-trips a read-only execution scope", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt(
+      "agent-read-only",
+      "company-1",
+      "codex_local",
+      "run-read-only",
+      { access: "read_only" },
+    );
+    expect(token).toBeTruthy();
+    expect(verifyLocalAgentJwt(token!)).toMatchObject({
+      sub: "agent-read-only",
+      company_id: "company-1",
+      run_id: "run-read-only",
+      access: "read_only",
+    });
+  });
+
   it("returns null when secret is missing", () => {
     process.env[secretEnv] = "";
     const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");

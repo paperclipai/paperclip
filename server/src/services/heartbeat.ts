@@ -58,6 +58,7 @@ import type {
   UsageSummary,
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import { agentExecutionAccess } from "./agent-execution-access.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
@@ -8674,8 +8675,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       const adapter = getServerAdapter(routeApplication.adapterType);
+      const executionAccess = agentExecutionAccess(agent.metadata);
       const authToken = adapter.supportsLocalAgentJwt
-        ? createLocalAgentJwt(agent.id, agent.companyId, routeApplication.adapterType, run.id)
+        ? createLocalAgentJwt(agent.id, agent.companyId, routeApplication.adapterType, run.id, {
+            ...(executionAccess === "read_only" ? { access: "read_only" as const } : {}),
+          })
         : null;
       if (adapter.supportsLocalAgentJwt && !authToken) {
         logger.warn(
@@ -8830,7 +8834,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
         const backupAdapter = getServerAdapter(routeApplication.adapterType);
         const backupAuthToken = backupAdapter.supportsLocalAgentJwt
-          ? createLocalAgentJwt(agent.id, agent.companyId, routeApplication.adapterType, run.id)
+          ? createLocalAgentJwt(agent.id, agent.companyId, routeApplication.adapterType, run.id, {
+              ...(executionAccess === "read_only" ? { access: "read_only" as const } : {}),
+            })
           : null;
         await appendRunEvent(currentRun, seq++, {
           eventType: "adapter.invoke",

@@ -161,6 +161,26 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
     });
   });
 
+  it("persists declared read-only execution access in managed agent metadata", async () => {
+    const pluginManifest = manifest();
+    pluginManifest.agents![0] = {
+      ...pluginManifest.agents![0]!,
+      executionAccess: "readOnly",
+    };
+    const { companyId, services } = await seedCompanyAndPlugin({ manifest: pluginManifest });
+
+    const created = await services.agents.managedReconcile({
+      companyId,
+      agentKey: "wiki-maintainer",
+    });
+
+    expect(created.agent?.metadata).toMatchObject({
+      pluginManagedAgent: {
+        executionAccess: "readOnly",
+      },
+    });
+  });
+
   it("preserves user edits during reconcile and resets only on explicit reset", async () => {
     const { companyId, services } = await seedCompanyAndPlugin();
     const created = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });

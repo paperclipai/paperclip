@@ -7,6 +7,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
+import { readOnlyAgentMutationGuard } from "./middleware/read-only-agent-guard.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
@@ -173,6 +174,7 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
+  app.use(readOnlyAgentMutationGuard());
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
@@ -438,8 +440,10 @@ export async function createApp(
     lifecycle,
     async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
   );
-  void ensureBundledLlmWikiPlugin({ loader, lifecycle, pluginRegistry }).catch((err) => {
-    logger.error({ err }, "Failed to auto-install bundled LLM Wiki plugin");
+  void ensureBundledLlmWikiPlugin({ loader, lifecycle, pluginRegistry }).then(() =>
+    ensureBundledOperatorAssistantPlugin({ loader, lifecycle, pluginRegistry })
+  ).catch((err) => {
+    logger.error({ err }, "Failed to auto-install bundled plugins");
   }).then(() => loader.loadAll()).then((result) => {
     if (!result) return;
     for (const loaded of result.results) {
@@ -473,10 +477,53 @@ async function ensureBundledLlmWikiPlugin({
   lifecycle: ReturnType<typeof pluginLifecycleManager>;
   pluginRegistry: ReturnType<typeof pluginRegistryService>;
 }) {
-  const pluginKey = "paperclipai.plugin-llm-wiki";
+  return ensureBundledPlugin({
+    loader,
+    lifecycle,
+    pluginRegistry,
+    pluginKey: "paperclipai.plugin-llm-wiki",
+    directoryName: "plugin-llm-wiki",
+    displayName: "LLM Wiki",
+  });
+}
+
+async function ensureBundledOperatorAssistantPlugin({
+  loader,
+  lifecycle,
+  pluginRegistry,
+}: {
+  loader: ReturnType<typeof pluginLoader>;
+  lifecycle: ReturnType<typeof pluginLifecycleManager>;
+  pluginRegistry: ReturnType<typeof pluginRegistryService>;
+}) {
+  return ensureBundledPlugin({
+    loader,
+    lifecycle,
+    pluginRegistry,
+    pluginKey: "paperclipai.plugin-operator-assistant",
+    directoryName: "plugin-operator-assistant",
+    displayName: "Operator Assistant",
+  });
+}
+
+async function ensureBundledPlugin({
+  loader,
+  lifecycle,
+  pluginRegistry,
+  pluginKey,
+  directoryName,
+  displayName,
+}: {
+  loader: ReturnType<typeof pluginLoader>;
+  lifecycle: ReturnType<typeof pluginLifecycleManager>;
+  pluginRegistry: ReturnType<typeof pluginRegistryService>;
+  pluginKey: string;
+  directoryName: string;
+  displayName: string;
+}) {
   const candidates = [
-    path.resolve(process.cwd(), "packages/plugins/plugin-llm-wiki"),
-    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../packages/plugins/plugin-llm-wiki"),
+    path.resolve(process.cwd(), `packages/plugins/${directoryName}`),
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), `../../packages/plugins/${directoryName}`),
   ];
   const pluginPath = candidates.find((candidate) =>
     fs.existsSync(path.join(candidate, "package.json")) &&
@@ -497,7 +544,7 @@ async function ensureBundledLlmWikiPlugin({
     await lifecycle.unload(existing.id, false);
     logger.info(
       { pluginKey, previousPackagePath: existing.packagePath, pluginPath },
-      "Reinstalling bundled LLM Wiki plugin from bundled path",
+      `Reinstalling bundled ${displayName} plugin from bundled path`,
     );
   }
 
@@ -505,5 +552,5 @@ async function ensureBundledLlmWikiPlugin({
   const installed = discovered.manifest ? await pluginRegistry.getByKey(discovered.manifest.id) : null;
   if (!installed) return;
   await lifecycle.load(installed.id);
-  logger.info({ pluginKey, pluginPath }, "Auto-installed bundled LLM Wiki plugin");
+  logger.info({ pluginKey, pluginPath }, `Auto-installed bundled ${displayName} plugin`);
 }

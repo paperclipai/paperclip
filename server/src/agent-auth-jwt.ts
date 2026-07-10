@@ -15,6 +15,7 @@ export interface LocalAgentJwtClaims {
   iss?: string;
   aud?: string;
   jti?: string;
+  access?: "read_only";
 }
 
 const JWT_ALGORITHM = "HS256";
@@ -65,7 +66,13 @@ function safeCompare(a: string, b: string) {
   return timingSafeEqual(left, right);
 }
 
-export function createLocalAgentJwt(agentId: string, companyId: string, adapterType: string, runId: string) {
+export function createLocalAgentJwt(
+  agentId: string,
+  companyId: string,
+  adapterType: string,
+  runId: string,
+  options: { access?: "read_only" } = {},
+) {
   const config = jwtConfig();
   if (!config) return null;
 
@@ -79,6 +86,7 @@ export function createLocalAgentJwt(agentId: string, companyId: string, adapterT
     exp: now + config.ttlSeconds,
     iss: config.issuer,
     aud: config.audience,
+    ...(options.access ? { access: options.access } : {}),
   };
 
   const header = {
@@ -137,5 +145,6 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
     ...(issuer ? { iss: issuer } : {}),
     ...(audience ? { aud: audience } : {}),
     jti: typeof claims.jti === "string" ? claims.jti : undefined,
+    access: claims.access === "read_only" ? "read_only" : undefined,
   };
 }

@@ -8,6 +8,7 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { isReadOnlyAgent } from "../services/agent-execution-access.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -177,6 +178,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         type: "agent",
         agentId: claims.sub,
         companyId: claims.company_id,
+        readOnly: claims.access === "read_only" || isReadOnlyAgent(agentRecord.metadata),
         keyId: undefined,
         runId: runIdHeader || claims.run_id || undefined,
         source: "agent_jwt",
@@ -205,6 +207,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       type: "agent",
       agentId: key.agentId,
       companyId: key.companyId,
+      readOnly: isReadOnlyAgent(agentRecord.metadata),
       keyId: key.id,
       runId: runIdHeader || undefined,
       source: "agent_key",
