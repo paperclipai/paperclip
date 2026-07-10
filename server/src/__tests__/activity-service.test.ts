@@ -7,6 +7,7 @@ import {
   createDb,
   documentRevisions,
   documents,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
@@ -63,6 +64,7 @@ describeEmbeddedPostgres("activity service", () => {
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(issues);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -517,6 +519,82 @@ describeEmbeddedPostgres("activity service", () => {
       key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
       createdAt,
       updatedAt: createdAt,
+    });
+
+    const service = activityService(db);
+    const { run: backfilledRun } = await waitForIssueRun(
+      service,
+      companyId,
+      issueId,
+      (entry) => entry.runId === runId && entry.livenessState === "plan_only",
+    );
+
+    expect(backfilledRun).toMatchObject({
+      runId,
+      livenessState: "plan_only",
+      livenessReason: "Run described runnable future work without concrete action evidence",
+      lastUsefulActionAt: null,
+    });
+  });
+
+  it("does not treat runtime skill preparation as concrete backfill evidence", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Implement the approved change",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      contextSnapshot: { issueId },
+      resultJson: {
+        summary: "I will inspect the repository next and implement the fix.",
+      },
+      livenessState: null,
+      livenessReason: null,
+    });
+
+    await db.insert(heartbeatRunEvents).values({
+      companyId,
+      runId,
+      agentId,
+      seq: 1,
+      eventType: "skills.runtime.prepared",
+      stream: "system",
+      level: "info",
+      message: "runtime skills prepared",
+      payload: { availableCount: 1 },
     });
 
     const service = activityService(db);
