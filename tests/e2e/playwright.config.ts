@@ -53,6 +53,7 @@ export default defineConfig({
     stderr: "pipe",
     env: {
       ...process.env,
+      NODE_ENV: "test",
       PORT: String(PORT),
       PAPERCLIP_HOME,
       PAPERCLIP_INSTANCE_ID,

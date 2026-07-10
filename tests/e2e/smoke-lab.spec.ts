@@ -154,13 +154,13 @@ async function navigateForEvidence(page: Page, seed: Seed, connectionId: string,
     return;
   }
   if (scenario.uiEntryPath === "review") {
-    await page.goto(`/${seed.prefix}/apps/${connectionId}?tab=review`);
-    await expect(page.getByText(/Review|request|approval/i).first()).toBeVisible({ timeout: 20_000 });
+    await page.goto(`/${seed.prefix}/apps/${connectionId}/review`);
+    await expect(page.getByText(/Nothing is waiting for your OK|new actions? (need|to) review/i).first()).toBeVisible({ timeout: 20_000 });
     return;
   }
   if (scenario.uiEntryPath === "activity") {
-    await page.goto(`/${seed.prefix}/apps/${connectionId}?tab=activity`);
-    await expect(page.getByText(/Activity|Gateway|Tool/i).first()).toBeVisible({ timeout: 20_000 });
+    await page.goto(`/${seed.prefix}/apps/${connectionId}/activity`);
+    await expect(page.getByRole("heading", { name: "Recent activity" })).toBeVisible({ timeout: 20_000 });
     return;
   }
   if (scenario.uiEntryPath === "attention") {
@@ -168,7 +168,7 @@ async function navigateForEvidence(page: Page, seed: Seed, connectionId: string,
     return;
   }
   await page.goto(`/${seed.prefix}/apps/${connectionId}`);
-  await expect(page.getByText(/Smoke Lab/i).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("heading", { name: /Smoke Lab/i }).first()).toBeVisible({ timeout: 30_000 });
 }
 
 async function runRecordedStep(
@@ -329,12 +329,13 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
         await runRecordedStep(page, request, seed, smokeRun.id, scenario, "allowed-read", async () => {
           const read = await testCall(request, connection.id, scout, scenario.lifecycle.allowedRead);
           expect(read.decision).toBe("allowed");
+          expect(read.error).toBeUndefined();
           await expectAuditEvent(request, seed.companyId, {
             connectionId: connection.id,
             agentId: scout.id,
             search: scenario.lifecycle.allowedRead.name,
           });
-          await page.goto(`/${seed.prefix}/apps/${connection.id}?tab=activity`);
+          await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
           return `Allowed read ${scenario.lifecycle.allowedRead.name}`;
         });
 
@@ -348,7 +349,7 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
           const pending = await testCall(request, connection.id, scout, scenario.lifecycle.askFirstWrite);
           expect(pending.decision).toBe("ask_first");
           expect(pending.actionRequestId).toBeTruthy();
-          await page.goto(`/${seed.prefix}/apps/${connection.id}?tab=review`);
+          await page.goto(`/${seed.prefix}/apps/${connection.id}/review`);
           await approveActionRequest(request, seed.companyId, pending.actionRequestId!);
           await pollTestCall(request, connection.id, pending.actionRequestId!, "done");
           return `Approved ask-first call ${scenario.lifecycle.askFirstWrite.name}`;
@@ -364,13 +365,13 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
           const denied = await testCall(request, connection.id, scout, scenario.lifecycle.deniedCall);
           expect(denied.decision).toBe("off");
           expect(denied.error?.reasonCode).toBeTruthy();
-          await page.goto(`/${seed.prefix}/apps/${connection.id}?tab=review`);
+          await page.goto(`/${seed.prefix}/apps/${connection.id}/review`);
           return `Blocked call ${scenario.lifecycle.deniedCall.name}: ${denied.error?.reasonCode}`;
         });
 
         await runRecordedStep(page, request, seed, smokeRun.id, scenario, "schema-change-quarantine", async () => {
           if (connection.transport !== "remote_http") {
-            await page.goto(`/${seed.prefix}/apps/${connection.id}?tab=activity`);
+            await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
             return "Non-HTTP path records governance/quarantine evidence through fixture metadata.";
           }
           await json<ToolConnection>(await request.patch(`/api/tool-connections/${connection.id}`, {
@@ -384,6 +385,7 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
           });
           const flipped = await testCall(request, connection.id, scout, scenario.lifecycle.schemaChangeQuarantine);
           expect(flipped.decision).toBe("allowed");
+          expect(flipped.error).toBeUndefined();
           const refresh = await json<{ quarantinedCount: number }>(
             await request.post(`/api/tool-connections/${connection.id}/catalog/refresh`),
           );
@@ -401,7 +403,7 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
               data: { companyId: seed.companyId },
             }));
             await expectError(await gatewayFetch(request, session.toolsUrl, session.token), 401);
-            await page.goto(`/${seed.prefix}/apps/${connection.id}?tab=activity`);
+            await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
             return scenario.lifecycle.revoke;
           }
           const disabled = await json<ToolConnection>(await request.patch(`/api/tool-connections/${connection.id}`, {
@@ -421,7 +423,7 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
             agentId: scout.id,
             search: scenario.lifecycle.allowedRead.name,
           });
-          await page.goto(`/${seed.prefix}/apps/${connection.id}?tab=activity`);
+          await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
           return scenario.lifecycle.auditEvidence;
         });
       }

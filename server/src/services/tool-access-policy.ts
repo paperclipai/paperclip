@@ -334,6 +334,12 @@ function selectorMatches(selector: ToolAccessSelector | Record<string, unknown> 
     const many = listValues(s[pluralKey]);
     return (!single || actual === single) && (many.length === 0 || Boolean(actual && many.includes(actual)));
   };
+  const matchAny = (singleKey: string, pluralKey: string, actuals: Array<string | null>) => {
+    const values = actuals.filter((value): value is string => Boolean(value));
+    const single = typeof s[singleKey] === "string" ? String(s[singleKey]) : null;
+    const many = listValues(s[pluralKey]);
+    return (!single || values.includes(single)) && (many.length === 0 || many.some((value) => values.includes(value)));
+  };
   return (
     match("actorType", "actorTypes", ctx.actorType) &&
     match("agentId", "agentIds", ctx.agentId) &&
@@ -346,7 +352,7 @@ function selectorMatches(selector: ToolAccessSelector | Record<string, unknown> 
     match("catalogEntryId", "catalogEntryIds", ctx.catalogEntryId) &&
     match("applicationKey", "applicationKeys", ctx.applicationKey) &&
     match("providerType", "providerTypes", ctx.providerType) &&
-    match("toolName", "toolNames", ctx.toolName) &&
+    matchAny("toolName", "toolNames", [ctx.toolName, ctx.upstreamToolName]) &&
     match("riskLevel", "riskLevels", ctx.riskLevel)
   );
 }

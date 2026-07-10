@@ -702,6 +702,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
           ilike(toolInvocations.toolName, like),
           sql`${activityLog.details}->>'tool' ilike ${like}`,
           sql`${activityLog.details}->>'toolName' ilike ${like}`,
+          sql`${activityLog.details}->>'upstreamToolName' ilike ${like}`,
           sql`${activityLog.details}->>'reasonCode' ilike ${like}`,
         ];
         if (matchedAgentIds.length > 0) {

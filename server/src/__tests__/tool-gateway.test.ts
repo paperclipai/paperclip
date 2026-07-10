@@ -2909,7 +2909,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         entityId: run.id,
         agentId: agent.id,
         runId: run.id,
-        details: { invocationId: newerInvocation!.id, decision: "allow", reasonCode: "tool_completed", tool: "mail:send_email" },
+        details: { invocationId: newerInvocation!.id, decision: "allow", reasonCode: "tool_completed", tool: "mail:send_email", upstreamToolName: "fixture.todo.list" },
         createdAt: new Date(now - 1_000),
       },
       {
@@ -2992,6 +2992,14 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     expect(byToolName.status).toBe(200);
     expect(byToolName.body.events).toEqual([
       expect.objectContaining({ action: "tool_gateway.call_denied", toolDisplayName: "Delete Everything" }),
+    ]);
+
+    const byUpstreamToolName = await request(app)
+      .get("/api/tool-gateway/audit")
+      .query({ companyId: company.id, window: "24h", search: "fixture.todo.list" });
+    expect(byUpstreamToolName.status).toBe(200);
+    expect(byUpstreamToolName.body.events).toEqual([
+      expect.objectContaining({ action: "tool_gateway.call_completed", toolDisplayName: "Send Email" }),
     ]);
 
     // ...and against the humanized agent name (resolved to the agent's events).

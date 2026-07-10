@@ -660,6 +660,35 @@ describeEmbeddedPostgres("tool access policy service", () => {
     expect(wildcardPolicy.selectors).toEqual({ toolName: "*send*" });
   });
 
+  it("matches tool name selectors against connected MCP upstream tool names", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    const policy = await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review upstream todo writes",
+      policyType: "require_approval",
+      priority: 10,
+      selectors: { toolNames: ["todo.add"] },
+    }).returning().then((rows) => rows[0]!);
+
+    await expect(toolAccessPolicyService(db).decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+      request: {
+        connectionId: connection.id,
+        catalogEntryId: catalogEntry.id,
+        toolName: "mcp.smoke-fixture:todo-add",
+        upstreamToolName: "todo.add",
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      decision: "require_approval",
+      reasonCode: "requires_approval_policy",
+      matchedPolicyIds: [policy.id],
+    });
+  });
+
   it("rejects agent-supplied run context that belongs to another agent", async () => {
     const company = await createCompany(db);
     const actorAgent = await createAgent(db, company.id);

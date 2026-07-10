@@ -12,6 +12,7 @@ import {
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
+  toolStdioCommandTemplates,
 } from "@paperclipai/db";
 import type {
   CreateSmokeRun,
@@ -36,6 +37,7 @@ const HTTP_APP_KEY = "paperclip.smoke-lab.http-fixture";
 const STDIO_APP_KEY = "paperclip.smoke-lab.stdio-fixture";
 const HTTP_CONNECTION_NAME = "Smoke Lab HTTP MCP fixture";
 const STDIO_CONNECTION_NAME = "Smoke Lab stdio MCP fixture";
+const STDIO_TEMPLATE_KEY = "paperclip.smoke-lab.stdio-fixture";
 const PROFILE_KEY = "paperclip.smoke-lab.profile";
 const HTTP_SERVICE_ID = "http-mcp-fixture" as const;
 const OAUTH_SERVICE_ID = "fake-oauth" as const;
@@ -662,6 +664,52 @@ export function smokeLabService(db: Db, options: {
     return { row: created, created: true };
   }
 
+  async function ensureStdioTemplate(companyId: string, actor?: SmokeLabActorInfo) {
+    const now = new Date();
+    const tools = FIXTURE_TOOLS
+      .filter((tool) => tool.transport === "stdio")
+      .map((tool) => ({
+        name: tool.name,
+        title: tool.title,
+        description: tool.description ?? null,
+        inputSchema: tool.inputSchema,
+        annotations: {
+          smokeLab: true,
+          capability: tool.capability,
+          fixtureRisk: tool.risk,
+          readOnlyHint: isReadOnly(tool),
+        },
+      }));
+    const values = {
+      name: "Smoke Lab stdio MCP fixture",
+      description: "Approved deterministic stdio command template for Smoke Lab scenarios.",
+      status: "active" as const,
+      command: process.execPath,
+      args: [path.resolve(process.cwd(), "scripts/mcp-fixtures/servers/stdio-fixture.mjs")],
+      envKeys: [] as string[],
+      tools,
+      disabledAt: null,
+      updatedAt: now,
+    };
+    const [existing] = await db.select().from(toolStdioCommandTemplates).where(and(
+      eq(toolStdioCommandTemplates.companyId, companyId),
+      eq(toolStdioCommandTemplates.templateKey, STDIO_TEMPLATE_KEY),
+    ));
+    if (existing) {
+      const [updated] = await db.update(toolStdioCommandTemplates).set(values).where(eq(toolStdioCommandTemplates.id, existing.id)).returning();
+      return { row: updated ?? existing, created: false };
+    }
+    const [created] = await db.insert(toolStdioCommandTemplates).values({
+      companyId,
+      templateKey: STDIO_TEMPLATE_KEY,
+      ...values,
+      createdByAgentId: actor?.actorType === "agent" ? actor.agentId ?? null : null,
+      createdByUserId: actor?.actorType === "user" ? actor.actorId : null,
+      createdAt: now,
+    }).returning();
+    return { row: created, created: true };
+  }
+
   async function syncCatalog(companyId: string, applicationId: string, connectionId: string, transport: FixtureTool["transport"]) {
     const now = new Date();
     const tools = FIXTURE_TOOLS.filter((tool) => tool.transport === transport);
@@ -804,7 +852,7 @@ export function smokeLabService(db: Db, options: {
     await db.update(toolConnections).set({
       config: {
         ...asRecord(connection.config),
-        url: httpSidecar.url,
+        url: `${httpSidecar.url}/mcp`,
         catalogUrl: `${httpSidecar.url}/catalog`,
         toolCallUrl: `${httpSidecar.url}/tools/call`,
       },
@@ -894,7 +942,7 @@ export function smokeLabService(db: Db, options: {
         id: HTTP_SERVICE_ID,
         label: "HTTP MCP fixture",
         status: httpSidecar ? "running" : httpSidecarError ? "error" : "stopped",
-        url: httpSidecar?.url ?? null,
+        url: httpSidecar ? `${httpSidecar.url}/mcp` : null,
         health: httpSidecar ? { ok: true, loopbackOnly: true, port: httpSidecar.port } : null,
         detail: httpSidecarError,
       },
@@ -951,13 +999,14 @@ export function smokeLabService(db: Db, options: {
         transport: "remote_http",
         config: {
           service: "smoke-lab.http-mcp-fixture",
-          url: httpSidecar?.url ?? null,
+          url: httpSidecar ? `${httpSidecar.url}/mcp` : null,
           catalogUrl: httpSidecar ? `${httpSidecar.url}/catalog` : null,
           toolCallUrl: httpSidecar ? `${httpSidecar.url}/tools/call` : null,
         },
         transportConfig: { loopbackOnly: true, managedBy: "smoke-lab-sidecar" },
         actor,
       });
+      const stdioTemplate = await ensureStdioTemplate(companyId, actor);
       const stdioConnection = await ensureConnection({
         companyId,
         applicationId: stdioApp.row.id,
@@ -966,7 +1015,7 @@ export function smokeLabService(db: Db, options: {
         config: {
           command: process.execPath,
           args: [path.resolve(process.cwd(), "scripts/mcp-fixtures/servers/stdio-fixture.mjs")],
-          templateId: "paperclip.smoke-lab.stdio-fixture",
+          templateId: STDIO_TEMPLATE_KEY,
         },
         transportConfig: { managedBy: "smoke-lab" },
         actor,
@@ -977,7 +1026,7 @@ export function smokeLabService(db: Db, options: {
       ];
       const profile = await syncProfile({ companyId, catalogEntries: catalog, actor });
       return {
-        created: httpApp.created || stdioApp.created || httpConnection.created || stdioConnection.created,
+        created: httpApp.created || stdioApp.created || httpConnection.created || stdioConnection.created || stdioTemplate.created,
         applications: [httpApp.row, stdioApp.row],
         connections: [httpConnection.row, stdioConnection.row],
         catalog,

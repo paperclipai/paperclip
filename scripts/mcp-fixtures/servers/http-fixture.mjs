@@ -23,6 +23,21 @@ async function readJson(req) {
   return body ? JSON.parse(body) : {};
 }
 
+function mcpToolResult(result) {
+  return {
+    content: [{ type: "text", text: JSON.stringify(result) }],
+    structuredContent: result,
+  };
+}
+
+function sendMcpError(res, id, code, message, data = undefined) {
+  sendJson(res, 200, {
+    jsonrpc: "2.0",
+    id: id ?? null,
+    error: { code, message, ...(data === undefined ? {} : { data }) },
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? "/", `http://${host}`);
@@ -32,6 +47,33 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/catalog") {
       sendJson(res, 200, { ok: true, tools: listTools({ schemaVariant: state.schemaVariant }).filter((tool) => tool.transport === "http") });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/mcp") {
+      const body = await readJson(req);
+      const params = body.params && typeof body.params === "object" ? body.params : {};
+      if (body.method === "tools/list") {
+        sendJson(res, 200, {
+          jsonrpc: "2.0",
+          id: body.id ?? null,
+          result: {
+            tools: listTools({ schemaVariant: state.schemaVariant }).filter((tool) => tool.transport === "http"),
+          },
+        });
+        return;
+      }
+      if (body.method !== "tools/call" || typeof params.name !== "string") {
+        sendMcpError(res, body.id, -32601, "Method not found");
+        return;
+      }
+      const response = await executeFixtureTool(params.name, params.arguments ?? {}, state, {
+        secrets: process.env,
+      });
+      if (!response.ok) {
+        sendMcpError(res, body.id, -32000, response.error?.message ?? "Fixture tool failed", response.error);
+        return;
+      }
+      sendJson(res, 200, { jsonrpc: "2.0", id: body.id ?? null, result: mcpToolResult(response.result) });
       return;
     }
     if (req.method === "POST" && url.pathname === "/tools/call") {
