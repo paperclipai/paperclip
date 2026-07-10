@@ -714,6 +714,12 @@ export async function startServer(): Promise<StartedServer> {
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
       .reapOrphanedRuns()
+      .then(() => heartbeat.reconcileInactiveProjectTimerWork())
+      .then((result) => {
+        if (result.cancelledRuns > 0 || result.cancelledWakeups > 0) {
+          logger.warn({ ...result }, "startup project-status gate cancelled inactive project timer work");
+        }
+      })
       .then(() => heartbeat.promoteDueScheduledRetries())
       .then(async (promotion) => {
         await heartbeat.resumeQueuedRuns();

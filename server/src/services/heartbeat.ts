@@ -6329,6 +6329,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  async function getProjectWorkGate(companyId: string, projectId: string | null) {
+    if (!projectId) return null;
+    const project = await db
+      .select({
+        id: projects.id,
+        name: projects.name,
+        status: projects.status,
+      })
+      .from(projects)
+      .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+
+    return {
+      projectId,
+      projectName: project?.name ?? null,
+      projectStatus: project?.status ?? "missing",
+      allowed: project?.status === "in_progress",
+    };
+  }
+
+  async function timerHasOnlyInactiveProjectAssignments(companyId: string, agentId: string) {
+    const assignedWork = await db
+      .select({
+        projectId: issues.projectId,
+        projectStatus: projects.status,
+      })
+      .from(issues)
+      .leftJoin(
+        projects,
+        and(eq(projects.id, issues.projectId), eq(projects.companyId, issues.companyId)),
+      )
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.assigneeAgentId, agentId),
+          inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+          isNull(issues.hiddenAt),
+        ),
+      );
+
+    if (assignedWork.length === 0) return false;
+    return !assignedWork.some(
+      (row) => row.projectId === null || row.projectStatus === "in_progress",
+    );
+  }
+
   function parseMaxTurnContinuationPolicy(agent: typeof agents.$inferSelect): MaxTurnContinuationPolicy {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
@@ -6494,16 +6540,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    let projectId = readNonEmptyString(context.projectId);
+    if (issueId) {
+      const issueScope = await db
+        .select({ projectId: issues.projectId })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (issueScope) projectId = issueScope.projectId;
+    }
+    const projectGate = await getProjectWorkGate(run.companyId, projectId);
+    if (run.invocationSource === "timer" && projectGate && !projectGate.allowed) {
+      await cancelRunInternal(
+        run.id,
+        `Cancelled scheduled heartbeat because project is not in_progress (current status: ${projectGate.projectStatus})`,
+        {
+          suppressImmediateRecovery: true,
+          errorCode: "project_timer_not_in_progress",
+          skipQueueAdvance: true,
+        },
+      );
+      logger.info(
+        { runId: run.id, issueId, ...projectGate },
+        "claimQueuedRun: cancelled scheduled heartbeat for inactive project",
+      );
+      return null;
+    }
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
-      issueId: readNonEmptyString(context.issueId),
-      projectId: readNonEmptyString(context.projectId),
+      issueId,
+      projectId,
     });
     if (budgetBlock) {
       await cancelRunInternal(run.id, budgetBlock.reason);
       return null;
     }
 
-    const issueId = readNonEmptyString(context.issueId);
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
       const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(db, {
@@ -9827,12 +9899,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
-    if (!projectId && issueId) {
-      projectId = await db
+    if (issueId) {
+      const issueScope = await db
         .select({ projectId: issues.projectId })
         .from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
-        .then((rows) => rows[0]?.projectId ?? null);
+        .then((rows) => rows[0] ?? null);
+      if (issueScope) projectId = issueScope.projectId;
     }
 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
@@ -9863,6 +9936,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
+      return null;
+    }
+
+    const projectGate = await getProjectWorkGate(agent.companyId, projectId);
+    if (source === "timer" && projectGate && !projectGate.allowed) {
+      await writeSkippedRequest("project.timer_not_in_progress");
+      logger.info(
+        { agentId, issueId, source, reason, ...projectGate },
+        "Skipped scheduled heartbeat for inactive project",
+      );
+      return null;
+    }
+
+    if (
+      source === "timer" &&
+      !issueId &&
+      !projectId &&
+      await timerHasOnlyInactiveProjectAssignments(agent.companyId, agentId)
+    ) {
+      await writeSkippedRequest("project.timer_no_in_progress_assignments");
+      logger.info(
+        { agentId, source, reason },
+        "Skipped timer wakeup because all assigned project work is inactive",
+      );
       return null;
     }
 
@@ -10498,9 +10595,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return newRun;
   }
 
-  async function listProjectScopedRunIds(companyId: string, projectId: string) {
-    const runIssueId = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
-    const effectiveProjectId = sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'projectId', ${issues.projectId}::text)`;
+  async function listProjectScopedRunIds(
+    companyId: string,
+    projectId: string,
+    opts?: { timerOnly?: boolean },
+  ) {
+    const runIssueId = sql<string | null>`coalesce(
+      ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+      ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+    )`;
+    const effectiveProjectId = sql<string | null>`coalesce(
+      ${heartbeatRuns.contextSnapshot} ->> 'projectId',
+      ${issues.projectId}::text
+    )`;
 
     const rows = await db
       .selectDistinctOn([heartbeatRuns.id], { id: heartbeatRuns.id })
@@ -10516,6 +10623,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         and(
           eq(heartbeatRuns.companyId, companyId),
           inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+          ...(opts?.timerOnly ? [eq(heartbeatRuns.invocationSource, "timer")] : []),
           sql`${effectiveProjectId} = ${projectId}`,
         ),
       );
@@ -10523,9 +10631,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return rows.map((row) => row.id);
   }
 
-  async function listProjectScopedWakeupIds(companyId: string, projectId: string) {
-    const wakeIssueId = sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`;
-    const effectiveProjectId = sql<string | null>`coalesce(${agentWakeupRequests.payload} ->> 'projectId', ${issues.projectId}::text)`;
+  async function listProjectScopedWakeupIds(
+    companyId: string,
+    projectId: string,
+    opts?: { timerOnly?: boolean },
+  ) {
+    const wakeIssueId = sql<string | null>`coalesce(
+      ${agentWakeupRequests.payload} ->> 'issueId',
+      ${agentWakeupRequests.payload} ->> 'taskId',
+      ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId',
+      ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId'
+    )`;
+    const effectiveProjectId = sql<string | null>`coalesce(
+      ${agentWakeupRequests.payload} ->> 'projectId',
+      ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'projectId',
+      ${issues.projectId}::text
+    )`;
 
     const rows = await db
       .selectDistinctOn([agentWakeupRequests.id], { id: agentWakeupRequests.id })
@@ -10541,6 +10662,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         and(
           eq(agentWakeupRequests.companyId, companyId),
           inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+          ...(opts?.timerOnly ? [eq(agentWakeupRequests.source, "timer")] : []),
           sql`${agentWakeupRequests.runId} is null`,
           sql`${effectiveProjectId} = ${projectId}`,
         ),
@@ -10673,7 +10795,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function cancelRunInternal(
     runId: string,
     reason = "Cancelled by control plane",
-    options: { suppressImmediateRecovery?: boolean; force?: boolean } = {},
+    options: {
+      suppressImmediateRecovery?: boolean;
+      force?: boolean;
+      errorCode?: string;
+      skipQueueAdvance?: boolean;
+    } = {},
   ) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
@@ -10686,14 +10813,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // isn't already terminal there, it misclassifies the deliberate cancel as
     // "failed" and schedules a doomed retry. Writing "cancelled" first makes the
     // completion handler see a terminal status and treat the run as cancelled.
+    const cancellationErrorCode = options.errorCode ?? "cancelled";
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: new Date(),
       error: reason,
-      errorCode: "cancelled",
+      errorCode: cancellationErrorCode,
       ...(agent ? {
         resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
           resultJson: parseObject(run.resultJson),
-          errorCode: "cancelled",
+          errorCode: cancellationErrorCode,
           errorMessage: reason,
         }),
       } : {}),
@@ -10734,7 +10862,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     runningProcesses.delete(run.id);
     await finalizeAgentStatus(run.agentId, "cancelled");
-    await startNextQueuedRunForAgent(run.agentId);
+    if (!options.skipQueueAdvance) {
+      await startNextQueuedRunForAgent(run.agentId);
+    }
     return cancelled;
   }
 
@@ -10788,6 +10918,87 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     return runs.length;
+  }
+
+  async function cancelInactiveProjectTimerWork(
+    companyId: string,
+    projectId: string,
+    knownProjectStatus?: string | null,
+  ) {
+    const gate = await getProjectWorkGate(companyId, projectId);
+    if (gate?.allowed) {
+      return { projectId, projectStatus: gate.projectStatus, cancelledRuns: 0, cancelledWakeups: 0 };
+    }
+
+    const projectStatus = gate?.projectStatus ?? knownProjectStatus ?? "missing";
+    const reason = `Cancelled scheduled heartbeat because project is not in_progress (current status: ${projectStatus})`;
+    const runIds = await listProjectScopedRunIds(companyId, projectId, { timerOnly: true });
+    await Promise.all(
+      runIds.map((runId) =>
+        cancelRunInternal(runId, reason, {
+          suppressImmediateRecovery: true,
+          errorCode: "project_timer_not_in_progress",
+        }),
+      ),
+    );
+
+    const wakeupIds = await listProjectScopedWakeupIds(companyId, projectId, { timerOnly: true });
+    if (wakeupIds.length > 0) {
+      const now = new Date();
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: reason,
+          updatedAt: now,
+        })
+        .where(inArray(agentWakeupRequests.id, wakeupIds));
+    }
+
+    if (runIds.length > 0 || wakeupIds.length > 0) {
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "project_status_gate",
+        action: "project.inactive_timer_work_cancelled",
+        entityType: "project",
+        entityId: projectId,
+        details: {
+          projectStatus,
+          cancelledRunIds: runIds,
+          cancelledWakeupRequestIds: wakeupIds,
+        },
+      });
+    }
+
+    return {
+      projectId,
+      projectStatus,
+      cancelledRuns: runIds.length,
+      cancelledWakeups: wakeupIds.length,
+    };
+  }
+
+  async function reconcileInactiveProjectTimerWork() {
+    const inactiveProjects = await db
+      .select({ id: projects.id, companyId: projects.companyId, status: projects.status })
+      .from(projects)
+      .where(sql`${projects.status} <> 'in_progress'`);
+
+    let cancelledRuns = 0;
+    let cancelledWakeups = 0;
+    for (const project of inactiveProjects) {
+      const result = await cancelInactiveProjectTimerWork(project.companyId, project.id, project.status);
+      cancelledRuns += result.cancelledRuns;
+      cancelledWakeups += result.cancelledWakeups;
+    }
+
+    return {
+      projectsChecked: inactiveProjects.length,
+      cancelledRuns,
+      cancelledWakeups,
+    };
   }
 
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
@@ -11087,6 +11298,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     reconcileProductivityReviews,
 
+    reconcileInactiveProjectTimerWork,
+
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
@@ -11138,6 +11351,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     cancelActiveForAgent: (agentId: string, reason?: string, options?: { force?: boolean }) =>
       cancelActiveForAgentInternal(agentId, reason, options),
+
+    cancelInactiveProjectTimerWork,
 
     cancelBudgetScopeWork,
 

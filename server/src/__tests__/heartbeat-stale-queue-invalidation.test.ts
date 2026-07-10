@@ -18,6 +18,7 @@ import {
   issueRelations,
   issueTreeHolds,
   issues,
+  projects,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import {
@@ -104,6 +105,7 @@ async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createD
       await db.delete(heartbeatRuns);
       await db.delete(agentWakeupRequests);
       await db.delete(agentRuntimeState);
+      await db.delete(projects);
       await db.delete(agents);
       await db.delete(companies);
       return;
@@ -126,6 +128,7 @@ type SeedOptions = {
   agentName?: string;
   agentRole?: string;
   maxConcurrentRuns?: number;
+  heartbeatEnabled?: boolean;
 };
 
 type SeedResult = {
@@ -201,6 +204,8 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       adapterConfig: {},
       runtimeConfig: {
         heartbeat: {
+          enabled: opts.heartbeatEnabled ?? false,
+          intervalSec: opts.heartbeatEnabled ? 30 : 0,
           wakeOnDemand: true,
           maxConcurrentRuns: opts.maxConcurrentRuns ?? 1,
         },
@@ -216,7 +221,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     issueId: string;
     wakeReason: string;
     contextExtras?: Record<string, unknown>;
-    invocationSource?: "assignment" | "automation";
+    invocationSource?: "timer" | "assignment" | "on_demand" | "automation";
     scheduledRetryReason?: string | null;
   }) {
     const wakeupRequestId = randomUUID();
@@ -251,6 +256,45 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       .set({ runId })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
     return { runId, wakeupRequestId };
+  }
+
+  async function seedProjectIssue(input: {
+    companyId: string;
+    agentId: string;
+    projectStatus: "planned" | "in_progress" | "completed" | "cancelled";
+  }) {
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId: input.companyId,
+      name: `Project ${input.projectStatus}`,
+      status: input.projectStatus,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: input.companyId,
+      projectId,
+      title: "Project-gated task",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: input.agentId,
+    });
+    return { projectId, issueId };
+  }
+
+  async function seedProjectlessIssue(input: { companyId: string; agentId: string }) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: input.companyId,
+      projectId: null,
+      title: "Projectless task",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: input.agentId,
+    });
+    return { issueId };
   }
 
   async function seedContinuationSummary(input: {
@@ -289,6 +333,247 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
     });
   }
+
+  it.each([
+    ["on_demand", "board_question"],
+    ["assignment", "issue_assigned"],
+    ["automation", "issue_commented"],
+  ] as const)("allows %s wakeups on inactive projects", async (source, reason) => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const { issueId } = await seedProjectIssue({
+      companyId,
+      agentId,
+      projectStatus: "completed",
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source,
+      triggerDetail: source === "on_demand" ? "manual" : "system",
+      reason,
+      payload: { issueId },
+      contextSnapshot: { issueId },
+    });
+
+    expect(run).not.toBeNull();
+    expect(await waitForCondition(async () => {
+      const current = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return current?.status === "succeeded";
+    })).toBe(true);
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
+  });
+
+  it("skips issue-scoped timer wakeups when the project is inactive", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ heartbeatEnabled: true });
+    const { issueId } = await seedProjectIssue({
+      companyId,
+      agentId,
+      projectStatus: "completed",
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      payload: { issueId },
+      contextSnapshot: { issueId },
+    });
+
+    const wakeup = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(run).toBeNull();
+    expect(wakeup).toMatchObject({ status: "skipped", reason: "project.timer_not_in_progress" });
+    const createdRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(createdRuns).toHaveLength(0);
+  });
+
+  it("skips timer wakeups when all assigned project work is inactive", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ heartbeatEnabled: true });
+    await seedProjectIssue({
+      companyId,
+      agentId,
+      projectStatus: "cancelled",
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+    });
+
+    const wakeup = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(run).toBeNull();
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      reason: "project.timer_no_in_progress_assignments",
+    });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("allows timer wakeups when assigned work has no project", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ heartbeatEnabled: true });
+    await seedProjectlessIssue({ companyId, agentId });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+    });
+
+    expect(run).not.toBeNull();
+    expect(await waitForCondition(async () => {
+      const current = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return current?.status === "succeeded";
+    })).toBe(true);
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
+  });
+
+  it("cancels queued timer runs when the project leaves in_progress before claim", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const { projectId, issueId } = await seedProjectIssue({
+      companyId,
+      agentId,
+      projectStatus: "in_progress",
+    });
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "heartbeat_timer",
+      invocationSource: "timer",
+    });
+
+    await db.update(projects).set({ status: "cancelled" }).where(eq(projects.id, projectId));
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "project_timer_not_in_progress" });
+    expect(wakeup?.status).toBe("cancelled");
+    expect(wakeup?.error).toContain("scheduled heartbeat");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("allows queued automation runs after the project leaves in_progress", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const { projectId, issueId } = await seedProjectIssue({
+      companyId,
+      agentId,
+      projectStatus: "in_progress",
+    });
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_commented",
+      invocationSource: "automation",
+    });
+
+    await db.update(projects).set({ status: "completed" }).where(eq(projects.id, projectId));
+    await heartbeat.resumeQueuedRuns();
+
+    expect(await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    })).toBe(true);
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
+
+  it("immediately cancels only queued timer work when an inactive status is applied", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const { projectId, issueId } = await seedProjectIssue({
+      companyId,
+      agentId,
+      projectStatus: "in_progress",
+    });
+    const { runId: timerRunId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "heartbeat_timer",
+      invocationSource: "timer",
+    });
+    const { runId: questionRunId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_commented",
+      invocationSource: "automation",
+    });
+    await db.update(projects).set({ status: "completed" }).where(eq(projects.id, projectId));
+
+    const result = await heartbeat.cancelInactiveProjectTimerWork(companyId, projectId, "completed");
+    expect(await waitForCondition(async () => {
+      const questionRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, questionRunId))
+        .then((rows) => rows[0] ?? null);
+      return questionRun?.status === "succeeded";
+    })).toBe(true);
+
+    const [timerRun, questionRun] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, timerRunId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, questionRunId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(result).toMatchObject({ cancelledRuns: 1, projectStatus: "completed" });
+    expect(timerRun).toMatchObject({ status: "cancelled", errorCode: "project_timer_not_in_progress" });
+    expect(questionRun?.status).toBe("succeeded");
+    expect(countExecuteCallsForRun(timerRunId)).toBe(0);
+    expect(countExecuteCallsForRun(questionRunId)).toBe(1);
+  });
 
   it("cancels queued runs when the issue assignee changes before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "OriginalCoder" });

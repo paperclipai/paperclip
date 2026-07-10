@@ -17,7 +17,7 @@ import {
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { projectService, logActivity, workspaceOperationService, accessService } from "../services/index.js";
+import { heartbeatService, projectService, logActivity, workspaceOperationService, accessService } from "../services/index.js";
 import { conflict, forbidden, notFound } from "../errors.js";
 import { assertCompanyAccess, getActorInfo, requireProjectPermission, requireProjectAccess } from "./authz.js";
 import {
@@ -73,6 +73,11 @@ export function projectRoutes(db: Db) {
   const workspaceOperations = workspaceOperationService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const environmentsSvc = environmentService(db);
+  let heartbeat: ReturnType<typeof heartbeatService> | null = null;
+  const getHeartbeat = () => {
+    heartbeat ??= heartbeatService(db);
+    return heartbeat;
+  };
 
   async function assertProjectEnvironmentSelection(companyId: string, environmentId: string | null | undefined) {
     if (environmentId === undefined || environmentId === null) return;
@@ -277,6 +282,11 @@ export function projectRoutes(db: Db) {
       );
     }
 
+    const inactiveProjectTimerCancellation =
+      body.status !== undefined && project.status !== "in_progress"
+        ? await getHeartbeat().cancelInactiveProjectTimerWork(project.companyId, project.id, project.status)
+        : null;
+
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: project.companyId,
@@ -288,6 +298,13 @@ export function projectRoutes(db: Db) {
       entityId: project.id,
       details: {
         changedKeys: Object.keys(req.body).sort(),
+        ...(body.status !== undefined
+          ? {
+              previousStatus: existing.status,
+              currentStatus: project.status,
+              inactiveProjectTimerCancellation,
+            }
+          : {}),
         envKeys:
           body.env && typeof body.env === "object" && !Array.isArray(body.env)
             ? Object.keys(body.env as Record<string, unknown>).sort()
