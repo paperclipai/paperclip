@@ -42,7 +42,12 @@ import {
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
-import { readLocalServicePortOwner, writeLocalServiceRegistryRecord } from "../services/local-service-supervisor.ts";
+import {
+  findAdoptableLocalService,
+  isLocalServiceProcessInWorkspace,
+  readLocalServicePortOwner,
+  writeLocalServiceRegistryRecord,
+} from "../services/local-service-supervisor.ts";
 import { resolvePaperclipConfigPath } from "../paths.ts";
 import type { WorkspaceOperation } from "@paperclipai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
@@ -4092,6 +4097,107 @@ describe("readLocalServicePortOwner", () => {
           else resolve();
         });
       });
+    }
+  });
+
+  it("accepts service cwd nested within the requested workspace", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-workspace-"));
+    const serviceCwd = path.join(workspace, "server");
+    await fs.mkdir(serviceCwd);
+
+    await expect(isLocalServiceProcessInWorkspace(serviceCwd, workspace)).resolves.toBe(true);
+  });
+
+  it("refuses to adopt a listener whose real cwd belongs to another workspace", async () => {
+    if (process.platform !== "linux") return;
+    try {
+      await execFileAsync("lsof", ["-v"]);
+    } catch {
+      return;
+    }
+
+    const targetWorkspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-target-"));
+    const ownerWorkspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-owner-"));
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = `cross-workspace-${randomUUID()}`;
+    const serviceKey = `cross-workspace-${randomUUID()}`;
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        "const server=require('node:http').createServer((req,res)=>res.end('ok')); server.listen(0, '127.0.0.1', () => console.log(server.address().port));",
+      ],
+      { cwd: ownerWorkspace, stdio: ["ignore", "pipe", "inherit"] },
+    );
+    const port = await new Promise<number>((resolve, reject) => {
+      let output = "";
+      child.stdout?.on("data", (chunk) => {
+        output += String(chunk);
+        const value = Number.parseInt(output.trim(), 10);
+        if (Number.isInteger(value) && value > 0) resolve(value);
+      });
+      child.once("error", reject);
+      child.once("exit", (code) => reject(new Error(`Port owner exited before listening: ${code ?? "unknown"}`)));
+    });
+
+    try {
+      await expect(findAdoptableLocalService({
+        serviceKey,
+        serviceName: "node",
+        command: "node",
+        cwd: targetWorkspace,
+        port,
+      })).resolves.toBeNull();
+
+      await writeLocalServiceRegistryRecord({
+        version: 1,
+        serviceKey,
+        profileKind: "workspace-runtime",
+        serviceName: "node",
+        command: "node",
+        cwd: targetWorkspace,
+        envFingerprint: "",
+        port,
+        url: null,
+        pid: child.pid!,
+        processGroupId: null,
+        provider: "local_process",
+        runtimeServiceId: null,
+        reuseKey: null,
+        startedAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        metadata: null,
+      });
+      await expect(findAdoptableLocalService({
+        serviceKey,
+        serviceName: "node",
+        command: "node",
+        cwd: targetWorkspace,
+        port,
+      })).resolves.toBeNull();
+
+      await expect(startRuntimeServicesForWorkspaceControl({
+        actor: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+        issue: null,
+        workspace: buildWorkspace(targetWorkspace),
+        config: {
+          workspaceRuntime: {
+            services: [{
+              name: "web",
+              command: "node",
+              cwd: ".",
+              port,
+              lifecycle: "shared",
+            }],
+          },
+        },
+        adapterEnv: {},
+      })).rejects.toThrow(new RegExp(`cross-workspace port conflict.*pid ${child.pid}.*${ownerWorkspace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i"));
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+      await fs.rm(paperclipHome, { recursive: true, force: true });
     }
   });
 });
