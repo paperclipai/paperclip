@@ -794,6 +794,7 @@ describe("IssueChatThread", () => {
             onAdd={async () => {}}
             showComposer={false}
             showJumpToLatest={false}
+            autoScrollToHashOnInitialLoad
             enableLiveTranscriptPolling={false}
             transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
             hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}

@@ -4530,6 +4530,7 @@ export function IssueChatThread({
     if (targetId.startsWith("comment-")) {
       const targetMessage = messages.find((message) => issueChatMessageAnchorId(message) === targetId);
       if (targetMessage && issueChatMessageIsDeleted(targetMessage)) {
+        didInitialHashScrollDecisionRef.current = true;
         lastScrolledHashRef.current = hash;
         if (typeof window !== "undefined") {
           window.history.replaceState(null, "", `${location.pathname}${location.search}`);
