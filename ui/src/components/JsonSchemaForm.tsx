@@ -372,12 +372,12 @@ const FieldWrapper = React.memo(({
       </div>
       {children}
       {description && (
-        <p className="text-[12px] text-muted-foreground leading-relaxed">
+        <p className="text-xs text-muted-foreground leading-relaxed">
           {description}
         </p>
       )}
       {error && (
-        <p className="text-[12px] font-medium text-destructive">{error}</p>
+        <p className="text-xs font-medium text-destructive">{error}</p>
       )}
     </div>
   );
@@ -624,7 +624,7 @@ const SecretField = React.memo(({
           onChange={(e) => onChange(e.target.value)}
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
-          className="min-h-[140px] pr-10 font-mono text-xs"
+          className="min-h-(--sz-140px) pr-10 font-mono text-xs"
           aria-invalid={!!error}
         />
       ) : (
@@ -641,7 +641,7 @@ const SecretField = React.memo(({
           readOnly
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
-          className="min-h-[140px] pr-10 font-mono text-xs italic text-muted-foreground"
+          className="min-h-(--sz-140px) pr-10 font-mono text-xs italic text-muted-foreground"
           aria-invalid={!!error}
         />
       )}
@@ -722,7 +722,7 @@ const SecretField = React.memo(({
               {!hasRawValue ? (
                 <button
                   type="button"
-                  className="text-[11px] text-muted-foreground hover:text-foreground"
+                  className="text-(length:--text-micro) text-muted-foreground hover:text-foreground"
                   onClick={() => {
                     setShowRawInput(false);
                     setIsVisible(false);
@@ -736,7 +736,7 @@ const SecretField = React.memo(({
           ) : (
             <button
               type="button"
-              className="text-[11px] text-muted-foreground hover:text-foreground"
+              className="text-(length:--text-micro) text-muted-foreground hover:text-foreground"
               onClick={() => setShowRawInput(true)}
               disabled={disabled}
             >
@@ -864,7 +864,7 @@ const StringField = React.memo(({
           onChange={(e) => onChange(e.target.value)}
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
-          className="min-h-[100px]"
+          className="min-h-(--sz-100px)"
           aria-invalid={!!error}
         />
       ) : (

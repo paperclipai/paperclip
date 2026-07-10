@@ -164,7 +164,7 @@ describe("FileViewerMetadataRow", () => {
 
   it("reserves metadata row height while file details load", () => {
     const markup = renderToStaticMarkup(<FileViewerMetadataRow state={state} />);
-    expect(markup).toContain("min-h-[18px]");
+    expect(markup).toContain("min-h-(--sz-18px)");
     expect(markup).toContain("Loading file details");
   });
 });

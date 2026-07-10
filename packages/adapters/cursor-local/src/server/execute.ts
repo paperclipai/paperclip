@@ -645,6 +645,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
         await flushStdoutChunk(chunk);
       },
+      runLogTail: paperclipBridge?.runLogTail,
     });
     await flushStdoutChunk("", true);
 

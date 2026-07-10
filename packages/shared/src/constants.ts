@@ -30,11 +30,11 @@ export type AgentStatus = (typeof AGENT_STATUSES)[number];
 export const AGENT_ADAPTER_TYPES = [
   "process",
   "http",
-  "acpx_local",
   "claude_local",
   "codex_local",
   "cursor_cloud",
   "gemini_local",
+  "grok_local",
   "hermes_gateway",
   "hermes_local",
   "opencode_local",
@@ -77,6 +77,20 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
 
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
+
+// Config keys owned by Paperclip/company state rather than one concrete adapter.
+// `paperclipSkillSync` is persisted in adapterConfig but must survive adapter swaps.
+export const ADAPTER_AGNOSTIC_KEYS = [
+  "env",
+  "promptTemplate",
+  "instructionsFilePath",
+  "cwd",
+  "timeoutSec",
+  "graceSec",
+  "bootstrapPromptTemplate",
+  "paperclipSkillSync",
+] as const;
+export type AdapterAgnosticKey = (typeof ADAPTER_AGNOSTIC_KEYS)[number];
 
 export const MODEL_PROFILE_KEYS = ["cheap"] as const;
 export type ModelProfileKey = (typeof MODEL_PROFILE_KEYS)[number];
@@ -199,8 +213,10 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
-export const ISSUE_WORK_MODES = ["standard", "ask", "planning"] as const;
+export const ISSUE_WORK_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
+export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
+export type IssueHarnessKind = (typeof ISSUE_HARNESS_KINDS)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
 
 export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
@@ -618,6 +634,9 @@ export type SecretProviderConfigHealthStatus =
 export const SECRET_STATUSES = ["active", "disabled", "archived", "deleted"] as const;
 export type SecretStatus = (typeof SECRET_STATUSES)[number];
 
+export const SECRET_SCOPES = ["company", "user"] as const;
+export type SecretScope = (typeof SECRET_SCOPES)[number];
+
 export const SECRET_MANAGED_MODES = ["paperclip_managed", "external_reference"] as const;
 export type SecretManagedMode = (typeof SECRET_MANAGED_MODES)[number];
 
@@ -643,7 +662,15 @@ export const SECRET_BINDING_TARGET_TYPES = [
 ] as const;
 export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
 
-export const SECRET_ACCESS_OUTCOMES = ["success", "failure"] as const;
+export const SECRET_ACCESS_OUTCOMES = [
+  "success",
+  "failure",
+  "missing",
+  "inactive",
+  "not_allowed",
+  "optional_omitted",
+  "provider_error",
+] as const;
 export type SecretAccessOutcome = (typeof SECRET_ACCESS_OUTCOMES)[number];
 
 export const SECRET_PROJECTION_CLASSES = ["unclassified", "class_3_static_lease"] as const;
@@ -793,6 +820,7 @@ export const HEARTBEAT_RUN_STATUSES = [
   "scheduled_retry",
   "running",
   "succeeded",
+  "interrupted",
   "failed",
   "cancelled",
   "timed_out",
@@ -872,7 +900,10 @@ export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
 export const PERMISSION_KEYS = [
   "agents:create",
+  "agents:configure",
+  "agents:suggest-changes",
   "skills:create",
+  "skills:suggest-changes",
   "environments:manage",
   "tools:admin",
   "tools:manage_connections",

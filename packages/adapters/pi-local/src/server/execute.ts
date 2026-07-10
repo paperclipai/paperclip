@@ -712,6 +712,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onSpawn,
         onRuntimeProgress: ctx.onRuntimeProgress,
         onLog: bufferedOnLog,
+        runLogTail: paperclipBridge?.runLogTail,
       });
 
       // Flush any remaining buffer content

@@ -109,6 +109,23 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
+  it("ignores fast mode for gpt-5.4-mini", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.4-mini",
+      fastMode: true,
+    });
+
+    expect(result.fastModeRequested).toBe(true);
+    expect(result.fastModeApplied).toBe(false);
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--model",
+      "gpt-5.4-mini",
+      "-",
+    ]);
+  });
+
   it("adds --skip-git-repo-check when requested", () => {
     const result = buildCodexExecArgs(
       {

@@ -21,6 +21,7 @@ import { parseObject } from "../adapters/utils.js";
 import { logActivity } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueService } from "./issues.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
 
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
@@ -28,7 +29,7 @@ const TASK_WATCHDOG_SUBTREE_MAX_DEPTH = 100;
 const TASK_WATCHDOG_LIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const TASK_WATCHDOG_WAKE_REQUEST_STATUSES = ["queued", "deferred_issue_execution"] as const;
 const TASK_WATCHDOG_TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
-const TASK_WATCHDOG_TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
+const TASK_WATCHDOG_TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 // Grace window after an issue is created/assigned during which its first
 // assignment run/wake may have been enqueued but is not yet visible to a
 // watchdog evaluation (the eval can race the issue's own assignment run).
@@ -740,6 +741,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         WHERE company_id = ${companyId}
           AND id = ${watchedIssueId}
           AND hidden_at IS NULL
+          AND harness_kind IS NULL
         UNION ALL
         SELECT
           child.id,
@@ -758,6 +760,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         JOIN watched_issues ON child.parent_id = watched_issues.id
         WHERE child.company_id = ${companyId}
           AND child.hidden_at IS NULL
+          AND child.harness_kind IS NULL
           AND child.origin_kind <> ${TASK_WATCHDOG_ORIGIN_KIND}
           AND watched_issues.depth < ${TASK_WATCHDOG_SUBTREE_MAX_DEPTH - 1}
       )
@@ -836,7 +839,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .where(and(
           eq(issues.companyId, companyId),
           inArray(issues.id, subtreeIssueIds),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           inArray(heartbeatRuns.status, [...TASK_WATCHDOG_LIVE_RUN_STATUSES]),
         )),
       db
@@ -1025,7 +1028,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         eq(issues.companyId, companyId),
         eq(issues.originKind, TASK_WATCHDOG_ORIGIN_KIND),
         eq(issues.originId, watchedIssueId),
-        isNull(issues.hiddenAt),
+        visibleIssueCondition(),
       ))
       .orderBy(asc(issues.createdAt), asc(issues.id))
       .limit(1)
@@ -1071,6 +1074,26 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .then((rows) => rows[0] ?? null),
     ]);
     return Boolean(run || issueRun || wake);
+  }
+
+  async function sameFingerprintWatchdogReviewIsStillOpen(
+    watchdogIssue: IssueRow | null,
+    stopFingerprint: string,
+  ) {
+    if (!watchdogIssue) return false;
+    if (watchdogIssue.originFingerprint !== stopFingerprint) return false;
+    if (isTerminalIssueStatus(watchdogIssue.status) || watchdogIssue.status === "backlog") return false;
+    if (watchdogIssue.status === "in_review") {
+      const hasPendingReviewPath = await watchdogIssueHasPendingReviewPath(watchdogIssue.companyId, watchdogIssue.id);
+      return isWatchdogReviewDisposition(watchdogIssue, hasPendingReviewPath);
+    }
+    return true;
+  }
+
+  async function watchdogIssueNeedsFreshWake(watchdogIssue: IssueRow) {
+    if (watchdogIssue.status !== "in_review") return false;
+    const hasPendingReviewPath = await watchdogIssueHasPendingReviewPath(watchdogIssue.companyId, watchdogIssue.id);
+    return !isWatchdogReviewDisposition(watchdogIssue, hasPendingReviewPath);
   }
 
   async function watchdogIssueHasPendingReviewPath(companyId: string, issueId: string) {
@@ -1157,14 +1180,16 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .where(and(
           eq(issues.companyId, input.watchdog.companyId),
           eq(issues.id, input.watchdog.watchdogIssueId),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
         ))
         .then((rows) => rows[0] ?? null)
       : null;
     const fallback = existing ?? await findTaskWatchdogIssue(input.watchdog.companyId, input.sourceIssue.id);
 
     if (fallback) {
-      const shouldReopen = isTerminalIssueStatus(fallback.status) || fallback.status === "backlog";
+      const shouldReopen = isTerminalIssueStatus(fallback.status) ||
+        fallback.status === "backlog" ||
+        await watchdogIssueNeedsFreshWake(fallback);
       const watchdogIssue = shouldReopen
         ? await issuesSvc.update(fallback.id, {
           status: "todo",
@@ -1258,7 +1283,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     const sourceIssue = await db
       .select()
       .from(issues)
-      .where(and(eq(issues.companyId, watchdog.companyId), eq(issues.id, watchdog.issueId), isNull(issues.hiddenAt)))
+      .where(and(eq(issues.companyId, watchdog.companyId), eq(issues.id, watchdog.issueId), visibleIssueCondition()))
       .then((rows) => rows[0] ?? null);
     if (!sourceIssue || sourceIssue.originKind === TASK_WATCHDOG_ORIGIN_KIND) {
       return { state: "skipped" as const, reason: "watched_issue_not_applicable" };
@@ -1284,6 +1309,37 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         })
         .where(eq(issueWatchdogs.id, watchdog.id));
       return { state: "watchdog_live" as const, classification, watchdogIssueId: existingWatchdogIssueId };
+    }
+    const existingWatchdogIssue = existingWatchdogIssueId
+      ? await db
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, watchdog.companyId),
+          eq(issues.id, existingWatchdogIssueId),
+          visibleIssueCondition(),
+        ))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    if (await sameFingerprintWatchdogReviewIsStillOpen(existingWatchdogIssue, classification.stopFingerprint)) {
+      if (
+        watchdog.watchdogIssueId !== existingWatchdogIssue!.id ||
+        watchdog.lastObservedFingerprint !== classification.stopFingerprint
+      ) {
+        await db
+          .update(issueWatchdogs)
+          .set({
+            watchdogIssueId: existingWatchdogIssue!.id,
+            lastObservedFingerprint: classification.stopFingerprint,
+            updatedAt: new Date(),
+          })
+          .where(eq(issueWatchdogs.id, watchdog.id));
+      }
+      return {
+        state: "watchdog_review_open" as const,
+        classification,
+        watchdogIssueId: existingWatchdogIssue!.id,
+      };
     }
 
     const watchdogIssue = await ensureReusableWatchdogIssue({
@@ -1367,12 +1423,14 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         WHERE company_id = ${companyId}
           AND id = ${issueId}
           AND hidden_at IS NULL
+          AND harness_kind IS NULL
         UNION ALL
         SELECT parent.id, parent.parent_id, ancestors.depth + 1
         FROM issues parent
         JOIN ancestors ON parent.id = ancestors.parent_id
         WHERE parent.company_id = ${companyId}
           AND parent.hidden_at IS NULL
+          AND parent.harness_kind IS NULL
           AND ancestors.depth < ${TASK_WATCHDOG_SUBTREE_MAX_DEPTH - 1}
       )
       SELECT id FROM ancestors
@@ -1519,7 +1577,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         if (evaluated.state === "triggered") {
           result.triggered += 1;
           result.watchdogIssueIds.push(evaluated.watchdogIssueId);
-        } else if (evaluated.state === "live" || evaluated.state === "watchdog_live") {
+        } else if (
+          evaluated.state === "live" ||
+          evaluated.state === "watchdog_live" ||
+          evaluated.state === "watchdog_review_open"
+        ) {
           result.live += 1;
         } else if (evaluated.state === "pending_first_run") {
           result.pendingFirstRun += 1;
@@ -1553,6 +1615,12 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           result.watchdogIssueIds.push(evaluated.watchdogIssueId);
         } else if (evaluated.state === "pending_first_run") {
           result.pendingFirstRun += 1;
+        } else if (
+          evaluated.state === "watchdog_review_open" ||
+          evaluated.state === "watchdog_live" ||
+          evaluated.state === "live"
+        ) {
+          // Existing review work is already open for this stopped state.
         } else {
           result.skipped += 1;
         }

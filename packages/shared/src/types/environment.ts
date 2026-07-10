@@ -28,12 +28,16 @@ export interface FakeSandboxEnvironmentConfig {
   provider: "fake";
   image: string;
   reuseLease: boolean;
+  /** Stream agent CLI stdout/stderr during sandbox runs (bridge log-tail loop). */
+  streamRunLogs?: boolean;
 }
 
 export interface PluginSandboxEnvironmentConfig {
   provider: SandboxEnvironmentProvider;
   reuseLease: boolean;
   timeoutMs?: number;
+  /** Stream agent CLI stdout/stderr during sandbox runs (bridge log-tail loop). */
+  streamRunLogs?: boolean;
   [key: string]: unknown;
 }
 
@@ -65,6 +69,28 @@ export interface Environment {
   metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export type EnvironmentDeleteBlockedReason = "managed_local" | "instance_default";
+
+export interface EnvironmentDeleteBlastRadius {
+  environmentId: string;
+  canDelete: boolean;
+  deleteBlockedReasons: EnvironmentDeleteBlockedReason[];
+  staticReferences: {
+    isManagedLocal: boolean;
+    isInstanceDefault: boolean;
+    agentDefaultCount: number;
+    executionWorkspaceSelectionCount: number;
+    issueSelectionCount: number;
+    projectSelectionCount: number;
+    secretBindingCount: number;
+  };
+  activeRuntimeUse: {
+    activeLeaseCount: number;
+    activeCustomImageSetupSessionCount: number;
+    hasActiveRuntimeUse: boolean;
+  };
 }
 
 export interface EnvironmentLease {

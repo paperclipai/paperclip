@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { Agent, CompanySecret, EnvBinding, Project, RoutineVariable } from "@paperclipai/shared";
 import { Code2, FileText, ListPlus, RotateCcw, Table2 } from "lucide-react";
-import { EnvVarEditor } from "@/components/EnvVarEditor";
+import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
 import { ExecutionParticipantPicker } from "@/components/ExecutionParticipantPicker";
 import { FoldCurtain } from "@/components/FoldCurtain";
 import { InlineEditor } from "@/components/InlineEditor";
@@ -121,7 +121,7 @@ const adapterSchema: JsonSchemaNode = {
       title: "Adapter name",
       description: "Human-readable name shown in the adapter manager.",
       minLength: 3,
-      default: "Codex local",
+      default: "Codex",
     },
     mode: {
       type: "string",
@@ -175,7 +175,7 @@ const adapterSchema: JsonSchemaNode = {
 
 const validAdapterValues = {
   ...getDefaultValues(adapterSchema),
-  adapterName: "Codex local",
+  adapterName: "Codex",
   mode: "implementation",
   apiKey: "secret:openai-api-key",
   concurrency: 2,
@@ -202,6 +202,9 @@ const storybookSecrets: CompanySecret[] = [
 	  {
 	    id: "secret-openai",
 	    companyId: "company-storybook",
+	    scope: "company",
+	    ownerUserId: null,
+	    userSecretDefinitionId: null,
 	    key: "openai-api-key",
 	    name: "OPENAI_API_KEY",
 	    provider: "local_encrypted",
@@ -223,6 +226,9 @@ const storybookSecrets: CompanySecret[] = [
 	  {
 	    id: "secret-github",
 	    companyId: "company-storybook",
+	    scope: "company",
+	    ownerUserId: null,
+	    userSecretDefinitionId: null,
 	    key: "github-token",
 	    name: "GITHUB_TOKEN",
 	    provider: "local_encrypted",
@@ -458,7 +464,7 @@ function InlineEditorGallery() {
   );
 }
 
-function EnvVarEditorGallery() {
+function EnvironmentVariablesEditorGallery() {
   const [emptyEnv, setEmptyEnv] = useState<Record<string, EnvBinding>>({});
   const [env, setEnv] = useState<Record<string, EnvBinding>>(filledEnv);
   const createSecret = async (name: string): Promise<CompanySecret> => ({
@@ -469,16 +475,16 @@ function EnvVarEditorGallery() {
   });
 
   return (
-    <Section eyebrow="EnvVarEditor" title="Runtime environment bindings">
+    <Section eyebrow="EnvironmentVariablesEditor" title="Runtime environment bindings">
       <div className="grid gap-4 lg:grid-cols-3">
-        <StatePanel label="Empty add row" detail="Trailing blank row is the add state.">
-          <EnvVarEditor value={emptyEnv} secrets={storybookSecrets} onCreateSecret={createSecret} onChange={(next) => setEmptyEnv(next ?? {})} />
+        <StatePanel label="Empty add row" detail="Explicit + Add variable button; no trailing ghost row.">
+          <EnvironmentVariablesEditor value={emptyEnv} secrets={storybookSecrets} onCreateSecret={createSecret} onChange={(next) => setEmptyEnv(next ?? {})} />
         </StatePanel>
-        <StatePanel label="Plain and secret values" detail="Filled rows show edit, seal, secret select, and remove controls.">
-          <EnvVarEditor value={env} secrets={storybookSecrets} onCreateSecret={createSecret} onChange={(next) => setEnv(next ?? {})} />
+        <StatePanel label="Plain and secret values" detail="Filled rows show text, secret picker, version tag, and remove controls.">
+          <EnvironmentVariablesEditor value={env} secrets={storybookSecrets} onCreateSecret={createSecret} onChange={(next) => setEnv(next ?? {})} />
         </StatePanel>
         <StatePanel label="Disabled shell" disabled>
-          <EnvVarEditor value={filledEnv} secrets={storybookSecrets} onCreateSecret={createSecret} onChange={() => undefined} />
+          <EnvironmentVariablesEditor value={filledEnv} secrets={storybookSecrets} onCreateSecret={createSecret} onChange={() => undefined} disabled />
         </StatePanel>
       </div>
     </Section>
@@ -655,7 +661,7 @@ function FormsEditorsShowcase() {
       <MarkdownBodyGallery />
       <JsonSchemaFormGallery />
       <InlineEditorGallery />
-      <EnvVarEditorGallery />
+      <EnvironmentVariablesEditorGallery />
       <ScheduleEditorGallery />
       <RoutineVariablesGallery />
       <PickerGallery />

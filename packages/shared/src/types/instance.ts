@@ -49,6 +49,7 @@ export interface InstanceExperimentalSettings {
   enableIsolatedWorkspaces: boolean;
   enableStreamlinedLeftNavigation: boolean;
   enablePipelines: boolean;
+  enableCases: boolean;
   enableConferenceRoomChat: boolean;
   enableTaskWatchdogs: boolean;
   enableIssuePlanDecompositions: boolean;
@@ -56,9 +57,20 @@ export interface InstanceExperimentalSettings {
   enableCloudSync: boolean;
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
+  enableBuiltInAgents: boolean;
+  enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
+  enableWorkspaceBranchReconcileForward: boolean;
+  enableWorkspaceDirtyQuarantineRepair: boolean;
+  /**
+   * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the
+   * heartbeat run engine by default so previews never self-execute tasks. When
+   * this is enabled the worktree-instance scheduling suppression is lifted so
+   * runs actually execute inside the preview. Ignored outside a worktree.
+   */
+  enableWorktreeRunExecution: boolean;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
 }
 

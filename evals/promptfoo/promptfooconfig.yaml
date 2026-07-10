@@ -10,7 +10,7 @@
 #   promptfoo view  # open results in browser
 #
 # Validate config before committing:
-#   promptfoo validate
+#   npx promptfoo@latest validate -c promptfooconfig.yaml
 #
 # Requires OPENROUTER_API_KEY or individual provider keys.
 

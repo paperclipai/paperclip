@@ -167,6 +167,8 @@ export function IssueDocumentAnnotations({
   const annotationsQuery = useQuery({
     queryKey: target?.kind === "routine"
       ? queryKeys.routines.documentAnnotations(target.routineId, target.documentKey, "all")
+      : target?.kind === "case"
+        ? queryKeys.cases.documentAnnotations(target.caseId, target.documentKey, "all")
       : queryKeys.issues.documentAnnotations(issueId, doc.key, "all"),
     queryFn: () => target
       ? documentAnnotationsApi.listForTarget(target, { status: "all", includeComments: true })
@@ -344,7 +346,7 @@ export function IssueDocumentAnnotations({
         className="relative min-w-0"
         data-testid={`document-annotation-body-${doc.key}`}
       >
-        <div className="relative z-[1]">
+        <div className="relative z-(--z-1)">
           {children}
         </div>
         {!historicalPreview && doc.latestRevisionId ? (
@@ -368,7 +370,7 @@ export function IssueDocumentAnnotations({
       {panelOpen && !isMobile && renderedDesktopPanelFrame ? (
         <div
           data-testid="document-annotation-panel-anchor"
-          className="pointer-events-auto fixed z-[60] hidden lg:block"
+          className="pointer-events-auto fixed z-(--z-60) hidden lg:block"
           style={{
             left: renderedDesktopPanelFrame.left,
             maxHeight: renderedDesktopPanelFrame.maxHeight,
@@ -406,6 +408,8 @@ export function DocumentAnnotationsCountChip({
   const annotationsQuery = useQuery({
     queryKey: target?.kind === "routine"
       ? queryKeys.routines.documentAnnotations(target.routineId, target.documentKey, "all")
+      : target?.kind === "case"
+        ? queryKeys.cases.documentAnnotations(target.caseId, target.documentKey, "all")
       : queryKeys.issues.documentAnnotations(issueId, docKey, "all"),
     queryFn: () => target
       ? documentAnnotationsApi.listForTarget(target, { status: "all", includeComments: true })
@@ -425,7 +429,7 @@ export function DocumentAnnotationsCountChip({
       variant="ghost"
       data-state={panelOpen ? "open" : "closed"}
       className={cn(
-        "h-auto gap-1 rounded-md px-1.5 py-0 text-[11px] font-normal text-muted-foreground hover:text-foreground",
+        "h-auto gap-1 rounded-md px-1.5 py-0 text-(length:--text-micro) font-normal text-muted-foreground hover:text-foreground",
         panelOpen && "bg-muted text-foreground",
         openCount > 0 && "text-foreground",
       )}

@@ -6,6 +6,7 @@ import type {
   SecretProviderConfigHealthStatus,
   SecretProviderConfigStatus,
   SecretProjectionClass,
+  SecretScope,
   SecretStatus,
   SecretVersionStatus,
 } from "../constants.js";
@@ -18,6 +19,7 @@ export type {
   SecretProviderConfigHealthStatus,
   SecretProviderConfigStatus,
   SecretProjectionClass,
+  SecretScope,
   SecretStatus,
   SecretVersionStatus,
 };
@@ -37,14 +39,25 @@ export interface EnvSecretRefBinding {
   projectionAllowlistKey?: string | null;
 }
 
+export interface EnvUserSecretRefBinding {
+  type: "user_secret_ref";
+  key: string;
+  version?: SecretVersionSelector;
+  required?: boolean;
+  allowMissingOverride?: boolean;
+}
+
 // Backward-compatible: legacy plaintext string values are still accepted.
-export type EnvBinding = string | EnvPlainBinding | EnvSecretRefBinding;
+export type EnvBinding = string | EnvPlainBinding | EnvSecretRefBinding | EnvUserSecretRefBinding;
 
 export type AgentEnvConfig = Record<string, EnvBinding>;
 
 export interface CompanySecret {
   id: string;
   companyId: string;
+  scope: SecretScope;
+  ownerUserId: string | null;
+  userSecretDefinitionId: string | null;
   key: string;
   name: string;
   provider: SecretProvider;
@@ -63,6 +76,50 @@ export interface CompanySecret {
   referenceCount?: number;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface UserSecretDefinition {
+  id: string;
+  companyId: string;
+  key: string;
+  name: string;
+  description: string | null;
+  status: SecretStatus;
+  provider: SecretProvider;
+  managedMode: SecretManagedMode;
+  providerConfigId: string | null;
+  providerMetadata: Record<string, unknown> | null;
+  usageGuidance: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  deletedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface UserSecretDeclaration {
+  id: string;
+  companyId: string;
+  userSecretDefinitionId: string;
+  targetType: SecretBindingTargetType;
+  targetId: string;
+  configPath: string;
+  envKey: string;
+  versionSelector: SecretVersionSelector;
+  required: boolean;
+  allowMissingOverride: boolean;
+  label: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface UserSecretCoverageSummary {
+  definitionId: string;
+  configuredCount: number;
+  missingCount: number;
+  inactiveCount: number;
 }
 
 export interface SecretProviderDescriptor {
@@ -222,9 +279,15 @@ export interface CompanySecretUsageBinding extends CompanySecretBinding {
 export interface SecretAccessEvent {
   id: string;
   companyId: string;
-  secretId: string;
+  secretId: string | null;
+  userSecretDefinitionId: string | null;
+  secretScope: SecretScope;
   version: number | null;
   provider: SecretProvider;
+  responsibleUserId: string | null;
+  credentialOwnerUserId: string | null;
+  credentialSubjectType: string | null;
+  credentialSubjectId: string | null;
   actorType: "agent" | "user" | "system" | "plugin";
   actorId: string | null;
   consumerType: SecretBindingTargetType | "plugin_worker";

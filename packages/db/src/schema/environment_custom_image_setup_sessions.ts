@@ -5,7 +5,6 @@ import type {
   EnvironmentCustomImageSetupSessionStatus,
 } from "@paperclipai/shared";
 import { agents } from "./agents.js";
-import { companies } from "./companies.js";
 import { environmentLeases } from "./environment_leases.js";
 import { environmentCustomImageTemplates } from "./environment_custom_image_templates.js";
 import { environments } from "./environments.js";
@@ -14,7 +13,6 @@ export const environmentCustomImageSetupSessions = pgTable(
   "environment_custom_image_setup_sessions",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     environmentId: uuid("environment_id").notNull().references(() => environments.id, { onDelete: "cascade" }),
     templateId: uuid("template_id").references(() => environmentCustomImageTemplates.id, { onDelete: "set null" }),
     promotedTemplateId: uuid("promoted_template_id")
@@ -36,26 +34,17 @@ export const environmentCustomImageSetupSessions = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    companyEnvironmentStatusIdx: index("environment_custom_image_setup_sessions_company_environment_status_idx").on(
-      table.companyId,
+    environmentStatusIdx: index("environment_custom_image_setup_sessions_environment_status_idx").on(
       table.environmentId,
       table.status,
     ),
-    companyEnvironmentActiveUq: uniqueIndex("environment_custom_image_setup_sessions_company_environment_active_uq")
-      .on(table.companyId, table.environmentId)
+    environmentActiveUq: uniqueIndex("environment_custom_image_setup_sessions_environment_active_uq")
+      .on(table.environmentId)
       .where(sql`${table.status} IN ('starting', 'waiting_for_user', 'capturing')`),
-    companyTemplateIdx: index("environment_custom_image_setup_sessions_company_template_idx").on(
-      table.companyId,
-      table.templateId,
-    ),
-    companyPromotedTemplateIdx: index("environment_custom_image_setup_sessions_company_promoted_template_idx").on(
-      table.companyId,
-      table.promotedTemplateId,
-    ),
-    companyExpiresIdx: index("environment_custom_image_setup_sessions_company_expires_idx").on(
-      table.companyId,
-      table.expiresAt,
-    ),
+    templateIdx: index("environment_custom_image_setup_sessions_template_idx").on(table.templateId),
+    promotedTemplateIdx: index("environment_custom_image_setup_sessions_promoted_template_idx")
+      .on(table.promotedTemplateId),
+    expiresIdx: index("environment_custom_image_setup_sessions_expires_idx").on(table.expiresAt),
     providerLeaseIdx: index("environment_custom_image_setup_sessions_provider_lease_idx").on(
       table.provider,
       table.providerLeaseId,

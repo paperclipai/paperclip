@@ -19,8 +19,19 @@ const mockSecretService = vi.hoisted(() => ({
   checkProviderConfigHealth: vi.fn(),
   getById: vi.fn(),
   create: vi.fn(),
+  rotate: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
+  listUserSecretDefinitions: vi.fn(),
+  createUserSecretDefinition: vi.fn(),
+  updateUserSecretDefinition: vi.fn(),
+  removeUserSecretDefinition: vi.fn(),
+  getUserSecretDefinitionCoverage: vi.fn(),
+  listCurrentUserSecretValues: vi.fn(),
+  createCurrentUserSecretValue: vi.fn(),
+  updateCurrentUserSecretValue: vi.fn(),
+  rotateCurrentUserSecretValue: vi.fn(),
+  removeCurrentUserSecretValue: vi.fn(),
   previewRemoteImport: vi.fn(),
   importRemoteSecrets: vi.fn(),
 }));
@@ -93,6 +104,218 @@ describe("secret routes", () => {
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toMatch(/Managed secrets cannot set externalRef/);
     expect(mockSecretService.create).not.toHaveBeenCalled();
+  });
+
+  it("returns sanitized AWS provider errors when managed secret creation fails", async () => {
+    mockSecretService.create.mockRejectedValue(
+      new HttpError(
+        403,
+        "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        {
+          code: "access_denied",
+          provider: "aws_secrets_manager",
+          operation: "secret.create",
+          providerConfigId: "11111111-1111-4111-8111-111111111111",
+          region: "us-east-1",
+          credentialPath: "Paperclip server runtime/provider credential path",
+          requiredCapability: "secretsmanager:CreateSecret",
+          actionableMessage:
+            "AWS managed secret creation needs secretsmanager:CreateSecret in the selected region for this provider vault.",
+          safeAlternative:
+            "If the secret already exists in AWS, link it as an external reference instead of creating a Paperclip-managed value.",
+        },
+      ),
+    );
+
+    const res = await request(createApp()).post("/api/companies/company-1/secrets").send({
+      name: "Vercel token",
+      key: "vercel_token",
+      provider: "aws_secrets_manager",
+      providerConfigId: "11111111-1111-4111-8111-111111111111",
+      managedMode: "paperclip_managed",
+      value: "vcp_test",
+    });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      code: "access_denied",
+      error: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+      details: {
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "secret.create",
+        providerConfigId: "11111111-1111-4111-8111-111111111111",
+        region: "us-east-1",
+        requiredCapability: "secretsmanager:CreateSecret",
+      },
+    });
+    expect(JSON.stringify(res.body)).not.toContain("arn:aws");
+    expect(JSON.stringify(res.body)).not.toContain("123456789012");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("restricts user secret definition management to company admins", async () => {
+    const res = await request(createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "member" }],
+    })).post("/api/companies/company-1/user-secret-definitions").send({
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+
+    expect(res.status).toBe(403);
+    expect(mockSecretService.createUserSecretDefinition).not.toHaveBeenCalled();
+  });
+
+  it("records implicit user-secret definition admins as system actors instead of board pseudo-users", async () => {
+    mockSecretService.createUserSecretDefinition.mockResolvedValue({
+      id: "definition-1",
+      companyId: "company-1",
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+      status: "active",
+    });
+
+    const res = await request(createApp({
+      type: "board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+      memberships: [],
+    })).post("/api/companies/company-1/user-secret-definitions").send({
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+
+    expect(res.status).toBe(201);
+    expect(mockSecretService.createUserSecretDefinition).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ key: "github_token" }),
+      { userId: null, agentId: null },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorType: "system",
+        actorId: "local_implicit",
+        action: "user_secret_definition.created",
+      }),
+    );
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("\"board\"");
+  });
+
+  it("logs patched user-secret definition deletion as deletion activity", async () => {
+    mockSecretService.updateUserSecretDefinition.mockResolvedValue({
+      id: "definition-1",
+      companyId: "company-1",
+      key: "github_token__deleted__definition-1",
+      name: "GitHub token",
+      provider: "local_encrypted",
+      status: "deleted",
+    });
+
+    const res = await request(createApp())
+      .patch("/api/companies/company-1/user-secret-definitions/definition-1")
+      .send({ status: "deleted" });
+
+    expect(res.status).toBe(200);
+    expect(mockSecretService.updateUserSecretDefinition).toHaveBeenCalledWith(
+      "company-1",
+      "definition-1",
+      expect.objectContaining({ status: "deleted" }),
+      { userId: "user-1", agentId: null },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "user_secret_definition.deleted",
+        entityType: "user_secret_definition",
+        entityId: "definition-1",
+      }),
+    );
+  });
+
+  it("creates current-user secret values for the authenticated user only", async () => {
+    mockSecretService.createCurrentUserSecretValue.mockResolvedValue({
+      id: "secret-1",
+      companyId: "company-1",
+      scope: "user",
+      ownerUserId: "user-1",
+      userSecretDefinitionId: "definition-1",
+      provider: "local_encrypted",
+      latestVersion: 1,
+    });
+
+    const res = await request(createApp()).post("/api/companies/company-1/me/user-secrets").send({
+      definitionKey: "github_token",
+      value: "secret-value",
+    });
+
+    expect(res.status).toBe(201);
+    expect(mockSecretService.createCurrentUserSecretValue).toHaveBeenCalledWith(
+      "company-1",
+      "user-1",
+      {
+        definitionKey: "github_token",
+        definitionId: undefined,
+        value: "secret-value",
+        externalRef: undefined,
+        providerVersionRef: undefined,
+        providerConfigId: undefined,
+      },
+      { userId: "user-1", agentId: null },
+    );
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("secret-value");
+  });
+
+  it("rejects current-user secret values without a concrete user identity", async () => {
+    const res = await request(createApp({
+      type: "board",
+      source: "local_implicit",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "admin" }],
+    })).post("/api/companies/company-1/me/user-secrets").send({
+      definitionKey: "github_token",
+      value: "secret-value",
+    });
+
+    expect(res.status).toBe(401);
+    expect(res.body).toMatchObject({ error: "User identity required for user-specific secrets" });
+    expect(mockSecretService.createCurrentUserSecretValue).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("rejects empty current-user secret rotation payloads", async () => {
+    const res = await request(createApp())
+      .post("/api/companies/company-1/me/user-secrets/secret-1/rotate")
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/requires value, externalRef/);
+    expect(mockSecretService.rotateCurrentUserSecretValue).not.toHaveBeenCalled();
+  });
+
+  it("hides user-scoped secrets from legacy company secret mutation routes", async () => {
+    mockSecretService.getById.mockResolvedValue({
+      id: "secret-1",
+      companyId: "company-1",
+      scope: "user",
+      ownerUserId: "user-2",
+      status: "active",
+    });
+
+    const res = await request(createApp()).post("/api/secrets/secret-1/rotate").send({
+      value: "new-secret-value",
+    });
+
+    expect(res.status).toBe(404);
+    expect(mockSecretService.rotate).not.toHaveBeenCalled();
   });
 
   it("rejects provider vault routes for non-board actors", async () => {

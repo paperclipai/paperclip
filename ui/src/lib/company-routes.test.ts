@@ -82,6 +82,24 @@ describe("company routes", () => {
     expect(toCompanyRelativePath("/PAP/tools/runtime")).toBe("/tools/runtime");
   });
 
+  it("treats /timeline as a board route that needs a company prefix", () => {
+    expect(isBoardPathWithoutPrefix("/timeline")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/timeline")).toBeNull();
+    expect(applyCompanyPrefix("/timeline", "PAP")).toBe("/PAP/timeline");
+    expect(toCompanyRelativePath("/PAP/timeline")).toBe("/timeline");
+  });
+
+  it("treats Skill Studio create mode as an unprefixed board route", () => {
+    expect(isBoardPathWithoutPrefix("/skills/studio/new")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/skills/studio/new")).toBeNull();
+    expect(applyCompanyPrefix("/skills/studio/new?forkFrom=skill-1", "PAP")).toBe(
+      "/PAP/skills/studio/new?forkFrom=skill-1",
+    );
+    expect(toCompanyRelativePath("/PAP/skills/studio/new?forkFrom=skill-1")).toBe(
+      "/skills/studio/new?forkFrom=skill-1",
+    );
+  });
+
   it("preserves artifact deep-link anchors when applying the company prefix", () => {
     expect(applyCompanyPrefix("/issues/PAP-10205#work-product-wp-1", "PAP")).toBe(
       "/PAP/issues/PAP-10205#work-product-wp-1",

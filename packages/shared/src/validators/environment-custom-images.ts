@@ -32,7 +32,6 @@ export type EnvironmentCustomImageSetupConnectionSummary =
 
 export const environmentCustomImageTemplateSchema = z.object({
   id: z.string().uuid(),
-  companyId: z.string().uuid(),
   environmentId: z.string().uuid(),
   provider: providerKeySchema,
   templateKind: environmentCustomImageTemplateKindSchema,
@@ -54,7 +53,6 @@ export type EnvironmentCustomImageTemplate =
 
 export const environmentCustomImageSetupSessionSchema = z.object({
   id: z.string().uuid(),
-  companyId: z.string().uuid(),
   environmentId: z.string().uuid(),
   templateId: z.string().uuid().nullable(),
   promotedTemplateId: z.string().uuid().nullable(),
@@ -95,3 +93,19 @@ export const cancelEnvironmentCustomImageSetupSessionSchema = z.object({
 }).strict();
 export type CancelEnvironmentCustomImageSetupSession =
   z.infer<typeof cancelEnvironmentCustomImageSetupSessionSchema>;
+
+export const createEnvironmentCustomImageTerminalSessionTokenSchema = z.object({}).strict().default({});
+export type CreateEnvironmentCustomImageTerminalSessionToken =
+  z.infer<typeof createEnvironmentCustomImageTerminalSessionTokenSchema>;
+
+export const environmentCustomImageTerminalSessionTokenSchema = z.object({
+  id: z.string().min(1),
+  token: z.string().min(32),
+  expiresAt: isoDateTime,
+  setupSessionId: z.string().min(1),
+  environmentId: z.string().min(1),
+  connectionType: z.literal("ssh"),
+  websocketPath: z.string().min(1),
+}).strict();
+export type EnvironmentCustomImageTerminalSessionToken =
+  z.infer<typeof environmentCustomImageTerminalSessionTokenSchema>;
