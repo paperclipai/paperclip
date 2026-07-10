@@ -47,7 +47,7 @@ export type WorktreeRunExecutionActivationState =
       reason: WorktreeRunExecutionSuppressedReason;
     };
 
-function isTruthyRuntimeEnvValue(value: string | undefined) {
+export function isTruthyRuntimeEnvValue(value: string | undefined) {
   return typeof value === "string" && TRUTHY_RUNTIME_ENV_VALUES.has(value.trim().toLowerCase());
 }
 

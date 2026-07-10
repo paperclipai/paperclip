@@ -67,6 +67,7 @@ import { parseCron, validateCron } from "./cron.js";
 import { heartbeatService } from "./heartbeat.js";
 import {
   instanceSettingsService,
+  isTruthyRuntimeEnvValue,
   resolveWorktreeRunExecutionActivationState,
   type WorktreeRunExecutionActivationState,
 } from "./instance-settings.js";
@@ -1167,7 +1168,7 @@ export function routineService(
     routine: typeof routines.$inferSelect,
     activation?: WorktreeRunExecutionActivationState,
   ) {
-    if (runtimeEnv.PAPERCLIP_IN_WORKTREE !== "true") return { eligible: true };
+    if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) return { eligible: true };
 
     const resolvedActivation = activation ?? await resolveWorktreeRunExecutionActivationState({
       getExperimental: instanceSettings.getExperimental,
@@ -2768,7 +2769,7 @@ export function routineService(
     },
 
     tickScheduledTriggers: async (now: Date = new Date()) => {
-      const worktreeActivation = runtimeEnv.PAPERCLIP_IN_WORKTREE === "true"
+      const worktreeActivation = isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)
         ? await resolveWorktreeRunExecutionActivationState({
           getExperimental: instanceSettings.getExperimental,
           runtimeEnv,

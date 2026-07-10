@@ -1761,7 +1761,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   it("records suppressed automatic runs when worktree execution is disabled while allowing manual runs", async () => {
-    const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
+    const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "yes", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
     const { companyId, routine, svc } = await seedFixture({ runtimeEnv });
     const { trigger: scheduleTrigger } = await svc.createTrigger(
       routine.id,
