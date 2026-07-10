@@ -71,6 +71,8 @@ describe("paperclip skill utils", () => {
     const normalizedLowerSkillBody = normalizedSkillBody.toLowerCase();
 
     expect(skillBody).toContain("name: create-issue-interaction-ui");
+    expect(skillBody).toContain("Developer/maintainer skill");
+    expect(skillBody).not.toContain("developer/maintainer skill");
     expect(normalizedLowerSkillBody).toContain("developer/maintainer skill");
     expect(normalizedLowerSkillBody).toContain(
       "not the operational agents that run inside a deployed paperclip company",
