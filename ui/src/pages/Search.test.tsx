@@ -724,6 +724,93 @@ describe("Search page", () => {
     });
   });
 
+  it("drops a committed operator filter from requests when its token is deleted", async () => {
+    searchApiMock.search.mockResolvedValue(emptyResponse());
+
+    const { root } = renderSearch("/search", container);
+    const input = container.querySelector('input[aria-label="Search query"]') as HTMLInputElement;
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+
+    flushSync(() => {
+      nativeSetter.call(input, "auth status:blocked");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await waitForAssertion(() => {
+      expect(searchApiMock.search).toHaveBeenCalledWith("company-1", {
+        q: "auth",
+        scope: "all",
+        limit: 20,
+        status: ["blocked"],
+      });
+    });
+
+    // Deleting the operator token must also delete its filter from the request.
+    flushSync(() => {
+      nativeSetter.call(input, "auth");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await waitForAssertion(() => {
+      const lastCall = searchApiMock.search.mock.calls.at(-1);
+      expect(lastCall?.[1]).toEqual({ q: "auth", scope: "all", limit: 20 });
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("removes an operator-derived filter chip and strips its token from the query", async () => {
+    searchApiMock.search.mockResolvedValue(emptyResponse());
+
+    const { root } = renderSearch("/search", container);
+    const input = container.querySelector('input[aria-label="Search query"]') as HTMLInputElement;
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+
+    flushSync(() => {
+      nativeSetter.call(input, "auth status:blocked");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await waitForAssertion(() => {
+      expect(searchApiMock.search).toHaveBeenCalledWith("company-1", {
+        q: "auth",
+        scope: "all",
+        limit: 20,
+        status: ["blocked"],
+      });
+    });
+
+    const removeButton = await (async () => {
+      let button: HTMLButtonElement | null = null;
+      await waitForAssertion(() => {
+        button = container.querySelector<HTMLButtonElement>('button[aria-label="Remove filter Status: Blocked"]');
+        expect(button).not.toBeNull();
+      });
+      return button!;
+    })();
+
+    flushSync(() => {
+      removeButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // The chip removal wins over the typed token: the input keeps only the plain
+    // text and the re-query carries no status filter.
+    await waitForAssertion(() => {
+      expect(input.value).toBe("auth");
+      const lastCall = searchApiMock.search.mock.calls.at(-1);
+      expect(lastCall?.[1]).toEqual({ q: "auth", scope: "all", limit: 20 });
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
   it("shows operator autocomplete suggestions and applies one to the current token", async () => {
     searchApiMock.search.mockResolvedValue({
       query: "auth",

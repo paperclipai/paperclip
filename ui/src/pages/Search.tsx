@@ -273,9 +273,10 @@ export function Search() {
     const handle = window.setTimeout(() => {
       setCommittedQuery(draftQuery);
       if (typeof window !== "undefined") {
-        const nextFilters = hasSearchFilters(draftOperatorFilters) ? draftFilters : urlFilters;
-        setUrlFilters(nextFilters);
-        const next = buildSearchUrl(window.location.href, parsedDraftQuery.query, scope, nextFilters, sort);
+        // Typed operators live only in the query text and are never folded into
+        // urlFilters, so deleting a token drops its filter from the next request.
+        // The URL still carries the merged view for reload/back-forward persistence.
+        const next = buildSearchUrl(window.location.href, parsedDraftQuery.query, scope, draftFilters, sort);
         if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}` && next !== lastUrlSyncRef.current) {
           lastUrlSyncRef.current = next;
           window.history.replaceState(window.history.state, "", next);
@@ -283,7 +284,7 @@ export function Search() {
       }
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [draftFilters, draftOperatorFilters, draftQuery, committedQuery, parsedDraftQuery.query, scope, sort, urlFilters]);
+  }, [draftFilters, draftQuery, committedQuery, parsedDraftQuery.query, scope, sort]);
 
   const handleScopeChange = useCallback(
     (next: string) => {
@@ -308,12 +309,18 @@ export function Search() {
     [activeFilters, parsedCommittedQuery.query, scope],
   );
 
-  // Filter-bar / chip / sheet changes write the issue filters into the URL.
+  // Filter-bar / chip / sheet changes make the controls authoritative: `next`
+  // already contains any operator-derived values (the controls render the merged
+  // view), so strip the typed tokens from the query to keep the plain text and
+  // prevent a removed filter from resurrecting out of the input.
   const handleFiltersChange = useCallback(
     (next: ParsedSearchQuery["filters"]) => {
+      const plain = parsedCommittedQuery.query;
+      setDraftQuery(plain);
+      setCommittedQuery(plain);
       setUrlFilters(next);
       if (typeof window !== "undefined") {
-        const url = buildSearchUrl(window.location.href, parsedCommittedQuery.query, scope, next, sort);
+        const url = buildSearchUrl(window.location.href, plain, scope, next, sort);
         window.history.pushState(window.history.state, "", url);
       }
     },
