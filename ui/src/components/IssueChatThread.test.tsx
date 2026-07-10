@@ -2067,6 +2067,268 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("renders the blue 'Waiting on live work' variant when the blocker chain is covered", () => {
+    const root = createRoot(container);
+
+    flushAct(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            issueStatus="blocked"
+            liveIssueIds={new Set(["blocker-run"])}
+            blockerAttention={{
+              state: "covered",
+              reason: "active_dependency",
+              unresolvedBlockerCount: 3,
+              coveredBlockerCount: 3,
+              stalledBlockerCount: 0,
+              attentionBlockerCount: 0,
+              sampleBlockerIdentifier: "PAP-2002",
+              sampleStalledBlockerIdentifier: null,
+            }}
+            blockedBy={[
+              {
+                id: "blocker-done",
+                identifier: "PAP-2001",
+                title: "Server work",
+                status: "done",
+                priority: "medium",
+                assigneeAgentId: "agent-1",
+                assigneeUserId: null,
+              },
+              {
+                id: "blocker-run",
+                identifier: "PAP-2002",
+                title: "UI work",
+                status: "in_progress",
+                priority: "medium",
+                assigneeAgentId: "agent-2",
+                assigneeUserId: null,
+              },
+              {
+                id: "blocker-queued",
+                identifier: "PAP-2003",
+                title: "QA gate",
+                status: "todo",
+                priority: "medium",
+                assigneeAgentId: "agent-3",
+                assigneeUserId: null,
+              },
+            ]}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const notice = container.querySelector('[data-testid="issue-blocked-notice-live"]');
+    expect(notice).not.toBeNull();
+    expect(notice?.getAttribute("data-blocker-attention-state")).toBe("covered");
+    expect(container.textContent).toContain("Waiting on live work");
+    expect(container.textContent).toContain("resumes automatically when the chain is done");
+    // Progress counts: 1 done, 1 running out of 3.
+    expect(container.textContent).toContain("1 of 3 done · 1 running");
+    // Amber "Ultimately waiting on" / "blocked by the linked task" copy is gone.
+    expect(container.textContent).not.toContain("Ultimately waiting on");
+    expect(container.textContent).not.toContain("Work on this task is blocked by");
+    // All three blockers render as chips.
+    expect(container.querySelector('[data-issue-path-id="PAP-2001"]')).not.toBeNull();
+    expect(container.querySelector('[data-issue-path-id="PAP-2002"]')).not.toBeNull();
+    expect(container.querySelector('[data-issue-path-id="PAP-2003"]')).not.toBeNull();
+
+    flushAct(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows a 'Now running' row replacing 'Ultimately waiting on' when the terminal leaf is live", () => {
+    const root = createRoot(container);
+
+    flushAct(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            issueStatus="blocked"
+            liveIssueIds={new Set(["terminal-live"])}
+            blockerAttention={{
+              state: "covered",
+              reason: "active_dependency",
+              unresolvedBlockerCount: 1,
+              coveredBlockerCount: 1,
+              stalledBlockerCount: 0,
+              attentionBlockerCount: 0,
+              sampleBlockerIdentifier: "PAP-3001",
+              sampleStalledBlockerIdentifier: null,
+            }}
+            blockedBy={[
+              {
+                id: "blocker-mid",
+                identifier: "PAP-3001",
+                title: "Phase 7 review",
+                status: "blocked",
+                priority: "medium",
+                assigneeAgentId: "agent-1",
+                assigneeUserId: null,
+                terminalBlockers: [
+                  {
+                    id: "terminal-live",
+                    identifier: "PAP-3002",
+                    title: "Security sign-off",
+                    status: "in_progress",
+                    priority: "high",
+                    assigneeAgentId: "agent-2",
+                    assigneeUserId: null,
+                  },
+                ],
+              },
+            ]}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const nowRunning = container.querySelector('[data-testid="issue-blocked-notice-now-running"]');
+    expect(nowRunning).not.toBeNull();
+    expect(nowRunning?.textContent).toContain("Now running");
+    expect(nowRunning?.textContent).toContain("PAP-3002");
+    expect(container.textContent).not.toContain("Ultimately waiting on");
+
+    flushAct(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the parked-work row amber inside the blue variant", () => {
+    const root = createRoot(container);
+
+    flushAct(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            issueStatus="blocked"
+            liveIssueIds={new Set(["blocker-run"])}
+            blockerAttention={{
+              state: "covered",
+              reason: "active_dependency",
+              unresolvedBlockerCount: 2,
+              coveredBlockerCount: 2,
+              stalledBlockerCount: 0,
+              attentionBlockerCount: 0,
+              sampleBlockerIdentifier: "PAP-4001",
+              sampleStalledBlockerIdentifier: null,
+            }}
+            blockedBy={[
+              {
+                id: "blocker-run",
+                identifier: "PAP-4001",
+                title: "UI work",
+                status: "in_progress",
+                priority: "medium",
+                assigneeAgentId: "agent-1",
+                assigneeUserId: null,
+              },
+              {
+                id: "blocker-parked",
+                identifier: "PAP-4002",
+                title: "Parked backlog task",
+                status: "backlog",
+                priority: "medium",
+                assigneeAgentId: "agent-2",
+                assigneeUserId: null,
+              },
+            ]}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="issue-blocked-notice-live"]')).not.toBeNull();
+    const parkedRow = container.querySelector('[data-testid="issue-blocked-notice-parked-row"]');
+    expect(parkedRow).not.toBeNull();
+    expect(parkedRow?.textContent).toContain("Blocked by parked work");
+    // Parked label keeps its amber tone even inside the blue box.
+    expect(parkedRow?.querySelector(".text-amber-800")).not.toBeNull();
+
+    flushAct(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the amber notice byte-for-byte for stalled / needs_attention / none states", () => {
+    for (const state of ["stalled", "needs_attention", "none"] as const) {
+      const root = createRoot(container);
+
+      flushAct(() => {
+        root.render(
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[]}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              issueStatus="blocked"
+              liveIssueIds={new Set(["blocker-1"])}
+              blockerAttention={{
+                state,
+                reason: state === "stalled" ? "stalled_review" : null,
+                unresolvedBlockerCount: 1,
+                coveredBlockerCount: 0,
+                stalledBlockerCount: state === "stalled" ? 1 : 0,
+                attentionBlockerCount: state === "needs_attention" ? 1 : 0,
+                sampleBlockerIdentifier: "PAP-5001",
+                sampleStalledBlockerIdentifier: state === "stalled" ? "PAP-5001" : null,
+              }}
+              blockedBy={[
+                {
+                  id: "blocker-1",
+                  identifier: "PAP-5001",
+                  title: "Review task",
+                  status: "in_review",
+                  priority: "medium",
+                  assigneeAgentId: "agent-1",
+                  assigneeUserId: null,
+                },
+              ]}
+              onAdd={async () => {}}
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>,
+        );
+      });
+
+      // Blue variant never appears for non-covered states.
+      expect(container.querySelector('[data-testid="issue-blocked-notice-live"]')).toBeNull();
+      // The amber container (with the canonical attention data attribute) does.
+      const amber = container.querySelector(`[data-blocker-attention-state="${state}"]`);
+      expect(amber).not.toBeNull();
+      expect(amber?.className).toContain("border-amber-300/70");
+      if (state === "stalled") {
+        expect(container.textContent).toContain("Stalled in review");
+      }
+
+      flushAct(() => {
+        root.unmount();
+      });
+    }
+  });
+
   it("shows paused responsible agent context above the composer", () => {
     const root = createRoot(container);
     const pausedAgent = {

@@ -101,6 +101,7 @@ import {
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -1728,6 +1729,7 @@ async function liveDescendantCountMapForIssues(
           JOIN heartbeat_runs live_run ON live_run.id = live_issue.execution_run_id
           WHERE live_issue.company_id = ${companyId}
             AND live_issue.hidden_at IS NULL
+            AND live_issue.harness_kind IS NULL
             AND live_run.company_id = ${companyId}
             AND live_run.status IN ('queued', 'running')
           UNION
@@ -1736,6 +1738,7 @@ async function liveDescendantCountMapForIssues(
           JOIN issues live_issue ON live_issue.id::text = (live_run.context_snapshot ->> 'issueId')
           WHERE live_issue.company_id = ${companyId}
             AND live_issue.hidden_at IS NULL
+            AND live_issue.harness_kind IS NULL
             AND live_run.company_id = ${companyId}
             AND live_run.status IN ('queued', 'running')
         ),
@@ -1745,6 +1748,7 @@ async function liveDescendantCountMapForIssues(
           JOIN issues parent ON parent.id = live_issues.parent_id
           WHERE parent.company_id = ${companyId}
             AND parent.hidden_at IS NULL
+            AND parent.harness_kind IS NULL
           UNION ALL
           SELECT
             live_ancestors.live_issue_id,
@@ -1755,6 +1759,7 @@ async function liveDescendantCountMapForIssues(
           JOIN issues parent ON parent.id = live_ancestors.next_parent_id
           WHERE parent.company_id = ${companyId}
             AND parent.hidden_at IS NULL
+            AND parent.harness_kind IS NULL
             AND NOT parent.id = ANY(live_ancestors.visited_issue_ids)
         )
       SELECT
@@ -1961,7 +1966,7 @@ async function listIssueProductivityReviewMap(
           eq(issues.companyId, companyId),
           eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
           inArray(issues.originId, chunk),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           notInArray(issues.status, PRODUCTIVITY_REVIEW_TERMINAL_STATUSES),
         ),
       )
@@ -2226,7 +2231,7 @@ async function listIssueBlockerAttentionMap(
         and(
           eq(issues.companyId, companyId),
           eq(issues.originKind, BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           notInArray(issues.status, BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES),
         ),
       );
@@ -2429,6 +2434,7 @@ const issueListSelect = {
   `,
   status: issues.status,
   workMode: issues.workMode,
+  harnessKind: issues.harnessKind,
   priority: issues.priority,
   assigneeAgentId: issues.assigneeAgentId,
   assigneeUserId: issues.assigneeUserId,
@@ -2978,7 +2984,7 @@ async function listIssueBlockedInboxAttentionMap(
       .from(issues)
       .where(and(
         eq(issues.companyId, companyId),
-        isNull(issues.hiddenAt),
+        visibleIssueCondition(),
         notInArray(issues.status, [...BLOCKED_INBOX_TERMINAL_STATUSES]),
       )),
     dbOrTx
@@ -3388,7 +3394,7 @@ async function blockedInboxIssueConditions(
 ) {
   const conditions = [
     eq(issues.companyId, companyId),
-    isNull(issues.hiddenAt),
+    visibleIssueCondition(),
     notInArray(issues.status, [...BLOCKED_INBOX_TERMINAL_STATUSES]),
   ];
   const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
@@ -4600,7 +4606,7 @@ export function issueService(db: Db) {
         });
       }
 
-      const conditions = [eq(issues.companyId, companyId)];
+      const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
       const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
       assertValidAssigneeAgentFilter(assigneeAgentFilter);
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
@@ -4723,8 +4729,6 @@ export function issueService(db: Db) {
       if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
       }
-      conditions.push(isNull(issues.hiddenAt));
-
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
       const searchOrder = sql<number>`
         CASE
@@ -4847,7 +4851,7 @@ export function issueService(db: Db) {
         return countBlockedInboxIssues(db, companyId, filters);
       }
 
-      const conditions = [eq(issues.companyId, companyId), isNull(issues.hiddenAt)];
+      const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1) conditions.push(eq(issues.status, statuses[0]!));
       else if (statuses.length > 1) conditions.push(inArray(issues.status, statuses));
@@ -4889,7 +4893,7 @@ export function issueService(db: Db) {
     ) => {
       const conditions = [
         eq(issues.companyId, companyId),
-        isNull(issues.hiddenAt),
+        visibleIssueCondition(),
         nonPluginOperationIssueCondition(),
         unreadForUserCondition(companyId, userId),
       ];
@@ -5234,6 +5238,7 @@ export function issueService(db: Db) {
           WHERE company_id = ${issue.companyId}
             AND id = ${issue.id}
             AND hidden_at IS NULL
+            AND harness_kind IS NULL
           UNION ALL
           SELECT
             child.id,
@@ -5254,6 +5259,7 @@ export function issueService(db: Db) {
           JOIN issue_tree ON child.parent_id = issue_tree.id
           WHERE child.company_id = ${issue.companyId}
             AND child.hidden_at IS NULL
+            AND child.harness_kind IS NULL
             AND issue_tree.depth < ${maxDepth + 1}
             AND NOT child.id = ANY(issue_tree.path)
         )
@@ -5320,6 +5326,7 @@ export function issueService(db: Db) {
               AND relation.type = 'blocks'
               AND blocker.company_id = ${issue.companyId}
               AND blocker.hidden_at IS NULL
+              AND blocker.harness_kind IS NULL
               AND relation.related_issue_id::text IN (${nodeIdValues})
           )
           SELECT *

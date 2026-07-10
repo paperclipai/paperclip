@@ -1,3 +1,6 @@
+import type { IssueAttachment, IssueDocument } from "./issue.js";
+import type { IssueWorkProduct } from "./work-product.js";
+
 export type CompanySkillSourceType = "local_path" | "github" | "url" | "catalog" | "skills_sh";
 
 export type CompanySkillTrustLevel = "markdown_only" | "assets" | "scripts_executables";
@@ -9,6 +12,15 @@ export type CompanySkillSourceBadge = "paperclip" | "github" | "local" | "url" |
 export type CompanySkillSharingScope = "private" | "company" | "public_link";
 
 export type CompanySkillListSort = "alphabetical" | "recent" | "installs" | "stars" | "agents" | "forks";
+
+export type CompanySkillListInclude = "lastEditor";
+
+export interface CompanySkillLastEditor {
+  kind: "user" | "agent";
+  id: string;
+  name: string | null;
+  imageUrl: string | null;
+}
 
 export interface CompanySkillFileInventoryEntry {
   path: string;
@@ -91,6 +103,7 @@ export interface CompanySkillListItem {
   originHash: string | null;
   packageName: string | null;
   packageVersion: string | null;
+  lastEditor?: CompanySkillLastEditor | null;
 }
 
 export interface CompanySkillUsageAgent {
@@ -126,6 +139,7 @@ export interface CompanySkillListQuery {
   sort?: CompanySkillListSort;
   categories?: string[];
   scope?: CompanySkillSharingScope;
+  include?: CompanySkillListInclude[];
 }
 
 export interface CompanySkillCategoryCount {
@@ -363,6 +377,187 @@ export interface CompanySkillFileDetail {
 export interface CompanySkillFileUpdateRequest {
   path: string;
   content: string;
+}
+
+export interface CompanySkillFileDeleteRequest {
+  path: string;
+  target: "file" | "folder";
+}
+
+export interface CompanySkillFileDeleteResult {
+  skillId: string;
+  path: string;
+  target: "file" | "folder";
+  deletedPaths: string[];
+}
+
+export type CompanySkillTestRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+export interface CompanySkillTestInput {
+  id: string;
+  companyId: string;
+  skillId: string;
+  name: string;
+  content: string;
+  createdBy: string | null;
+  deletedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CompanySkillTestInputCreateRequest {
+  name: string;
+  content: string;
+}
+
+export interface CompanySkillTestInputUpdateRequest {
+  name?: string;
+  content?: string;
+}
+
+export interface CompanySkillTestRunTemplate {
+  id: string;
+  companyId: string;
+  name: string;
+  description: string | null;
+  body: string;
+  builtIn: boolean;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  deletedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CompanySkillTestRunTemplateCreateRequest {
+  name: string;
+  description?: string | null;
+  body: string;
+}
+
+export interface CompanySkillTestRunTemplateUpdateRequest {
+  name?: string;
+  description?: string | null;
+  body?: string;
+}
+
+export interface CompanySkillTestRunTemplateSnapshot {
+  templateId: string | null;
+  templateName: string | null;
+  templateBody: string | null;
+}
+
+export interface CompanySkillTestRunCostSummary {
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+}
+
+export interface CompanySkillTestRun {
+  id: string;
+  companyId: string;
+  skillId: string;
+  inputId: string | null;
+  inputSnapshot: string;
+  skillVersionId: string;
+  agentId: string;
+  agentConfigSnapshot: Record<string, unknown>;
+  issueId: string;
+  templateId: string | null;
+  templateName: string | null;
+  templateBody: string | null;
+  renderedTemplateBody: string | null;
+  harnessIssueDescription: string;
+  status: CompanySkillTestRunStatus;
+  outputDocumentKey: string;
+  outputSnapshot: string;
+  error: string | null;
+  deletedAt: Date | null;
+  supersededAt: Date | null;
+  harnessIssueExpiresAt: Date | null;
+  harnessIssueDeletedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  cost: CompanySkillTestRunCostSummary;
+  taskExpired: boolean;
+}
+
+export interface CompanySkillTestRunCreateRequest {
+  inputId?: string | null;
+  content?: string | null;
+  agentId: string;
+  /**
+   * Omitted uses the built-in default template, null means "No template", and
+   * a string selects a built-in or custom template id.
+   */
+  templateId?: string | null;
+  /**
+   * Re-run can provide the viewed run's template body snapshot so the new run
+   * does not silently pick up later edits to the source template.
+   */
+  templateSnapshot?: CompanySkillTestRunTemplateSnapshot | null;
+  /**
+   * Pin a specific skill version for this run instead of the live head. Used by
+   * Re-run to reproduce the viewed run's `skillVersionId` snapshot.
+   */
+  skillVersionId?: string | null;
+}
+
+export interface CompanySkillTestRunListQuery {
+  inputId?: string;
+}
+
+export type CompanySkillTestRunHarnessContentUnavailableReason = "expired" | "deleted" | "missing";
+
+/**
+ * Rich renderable content hydrated from the run's own hidden harness issue.
+ * When the harness issue has expired or been deleted, `available` is false and
+ * the collections are empty; stored run snapshots (input/output/template)
+ * remain usable on the run itself.
+ */
+export interface CompanySkillTestRunHarnessContent {
+  available: boolean;
+  unavailableReason: CompanySkillTestRunHarnessContentUnavailableReason | null;
+  documents: IssueDocument[];
+  attachments: IssueAttachment[];
+  workProducts: IssueWorkProduct[];
+}
+
+export interface CompanySkillTestRunDetail extends CompanySkillTestRun {
+  skillVersion: CompanySkillVersion;
+  outputBody: string;
+  harnessContent: CompanySkillTestRunHarnessContent;
+  harnessIssue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    status: string;
+    hiddenAt: Date | null;
+  } | null;
+  documents: Array<{
+    key: string;
+    title: string | null;
+    updatedAt: Date;
+    body: string;
+  }>;
+  interactions: Array<{
+    id: string;
+    kind: string;
+    status: string;
+    title: string;
+    createdAt: Date;
+    updatedAt: Date;
+  }>;
+  artifacts: Array<{
+    id: string;
+    kind: "attachment" | "work_product";
+    title: string;
+    summary: string | null;
+    createdAt: Date;
+  }>;
 }
 
 export type CatalogSkillKind = "bundled" | "optional";

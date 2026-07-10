@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-07-07T12:23:29.613Z",
+  "generatedAt": "2026-07-10T00:27:11.902Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -72,6 +72,41 @@
         }
       ],
       "contentHash": "sha256:88dc13560371fb364963782cb4f6eeb4090fcde92ee3774479428ed6b90e11c1"
+    },
+    {
+      "id": "paperclipai:bundled:paperclip-operations:reflection-coach",
+      "key": "paperclipai/bundled/paperclip-operations/reflection-coach",
+      "kind": "bundled",
+      "category": "paperclip-operations",
+      "slug": "reflection-coach",
+      "name": "reflection-coach",
+      "description": "Reflect on another agent's recent execution record, name evidence-backed patterns, and propose the smallest durable change to their AGENTS.md, a reusable skill, or a tool description — as a reviewable, interaction-gated proposal, never a same-run hot-swap.",
+      "path": "catalog/bundled/paperclip-operations/reflection-coach",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "manager",
+        "general"
+      ],
+      "requires": [],
+      "tags": [
+        "paperclip",
+        "reflection",
+        "coaching",
+        "agents",
+        "skills"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 11903,
+          "sha256": "ca167eac8d1e89cadc8009b61a204368507e7edb7f2da0688fea6dba8223e189"
+        }
+      ],
+      "contentHash": "sha256:20381a898f05ceb668e305708dd33a03ce36aef0e00b923c01ae20ab785f04d2"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:task-planning",
@@ -374,11 +409,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4416,
-          "sha256": "062810ac34e9edc89efa701fec2eee60f16949d1944cc2cae49803cb91e8cbf4"
+          "sizeBytes": 6945,
+          "sha256": "d745cca96350518fabae14f5c407d779e1df2c5d091b5b4a5c55bb888b569e5f"
         }
       ],
-      "contentHash": "sha256:f22a9ed696e6614c6db2757a149f48b3295e81f78c27d065d9cb164cf4f8a9bd"
+      "contentHash": "sha256:efe8ea89b552df95222609867c9c75f1b40e16f457d34e7e4a124f54daa33efa"
     },
     {
       "id": "paperclipai:optional:finance:ramp",

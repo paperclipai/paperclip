@@ -62,6 +62,7 @@ vi.mock("../api/execution-workspaces", () => ({
 vi.mock("../api/issues", () => ({
   issuesApi: {
     list: apiMocks.issuesList,
+    listCompact: apiMocks.issuesList,
     count: apiMocks.issuesCount,
     listLabels: apiMocks.issueLabels,
     markRead: vi.fn(),
@@ -376,13 +377,18 @@ describe("Inbox toolbar", () => {
       true,
       true,
     ]);
+    expect(apiMocks.issuesList.mock.calls.map((call) => call[1]?.limit)).toEqual([
+      500,
+      500,
+      500,
+    ]);
 
     act(() => {
       root.unmount();
     });
   });
 
-  it("syncs hover with j/k selection on inbox rows", async () => {
+  it("paints row hover via CSS only, without moving React selection state", async () => {
     routerMock.location.pathname = "/inbox/mine";
     const issueA = createIssue({ id: "issue-a", identifier: "PAP-1001", title: "First inbox row" });
     const issueB = createIssue({ id: "issue-b", identifier: "PAP-1002", title: "Second inbox row" });
@@ -413,27 +419,19 @@ describe("Inbox toolbar", () => {
     expect(linkOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
     expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
 
+    // Hovering paints via CSS `:hover` only — it must NOT flip a row into the
+    // state-selected band (which would swap to hover:bg-transparent). Coupling
+    // hover to React state was the per-hover re-render storm behind the lag;
+    // scrubbing the list must not touch selection state. (Keyboard nav that
+    // continues from the hovered row is exercised in live/e2e verification —
+    // this unit mocks keyboardShortcutsEnabled off.)
     await act(async () => {
       rows[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
       rows[1]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
     });
-
-    // After hovering row 1, that row is "selected" — same visual state as j/k selection.
-    await vi.waitFor(() => {
-      expect(linkOf(rows[1]!)?.className).toContain("hover:bg-transparent");
-    });
     expect(linkOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
-
-    await act(async () => {
-      rows[0]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-      rows[0]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
-    });
-
-    // Hovering a different row moves the selection to follow the mouse.
-    await vi.waitFor(() => {
-      expect(linkOf(rows[0]!)?.className).toContain("hover:bg-transparent");
-    });
     expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
+    expect(linkOf(rows[1]!)?.className).not.toContain("hover:bg-transparent");
 
     act(() => {
       root.unmount();
@@ -468,7 +466,7 @@ describe("Inbox toolbar", () => {
     });
 
     const initialArchiveButtons = Array.from(
-      container.querySelectorAll<HTMLButtonElement>('button[aria-label="Dismiss from inbox"]'),
+      container.querySelectorAll<HTMLButtonElement>('button[aria-label="Archive"]'),
     );
     expect(initialArchiveButtons.length).toBeGreaterThanOrEqual(2);
 
@@ -483,7 +481,7 @@ describe("Inbox toolbar", () => {
     });
 
     const remainingArchiveButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Dismiss from inbox"]',
+      'button[aria-label="Archive"]',
     );
     expect(remainingArchiveButton).not.toBeNull();
     expect(remainingArchiveButton?.disabled).toBe(false);

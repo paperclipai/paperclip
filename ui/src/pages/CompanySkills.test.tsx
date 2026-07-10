@@ -5,7 +5,8 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import type { CompanySkillDetail, CompanySkillVersion } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SkillDetailPage, getSkillVersionDiffSelection } from "./CompanySkills";
+import { DiscoveryGrid, SkillDetailPage, getSkillVersionDiffSelection } from "./CompanySkills";
+import { skillStudioNewRoute } from "../lib/company-skill-routes";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -40,7 +41,7 @@ vi.mock("@/components/ui/dialog", () => ({
 
 vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenu: ({ children }: { children: ReactNode }) => <>{children}</>,
-  DropdownMenuContent: () => null,
+  DropdownMenuContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   DropdownMenuItem: ({ children, onSelect }: { children: ReactNode; onSelect?: () => void }) => (
     <button type="button" onClick={onSelect}>{children}</button>
   ),
@@ -226,6 +227,44 @@ async function renderSkillDetail(
   return container;
 }
 
+async function renderDiscoveryGrid(props: Partial<ComponentProps<typeof DiscoveryGrid>> = {}) {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+
+  await act(async () => {
+    root?.render(
+      <DiscoveryGrid
+        tab="all"
+        tabCounts={{ all: 0, installed: 0, catalog: 0, bundled: 0 }}
+        onTabChange={vi.fn()}
+        categories={[]}
+        categoryTotal={0}
+        activeCategory={null}
+        onCategoryChange={vi.fn()}
+        search=""
+        onSearchChange={vi.fn()}
+        sort="agents"
+        onSortChange={vi.fn()}
+        cards={[]}
+        onOpenCard={vi.fn()}
+        loading={false}
+        error={null}
+        totalCount={0}
+        onCreate={vi.fn()}
+        onImport={vi.fn()}
+        onBrowseCatalog={vi.fn()}
+        onScan={vi.fn()}
+        scanPending={false}
+        scanStatus={null}
+        {...props}
+      />,
+    );
+  });
+
+  return container;
+}
+
 function buttonsNamed(node: ParentNode, name: string) {
   return Array.from(node.querySelectorAll("button")).filter((button) => button.textContent?.trim() === name);
 }
@@ -268,6 +307,33 @@ describe("getSkillVersionDiffSelection", () => {
   });
 });
 
+describe("DiscoveryGrid Studio entry points", () => {
+  it("links the header Studio button to Skill Studio", async () => {
+    const node = await renderDiscoveryGrid();
+    const studioLink = Array.from(node.querySelectorAll("a")).find((link) =>
+      link.textContent?.includes("Studio"),
+    );
+
+    expect(studioLink?.getAttribute("href")).toBe("/skills/studio");
+  });
+
+  it("uses the create callback from the New menu and empty state", async () => {
+    const onCreate = vi.fn();
+    const node = await renderDiscoveryGrid({ onCreate });
+
+    await click(buttonsNamed(node, "Create new skill")[0] as HTMLButtonElement);
+    await click(buttonsNamed(node, "Create a skill")[0] as HTMLButtonElement);
+
+    expect(onCreate).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("skillStudioNewRoute", () => {
+  it("builds a direct fork draft URL for a specific skill", () => {
+    expect(skillStudioNewRoute("skill 1")).toBe("/skills/studio/new?forkFrom=skill%201");
+  });
+});
+
 describe("SkillDetailPage versions tab", () => {
   it("opens per-row version diffs for newest and oldest revisions", async () => {
     const v1 = makeVersion(1, "# Demo Skill\n\nFirst line");
@@ -299,6 +365,31 @@ describe("SkillDetailPage versions tab", () => {
 });
 
 describe("SkillDetailPage settings", () => {
+  it("shows a direct fork action for read-only skills", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const onFork = vi.fn();
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail: makeDetail(v1, {
+        editable: false,
+        editableReason: "Remote GitHub skills are read-only. Fork or import locally to edit them.",
+        sourceBadge: "github",
+        sourceLabel: "GitHub",
+        sourceType: "github",
+      }),
+      onFork,
+    });
+
+    expect(node.textContent).not.toContain("Fork or import locally");
+
+    const forkButton = buttonsNamed(node, "Fork")[0] as HTMLButtonElement;
+    expect(forkButton).toBeTruthy();
+
+    await click(forkButton);
+
+    expect(onFork).toHaveBeenCalledOnce();
+  });
+
   it("saves normalized category edits from the settings dialog", async () => {
     const v1 = makeVersion(1, "# Demo Skill");
     const onUpdateSettings = vi.fn();
@@ -318,12 +409,12 @@ describe("SkillDetailPage settings", () => {
 
     expect(categoryInput.value).toBe("engineering");
 
-    await inputValue(categoryInput, " Memory, review, memory ,,");
+    await inputValue(categoryInput, " Memory Tools, review, memory tools ,,");
     await click(saveButton);
 
     expect(onUpdateSettings).toHaveBeenCalledWith({
       sharingScope: "company",
-      categories: ["memory", "review"],
+      categories: ["Memory Tools", "review"],
     });
   });
 

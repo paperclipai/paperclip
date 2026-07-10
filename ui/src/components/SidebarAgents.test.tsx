@@ -645,7 +645,7 @@ describe("SidebarAgents", () => {
     expect(seeAllAgentsLink(container)?.getAttribute("href")).toBe("/agents/all");
   });
 
-  it("shows up to 5 recently-active agents plus a See all link when none are running", async () => {
+  it("shows up to 3 recently-active agents plus a See all link when none are running", async () => {
     mockAgentsApi.list.mockResolvedValue(
       Array.from({ length: 7 }, (_, index) =>
         makeAgent({
@@ -659,7 +659,7 @@ describe("SidebarAgents", () => {
 
     await renderSidebarAgents();
 
-    expect(agentLinkLabels(container)).toHaveLength(5);
+    expect(agentLinkLabels(container)).toHaveLength(3);
     expect(seeAllAgentsLink(container)?.getAttribute("href")).toBe("/agents/all");
   });
 

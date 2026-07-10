@@ -73,6 +73,7 @@ import {
 } from "./helpers";
 import { PropertyPicker } from "./property-picker";
 import { PropertyChip, PropertyRow, PropertySection } from "./primitives";
+import { IssueCasesPanel } from "../IssueCasesPanel";
 import { ExpandRelationListButton, RemovableIssueReferencePill } from "./relation-controls";
 import { Badge } from "@/components/ui/badge";
 
@@ -2298,6 +2299,12 @@ export function IssueProperties({
           </PropertyRow>
         )}
       </PropertySection>
+
+      {/* Experimental Cases rail (PAP-12969) — self-gates on the flag and
+          renders nothing when no cases are linked. */}
+      <div className="pt-3">
+        <IssueCasesPanel issueId={issue.id} />
+      </div>
     </div>
   );
 }

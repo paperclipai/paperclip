@@ -68,6 +68,10 @@ describe("SidebarNavItem", () => {
     return container.querySelector("a") as HTMLAnchorElement;
   }
 
+  function classTokens(element: Element | null | undefined) {
+    return element?.className.toString().split(/\s+/).filter(Boolean) ?? [];
+  }
+
   it("shows the full label and numeric badge when expanded", () => {
     render(<SidebarNavItem to="/inbox" label="Inbox" icon={Inbox} badge={28} badgeLabel="unread" />);
 
@@ -89,8 +93,8 @@ describe("SidebarNavItem", () => {
     const label = Array.from(container.querySelectorAll("span")).find((el) => el.textContent === "Inbox");
     expect(label).toBeTruthy();
     expect(label?.className).not.toContain("sr-only");
-    expect(label?.className).toContain("w-0");
-    expect(label?.className).toContain("overflow-hidden");
+    expect(classTokens(label)).toContain("w-0");
+    expect(classTokens(label)).toContain("overflow-hidden");
 
     // The numeric count is no longer rendered as text; it is a dot with an
     // accessible text equivalent on the link.
@@ -142,8 +146,8 @@ describe("SidebarNavItem", () => {
     );
 
     const label = Array.from(container.querySelectorAll("span")).find((el) => el.textContent === "Inbox");
-    expect(label?.className).not.toContain("w-0");
-    expect(label?.className).toContain("flex-1");
+    expect(classTokens(label)).not.toContain("w-0");
+    expect(classTokens(label)).toContain("flex-1");
     // Full numeric badge, no rail aria-label, no tooltip wrapper.
     expect(container.textContent).toContain("28");
     expect(link().getAttribute("aria-label")).toBeNull();

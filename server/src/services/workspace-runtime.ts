@@ -7,15 +7,17 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
 import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import { executionWorkspaces, issueComments, issues, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   listWorkspaceServiceCommandDefinitions,
   type GitWorktreeBranchAncestryVerdict,
   type GitWorktreeBranchIncoherenceEvidence as SharedGitWorktreeBranchIncoherenceEvidence,
+  type GitWorktreeInProgressOperation,
+  type WorkspaceOperationPhase,
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import {
@@ -661,11 +663,23 @@ type GitWorktreeCleanliness = SharedGitWorktreeBranchIncoherenceEvidence["cleanl
 
 type GitWorktreeBranchIncoherenceEvidence = SharedGitWorktreeBranchIncoherenceEvidence;
 
+type GitWorktreeBranchContention = NonNullable<GitWorktreeBranchIncoherenceEvidence["contention"]>;
+
 type GitWorktreeBranchCoherenceResult = {
   branchName: string | null;
   reconciledForward: boolean;
   pendingForwardBranchReconcile?: PendingForwardBranchReconcile | null;
+  dirtyQuarantineRepair?: DirtyQuarantineRepairResult | null;
   warnings: string[];
+};
+
+type DirtyQuarantineRepairResult = {
+  rescueBranch: string;
+  rescueCommitSha: string;
+  fileCount: number;
+  clearedInProgressOperation: GitWorktreeInProgressOperation | null;
+  sourceAuditCommentId: string | null;
+  claimantAuditCommentId: string | null;
 };
 
 export type PendingForwardBranchReconcile = {
@@ -677,6 +691,186 @@ export type PendingForwardBranchReconcile = {
 
 function formatBranchForMessage(branch: string | null | undefined) {
   return branch && branch.length > 0 ? branch : "<detached>";
+}
+
+const GIT_IN_PROGRESS_OPERATION_MARKERS: ReadonlyArray<{
+  operation: GitWorktreeInProgressOperation;
+  marker: string;
+}> = [
+  { operation: "rebase", marker: "rebase-merge" },
+  { operation: "rebase", marker: "rebase-apply" },
+  { operation: "merge", marker: "MERGE_HEAD" },
+  { operation: "cherry_pick", marker: "CHERRY_PICK_HEAD" },
+  { operation: "revert", marker: "REVERT_HEAD" },
+  { operation: "bisect", marker: "BISECT_LOG" },
+];
+
+const GIT_IN_PROGRESS_OPERATION_LABELS: Record<GitWorktreeInProgressOperation, string> = {
+  rebase: "rebase",
+  merge: "merge",
+  cherry_pick: "cherry-pick",
+  revert: "revert",
+  bisect: "bisect",
+};
+
+// `--quit` clears the interrupted operation's state directory without touching
+// the working tree or moving HEAD, unlike `--abort` which resets both.
+const GIT_IN_PROGRESS_OPERATION_QUIT_ARGS: Record<GitWorktreeInProgressOperation, string[]> = {
+  rebase: ["rebase", "--quit"],
+  merge: ["merge", "--quit"],
+  cherry_pick: ["cherry-pick", "--quit"],
+  revert: ["revert", "--quit"],
+  bisect: ["bisect", "reset", "HEAD"],
+};
+
+async function detectGitWorktreeInProgressOperation(
+  worktreePath: string,
+): Promise<GitWorktreeInProgressOperation | null> {
+  for (const { operation, marker } of GIT_IN_PROGRESS_OPERATION_MARKERS) {
+    const markerPath = await runGit(["rev-parse", "--git-path", marker], worktreePath).catch(() => null);
+    if (!markerPath) continue;
+    if (existsSync(path.resolve(worktreePath, markerPath))) return operation;
+  }
+  return null;
+}
+
+const DIRTY_PATH_SAMPLE_LIMIT = 5;
+
+function parseGitPorcelainPath(line: string) {
+  const raw = line.trimEnd();
+  if (raw.trim().length <= 3) return raw.trim();
+  if (raw[1] === " " && raw[2] !== " ") return raw.slice(2).trim();
+  return raw.slice(3).trim();
+}
+
+function sampleDirtyStatusPaths(statusLines: string[] | null) {
+  return (statusLines ?? [])
+    .map(parseGitPorcelainPath)
+    .filter((value) => value.length > 0)
+    .slice(0, DIRTY_PATH_SAMPLE_LIMIT);
+}
+
+function formatUtcBranchTimestamp(date = new Date()) {
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+function buildDirtyQuarantineRescueBranch(sourceIssue: ExecutionWorkspaceIssueRef | null) {
+  const issueComponent = sanitizeBranchName(sourceIssue?.identifier ?? sourceIssue?.id ?? "issue");
+  return sanitizeBranchName(`paperclip/rescue/${issueComponent}/${formatUtcBranchTimestamp()}`);
+}
+
+function formatIssueReference(issueId: string | null | undefined, identifier: string | null | undefined) {
+  if (!identifier) return issueId ? `\`${issueId}\`` : "`unknown`";
+  const match = identifier.match(/^([A-Z]+)-\d+$/);
+  if (!match) return `\`${identifier}\``;
+  return `[${identifier}](/${match[1]}/issues/${identifier})`;
+}
+
+async function readIssueCompanyId(db: Db, issueId: string | null | undefined): Promise<string | null> {
+  if (!issueId) return null;
+  return db
+    .select({ companyId: issues.companyId })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .then((rows) => rows[0]?.companyId ?? null);
+}
+
+async function findGitWorktreeBranchContention(input: {
+  db: Db | null | undefined;
+  sourceIssue: ExecutionWorkspaceIssueRef | null;
+  executionWorkspaceId: string | null;
+  worktreePath: string;
+  actualBranchName: string | null;
+}): Promise<GitWorktreeBranchContention | null> {
+  if (!input.db) return null;
+  const companyId = await readIssueCompanyId(input.db, input.sourceIssue?.id);
+  if (!companyId) return null;
+  return executionWorkspaceService(input.db).findGitWorktreeContention({
+    companyId,
+    worktreePath: input.worktreePath,
+    liveBranchName: input.actualBranchName,
+    excludingExecutionWorkspaceId: input.executionWorkspaceId,
+  });
+}
+
+function executionWorkspaceUsesInheritedProjectRuntimeServices(
+  row: typeof executionWorkspaces.$inferSelect,
+) {
+  if (row.mode !== "shared_workspace" || !row.projectWorkspaceId) return false;
+  return !readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null)?.workspaceRuntime;
+}
+
+async function findActiveRuntimeServiceBlockingDirtyQuarantine(input: {
+  db: Db;
+  workspace: typeof executionWorkspaces.$inferSelect;
+}) {
+  const inheritedProjectWorkspaceId = executionWorkspaceUsesInheritedProjectRuntimeServices(input.workspace)
+    ? input.workspace.projectWorkspaceId
+    : null;
+  const serviceScopeCondition = inheritedProjectWorkspaceId
+    ? and(
+        eq(workspaceRuntimeServices.companyId, input.workspace.companyId),
+        eq(workspaceRuntimeServices.projectWorkspaceId, inheritedProjectWorkspaceId),
+        eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+      )
+    : and(
+        eq(workspaceRuntimeServices.companyId, input.workspace.companyId),
+        eq(workspaceRuntimeServices.executionWorkspaceId, input.workspace.id),
+      );
+
+  const [service] = await input.db
+    .select({
+      id: workspaceRuntimeServices.id,
+      serviceName: workspaceRuntimeServices.serviceName,
+      status: workspaceRuntimeServices.status,
+      scopeType: workspaceRuntimeServices.scopeType,
+    })
+    .from(workspaceRuntimeServices)
+    .where(and(serviceScopeCondition, ne(workspaceRuntimeServices.status, "stopped")))
+    .orderBy(desc(workspaceRuntimeServices.updatedAt), desc(workspaceRuntimeServices.createdAt))
+    .limit(1);
+  return service ?? null;
+}
+
+async function assertDirtyQuarantineRuntimeServicesStopped(input: {
+  db: Db;
+  executionWorkspaceId: string | null;
+  evidence: GitWorktreeBranchIncoherenceEvidence;
+}) {
+  if (!input.executionWorkspaceId) {
+    input.evidence.safeRepair.eligible = false;
+    input.evidence.safeRepair.reason = "dirty quarantine repair requires an execution workspace id for runtime-service checks";
+    throw branchIncoherenceValidationFailure(input.evidence);
+  }
+
+  const [workspace] = await input.db
+    .select()
+    .from(executionWorkspaces)
+    .where(eq(executionWorkspaces.id, input.executionWorkspaceId));
+  if (!workspace) {
+    input.evidence.safeRepair.eligible = false;
+    input.evidence.safeRepair.reason = "dirty quarantine repair requires a persisted execution workspace for runtime-service checks";
+    throw branchIncoherenceValidationFailure(input.evidence);
+  }
+
+  const activeService = await findActiveRuntimeServiceBlockingDirtyQuarantine({
+    db: input.db,
+    workspace,
+  });
+  if (!activeService) return;
+
+  input.evidence.safeRepair.eligible = false;
+  input.evidence.safeRepair.reason =
+    `dirty quarantine repair requires runtime service "${activeService.serviceName}" (${activeService.id}) to be stopped; current status is ${activeService.status}`;
+  throw branchIncoherenceValidationFailure(input.evidence);
+}
+
+async function assertGitIndexIsUnlocked(worktreePath: string) {
+  const indexLockPath = await runGit(["rev-parse", "--git-path", "index.lock"], worktreePath)
+    .catch(() => null);
+  if (indexLockPath && existsSync(indexLockPath)) {
+    throw new Error(`git index lock exists at ${indexLockPath}`);
+  }
 }
 
 function fingerprintWorkspaceBranchIncoherence(input: {
@@ -749,6 +943,7 @@ function explainGitWorktreeBranchIncoherence(input: {
 }
 
 async function inspectGitWorktreeBranchIncoherence(input: {
+  db?: Db | null;
   repoRoot: string;
   worktreePath: string;
   expectedBranchName: string;
@@ -762,9 +957,11 @@ async function inspectGitWorktreeBranchIncoherence(input: {
   ).catch(() => null);
   const statusLines = status === null
     ? null
-    : status.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    : status.split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line.trim().length > 0);
+  const dirtyPathSample = sampleDirtyStatusPaths(statusLines);
   const cleanliness: GitWorktreeCleanliness =
     status === null ? "unknown" : status.trim().length > 0 ? "dirty" : "clean";
+  const inProgressOperation = await detectGitWorktreeInProgressOperation(input.worktreePath);
   const expectedHeadSha = await runGit(
     ["rev-parse", "--verify", `refs/heads/${input.expectedBranchName}^{commit}`],
     input.repoRoot,
@@ -784,7 +981,7 @@ async function inspectGitWorktreeBranchIncoherence(input: {
     expectedHeadSha,
     actualHeadSha,
   });
-  const plainLanguageReason = explainGitWorktreeBranchIncoherence({
+  const basePlainLanguageReason = explainGitWorktreeBranchIncoherence({
     expectedBranchName: input.expectedBranchName,
     actualBranchName: input.actualBranchName,
     expectedHeadSha,
@@ -792,6 +989,9 @@ async function inspectGitWorktreeBranchIncoherence(input: {
     sameHead,
     ancestryVerdict,
   });
+  const plainLanguageReason = inProgressOperation
+    ? `${basePlainLanguageReason} An interrupted git ${GIT_IN_PROGRESS_OPERATION_LABELS[inProgressOperation]} is still in progress in this worktree.`
+    : basePlainLanguageReason;
   const canCheckoutRecordedBranch =
     cleanliness === "clean" && expectedBranchExists && sameHead && registeredBranchMatchesHead;
   const canAdoptForwardActualBranch =
@@ -817,7 +1017,9 @@ async function inspectGitWorktreeBranchIncoherence(input: {
         ? "clean worktree and checked-out branch is forward of the recorded branch"
         : "clean detached worktree HEAD is forward of the recorded branch"
     : cleanliness !== "clean"
-      ? "worktree is not clean"
+      ? inProgressOperation
+        ? `worktree is not clean and a git ${GIT_IN_PROGRESS_OPERATION_LABELS[inProgressOperation]} is in progress`
+        : "worktree is not clean"
       : !registered
         ? "worktree path is not registered"
       : !registeredBranchMatchesHead
@@ -837,6 +1039,13 @@ async function inspectGitWorktreeBranchIncoherence(input: {
     expectedHeadSha,
     actualHeadSha,
   });
+  const contention = await findGitWorktreeBranchContention({
+    db: input.db ?? null,
+    sourceIssue: input.sourceIssue,
+    executionWorkspaceId: input.executionWorkspaceId ?? null,
+    worktreePath: input.worktreePath,
+    actualBranchName: input.actualBranchName,
+  });
 
   return {
     reason: GIT_WORKTREE_BRANCH_INCOHERENCE_REASON,
@@ -849,7 +1058,10 @@ async function inspectGitWorktreeBranchIncoherence(input: {
     expectedBranch: input.expectedBranchName,
     actualBranch: input.actualBranchName,
     cleanliness,
+    inProgressOperation,
     statusEntryCount: statusLines?.length ?? null,
+    dirtyPathSample,
+    contention,
     provenance: {
       expectedBranchRef: `refs/heads/${input.expectedBranchName}`,
       actualBranchRef,
@@ -880,6 +1092,407 @@ function branchIncoherenceValidationFailure(evidence: GitWorktreeBranchIncoheren
       workspaceValidation: evidence,
     },
   );
+}
+
+function formatDirtyQuarantineContentionRefusal(contention: GitWorktreeBranchContention) {
+  const activeRunText = contention.activeRun
+    ? ` with active run ${contention.activeRun.id}`
+    : " with no active run";
+  return `dirty quarantine repair refused because workspace ${contention.claimedByWorkspaceId} already claims the live branch${activeRunText}`;
+}
+
+function formatDirtyQuarantineFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    gitErrorIncludes(error, "index.lock") ||
+    gitErrorIncludes(error, "index lock") ||
+    gitErrorIncludes(error, "another git process") ||
+    gitErrorIncludes(error, "Unable to create")
+  ) {
+    return `dirty quarantine repair aborted because git reported index contention: ${message}`;
+  }
+  return `dirty quarantine repair failed: ${message}`;
+}
+
+function formatDirtyQuarantineAuditComment(input: {
+  evidence: GitWorktreeBranchIncoherenceEvidence;
+  rescueBranch: string;
+  rescueCommitSha: string;
+  fileCount: number;
+  sourceIssue: ExecutionWorkspaceIssueRef | null;
+  claimant: GitWorktreeBranchContention | null;
+}) {
+  const dirtySample = input.evidence.dirtyPathSample.length > 0
+    ? input.evidence.dirtyPathSample.map((entry) => `\`${entry}\``).join(", ")
+    : "`none captured`";
+  return [
+    "Execution workspace dirty worktree quarantined before restore.",
+    "",
+    `- Source issue: ${formatIssueReference(input.evidence.sourceIssueId, input.evidence.sourceIdentifier ?? input.sourceIssue?.identifier ?? null)}`,
+    `- Workspace: \`${input.evidence.executionWorkspaceId ?? "unpersisted"}\``,
+    `- Worktree: \`${input.evidence.worktreePath}\``,
+    `- Recorded branch: \`${input.evidence.expectedBranch}\``,
+    `- Live branch: \`${formatBranchForMessage(input.evidence.actualBranch)}\``,
+    `- Rescue branch: \`${input.rescueBranch}\``,
+    `- Rescue commit: \`${input.rescueCommitSha}\``,
+    `- Dirty file count: \`${input.fileCount}\``,
+    `- Dirty path sample: ${dirtySample}`,
+    ...(input.evidence.inProgressOperation
+      ? [`- Interrupted operation: \`git ${GIT_IN_PROGRESS_OPERATION_LABELS[input.evidence.inProgressOperation]}\` (state cleared after rescue; resolution preserved on the rescue branch)`]
+      : []),
+    `- Fingerprint: \`${input.evidence.fingerprint}\``,
+    input.claimant
+      ? `- Claimant: workspace \`${input.claimant.claimedByWorkspaceId}\` on issue ${formatIssueReference(input.claimant.claimedByIssueId, input.claimant.claimedByIssueIdentifier)}${input.claimant.activeRun ? ` with active run \`${input.claimant.activeRun.id}\`` : " with no active run"}`
+      : "- Claimant: none",
+  ].join("\n");
+}
+
+async function writeDirtyQuarantineAuditComments(input: {
+  db: Db;
+  companyId: string;
+  evidence: GitWorktreeBranchIncoherenceEvidence;
+  sourceIssue: ExecutionWorkspaceIssueRef | null;
+  rescueBranch: string;
+  rescueCommitSha: string;
+  fileCount: number;
+  heartbeatRunId: string | null;
+}): Promise<{ sourceAuditCommentId: string | null; claimantAuditCommentId: string | null }> {
+  const body = formatDirtyQuarantineAuditComment({
+    evidence: input.evidence,
+    rescueBranch: input.rescueBranch,
+    rescueCommitSha: input.rescueCommitSha,
+    fileCount: input.fileCount,
+    sourceIssue: input.sourceIssue,
+    claimant: input.evidence.contention,
+  });
+  let sourceAuditCommentId: string | null = null;
+  let claimantAuditCommentId: string | null = null;
+  const now = new Date();
+  if (input.evidence.sourceIssueId) {
+    const [sourceComment] = await input.db
+      .insert(issueComments)
+      .values({
+        companyId: input.companyId,
+        issueId: input.evidence.sourceIssueId,
+        authorAgentId: null,
+        authorUserId: null,
+        authorType: "system",
+        createdByRunId: input.heartbeatRunId,
+        body,
+      })
+      .returning({ id: issueComments.id });
+    sourceAuditCommentId = sourceComment?.id ?? null;
+    await input.db
+      .update(issues)
+      .set({ updatedAt: now })
+      .where(eq(issues.id, input.evidence.sourceIssueId));
+  }
+
+  const claimantIssueId = input.evidence.contention?.claimedByIssueId ?? null;
+  if (claimantIssueId && claimantIssueId !== input.evidence.sourceIssueId) {
+    const [claimantComment] = await input.db
+      .insert(issueComments)
+      .values({
+        companyId: input.companyId,
+        issueId: claimantIssueId,
+        authorAgentId: null,
+        authorUserId: null,
+        authorType: "system",
+        createdByRunId: input.heartbeatRunId,
+        body,
+      })
+      .returning({ id: issueComments.id });
+    claimantAuditCommentId = claimantComment?.id ?? null;
+    await input.db
+      .update(issues)
+      .set({ updatedAt: now })
+      .where(eq(issues.id, claimantIssueId));
+  }
+
+  return { sourceAuditCommentId, claimantAuditCommentId };
+}
+
+async function logDirtyQuarantineActivity(input: {
+  db: Db;
+  companyId: string;
+  evidence: GitWorktreeBranchIncoherenceEvidence;
+  rescueBranch: string;
+  rescueCommitSha: string;
+  fileCount: number;
+  heartbeatRunId: string | null;
+  sourceAuditCommentId: string | null;
+  claimantAuditCommentId: string | null;
+}) {
+  await logActivity(input.db, {
+    companyId: input.companyId,
+    actorType: "system",
+    actorId: "workspace_runtime",
+    runId: input.heartbeatRunId,
+    action: "execution_workspace.dirty_worktree_quarantined",
+    entityType: input.evidence.executionWorkspaceId ? "execution_workspace" : "issue",
+    entityId: input.evidence.executionWorkspaceId ?? input.evidence.sourceIssueId ?? input.companyId,
+    details: {
+      reason: GIT_WORKTREE_BRANCH_INCOHERENCE_REASON,
+      sourceIssueId: input.evidence.sourceIssueId,
+      executionWorkspaceId: input.evidence.executionWorkspaceId,
+      worktreePath: input.evidence.worktreePath,
+      expectedBranch: input.evidence.expectedBranch,
+      actualBranch: input.evidence.actualBranch,
+      rescueBranch: input.rescueBranch,
+      rescueCommitSha: input.rescueCommitSha,
+      fileCount: input.fileCount,
+      dirtyPathSample: input.evidence.dirtyPathSample,
+      fingerprint: input.evidence.fingerprint,
+      contention: input.evidence.contention,
+      sourceAuditCommentId: input.sourceAuditCommentId,
+      claimantAuditCommentId: input.claimantAuditCommentId,
+      actor: {
+        type: "system",
+        id: "workspace_runtime",
+        source: "workspace_runtime",
+      },
+    },
+  });
+}
+
+async function recordDirtyQuarantineOperation(input: {
+  recorder?: WorkspaceOperationRecorder | null;
+  phase?: "worktree_prepare" | "workspace_finalize";
+  cwd: string;
+  evidence: GitWorktreeBranchIncoherenceEvidence;
+  rescueBranch: string;
+  rescueCommitSha: string;
+  fileCount: number;
+  sourceAuditCommentId: string | null;
+  claimantAuditCommentId: string | null;
+}) {
+  if (!input.recorder) return;
+  await input.recorder.recordOperation({
+    phase: input.phase ?? "worktree_prepare",
+    cwd: input.cwd,
+    metadata: {
+      repoRoot: input.evidence.repoRoot,
+      worktreePath: input.evidence.worktreePath,
+      expectedBranchName: input.evidence.expectedBranch,
+      actualBranchName: input.evidence.actualBranch,
+      branchIncoherenceDirtyQuarantineRepair: true,
+      rescueBranch: input.rescueBranch,
+      rescueCommitSha: input.rescueCommitSha,
+      fileCount: input.fileCount,
+      dirtyPathSample: input.evidence.dirtyPathSample,
+      fingerprint: input.evidence.fingerprint,
+      sourceIssueId: input.evidence.sourceIssueId,
+      executionWorkspaceId: input.evidence.executionWorkspaceId,
+      sourceAuditCommentId: input.sourceAuditCommentId,
+      claimantAuditCommentId: input.claimantAuditCommentId,
+    },
+    run: async () => ({
+      status: "succeeded",
+      system:
+        `Quarantined dirty git worktree state on ${input.rescueBranch} (${formatShortSha(input.rescueCommitSha)}) and restored recorded branch ${input.evidence.expectedBranch}.\n`,
+    }),
+  });
+}
+
+async function quarantineDirtyWorktreeBranchIncoherence(input: {
+  db: Db;
+  repoRoot: string;
+  worktreePath: string;
+  expectedBranchName: string;
+  sourceIssue: ExecutionWorkspaceIssueRef | null;
+  executionWorkspaceId: string | null;
+  heartbeatRunId: string | null;
+  evidence: GitWorktreeBranchIncoherenceEvidence;
+  phase?: "worktree_prepare" | "workspace_finalize";
+  recorder?: WorkspaceOperationRecorder | null;
+}): Promise<DirtyQuarantineRepairResult> {
+  const companyId = await readIssueCompanyId(input.db, input.evidence.sourceIssueId);
+  if (!companyId) {
+    input.evidence.safeRepair.eligible = false;
+    input.evidence.safeRepair.reason = "dirty quarantine repair requires a source issue company for audit";
+    throw branchIncoherenceValidationFailure(input.evidence);
+  }
+
+  const freshContention = await findGitWorktreeBranchContention({
+    db: input.db,
+    sourceIssue: input.sourceIssue,
+    executionWorkspaceId: input.executionWorkspaceId,
+    worktreePath: input.worktreePath,
+    actualBranchName: input.evidence.actualBranch,
+  });
+  input.evidence.contention = freshContention;
+  if (freshContention) {
+    input.evidence.safeRepair.eligible = false;
+    input.evidence.safeRepair.reason = formatDirtyQuarantineContentionRefusal(freshContention);
+    throw branchIncoherenceValidationFailure(input.evidence);
+  }
+
+  const rescueBranch = buildDirtyQuarantineRescueBranch(input.sourceIssue);
+  const fileCount = input.evidence.statusEntryCount ?? input.evidence.dirtyPathSample.length;
+  const baseMetadata = {
+    repoRoot: input.repoRoot,
+    worktreePath: input.worktreePath,
+    expectedBranchName: input.expectedBranchName,
+    actualBranchName: input.evidence.actualBranch,
+    branchIncoherenceDirtyQuarantineRepair: true,
+    rescueBranch,
+    fingerprint: input.evidence.fingerprint,
+    sourceIssueId: input.evidence.sourceIssueId,
+    executionWorkspaceId: input.evidence.executionWorkspaceId,
+    fileCount,
+    dirtyPathSample: input.evidence.dirtyPathSample,
+    contention: input.evidence.contention,
+  };
+
+  let rescueBranchCreated = false;
+  let expectedBranchRestored = false;
+  try {
+    await assertGitIndexIsUnlocked(input.worktreePath);
+    await recordGitOperation(input.recorder, {
+      phase: input.phase ?? "worktree_prepare",
+      args: ["checkout", "-b", rescueBranch],
+      cwd: input.worktreePath,
+      metadata: baseMetadata,
+      successMessage: `Created rescue branch ${rescueBranch} for dirty git worktree state at ${input.worktreePath}\n`,
+      failureLabel: `git checkout -b ${rescueBranch}`,
+    });
+    rescueBranchCreated = true;
+    await recordGitOperation(input.recorder, {
+      phase: input.phase ?? "worktree_prepare",
+      args: ["add", "-A"],
+      cwd: input.worktreePath,
+      metadata: baseMetadata,
+      successMessage: `Staged dirty git worktree state for rescue branch ${rescueBranch}\n`,
+      failureLabel: "git add -A",
+    });
+    await recordGitOperation(input.recorder, {
+      phase: input.phase ?? "worktree_prepare",
+      args: [
+        "commit",
+        "-m",
+        "Paperclip dirty workspace rescue",
+        "-m",
+        [
+          `Source-Issue: ${input.evidence.sourceIdentifier ?? input.evidence.sourceIssueId ?? "unknown"}`,
+          `Run-Id: ${input.heartbeatRunId ?? "unknown"}`,
+          `Recorded-Branch: ${input.expectedBranchName}`,
+          `Live-Branch: ${formatBranchForMessage(input.evidence.actualBranch)}`,
+          `Fingerprint: ${input.evidence.fingerprint}`,
+        ].join("\n"),
+      ],
+      cwd: input.worktreePath,
+      metadata: baseMetadata,
+      successMessage: `Committed dirty git worktree state to rescue branch ${rescueBranch}\n`,
+      failureLabel: "git commit dirty workspace rescue",
+    });
+    const rescueCommitSha = await runGit(["rev-parse", "HEAD"], input.worktreePath);
+    await recordGitOperation(input.recorder, {
+      phase: input.phase ?? "worktree_prepare",
+      args: ["checkout", input.expectedBranchName],
+      cwd: input.worktreePath,
+      metadata: {
+        ...baseMetadata,
+        rescueCommitSha,
+      },
+      successMessage: `Restored recorded branch ${input.expectedBranchName} after dirty workspace rescue ${rescueBranch}\n`,
+      failureLabel: `git checkout ${input.expectedBranchName}`,
+    });
+    expectedBranchRestored = true;
+
+    // A run that died mid-rebase (or mid-merge/cherry-pick/revert/bisect)
+    // leaves the operation's state directory behind even after the recorded
+    // branch is checked out, which wedges the next git command in the
+    // worktree. The rescue commit above already preserved the in-flight
+    // resolution, so clearing the state metadata here loses nothing.
+    let clearedInProgressOperation: GitWorktreeInProgressOperation | null = null;
+    const lingeringOperation = await detectGitWorktreeInProgressOperation(input.worktreePath);
+    if (lingeringOperation) {
+      const operationLabel = GIT_IN_PROGRESS_OPERATION_LABELS[lingeringOperation];
+      const quitArgs = GIT_IN_PROGRESS_OPERATION_QUIT_ARGS[lingeringOperation];
+      await recordGitOperation(input.recorder, {
+        phase: input.phase ?? "worktree_prepare",
+        args: quitArgs,
+        cwd: input.worktreePath,
+        metadata: {
+          ...baseMetadata,
+          clearedInProgressOperation: lingeringOperation,
+        },
+        successMessage: `Cleared interrupted git ${operationLabel} state after dirty workspace rescue ${rescueBranch}\n`,
+        failureLabel: `git ${quitArgs.join(" ")}`,
+      });
+      const stillInProgress = await detectGitWorktreeInProgressOperation(input.worktreePath);
+      if (stillInProgress) {
+        input.evidence.safeRepair.succeeded = false;
+        input.evidence.safeRepair.reason =
+          `dirty quarantine repair could not clear the interrupted git ${GIT_IN_PROGRESS_OPERATION_LABELS[stillInProgress]} state`;
+        throw branchIncoherenceValidationFailure(input.evidence);
+      }
+      clearedInProgressOperation = lingeringOperation;
+    }
+
+    const repairedBranch = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], input.worktreePath)
+      .catch(() => null);
+    if (repairedBranch !== input.expectedBranchName) {
+      input.evidence.safeRepair.succeeded = false;
+      input.evidence.safeRepair.reason =
+        `dirty quarantine repair checked out ${formatBranchForMessage(repairedBranch)} instead of ${input.expectedBranchName}`;
+      throw branchIncoherenceValidationFailure(input.evidence);
+    }
+    const repairedStatus = await runGit(["status", "--porcelain", "--untracked-files=all"], input.worktreePath);
+    if (repairedStatus.trim().length > 0) {
+      input.evidence.safeRepair.succeeded = false;
+      input.evidence.safeRepair.reason = "dirty quarantine repair completed but the worktree is still dirty";
+      throw branchIncoherenceValidationFailure(input.evidence);
+    }
+
+    const comments = await writeDirtyQuarantineAuditComments({
+      db: input.db,
+      companyId,
+      evidence: input.evidence,
+      sourceIssue: input.sourceIssue,
+      rescueBranch,
+      rescueCommitSha,
+      fileCount,
+      heartbeatRunId: input.heartbeatRunId,
+    });
+    await logDirtyQuarantineActivity({
+      db: input.db,
+      companyId,
+      evidence: input.evidence,
+      rescueBranch,
+      rescueCommitSha,
+      fileCount,
+      heartbeatRunId: input.heartbeatRunId,
+      sourceAuditCommentId: comments.sourceAuditCommentId,
+      claimantAuditCommentId: comments.claimantAuditCommentId,
+    });
+    await recordDirtyQuarantineOperation({
+      recorder: input.recorder,
+      phase: input.phase,
+      cwd: input.worktreePath,
+      evidence: input.evidence,
+      rescueBranch,
+      rescueCommitSha,
+      fileCount,
+      sourceAuditCommentId: comments.sourceAuditCommentId,
+      claimantAuditCommentId: comments.claimantAuditCommentId,
+    });
+    return {
+      rescueBranch,
+      rescueCommitSha,
+      fileCount,
+      clearedInProgressOperation,
+      ...comments,
+    };
+  } catch (error) {
+    if (rescueBranchCreated && !expectedBranchRestored) {
+      await runGit(["checkout", input.expectedBranchName], input.worktreePath).catch(() => null);
+    }
+    if (error instanceof WorkspaceRuntimeValidationFailure) throw error;
+    input.evidence.safeRepair.succeeded = false;
+    input.evidence.safeRepair.reason = formatDirtyQuarantineFailure(error);
+    throw branchIncoherenceValidationFailure(input.evidence);
+  }
 }
 
 async function recordForwardBranchReconcileOperation(input: {
@@ -1047,6 +1660,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
   actualBranchName?: string | null;
   heartbeatRunId?: string | null;
   enableWorkspaceBranchReconcileForward?: boolean;
+  enableWorkspaceDirtyQuarantineRepair?: boolean;
   persistForwardReconcile?: boolean;
   reconcileOperationPhase?: "worktree_prepare" | "workspace_finalize";
   recorder?: WorkspaceOperationRecorder | null;
@@ -1062,6 +1676,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
   }
 
   const evidence = await inspectGitWorktreeBranchIncoherence({
+    db: input.db ?? null,
     repoRoot: input.repoRoot,
     worktreePath: input.worktreePath,
     expectedBranchName,
@@ -1070,9 +1685,63 @@ export async function ensureGitWorktreeBranchCoherent(input: {
     executionWorkspaceId: input.executionWorkspaceId ?? null,
   });
 
+  if (evidence.cleanliness === "dirty" && input.enableWorkspaceDirtyQuarantineRepair === true) {
+    if (!input.db) {
+      evidence.safeRepair.reason = "dirty quarantine repair requires database access for claimant checks and audit";
+      throw branchIncoherenceValidationFailure(evidence);
+    }
+    if (!evidence.provenance.registeredPathFound) {
+      evidence.safeRepair.reason = "dirty quarantine repair requires a registered git worktree path";
+      throw branchIncoherenceValidationFailure(evidence);
+    }
+    if (!evidence.provenance.expectedBranchExists) {
+      evidence.safeRepair.reason = "dirty quarantine repair requires the recorded branch to exist";
+      throw branchIncoherenceValidationFailure(evidence);
+    }
+    if (evidence.contention) {
+      evidence.safeRepair.eligible = false;
+      evidence.safeRepair.reason = formatDirtyQuarantineContentionRefusal(evidence.contention);
+      throw branchIncoherenceValidationFailure(evidence);
+    }
+    await assertDirtyQuarantineRuntimeServicesStopped({
+      db: input.db,
+      executionWorkspaceId: input.executionWorkspaceId ?? null,
+      evidence,
+    });
+    evidence.safeRepair.eligible = true;
+    evidence.safeRepair.attempted = true;
+    evidence.safeRepair.reason = "dirty worktree can be quarantined on a rescue branch before restoring the recorded branch";
+    const result = await quarantineDirtyWorktreeBranchIncoherence({
+      db: input.db,
+      repoRoot: input.repoRoot,
+      worktreePath: input.worktreePath,
+      expectedBranchName,
+      sourceIssue: input.sourceIssue,
+      executionWorkspaceId: input.executionWorkspaceId ?? null,
+      heartbeatRunId: input.heartbeatRunId ?? null,
+      evidence,
+      phase: input.reconcileOperationPhase,
+      recorder: input.recorder ?? null,
+    });
+    evidence.safeRepair.succeeded = true;
+    evidence.safeRepair.reason = result.clearedInProgressOperation
+      ? `dirty worktree quarantined on ${result.rescueBranch} at ${formatShortSha(result.rescueCommitSha)}; interrupted git ${GIT_IN_PROGRESS_OPERATION_LABELS[result.clearedInProgressOperation]} state cleared`
+      : `dirty worktree quarantined on ${result.rescueBranch} at ${formatShortSha(result.rescueCommitSha)}`;
+    return {
+      branchName: expectedBranchName,
+      reconciledForward: false,
+      dirtyQuarantineRepair: result,
+      warnings: [
+        `Execution workspace dirty worktree state was quarantined on rescue branch "${result.rescueBranch}" (${formatShortSha(result.rescueCommitSha)}; ${result.fileCount} ${result.fileCount === 1 ? "file" : "files"}) before restoring recorded branch "${expectedBranchName}".${result.clearedInProgressOperation ? ` An interrupted git ${GIT_IN_PROGRESS_OPERATION_LABELS[result.clearedInProgressOperation]} was also cleared; its in-flight state is preserved on the rescue branch.` : ""}`,
+      ],
+    };
+  }
+
   if (
     input.enableWorkspaceBranchReconcileForward === true &&
     evidence.provenance.ancestryVerdict === "ancestor" &&
+    !evidence.provenance.sameHead &&
+    evidence.cleanliness === "clean" &&
     currentBranch
   ) {
     const reason = "Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch.";
@@ -1747,7 +2416,7 @@ async function runWorkspaceCommand(input: {
 async function recordGitOperation(
   recorder: WorkspaceOperationRecorder | null | undefined,
   input: {
-    phase: "worktree_prepare" | "worktree_cleanup";
+    phase: WorkspaceOperationPhase;
     args: string[];
     cwd: string;
     metadata?: Record<string, unknown> | null;
@@ -1970,6 +2639,7 @@ export async function realizeExecutionWorkspace(input: {
   agent: ExecutionWorkspaceAgentRef;
   heartbeatRunId?: string | null;
   enableWorkspaceBranchReconcileForward?: boolean;
+  enableWorkspaceDirtyQuarantineRepair?: boolean;
   recorder?: WorkspaceOperationRecorder | null;
 }): Promise<RealizedExecutionWorkspace> {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
@@ -2100,6 +2770,7 @@ export async function realizeExecutionWorkspace(input: {
         executionWorkspaceId: null,
         heartbeatRunId: input.heartbeatRunId ?? null,
         enableWorkspaceBranchReconcileForward: input.enableWorkspaceBranchReconcileForward === true,
+        enableWorkspaceDirtyQuarantineRepair: input.enableWorkspaceDirtyQuarantineRepair === true,
         reconcileOperationPhase: "worktree_prepare",
         recorder: input.recorder ?? null,
       });
@@ -2240,6 +2911,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   agent: ExecutionWorkspaceAgentRef;
   heartbeatRunId?: string | null;
   enableWorkspaceBranchReconcileForward?: boolean;
+  enableWorkspaceDirtyQuarantineRepair?: boolean;
   recorder?: WorkspaceOperationRecorder | null;
 }): Promise<RealizedExecutionWorkspace | null> {
   const cwd = asString(input.workspace.cwd ?? input.workspace.providerRef, "").trim();
@@ -2285,6 +2957,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
         executionWorkspaceId: input.workspace.id ?? null,
         heartbeatRunId: input.heartbeatRunId ?? null,
         enableWorkspaceBranchReconcileForward: input.enableWorkspaceBranchReconcileForward === true,
+        enableWorkspaceDirtyQuarantineRepair: input.enableWorkspaceDirtyQuarantineRepair === true,
         persistForwardReconcile: false,
         reconcileOperationPhase: "worktree_prepare",
         recorder: input.recorder ?? null,
@@ -2867,18 +3540,27 @@ export function resolveWorkspaceRuntimeReadinessTimeoutSec(service: Record<strin
 
 async function waitForReadiness(input: {
   service: Record<string, unknown>;
+  serviceName?: string | null;
+  command?: string | null;
   url: string | null;
 }) {
   const readiness = parseObject(input.service.readiness);
   const readinessType = asString(readiness.type, "");
   if (readinessType !== "http" || !input.url) return;
+  const readinessUrl = resolveRuntimeServiceHealthUrl(input.url, {
+    serviceName: input.serviceName,
+    command: input.command,
+  });
+  if (!readinessUrl) {
+    throw new Error(`Readiness check failed: could not resolve health URL for ${input.url}`);
+  }
   const timeoutSec = resolveWorkspaceRuntimeReadinessTimeoutSec(input.service);
   const intervalMs = Math.max(100, asNumber(readiness.intervalMs, 500));
   const deadline = Date.now() + timeoutSec * 1000;
   let lastError = "service did not become ready";
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(input.url);
+      const response = await fetch(readinessUrl);
       if (response.ok) return;
       lastError = `received HTTP ${response.status}`;
     } catch (err) {
@@ -2886,7 +3568,7 @@ async function waitForReadiness(input: {
     }
     await delay(intervalMs);
   }
-  throw new Error(`Readiness check failed for ${input.url}: ${lastError}`);
+  throw new Error(`Readiness check failed for ${readinessUrl}: ${lastError}`);
 }
 
 function isPaperclipDevRuntimeService(input: { serviceName?: string | null; command?: string | null }) {
@@ -2924,7 +3606,7 @@ async function isRuntimeServiceUrlHealthy(
 ) {
   if (!url) return true;
   const healthUrl = resolveRuntimeServiceHealthUrl(url, input);
-  if (!healthUrl) return true;
+  if (!healthUrl) return false;
   try {
     const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2_000) });
     return response.ok;
@@ -3294,7 +3976,7 @@ async function startLocalRuntimeService(input: {
 
   try {
     await Promise.race([
-      waitForReadiness({ service: input.service, url }),
+      waitForReadiness({ service: input.service, serviceName, command, url }),
       spawnErrorPromise,
     ]);
   } catch (err) {

@@ -1,5 +1,7 @@
 import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useVisibilityRefetchInterval } from "@/lib/polling";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 import type { ActivityEvent, Agent } from "@paperclipai/shared";
 import { activityApi } from "../api/activity";
 import { agentsApi } from "../api/agents";
@@ -338,13 +340,25 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
     document.head.appendChild(style);
   }, []);
 
-  // Fetch company-level activity, poll every 5s
-  const { data: activity } = useQuery({
-    queryKey: queryKeys.activity(selectedCompanyId ?? ""),
-    queryFn: () => activityApi.list(selectedCompanyId!),
+  // Fetch company-level activity. Poll ~5s when the tab is focused; slow/stop in the
+  // background so restored tabs don't storm the activity endpoint (PAP-12556).
+  const activityRefetchInterval = useVisibilityRefetchInterval({ visibleMs: 5000 });
+  const activityQueryKey = queryKeys.activity(selectedCompanyId ?? "");
+  const sharedActivity = useSharedPollingQuery({
+    companyId: selectedCompanyId,
+    resourceKey: "activity",
+    queryKey: activityQueryKey,
     enabled: !!selectedCompanyId,
-    refetchInterval: 5000,
+    refetchInterval: activityRefetchInterval,
+    leaderOnly: true,
   });
+  const { data: activity, dataUpdatedAt: activityUpdatedAt } = useQuery({
+    queryKey: activityQueryKey,
+    queryFn: ({ signal }) => activityApi.list(selectedCompanyId!, undefined, { signal }),
+    enabled: sharedActivity.enabled,
+    refetchInterval: sharedActivity.refetchInterval,
+  });
+  usePublishSharedQueryData(sharedActivity, activity, activityUpdatedAt);
 
   // Fetch agents for name resolution + empty state
   const { data: agents } = useQuery({

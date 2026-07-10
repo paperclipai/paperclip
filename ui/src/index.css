@@ -1470,8 +1470,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --hex-eab308: #eab308; /* ActivityCharts.tsx — priority 'medium'; also the 0.5-0.8 success-rate bar tint. */
   --hex-6b7280: #6b7280; /* ActivityCharts.tsx — priority 'low' + unknown-status statusColors fallback. */
   --hex-10b981: #10b981; /* ActivityCharts.tsx — >=0.8 success-rate bar tint; also the run-activity 'succeeded' segment. */
-  --hex-f59e0b: #f59e0b; /* ActivityCharts.tsx — run-activity 'recovered' segment (independent run-outcome series; same value as --status-task-todo by coincidence, decoupled on purpose). */
-  --hex-737373: #737373; /* ActivityCharts.tsx — run-activity 'other' segment (neutral). */
+  --hex-737373: #737373; /* ActivityCharts.tsx — run activity 'other' segment tint. */
   --project-none: #64748b; /* Semantic rename of --hex-64748b (DECISION-SHEET.md A3, value unchanged). 'No project assigned' muted-slate fallback (TOKEN-AUDIT.md 1.3) across Routines/MarkdownEditor/RoutineRunVariablesDialog/RoutineList/IssueColumns/editable-sections; also ActivityCharts.tsx status 'backlog'. */
   --project-seed: #6366f1; /* Semantic rename of --hex-6366f1 (DECISION-SHEET.md A3, value unchanged). Project-color-fallback indigo seed default (ProjectDetail/PipelineSettings/IssueProperties/NewIssueDialog) — new-project-color-picker-seed family per TOKEN-AUDIT.md 1.3. */
   --liveness-blue: #2563eb; /* DECISION-SHEET.md A6: IssueChatThread.tsx human-message 'liveness blue' bubble (PAP-95 rev 5). Same value as --status-task-in_progress by coincidence, decoupled on purpose so a future status-hue change doesn't drag the chat bubble along. */
@@ -1566,6 +1565,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-80vh: 80vh; /* Extracted from ui/src/components/DocumentAnnotationPanel.tsx (max-h-[80vh]). */
   --sz-360px: 360px; /* Extracted from ui/src/components/DocumentAnnotationPanel.tsx (w-[360px]). */
   --sz-85vh: 85vh; /* Extracted from ui/src/components/DocumentDiffModal.tsx (max-h-[85vh]). */
+  --sz-6rem: 6rem; /* Extracted from ui/src/components/EntityRow.tsx (min-w-[6rem]). */
   --sz-1px: 1px; /* Extracted from ui/src/components/EntityRow.tsx (top-[1px]). */
   --sz-100px: 100px; /* Extracted from ui/src/components/ExecutionParticipantPicker.tsx (max-w-[100px]). */
   --sz-calc-3: min(840px,calc(100dvh - 2rem)); /* Extracted from ui/src/components/FileViewerSheet.tsx (h-[min(840px,calc(100dvh-2rem))]). */
@@ -1586,8 +1586,6 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-9: min(80vh,42rem); /* Extracted from ui/src/components/IssueFiltersPopover.test.tsx (max-h-[min(80vh,42rem)]). */
   --sz-calc-10: min(780px,calc(100vw - 2rem)); /* Extracted from ui/src/components/IssueFiltersPopover.tsx (w-[min(780px,calc(100vw-2rem))]). */
   --sz-24ch: 24ch; /* Extracted from ui/src/components/IssuePlanDecompositionsSection.tsx (max-w-[24ch]). */
-  --sz-calc-11: calc(0.5rem - 2px); /* Extracted from ui/src/components/IssueRow.tsx (pl-[calc(theme(spacing.2)-2px)]). */
-  --sz-calc-12: calc(0.25rem - 2px); /* Extracted from ui/src/components/IssueRow.tsx (pl-[calc(theme(spacing.1)-2px)]). */
   --sz-calc-13: calc(0.75rem + 0.5rem); /* Extracted from ui/src/components/IssueRow.tsx (ml-[calc(theme(spacing.3)+theme(spacing.2))]). */
   --sz-140px: 140px; /* Extracted from ui/src/components/JsonSchemaForm.tsx (min-h-[140px]). */
   --sz-52px: 52px; /* Extracted from ui/src/components/KanbanBoard.tsx (w-[52px]). */
@@ -1619,6 +1617,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-23: min(32rem,calc(100vw - 2rem)); /* Extracted from ui/src/components/SearchableSelect.tsx (max-w-[min(32rem,calc(100vw-2rem))]). */
   --sz-277px: 277px; /* Extracted from ui/src/components/SidebarAccountMenu.test.tsx (w-[277px]). */
   --sz-calc-24: calc(100vw - 1rem); /* Extracted from ui/src/components/SidebarAccountMenu.tsx (max-w-[calc(100vw-1rem)]). */
+  --sz-4_5rem: 4.5rem; /* Extracted from ui/src/components/SidebarAgents.tsx (min-w-[4.5rem]). */
   --sz-36px: 36px; /* Extracted from ui/src/components/WorkspaceFileBrowser.tsx (min-h-[36px]). */
   --sz-32px: 32px; /* Extracted from ui/src/components/WorkspaceFileBrowser.tsx (min-h-[32px]). */
   --sz-30px: 30px; /* Extracted from ui/src/components/WorkspaceFileBrowser.tsx (min-h-[30px]). */
@@ -1648,6 +1647,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-31: calc(100vh - 16rem); /* Extracted from ui/src/pages/CompanyImport.tsx (h-[calc(100vh-16rem)]). */
   --sz-calc-32: min(28rem,70vh); /* Extracted from ui/src/pages/CompanySkills.tsx (max-h-[min(28rem,70vh)]). */
   --sz-11_5rem: 11.5rem; /* Extracted from ui/src/pages/CompanySkills.tsx (min-h-[11.5rem]). */
+  --sz-11_75rem: 11.75rem; /* SkillStudio.tsx file/input browser cap: five min-h-9 rows plus p-1 vertical padding. */
   --sz-calc-33: calc(100dvh - 6rem); /* Extracted from ui/src/pages/CompanySkills.tsx (h-[calc(100dvh-6rem)]). */
   --sz-calc-34: clamp(14rem,45vh,28rem); /* Extracted from ui/src/pages/CompanySkills.tsx (h-[clamp(14rem,45vh,28rem)]). */
   --sz-400px: 400px; /* Extracted from ui/src/pages/CompanySkills.tsx (min-h-[400px]). */
@@ -1682,6 +1682,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --pct-90: 90%; /* Extracted from ui/src/components/DocumentDiffModal.tsx (max-w-[90%]). */
   --pct-50: 50%; /* Extracted from ui/src/components/ImageGalleryModal.tsx (max-w-[50%]). */
   --pct-85: 85%; /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-w-[85%]). */
+  --pct-70: 70%; /* Extracted from ui/src/components/CaseFieldsPanel.tsx (max-w-[70%]). */
   --pct-neg-50: -50%; /* Extracted from ui/src/components/ui/alert-dialog.tsx (translate-x-[-50%]). */
   --pct-72: 72%; /* Extracted from ui/src/pages/IssueDetail.tsx (w-[72%]). */
   --shadow-extract-1: 0 16px 40px rgba(37,99,235,0.08); /* ActiveAgentsPanel.tsx live-box glow. Gallery feedback r2: liveness glow recolored cyan->status blue (value edit, site unchanged; originally extracted as rgba(6,182,212,0.08)). */
@@ -1739,6 +1740,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 */
 :root {
   --gtc-1: 56px 56px 24px minmax(0,1fr); /* Extracted from ui/src/components/DocumentDiffModal.tsx (grid-cols-[56px_56px_24px_minmax(0,1fr)]). */
+  --gtc-case-revisions: 16rem 1fr; /* Extracted from ui/src/components/CaseRevisionRail.tsx (grid-cols-[16rem_1fr]). */
   --gtc-2: auto minmax(0,1fr) 2.25rem; /* Extracted from ui/src/components/FileTree.tsx (grid-cols-[auto_minmax(0,1fr)_2.25rem]). */
   --gtc-3: minmax(0,1fr) 2.25rem; /* Extracted from ui/src/components/FileTree.tsx (grid-cols-[minmax(0,1fr)_2.25rem]). */
   --gtc-4: minmax(0,1fr); /* Extracted from ui/src/components/FileTree.tsx (grid-cols-[minmax(0,1fr)]). */
@@ -1825,6 +1827,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --z-9999: 9999; /* Extracted from ui/src/components/MarkdownEditor.tsx (z-[9999]). */
   --z-120: 120; /* Extracted from ui/src/components/ToastViewport.tsx (z-[120]). */
   --s-0_98: 0.98; /* Extracted from ui/src/pages/Inbox.tsx (scale-[0.98]). */
+  --s-1_02: 1.02; /* Extracted from ui/src/components/CaseAttachmentsGallery.tsx (scale-[1.02]). */
   --e-cubic-bezier-0_16-1-0_3-1: cubic-bezier(0.16,1,0.3,1); /* Extracted from ui/src/components/ui/alert-dialog.tsx (ease-[cubic-bezier(0.16,1,0.3,1)]). */
   --va-0_125em: -0.125em; /* Extracted from ui/src/components/ExternalObjectStatusIcon.tsx (align-[-0.125em]). */
   --sw-2_3: 2.3; /* Extracted from ui/src/components/MobileBottomNav.tsx (stroke-[2.3]). */

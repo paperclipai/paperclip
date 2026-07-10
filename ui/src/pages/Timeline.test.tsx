@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { WorkTimelineResult } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Timeline } from "./Timeline";
+import { Timeline, timelineSummary } from "./Timeline";
 
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockWorkTimelineApi = vi.hoisted(() => ({
@@ -270,6 +270,20 @@ describe("Timeline", () => {
     expect(container.textContent).toContain("Tokens used");
     expect(container.textContent).toContain("2K");
     expect(container.textContent).not.toContain("4K");
+  });
+
+  it("summarizes only runs that overlap the visible timeline window", () => {
+    const summary = timelineSummary(populatedTimeline, {
+      fromMs: new Date("2026-07-02T10:15:00.000Z").getTime(),
+      toMs: new Date("2026-07-02T11:05:00.000Z").getTime(),
+    });
+
+    expect(summary).toEqual({
+      runs: 2,
+      agents: 2,
+      activeMs: 20 * 60 * 1000,
+      totalTokens: 1_250,
+    });
   });
 
   it("requests the company timeline without a user lens parameter", async () => {

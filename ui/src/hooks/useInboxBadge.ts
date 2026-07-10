@@ -9,6 +9,7 @@ import { dashboardApi } from "../api/dashboard";
 import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "./useSharedPolling";
 import {
   buildInboxDismissedAtByKey,
   computeInboxBadgeData,
@@ -169,14 +170,29 @@ export function useInboxBadge(companyId: string | null | undefined) {
     retry: false,
   });
 
-  const { data: dashboard } = useQuery({
-    queryKey: queryKeys.dashboard(companyId!),
+  const dashboardQueryKey = queryKeys.dashboard(companyId!);
+  const sharedDashboard = useSharedPollingQuery({
+    companyId,
+    resourceKey: "dashboard",
+    queryKey: dashboardQueryKey,
+    enabled: !!companyId,
+  });
+  const { data: dashboard, dataUpdatedAt: dashboardUpdatedAt } = useQuery({
+    queryKey: dashboardQueryKey,
     queryFn: () => dashboardApi.summary(companyId!),
     enabled: !!companyId,
   });
+  usePublishSharedQueryData(sharedDashboard, dashboard, dashboardUpdatedAt);
 
-  const { data: mineIssuesRaw = [] } = useQuery({
-    queryKey: queryKeys.issues.listMineByMe(companyId!),
+  const mineIssuesQueryKey = queryKeys.issues.listMineByMe(companyId!);
+  const sharedMineIssues = useSharedPollingQuery({
+    companyId,
+    resourceKey: "inbox-badge:mine-issues",
+    queryKey: mineIssuesQueryKey,
+    enabled: !!companyId,
+  });
+  const { data: mineIssuesRaw = [], dataUpdatedAt: mineIssuesUpdatedAt } = useQuery({
+    queryKey: mineIssuesQueryKey,
     queryFn: () =>
       issuesApi.list(companyId!, {
         touchedByUserId: "me",
@@ -188,6 +204,7 @@ export function useInboxBadge(companyId: string | null | undefined) {
     refetchOnWindowFocus: false,
     staleTime: INBOX_BADGE_HOT_PATH_STALE_MS,
   });
+  usePublishSharedQueryData(sharedMineIssues, mineIssuesRaw, mineIssuesUpdatedAt);
 
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
