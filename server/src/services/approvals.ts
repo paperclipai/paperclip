@@ -24,6 +24,13 @@ export function approvalService(db: Db) {
     };
   }
 
+  async function reconcileApprovedBuiltInAgent(companyId: string, payload: Record<string, unknown>) {
+    const sourceBuiltInAgentKey = typeof payload.sourceBuiltInAgentKey === "string" ? payload.sourceBuiltInAgentKey : null;
+    if (!sourceBuiltInAgentKey) return;
+    const { builtInAgentService } = await import("./built-in-agents.js");
+    await builtInAgentService(db).ensure(companyId, sourceBuiltInAgentKey);
+  }
+
   async function getExistingApproval(id: string) {
     const existing = await db
       .select()
@@ -128,7 +135,8 @@ export function approvalService(db: Db) {
         const payload = updated.payload as Record<string, unknown>;
         const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
         if (payloadAgentId) {
-          await agentsSvc.activatePendingApproval(payloadAgentId);
+          await agentsSvc.activatePendingApproval(payloadAgentId, payload);
+          await reconcileApprovedBuiltInAgent(updated.companyId, payload);
           hireApprovedAgentId = payloadAgentId;
         } else {
           const created = await agentsSvc.create(updated.companyId, {

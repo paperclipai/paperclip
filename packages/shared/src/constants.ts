@@ -30,11 +30,13 @@ export type AgentStatus = (typeof AGENT_STATUSES)[number];
 export const AGENT_ADAPTER_TYPES = [
   "process",
   "http",
-  "acpx_local",
   "claude_local",
   "codex_local",
   "cursor_cloud",
   "gemini_local",
+  "grok_local",
+  "hermes_gateway",
+  "hermes_local",
   "opencode_local",
   "pi_local",
   "cursor",
@@ -75,6 +77,20 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
 
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
+
+// Config keys owned by Paperclip/company state rather than one concrete adapter.
+// `paperclipSkillSync` is persisted in adapterConfig but must survive adapter swaps.
+export const ADAPTER_AGNOSTIC_KEYS = [
+  "env",
+  "promptTemplate",
+  "instructionsFilePath",
+  "cwd",
+  "timeoutSec",
+  "graceSec",
+  "bootstrapPromptTemplate",
+  "paperclipSkillSync",
+] as const;
+export type AdapterAgnosticKey = (typeof ADAPTER_AGNOSTIC_KEYS)[number];
 
 export const MODEL_PROFILE_KEYS = ["cheap"] as const;
 export type ModelProfileKey = (typeof MODEL_PROFILE_KEYS)[number];
@@ -197,8 +213,10 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
-export const ISSUE_WORK_MODES = ["standard", "ask", "planning"] as const;
+export const ISSUE_WORK_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
+export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
+export type IssueHarnessKind = (typeof ISSUE_HARNESS_KINDS)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
 
 export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
@@ -331,7 +349,12 @@ export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = ["manual", "after_activ
 export type IssueTreeHoldReleasePolicyStrategy = (typeof ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES)[number];
 
 export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY = "continuation-summary" as const;
-export const SYSTEM_ISSUE_DOCUMENT_KEYS = [ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY] as const;
+export const PIPELINE_CASE_BODY_DOCUMENT_KEY = "pipeline-case-body" as const;
+export const PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE = "{{pipeline_name}} / {{stage_name}}: {{case_title}}" as const;
+export const SYSTEM_ISSUE_DOCUMENT_KEYS = [
+  ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  PIPELINE_CASE_BODY_DOCUMENT_KEY,
+] as const;
 export type SystemIssueDocumentKey = (typeof SYSTEM_ISSUE_DOCUMENT_KEYS)[number];
 
 const SYSTEM_ISSUE_DOCUMENT_KEY_SET = new Set<string>(SYSTEM_ISSUE_DOCUMENT_KEYS);
@@ -482,6 +505,42 @@ export type EnvironmentLeasePolicy = (typeof ENVIRONMENT_LEASE_POLICIES)[number]
 export const ENVIRONMENT_LEASE_CLEANUP_STATUSES = ["pending", "success", "failed"] as const;
 export type EnvironmentLeaseCleanupStatus = (typeof ENVIRONMENT_LEASE_CLEANUP_STATUSES)[number];
 
+export const ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_KINDS = [
+  "snapshot",
+  "image",
+  "provider_template",
+  "unknown",
+] as const;
+export type EnvironmentCustomImageTemplateKind = (typeof ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_KINDS)[number];
+
+export const ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_STATUSES = [
+  "active",
+  "superseded",
+  "revoked",
+  "failed",
+] as const;
+export type EnvironmentCustomImageTemplateStatus = (typeof ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_STATUSES)[number];
+
+export const ENVIRONMENT_CUSTOM_IMAGE_SETUP_SESSION_STATUSES = [
+  "starting",
+  "waiting_for_user",
+  "capturing",
+  "promoted",
+  "cancelled",
+  "timed_out",
+  "failed",
+] as const;
+export type EnvironmentCustomImageSetupSessionStatus =
+  (typeof ENVIRONMENT_CUSTOM_IMAGE_SETUP_SESSION_STATUSES)[number];
+
+export const ENVIRONMENT_CUSTOM_IMAGE_SETUP_CONNECTION_TYPES = [
+  "ssh",
+  "browser_terminal",
+  "unknown",
+] as const;
+export type EnvironmentCustomImageSetupConnectionType =
+  (typeof ENVIRONMENT_CUSTOM_IMAGE_SETUP_CONNECTION_TYPES)[number];
+
 export const ROUTINE_STATUSES = ["active", "paused", "archived"] as const;
 export type RoutineStatus = (typeof ROUTINE_STATUSES)[number];
 
@@ -497,7 +556,7 @@ export type RoutineTriggerKind = (typeof ROUTINE_TRIGGER_KINDS)[number];
 export const ROUTINE_TRIGGER_SIGNING_MODES = ["bearer", "hmac_sha256", "github_hmac", "none"] as const;
 export type RoutineTriggerSigningMode = (typeof ROUTINE_TRIGGER_SIGNING_MODES)[number];
 
-export const ROUTINE_VARIABLE_TYPES = ["text", "textarea", "number", "boolean", "select"] as const;
+export const ROUTINE_VARIABLE_TYPES = ["text", "textarea", "number", "boolean", "select", "date"] as const;
 export type RoutineVariableType = (typeof ROUTINE_VARIABLE_TYPES)[number];
 
 export const ROUTINE_RUN_STATUSES = [
@@ -575,6 +634,9 @@ export type SecretProviderConfigHealthStatus =
 export const SECRET_STATUSES = ["active", "disabled", "archived", "deleted"] as const;
 export type SecretStatus = (typeof SECRET_STATUSES)[number];
 
+export const SECRET_SCOPES = ["company", "user"] as const;
+export type SecretScope = (typeof SECRET_SCOPES)[number];
+
 export const SECRET_MANAGED_MODES = ["paperclip_managed", "external_reference"] as const;
 export type SecretManagedMode = (typeof SECRET_MANAGED_MODES)[number];
 
@@ -599,7 +661,15 @@ export const SECRET_BINDING_TARGET_TYPES = [
 ] as const;
 export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
 
-export const SECRET_ACCESS_OUTCOMES = ["success", "failure"] as const;
+export const SECRET_ACCESS_OUTCOMES = [
+  "success",
+  "failure",
+  "missing",
+  "inactive",
+  "not_allowed",
+  "optional_omitted",
+  "provider_error",
+] as const;
 export type SecretAccessOutcome = (typeof SECRET_ACCESS_OUTCOMES)[number];
 
 export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
@@ -700,6 +770,7 @@ export const HEARTBEAT_RUN_STATUSES = [
   "scheduled_retry",
   "running",
   "succeeded",
+  "interrupted",
   "failed",
   "cancelled",
   "timed_out",
@@ -720,6 +791,7 @@ export type RunLivenessState = (typeof RUN_LIVENESS_STATES)[number];
 export const LIVE_EVENT_TYPES = [
   "heartbeat.run.queued",
   "heartbeat.run.status",
+  "heartbeat.run.progress",
   "heartbeat.run.event",
   "heartbeat.run.log",
   "agent.status",
@@ -778,12 +850,17 @@ export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
 export const PERMISSION_KEYS = [
   "agents:create",
+  "agents:configure",
+  "agents:suggest-changes",
+  "skills:create",
+  "skills:suggest-changes",
   "environments:manage",
   "users:invite",
   "users:manage_permissions",
   "tasks:assign",
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
+  "pipelines:write",
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -999,6 +1076,10 @@ export const PLUGIN_UI_SLOT_TYPES = [
 ] as const;
 export type PluginUiSlotType = (typeof PLUGIN_UI_SLOT_TYPES)[number];
 
+export const WORKSPACE_OVERVIEW_DEFAULT_LIMIT = 50;
+export const WORKSPACE_OVERVIEW_MAX_LIMIT = 100;
+export const WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT = 4;
+
 /**
  * Reserved company-scoped route segments that plugin page routes may not claim.
  *
@@ -1020,6 +1101,7 @@ export const PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS = [
   "costs",
   "activity",
   "inbox",
+  "workspaces",
   "design-guide",
   "tests",
 ] as const;

@@ -12,9 +12,17 @@ import type {
 import { definePlugin } from "@paperclipai/plugin-sdk";
 import type {
   PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentCancelInteractiveSetupParams,
+  PluginEnvironmentCancelInteractiveSetupResult,
+  PluginEnvironmentCaptureTemplateParams,
+  PluginEnvironmentCaptureTemplateResult,
+  PluginEnvironmentDeleteTemplateParams,
+  PluginEnvironmentDeleteTemplateResult,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentGetInteractiveSetupParams,
+  PluginEnvironmentInteractiveSetupSession,
   PluginEnvironmentLease,
   PluginEnvironmentProbeParams,
   PluginEnvironmentProbeResult,
@@ -22,6 +30,7 @@ import type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentResumeLeaseParams,
+  PluginEnvironmentStartInteractiveSetupParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
 } from "@paperclipai/plugin-sdk";
@@ -50,6 +59,23 @@ type WorkspaceSentinelResult = {
   result: "written" | "matched" | "missing" | "mismatch" | "skipped";
 };
 
+type DaytonaSshAccess = {
+  token?: string | null;
+  command?: string | null;
+  sshCommand?: string | null;
+  expiresAt?: string | null;
+};
+
+type DaytonaInteractiveSandbox = Sandbox & {
+  createSshAccess?: (expiresInMinutes?: number) => Promise<DaytonaSshAccess>;
+  _experimental_createSnapshot?: (name: string, timeout?: number) => Promise<void>;
+};
+
+type DaytonaSnapshotService = {
+  get?: (name: string) => Promise<unknown>;
+  delete?: (snapshot: unknown) => Promise<void>;
+};
+
 const WORKSPACE_SENTINEL_RELATIVE_PATH = ".paperclip-runtime/reusable-sandbox-lease.json";
 
 // Quota-safety defaults (minutes). Daytona counts *stopped* sandboxes against
@@ -66,6 +92,24 @@ const WORKSPACE_SENTINEL_RELATIVE_PATH = ".paperclip-runtime/reusable-sandbox-le
 const DEFAULT_AUTO_STOP_INTERVAL_MINUTES = 15;
 const DEFAULT_AUTO_ARCHIVE_INTERVAL_MINUTES = 60;
 const DEFAULT_AUTO_DELETE_INTERVAL_MINUTES = 7 * 24 * 60; // 7 days
+
+// Fail-fast cap for git network operations (push, fetch, pull, ls-remote, etc.)
+// so a stalled remote or missing credential never consumes the full 900 s adapter
+// RPC ceiling; callers always see an actionable error within this window.
+const GIT_NETWORK_TIMEOUT_MS = 120_000;
+
+// Noninteractive git credential defaults injected into every Daytona one-shot
+// command so that git operations never stall waiting for a terminal prompt.
+// Callers can override any of these via the env parameter.
+const NONINTERACTIVE_GIT_ENV: Record<string, string> = {
+  GIT_TERMINAL_PROMPT: "0",
+  GCM_INTERACTIVE: "Never",
+  GIT_ASKPASS: "echo",
+  SSH_ASKPASS: "echo",
+  SSH_ASKPASS_REQUIRE: "force",
+};
+const DEFAULT_SSH_ACCESS_MINUTES = 60;
+const DAYTONA_SSH_GATEWAY_HOST = "ssh.app.daytona.io";
 
 function parseOptionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -169,10 +213,20 @@ function validateResourceRequest(config: DaytonaDriverConfig): string | null {
   return "Daytona resource settings require image-backed sandbox creation; snapshot/default sandbox creation cannot override CPU, memory, disk, or GPU.";
 }
 
+function validateRuntimeResourceRequest(config: DaytonaDriverConfig): string | null {
+  // A snapshot bakes in its own resource allocation, so resources are dropped at
+  // create time (see buildCreateParams) rather than failing the run when a custom
+  // image snapshot is layered over a base config that carries CPU/memory/disk/GPU.
+  if (!hasResourceRequest(config) || config.image || config.snapshot) return null;
+  return "Daytona resource settings require image-backed sandbox creation; default sandbox creation cannot override CPU, memory, disk, or GPU.";
+}
+
 function buildSandboxLabels(input: {
   companyId: string;
   environmentId: string;
   runId?: string;
+  setupSessionId?: string;
+  purpose?: string;
   reuseLease: boolean;
 }): Record<string, string> {
   return {
@@ -181,6 +235,8 @@ function buildSandboxLabels(input: {
     "paperclip-environment-id": input.environmentId,
     "paperclip-reuse-lease": input.reuseLease ? "true" : "false",
     ...(input.runId ? { "paperclip-run-id": input.runId } : {}),
+    ...(input.setupSessionId ? { "paperclip-setup-session-id": input.setupSessionId } : {}),
+    ...(input.purpose ? { "paperclip-purpose": input.purpose } : {}),
   };
 }
 
@@ -394,8 +450,158 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+function resolveConnectionExpiresInMinutes(value: number | null | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_SSH_ACCESS_MINUTES;
+  return Math.min(24 * 60, Math.max(1, Math.trunc(value)));
+}
+
+function expiresAtForMinutes(minutes: number): string {
+  return new Date(Date.now() + minutes * 60_000).toISOString();
+}
+
+function sanitizeSnapshotName(value: string | null | undefined, fallback: string): string {
+  const cleaned = (value ?? fallback)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 96);
+  return cleaned || fallback;
+}
+
+function withSetupSourceTemplate(
+  config: DaytonaDriverConfig,
+  params: Pick<PluginEnvironmentStartInteractiveSetupParams, "sourceTemplateRef" | "sourceTemplateKind">,
+): DaytonaDriverConfig {
+  if (!params.sourceTemplateRef) return config;
+  const sourceKind = params.sourceTemplateKind ?? "snapshot";
+  if (sourceKind === "image") {
+    return {
+      ...config,
+      image: params.sourceTemplateRef,
+      snapshot: null,
+    };
+  }
+  if (sourceKind !== "snapshot") {
+    throw new Error(`Daytona interactive setup can start from image or snapshot templates only, not ${sourceKind}.`);
+  }
+  return {
+    ...config,
+    snapshot: params.sourceTemplateRef,
+    image: null,
+  };
+}
+
+async function createSshConnection(
+  sandbox: Sandbox,
+  expiresInMinutes: number,
+): Promise<Pick<PluginEnvironmentInteractiveSetupSession, "connectionSummary" | "connectionPayload">> {
+  const createSshAccess = (sandbox as DaytonaInteractiveSandbox).createSshAccess;
+  if (typeof createSshAccess !== "function") {
+    throw new Error(
+      "Daytona interactive setup requires @daytonaio/sdk Sandbox.createSshAccess support.",
+    );
+  }
+
+  const fallbackExpiresAt = expiresAtForMinutes(expiresInMinutes);
+  const access = await createSshAccess.call(sandbox, expiresInMinutes);
+  const token = typeof access.token === "string" && access.token.trim().length > 0
+    ? access.token.trim()
+    : null;
+  const commandFromAccess =
+    typeof access.command === "string" && access.command.trim().length > 0
+      ? access.command.trim()
+      : typeof access.sshCommand === "string" && access.sshCommand.trim().length > 0
+        ? access.sshCommand.trim()
+        : null;
+  const command = commandFromAccess ?? (token ? `ssh ${token}@${DAYTONA_SSH_GATEWAY_HOST}` : null);
+  if (!command) {
+    throw new Error("Daytona SSH access did not return a token or SSH command.");
+  }
+  const expiresAt = typeof access.expiresAt === "string" && access.expiresAt.trim().length > 0
+    ? access.expiresAt.trim()
+    : fallbackExpiresAt;
+
+  return {
+    connectionSummary: {
+      type: "ssh",
+      username: "token",
+      hostRedacted: true,
+      portRedacted: true,
+      commandRedacted: true,
+      expiresAt,
+      metadata: {
+        provider: "daytona",
+        expiresInMinutes,
+      },
+    },
+    connectionPayload: {
+      type: "ssh",
+      command,
+      token,
+      expiresAt,
+      metadata: {
+        provider: "daytona",
+        sensitive: true,
+      },
+    },
+  };
+}
+
+function interactiveSetupMetadata(input: {
+  config: DaytonaDriverConfig;
+  sandbox: Sandbox;
+  shellCommand: "bash" | "sh";
+  remoteCwd: string;
+  sourceTemplateRef?: string | null;
+}) {
+  return {
+    provider: "daytona",
+    sandboxId: input.sandbox.id,
+    sandboxState: input.sandbox.state ?? null,
+    shellCommand: input.shellCommand,
+    imageConfigured: Boolean(input.config.image),
+    snapshotConfigured: Boolean(input.config.snapshot),
+    sourceTemplateRefRedacted: Boolean(input.sourceTemplateRef),
+    target: input.sandbox.target,
+    timeoutMs: input.config.timeoutMs,
+    remoteCwd: input.remoteCwd,
+    connectionRedacted: true,
+  };
+}
+
 function isValidShellEnvKey(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
+const GIT_NETWORK_SUBCOMMANDS = new Set(["push", "fetch", "pull", "ls-remote", "clone"]);
+
+function isGitNetworkCommand(command: string, args: string[]): boolean {
+  if (path.basename(command) !== "git") return false;
+  // Find the first positional arg (the git subcommand), skipping flags and their values.
+  let i = 0;
+  while (i < args.length) {
+    const arg = args[i];
+    if (arg === "-C" || arg === "-c" || arg === "--git-dir" || arg === "--work-tree") {
+      i += 2;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      i++;
+      continue;
+    }
+    if (GIT_NETWORK_SUBCOMMANDS.has(arg)) return true;
+    if (arg === "remote") {
+      const next = args.slice(i + 1).find(a => !a.startsWith("-"));
+      return next === "update";
+    }
+    if (arg === "submodule") {
+      const next = args.slice(i + 1).find(a => !a.startsWith("-"));
+      return next === "update";
+    }
+    return false;
+  }
+  return false;
 }
 
 // Mirror the E2B sandbox executor: source common login profiles (and nvm)
@@ -410,12 +616,14 @@ function buildLoginShellScript(input: {
   env?: Record<string, string>;
   stdinPath?: string;
 }): string {
-  const env = input.env ?? {};
-  for (const key of Object.keys(env)) {
+  const callerEnv = input.env ?? {};
+  for (const key of Object.keys(callerEnv)) {
     if (!isValidShellEnvKey(key)) {
       throw new Error(`Invalid sandbox environment variable key: ${key}`);
     }
   }
+  // Caller env takes priority over noninteractive git credential defaults
+  const env = { ...NONINTERACTIVE_GIT_ENV, ...callerEnv };
   const envArgs = Object.entries(env)
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
     .map(([key, value]) => `${key}=${shellQuote(value)}`);
@@ -448,10 +656,11 @@ function buildLoginShellScript(input: {
 }
 
 async function createSandbox(
-  params: PluginEnvironmentAcquireLeaseParams | PluginEnvironmentProbeParams,
+  params: PluginEnvironmentAcquireLeaseParams | PluginEnvironmentProbeParams | PluginEnvironmentStartInteractiveSetupParams,
   config: DaytonaDriverConfig,
+  options: { purpose?: string } = {},
 ): Promise<Sandbox> {
-  const resourceRequestError = validateResourceRequest(config);
+  const resourceRequestError = validateRuntimeResourceRequest(config);
   if (resourceRequestError) {
     throw new Error(resourceRequestError);
   }
@@ -460,6 +669,8 @@ async function createSandbox(
     companyId: params.companyId,
     environmentId: params.environmentId,
     runId: "runId" in params ? params.runId : undefined,
+    setupSessionId: "sessionId" in params ? params.sessionId : undefined,
+    purpose: options.purpose,
     reuseLease: config.reuseLease,
   }));
   const sandbox = await client.create(createParams, {
@@ -500,8 +711,10 @@ async function executeOneShot(
   params: PluginEnvironmentExecuteParams,
   config: DaytonaDriverConfig,
 ): Promise<PluginEnvironmentExecuteResult> {
+  const gitNet = isGitNetworkCommand(params.command, params.args ?? []);
   const timeoutMs = resolveTimeoutMs(params.timeoutMs, config);
-  const timeoutSeconds = toTimeoutSeconds(timeoutMs);
+  const effectiveTimeoutMs = gitNet ? Math.min(timeoutMs, GIT_NETWORK_TIMEOUT_MS) : timeoutMs;
+  const timeoutSeconds = toTimeoutSeconds(effectiveTimeoutMs);
   const stdinPath = params.stdin != null ? `/tmp/paperclip-stdin-${randomUUID()}` : null;
 
   try {
@@ -531,11 +744,14 @@ async function executeOneShot(
     };
   } catch (error) {
     if (error instanceof DaytonaTimeoutError) {
+      const timeoutMessage = gitNet
+        ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
+        : error.message.trim();
       return {
         exitCode: null,
         timedOut: true,
         stdout: "",
-        stderr: `${error.message.trim()}\n`,
+        stderr: `${timeoutMessage}\n`,
       };
     }
     throw error;
@@ -774,6 +990,200 @@ const plugin = definePlugin({
       metadata: {
         provider: "daytona",
         remoteCwd,
+      },
+    };
+  },
+
+  async onEnvironmentStartInteractiveSetup(
+    params: PluginEnvironmentStartInteractiveSetupParams,
+  ): Promise<PluginEnvironmentInteractiveSetupSession> {
+    const baseConfig = parseDriverConfig(params.config);
+    const config = withSetupSourceTemplate(baseConfig, params);
+    const sandbox = await createSandbox(params, config, { purpose: "interactive_setup" });
+    try {
+      const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+      const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
+      const connection = await createSshConnection(
+        sandbox,
+        resolveConnectionExpiresInMinutes(params.connectionExpiresInMinutes),
+      );
+      return {
+        providerLeaseId: sandbox.id,
+        status: "waiting_for_user",
+        expiresAt: params.expiresAt ?? connection.connectionPayload?.expiresAt ?? null,
+        ...connection,
+        metadata: interactiveSetupMetadata({
+          config,
+          sandbox,
+          shellCommand,
+          remoteCwd,
+          sourceTemplateRef: params.sourceTemplateRef,
+        }),
+      };
+    } catch (error) {
+      await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
+      throw error;
+    }
+  },
+
+  async onEnvironmentGetInteractiveSetup(
+    params: PluginEnvironmentGetInteractiveSetupParams,
+  ): Promise<PluginEnvironmentInteractiveSetupSession> {
+    const config = parseDriverConfig(params.config);
+    if (!params.providerLeaseId) {
+      return {
+        providerLeaseId: null,
+        status: "missing",
+        connectionSummary: null,
+        connectionPayload: null,
+        metadata: {
+          provider: "daytona",
+          missing: true,
+        },
+      };
+    }
+    const sandbox = await getSandboxOrNull(config, params.providerLeaseId);
+    if (!sandbox) {
+      return {
+        providerLeaseId: null,
+        status: "missing",
+        connectionSummary: null,
+        connectionPayload: null,
+        metadata: {
+          provider: "daytona",
+          missing: true,
+        },
+      };
+    }
+
+    await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+    const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+    const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
+    const connection = params.includeConnectionPayload === true
+      ? await createSshConnection(sandbox, resolveConnectionExpiresInMinutes(params.connectionExpiresInMinutes))
+      : {
+          connectionSummary: {
+            type: "ssh" as const,
+            username: "token",
+            hostRedacted: true,
+            portRedacted: true,
+            commandRedacted: true,
+            metadata: {
+              provider: "daytona",
+            },
+          },
+          connectionPayload: null,
+        };
+
+    return {
+      providerLeaseId: sandbox.id,
+      status: "waiting_for_user",
+      ...connection,
+      metadata: interactiveSetupMetadata({
+        config,
+        sandbox,
+        shellCommand,
+        remoteCwd,
+      }),
+    };
+  },
+
+  async onEnvironmentCaptureTemplate(
+    params: PluginEnvironmentCaptureTemplateParams,
+  ): Promise<PluginEnvironmentCaptureTemplateResult> {
+    const config = parseDriverConfig(params.config);
+    if (!params.providerLeaseId) {
+      throw new Error("Cannot capture a Daytona template without a setup sandbox lease.");
+    }
+    const sandbox = await getSandbox(config, params.providerLeaseId);
+    const createSnapshot = (sandbox as DaytonaInteractiveSandbox)._experimental_createSnapshot;
+    if (typeof createSnapshot !== "function") {
+      throw new Error(
+        "Daytona template capture requires @daytonaio/sdk Sandbox._experimental_createSnapshot support.",
+      );
+    }
+    const templateRef = sanitizeSnapshotName(
+      params.templateLabel,
+      `paperclip-${params.environmentId}-${randomUUID().slice(0, 8)}`,
+    );
+    const timeoutMs = typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs) && params.timeoutMs > 0
+      ? Math.trunc(params.timeoutMs)
+      : config.timeoutMs;
+
+    await createSnapshot.call(sandbox, templateRef, toTimeoutSeconds(timeoutMs));
+
+    return {
+      templateKind: "snapshot",
+      templateRef,
+      metadata: {
+        provider: "daytona",
+        sandboxId: sandbox.id,
+        capturedAt: new Date().toISOString(),
+        sourceTemplateRefRedacted: Boolean(params.sourceTemplateRef),
+        previousTemplateRefRedacted: Boolean(params.previousTemplateRef),
+        timeoutMs,
+      },
+    };
+  },
+
+  async onEnvironmentCancelInteractiveSetup(
+    params: PluginEnvironmentCancelInteractiveSetupParams,
+  ): Promise<PluginEnvironmentCancelInteractiveSetupResult> {
+    const config = parseDriverConfig(params.config);
+    if (!params.providerLeaseId) {
+      return {
+        status: "missing",
+        metadata: {
+          provider: "daytona",
+          missing: true,
+          reason: params.reason ?? null,
+        },
+      };
+    }
+    const sandbox = await getSandboxOrNull(config, params.providerLeaseId);
+    if (!sandbox) {
+      return {
+        status: "missing",
+        metadata: {
+          provider: "daytona",
+          missing: true,
+          reason: params.reason ?? null,
+        },
+      };
+    }
+    await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
+    return {
+      status: params.reason === "timed_out" ? "timed_out" : "cancelled",
+      metadata: {
+        provider: "daytona",
+        sandboxId: sandbox.id,
+        reason: params.reason ?? null,
+      },
+    };
+  },
+
+  async onEnvironmentDeleteTemplate(
+    params: PluginEnvironmentDeleteTemplateParams,
+  ): Promise<PluginEnvironmentDeleteTemplateResult> {
+    const templateKind = params.templateKind ?? "snapshot";
+    if (templateKind !== "snapshot") {
+      throw new Error(`Daytona can delete snapshot templates only, not ${templateKind}.`);
+    }
+    const config = parseDriverConfig(params.config);
+    const client = createDaytonaClient(config) as Daytona & { snapshot?: DaytonaSnapshotService };
+    const snapshotService = client.snapshot;
+    if (typeof snapshotService?.get !== "function" || typeof snapshotService.delete !== "function") {
+      throw new Error("Daytona template deletion requires @daytonaio/sdk snapshot.get/delete support.");
+    }
+    const snapshot = await snapshotService.get(params.templateRef);
+    await snapshotService.delete(snapshot);
+    return {
+      deleted: true,
+      metadata: {
+        provider: "daytona",
+        templateKind: "snapshot",
+        templateRefRedacted: true,
+        reason: params.reason ?? null,
       },
     };
   },

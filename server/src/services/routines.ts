@@ -3,6 +3,8 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, not, or, sql }
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companies,
+  companyMemberships,
   companySecretBindings,
   companySecretVersions,
   companySecrets,
@@ -46,6 +48,7 @@ import {
   getBuiltinRoutineVariableValues,
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
+  isValidRoutineDateString,
   pluginOperationIssueOriginKind,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
@@ -57,6 +60,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 import { secretService } from "./secrets.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { parseCron, validateCron } from "./cron.js";
@@ -79,6 +83,45 @@ const WEEKDAY_INDEX: Record<string, number> = {
   Fri: 5,
   Sat: 6,
 };
+
+async function resolveCompanyDefaultResponsibleUserId(db: Db, companyId: string) {
+  const company = await db
+    .select({ defaultResponsibleUserId: companies.defaultResponsibleUserId })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .then((rows) => rows[0] ?? null);
+  if (company?.defaultResponsibleUserId) return company.defaultResponsibleUserId;
+
+  const owner = await db
+    .select({ userId: companyMemberships.principalId })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.status, "active"),
+        eq(companyMemberships.membershipRole, "owner"),
+      ),
+    )
+    .orderBy(asc(companyMemberships.createdAt), asc(companyMemberships.id))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return owner?.userId ?? null;
+}
+
+async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorUserId: string | null | undefined, parentIssueId?: string | null) {
+  if (actorUserId) return actorUserId;
+  if (parentIssueId) {
+    const parent = await db
+      .select({ responsibleUserId: issues.responsibleUserId, createdByUserId: issues.createdByUserId })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, parentIssueId)))
+      .then((rows) => rows[0] ?? null);
+    if (parent?.responsibleUserId) return parent.responsibleUserId;
+    if (parent?.createdByUserId) return parent.createdByUserId;
+  }
+  return resolveCompanyDefaultResponsibleUserId(db, companyId);
+}
 
 type Actor = { agentId?: string | null; userId?: string | null; runId?: string | null };
 type RoutineRow = typeof routines.$inferSelect;
@@ -223,10 +266,22 @@ function parseNumberVariableValue(name: string, raw: unknown) {
   throw unprocessable(`Variable "${name}" must be a number`);
 }
 
+function parseDateVariableValue(name: string, raw: unknown) {
+  if (typeof raw !== "string") {
+    throw unprocessable(`Variable "${name}" must be a YYYY-MM-DD date`);
+  }
+  const normalized = raw.trim();
+  if (!isValidRoutineDateString(normalized)) {
+    throw unprocessable(`Variable "${name}" must be a valid YYYY-MM-DD date`);
+  }
+  return normalized;
+}
+
 function normalizeRoutineVariableValue(variable: RoutineVariable, raw: unknown): string | number | boolean | null {
   if (raw == null) return null;
   if (variable.type === "boolean") return parseBooleanVariableValue(variable.name, raw);
   if (variable.type === "number") return parseNumberVariableValue(variable.name, raw);
+  if (variable.type === "date") return parseDateVariableValue(variable.name, raw);
 
   const normalized = stringifyRoutineVariableValue(raw);
   if (variable.type === "select") {
@@ -389,6 +444,7 @@ function normalizeRoutineDispatchFingerprintValue(value: unknown): unknown {
 function createRoutineDispatchFingerprint(input: {
   payload: Record<string, unknown> | null;
   projectId: string | null;
+  projectWorkspaceId: string | null;
   assigneeAgentId: string | null;
   routineRevisionId: string | null;
   routineEnvFingerprint: string | null;
@@ -438,6 +494,7 @@ function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSna
     catchUpPolicy: routine.catchUpPolicy as RoutineRevisionSnapshotV1["routine"]["catchUpPolicy"],
     variables: routine.variables ?? [],
     env: routine.env ?? null,
+    responsibleUserId: routine.responsibleUserId ?? null,
   };
 }
 
@@ -805,6 +862,7 @@ export function routineService(
         createdByAgentId: actor.agentId ?? null,
         createdByUserId: actor.userId ?? null,
         createdByRunId: actor.runId ?? null,
+        responsibleUserId: snapshot.routine.responsibleUserId ?? null,
         createdAt: now,
       })
       .returning();
@@ -1003,7 +1061,7 @@ export function routineService(
           eq(issues.originKind, "routine_execution"),
           inArray(issues.originId, routineIds),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
         ),
       )
       .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
@@ -1041,7 +1099,7 @@ export function routineService(
             eq(issues.originKind, "routine_execution"),
             inArray(issues.originId, missingRoutineIds),
             inArray(issues.status, OPEN_ISSUE_STATUSES),
-            isNull(issues.hiddenAt),
+            visibleIssueCondition(),
           ),
         )
         .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
@@ -1122,6 +1180,7 @@ export function routineService(
           completedAt: triggeredAt,
           linkedIssueId: null,
           routineRevisionId: input.routine.latestRevisionId,
+          responsibleUserId: input.routine.responsibleUserId ?? null,
         })
         .returning();
       await updateRoutineTouchedState({
@@ -1192,7 +1251,7 @@ export function routineService(
           eq(issues.originKind, originKind),
           eq(issues.originId, originId),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           ...(fingerprintCondition ? [fingerprintCondition] : []),
         ),
       )
@@ -1218,7 +1277,7 @@ export function routineService(
           eq(issues.originKind, originKind),
           eq(issues.originId, originId),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           ...(fingerprintCondition ? [fingerprintCondition] : []),
         ),
       )
@@ -1377,14 +1436,17 @@ export function routineService(
     payload?: Record<string, unknown> | null;
     variables?: Record<string, unknown> | null;
     projectId?: string | null;
+    projectWorkspaceId?: string | null;
     assigneeAgentId?: string | null;
     idempotencyKey?: string | null;
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
+    descriptionAppendix?: string | null;
     actor?: Actor;
   }) {
     const projectId = input.projectId ?? input.routine.projectId ?? null;
+    const projectWorkspaceId = input.projectWorkspaceId ?? null;
     const assigneeAgentId = input.assigneeAgentId ?? input.routine.assigneeAgentId ?? null;
     if (!assigneeAgentId) {
       throw unprocessable("Default agent required");
@@ -1416,7 +1478,10 @@ export function routineService(
     });
     const allVariables = { ...getBuiltinRoutineVariableValues(), ...automaticVariables, ...resolvedVariables };
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
-    const description = interpolateRoutineTemplate(input.routine.description, allVariables);
+    const baseDescription = interpolateRoutineTemplate(input.routine.description, allVariables);
+    const description = [baseDescription, input.descriptionAppendix]
+      .filter((part): part is string => Boolean(part && part.trim()))
+      .join("\n\n");
     const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
     const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
     const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
@@ -1428,6 +1493,7 @@ export function routineService(
     const dispatchFingerprint = createRoutineDispatchFingerprint({
       payload: triggerPayload,
       projectId,
+      projectWorkspaceId,
       assigneeAgentId,
       routineRevisionId: input.routine.latestRevisionId,
       routineEnvFingerprint: createRoutineEnvFingerprint(input.routine.env),
@@ -1464,6 +1530,26 @@ export function routineService(
 
       const triggeredAt = new Date();
       const manualRunnerUserId = input.source === "manual" ? input.actor?.userId ?? null : null;
+      const latestRevisionResponsibleUserId = input.routine.latestRevisionId
+        ? await txDb
+            .select({
+              responsibleUserId: routineRevisions.responsibleUserId,
+              snapshot: routineRevisions.snapshot,
+            })
+            .from(routineRevisions)
+            .where(and(
+              eq(routineRevisions.companyId, input.routine.companyId),
+              eq(routineRevisions.routineId, input.routine.id),
+              eq(routineRevisions.id, input.routine.latestRevisionId),
+            ))
+            .then((rows) => {
+              const row = rows[0] ?? null;
+              const snapshot = row?.snapshot as RoutineRevisionSnapshotV1 | undefined;
+              return row?.responsibleUserId ?? snapshot?.routine.responsibleUserId ?? null;
+            })
+        : null;
+      const responsibleUserId =
+        manualRunnerUserId ?? latestRevisionResponsibleUserId ?? input.routine.responsibleUserId ?? null;
       const [createdRun] = await txDb
         .insert(routineRuns)
         .values({
@@ -1477,6 +1563,7 @@ export function routineService(
           triggerPayload,
           dispatchFingerprint,
           routineRevisionId: input.routine.latestRevisionId,
+          responsibleUserId,
         })
         .returning();
 
@@ -1520,6 +1607,7 @@ export function routineService(
         try {
           createdIssue = await issueSvc.create(input.routine.companyId, {
             projectId,
+            projectWorkspaceId,
             goalId: input.routine.goalId,
             parentId: input.routine.parentIssueId,
             title,
@@ -1529,6 +1617,8 @@ export function routineService(
             assigneeAgentId,
             createdByAgentId: input.source === "manual" ? input.actor?.agentId ?? null : null,
             createdByUserId: manualRunnerUserId,
+            responsibleUserId,
+            trustExplicitResponsibleUserId: true,
             originKind: issueOriginKind,
             originId: issueOriginId,
             originRunId: createdRun.id,
@@ -1820,6 +1910,10 @@ export function routineService(
       );
       assertRoutineVariableDefinitions(variables);
       const status = normalizeDraftRoutineStatus(input.status, input.assigneeAgentId);
+      const responsibleUserId = await resolveRoutineResponsibleUserId(db, companyId, actor.userId, input.parentIssueId ?? null);
+      if (!responsibleUserId) {
+        throw unprocessable("Routine requires a responsible user");
+      }
       const createdRoutine = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         const [created] = await txDb
@@ -1838,6 +1932,7 @@ export function routineService(
             catchUpPolicy: input.catchUpPolicy,
             variables,
             env,
+            responsibleUserId,
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             updatedByAgentId: actor.agentId ?? null,
@@ -1908,6 +2003,15 @@ export function routineService(
       if (enabledScheduleTriggers) {
         assertScheduleCompatibleVariables(nextVariables);
       }
+      const responsibleUserId = await resolveRoutineResponsibleUserId(
+        db,
+        existing.companyId,
+        actor.userId,
+        patch.parentIssueId === undefined ? existing.parentIssueId : patch.parentIssueId,
+      );
+      if (!responsibleUserId) {
+        throw unprocessable("Routine requires a responsible user");
+      }
       const updatedRoutine = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${id} for update`);
@@ -1938,6 +2042,7 @@ export function routineService(
           catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
           variables: nextVariables,
           env: nextEnv,
+          responsibleUserId: locked.responsibleUserId ?? responsibleUserId,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
@@ -1987,6 +2092,7 @@ export function routineService(
             catchUpPolicy: candidate.catchUpPolicy,
             variables: candidate.variables,
             env: candidate.env,
+            responsibleUserId: candidate.responsibleUserId,
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
             updatedAt: new Date(),
@@ -2425,12 +2531,39 @@ export function routineService(
         payload: input.payload as Record<string, unknown> | null | undefined,
         variables: input.variables as Record<string, unknown> | null | undefined,
         projectId: input.projectId ?? null,
+        projectWorkspaceId: input.projectWorkspaceId ?? null,
         assigneeAgentId: input.assigneeAgentId ?? null,
         idempotencyKey: input.idempotencyKey,
         executionWorkspaceId: input.executionWorkspaceId ?? null,
         executionWorkspacePreference: input.executionWorkspacePreference ?? null,
         executionWorkspaceSettings:
           (input.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null,
+        actor,
+      });
+    },
+
+    runPipelineStageEntryRoutine: async (id: string, input: RunRoutine & { descriptionAppendix?: string | null }, actor?: Actor) => {
+      const routine = await getRoutineById(id);
+      if (!routine) throw notFound("Routine not found");
+      if (routine.status === "archived") throw conflict("Routine is archived");
+      await assertProject(routine.companyId, input.projectId ?? null);
+      const assigneeAgentId = input.assigneeAgentId ?? routine.assigneeAgentId ?? null;
+      await assertAssignableAgent(db, routine.companyId, assigneeAgentId, { kind: "routine" });
+      return dispatchRoutineRun({
+        routine,
+        trigger: null,
+        source: "api",
+        payload: input.payload as Record<string, unknown> | null | undefined,
+        variables: input.variables as Record<string, unknown> | null | undefined,
+        projectId: input.projectId ?? null,
+        projectWorkspaceId: input.projectWorkspaceId ?? null,
+        assigneeAgentId: input.assigneeAgentId ?? null,
+        idempotencyKey: input.idempotencyKey,
+        executionWorkspaceId: input.executionWorkspaceId ?? null,
+        executionWorkspacePreference: input.executionWorkspacePreference ?? null,
+        executionWorkspaceSettings:
+          (input.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null,
+        descriptionAppendix: input.descriptionAppendix ?? null,
         actor,
       });
     },

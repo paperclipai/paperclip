@@ -45,6 +45,7 @@ vi.mock("../services/index.js", () => ({
   agentInstructionsService: () => ({}),
   accessService: () => mockAccessService,
   approvalService: () => ({}),
+  builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
   companySkillService: () => ({
     listRuntimeSkillEntries: vi.fn(async () => []),
     resolveRequestedSkillKeys: vi.fn(async () => []),

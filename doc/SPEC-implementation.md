@@ -83,8 +83,12 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Revenue/expense accounting beyond model/token costs
 - Knowledge base subsystem
 - Public marketplace (ClipHub)
-- Multi-board governance or role-based human permission granularity
+- Multi-board governance (multiple board UIs for a single company)
 - Automatic self-healing orchestration (auto-reassign/retry planners)
+
+Role-based human permission granularity is V1 — see the `humans-and-permissions`
+plan, the `principal_permission_grants` table, and the `PERMISSION_KEYS` set
+in `packages/shared/src/constants.ts`.
 
 ## 6. Architecture
 
@@ -153,7 +157,7 @@ Invariant: every business record belongs to exactly one company.
 - `status` enum: `active | paused | idle | running | error | pending_approval | terminated`
 - `reports_to` uuid fk `agents.id` null
 - `capabilities` text null
-- `adapter_type` text; built-ins include `process`, `http`, `claude_local`, `codex_local`, `gemini_local`, `opencode_local`, `pi_local`, `cursor`, and `openclaw_gateway`
+- `adapter_type` text; built-ins include `process`, `http`, `claude_local`, `codex_local`, `gemini_local`, `opencode_local`, `pi_local`, `cursor`, `hermes_local`, `hermes_gateway`, and `openclaw_gateway`
 - `adapter_config` jsonb not null
 - `runtime_config` jsonb not null default `{}`; may include Paperclip runtime policy such as `modelProfiles.cheap.adapterConfig` for an optional low-cost model lane that does not change the primary adapter config
 - `default_environment_id` uuid fk `environments.id` null

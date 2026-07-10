@@ -32,6 +32,7 @@ const sidebarState = vi.hoisted(() => ({
 
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
+  listLabels: vi.fn(),
 }));
 
 const mockAgentsApi = vi.hoisted(() => ({
@@ -44,6 +45,10 @@ const mockProjectsApi = vi.hoisted(() => ({
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
+}));
+
+const mockAuthApi = vi.hoisted(() => ({
+  getSession: vi.fn(),
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -85,6 +90,10 @@ vi.mock("../api/projects", () => ({
 
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../api/auth", () => ({
+  authApi: mockAuthApi,
 }));
 
 vi.mock("./Identity", () => ({
@@ -190,19 +199,23 @@ describe("CommandPalette", () => {
     dialogState.openNewAgent.mockReset();
     sidebarState.setSidebarOpen.mockReset();
     mockIssuesApi.list.mockReset();
+    mockIssuesApi.listLabels.mockReset();
     mockAgentsApi.list.mockReset();
     mockProjectsApi.list.mockReset();
     mockInstanceSettingsApi.getExperimental.mockReset();
+    mockAuthApi.getSession.mockReset();
     navigateState.navigate.mockReset();
     locationState.location.pathname = "/";
     locationState.location.search = "";
     locationState.location.hash = "";
     mockIssuesApi.list.mockResolvedValue([]);
+    mockIssuesApi.listLabels.mockResolvedValue([]);
     mockAgentsApi.list.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableExperimentalFileViewer: false,
     });
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" }, session: { userId: "user-1" } });
   });
 
   afterEach(() => {
@@ -312,7 +325,68 @@ describe("CommandPalette", () => {
     });
 
     await waitForAssertion(() => {
-      expect(navigateState.navigate).toHaveBeenCalledWith("/search?q=auth%20flake");
+      expect(navigateState.navigate).toHaveBeenCalledWith("/search?q=auth+flake");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("promotes matching projects above the Tasks group when typing", async () => {
+    const projects = [
+      { id: "p1", urlKey: "mobile", name: "Mobile App", description: "iOS client", archivedAt: null },
+      { id: "p2", urlKey: "billing", name: "Billing Service", description: null, archivedAt: null },
+    ];
+    mockProjectsApi.list.mockResolvedValue(projects);
+    mockIssuesApi.list.mockImplementation((_companyId: string, opts?: { q?: string }) =>
+      Promise.resolve(opts?.q ? [{ id: "i1", identifier: "ENG-9", title: "Fix login" }] : []),
+    );
+
+    const { root } = renderWithQueryClient(<CommandPalette />, container, (queryClient) => {
+      // Seed the caches so the already-loaded data is available synchronously —
+      // this harness's flush model doesn't reliably propagate fresh async fetches.
+      queryClient.setQueryData(queryKeys.projects.list("company-1"), projects);
+      queryClient.setQueryData(queryKeys.issues.search("company-1", "mob", undefined, 10), [
+        { id: "i1", identifier: "ENG-9", title: "Fix login" },
+      ]);
+    });
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+    });
+
+    const input = container.querySelector('input[aria-label="Command search"]') as HTMLInputElement;
+    act(() => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      nativeSetter.call(input, "mob");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      const match = container.querySelector('button[data-testid="command-project-match"]');
+      expect(match).not.toBeNull();
+      expect(match!.textContent).toContain("Mobile App");
+    });
+
+    // Non-matching project is excluded from the typeahead results.
+    expect(container.textContent).not.toContain("Billing Service");
+
+    // The promoted project renders above the fold — before the Tasks group.
+    await waitForAssertion(() => {
+      const text = container.textContent ?? "";
+      expect(text).toContain("Fix login");
+      expect(text.indexOf("Mobile App")).toBeLessThan(text.indexOf("Fix login"));
+    });
+
+    // Selecting the promoted project navigates to its URL.
+    act(() => {
+      container
+        .querySelector('button[data-testid="command-project-match"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      expect(navigateState.navigate).toHaveBeenCalledWith("/projects/mobile");
     });
 
     act(() => {
@@ -355,4 +429,73 @@ describe("CommandPalette", () => {
       root.unmount();
     });
   });
+
+  it("renders quick-filter chips and inserts them into the palette query", async () => {
+    const { root } = renderWithQueryClient(<CommandPalette />, container);
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      const chips = Array.from(container.querySelectorAll('button[data-testid="command-filter-chip"]'));
+      expect(chips.map((chip) => chip.textContent)).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("assignee:me"),
+          expect.stringContaining("is:open"),
+          expect.stringContaining("updated:>7d"),
+        ]),
+      );
+    });
+
+    act(() => {
+      container.querySelector('button[data-testid="command-filter-chip"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const input = container.querySelector('input[aria-label="Command search"]') as HTMLInputElement;
+    await waitForAssertion(() => {
+      expect(input.value).toBe("assignee:me");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("parses operators for lightweight issue search but keeps filters for command-enter handoff", async () => {
+    mockIssuesApi.list.mockResolvedValue([]);
+    const { root } = renderWithQueryClient(<CommandPalette />, container);
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+    });
+
+    const input = container.querySelector('input[aria-label="Command search"]') as HTMLInputElement;
+    act(() => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      nativeSetter.call(input, "auth status:blocked updated:>7d");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
+        q: "auth",
+        limit: 10,
+        includeRoutineExecutions: true,
+      });
+    });
+
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(navigateState.navigate).toHaveBeenCalledWith("/search?q=auth&status=blocked&updatedWithin=7d");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
 });

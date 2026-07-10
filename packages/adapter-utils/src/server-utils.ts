@@ -126,6 +126,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
   "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
   "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
+  "- Use `PAPERCLIP_SCRATCH_DIR` / `PAPERCLIP_RUN_SCRATCH_DIR` for temporary scratch files instead of ad hoc `/tmp` paths; Paperclip removes that run-owned directory after the run ends.",
   "- To ask for that input, create an interaction on the current issue with POST /api/issues/{issueId}/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response; for request_confirmation this resumes only after acceptance.",
   "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/{issueId}/comments or PATCH /api/issues/{issueId} comment payload. Generic agent comments on closed issues are inert by default.",
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
@@ -436,6 +437,114 @@ type PaperclipWakeComment = {
   authorId: string | null;
 };
 
+type PaperclipWakePlanReviewAuthor = {
+  type: string | null;
+  id: string | null;
+};
+
+type PaperclipWakeAnnotationDelta = {
+  id: string | null;
+  issueId: string | null;
+  threadId: string | null;
+  documentKey: string | null;
+  revisionNumber: number | null;
+  quote: string;
+  prefix: string;
+  suffix: string;
+  threadStatus: string | null;
+  anchorState: string | null;
+  anchorConfidence: string | null;
+  body: string;
+  bodyTruncated: boolean;
+  createdAt: string | null;
+  author: PaperclipWakePlanReviewAuthor | null;
+};
+
+type PaperclipWakePlanReviewComment = {
+  id: string | null;
+  threadId: string | null;
+  body: string;
+  bodyTruncated: boolean;
+  author: PaperclipWakePlanReviewAuthor | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+type PaperclipWakePlanReviewThread = {
+  id: string | null;
+  documentKey: string | null;
+  documentId: string | null;
+  status: string | null;
+  revisionId: string | null;
+  revisionNumber: number | null;
+  anchorState: string | null;
+  anchorConfidence: string | null;
+  selectedText: string;
+  selectedTextTruncated: boolean;
+  prefixText: string;
+  prefixTextTruncated: boolean;
+  suffixText: string;
+  suffixTextTruncated: boolean;
+  author: PaperclipWakePlanReviewAuthor | null;
+  commentCount: number;
+  comments: PaperclipWakePlanReviewComment[];
+  commentsTruncated: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+type PaperclipWakePlanReviewInteractionTarget = {
+  issueId: string | null;
+  documentId: string | null;
+  key: string | null;
+  revisionId: string | null;
+  revisionNumber: number | null;
+};
+
+type PaperclipWakePlanReviewInteractionResult = {
+  outcome: string | null;
+  reason: string | null;
+  commentId: string | null;
+};
+
+type PaperclipWakePlanReviewInteraction = {
+  id: string | null;
+  kind: string | null;
+  status: string | null;
+  continuationPolicy: string | null;
+  sourceCommentId: string | null;
+  sourceRunId: string | null;
+  target: PaperclipWakePlanReviewInteractionTarget | null;
+  acceptedTargetRevision: PaperclipWakePlanReviewInteractionTarget | null;
+  result: PaperclipWakePlanReviewInteractionResult | null;
+  resolvedAt: string | null;
+};
+
+type PaperclipWakePlanReviewContext = {
+  documentKey: string | null;
+  issueId: string | null;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number | null;
+  threads: PaperclipWakePlanReviewThread[];
+  interaction: PaperclipWakePlanReviewInteraction | null;
+  totals: {
+    openThreadCount: number;
+    includedThreadCount: number;
+    omittedThreadCount: number;
+    commentCount: number;
+    includedCommentCount: number;
+    omittedCommentCount: number;
+  };
+  limits: {
+    maxThreads: number;
+    maxComments: number;
+    maxBodyChars: number;
+    maxTotalBodyChars: number;
+    maxAnchorTextChars: number;
+  } | null;
+  truncated: boolean;
+};
+
 type PaperclipWakeContinuationSummary = {
   key: string | null;
   title: string | null;
@@ -477,6 +586,20 @@ type PaperclipWakeTreeHoldSummary = {
   reason: string | null;
 };
 
+type PaperclipWakeCheckboxSelection = {
+  prompt: string | null;
+  selectedOptionIds: string[];
+  selectedOptions: Array<{
+    id: string;
+    label: string;
+    description: string | null;
+  }>;
+};
+
+type PaperclipWakeExecutionWorkspace = {
+  branchName: string | null;
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
@@ -488,10 +611,14 @@ type PaperclipWakePayload = {
   unresolvedBlockerSummaries: PaperclipWakeBlockerSummary[];
   executionStage: PaperclipWakeExecutionStage | null;
   continuationSummary: PaperclipWakeContinuationSummary | null;
+  planReviewContext: PaperclipWakePlanReviewContext | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
   taskWatchdog: PaperclipWakeTaskWatchdogContext | null;
   interactionKind: string | null;
   interactionStatus: string | null;
+  checkboxSelection: PaperclipWakeCheckboxSelection | null;
+  executionWorkspace: PaperclipWakeExecutionWorkspace | null;
+  annotationDeltas: PaperclipWakeAnnotationDelta[];
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
   commentIds: string[];
@@ -536,6 +663,225 @@ function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | n
     createdAt: asString(comment.createdAt, "").trim() || null,
     authorType: asString(author.type, "").trim() || null,
     authorId: asString(author.id, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakePlanReviewAuthor(value: unknown): PaperclipWakePlanReviewAuthor | null {
+  const author = parseObject(value);
+  const type = asString(author.type, "").trim() || null;
+  const id = asString(author.id, "").trim() || null;
+  if (!type && !id) return null;
+  return { type, id };
+}
+
+function normalizePaperclipWakeAnnotationDelta(value: unknown): PaperclipWakeAnnotationDelta | null {
+  const delta = parseObject(value);
+  const id = asString(delta.id, "").trim() || null;
+  const issueId = asString(delta.issueId, "").trim() || null;
+  const threadId = asString(delta.threadId, "").trim() || null;
+  const documentKey = asString(delta.documentKey, "").trim() || null;
+  const revisionNumber = asNumber(delta.revisionNumber, 0);
+  const quote = asString(delta.quote, "");
+  const prefix = asString(delta.prefix, "");
+  const suffix = asString(delta.suffix, "");
+  const threadStatus = asString(delta.threadStatus, "").trim() || null;
+  const anchorState = asString(delta.anchorState, "").trim() || null;
+  const anchorConfidence = asString(delta.anchorConfidence, "").trim() || null;
+  const body = asString(delta.body, "");
+  const createdAt = asString(delta.createdAt, "").trim() || null;
+  const author = normalizePaperclipWakePlanReviewAuthor(delta.author);
+  if (!id && !threadId && !documentKey && !quote.trim() && !body.trim()) return null;
+  return {
+    id,
+    issueId,
+    threadId,
+    documentKey,
+    revisionNumber: revisionNumber > 0 ? revisionNumber : null,
+    quote,
+    prefix,
+    suffix,
+    threadStatus,
+    anchorState,
+    anchorConfidence,
+    body,
+    bodyTruncated: asBoolean(delta.bodyTruncated, false),
+    createdAt,
+    author,
+  };
+}
+
+function normalizePaperclipWakePlanReviewComment(value: unknown): PaperclipWakePlanReviewComment | null {
+  const comment = parseObject(value);
+  const id = asString(comment.id, "").trim() || null;
+  const threadId = asString(comment.threadId, "").trim() || null;
+  const body = asString(comment.body, "");
+  const author = normalizePaperclipWakePlanReviewAuthor(comment.author);
+  const createdAt = asString(comment.createdAt, "").trim() || null;
+  const updatedAt = asString(comment.updatedAt, "").trim() || null;
+  if (!id && !threadId && !body.trim()) return null;
+  return {
+    id,
+    threadId,
+    body,
+    bodyTruncated: asBoolean(comment.bodyTruncated, false),
+    author,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function normalizePaperclipWakePlanReviewThread(value: unknown): PaperclipWakePlanReviewThread | null {
+  const thread = parseObject(value);
+  const comments = Array.isArray(thread.comments)
+    ? thread.comments
+        .map((entry) => normalizePaperclipWakePlanReviewComment(entry))
+        .filter((entry): entry is PaperclipWakePlanReviewComment => Boolean(entry))
+    : [];
+  const id = asString(thread.id, "").trim() || null;
+  const documentKey = asString(thread.documentKey, "").trim() || null;
+  const documentId = asString(thread.documentId, "").trim() || null;
+  const status = asString(thread.status, "").trim() || null;
+  const revisionId = asString(thread.revisionId, "").trim() || null;
+  const revisionNumber = asNumber(thread.revisionNumber, 0);
+  const anchorState = asString(thread.anchorState, "").trim() || null;
+  const anchorConfidence = asString(thread.anchorConfidence, "").trim() || null;
+  const selectedText = asString(thread.selectedText, "");
+  const prefixText = asString(thread.prefixText, "");
+  const suffixText = asString(thread.suffixText, "");
+  const author = normalizePaperclipWakePlanReviewAuthor(thread.author);
+  const commentCount = asNumber(thread.commentCount, comments.length);
+  const createdAt = asString(thread.createdAt, "").trim() || null;
+  const updatedAt = asString(thread.updatedAt, "").trim() || null;
+  if (!id && !documentId && !selectedText.trim() && comments.length === 0) return null;
+  return {
+    id,
+    documentKey,
+    documentId,
+    status,
+    revisionId,
+    revisionNumber: revisionNumber > 0 ? revisionNumber : null,
+    anchorState,
+    anchorConfidence,
+    selectedText,
+    selectedTextTruncated: asBoolean(thread.selectedTextTruncated, false),
+    prefixText,
+    prefixTextTruncated: asBoolean(thread.prefixTextTruncated, false),
+    suffixText,
+    suffixTextTruncated: asBoolean(thread.suffixTextTruncated, false),
+    author,
+    commentCount: commentCount >= 0 ? commentCount : comments.length,
+    comments,
+    commentsTruncated: asBoolean(thread.commentsTruncated, false),
+    createdAt,
+    updatedAt,
+  };
+}
+
+function normalizePaperclipWakePlanReviewInteractionTarget(
+  value: unknown,
+): PaperclipWakePlanReviewInteractionTarget | null {
+  const target = parseObject(value);
+  const issueId = asString(target.issueId, "").trim() || null;
+  const documentId = asString(target.documentId, "").trim() || null;
+  const key = asString(target.key, "").trim() || null;
+  const revisionId = asString(target.revisionId, "").trim() || null;
+  const revisionNumber = asNumber(target.revisionNumber, 0);
+  if (!issueId && !documentId && !key && !revisionId && !revisionNumber) return null;
+  return {
+    issueId,
+    documentId,
+    key,
+    revisionId,
+    revisionNumber: revisionNumber > 0 ? revisionNumber : null,
+  };
+}
+
+function normalizePaperclipWakePlanReviewInteractionResult(
+  value: unknown,
+): PaperclipWakePlanReviewInteractionResult | null {
+  const result = parseObject(value);
+  const outcome = asString(result.outcome, "").trim() || null;
+  const reason = asString(result.reason, "").trim() || null;
+  const commentId = asString(result.commentId, "").trim() || null;
+  if (!outcome && !reason && !commentId) return null;
+  return { outcome, reason, commentId };
+}
+
+function normalizePaperclipWakePlanReviewInteraction(value: unknown): PaperclipWakePlanReviewInteraction | null {
+  const interaction = parseObject(value);
+  const id = asString(interaction.id, "").trim() || null;
+  const kind = asString(interaction.kind, "").trim() || null;
+  const status = asString(interaction.status, "").trim() || null;
+  const continuationPolicy = asString(interaction.continuationPolicy, "").trim() || null;
+  const sourceCommentId = asString(interaction.sourceCommentId, "").trim() || null;
+  const sourceRunId = asString(interaction.sourceRunId, "").trim() || null;
+  const target = normalizePaperclipWakePlanReviewInteractionTarget(interaction.target);
+  const acceptedTargetRevision = normalizePaperclipWakePlanReviewInteractionTarget(interaction.acceptedTargetRevision);
+  const result = normalizePaperclipWakePlanReviewInteractionResult(interaction.result);
+  const resolvedAt = asString(interaction.resolvedAt, "").trim() || null;
+  if (!id && !kind && !status && !target && !acceptedTargetRevision && !result) return null;
+  return {
+    id,
+    kind,
+    status,
+    continuationPolicy,
+    sourceCommentId,
+    sourceRunId,
+    target,
+    acceptedTargetRevision,
+    result,
+    resolvedAt,
+  };
+}
+
+function normalizePaperclipWakePlanReviewContext(value: unknown): PaperclipWakePlanReviewContext | null {
+  const context = parseObject(value);
+  const threads = Array.isArray(context.threads)
+    ? context.threads
+        .map((entry) => normalizePaperclipWakePlanReviewThread(entry))
+        .filter((entry): entry is PaperclipWakePlanReviewThread => Boolean(entry))
+    : [];
+  const interaction = normalizePaperclipWakePlanReviewInteraction(context.interaction);
+  const totalsRaw = parseObject(context.totals);
+  const limitsRaw = parseObject(context.limits);
+  const limits = Object.keys(limitsRaw).length > 0
+    ? {
+        maxThreads: asNumber(limitsRaw.maxThreads, 0),
+        maxComments: asNumber(limitsRaw.maxComments, 0),
+        maxBodyChars: asNumber(limitsRaw.maxBodyChars, 0),
+        maxTotalBodyChars: asNumber(limitsRaw.maxTotalBodyChars, 0),
+        maxAnchorTextChars: asNumber(limitsRaw.maxAnchorTextChars, 0),
+      }
+    : null;
+  const documentKey = asString(context.documentKey, "").trim() || null;
+  const issueId = asString(context.issueId, "").trim() || null;
+  const latestRevisionId = asString(context.latestRevisionId, "").trim() || null;
+  const latestRevisionNumber = asNumber(context.latestRevisionNumber, 0);
+  const openThreadCount = asNumber(totalsRaw.openThreadCount, threads.length);
+  const includedThreadCount = asNumber(totalsRaw.includedThreadCount, threads.length);
+  const commentCount = asNumber(totalsRaw.commentCount, threads.reduce((sum, thread) => sum + thread.commentCount, 0));
+  const includedCommentCount = asNumber(
+    totalsRaw.includedCommentCount,
+    threads.reduce((sum, thread) => sum + thread.comments.length, 0),
+  );
+  if (!documentKey && !issueId && threads.length === 0 && !interaction) return null;
+  return {
+    documentKey,
+    issueId,
+    latestRevisionId,
+    latestRevisionNumber: latestRevisionNumber > 0 ? latestRevisionNumber : null,
+    threads,
+    interaction,
+    totals: {
+      openThreadCount: Math.max(0, openThreadCount),
+      includedThreadCount: Math.max(0, includedThreadCount),
+      omittedThreadCount: Math.max(0, asNumber(totalsRaw.omittedThreadCount, Math.max(0, openThreadCount - threads.length))),
+      commentCount: Math.max(0, commentCount),
+      includedCommentCount: Math.max(0, includedCommentCount),
+      omittedCommentCount: Math.max(0, asNumber(totalsRaw.omittedCommentCount, Math.max(0, commentCount - includedCommentCount))),
+    },
+    limits,
+    truncated: asBoolean(context.truncated, false),
   };
 }
 
@@ -602,6 +948,42 @@ function normalizePaperclipWakeTreeHoldSummary(value: unknown): PaperclipWakeTre
   const reason = asString(hold.reason, "").trim() || null;
   if (!holdId && !rootIssueId && !mode && !reason) return null;
   return { holdId, rootIssueId, mode, reason };
+}
+
+function normalizePaperclipWakeCheckboxSelection(value: unknown): PaperclipWakeCheckboxSelection | null {
+  const selection = parseObject(value);
+  const hasExplicitSelection =
+    Object.prototype.hasOwnProperty.call(selection, "prompt") ||
+    Object.prototype.hasOwnProperty.call(selection, "selectedOptionIds") ||
+    Object.prototype.hasOwnProperty.call(selection, "selectedOptions");
+  const prompt = asString(selection.prompt, "").trim() || null;
+  const selectedOptionIds = Array.isArray(selection.selectedOptionIds)
+    ? selection.selectedOptionIds
+        .map((entry) => asString(entry, "").trim())
+        .filter(Boolean)
+    : [];
+  const selectedOptions = Array.isArray(selection.selectedOptions)
+    ? selection.selectedOptions
+        .map((entry) => {
+          const option = parseObject(entry);
+          const id = asString(option.id, "").trim();
+          if (!id) return null;
+          return {
+            id,
+            label: asString(option.label, id).trim() || id,
+            description: asString(option.description, "").trim() || null,
+          };
+        })
+        .filter((entry): entry is { id: string; label: string; description: string | null } => Boolean(entry))
+    : [];
+
+  if (!hasExplicitSelection && selectedOptionIds.length === 0 && selectedOptions.length === 0 && !prompt) return null;
+  const optionById = new Map(selectedOptions.map((option) => [option.id, option]));
+  return {
+    prompt,
+    selectedOptionIds,
+    selectedOptions: selectedOptionIds.map((id) => optionById.get(id) ?? { id, label: id, description: null }),
+  };
 }
 
 function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWakeExecutionPrincipal | null {
@@ -748,6 +1130,29 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
   };
 }
 
+function normalizePaperclipWakeExecutionWorkspace(value: unknown): PaperclipWakeExecutionWorkspace | null {
+  const workspace = parseObject(value);
+  // Strip control characters (illegal in git refs, and the newline route into
+  // the prompt) but keep the ref otherwise exact -- the guard must name the
+  // real branch. Renderers escape the name for their output format.
+  const branchName =
+    asString(workspace.branchName, "")
+      .replace(/[\u0000-\u001f\u007f]/g, "")
+      .trim()
+      .slice(0, 300) || null;
+  if (!branchName) return null;
+  return { branchName };
+}
+
+// Wrap a value in a Markdown inline-code span whose backtick fence is longer
+// than any backtick run inside the value, so the value cannot close the span.
+function markdownInlineCode(value: string): string {
+  const longestBacktickRun = value.match(/`+/g)?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
+  if (longestBacktickRun === 0) return `\`${value}\``;
+  const fence = "`".repeat(longestBacktickRun + 1);
+  return `${fence} ${value} ${fence}`;
+}
+
 export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
   const payload = parseObject(value);
   const comments = Array.isArray(payload.comments)
@@ -763,6 +1168,12 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
   const executionStage = normalizePaperclipWakeExecutionStage(payload.executionStage);
   const continuationSummary = normalizePaperclipWakeContinuationSummary(payload.continuationSummary);
+  const planReviewContext = normalizePaperclipWakePlanReviewContext(payload.planReviewContext);
+  const annotationDeltas = Array.isArray(payload.annotationDeltas)
+    ? payload.annotationDeltas
+        .map((entry) => normalizePaperclipWakeAnnotationDelta(entry))
+        .filter((entry): entry is PaperclipWakeAnnotationDelta => Boolean(entry))
+    : [];
   const livenessContinuation = normalizePaperclipWakeLivenessContinuation(payload.livenessContinuation);
   const taskWatchdog = normalizePaperclipWakeTaskWatchdog(payload.taskWatchdog);
   const childIssueSummaries = Array.isArray(payload.childIssueSummaries)
@@ -782,7 +1193,9 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !taskWatchdog && !normalizePaperclipWakeIssue(payload.issue)) {
+  const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
+  const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -797,10 +1210,14 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     unresolvedBlockerSummaries,
     executionStage,
     continuationSummary,
+    planReviewContext,
+    annotationDeltas,
     livenessContinuation,
     taskWatchdog,
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
+    checkboxSelection,
+    executionWorkspace,
     childIssueSummaries,
     childIssueSummaryTruncated: asBoolean(payload.childIssueSummaryTruncated, false),
     commentIds,
@@ -841,6 +1258,25 @@ export function renderPaperclipWakePrompt(
     if (!principal || !principal.type) return "unknown";
     if (principal.type === "agent") return principal.agentId ? `agent ${principal.agentId}` : "agent";
     return principal.userId ? `user ${principal.userId}` : "user";
+  };
+  const planReviewTargetLabel = (target: PaperclipWakePlanReviewInteractionTarget | null) => {
+    if (!target) return "none";
+    const revision = target.revisionNumber
+      ? `revision #${target.revisionNumber}`
+      : target.revisionId
+        ? `revision ${target.revisionId}`
+        : "unknown revision";
+    return `${target.key ?? "document"} ${revision}`;
+  };
+  const planReviewAuthorLabel = (author: PaperclipWakePlanReviewAuthor | null) => {
+    if (!author) return "unknown";
+    return author.id ? `${author.type ?? "unknown"} ${author.id}` : author.type ?? "unknown";
+  };
+  const renderPlanReviewText = (label: string, text: string, truncated: boolean) => {
+    lines.push(`${label}: ${text.trim() ? text : "(empty)"}`);
+    if (truncated) {
+      lines.push(`[${label.trim().toLowerCase()} truncated]`);
+    }
   };
 
   const lines = resumedSession
@@ -887,6 +1323,21 @@ export function renderPaperclipWakePrompt(
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
   }
+  if (normalized.checkboxSelection) {
+    if (normalized.checkboxSelection.prompt) {
+      lines.push(`- checkbox prompt: ${normalized.checkboxSelection.prompt}`);
+    }
+    const selectedOptionIds = normalized.checkboxSelection.selectedOptionIds.join(", ") || "(none)";
+    const selectedOptions = normalized.checkboxSelection.selectedOptions
+      .map((option) => {
+        const label = option.label && option.label !== option.id ? ` (${option.label})` : "";
+        const description = option.description ? ` - ${option.description}` : "";
+        return `${option.id}${label}${description}`;
+      })
+      .join(", ") || "(none)";
+    lines.push(`- checkbox selection ids: ${selectedOptionIds}`);
+    lines.push(`- checkbox selection options: ${selectedOptions}`);
+  }
   if (normalized.issue?.workMode === "planning" && !normalized.taskWatchdog) {
     const hasWakeComments = normalized.comments.length > 0;
     const acceptedPlanContinuation =
@@ -908,6 +1359,11 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.checkedOutByHarness) {
     lines.push("- checkout: already claimed by the harness for this run");
+  }
+  if (!resumedSession && normalized.executionWorkspace?.branchName) {
+    lines.push(
+      `- execution workspace branch: you are running in an execution workspace on branch ${markdownInlineCode(normalized.executionWorkspace.branchName)}. Do not switch, rename, or re-point this branch; keep all commits on it.`,
+    );
   }
   if (normalized.dependencyBlockedInteraction) {
     lines.push("- dependency-blocked interaction: yes");
@@ -931,6 +1387,93 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.missingCount > 0) {
     lines.push(`- omitted comments: ${normalized.missingCount}`);
+  }
+
+  if (normalized.annotationDeltas.length > 0) {
+    lines.push(
+      "",
+      "New plan annotation deltas:",
+      "These direct annotation deltas are user feedback tied to plan text.",
+    );
+    for (const delta of normalized.annotationDeltas) {
+      const state = [
+        delta.threadStatus,
+        delta.revisionNumber ? `revision #${delta.revisionNumber}` : null,
+        delta.anchorState,
+        delta.anchorConfidence,
+      ].filter(Boolean).join(", ");
+      lines.push(`- annotation ${delta.id ?? delta.threadId ?? "unknown"}${state ? ` (${state})` : ""}`);
+      if (delta.threadId) lines.push(`  thread: ${delta.threadId}`);
+      if (delta.documentKey) lines.push(`  document: ${delta.documentKey}`);
+      renderPlanReviewText("  selected text", delta.quote, false);
+      renderPlanReviewText("  context before", delta.prefix, false);
+      renderPlanReviewText("  context after", delta.suffix, false);
+      lines.push(`  comment by ${planReviewAuthorLabel(delta.author)}${delta.createdAt ? ` at ${delta.createdAt}` : ""}:`);
+      lines.push(delta.body);
+      if (delta.bodyTruncated) {
+        lines.push("[annotation comment body truncated]");
+      }
+    }
+  }
+
+  if (normalized.planReviewContext) {
+    const context = normalized.planReviewContext;
+    lines.push(
+      "",
+      "Open plan comments to incorporate:",
+      "These open plan annotations are user feedback. Resolved annotations were intentionally omitted.",
+      "Read this before revising the plan or creating child issues from an accepted plan.",
+    );
+    if (context.latestRevisionNumber || context.latestRevisionId) {
+      lines.push(
+        `- latest plan revision: ${context.latestRevisionNumber ?? "unknown"}${context.latestRevisionId ? ` (${context.latestRevisionId})` : ""}`,
+      );
+    }
+    if (context.interaction) {
+      lines.push(`- interaction: ${context.interaction.kind ?? "unknown"} ${context.interaction.status ?? "unknown"}`);
+      if (context.interaction.result) {
+        const result = context.interaction.result;
+        lines.push(`- result: ${result.outcome ?? "unknown"}${result.reason ? ` (${result.reason})` : ""}`);
+        if (result.commentId) {
+          lines.push(`- result comment id: ${result.commentId}`);
+        }
+      }
+      lines.push(`- target: ${planReviewTargetLabel(context.interaction.target)}`);
+      if (context.interaction.acceptedTargetRevision) {
+        lines.push(`- accepted target: ${planReviewTargetLabel(context.interaction.acceptedTargetRevision)}`);
+      }
+    }
+    lines.push(
+      `- open annotation threads included: ${context.totals.includedThreadCount}/${context.totals.openThreadCount}`,
+      `- annotation comments included: ${context.totals.includedCommentCount}/${context.totals.commentCount}`,
+    );
+    for (const thread of context.threads) {
+      const state = [
+        thread.status,
+        thread.revisionNumber ? `revision #${thread.revisionNumber}` : null,
+        thread.anchorState,
+        thread.anchorConfidence,
+      ].filter(Boolean).join(", ");
+      lines.push(`- thread ${thread.id ?? "unknown"}${state ? ` (${state})` : ""}`);
+      renderPlanReviewText("  selected text", thread.selectedText, thread.selectedTextTruncated);
+      renderPlanReviewText("  context before", thread.prefixText, thread.prefixTextTruncated);
+      renderPlanReviewText("  context after", thread.suffixText, thread.suffixTextTruncated);
+      for (const comment of thread.comments) {
+        lines.push(
+          `  comment ${comment.id ?? "unknown"} by ${planReviewAuthorLabel(comment.author)}${comment.createdAt ? ` at ${comment.createdAt}` : ""}:`,
+        );
+        lines.push(comment.body);
+        if (comment.bodyTruncated) {
+          lines.push("[plan comment body truncated]");
+        }
+      }
+      if (thread.commentsTruncated) {
+        lines.push("[plan thread comments truncated]");
+      }
+    }
+    if (context.totals.omittedThreadCount > 0 || context.totals.omittedCommentCount > 0 || context.truncated) {
+      lines.push("[plan review context truncated]");
+    }
   }
 
   if (executionStage) {

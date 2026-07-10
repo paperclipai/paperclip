@@ -147,6 +147,24 @@ function elementFromNode(node: Node | null | undefined): HTMLElement | null {
   return parent instanceof HTMLElement ? parent : null;
 }
 
+function selectionTouchesEditableElement(container: HTMLElement, range: Range) {
+  for (const node of [range.startContainer, range.endContainer, range.commonAncestorContainer]) {
+    const element = elementFromNode(node);
+    if (!element || !container.contains(element)) continue;
+    const editableElement = element.closest("input, textarea, select, [contenteditable]");
+    if (!(editableElement instanceof HTMLElement)) continue;
+    if (editableElement.matches("input, textarea, select")) return true;
+    const contentEditableValue = editableElement.getAttribute("contenteditable");
+    if (
+      editableElement.isContentEditable ||
+      (contentEditableValue !== null && contentEditableValue.toLowerCase() !== "false")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function intersectRects(a: DOMRect, b: DOMRect): DOMRect | null {
   const left = Math.max(a.left, b.left);
   const top = Math.max(a.top, b.top);
@@ -384,6 +402,7 @@ export function DocumentAnnotationLayer({
     if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
     const range = selection.getRangeAt(0);
     if (!container.contains(range.commonAncestorContainer)) return null;
+    if (selectionTouchesEditableElement(container, range)) return null;
     const containerOffset = getContainerTextOffset(container, range);
     if (!containerOffset) return null;
     const anchor = buildAnchorFromContainerSelection({ markdown, containerOffset });
@@ -454,7 +473,7 @@ export function DocumentAnnotationLayer({
                       : isStale
                         ? "bg-yellow-200 outline outline-2 outline-dashed outline-offset-0 outline-yellow-700/65 dark:bg-yellow-600 dark:outline-yellow-200/70"
                         : isFocused
-                          ? "bg-yellow-300 outline outline-2 outline-offset-0 outline-yellow-700/85 shadow-[0_0_0_1px_var(--color-background)] dark:bg-yellow-500 dark:outline-yellow-200/85"
+                          ? "bg-yellow-300 outline outline-2 outline-offset-0 outline-yellow-700/85 shadow-(--shadow-extract-6) dark:bg-yellow-500 dark:outline-yellow-200/85"
                           : "bg-yellow-200 dark:bg-yellow-600",
                   )}
                   style={{
@@ -470,7 +489,7 @@ export function DocumentAnnotationLayer({
         </div>
       ) : null}
       <div
-        className="paperclip-doc-annotation-layer pointer-events-none absolute inset-0 z-[2]"
+        className="paperclip-doc-annotation-layer pointer-events-none absolute inset-0 z-(--z-2)"
         aria-hidden="true"
       >
         <div ref={overlayRef} className="relative h-full w-full">

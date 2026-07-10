@@ -187,6 +187,7 @@ function BlockedTabSurface({ search = "" }: { search?: string }) {
             searchQuery={search}
             agentNameById={new Map()}
             issueLinkState={null}
+            subtreeLiveCounts={new Map()}
           />
         </div>
       </div>
@@ -259,6 +260,7 @@ function BlockedTabEmptyState() {
         searchQuery=""
         agentNameById={new Map()}
         issueLinkState={null}
+        subtreeLiveCounts={new Map()}
       />
     </div>
   );
