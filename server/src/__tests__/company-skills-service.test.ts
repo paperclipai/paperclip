@@ -152,6 +152,41 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(inventoryScanCount).toBe(2);
   });
 
+  it("rejects duplicate canonical keys before partially writing an import batch", async () => {
+    const companyId = randomUUID();
+    const duplicateKey = `company/${companyId}/duplicate`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const skillMarkdown = (name: string) => [
+      "---",
+      `name: ${name}`,
+      `key: \"${duplicateKey}\"`,
+      "---",
+      "",
+      `# ${name}`,
+    ].join("\n");
+
+    await expect(svc.importPackageFiles(companyId, {
+      "first/SKILL.md": skillMarkdown("First Duplicate"),
+      "second/SKILL.md": skillMarkdown("Second Duplicate"),
+    })).rejects.toMatchObject({
+      status: 422,
+      message: `Duplicate company skill keys in import batch: ${duplicateKey}`,
+      details: { duplicateKeys: [duplicateKey] },
+    });
+
+    const rows = await db
+      .select()
+      .from(companySkills)
+      .where(eq(companySkills.key, duplicateKey));
+    expect(rows).toHaveLength(0);
+  });
+
   it("prevents deleting bundled Paperclip skills even when no agent uses them", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();

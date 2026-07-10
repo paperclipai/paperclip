@@ -58,7 +58,11 @@ async function createApp(actor: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = actor;
+    const runId = req.header("x-paperclip-run-id");
+    (req as any).actor = {
+      ...actor,
+      ...(runId ? { runId } : {}),
+    };
     next();
   });
   app.use("/api", improvementSuggestionRoutes({} as any));
@@ -102,6 +106,9 @@ describe("improvement suggestion routes", () => {
 
   it("records board-created entries as directives and rejects agent review attempts", async () => {
     mockService.create.mockResolvedValue(suggestion("board_directed", "accepted"));
+    mockLogActivity.mockImplementation(async (_db, input) => {
+      if (input.runId) throw new Error("spoofed board run must not reach the activity foreign key");
+    });
     const board = {
       type: "board",
       userId: "board-user",
@@ -111,10 +118,12 @@ describe("improvement suggestion routes", () => {
     };
     const created = await request(await createApp(board))
       .post("/api/companies/company-1/improvement-suggestions")
+      .set("x-paperclip-run-id", "33333333-3333-4333-8333-333333333333")
       .send(payload);
     expect(created.status).toBe(201);
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "improvement.board_directive.recorded",
+      runId: null,
     }));
     expect(mockService.create).toHaveBeenCalledWith("company-1", payload, {
       type: "board",
@@ -136,6 +145,9 @@ describe("improvement suggestion routes", () => {
 
   it("lets the board accept a pending suggestion and records the decision", async () => {
     mockService.review.mockResolvedValue(suggestion("agent_detected", "accepted"));
+    mockLogActivity.mockImplementation(async (_db, input) => {
+      if (input.runId) throw new Error("spoofed board run must not reach the activity foreign key");
+    });
     const response = await request(await createApp({
       type: "board",
       userId: "board-user",
@@ -144,6 +156,7 @@ describe("improvement suggestion routes", () => {
       isInstanceAdmin: false,
     }))
       .post(`/api/companies/company-1/improvement-suggestions/${suggestionId}/review`)
+      .set("x-paperclip-run-id", "44444444-4444-4444-8444-444444444444")
       .send({ decision: "accept", note: "Evidence is sufficient." });
 
     expect(response.status, JSON.stringify(response.body)).toBe(200);
@@ -156,6 +169,7 @@ describe("improvement suggestion routes", () => {
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "improvement.suggestion.accepted",
       entityId: suggestionId,
+      runId: null,
     }));
   });
 

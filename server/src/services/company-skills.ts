@@ -2430,6 +2430,19 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
   async function upsertImportedSkills(companyId: string, imported: ImportedSkill[]): Promise<CompanySkill[]> {
     const out: CompanySkill[] = [];
     if (imported.length === 0) return out;
+    const incomingKeyCounts = new Map<string, number>();
+    for (const skill of imported) {
+      incomingKeyCounts.set(skill.key, (incomingKeyCounts.get(skill.key) ?? 0) + 1);
+    }
+    const duplicateKeys = Array.from(incomingKeyCounts.entries())
+      .filter(([, count]) => count > 1)
+      .map(([key]) => key)
+      .sort((left, right) => left.localeCompare(right));
+    if (duplicateKeys.length > 0) {
+      throw unprocessable(`Duplicate company skill keys in import batch: ${duplicateKeys.join(", ")}`, {
+        duplicateKeys,
+      });
+    }
     const importedKeys = Array.from(new Set(imported.map((skill) => skill.key)));
     const existingByKey = new Map(
       (await db

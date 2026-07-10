@@ -90,7 +90,7 @@ export function improvementSuggestionRoutes(db: Db) {
         actorType: actorInfo.actorType,
         actorId: actorInfo.actorId,
         agentId: actorInfo.agentId,
-        runId: actorInfo.runId,
+        runId: actor.type === "board" ? null : actorInfo.runId,
         action: suggestion.originKind === "board_directed"
           ? "improvement.board_directive.recorded"
           : "improvement.suggestion.created",
@@ -131,7 +131,7 @@ export function improvementSuggestionRoutes(db: Db) {
         actorType: actor.actorType,
         actorId: actor.actorId,
         agentId: actor.agentId,
-        runId: actor.runId,
+        runId: null,
         action: suggestion.status === "accepted"
           ? "improvement.suggestion.accepted"
           : "improvement.suggestion.rejected",
