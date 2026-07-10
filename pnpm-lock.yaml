@@ -389,9 +389,6 @@ importers:
       '@rollup/plugin-typescript':
         specifier: ^12.1.2
         version: 12.3.0(rollup@4.60.3)(tslib@2.8.1)(typescript@5.9.3)
-      '@types/d3-force':
-        specifier: ^3.0.10
-        version: 3.0.10
       '@types/node':
         specifier: ^24.6.0
         version: 24.12.4
@@ -447,9 +444,6 @@ importers:
       '@types/react-dom':
         specifier: ^19.0.3
         version: 19.2.3(@types/react@19.2.14)
-      d3-force:
-        specifier: ^3.0.0
-        version: 3.0.0
       esbuild:
         specifier: ^0.27.3
         version: 0.27.7
@@ -550,6 +544,9 @@ importers:
       '@rollup/plugin-typescript':
         specifier: ^12.1.2
         version: 12.3.0(rollup@4.60.3)(tslib@2.8.1)(typescript@5.9.3)
+      '@types/d3-force':
+        specifier: ^3.0.10
+        version: 3.0.10
       '@types/node':
         specifier: ^24.6.0
         version: 24.12.4
@@ -559,6 +556,9 @@ importers:
       '@types/react-dom':
         specifier: ^19.0.3
         version: 19.2.3(@types/react@19.2.14)
+      d3-force:
+        specifier: ^3.0.0
+        version: 3.0.0
       esbuild:
         specifier: ^0.27.3
         version: 0.27.7
