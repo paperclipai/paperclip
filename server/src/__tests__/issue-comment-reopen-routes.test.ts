@@ -398,7 +398,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
+  it("does not implicitly reopen or wake closed issues via the PATCH comment path", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("done"),
@@ -414,22 +414,22 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({
         assigneeAgentId: "33333333-3333-4333-8333-333333333333",
-        status: "todo",
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         action: "issue.updated",
-        details: expect.objectContaining({
-          reopened: true,
-          reopenedFrom: "done",
-          status: "todo",
-        }),
+        details: expect.not.objectContaining({ reopened: true }),
       }),
     );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("resolves assignee shortnames before updating an issue", async () => {
@@ -510,7 +510,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("implicitly reopens closed issues via POST comments when an agent is assigned", async () => {
+  it("does not implicitly reopen or wake closed issues via POST comments", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("done"),
@@ -522,19 +522,8 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: "hello" });
 
     expect(res.status).toBe(201);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
-      "11111111-1111-4111-8111-111111111111",
-      { status: "todo" },
-    );
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "issue_reopened_via_comment",
-        payload: expect.objectContaining({
-          reopenedFrom: "done",
-        }),
-      }),
-    ));
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("rejects non-assignee agent POST comments on closed issues", async () => {
@@ -644,9 +633,7 @@ describe.sequential("issue comment reopen routes", () => {
     },
   );
 
-  // POST self-comment from the assignee agent on a done issue with explicit
-  // reopen=true is the same log-class signal — the guard must suppress reopen.
-  it("does not reopen via POST comment+reopen when the assignee agent is the actor on a done issue", async () => {
+  it("rejects POST comment+reopen when an agent is the actor on a done issue", async () => {
     const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
@@ -675,7 +662,8 @@ describe.sequential("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "log line", reopen: true });
 
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(403);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({ status: "todo" }),
@@ -686,9 +674,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  // Same guard on cancelled status — explicit resume must use `resume: true`,
-  // a log-class self-comment with `reopen: true` is not a reopen signal.
-  it("does not reopen via POST comment+reopen when the assignee agent is the actor on a cancelled issue", async () => {
+  it("rejects POST comment+reopen when an agent is the actor on a cancelled issue", async () => {
     const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
     mockIssueService.getById.mockResolvedValue(makeIssue("cancelled"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
@@ -719,10 +705,8 @@ describe.sequential("issue comment reopen routes", () => {
       // is observable here — the guard is what keeps it from flipping back.
       .send({ body: "log line", reopen: true });
 
-    // Cancelled issues are rejected at assertExplicitResumeIntentAllowed for
-    // agent actors with reopen=true (409). The guard runs after that, but
-    // either way no reopen wakeup must fire and no status update to todo.
-    expect([200, 201, 409]).toContain(res.status);
+    expect(res.status).toBe(403);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({ status: "todo" }),
@@ -733,10 +717,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  // The guard must block explicit reopen=true + comment by the assignee agent
-  // on their own done issue (assignee self-comments are log lines, not reopen
-  // signals; explicit resume intent is delivered via `resume: true` instead).
-  it("does not reopen via PATCH comment+reopen when the assignee agent is the actor on a done issue", async () => {
+  it("rejects PATCH comment+reopen when an agent is the actor on a done issue", async () => {
     const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
@@ -755,7 +736,8 @@ describe.sequential("issue comment reopen routes", () => {
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "log line", reopen: true });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -769,10 +751,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  // The guard compares against the issue's current assignee, not the requested
-  // one — so an admin agent reassigning a different agent's terminal issue to
-  // themselves with comment + reopen=true still reopens as today (AC-3).
-  it("still reopens a done issue via PATCH when a different agent reassigns to self with reopen=true", async () => {
+  it("rejects PATCH comment+reopen when a different agent reassigns a done issue to self", async () => {
     const otherAgentId = "33333333-3333-4333-8333-333333333333";
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
       allowed: true,
@@ -797,25 +776,9 @@ describe.sequential("issue comment reopen routes", () => {
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "taking over", reopen: true, assigneeAgentId: otherAgentId });
 
-    expect(res.status).toBe(200);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
-      "11111111-1111-4111-8111-111111111111",
-      expect.objectContaining({
-        assigneeAgentId: otherAgentId,
-        status: "todo",
-      }),
-    );
-    expect(mockLogActivity).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        action: "issue.updated",
-        details: expect.objectContaining({
-          reopened: true,
-          reopenedFrom: "done",
-          status: "todo",
-        }),
-      }),
-    );
+    expect(res.status).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("moves assigned blocked issues back to todo via POST comments", async () => {
@@ -1156,7 +1119,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("still implicitly reopens done issues via POST comments when the comment runId differs from the issue's owning run", async () => {
+  it("does not implicitly reopen done issues via POST comments when the comment runId differs from the issue's owning run", async () => {
     mockIssueService.getById.mockResolvedValue({
       ...makeIssue("done"),
       checkoutRunId: "run-owning",
@@ -1179,10 +1142,11 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: "Real human follow-up — please reopen" });
 
     expect(res.status).toBe(201);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
-      { status: "todo" },
+      expect.objectContaining({ status: "todo" }),
     );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("does not implicitly reopen done issues via the PATCH comment path when actor runId matches the issue's checkout run", async () => {
@@ -1475,14 +1439,14 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("explicit same-agent resume works through the PATCH comment path", async () => {
+  it("explicit board resume works through the PATCH comment path", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("done"),
       ...patch,
     }));
 
-    const res = await request(await installActor(createApp(), agentActor()))
+    const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "please validate the follow-up", resume: true });
 
@@ -1491,8 +1455,8 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({
         status: "todo",
-        actorAgentId: "22222222-2222-4222-8222-222222222222",
-        actorUserId: null,
+        actorAgentId: null,
+        actorUserId: "local-board",
       }),
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
@@ -1532,14 +1496,14 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("explicit same-agent resume comments reopen closed issues and mark the wake payload", async () => {
+  it("explicit board resume comments reopen closed issues and mark the wake payload", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("done"),
       ...patch,
     }));
 
-    const res = await request(await installActor(createApp(), agentActor()))
+    const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "please validate the follow-up", resume: true });
 
@@ -1608,8 +1572,8 @@ describe.sequential("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "please resume", resume: true });
 
-    expect(res.status).toBe(409);
-    expect(res.body.error).toBe("Issue follow-up blocked by active subtree pause hold");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Only board users can reopen terminal issues");
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
@@ -1621,8 +1585,8 @@ describe.sequential("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "please resume", resume: true });
 
-    expect(res.status).toBe(409);
-    expect(res.body.error).toBe("Cancelled issues must be restored through the dedicated restore flow");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Only board users can reopen terminal issues");
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
