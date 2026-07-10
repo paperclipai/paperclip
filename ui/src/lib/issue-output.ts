@@ -64,6 +64,15 @@ const GENERIC_BINARY_CONTENT_TYPES = new Set([
   "application/x-binary",
 ]);
 
+const VIDEO_FILENAME_EXTENSIONS = [
+  ".mp4",
+  ".m4v",
+  ".webm",
+  ".mov",
+  ".qt",
+  ".quicktime",
+];
+
 const BINARY_OUTPUT_APPLICATION_TYPES = new Set([
   "application/wasm",
 ]);
@@ -199,6 +208,18 @@ export function getOutputFileGlyph(contentType: string | null | undefined): Outp
 
 export function isVideoContentType(contentType: string | null | undefined): boolean {
   return normalizeOutputContentType(contentType).startsWith("video/");
+}
+
+export function isVideoLikeOutput(
+  contentType: string | null | undefined,
+  originalFilename?: string | null | undefined,
+): boolean {
+  const type = normalizeOutputContentType(contentType);
+  if (type.startsWith("video/")) return true;
+  if (!GENERIC_BINARY_CONTENT_TYPES.has(type)) return false;
+
+  const filename = (originalFilename ?? "").trim().toLowerCase();
+  return VIDEO_FILENAME_EXTENSIONS.some((extension) => filename.endsWith(extension));
 }
 
 export function isImageContentType(contentType: string | null | undefined): boolean {

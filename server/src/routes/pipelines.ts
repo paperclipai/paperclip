@@ -266,6 +266,7 @@ function withDerivedStageAutomation(
   stage: typeof pipelineStages.$inferSelect,
   routineById: Map<string, {
     assigneeAgentId: string | null;
+    title: string;
     description: string | null;
     env: PipelineStageAutomation["env"];
     latestRevisionId: string | null;
@@ -285,6 +286,7 @@ function withDerivedStageAutomation(
       automation: {
         routineId,
         assigneeAgentId: routine.assigneeAgentId,
+        titleTemplate: routine.title,
         instructionsBody: routine.description ?? "",
         ...stageAutomationContext(config),
         env: routine.env ?? null,
@@ -480,7 +482,7 @@ async function assertPipelineWriteAccess(
   });
   if (!decision.allowed) {
     throw new HttpError(403, decision.explanation, {
-      code: "pipeline_write_forbidden",
+      code: decision.code ?? "pipeline_write_forbidden",
       reason: decision.reason,
       pipelineId: input.pipelineId,
     });
@@ -898,7 +900,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     });
     if (!decision.allowed) {
       throw new HttpError(403, decision.explanation, {
-        code: "pipeline_write_forbidden",
+        code: decision.code ?? "pipeline_write_forbidden",
         reason: decision.reason,
       });
     }
@@ -986,6 +988,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
           .select({
             id: routines.id,
             assigneeAgentId: routines.assigneeAgentId,
+            title: routines.title,
             description: routines.description,
             env: routines.env,
             latestRevisionId: routines.latestRevisionId,
@@ -998,6 +1001,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       row.id,
       {
         assigneeAgentId: row.assigneeAgentId,
+        title: row.title,
         description: row.description,
         env: row.env,
         latestRevisionId: row.latestRevisionId,
@@ -1076,6 +1080,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
           .select({
             id: routines.id,
             assigneeAgentId: routines.assigneeAgentId,
+            title: routines.title,
             description: routines.description,
             env: routines.env,
             latestRevisionId: routines.latestRevisionId,
@@ -1088,6 +1093,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       row.id,
       {
         assigneeAgentId: row.assigneeAgentId,
+        title: row.title,
         description: row.description,
         env: row.env,
         latestRevisionId: row.latestRevisionId,

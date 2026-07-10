@@ -7,12 +7,24 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, Environment, EnvironmentCapabilities } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../context/ToastContext";
+import type { BuiltInAgentState } from "../api/builtInAgents";
 import { Agents } from "./Agents";
 import type { AgentOrgChainHealth } from "@paperclipai/shared";
+
+const mockRouterState = vi.hoisted(() => ({
+  pathname: "/agents/all",
+  navigate: vi.fn(),
+}));
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   org: vi.fn(),
+}));
+
+const mockBuiltInAgentsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+  provision: vi.fn(),
+  reset: vi.fn(),
 }));
 
 const mockEnvironmentsApi = vi.hoisted(() => ({
@@ -35,13 +47,14 @@ const mockResourceMembershipsApi = vi.hoisted(() => ({
 
 const mockOpenNewAgent = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
+const mockSidebarState = vi.hoisted(() => ({ isMobile: false }));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
     <a href={to} {...props}>{children}</a>
   ),
-  useLocation: () => ({ pathname: "/agents/all", search: "", hash: "", state: null }),
-  useNavigate: () => vi.fn(),
+  useLocation: () => ({ pathname: mockRouterState.pathname, search: "", hash: "", state: null }),
+  useNavigate: () => mockRouterState.navigate,
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -57,11 +70,15 @@ vi.mock("../context/BreadcrumbContext", () => ({
 }));
 
 vi.mock("../context/SidebarContext", () => ({
-  useSidebar: () => ({ isMobile: false }),
+  useSidebar: () => ({ isMobile: mockSidebarState.isMobile }),
 }));
 
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
+}));
+
+vi.mock("../api/builtInAgents", () => ({
+  builtInAgentsApi: mockBuiltInAgentsApi,
 }));
 
 vi.mock("../api/environments", () => ({
@@ -123,6 +140,24 @@ function makeAgent(overrides: Partial<Agent>): Agent {
   };
 }
 
+function makeBuiltInAgentState(overrides: Partial<BuiltInAgentState> = {}): BuiltInAgentState {
+  return {
+    definition: {
+      key: "briefs",
+      displayName: "Briefs Agent",
+      featureKeys: ["Briefs"],
+      shortPurpose: "Generates briefs.",
+      defaultInstructions: "You are Paperclip's built-in Briefs agent.",
+      defaultRole: "engineer",
+    },
+    status: "ready",
+    agentId: "built-in-agent",
+    agent: null,
+    pauseReason: null,
+    ...overrides,
+  };
+}
+
 function makeEnvironment(overrides: Partial<Environment>): Environment {
   return {
     id: "env-1",
@@ -154,6 +189,10 @@ const environmentCapabilities: EnvironmentCapabilities = {
       supportsUnsavedProbe: true,
       supportsRunExecution: true,
       supportsReusableLeases: true,
+      supportsInteractiveSetup: false,
+      interactiveSetupConnectionTypes: [],
+      supportsTemplateCapture: false,
+      supportsTemplateDelete: false,
       displayName: "Fake",
       source: "builtin",
     },
@@ -163,6 +202,10 @@ const environmentCapabilities: EnvironmentCapabilities = {
       supportsUnsavedProbe: true,
       supportsRunExecution: true,
       supportsReusableLeases: true,
+      supportsInteractiveSetup: true,
+      interactiveSetupConnectionTypes: ["ssh"],
+      supportsTemplateCapture: true,
+      supportsTemplateDelete: true,
       displayName: "Daytona",
       source: "plugin",
     },
@@ -172,9 +215,11 @@ const environmentCapabilities: EnvironmentCapabilities = {
 function makeInstanceSettings({
   defaultEnvironmentId = null,
   enableEnvironments = true,
+  enableBuiltInAgents = false,
 }: {
   defaultEnvironmentId?: string | null;
   enableEnvironments?: boolean;
+  enableBuiltInAgents?: boolean;
 } = {}) {
   return {
     id: "instance-settings-1",
@@ -200,6 +245,7 @@ function makeInstanceSettings({
       enableExperimentalFileViewer: false,
       enableCloudSync: false,
       enableExternalObjects: false,
+      enableBuiltInAgents,
       autoRestartDevServerWhenIdle: false,
       enableIssueGraphLivenessAutoRecovery: false,
       issueGraphLivenessAutoRecoveryLookbackHours: 24,
@@ -254,6 +300,8 @@ describe("Agents", () => {
   let queryClient: QueryClient;
 
   beforeEach(() => {
+    mockRouterState.pathname = "/agents/all";
+    mockRouterState.navigate.mockClear();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = null;
@@ -277,6 +325,7 @@ describe("Agents", () => {
         reports: [],
       },
     ]);
+    mockBuiltInAgentsApi.list.mockResolvedValue([]);
     mockEnvironmentsApi.list.mockResolvedValue([
       makeEnvironment({ id: "env-daytona" }),
     ]);
@@ -294,6 +343,7 @@ describe("Agents", () => {
       state: "left",
       updatedAt: new Date("2026-01-02T00:00:00Z"),
     });
+    mockSidebarState.isMobile = false;
   });
 
   afterEach(async () => {
@@ -331,6 +381,117 @@ describe("Agents", () => {
     const heartbeatCell = container.querySelector(".whitespace-nowrap.w-24");
     expect(heartbeatCell).not.toBeNull();
     expect(heartbeatCell?.textContent).not.toContain("\n");
+  });
+
+  it("gives mobile agent names the full row width after the leading status indicator", async () => {
+    mockSidebarState.isMobile = true;
+    mockResourceMembershipsApi.listMine.mockResolvedValue({
+      projectMemberships: {},
+      agentMemberships: {
+        "agent-mobile": "left",
+      },
+      starredProjectIds: [],
+      starredAgentIds: [],
+      projectStarredAt: {},
+      agentStarredAt: {},
+      updatedAt: new Date("2026-01-02T00:00:00Z"),
+    });
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        id: "agent-mobile",
+        name: "Paperclip Engineer With A Much Longer Display Name",
+        title: "Software Engineer With A Much Longer Specialty Title",
+        urlKey: "paperclip-engineer-long",
+      }),
+    ]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const row = findAgentRow(container, "Paperclip Engineer With A Much Longer Display Name");
+    expect(row).not.toBeNull();
+    expect(row?.querySelector(".sm\\:hidden")).toBeNull();
+    expect(row?.querySelector(".hidden.sm\\:flex")).not.toBeNull();
+    expect(row?.querySelector(".flex-1.hidden.xl\\:block")).not.toBeNull();
+    expect(row?.classList.contains("text-foreground/55")).toBe(false);
+    expect(row?.classList.contains("sm:text-foreground/55")).toBe(true);
+    const name = row?.querySelector("span[title='Paperclip Engineer With A Much Longer Display Name']");
+    const subtitle = Array.from(row?.querySelectorAll("p") ?? []).find((node) =>
+      node.textContent?.includes("Software Engineer With A Much Longer Specialty Title"),
+    );
+    expect(name?.classList.contains("whitespace-normal")).toBe(true);
+    expect(name?.classList.contains("break-words")).toBe(true);
+    expect(name?.classList.contains("xl:truncate")).toBe(true);
+    expect(name?.classList.contains("xl:whitespace-nowrap")).toBe(true);
+    expect(name?.classList.contains("truncate")).toBe(false);
+    expect(subtitle).toBeDefined();
+    expect(subtitle?.classList.contains("whitespace-normal")).toBe(true);
+    expect(subtitle?.classList.contains("break-words")).toBe(true);
+    expect(subtitle?.classList.contains("xl:truncate")).toBe(true);
+    expect(subtitle?.classList.contains("xl:whitespace-nowrap")).toBe(true);
+    expect(subtitle?.classList.contains("truncate")).toBe(false);
+  });
+
+  it("uses the built-in agents route segment as the built-in filter", async () => {
+    mockRouterState.pathname = "/agents/builtin";
+    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
+    const builtInAgent = makeAgent({
+      id: "built-in-agent",
+      name: "Briefs Agent",
+      urlKey: "briefs-agent",
+    });
+    const regularAgent = makeAgent({
+      id: "regular-agent",
+      name: "Regular Agent",
+      urlKey: "regular-agent",
+    });
+    mockAgentsApi.list.mockResolvedValue([builtInAgent, regularAgent]);
+    mockAgentsApi.org.mockResolvedValue([
+      {
+        id: "built-in-agent",
+        name: "Briefs Agent",
+        role: "engineer",
+        status: "active",
+        reports: [],
+      },
+      {
+        id: "regular-agent",
+        name: "Regular Agent",
+        role: "engineer",
+        status: "active",
+        reports: [],
+      },
+    ]);
+    mockBuiltInAgentsApi.list.mockResolvedValue([
+      makeBuiltInAgentState({ agentId: "built-in-agent", agent: builtInAgent }),
+    ]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("1 agent");
+    expect(container.textContent).toContain("Briefs Agent");
+    expect(container.textContent).not.toContain("Regular Agent");
   });
 
   it("shows effective environment and sandbox provider beside agents", async () => {
@@ -651,6 +812,82 @@ describe("Agents", () => {
     expect(container.querySelector('select[aria-label="Group agents"]')).toBeNull();
   });
 
+  it("hides built-in agent surfaces while the experimental flag is disabled", async () => {
+    mockRouterState.pathname = "/agents/builtin";
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockBuiltInAgentsApi.list).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Built-in");
+    expect(mockRouterState.navigate).toHaveBeenCalledWith("/agents/all", { replace: true });
+  });
+
+  it("shows and filters built-in agents when the experimental flag is enabled", async () => {
+    mockRouterState.pathname = "/agents/builtin";
+    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        id: "built-in-agent",
+        name: "Briefs Agent",
+        urlKey: "briefs-agent",
+      }),
+      makeAgent({
+        id: "regular-agent",
+        name: "Regular Agent",
+        urlKey: "regular-agent",
+      }),
+    ]);
+    mockAgentsApi.org.mockResolvedValue([
+      {
+        id: "built-in-agent",
+        name: "Briefs Agent",
+        role: "engineer",
+        status: "active",
+        reports: [],
+      },
+      {
+        id: "regular-agent",
+        name: "Regular Agent",
+        role: "engineer",
+        status: "active",
+        reports: [],
+      },
+    ]);
+    mockBuiltInAgentsApi.list.mockResolvedValue([
+      makeBuiltInAgentState({ agentId: "built-in-agent" }),
+    ]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockBuiltInAgentsApi.list).toHaveBeenCalledWith("company-1");
+    expect(container.textContent).toContain("Built-in");
+    expect(container.textContent).toContain("Briefs Agent");
+    expect(container.textContent).not.toContain("Regular Agent");
+    expect(mockRouterState.navigate).not.toHaveBeenCalledWith("/agents/all", { replace: true });
+  });
+
   it("gives list-view rows a fixed-width title so meta columns align (PAP-86)", async () => {
     root = createRoot(container);
     await act(async () => {
@@ -675,13 +912,89 @@ describe("Agents", () => {
     });
     await flushReact();
 
-    // The title cell carries a constant width (`w-56`), not a content-sized
-    // `min-w-[7rem]`, so the `meta` group starts at the same x on every row and
-    // the model + timestamp columns line up vertically.
-    const titleCell = container.querySelector(".w-56");
+    // The title cell carries a constant width at xl (`xl:w-56`), not a
+    // content-sized `min-w-(--sz-7rem)`, so the `meta` group starts at the same
+    // x on every row and the model + timestamp columns line up vertically.
+    // Below xl the meta columns are hidden and the title flexes (`flex-1`)
+    // instead, so the shrink-0 trailing actions can't squeeze the agent name
+    // to zero width on mobile.
+    const titleCell = container.querySelector(".xl\\:w-56");
     expect(titleCell).not.toBeNull();
     expect(titleCell?.textContent).toContain("Alpha");
-    expect(container.querySelector(".min-w-\\[7rem\\]")).toBeNull();
+    expect(titleCell?.classList.contains("flex-1")).toBe(true);
+    expect(container.querySelector(".min-w-\\(--sz-7rem\\)")).toBeNull();
+  });
+
+  it("keeps row membership actions reachable while hiding star actions on mobile", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    // Org view (default).
+    const orgAction = container.querySelector('[aria-label="Leave Alpha"]');
+    const orgStar = container.querySelector('[aria-label="Star Alpha"]');
+    expect(orgAction).not.toBeNull();
+    expect(orgStar).not.toBeNull();
+    expect(orgAction?.closest(".hidden")).toBeNull();
+    expect(orgStar?.closest(".hidden")).not.toBeNull();
+
+    // List view.
+    const listToggle = Array.from(container.querySelectorAll("button")).find(
+      (btn) => btn.querySelector("svg.lucide-list"),
+    );
+    await act(async () => {
+      listToggle!.click();
+    });
+    await flushReact();
+
+    const listAction = container.querySelector('[aria-label="Leave Alpha"]');
+    const listStar = container.querySelector('[aria-label="Star Alpha"]');
+    expect(listAction).not.toBeNull();
+    expect(listStar).not.toBeNull();
+    expect(listAction?.closest(".hidden")).toBeNull();
+    expect(listStar?.closest(".hidden")).not.toBeNull();
+  });
+
+  it("does not dim left-membership agent names on mobile", async () => {
+    mockSidebarState.isMobile = true;
+    mockResourceMembershipsApi.listMine.mockResolvedValue({
+      projectMemberships: {},
+      agentMemberships: {
+        "agent-1": "left",
+      },
+      starredProjectIds: [],
+      starredAgentIds: [],
+      projectStarredAt: {},
+      agentStarredAt: {},
+      updatedAt: new Date("2026-01-02T00:00:00Z"),
+    });
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const row = findAgentRow(container, "Alpha");
+    expect(row).not.toBeNull();
+    expect(row?.classList.contains("text-foreground/55")).toBe(false);
+    expect(row?.classList.contains("sm:text-foreground/55")).toBe(true);
   });
 
   it("keeps invalid-org-chain agents visible with a warning marker", async () => {

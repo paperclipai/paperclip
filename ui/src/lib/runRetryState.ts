@@ -66,7 +66,7 @@ export function describeRunRetryState(run: RetryAwareRun): RunRetryStateSummary 
     return {
       kind: "scheduled",
       badgeLabel: isMaxTurnContinuation ? "Continuation scheduled" : "Retry scheduled",
-      tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
+      tone: "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300",
       detail: joinFragments([attemptLabel, reasonLabel]),
       secondary: dueAt
         ? `${isMaxTurnContinuation ? "Next continuation" : "Next retry"} ${dueAt}`

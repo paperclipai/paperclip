@@ -18,12 +18,15 @@ export async function probeEnvironment(
     companyId?: string | null;
     pluginWorkerManager?: PluginWorkerManager;
     resolvedConfig?: ParsedEnvironmentConfig;
+    applyCustomImageTemplate?: boolean;
   } = {},
 ): Promise<EnvironmentProbeResult> {
   const resolvedCompanyId = options.companyId ?? null;
   const parsed = options.resolvedConfig ?? (
-    resolvedCompanyId
-      ? await resolveEnvironmentDriverConfigForRuntime(db, resolvedCompanyId, environment)
+    resolvedCompanyId || options.applyCustomImageTemplate === true
+      ? await resolveEnvironmentDriverConfigForRuntime(db, resolvedCompanyId, environment, {
+          applyCustomImageTemplate: options.applyCustomImageTemplate === true,
+        })
       : parseEnvironmentDriverConfig(environment)
   );
 

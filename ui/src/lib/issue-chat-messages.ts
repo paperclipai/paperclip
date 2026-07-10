@@ -367,7 +367,7 @@ function authorNameForComment(
     return agentMap?.get(authorAgentId)?.name ?? (options?.isSystemNotice ? "Paperclip" : authorAgentId.slice(0, 8));
   }
   const authorUserId = comment.authorUserId ?? null;
-  if (!authorUserId) return "You";
+  if (!authorUserId) return options?.isSystemNotice ? "Paperclip" : "You";
   const userLabel = userLabelMap?.get(authorUserId)?.trim();
   if (userLabel) return userLabel;
   return formatAssigneeUserLabel(authorUserId, currentUserId, userLabelMap) ?? "You";
@@ -871,6 +871,11 @@ function normalizeLiveRuns(
       currentStatusUpdatedAt: activeRun.currentStatusUpdatedAt
         ? toDate(activeRun.currentStatusUpdatedAt).toISOString()
         : null,
+      currentToolName: activeRun.currentToolName ?? null,
+      lastAssistantSnippet: activeRun.lastAssistantSnippet ?? null,
+      lastEventAt: activeRun.lastEventAt
+        ? toDate(activeRun.lastEventAt).toISOString()
+        : null,
     });
   }
   return [...deduped.values()].sort((a, b) => toTimestamp(a.createdAt) - toTimestamp(b.createdAt));
@@ -911,6 +916,9 @@ function createLiveRunMessage(args: {
       chainOfThoughtSegments: segments,
       currentStatusMessage: run.currentStatusMessage ?? null,
       currentStatusUpdatedAt: run.currentStatusUpdatedAt ?? null,
+      currentToolName: run.currentToolName ?? null,
+      lastAssistantSnippet: run.lastAssistantSnippet ?? null,
+      lastEventAt: run.lastEventAt ?? null,
     }),
   };
   return message;

@@ -42,6 +42,7 @@ export const routines = pgTable(
     latestRevisionNumber: integer("latest_revision_number").notNull().default(1),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
+    responsibleUserId: text("responsible_user_id"),
     updatedByAgentId: uuid("updated_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     updatedByUserId: text("updated_by_user_id"),
     lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
@@ -53,6 +54,7 @@ export const routines = pgTable(
     companyStatusIdx: index("routines_company_status_idx").on(table.companyId, table.status),
     companyAssigneeIdx: index("routines_company_assignee_idx").on(table.companyId, table.assigneeAgentId),
     companyProjectIdx: index("routines_company_project_idx").on(table.companyId, table.projectId),
+    companyResponsibleUserIdx: index("routines_company_responsible_user_idx").on(table.companyId, table.responsibleUserId),
     companyOriginIdx: index("routines_company_origin_idx").on(table.companyId, table.originKind, table.originId),
   }),
 );
@@ -75,6 +77,7 @@ export const routineRevisions = pgTable(
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    responsibleUserId: text("responsible_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
@@ -85,6 +88,11 @@ export const routineRevisions = pgTable(
     companyRoutineCreatedIdx: index("routine_revisions_company_routine_created_idx").on(
       table.companyId,
       table.routineId,
+      table.createdAt,
+    ),
+    companyResponsibleUserIdx: index("routine_revisions_company_responsible_user_idx").on(
+      table.companyId,
+      table.responsibleUserId,
       table.createdAt,
     ),
   }),
@@ -136,6 +144,7 @@ export const routineRuns = pgTable(
     status: text("status").notNull().default("received"),
     triggeredAt: timestamp("triggered_at", { withTimezone: true }).notNull().defaultNow(),
     routineRevisionId: uuid("routine_revision_id").references(() => routineRevisions.id, { onDelete: "set null" }),
+    responsibleUserId: text("responsible_user_id"),
     idempotencyKey: text("idempotency_key"),
     triggerPayload: jsonb("trigger_payload").$type<Record<string, unknown>>(),
     dispatchFingerprint: text("dispatch_fingerprint"),
@@ -149,6 +158,11 @@ export const routineRuns = pgTable(
   (table) => ({
     companyRoutineIdx: index("routine_runs_company_routine_idx").on(table.companyId, table.routineId, table.createdAt),
     routineRevisionIdx: index("routine_runs_revision_idx").on(table.routineRevisionId),
+    companyResponsibleUserIdx: index("routine_runs_company_responsible_user_idx").on(
+      table.companyId,
+      table.responsibleUserId,
+      table.createdAt,
+    ),
     triggerIdx: index("routine_runs_trigger_idx").on(table.triggerId, table.createdAt),
     dispatchFingerprintIdx: index("routine_runs_dispatch_fingerprint_idx").on(table.routineId, table.dispatchFingerprint),
     linkedIssueIdx: index("routine_runs_linked_issue_idx").on(table.linkedIssueId),

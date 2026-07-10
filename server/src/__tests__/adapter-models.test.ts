@@ -37,11 +37,10 @@ describe("adapter model listing", () => {
     expect(models).toEqual([]);
   });
 
-  it("uses provider-prefixed ACPX fallback model labels", () => {
+  it("does not expose models for the retired acpx_local tombstone", () => {
     const adapter = listServerAdapters().find((candidate) => candidate.type === "acpx_local");
 
-    expect(adapter?.models?.some((model) => model.label.startsWith("Claude: "))).toBe(true);
-    expect(adapter?.models?.some((model) => model.label.startsWith("Codex: "))).toBe(true);
+    expect(adapter?.models).toEqual([]);
   });
 
   it("returns codex fallback models when no OpenAI key is available", async () => {

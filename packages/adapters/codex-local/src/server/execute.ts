@@ -41,11 +41,12 @@ import {
 import {
   parseCodexJsonl,
   extractCodexRetryNotBefore,
+  isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
 } from "./parse.js";
 import {
-  codexHomeHasUsableAuth,
+  evaluateCodexCredentialReadiness,
   isManagedCodexHomePath,
   pathExists,
   prepareManagedCodexHome,
@@ -63,8 +64,14 @@ import {
   formatOutputInactivityMonitorErrorMessage,
   resolveCodexInactivityTimeout,
 } from "./output-inactivity-monitor.js";
+import {
+  createCodexAcpExecutor,
+  formatCodexAcpFallbackMessage,
+  resolveCodexExecutionEngineForRun,
+} from "./acp.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const executeCodexAcp = createCodexAcpExecutor();
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
 
@@ -321,6 +328,23 @@ export async function ensureCodexSkillsInjected(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
+  if (engineSelection.engine === "acp") {
+    try {
+      return await executeCodexAcp(ctx);
+    } catch (err) {
+      if (engineSelection.explicit) throw err;
+      const reason = err instanceof Error ? err.message : String(err);
+      await ctx.onLog(
+        "stderr",
+        formatCodexAcpFallbackMessage(`Codex ACP startup failed: ${reason}`),
+      );
+    }
+  }
+  if (!engineSelection.explicit && engineSelection.fallbackReason) {
+    await ctx.onLog("stderr", formatCodexAcpFallbackMessage(engineSelection.fallbackReason));
+  }
+
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
 
   const promptTemplate = asString(
@@ -402,12 +426,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // with OPENAI_API_KEY="" the provider rejects every request with
   // "401 Missing bearer"; fail fast with a clear adapter error instead of
   // emitting unauthenticated calls. External overrides manage their own auth.
-  const effectiveHomeIsManaged = configuredCodexHome == null || configuredHomeIsManaged;
-  if (
-    effectiveHomeIsManaged &&
-    !configuredOpenAiApiKey &&
-    !(await codexHomeHasUsableAuth(effectiveCodexHome))
-  ) {
+  // This is the execute-time backstop for the control plane's pre-dispatch
+  // configuration-incomplete gate (see server heartbeat) — both decide
+  // readiness through the same `evaluateCodexCredentialReadiness` predicate, so
+  // they cannot drift.
+  const credentialReadiness = await evaluateCodexCredentialReadiness({
+    env: process.env,
+    companyId: agent.companyId,
+    configuredCodexHome,
+    configuredApiKey: configuredOpenAiApiKey,
+  });
+  if (credentialReadiness.managed && !credentialReadiness.ready) {
     throw new Error(
       `no Codex credentials provisioned for managed home "${effectiveCodexHome}" ` +
         `(no usable auth.json and OPENAI_API_KEY is empty). ` +
@@ -470,12 +499,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 key: "home",
                 localDir: effectiveCodexHome,
                 followSymlinks: true,
-                // Transient Codex home dirs (`tmp/`, `.tmp/`) can hold symlinks
-                // to the host Codex binary (e.g. `tmp/arg0`). With
-                // followSymlinks the archive would inline those binaries,
-                // bloating the sandbox upload. None of this transient state is
-                // needed in the sandbox; auth/config/skills/session live elsewhere.
-                exclude: ["tmp", ".tmp"],
+                // Exclude state that the sandbox run never needs so we don't
+                // tar/upload hundreds of MB on every run:
+                // - `tmp`/`.tmp`: transient dirs that can hold symlinks to the
+                //   host Codex binary (e.g. `tmp/arg0`); followSymlinks would
+                //   inline those binaries and bloat the archive.
+                // - `sessions`: prior conversation rollouts (host-local history,
+                //   typically the bulk of CODEX_HOME) — irrelevant to a fresh run.
+                // - `shell_snapshots`: host shell captures that don't apply to
+                //   the sandbox's (different) shell/OS.
+                // Auth, config, and skills (the bits Codex actually needs) are
+                // small and still uploaded.
+                exclude: ["tmp", ".tmp", "sessions", "shell_snapshots"],
               },
             ],
           });
@@ -887,6 +922,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             if (!cleaned.trim()) return;
             await onLog(stream, cleaned);
           },
+          runLogTail: paperclipBridge?.runLogTail,
         });
         const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
         return {
@@ -1004,13 +1040,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               errorMessage: fallbackErrorMessage,
             })
           : null;
+      const providerQuota =
+        (attempt.proc.exitCode ?? 0) !== 0 &&
+        isCodexProviderQuotaError({
+          stdout: attempt.proc.stdout,
+          stderr: attempt.proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        });
       const transientUpstream =
         (attempt.proc.exitCode ?? 0) !== 0 &&
+        !providerQuota &&
         isCodexTransientUpstreamError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
           errorMessage: fallbackErrorMessage,
         });
+      const errorFamily = providerQuota ? "provider_quota" : transientUpstream ? "transient_upstream" : null;
 
       return {
         exitCode: attempt.proc.exitCode,
@@ -1021,10 +1066,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ? null
             : fallbackErrorMessage,
         errorCode:
-          transientUpstream
+          providerQuota
+            ? "provider_quota"
+            : transientUpstream
             ? "codex_transient_upstream"
             : null,
-        errorFamily: transientUpstream ? "transient_upstream" : null,
+        errorFamily,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
         usage: attempt.parsed.usage,
         sessionId: resolvedSessionId,
@@ -1038,9 +1085,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
-          ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
+          ...(errorFamily ? { errorFamily } : {}),
           ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
           ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+          ...(providerQuota && transientRetryNotBefore ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
         },
         summary: attempt.parsed.summary,
         clearSession: Boolean((clearSessionOnMissingSession || forceFreshSession) && !resolvedSessionId),
