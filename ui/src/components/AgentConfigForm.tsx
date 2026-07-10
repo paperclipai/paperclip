@@ -165,6 +165,8 @@ const codexThinkingEffortOptions = [
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
   { id: "xhigh", label: "X-High" },
+  { id: "max", label: "Max" },
+  { id: "ultra", label: "Ultra" },
 ] as const;
 
 const openCodeThinkingEffortOptions = [

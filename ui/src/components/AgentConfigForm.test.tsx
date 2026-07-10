@@ -181,4 +181,43 @@ describe("AgentConfigForm", () => {
       root.unmount();
     });
   });
+
+  it("offers Max and Ultra thinking effort for Codex agents", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const values: CreateConfigValues = {
+      ...defaultCreateValues,
+      adapterType: "codex_local",
+    };
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <AgentConfigForm
+              mode="create"
+              values={values}
+              onChange={vi.fn()}
+              hidePromptTemplate
+              showAdapterTestEnvironmentButton={false}
+              showCreateRunPolicySection={false}
+            />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const optionLabels = Array.from(container.querySelectorAll("button"))
+      .map((button) => button.querySelector("span")?.textContent?.trim())
+      .filter(Boolean);
+    expect(optionLabels).toContain("Max");
+    expect(optionLabels).toContain("Ultra");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });
