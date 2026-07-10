@@ -192,8 +192,8 @@ export function Sidebar() {
           })()}
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem
-            to="/attention"
-            label="What needs me"
+            to="/decisions"
+            label="Decisions"
             icon={ListChecks}
             badge={attentionCount}
             badgeLabel="decisions"

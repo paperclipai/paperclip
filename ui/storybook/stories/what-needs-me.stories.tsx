@@ -336,7 +336,7 @@ function Queue({
   return (
     <div className="max-w-3xl space-y-4 p-6">
       <div className="flex items-center justify-between gap-2">
-        <h1 className="text-xl font-bold">What needs me</h1>
+        <h1 className="text-xl font-bold">Decisions</h1>
         <div className="flex items-center gap-2">
           {count > 0 && (
             <span className="text-sm text-muted-foreground">
@@ -436,7 +436,7 @@ function Queue({
 }
 
 const meta: Meta<typeof Queue> = {
-  title: "Pages/What needs me",
+  title: "Pages/Decisions",
   component: Queue,
   parameters: { layout: "fullscreen" },
 };
