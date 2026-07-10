@@ -66,6 +66,7 @@ export const environmentsApi = {
     metadata?: Record<string, unknown> | null;
   }) => api.patch<Environment>(`/environments/${environmentId}`, body),
   probe: (environmentId: string) => api.post<EnvironmentProbeResult>(`/environments/${environmentId}/probe`, {}),
+  remove: (environmentId: string) => api.delete<{ ok: true }>(`/environments/${environmentId}`),
   probeConfig: (companyId: string, body: {
     name?: string;
     driver: "local" | "ssh" | "sandbox" | "plugin";

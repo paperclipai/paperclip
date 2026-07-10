@@ -1045,6 +1045,7 @@ export function CompanyEnvironments() {
   const environmentVariablesEditorRef = useRef<EnvironmentVariablesEditorHandle | null>(null);
   const [probeResults, setProbeResults] = useState<Record<string, EnvironmentProbeResult | null>>({});
   const [testingEnvironmentId, setTestingEnvironmentId] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<Environment | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -1187,6 +1188,27 @@ export function CompanyEnvironments() {
     },
   });
 
+  const deleteEnvironmentMutation = useMutation({
+    mutationFn: (environmentId: string) => environmentsApi.remove(environmentId),
+    onSuccess: async (_response, environmentId) => {
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.environments.list(selectedCompanyId!),
+      });
+      setDeleteConfirm(null);
+      pushToast({
+        title: "Environment deleted",
+        tone: "info",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Delete failed",
+        body: error instanceof Error ? error.message : "Try again",
+        tone: "error",
+      });
+    },
+  });
+
   const draftEnvironmentProbeMutation = useMutation({
     mutationFn: async (form: EnvironmentFormState) => {
       const body = buildEnvironmentPayload(form);
@@ -1214,6 +1236,7 @@ export function CompanyEnvironments() {
     setEnvironmentForm(createEmptyEnvironmentForm());
     setProbeResults({});
     setTestingEnvironmentId(null);
+    setDeleteConfirm(null);
   }, [selectedCompanyId]);
 
   function handleStartCreateEnvironment() {
@@ -1466,6 +1489,14 @@ export function CompanyEnvironments() {
                       onClick={() => handleEditEnvironment(environment)}
                     >
                       {isEditing ? "Editing" : "Edit"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => setDeleteConfirm(environment)}
+                    >
+                      Remove
                     </Button>
                   </div>
                 </div>
@@ -1776,6 +1807,27 @@ export function CompanyEnvironments() {
                 : editingEnvironmentId
                   ? "Save environment"
                   : "Create environment"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(deleteConfirm)} onOpenChange={(open) => !open && setDeleteConfirm(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete environment</DialogTitle>
+            <DialogDescription>
+              Permanently removes <strong>{deleteConfirm?.name}</strong>. Any workspace or project bindings referencing this environment will be cleared.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteConfirm && deleteEnvironmentMutation.mutate(deleteConfirm.id)}
+              disabled={deleteEnvironmentMutation.isPending}
+            >
+              {deleteEnvironmentMutation.isPending ? "Deleting..." : "Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>
