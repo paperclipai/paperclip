@@ -19,7 +19,7 @@ export interface AgentConfigOverlay {
   modelProfiles?: { cheap?: AgentModelProfileOverlay };
 }
 
-export function omitUndefinedEntries(value: Record<string, unknown>) {
+function omitUndefinedEntries(value: Record<string, unknown>) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entryValue]) => entryValue !== undefined),
   );
