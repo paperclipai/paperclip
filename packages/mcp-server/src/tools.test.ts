@@ -159,6 +159,7 @@ describe("paperclip MCP tools", () => {
     expect(JSON.parse(String(init.body))).toEqual({
       prompt: "Generate a cafe founder carousel image.",
       referenceImageAttachmentIds: ["2d8a654e-2ece-43cf-9000-ab0fe254e1a6"],
+      referenceImageAssetIds: [],
       size: "1080x1350",
       quality: "high",
       model: "gpt-image-2",

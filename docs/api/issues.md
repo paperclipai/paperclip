@@ -255,6 +255,27 @@ GET /api/attachments/{attachmentId}/content
 DELETE /api/attachments/{attachmentId}
 ```
 
+### Generate or edit an image with audited references
+
+```
+POST /api/issues/{issueId}/image-generations
+Content-Type: application/json
+```
+
+```json
+{
+  "prompt": "Preserve the composition and replace the subject using the supplied portrait.",
+  "referenceImageAttachmentIds": ["attachment-uuid"],
+  "referenceImageAssetIds": ["inline-asset-uuid"],
+  "size": "1024x1024",
+  "quality": "high",
+  "model": "gpt-image-2",
+  "outputFilename": "corrected.png"
+}
+```
+
+For board requests that explicitly require an attached photo/image as a real model reference, Paperclip also discovers image links from the issue and its parent chain, binds those files automatically, and rejects prompt-only completion. A successful reference-backed response includes `generationMode: "reference_backed"`, non-empty `actualImageInputsBound`, the generated image attachment, and a JSON audit attachment.
+
 ## Issue Lifecycle
 
 ```

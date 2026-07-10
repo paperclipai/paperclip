@@ -433,9 +433,16 @@ type PaperclipWakeTreeHoldSummary = {
   reason: string | null;
 };
 
+type PaperclipWakeImageReferenceGuardrail = {
+  required: boolean;
+  candidateAttachmentIds: string[];
+  candidateAssetIds: string[];
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
+  imageReferenceGuardrail: PaperclipWakeImageReferenceGuardrail | null;
   executionContract: Record<string, unknown> | null;
   checkedOutByHarness: boolean;
   dependencyBlockedInteraction: boolean;
@@ -638,6 +645,23 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
   };
 }
 
+function normalizePaperclipWakeImageReferenceGuardrail(
+  value: unknown,
+): PaperclipWakeImageReferenceGuardrail | null {
+  const guardrail = parseObject(value);
+  if (!asBoolean(guardrail.required, false)) return null;
+  const normalizeIds = (candidate: unknown) => Array.isArray(candidate)
+    ? candidate
+        .map((entry) => asString(entry, "").trim())
+        .filter(Boolean)
+    : [];
+  return {
+    required: true,
+    candidateAttachmentIds: normalizeIds(guardrail.candidateAttachmentIds),
+    candidateAssetIds: normalizeIds(guardrail.candidateAssetIds),
+  };
+}
+
 export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
   const payload = parseObject(value);
   const comments = Array.isArray(payload.comments)
@@ -652,6 +676,9 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .map((entry) => entry.trim())
     : [];
   const executionStage = normalizePaperclipWakeExecutionStage(payload.executionStage);
+  const imageReferenceGuardrail = normalizePaperclipWakeImageReferenceGuardrail(
+    payload.imageReferenceGuardrail,
+  );
   const executionContractFromTopLevel = parseObject(payload.executionContract);
   const executionContractFromIssue = parseObject(parseObject(payload.issue).executionContract);
   const executionContract =
@@ -679,13 +706,14 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !executionContract && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !imageReferenceGuardrail && !executionContract && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
   return {
     reason: asString(payload.reason, "").trim() || null,
     issue: normalizePaperclipWakeIssue(payload.issue),
+    imageReferenceGuardrail,
     executionContract,
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
@@ -802,6 +830,24 @@ export function renderPaperclipWakePrompt(
       "- hidden execution contract: present",
       "Use `executionContract` from `PAPERCLIP_WAKE_PAYLOAD_JSON` for guardrails, source-of-truth, and acceptance checks. Still read any issue description as the human-readable brief; the contract does not replace or erase description context.",
     );
+  }
+  if (normalized.imageReferenceGuardrail?.required) {
+    const guardrail = normalized.imageReferenceGuardrail;
+    lines.push(
+      "",
+      "HARD IMAGE-REFERENCE GATE:",
+      "- The board requires one or more supplied images to be passed to the image model as real visual inputs. Reading/viewing the files and rewriting them as prompt text does not satisfy this issue.",
+      "- Generate or edit through `paperclipGenerateIssueImage` when the Paperclip MCP tool is available, or POST `/api/issues/{issueId}/image-generations`. Do not use a generic prompt-only image tool for the final asset.",
+      "- Paperclip auto-binds board-linked image attachments/assets on that route and records an audit. Before review/completion, verify `generationMode=reference_backed` and `actualImageInputsBound` is non-empty.",
+      "- If the Paperclip reference-backed route cannot bind the required image, block the issue. Never claim actual reference use from a prompt, visual inspection, or contract statement alone.",
+    );
+    if (guardrail.candidateAttachmentIds.length > 0) {
+      lines.push(`- candidate reference attachment ids: ${guardrail.candidateAttachmentIds.join(", ")}`);
+    }
+    if (guardrail.candidateAssetIds.length > 0) {
+      lines.push(`- candidate inline asset ids: ${guardrail.candidateAssetIds.join(", ")}`);
+    }
+    lines.push("");
   }
   if (normalized.issue?.workMode === "planning") {
     const hasWakeComments = normalized.comments.length > 0;

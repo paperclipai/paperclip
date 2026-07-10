@@ -552,6 +552,32 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
+  it("renders the hard image-reference gate with auditable input candidates", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "SIX-3832",
+        title: "Fix photo",
+        status: "todo",
+      },
+      imageReferenceGuardrail: {
+        required: true,
+        candidateAttachmentIds: ["attachment-1"],
+        candidateAssetIds: ["asset-1"],
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("HARD IMAGE-REFERENCE GATE");
+    expect(prompt).toContain("paperclipGenerateIssueImage");
+    expect(prompt).toContain("generationMode=reference_backed");
+    expect(prompt).toContain("candidate reference attachment ids: attachment-1");
+    expect(prompt).toContain("candidate inline asset ids: asset-1");
+    expect(prompt).toContain("Never claim actual reference use from a prompt");
+  });
+
   it("does not render stale accepted-plan continuation guidance for later planning comment wakes", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_commented",

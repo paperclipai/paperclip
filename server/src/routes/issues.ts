@@ -6,6 +6,7 @@ import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  assets as assetRows,
   executionWorkspaces,
   issueExecutionDecisions,
   issueRelations,
@@ -117,6 +118,10 @@ import {
 } from "../services/openai-image-generation.js";
 import { generateCodexIssueImage } from "../services/codex-image-generation.js";
 import {
+  hasReferenceBackedImageGenerationEvidence,
+  resolveIssueImageReferenceGuardrail,
+} from "../services/image-reference-guardrails.js";
+import {
   createCompanySearchRateLimiter,
   type CompanySearchRateLimiter,
 } from "../services/company-search-rate-limit.js";
@@ -137,6 +142,7 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
 const generateIssueImageSchema = z.object({
   prompt: z.string().trim().min(1).max(12000),
   referenceImageAttachmentIds: z.array(z.string().uuid()).max(6).optional().default([]),
+  referenceImageAssetIds: z.array(z.string().uuid()).max(6).optional().default([]),
   size: z.string().trim().min(1).max(64).default("1024x1024"),
   quality: z.enum(["auto", "low", "medium", "high"]).default("high"),
   model: z.literal(PAPERCLIP_IMAGE_MODEL).optional().default(PAPERCLIP_IMAGE_MODEL),
@@ -1588,15 +1594,18 @@ export function issueRoutes(
     issueId: string;
     companyId: string;
     attachmentIds: string[];
+    assetIds: string[];
+    allowedIssueIds: string[];
   }): Promise<ImageReferenceInput[]> {
     const references: ImageReferenceInput[] = [];
+    const allowedIssueIds = new Set(input.allowedIssueIds.length > 0 ? input.allowedIssueIds : [input.issueId]);
     for (const attachmentId of input.attachmentIds) {
       const attachment = await svc.getAttachmentById(attachmentId);
       if (!attachment) {
         throw notFound(`Reference image attachment not found: ${attachmentId}`);
       }
-      if (attachment.companyId !== input.companyId || attachment.issueId !== input.issueId) {
-        throw unprocessable(`Reference image attachment does not belong to this issue: ${attachmentId}`);
+      if (attachment.companyId !== input.companyId || !allowedIssueIds.has(attachment.issueId)) {
+        throw unprocessable(`Reference image attachment does not belong to this issue or its parent chain: ${attachmentId}`);
       }
       if (attachment.byteSize && attachment.byteSize > MAX_REFERENCE_IMAGE_BYTES) {
         throw unprocessable(`Reference image attachment exceeds ${MAX_REFERENCE_IMAGE_BYTES} bytes: ${attachmentId}`);
@@ -1618,12 +1627,62 @@ export function issueRoutes(
 
       references.push({
         attachmentId,
+        sourceKind: "attachment",
+        sourceId: attachmentId,
+        assetId: attachment.assetId,
+        sha256: attachment.sha256,
         filename: attachment.originalFilename,
         contentType,
         bytes,
       });
     }
-    return references;
+
+    for (const assetId of input.assetIds) {
+      const asset = await db
+        .select()
+        .from(assetRows)
+        .where(and(eq(assetRows.id, assetId), eq(assetRows.companyId, input.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!asset) {
+        throw notFound(`Reference image asset not found: ${assetId}`);
+      }
+      if (asset.byteSize && asset.byteSize > MAX_REFERENCE_IMAGE_BYTES) {
+        throw unprocessable(`Reference image asset exceeds ${MAX_REFERENCE_IMAGE_BYTES} bytes: ${assetId}`);
+      }
+
+      const object = await storage.getObject(asset.companyId, asset.objectKey);
+      const contentType = normalizeContentType(asset.contentType || object.contentType);
+      if (!isSupportedReferenceImageContentType(contentType)) {
+        throw unprocessable(`Reference asset must be PNG, JPEG, or WEBP: ${assetId}`);
+      }
+      const bytes = await streamToBuffer(object.stream);
+      if (bytes.length <= 0) {
+        throw unprocessable(`Reference image asset is empty: ${assetId}`);
+      }
+      if (bytes.length > MAX_REFERENCE_IMAGE_BYTES) {
+        throw unprocessable(`Reference image asset exceeds ${MAX_REFERENCE_IMAGE_BYTES} bytes: ${assetId}`);
+      }
+
+      references.push({
+        // Keep attachmentId populated for compatibility with image providers
+        // that predate inline issue assets as direct reference inputs.
+        attachmentId: assetId,
+        sourceKind: "asset",
+        sourceId: assetId,
+        assetId,
+        sha256: asset.sha256,
+        filename: asset.originalFilename,
+        contentType,
+        bytes,
+      });
+    }
+
+    const deduped = new Map<string, ImageReferenceInput>();
+    for (const reference of references) {
+      const key = reference.sha256?.trim() || `${reference.contentType}:${reference.sourceKind}:${reference.sourceId}`;
+      if (!deduped.has(key)) deduped.set(key, reference);
+    }
+    return [...deduped.values()];
   }
 
   function parseBooleanQuery(value: unknown) {
@@ -2150,6 +2209,49 @@ export function issueRoutes(
       actorAgentId: input.actor.agentId,
       ...reviewer,
     };
+  }
+
+  async function assertImageReferenceCompletionGate(input: {
+    existing: {
+      id: string;
+      companyId: string;
+      status: string;
+    };
+    updateFields: Record<string, unknown>;
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    const requestedStatus = typeof input.updateFields.status === "string"
+      ? input.updateFields.status
+      : null;
+    if (
+      input.actor.actorType !== "agent" ||
+      !requestedStatus ||
+      !["in_review", "done"].includes(requestedStatus)
+    ) {
+      return;
+    }
+
+    const guardrail = await resolveIssueImageReferenceGuardrail(db, {
+      issueId: input.existing.id,
+      companyId: input.existing.companyId,
+    });
+    if (!guardrail.required) return;
+
+    const hasEvidence = await hasReferenceBackedImageGenerationEvidence(db, {
+      issueId: input.existing.id,
+      companyId: input.existing.companyId,
+    });
+    if (hasEvidence) return;
+
+    throw unprocessable(
+      "This issue requires the board image to be bound as a real model reference. Generate the image through POST /api/issues/{issueId}/image-generations (or paperclipGenerateIssueImage) and verify generationMode=reference_backed with non-empty actualImageInputsBound before requesting review or completion.",
+      {
+        code: "image_reference_evidence_required",
+        requiredEvidence: "reference_backed_image_generation_audit",
+        candidateReferenceAttachmentIds: guardrail.candidateAttachmentIds,
+        candidateReferenceAssetIds: guardrail.candidateAssetIds,
+      },
+    );
   }
 
   function requireAgentRunId(req: Request, res: Response) {
@@ -4312,6 +4414,12 @@ export function issueRoutes(
           updateFields,
           actor,
         });
+
+    await assertImageReferenceCompletionGate({
+      existing,
+      updateFields,
+      actor,
+    });
 
     await assertAgentInReviewReviewPath({
       existing,
@@ -6771,15 +6879,48 @@ export function issueRoutes(
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
 
     const actor = getActorInfo(req);
+    const referenceGuardrail = await resolveIssueImageReferenceGuardrail(db, {
+      issueId: issue.id,
+      companyId: issue.companyId,
+    });
     const requestedReferenceImageAttachmentIds = uniqueIds(body.referenceImageAttachmentIds);
+    const requestedReferenceImageAssetIds = uniqueIds(body.referenceImageAssetIds);
+    const autoBoundReferenceImageAttachmentIds = referenceGuardrail.required
+      ? referenceGuardrail.candidateAttachmentIds
+      : [];
+    const autoBoundReferenceImageAssetIds = referenceGuardrail.required
+      ? referenceGuardrail.candidateAssetIds
+      : [];
+    const effectiveReferenceImageAttachmentIds = uniqueIds([
+      ...requestedReferenceImageAttachmentIds,
+      ...autoBoundReferenceImageAttachmentIds,
+    ]);
+    const effectiveReferenceImageAssetIds = uniqueIds([
+      ...requestedReferenceImageAssetIds,
+      ...autoBoundReferenceImageAssetIds,
+    ]);
     const references = await loadImageReferences({
       issueId: issue.id,
       companyId: issue.companyId,
-      attachmentIds: requestedReferenceImageAttachmentIds,
+      attachmentIds: effectiveReferenceImageAttachmentIds,
+      assetIds: effectiveReferenceImageAssetIds,
+      allowedIssueIds: referenceGuardrail.issueScopeIds,
     });
 
-    if (requestedReferenceImageAttachmentIds.length > 0 && references.length === 0) {
-      throw unprocessable("No reference image attachment could be bound");
+    if (
+      (effectiveReferenceImageAttachmentIds.length > 0 || effectiveReferenceImageAssetIds.length > 0) &&
+      references.length === 0
+    ) {
+      throw unprocessable("No reference image attachment or asset could be bound");
+    }
+    if (references.length > 6) {
+      throw unprocessable("At most 6 unique image reference inputs can be bound; select the exact required references explicitly");
+    }
+    if (referenceGuardrail.required && references.length === 0) {
+      throw unprocessable(
+        "The board required an actual image reference, but no usable image attachment or inline asset could be bound. Do not continue with prompt-only generation.",
+        { code: "image_reference_required_but_unavailable" },
+      );
     }
 
     const imageProvider = resolveIssueImageProvider();
@@ -6823,7 +6964,12 @@ export function issueRoutes(
       prompt: body.prompt,
       size: body.size,
       quality: body.quality,
+      boardReferenceIntentDetected: referenceGuardrail.required,
+      referenceGuardrailApplied: referenceGuardrail.required,
       requestedReferenceImageAttachmentIds,
+      requestedReferenceImageAssetIds,
+      autoBoundReferenceImageAttachmentIds,
+      autoBoundReferenceImageAssetIds,
       actualImageInputsBound: generated.actualImageInputsBound,
       generationMode: generated.generationMode,
       promptOnly: generated.generationMode === "prompt_only",
@@ -6834,7 +6980,11 @@ export function issueRoutes(
       codexThreadId: "codexThreadId" in generated ? generated.codexThreadId : null,
       codexOutputPath: "codexOutputPath" in generated ? generated.codexOutputPath : null,
       referenceImageInputs: references.map((reference) => ({
-        attachmentId: reference.attachmentId,
+        sourceKind: reference.sourceKind ?? "attachment",
+        sourceId: reference.sourceId ?? reference.attachmentId,
+        attachmentId: reference.sourceKind === "asset" ? null : reference.attachmentId,
+        assetId: reference.assetId ?? null,
+        sha256: reference.sha256 ?? null,
         filename: reference.filename,
         contentType: reference.contentType,
         byteSize: reference.bytes.length,
@@ -6864,7 +7014,12 @@ export function issueRoutes(
         provider: imageProvider,
         model: generated.model,
         generationMode: generated.generationMode,
+        boardReferenceIntentDetected: referenceGuardrail.required,
+        referenceGuardrailApplied: referenceGuardrail.required,
         requestedReferenceImageAttachmentIds,
+        requestedReferenceImageAssetIds,
+        autoBoundReferenceImageAttachmentIds,
+        autoBoundReferenceImageAssetIds,
         actualImageInputsBound: generated.actualImageInputsBound,
         outputAttachmentId: outputAttachment.id,
         auditAttachmentId: auditAttachment.id,

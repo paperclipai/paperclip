@@ -129,6 +129,22 @@ async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
   return hasWorkspace && hasPackageJson && hasServerDir && hasAdapterUtilsDir;
 }
 
+export async function resolveBundledPaperclipMcpStdioPath(
+  env: NodeJS.ProcessEnv = process.env,
+  moduleDir: string = __moduleDir,
+) {
+  const configured = env.PAPERCLIP_MCP_STDIO_PATH?.trim();
+  const candidates = [
+    configured ? path.resolve(configured) : null,
+    path.resolve(moduleDir, "../../../../mcp-server/dist/stdio.js"),
+    path.resolve(process.cwd(), "packages/mcp-server/dist/stdio.js"),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  for (const candidate of Array.from(new Set(candidates))) {
+    if (await pathExists(candidate)) return candidate;
+  }
+  return null;
+}
+
 async function isLikelyPaperclipRuntimeSkillPath(
   candidate: string,
   skillName: string,
@@ -512,7 +528,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // strand prior session rollouts and silently lose resume history. Injected
   // [mcp_servers.*] tables therefore also stay per-agent, invisible to the
   // company's other agents.
-  const resolvedMcpServers = parseResolvedMcpServers(config.mcpServers);
+  const configuredMcpServers = parseResolvedMcpServers(config.mcpServers);
+  const imageReferenceGuardrail = parseObject(context.paperclipImageReferenceGuardrail);
+  const shouldInjectBundledPaperclipMcp =
+    imageReferenceGuardrail.required === true && !executionTargetIsRemote && Boolean(authToken);
+  const bundledPaperclipMcpPath = shouldInjectBundledPaperclipMcp
+    ? await resolveBundledPaperclipMcpStdioPath()
+    : null;
+  const resolvedMcpServers = bundledPaperclipMcpPath
+    ? {
+        ...configuredMcpServers,
+        paperclip: {
+          transport: "stdio" as const,
+          command: process.execPath,
+          args: [bundledPaperclipMcpPath],
+          timeoutMs: 30_000,
+          allowedTools: ["paperclipGenerateIssueImage"],
+        },
+      }
+    : configuredMcpServers;
   const mcpServerNames = Object.keys(resolvedMcpServers);
   const mcpAgentId = agent.id;
   const preparedManagedCodexHome =
@@ -561,7 +595,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     mcpSpawnEnv = injected.spawnEnv;
     await onLog(
       "stdout",
-      `[paperclip] Injecting ${mcpServerNames.length} external MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) into Codex config.toml.\n`,
+      `[paperclip] Injecting ${mcpServerNames.length} MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) into Codex config.toml.\n`,
     );
   } else if (await configTomlHasManagedMcpSection(effectiveCodexHome)) {
     // The last MCP server was removed (or the adapter was switched): drop the
@@ -575,6 +609,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await onLog(
       "stdout",
       "[paperclip] Removed stale paperclip-managed MCP servers from Codex config.toml.\n",
+    );
+  }
+  if (shouldInjectBundledPaperclipMcp && !bundledPaperclipMcpPath) {
+    await onLog(
+      "stderr",
+      "[paperclip] Hard image-reference gate is active, but the bundled Paperclip MCP server is unavailable. Use the authenticated /api/issues/{issueId}/image-generations endpoint directly; prompt-only generation will not pass completion.\n",
     );
   }
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(

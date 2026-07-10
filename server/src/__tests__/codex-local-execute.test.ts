@@ -122,6 +122,97 @@ function createLocalSandboxRunner() {
 }
 
 describe("codex execute", () => {
+  it("injects the bundled Paperclip MCP image tool when the hard image-reference gate is active", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-image-reference-mcp-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const mcpStdioPath = path.join(root, "paperclip-mcp-stdio.js");
+    const managedCodexHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "codex-home",
+    );
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"shared"}\n', "utf8");
+    await fs.writeFile(path.join(sharedCodexHome, "config.toml"), 'model = "codex-mini-latest"\n', "utf8");
+    await fs.writeFile(mcpStdioPath, "// Paperclip MCP test entry\n", "utf8");
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousMcpStdioPath = process.env.PAPERCLIP_MCP_STDIO_PATH;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.CODEX_HOME = sharedCodexHome;
+    process.env.PAPERCLIP_MCP_STDIO_PATH = mcpStdioPath;
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-image-reference",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Designer",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: "issue-1",
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Follow the Paperclip image-reference gate.",
+        },
+        context: {
+          paperclipImageReferenceGuardrail: {
+            required: true,
+            candidateAttachmentIds: ["attachment-1"],
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      const configToml = await fs.readFile(path.join(managedCodexHome, "config.toml"), "utf8");
+      expect(configToml).toContain("[mcp_servers.paperclip]");
+      expect(configToml).toContain(`command = ${JSON.stringify(process.execPath)}`);
+      expect(configToml).toContain(JSON.stringify(mcpStdioPath));
+      expect(logs).toContainEqual(expect.objectContaining({
+        stream: "stdout",
+        chunk: expect.stringContaining("Injecting 1 MCP server (paperclip)"),
+      }));
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      if (previousMcpStdioPath === undefined) delete process.env.PAPERCLIP_MCP_STDIO_PATH;
+      else process.env.PAPERCLIP_MCP_STDIO_PATH = previousMcpStdioPath;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses a Paperclip-managed CODEX_HOME outside worktree mode while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-default-"));
     const workspace = path.join(root, "workspace");

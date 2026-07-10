@@ -50,8 +50,10 @@ RUN rm -rf ui/dist server/ui-dist server/dist \
   && cp -R ui/dist/. server/ui-dist/ \
   && node -e "const fs=require('fs');const path=require('path');const root='server/ui-dist';const html=fs.readFileSync(path.join(root,'index.html'),'utf8');const refs=[...html.matchAll(/(?:src|href)=['\\\"](\\/assets\\/[^'\\\"]+)/g)].map((m)=>m[1]);const missing=refs.filter((ref)=>!fs.existsSync(path.join(root,ref)));if(missing.length){console.error('Missing UI assets referenced by index.html:',missing.join(', '));process.exit(1);}"
 RUN pnpm --filter "@paperclipai/server..." build
+RUN pnpm --filter "@paperclipai/mcp-server" build
 RUN pnpm --filter "@paperclipai/plugin-llm-wiki" build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+RUN test -f packages/mcp-server/dist/stdio.js || (echo "ERROR: Paperclip MCP build output missing" && exit 1)
 
 FROM base AS production
 WORKDIR /app

@@ -81,7 +81,7 @@ The `extensions` object is intentionally open-ended. QA, deployment, reference-f
 ## Task-type notes
 
 - `implementation`: `source_of_truth.files` and `acceptance_checks` are mandatory. `evidence_required` should include tests run and, for UI work, screenshots.
-- `reference_fidelity` (rebuild/match-a-reference work): the reference itself is mandatory in `source_of_truth.links` or `files`; `constraints.must_preserve`/`must_not_change` are mandatory and reviewed first by QA.
+- `reference_fidelity` (rebuild/match-a-reference work): the reference itself is mandatory in `source_of_truth.links` or `files`; `constraints.must_preserve`/`must_not_change` are mandatory and reviewed first by QA. For generated/edited raster images, the contract must name each reference's role (edit target, identity/subject reference, composition/style reference) and require Paperclip's audited image-generation route. A link in the contract is not proof that the file reached the model.
 - `research`: `acceptance_checks` state what questions must be answered and with what sourcing standard.
 - `qa`: the contract under review is itself the source of truth; see QA duties below.
 - `incident_response`: `block_if_missing` must include access/credentials needed; escalation path goes in `handoff_notes`.
@@ -115,6 +115,7 @@ QA verifies the work **against the contract**, not against general quality intui
 - Every `core.evidenceRequired` item exists (link it in the QA comment).
 - `core.blockIfMissing` items were not silently skipped.
 - The output solves the contract's `core.objective` — not a related, plausible-looking problem.
+- For board-supplied image-reference work, the Paperclip image audit says `generationMode=reference_backed`, `actualImageInputsBound` is non-empty, and the exact required reference appears in `referenceImageInputs`. Prompt text, a method claim, or visual trait similarity alone is not evidence of input binding.
 
 QA MUST fail work that is high quality but solves the wrong problem. "Looks great" is not a pass. When failing, cite the specific contract field violated.
 

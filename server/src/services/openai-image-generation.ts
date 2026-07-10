@@ -10,7 +10,15 @@ const OPENAI_IMAGE_GENERATION_URL = "https://api.openai.com/v1/images/generation
 type GenerationMode = "prompt_only" | "reference_backed";
 
 export interface ImageReferenceInput {
+  /**
+   * Backwards-compatible binding id. For attachment inputs this is the
+   * attachment id; for inline asset inputs it is the asset id.
+   */
   attachmentId: string;
+  sourceKind?: "attachment" | "asset";
+  sourceId?: string;
+  assetId?: string | null;
+  sha256?: string | null;
   filename: string | null;
   contentType: string;
   bytes: Buffer;
@@ -33,6 +41,10 @@ export interface GenerateOpenAiImageResult {
   outputBytes: Buffer;
   outputContentType: "image/png";
   providerRequestId: string | null;
+}
+
+export function imageReferenceSourceId(reference: ImageReferenceInput) {
+  return reference.sourceId?.trim() || reference.attachmentId;
 }
 
 type OpenAiImageResponse = {
@@ -138,7 +150,7 @@ export async function generateOpenAiIssueImage(input: GenerateOpenAiImageInput):
     model: PAPERCLIP_IMAGE_MODEL,
     endpoint,
     generationMode,
-    actualImageInputsBound: input.references.map((reference) => reference.attachmentId),
+    actualImageInputsBound: input.references.map(imageReferenceSourceId),
     outputBytes,
     outputContentType: "image/png",
     providerRequestId: response.headers.get("x-request-id"),

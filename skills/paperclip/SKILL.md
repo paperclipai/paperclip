@@ -30,6 +30,18 @@ Paperclip uses a two-level execution topology: one main parent issue plus direct
 
 Every delegated child issue must carry an **execution contract** — the objective, source-of-truth, constraints, acceptance checks, and manager reasoning the executor works from and QA reviews against. Read `references/execution-contract.md` before delegating work, starting delegated work, or QA-reviewing delegated work. Missing required context is a blocker, not permission to invent.
 
+## Board-Supplied Image References (Hard Rule)
+
+When the board asks an image model to use an attached image, photo, portrait, prior creative, or inline issue asset as a reference, the file itself is mandatory model input. Viewing/reading the image and turning observations into prompt text is **prompt-only recreation** and does not satisfy the request.
+
+- Use `paperclipGenerateIssueImage` when the Paperclip MCP tool is available. Otherwise call `POST /api/issues/{issueId}/image-generations` with the current run header.
+- Put issue attachment ids in `referenceImageAttachmentIds`. Put ids from `/api/assets/{assetId}/content` inline issue images in `referenceImageAssetIds`. If the board's issue/parent text clearly requires real reference input, Paperclip auto-binds board-linked images even when those arrays are omitted.
+- Do not use the generic Codex/Claude image-generation tool for the final asset on a board reference-fidelity request. The Paperclip route is the auditable path: it downloads the bytes, validates image types, binds the files to the model, attaches the result, and writes a JSON audit attachment.
+- Before claiming success or requesting review, require `generationMode=reference_backed` and a non-empty `actualImageInputsBound`. Name the exact input filenames/source ids and link both the final image and audit attachment in the issue comment.
+- Never claim "actual image input" because a contract said so, because you opened the image, or because the result loosely matches visible traits. If the reference-backed route cannot bind the required file, mark the issue `blocked`; do not fall back to text-to-image.
+
+Agent transitions to `in_review` or `done` are hard-blocked for detected board reference-fidelity image work until Paperclip has recorded reference-backed generation evidence on that issue or a direct child lane.
+
 ## The Heartbeat Procedure
 
 Follow these steps every time you wake up:
@@ -400,6 +412,7 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Create approval                       | `POST /api/companies/:companyId/approvals`                                                                                      |
 | Upload attachment (multipart, `file`) | `POST /api/companies/:companyId/issues/:issueId/attachments`                                                                    |
 | List / get / delete attachment        | `GET /api/issues/:issueId/attachments` • `GET\|DELETE /api/attachments/:attachmentId[/content]`                                 |
+| Audited image generation/edit         | `POST /api/issues/:issueId/image-generations` (`referenceImageAttachmentIds` / `referenceImageAssetIds`)                         |
 | Execution workspace + runtime         | `GET /api/execution-workspaces/:id` • `POST …/runtime-services/:action`                                                         |
 | Set agent instructions path           | `PATCH /api/agents/:agentId/instructions-path`                                                                                  |
 | List agents                           | `GET /api/companies/:companyId/agents`                                                                                          |

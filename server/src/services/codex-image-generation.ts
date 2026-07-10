@@ -5,6 +5,7 @@ import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { unprocessable } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import {
+  imageReferenceSourceId,
   PAPERCLIP_IMAGE_MODEL,
   type ImageReferenceInput,
 } from "./openai-image-generation.js";
@@ -144,7 +145,7 @@ async function writeReferenceFiles(references: ImageReferenceInput[], dir: strin
 
 function buildCodexImagePrompt(input: GenerateCodexImageInput) {
   const referenceLines = input.references.map((reference, index) =>
-    `- Reference ${index + 1}: attachmentId=${reference.attachmentId}, filename=${reference.filename ?? "unknown"}, contentType=${reference.contentType}, byteSize=${reference.bytes.length}`,
+    `- Reference ${index + 1}: source=${reference.sourceKind ?? "attachment"}:${imageReferenceSourceId(reference)}, filename=${reference.filename ?? "unknown"}, contentType=${reference.contentType}, byteSize=${reference.bytes.length}`,
   );
   return [
     "You are running inside Paperclip's Codex image-generation bridge.",
@@ -285,7 +286,7 @@ export async function generateCodexIssueImage(input: GenerateCodexImageInput): P
       model: PAPERCLIP_IMAGE_MODEL,
       endpoint: "codex_exec_image_gen",
       generationMode,
-      actualImageInputsBound: input.references.map((reference) => reference.attachmentId),
+      actualImageInputsBound: input.references.map(imageReferenceSourceId),
       outputBytes,
       outputContentType: "image/png",
       providerRequestId: threadId,
