@@ -91,10 +91,13 @@ async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
 
 async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createDb>) {
   await db.transaction(async (tx) => {
-    // Heartbeat completion can write an issue-thread comment shortly after the
-    // run leaves queued/running. Keep late writers outside the interval between
-    // deleting comments and their parent issues so FK cleanup is deterministic.
-    await tx.execute(sql.raw('LOCK TABLE "issue_comments" IN ACCESS EXCLUSIVE MODE'));
+    // Heartbeat completion can write an issue-thread comment or activity row
+    // shortly after the run leaves queued/running. Keep late writers outside
+    // the interval between deleting child rows and their FK parents so cleanup
+    // remains deterministic under the slower, highly concurrent CI runner.
+    await tx.execute(sql.raw(
+      'LOCK TABLE "issue_comments", "activity_log" IN ACCESS EXCLUSIVE MODE',
+    ));
 
     await tx.delete(companySkills);
     await tx.delete(issueComments);
