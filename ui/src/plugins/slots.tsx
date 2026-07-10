@@ -29,6 +29,7 @@ import {
   type ReactNode,
   type ComponentType,
 } from "react";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import type {
   PluginLauncherDeclaration,
@@ -61,6 +62,7 @@ export type ResolvedPluginSlot = PluginUiSlotDeclaration & {
   pluginKey: string;
   pluginDisplayName: string;
   pluginVersion: string;
+  pluginPageRoutePath?: string | null;
 };
 
 /**
@@ -236,6 +238,48 @@ function buildPluginUiUrl(contribution: PluginUiContribution): string {
  */
 const shimBlobUrls: Record<string, string> = {};
 
+const REACT_SHIM_NAMED_EXPORTS = [
+  "useState",
+  "useEffect",
+  "useLayoutEffect",
+  "useInsertionEffect",
+  "useCallback",
+  "useMemo",
+  "useReducer",
+  "useRef",
+  "useImperativeHandle",
+  "useContext",
+  "useDebugValue",
+  "useDeferredValue",
+  "useTransition",
+  "useId",
+  "useSyncExternalStore",
+  "createContext",
+  "createElement",
+  "Fragment",
+  "Component",
+  "forwardRef",
+  "memo",
+  "lazy",
+  "Suspense",
+  "StrictMode",
+  "cloneElement",
+  "Children",
+  "isValidElement",
+  "createRef",
+  "startTransition",
+] as const;
+
+function buildReactShimSource(): string {
+  const names = REACT_SHIM_NAMED_EXPORTS.join(", ");
+  return `
+        const R = globalThis.__paperclipPluginBridge__?.react;
+        export default R;
+        const { ${names} } = R;
+        export { ${names} };
+      `;
+}
+
 function applyJsxRuntimeKey(
   props: Record<string, unknown> | null | undefined,
   key: string | number | undefined,
@@ -250,18 +294,7 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
   let source: string;
   switch (specifier) {
     case "react":
-      source = `
-        const R = globalThis.__paperclipPluginBridge__?.react;
-        export default R;
-        const { useState, useEffect, useCallback, useMemo, useRef, useContext,
-          createContext, createElement, Fragment, Component, forwardRef,
-          memo, lazy, Suspense, StrictMode, cloneElement, Children,
-          isValidElement, createRef } = R;
-        export { useState, useEffect, useCallback, useMemo, useRef, useContext,
-          createContext, createElement, Fragment, Component, forwardRef,
-          memo, lazy, Suspense, StrictMode, cloneElement, Children,
-          isValidElement, createRef };
-      `;
+      source = buildReactShimSource();
       break;
     case "react/jsx-runtime":
       source = `
@@ -619,6 +652,7 @@ export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
           pluginKey: contribution.pluginKey,
           pluginDisplayName: contribution.displayName,
           pluginVersion: contribution.version,
+          pluginPageRoutePath: contribution.slots.find((entry) => entry.type === "page")?.routePath ?? null,
         });
       }
     }
@@ -797,6 +831,23 @@ export function PluginSlotMount({
 
   if (!component) {
     if (missingBehavior === "hidden") return null;
+    const fallbackRoute = slot.type === "sidebar" ? slot.pluginPageRoutePath?.trim() : null;
+    if (fallbackRoute) {
+      const companyPrefix = context.companyPrefix?.trim().toUpperCase();
+      const fallbackHref = companyPrefix ? `/${companyPrefix}/${fallbackRoute}` : `/${fallbackRoute}`;
+      return (
+        <Link
+          to={fallbackHref}
+          className={cn(
+            "block rounded-md border border-dashed border-border px-2 py-1 text-xs text-foreground/80 transition-colors hover:border-foreground/40 hover:bg-accent/50 hover:text-foreground",
+            className,
+          )}
+          aria-label={`Open ${slot.displayName}`}
+        >
+          {slot.displayName}
+        </Link>
+      );
+    }
     return (
       <div className={cn("rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground", className)}>
         {slot.pluginDisplayName}: {slot.displayName}
@@ -897,6 +948,11 @@ export function _resetPluginModuleLoader(): void {
   for (const key of Object.keys(shimBlobUrls)) {
     delete shimBlobUrls[key];
   }
+}
+
+/** @internal Test-only view of the generated React compatibility module. */
+export function _getReactShimSourceForTests(): string {
+  return buildReactShimSource();
 }
 
 export const _applyJsxRuntimeKeyForTests = applyJsxRuntimeKey;
