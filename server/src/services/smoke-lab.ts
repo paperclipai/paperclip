@@ -29,6 +29,8 @@ import { instanceSettingsService } from "./instance-settings.js";
 export const SMOKE_LAB_DEMO_EMAIL = "smoke@paperclip.test";
 export const SMOKE_LAB_DEMO_PASSWORD = "smoke-password";
 export const SMOKE_LAB_BANNER = "SMOKE TEST - not a real provider";
+export const SMOKE_LAB_OAUTH_SCOPES = ["smoke:openid", "smoke:profile", "smoke:email"] as const;
+export const SMOKE_LAB_OAUTH_SCOPE = SMOKE_LAB_OAUTH_SCOPES.join(" ");
 
 const HTTP_APP_KEY = "paperclip.smoke-lab.http-fixture";
 const STDIO_APP_KEY = "paperclip.smoke-lab.stdio-fixture";
@@ -37,6 +39,24 @@ const STDIO_CONNECTION_NAME = "Smoke Lab stdio MCP fixture";
 const PROFILE_KEY = "paperclip.smoke-lab.profile";
 const HTTP_SERVICE_ID = "http-mcp-fixture" as const;
 const OAUTH_SERVICE_ID = "fake-oauth" as const;
+
+function smokeFixtureToken(prefix: "code" | "access" | "refresh", parts: Record<string, string>) {
+  const stableInput = Object.keys(parts)
+    .sort()
+    .map((key) => `${key}=${parts[key]}`)
+    .join("\n");
+  return `smoke_${prefix}_${createHash("sha256").update(stableInput).digest("hex").slice(0, 24)}`;
+}
+
+function normalizeSmokeOAuthScope(scope?: string) {
+  const requested = scope ? scope.split(/\s+/).map((item) => item.trim()).filter(Boolean) : [...SMOKE_LAB_OAUTH_SCOPES];
+  const unique = [...new Set(requested)];
+  const invalid = unique.filter((item) => !(SMOKE_LAB_OAUTH_SCOPES as readonly string[]).includes(item));
+  if (invalid.length > 0) {
+    throw badRequest(`Smoke OAuth only supports fixture scopes: ${SMOKE_LAB_OAUTH_SCOPE}`);
+  }
+  return unique.join(" ");
+}
 
 type SmokeLabActorInfo = {
   actorType: "agent" | "user" | "system";
@@ -397,7 +417,7 @@ export function smokeLabService(db: Db, options: {
       client_id: input.clientId,
       redirect_uri: input.redirectUri,
       state: input.state ?? "",
-      scope: input.scope ?? "openid profile email",
+      scope: normalizeSmokeOAuthScope(input.scope),
       response_type: "code",
     }).map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}" />`).join("\n");
     return `<!doctype html>
@@ -441,13 +461,19 @@ export function smokeLabService(db: Db, options: {
     if (!["127.0.0.1", "localhost", "[::1]", "::1"].includes(redirect.hostname)) {
       throw forbidden("Smoke OAuth redirect_uri must be loopback-only");
     }
-    const code = `smoke_code_${randomUUID()}`;
+    const scope = normalizeSmokeOAuthScope(input.scope);
+    const code = smokeFixtureToken("code", {
+      clientId: input.clientId,
+      companyId: input.companyId,
+      redirectUri: input.redirectUri,
+      scope,
+    });
     codes.set(code, {
       companyId: input.companyId,
       code,
       clientId: input.clientId,
       redirectUri: input.redirectUri,
-      scope: input.scope ?? "openid profile email",
+      scope,
       expiresAt: Date.now() + 5 * 60 * 1000,
       consumed: false,
     });
@@ -476,8 +502,19 @@ export function smokeLabService(db: Db, options: {
         throw badRequest("redirect_uri does not match authorization code");
       }
       code.consumed = true;
-      const accessToken = `smoke_access_${randomUUID()}`;
-      const refreshToken = `smoke_refresh_${randomUUID()}`;
+      const accessToken = smokeFixtureToken("access", {
+        clientId: code.clientId,
+        code: code.code,
+        companyId: input.companyId,
+        redirectUri: code.redirectUri,
+        scope: code.scope,
+      });
+      const refreshToken = smokeFixtureToken("refresh", {
+        clientId: code.clientId,
+        companyId: input.companyId,
+        redirectUri: code.redirectUri,
+        scope: code.scope,
+      });
       const record: OAuthTokenRecord = {
         companyId: input.companyId,
         token: accessToken,
@@ -500,7 +537,11 @@ export function smokeLabService(db: Db, options: {
       if (!existing || existing.companyId !== input.companyId || existing.revoked) {
         throw badRequest("Invalid refresh token");
       }
-      const accessToken = `smoke_access_${randomUUID()}`;
+      const accessToken = smokeFixtureToken("access", {
+        companyId: input.companyId,
+        refreshToken: existing.refreshToken,
+        scope: existing.scope,
+      });
       const next: OAuthTokenRecord = { ...existing, token: accessToken };
       accessTokens.set(accessToken, next);
       refreshTokens.set(existing.refreshToken, next);

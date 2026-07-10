@@ -23,6 +23,7 @@ import {
 import { eq } from "drizzle-orm";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { smokeLabRoutes } from "../routes/smoke-lab.js";
+import { SMOKE_LAB_OAUTH_SCOPE } from "../services/smoke-lab.js";
 import { errorHandler } from "../middleware/index.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -153,18 +154,21 @@ describeEmbeddedPostgres("smoke lab service pack and results API", () => {
       .expect(200);
     expect(page.text).toContain("SMOKE TEST - not a real provider");
     expect(page.text).toContain("smoke@paperclip.test");
+    expect(page.text).toContain(SMOKE_LAB_OAUTH_SCOPE);
 
+    const authorizeBody = {
+      client_id: "smoke-client",
+      redirect_uri: redirectUri,
+      state: "state-1",
+      response_type: "code",
+      scope: SMOKE_LAB_OAUTH_SCOPE,
+      email: "smoke@paperclip.test",
+      password: "smoke-password",
+    };
     const authorize = await request(app)
       .post(`/api/companies/${company.id}/smoke-lab/oauth/authorize`)
       .type("form")
-      .send({
-        client_id: "smoke-client",
-        redirect_uri: redirectUri,
-        state: "state-1",
-        response_type: "code",
-        email: "smoke@paperclip.test",
-        password: "smoke-password",
-      })
+      .send(authorizeBody)
       .expect(302);
     const redirected = new URL(authorize.headers.location);
     const code = redirected.searchParams.get("code");
@@ -178,6 +182,22 @@ describeEmbeddedPostgres("smoke lab service pack and results API", () => {
       .expect(200);
     expect(token.body.access_token).toMatch(/^smoke_access_/);
     expect(token.body.refresh_token).toMatch(/^smoke_refresh_/);
+    expect(token.body.scope).toBe(SMOKE_LAB_OAUTH_SCOPE);
+
+    const repeatAuthorize = await request(app)
+      .post(`/api/companies/${company.id}/smoke-lab/oauth/authorize`)
+      .type("form")
+      .send(authorizeBody)
+      .expect(302);
+    const repeatCode = new URL(repeatAuthorize.headers.location).searchParams.get("code");
+    expect(repeatCode).toBe(code);
+    const repeatToken = await request(app)
+      .post(`/api/companies/${company.id}/smoke-lab/oauth/token`)
+      .type("form")
+      .send({ grant_type: "authorization_code", code: repeatCode, client_id: "smoke-client", redirect_uri: redirectUri })
+      .expect(200);
+    expect(repeatToken.body.access_token).toBe(token.body.access_token);
+    expect(repeatToken.body.refresh_token).toBe(token.body.refresh_token);
 
     const refreshed = await request(app)
       .post(`/api/companies/${company.id}/smoke-lab/oauth/token`)
@@ -185,6 +205,7 @@ describeEmbeddedPostgres("smoke lab service pack and results API", () => {
       .send({ grant_type: "refresh_token", refresh_token: token.body.refresh_token })
       .expect(200);
     expect(refreshed.body.access_token).toMatch(/^smoke_access_/);
+    expect(refreshed.body.scope).toBe(SMOKE_LAB_OAUTH_SCOPE);
 
     const userinfo = await request(app)
       .get(`/api/companies/${company.id}/smoke-lab/oauth/userinfo`)
@@ -202,6 +223,30 @@ describeEmbeddedPostgres("smoke lab service pack and results API", () => {
       .get(`/api/companies/${company.id}/smoke-lab/oauth/userinfo`)
       .set("Authorization", `Bearer ${refreshed.body.access_token}`)
       .expect(403);
+  });
+
+  it("rejects real-looking vendor scopes at the fake OAuth provider", async () => {
+    const company = await createCompany(db);
+    await enableSmokeLab(db);
+    const app = createRouteApp(db);
+    const redirectUri = "http://127.0.0.1/callback";
+
+    await request(app)
+      .get(`/api/companies/${company.id}/smoke-lab/oauth/authorize`)
+      .query({ client_id: "smoke-client", redirect_uri: redirectUri, scope: "repo user:email offline_access", response_type: "code" })
+      .expect(400);
+
+    await request(app)
+      .post(`/api/companies/${company.id}/smoke-lab/oauth/authorize`)
+      .type("form")
+      .send({
+        client_id: "smoke-client",
+        redirect_uri: redirectUri,
+        scope: "repo user:email offline_access",
+        email: "smoke@paperclip.test",
+        password: "smoke-password",
+      })
+      .expect(400);
   });
 
   it("installs smoke fixtures idempotently into tool access tables", async () => {

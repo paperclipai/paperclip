@@ -3471,6 +3471,22 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return [];
   }
 
+  function isSmokeLabOAuthUrl(value: string | null | undefined) {
+    if (!value) return false;
+    try {
+      return /\/smoke-lab\/oauth(?:\/|$)/.test(new URL(value).pathname);
+    } catch {
+      return false;
+    }
+  }
+
+  function assertNotSmokeLabOAuthEndpoints(endpoints: OAuthProviderEndpoints) {
+    const blockedUrl = [endpoints.authorizationUrl, endpoints.tokenUrl, endpoints.metadataUrl].find(isSmokeLabOAuthUrl);
+    if (blockedUrl) {
+      throw unprocessable("Smoke Lab OAuth provider cannot be used for tool app sign-in");
+    }
+  }
+
   function oauthProviderForConnection(connection: typeof toolConnections.$inferSelect, metadataUrl?: string | null): string {
     const oauth = oauthConfig(connection);
     if (typeof oauth.provider === "string" && oauth.provider.trim()) return oauth.provider.trim();
@@ -3647,10 +3663,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   ): Promise<OAuthProviderEndpoints> {
     const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
     const galleryEntry = sourceTemplateKey ? getToolAppGalleryEntry(sourceTemplateKey) : null;
-    if (galleryEntry?.authKind === "oauth" && galleryEntry.oauth) return oauthProviderEndpoints(galleryEntry);
-    const discovered = await discoverOAuthEndpoints(connection, challenge);
-    if (!discovered) throw unprocessable("This app connection does not advertise OAuth sign in");
-    return discovered;
+    const endpoints = galleryEntry?.authKind === "oauth" && galleryEntry.oauth
+      ? await oauthProviderEndpoints(galleryEntry)
+      : await discoverOAuthEndpoints(connection, challenge);
+    if (!endpoints) throw unprocessable("This app connection does not advertise OAuth sign in");
+    assertNotSmokeLabOAuthEndpoints(endpoints);
+    return endpoints;
   }
 
   async function oauthGalleryEntryForConnection(connection: typeof toolConnections.$inferSelect) {

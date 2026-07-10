@@ -3947,6 +3947,78 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(JSON.stringify(connection.config)).not.toContain("generic-access-token");
   });
 
+  it("blocks Smoke Lab OAuth issuer URLs from the normal tool OAuth secret pipeline", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const smokeAuthorizeUrl = `http://127.0.0.1:3100/api/companies/${company.id}/smoke-lab/oauth/authorize`;
+    const smokeTokenUrl = `http://127.0.0.1:3100/api/companies/${company.id}/smoke-lab/oauth/token`;
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `smoke-oauth-masquerade-${randomUUID()}`,
+      name: "Smoke OAuth masquerade",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: "Smoke OAuth masquerade connection",
+      transport: "remote_http",
+      status: "active",
+      enabled: false,
+      healthStatus: "unchecked",
+      config: {
+        url: "http://127.0.0.1:3100/mcp",
+        oauth: {
+          provider: "smoke_lab",
+          authorizationUrl: smokeAuthorizeUrl,
+          tokenUrl: smokeTokenUrl,
+          scopes: ["repo", "user:email", "offline_access"],
+        },
+      },
+      transportConfig: { url: "http://127.0.0.1:3100/mcp" },
+      credentialSecretRefs: [],
+      credentialRefs: [],
+    }).returning();
+
+    await expect(service.startOAuth(company.id, connection!.id, {
+      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "Smoke Lab OAuth provider cannot be used for tool app sign-in",
+    });
+    await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
+
+    await db.insert(toolOauthStates).values({
+      state: "legacy-smoke-state",
+      companyId: company.id,
+      connectionId: connection!.id,
+      codeVerifier: "legacy-smoke-code-verifier",
+      createdByActorType: "user",
+      createdByActorId: "board",
+      createdBySessionId: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("smoke OAuth token endpoint must not be called"));
+
+    await expect(service.completeOAuthCallback({
+      state: "legacy-smoke-state",
+      code: "smoke-code",
+      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "Smoke Lab OAuth provider cannot be used for tool app sign-in",
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    const [updatedConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+    expect(updatedConnection!.credentialSecretRefs).toEqual([]);
+    await expect(db.select().from(companySecretBindings)).resolves.toHaveLength(0);
+    await expect(db.select().from(companySecrets)).resolves.toHaveLength(0);
+  });
+
   it("connects gallery apps and finishes access profiles, bindings, and ask-first policies", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);
