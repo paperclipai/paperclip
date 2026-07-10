@@ -51,6 +51,7 @@ import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
+import { createStartupThenPeriodicSingleFlight } from "./lib/coalescing-single-flight.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -710,18 +711,25 @@ export async function startServer(): Promise<StartedServer> {
     const routines = routineService(db as any, { pluginWorkerManager });
     const deadlineWarden = deadlineWardenService(db as any, { heartbeat });
   
-    // Reap orphaned running runs at startup while in-memory execution state is empty,
-    // then resume any persisted queued runs that were waiting on the previous process.
-    void heartbeat
-      .reapOrphanedRuns()
-      .then(() => heartbeat.reconcileInactiveProjectTimerWork())
-      .then((result) => {
-        if (result.cancelledRuns > 0 || result.cancelledWakeups > 0) {
-          logger.warn({ ...result }, "startup project-status gate cancelled inactive project timer work");
+    // Startup and interval recovery share one process-wide drain. If an interval
+    // fires while recovery is active, requests coalesce into one follow-up pass
+    // instead of stacking database lock waiters on the same agents/actions.
+    const recoveryPipeline = createStartupThenPeriodicSingleFlight(
+      async (phase) => {
+        await heartbeat.reapOrphanedRuns(
+          phase === "startup" ? undefined : { staleThresholdMs: 5 * 60 * 1000 },
+        );
+        if (phase === "startup") {
+          const inactiveTimerWork = await heartbeat.reconcileInactiveProjectTimerWork();
+          if (inactiveTimerWork.cancelledRuns > 0 || inactiveTimerWork.cancelledWakeups > 0) {
+            logger.warn(
+              { ...inactiveTimerWork },
+              "startup project-status gate cancelled inactive project timer work",
+            );
+          }
         }
-      })
-      .then(() => heartbeat.promoteDueScheduledRetries())
-      .then(async (promotion) => {
+
+        const promotion = await heartbeat.promoteDueScheduledRetries();
         await heartbeat.resumeQueuedRuns();
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
         if (
@@ -734,32 +742,35 @@ export async function startServer(): Promise<StartedServer> {
           reconciled.escalated > 0
         ) {
           logger.warn(
-            { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
-            "startup heartbeat recovery changed assigned issue state",
+            {
+              promotedScheduledRetries: promotion.promoted,
+              promotedScheduledRetryRunIds: promotion.runIds,
+              ...reconciled,
+            },
+            `${phase} heartbeat recovery changed assigned issue state`,
           );
         }
-      })
-      .then(async () => {
-        const reconciled = await heartbeat.reconcileIssueGraphLiveness();
-        if (reconciled.escalationsCreated > 0) {
-          logger.warn({ ...reconciled }, "startup issue-graph liveness reconciliation created escalations");
+
+        const liveness = await heartbeat.reconcileIssueGraphLiveness();
+        if (liveness.escalationsCreated > 0) {
+          logger.warn({ ...liveness }, `${phase} issue-graph liveness reconciliation created escalations`);
         }
-      })
-      .then(async () => {
+
         const scanned = await heartbeat.scanSilentActiveRuns();
         if (scanned.created > 0 || scanned.escalated > 0) {
-          logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
+          logger.warn({ ...scanned }, `${phase} active-run output watchdog created review work`);
         }
-      })
-      .then(async () => {
+
         const reviewed = await heartbeat.reconcileProductivityReviews();
         if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
-          logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
+          logger.warn({ ...reviewed }, `${phase} productivity reconciliation created or updated review work`);
         }
-      })
-      .catch((err) => {
-        logger.error({ err }, "startup heartbeat recovery failed");
-      });
+      },
+      (err, phase) => {
+        logger.error({ err }, `${phase} heartbeat recovery failed`);
+      },
+    );
+    void recoveryPipeline.trigger();
     setInterval(() => {
       void heartbeat
         .tickTimers(new Date())
@@ -794,50 +805,9 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "deadline warden tick failed");
         });
   
-      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-      // persisted queued work is still being driven forward.
-      void heartbeat
-        .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-        .then(() => heartbeat.promoteDueScheduledRetries())
-        .then(async (promotion) => {
-          await heartbeat.resumeQueuedRuns();
-          const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
-          if (
-            promotion.promoted > 0 ||
-            reconciled.assignmentDispatched > 0 ||
-            reconciled.dispatchRequeued > 0 ||
-            reconciled.continuationRequeued > 0 ||
-            reconciled.orphanedDeferredWakesFailed > 0 ||
-            reconciled.successfulRunHandoffEscalated > 0 ||
-            reconciled.escalated > 0
-          ) {
-            logger.warn(
-              { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
-              "periodic heartbeat recovery changed assigned issue state",
-            );
-          }
-        })
-        .then(async () => {
-          const reconciled = await heartbeat.reconcileIssueGraphLiveness();
-          if (reconciled.escalationsCreated > 0) {
-            logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
-          }
-        })
-        .then(async () => {
-          const scanned = await heartbeat.scanSilentActiveRuns();
-          if (scanned.created > 0 || scanned.escalated > 0) {
-            logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
-          }
-        })
-        .then(async () => {
-          const reviewed = await heartbeat.reconcileProductivityReviews();
-          if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
-            logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "periodic heartbeat recovery failed");
-        });
+      // Periodically reap orphaned runs and drive persisted work forward. The
+      // single-flight coalesces any overlap with startup or a slow prior tick.
+      void recoveryPipeline.trigger();
     }, config.heartbeatSchedulerIntervalMs);
   }
 

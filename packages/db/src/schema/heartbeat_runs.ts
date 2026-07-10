@@ -80,6 +80,13 @@ export const heartbeatRuns = pgTable(
       sql`${table.createdAt} DESC`,
       sql`${table.id} DESC`,
     ),
+    companyRecoveryActionIdx: index("heartbeat_runs_company_recovery_action_id_idx")
+      .on(
+        table.companyId,
+        sql`(${table.contextSnapshot} ->> 'recoveryActionId')`,
+        table.id,
+      )
+      .where(sql`${table.contextSnapshot} ->> 'recoveryActionId' is not null`),
     companyStatusLastOutputIdx: index("heartbeat_runs_company_status_last_output_idx").on(
       table.companyId,
       table.status,

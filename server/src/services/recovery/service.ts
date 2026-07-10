@@ -74,6 +74,7 @@ const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiv
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const ISSUE_GRAPH_LIVENESS_RECOVERY_ACTION_OWNER_STATUSES = new Set(["active", "idle", "running"]);
 const STRANDED_RECOVERY_ACTION_TIMEOUT_MS = 15 * 60 * 1000;
+const legacyRecoveryReconciliationInFlight = new WeakMap<object, Promise<unknown>>();
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -198,6 +199,97 @@ function issueIdFromWakePayload(payload: unknown) {
   return readNonEmptyString(parsed.issueId) ??
     readNonEmptyString(nestedContext.issueId) ??
     readNonEmptyString(nestedContext.taskId);
+}
+
+function primarySourceRecoveryRunPredicate(actionId: string, sourceIssueId: string) {
+  return sql`(
+    ${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId' = ${actionId}
+    and ${heartbeatRuns.contextSnapshot} ->> 'source' = 'issue_recovery_action'
+    and ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${sourceIssueId}
+    and ${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${sourceIssueId}
+    and ${heartbeatRuns.contextSnapshot} ->> 'sourceIssueId' = ${sourceIssueId}
+  )`;
+}
+
+function isPrimarySourceRecoveryRunContext(
+  contextSnapshot: unknown,
+  actionId: string,
+  sourceIssueId: string,
+) {
+  const context = parseObject(contextSnapshot);
+  return context.recoveryActionId === actionId &&
+    context.source === "issue_recovery_action" &&
+    context.issueId === sourceIssueId &&
+    context.taskId === sourceIssueId &&
+    context.sourceIssueId === sourceIssueId;
+}
+
+function primarySourceRecoveryWakePredicate(actionId: string, sourceIssueId: string) {
+  return sql`(
+    (
+      ${agentWakeupRequests.payload} ->> 'recoveryActionId' = ${actionId}
+      and ${agentWakeupRequests.payload} ->> 'issueId' = ${sourceIssueId}
+      and ${agentWakeupRequests.payload} ->> 'sourceIssueId' = ${sourceIssueId}
+      and ${agentWakeupRequests.payload} ->> 'managerEscalation' is distinct from 'true'
+      and ${agentWakeupRequests.payload} -> '_paperclipWakeContext' is null
+      and ${agentWakeupRequests.payload} ->> 'commentId' is null
+      and ${agentWakeupRequests.payload} ->> 'wakeCommentId' is null
+      and ${agentWakeupRequests.payload} -> 'wakeCommentIds' is null
+    )
+    or (
+      ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'recoveryActionId' = ${actionId}
+      and ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId' = ${sourceIssueId}
+      and ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'sourceIssueId' = ${sourceIssueId}
+      and ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'source' = 'issue_recovery_action'
+      and ${agentWakeupRequests.payload} ->> 'managerEscalation' is distinct from 'true'
+      and ${agentWakeupRequests.payload} ->> 'commentId' is null
+      and ${agentWakeupRequests.payload} ->> 'wakeCommentId' is null
+      and ${agentWakeupRequests.payload} -> 'wakeCommentIds' is null
+      and ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'commentId' is null
+      and ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'wakeCommentId' is null
+      and ${agentWakeupRequests.payload} -> '_paperclipWakeContext' -> 'wakeCommentIds' is null
+      and (
+        ${agentWakeupRequests.status} <> 'deferred_issue_execution'
+        or coalesce(${agentWakeupRequests.coalescedCount}, 0) = 0
+      )
+    )
+  )`;
+}
+
+function isPrimarySourceRecoveryWakePayload(
+  payload: unknown,
+  actionId: string,
+  sourceIssueId: string,
+  wakeup?: { status: string; coalescedCount: number | null } | null,
+) {
+  if (
+    wakeup?.status === "deferred_issue_execution" &&
+    (wakeup.coalescedCount ?? 0) > 0
+  ) return false;
+  const parsed = parseObject(payload);
+  if (parsed.managerEscalation === true || parsed.managerEscalation === "true") return false;
+  const nestedContext = parseObject(parsed[DEFERRED_WAKE_CONTEXT_KEY]);
+  const hasNestedContext = Object.keys(nestedContext).length > 0;
+  const hasHumanCommentSignal = Boolean(
+    readNonEmptyString(parsed.commentId) ||
+    readNonEmptyString(parsed.wakeCommentId) ||
+    (Array.isArray(parsed.wakeCommentIds) && parsed.wakeCommentIds.length > 0) ||
+    readNonEmptyString(nestedContext.commentId) ||
+    readNonEmptyString(nestedContext.wakeCommentId) ||
+    (Array.isArray(nestedContext.wakeCommentIds) && nestedContext.wakeCommentIds.length > 0),
+  );
+  const rootMatches = !hasNestedContext && !hasHumanCommentSignal && (
+    parsed.recoveryActionId === actionId &&
+    parsed.issueId === sourceIssueId &&
+    parsed.sourceIssueId === sourceIssueId
+  );
+  const nestedMatches = hasNestedContext && !hasHumanCommentSignal && (
+    nestedContext.recoveryActionId === actionId &&
+    nestedContext.issueId === sourceIssueId &&
+    nestedContext.sourceIssueId === sourceIssueId &&
+    nestedContext.source === "issue_recovery_action"
+  );
+  return rootMatches || nestedMatches;
 }
 
 function issueUiLink(issue: { identifier: string | null; id: string }, prefix: string) {
@@ -408,6 +500,7 @@ type RecoveryRunCancellation = (
     suppressImmediateRecovery: boolean;
     force: boolean;
     errorCode?: string;
+    requireTransition?: boolean;
   },
 ) => Promise<unknown>;
 
@@ -3366,6 +3459,520 @@ export function recoveryService(
   ] as const;
 
   /**
+   * Recovery authority is no longer actionable once its source issue is
+   * terminal. Reconcile that invariant independently of delivery history so
+   * actions created by older releases cannot stay active forever merely
+   * because they have no current run/wakeup evidence.
+   *
+   * The transaction follows the lifecycle lock order used by termination and
+   * the recovery watchdog: owner agent -> wakeups -> runs -> source issue ->
+   * recovery action. Running work is stopped through heartbeat control only
+   * after database locks are released, then the candidate is retried.
+   */
+  async function reconcileTerminalSourceRecoveryActions(now = new Date()) {
+    const candidates = await db
+      .select({
+        actionId: issueRecoveryActions.id,
+        companyId: issueRecoveryActions.companyId,
+        sourceIssueId: issueRecoveryActions.sourceIssueId,
+        ownerAgentId: issueRecoveryActions.ownerAgentId,
+        attemptCount: issueRecoveryActions.attemptCount,
+        actionUpdatedAt: issueRecoveryActions.updatedAt,
+        sourceStatus: issues.status,
+      })
+      .from(issueRecoveryActions)
+      .leftJoin(
+        issues,
+        and(
+          eq(issues.id, issueRecoveryActions.sourceIssueId),
+          eq(issues.companyId, issueRecoveryActions.companyId),
+        ),
+      )
+      .where(
+        and(
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          or(isNull(issues.id), inArray(issues.status, ["done", "cancelled"]))!,
+        ),
+      )
+      .orderBy(asc(issueRecoveryActions.id));
+
+    const resolvedActionIds: string[] = [];
+    const cancelledActionIds: string[] = [];
+    const cancelledRunIds: string[] = [];
+    const cancelledWakeupIds: string[] = [];
+    const failedActionIds = new Set<string>();
+
+    for (const candidate of candidates) {
+      const externallyCancelledRunIds: string[] = [];
+      const externallyCancelledWakeupIds: string[] = [];
+      let reconciled: {
+        actionId: string;
+        companyId: string;
+        sourceIssueId: string;
+        sourceStatus: "done" | "cancelled" | null;
+        actionStatus: "resolved" | "cancelled";
+        cancelledRunIds: string[];
+        cancelledWakeupIds: string[];
+        details: Record<string, unknown>;
+      } | null = null;
+
+      for (let pass = 0; pass < 3 && !reconciled; pass += 1) {
+        // Discover delivery identities before taking any lifecycle row lock.
+        // The transaction below then locks only primary keys, avoiding the
+        // full-table JSON scan/owner-lock convoy that older recovery sweeps
+        // could create on large heartbeat history tables.
+        const [preReadWakeups, preReadRuns] = await Promise.all([
+          db
+            .select({ id: agentWakeupRequests.id })
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.companyId, candidate.companyId),
+                inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
+                primarySourceRecoveryWakePredicate(candidate.actionId, candidate.sourceIssueId),
+              ),
+            ),
+          db
+            .select({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId })
+            .from(heartbeatRuns)
+            .innerJoin(
+              agentWakeupRequests,
+              and(
+                eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId),
+                eq(agentWakeupRequests.runId, heartbeatRuns.id),
+              ),
+            )
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, candidate.companyId),
+                inArray(heartbeatRuns.status, [...liveRecoveryRunStatuses]),
+                sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId' = ${candidate.actionId}`,
+                primarySourceRecoveryWakePredicate(candidate.actionId, candidate.sourceIssueId),
+              ),
+            ),
+        ]);
+        const preReadWakeupIds = [
+          ...new Set([
+            ...preReadWakeups.map((wakeup) => wakeup.id),
+            ...preReadRuns
+              .map((run) => run.wakeupRequestId)
+              .filter((id): id is string => Boolean(id)),
+          ]),
+        ].sort();
+        const preReadRunIds = [...new Set(preReadRuns.map((run) => run.id))].sort();
+
+        const result = await db.transaction(async (tx) => {
+          if (candidate.ownerAgentId) {
+            await tx
+              .select({ id: agents.id })
+              .from(agents)
+              .where(
+                and(
+                  eq(agents.id, candidate.ownerAgentId),
+                  eq(agents.companyId, candidate.companyId),
+                ),
+              )
+              .for("update");
+          }
+
+          const lockedWakeups = preReadWakeupIds.length > 0
+            ? await tx
+                .select({
+                  id: agentWakeupRequests.id,
+                  status: agentWakeupRequests.status,
+                  coalescedCount: agentWakeupRequests.coalescedCount,
+                  payload: agentWakeupRequests.payload,
+                  runId: agentWakeupRequests.runId,
+                })
+                .from(agentWakeupRequests)
+                .where(
+                  and(
+                    eq(agentWakeupRequests.companyId, candidate.companyId),
+                    inArray(agentWakeupRequests.id, preReadWakeupIds),
+                  ),
+                )
+                .orderBy(asc(agentWakeupRequests.id))
+                .for("update")
+            : [];
+          const lockedWakeupIds = lockedWakeups.map((wakeup) => wakeup.id);
+
+          const lockedRuns = preReadRunIds.length > 0
+            ? await tx
+                .select({
+                  id: heartbeatRuns.id,
+                  status: heartbeatRuns.status,
+                  wakeupRequestId: heartbeatRuns.wakeupRequestId,
+                  contextSnapshot: heartbeatRuns.contextSnapshot,
+                })
+                .from(heartbeatRuns)
+                .where(
+                  and(
+                    eq(heartbeatRuns.companyId, candidate.companyId),
+                    inArray(heartbeatRuns.id, preReadRunIds),
+                    inArray(heartbeatRuns.status, [...liveRecoveryRunStatuses]),
+                    sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId' = ${candidate.actionId}`,
+                  ),
+                )
+                .orderBy(asc(heartbeatRuns.id))
+                .for("update")
+            : [];
+
+          const lockedIssue = await tx
+            .select({ id: issues.id, status: issues.status })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.id, candidate.sourceIssueId),
+                eq(issues.companyId, candidate.companyId),
+              ),
+            )
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+
+          const action = await tx
+            .select()
+            .from(issueRecoveryActions)
+            .where(
+              and(
+                eq(issueRecoveryActions.id, candidate.actionId),
+                eq(issueRecoveryActions.companyId, candidate.companyId),
+              ),
+            )
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+          if (
+            !action ||
+            !["active", "escalated"].includes(action.status) ||
+            action.sourceIssueId !== candidate.sourceIssueId ||
+            action.ownerAgentId !== candidate.ownerAgentId ||
+            action.attemptCount !== candidate.attemptCount ||
+            action.updatedAt.getTime() !== candidate.actionUpdatedAt.getTime()
+          ) {
+            return { kind: "stale" as const };
+          }
+
+          const sourceStatus = lockedIssue?.status ?? null;
+          if (sourceStatus !== null && !["done", "cancelled"].includes(sourceStatus)) {
+            return { kind: "stale" as const };
+          }
+
+          // If a delivery changed or appeared after the advisory pre-read,
+          // retry while the action is still active. Once the action row is
+          // terminalized, the atomic claim gate rejects any later queued row.
+          const lockedWakeupsById = new Map(lockedWakeups.map((wakeup) => [wakeup.id, wakeup]));
+          const authoritativeLockedRuns = lockedRuns.filter((run) => {
+            const context = parseObject(run.contextSnapshot);
+            if (context.recoveryActionId !== candidate.actionId) return false;
+            if (!run.wakeupRequestId) return false;
+            const wakeup = run.wakeupRequestId
+              ? lockedWakeupsById.get(run.wakeupRequestId) ?? null
+              : null;
+            return Boolean(
+              wakeup &&
+              wakeup.runId === run.id &&
+              isPrimarySourceRecoveryWakePayload(
+                wakeup.payload,
+                candidate.actionId,
+                candidate.sourceIssueId,
+                wakeup,
+              ),
+            );
+          });
+          const lockedWakeupIdSet = new Set(lockedWakeupIds);
+          if (authoritativeLockedRuns.some((run) =>
+            run.wakeupRequestId && !lockedWakeupIdSet.has(run.wakeupRequestId)
+          )) {
+            return { kind: "retry" as const };
+          }
+          const newlyLinkedLiveRun = await tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .innerJoin(
+              agentWakeupRequests,
+              and(
+                eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId),
+                eq(agentWakeupRequests.runId, heartbeatRuns.id),
+              ),
+            )
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, candidate.companyId),
+                inArray(heartbeatRuns.status, [...liveRecoveryRunStatuses]),
+                sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId' = ${candidate.actionId}`,
+                primarySourceRecoveryWakePredicate(candidate.actionId, candidate.sourceIssueId),
+                preReadRunIds.length > 0
+                  ? notInArray(heartbeatRuns.id, preReadRunIds)
+                  : undefined,
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (newlyLinkedLiveRun) {
+            return { kind: "retry" as const };
+          }
+          const newlyLinkedLiveWakeup = await tx
+            .select({ id: agentWakeupRequests.id })
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.companyId, candidate.companyId),
+                inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
+                primarySourceRecoveryWakePredicate(candidate.actionId, candidate.sourceIssueId),
+                preReadWakeupIds.length > 0
+                  ? notInArray(agentWakeupRequests.id, preReadWakeupIds)
+                  : undefined,
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (newlyLinkedLiveWakeup) {
+            return { kind: "retry" as const };
+          }
+
+          const runningRuns = authoritativeLockedRuns
+            .filter((run) => run.status === "running")
+            .map((run) => ({ id: run.id, wakeupRequestId: run.wakeupRequestId }));
+          if (runningRuns.length > 0) {
+            return { kind: "cancel_running" as const, runs: runningRuns };
+          }
+
+          const queuedRunIds = authoritativeLockedRuns
+            .filter((run) => ["queued", "scheduled_retry"].includes(run.status))
+            .map((run) => run.id);
+          const cancelledRuns = queuedRunIds.length > 0
+            ? await tx
+                .update(heartbeatRuns)
+                .set({
+                  status: "cancelled",
+                  finishedAt: now,
+                  error: "Cancelled because the recovery source issue is terminal",
+                  errorCode: "recovery_source_issue_terminal",
+                  updatedAt: now,
+                })
+                .where(
+                  and(
+                    eq(heartbeatRuns.companyId, action.companyId),
+                    inArray(heartbeatRuns.id, queuedRunIds),
+                    inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+                  ),
+                )
+                .returning({ id: heartbeatRuns.id })
+            : [];
+
+          const activeWakeupIds = lockedWakeups
+            .filter((wakeup) =>
+              ["queued", "claimed", "deferred_issue_execution"].includes(wakeup.status) &&
+              isPrimarySourceRecoveryWakePayload(
+                wakeup.payload,
+                candidate.actionId,
+                candidate.sourceIssueId,
+                wakeup,
+              )
+            )
+            .map((wakeup) => wakeup.id);
+          const cancelledWakeups = activeWakeupIds.length > 0
+            ? await tx
+                .update(agentWakeupRequests)
+                .set({
+                  status: "cancelled",
+                  finishedAt: now,
+                  error: "Cancelled because the recovery source issue is terminal",
+                  updatedAt: now,
+                })
+                .where(
+                  and(
+                    eq(agentWakeupRequests.companyId, action.companyId),
+                    inArray(agentWakeupRequests.id, activeWakeupIds),
+                    inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
+                  ),
+                )
+                .returning({ id: agentWakeupRequests.id })
+            : [];
+
+          const actionStatus = sourceStatus === "done" ? "resolved" as const : "cancelled" as const;
+          const previousEvidence = parseObject(action.evidence);
+          const reconciledCancelledRunIds = [
+            ...new Set([...externallyCancelledRunIds, ...cancelledRuns.map((run) => run.id)]),
+          ];
+          const reconciledCancelledWakeupIds = [
+            ...new Set([...externallyCancelledWakeupIds, ...cancelledWakeups.map((wakeup) => wakeup.id)]),
+          ];
+          const details = {
+            recoveryActionId: action.id,
+            source: "recovery_terminal_source_reconciliation",
+            sourceIssueStatus: sourceStatus ?? "missing",
+            previousActionStatus: action.status,
+            previousOwnerAgentId: action.ownerAgentId,
+            recoveryAttempt: action.attemptCount,
+            cancelledRunIds: reconciledCancelledRunIds,
+            cancelledWakeupIds: reconciledCancelledWakeupIds,
+            reconciledAt: now.toISOString(),
+          };
+          const updated = await tx
+            .update(issueRecoveryActions)
+            .set({
+              status: actionStatus,
+              outcome: actionStatus === "resolved" ? "restored" : "cancelled",
+              resolutionNote: actionStatus === "resolved"
+                ? "Recovery action resolved automatically because its source issue is done."
+                : "Recovery action cancelled automatically because its source issue is cancelled or missing.",
+              resolvedAt: now,
+              evidence: {
+                ...previousEvidence,
+                terminalSourceReconciliation: details,
+              },
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(issueRecoveryActions.id, action.id),
+                inArray(issueRecoveryActions.status, ["active", "escalated"]),
+                eq(issueRecoveryActions.attemptCount, action.attemptCount),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (!updated) return { kind: "stale" as const };
+
+          await tx.insert(activityLog).values({
+            companyId: action.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: null,
+            runId: null,
+            action: "issue.recovery_action_source_terminal_reconciled",
+            entityType: "issue",
+            entityId: action.sourceIssueId,
+            details,
+          });
+
+          return {
+            kind: "reconciled" as const,
+            actionId: action.id,
+            companyId: action.companyId,
+            sourceIssueId: action.sourceIssueId,
+            sourceStatus: sourceStatus as "done" | "cancelled" | null,
+            actionStatus,
+            cancelledRunIds: reconciledCancelledRunIds,
+            cancelledWakeupIds: reconciledCancelledWakeupIds,
+            details,
+          };
+        });
+
+        if (result.kind === "reconciled") {
+          reconciled = result;
+          break;
+        }
+        if (result.kind === "stale") break;
+        if (result.kind === "retry") {
+          if (pass === 2) failedActionIds.add(candidate.actionId);
+          continue;
+        }
+        if (!deps.cancelRun) {
+          failedActionIds.add(candidate.actionId);
+          logger.error(
+            { recoveryActionId: candidate.actionId, runIds: result.runs.map((run) => run.id) },
+            "cannot reconcile terminal-source recovery action without heartbeat cancellation",
+          );
+          break;
+        }
+        let cancellationFailed = false;
+        for (const runningRun of result.runs) {
+          try {
+            await deps.cancelRun(runningRun.id, {
+              reason: "Cancelled because the recovery source issue is terminal",
+              suppressImmediateRecovery: true,
+              force: true,
+              errorCode: "recovery_source_issue_terminal",
+              requireTransition: true,
+            });
+            const stoppedRun = await db
+              .select({
+                status: heartbeatRuns.status,
+                errorCode: heartbeatRuns.errorCode,
+                wakeupRequestId: heartbeatRuns.wakeupRequestId,
+              })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, runningRun.id))
+              .then((rows) => rows[0] ?? null);
+            if (stoppedRun?.status === "running") {
+              throw new Error("Heartbeat cancellation returned before the recovery run stopped");
+            }
+            if (
+              stoppedRun?.status === "cancelled" &&
+              stoppedRun.errorCode === "recovery_source_issue_terminal"
+            ) {
+              externallyCancelledRunIds.push(runningRun.id);
+              if (stoppedRun.wakeupRequestId) {
+                const stoppedWakeup = await db
+                  .select({ status: agentWakeupRequests.status })
+                  .from(agentWakeupRequests)
+                  .where(eq(agentWakeupRequests.id, stoppedRun.wakeupRequestId))
+                  .then((rows) => rows[0] ?? null);
+                if (stoppedWakeup?.status === "cancelled") {
+                  externallyCancelledWakeupIds.push(stoppedRun.wakeupRequestId);
+                }
+              }
+            }
+          } catch (error) {
+            cancellationFailed = true;
+            logger.error(
+              { err: error, recoveryActionId: candidate.actionId, runId: runningRun.id },
+              "failed to stop running recovery for a terminal source issue",
+            );
+          }
+        }
+        if (cancellationFailed) {
+          failedActionIds.add(candidate.actionId);
+          break;
+        }
+        if (pass === 2) failedActionIds.add(candidate.actionId);
+      }
+
+      if (!reconciled) continue;
+      if (reconciled.actionStatus === "resolved") {
+        resolvedActionIds.push(reconciled.actionId);
+      } else {
+        cancelledActionIds.push(reconciled.actionId);
+      }
+      cancelledRunIds.push(...reconciled.cancelledRunIds);
+      cancelledWakeupIds.push(...reconciled.cancelledWakeupIds);
+      publishLiveEvent({
+        companyId: reconciled.companyId,
+        type: "activity.logged",
+        payload: {
+          actorType: "system",
+          actorId: "system",
+          action: "issue.recovery_action_source_terminal_reconciled",
+          entityType: "issue",
+          entityId: reconciled.sourceIssueId,
+          agentId: null,
+          runId: null,
+          details: reconciled.details,
+        },
+      });
+    }
+
+    const actionIds = [...resolvedActionIds, ...cancelledActionIds];
+    const result = {
+      reconciled: actionIds.length,
+      resolved: resolvedActionIds.length,
+      cancelled: cancelledActionIds.length,
+      actionIds,
+      resolvedActionIds,
+      cancelledActionIds,
+      cancelledRunIds: [...new Set(cancelledRunIds)],
+      cancelledWakeupIds: [...new Set(cancelledWakeupIds)],
+      failed: failedActionIds.size,
+      failedActionIds: [...failedActionIds],
+    };
+    if (result.reconciled > 0 || result.failed > 0) {
+      logger.warn(result, "reconciled recovery actions for terminal source issues");
+    }
+    return result;
+  }
+
+  /**
    * Pre-generation and stale source-scoped deliveries cannot be admitted by
    * the current claim gate. A terminal malformed delivery is also invisible to
    * the bounded-action watchdog because it has no exact current generation.
@@ -3374,7 +3981,7 @@ export function recoveryService(
    * wakeups -> runs -> source issue -> recovery action. Running work is stopped
    * only after those database locks have been released.
    */
-  async function reconcileLegacySourceScopedRecoveryDeliveries(now = new Date()) {
+  async function reconcileLegacySourceScopedRecoveryDeliveriesOnce(now: Date) {
     const legacyRows = await db
       .select({
         actionId: issueRecoveryActions.id,
@@ -3395,7 +4002,17 @@ export function recoveryService(
           sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId' = ${issueRecoveryActions.id}::text`,
         ),
       )
-      .leftJoin(agentWakeupRequests, eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId))
+      .innerJoin(
+        agentWakeupRequests,
+        and(
+          eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId),
+          eq(agentWakeupRequests.runId, heartbeatRuns.id),
+          sql`${agentWakeupRequests.payload} ->> 'recoveryActionId' = ${issueRecoveryActions.id}::text`,
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueRecoveryActions.sourceIssueId}::text`,
+          sql`${agentWakeupRequests.payload} ->> 'sourceIssueId' = ${issueRecoveryActions.sourceIssueId}::text`,
+          sql`${agentWakeupRequests.payload} ->> 'managerEscalation' is distinct from 'true'`,
+        ),
+      )
       .where(
         and(
           inArray(issueRecoveryActions.status, ["active", "escalated"]),
@@ -3534,7 +4151,7 @@ export function recoveryService(
             : null;
 
           const wakeupLockPredicates = [
-            sql`${agentWakeupRequests.payload} ->> 'recoveryActionId' = ${candidate.actionId}`,
+            primarySourceRecoveryWakePredicate(candidate.actionId, candidate.sourceIssueId),
           ];
           if (candidate.wakeupIds.length > 0) {
             wakeupLockPredicates.push(inArray(agentWakeupRequests.id, candidate.wakeupIds));
@@ -3544,6 +4161,7 @@ export function recoveryService(
               id: agentWakeupRequests.id,
               agentId: agentWakeupRequests.agentId,
               status: agentWakeupRequests.status,
+              coalescedCount: agentWakeupRequests.coalescedCount,
               reason: agentWakeupRequests.reason,
               payload: agentWakeupRequests.payload,
               runId: agentWakeupRequests.runId,
@@ -3625,17 +4243,14 @@ export function recoveryService(
           );
           const isExactCurrentDelivery = (run: (typeof lockedRuns)[number]) => {
             const context = parseObject(run.contextSnapshot);
-            if (context.recoveryActionId !== action.id) {
-              return false;
-            }
             const wakeup = run.wakeupRequestId ? wakeupsById.get(run.wakeupRequestId) ?? null : null;
             const wakePayload = parseObject(wakeup?.payload);
             return (
+              isPrimarySourceRecoveryRunContext(run.contextSnapshot, action.id, action.sourceIssueId) &&
+              Boolean(wakeup) &&
+              wakeup?.runId === run.id &&
+              isPrimarySourceRecoveryWakePayload(wakeup?.payload, action.id, action.sourceIssueId, wakeup) &&
               context.wakeReason === "source_scoped_recovery_action" &&
-              context.source === "issue_recovery_action" &&
-              context.issueId === action.sourceIssueId &&
-              context.taskId === action.sourceIssueId &&
-              context.sourceIssueId === action.sourceIssueId &&
               context.recoveryAttempt === action.attemptCount &&
               context.recoveryCause === action.cause &&
               run.agentId === action.ownerAgentId &&
@@ -3669,6 +4284,16 @@ export function recoveryService(
 
           const candidateRunIds = new Set(candidate.runIds);
           const legacyRuns = lockedRuns.filter((run) => {
+            const wakeup = run.wakeupRequestId ? wakeupsById.get(run.wakeupRequestId) ?? null : null;
+            const context = parseObject(run.contextSnapshot);
+            if (
+              context.recoveryActionId !== action.id ||
+              !wakeup ||
+              wakeup.runId !== run.id ||
+              !isPrimarySourceRecoveryWakePayload(wakeup.payload, action.id, action.sourceIssueId, wakeup)
+            ) {
+              return false;
+            }
             if (isExactCurrentDelivery(run)) return false;
             if (
               terminalRecoveryRunStatuses.includes(
@@ -3993,8 +4618,22 @@ export function recoveryService(
               suppressImmediateRecovery: true,
               force: true,
               errorCode: "legacy_recovery_generation_migrated",
+              requireTransition: true,
             });
-            cancelledLegacyRunIds.push(runId);
+            const stoppedRun = await db
+              .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, runId))
+              .then((rows) => rows[0] ?? null);
+            if (stoppedRun?.status === "running") {
+              throw new Error("Heartbeat cancellation returned before the legacy recovery run stopped");
+            }
+            if (
+              stoppedRun?.status === "cancelled" &&
+              stoppedRun.errorCode === "legacy_recovery_generation_migrated"
+            ) {
+              cancelledLegacyRunIds.push(runId);
+            }
           } catch (error) {
             cancellationFailed = true;
             logger.error(
@@ -4047,12 +4686,30 @@ export function recoveryService(
     return result;
   }
 
+  async function reconcileLegacySourceScopedRecoveryDeliveries(now = new Date()) {
+    type Result = Awaited<ReturnType<typeof reconcileLegacySourceScopedRecoveryDeliveriesOnce>>;
+    const key = db as object;
+    const active = legacyRecoveryReconciliationInFlight.get(key) as Promise<Result> | undefined;
+    if (active) return active;
+
+    const pending = reconcileLegacySourceScopedRecoveryDeliveriesOnce(now);
+    legacyRecoveryReconciliationInFlight.set(key, pending);
+    try {
+      return await pending;
+    } finally {
+      if (legacyRecoveryReconciliationInFlight.get(key) === pending) {
+        legacyRecoveryReconciliationInFlight.delete(key);
+      }
+    }
+  }
+
   async function escalateExhaustedRecoveryActions(now: Date) {
     const candidates = await db
       .select({
         id: issueRecoveryActions.id,
         companyId: issueRecoveryActions.companyId,
         sourceIssueId: issueRecoveryActions.sourceIssueId,
+        ownerAgentId: issueRecoveryActions.ownerAgentId,
         attemptCount: issueRecoveryActions.attemptCount,
       })
       .from(issueRecoveryActions)
@@ -4101,17 +4758,37 @@ export function recoveryService(
       // work from the expired generation is still executing.
       for (let pass = 0; pass < 3 && !escalated; pass += 1) {
         const result = await db.transaction(async (tx) => {
-          // Match termination's global order: wakeups -> runs -> source issue
+          // Match termination's global order: owner -> wakeups -> runs -> source issue
           // -> recovery action. Candidate generation is a stale-safe pre-read;
           // the action is revalidated after every prerequisite row is locked.
+          if (candidate.ownerAgentId) {
+            await tx
+              .select({ id: agents.id })
+              .from(agents)
+              .where(and(
+                eq(agents.id, candidate.ownerAgentId),
+                eq(agents.companyId, candidate.companyId),
+              ))
+              .for("update");
+          }
           const lockedWakeups = await tx
-            .select({ id: agentWakeupRequests.id })
+            .select({
+              id: agentWakeupRequests.id,
+              agentId: agentWakeupRequests.agentId,
+              status: agentWakeupRequests.status,
+              coalescedCount: agentWakeupRequests.coalescedCount,
+              payload: agentWakeupRequests.payload,
+              runId: agentWakeupRequests.runId,
+            })
             .from(agentWakeupRequests)
             .where(
               and(
                 eq(agentWakeupRequests.companyId, candidate.companyId),
-                sql`${agentWakeupRequests.payload} ->> 'recoveryActionId' = ${candidate.id}`,
-                sql`${agentWakeupRequests.payload} ->> 'recoveryAttempt' = ${candidate.attemptCount}::text`,
+                primarySourceRecoveryWakePredicate(candidate.id, candidate.sourceIssueId),
+                sql`coalesce(
+                  ${agentWakeupRequests.payload} ->> 'recoveryAttempt',
+                  ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'recoveryAttempt'
+                ) = ${candidate.attemptCount}::text`,
               ),
             )
             .orderBy(asc(agentWakeupRequests.id))
@@ -4120,8 +4797,10 @@ export function recoveryService(
           const lockedRuns = await tx
             .select({
               id: heartbeatRuns.id,
+              agentId: heartbeatRuns.agentId,
               status: heartbeatRuns.status,
               wakeupRequestId: heartbeatRuns.wakeupRequestId,
+              contextSnapshot: heartbeatRuns.contextSnapshot,
               finishedAt: heartbeatRuns.finishedAt,
               updatedAt: heartbeatRuns.updatedAt,
             })
@@ -4156,23 +4835,45 @@ export function recoveryService(
           if (
             !action ||
             action.status !== "active" ||
-            action.attemptCount !== candidate.attemptCount
+            action.attemptCount !== candidate.attemptCount ||
+            action.ownerAgentId !== candidate.ownerAgentId
           ) {
             return { kind: "stale" as const };
           }
 
           const timedOut = Boolean(action.timeoutAt && action.timeoutAt <= now);
-          const runningRunIds = lockedRuns
+          const wakeupsById = new Map(lockedWakeups.map((wakeup) => [wakeup.id, wakeup]));
+          const authoritativeRuns = lockedRuns.filter((run) => {
+            const context = parseObject(run.contextSnapshot);
+            if (
+              context.recoveryActionId !== action.id ||
+              context.recoveryAttempt !== action.attemptCount ||
+              !run.wakeupRequestId
+            ) return false;
+            const wakeup = wakeupsById.get(run.wakeupRequestId) ?? null;
+            return Boolean(
+              wakeup &&
+              wakeup.runId === run.id &&
+              isPrimarySourceRecoveryWakePayload(
+                wakeup.payload,
+                action.id,
+                action.sourceIssueId,
+                wakeup,
+              ) &&
+              parseObject(wakeup.payload).recoveryAttempt === action.attemptCount,
+            );
+          });
+          const runningRunIds = authoritativeRuns
             .filter((run) => run.status === "running")
             .map((run) => run.id);
           if (timedOut && runningRunIds.length > 0) {
             return { kind: "cancel_running" as const, runIds: runningRunIds };
           }
 
-          const liveRun = lockedRuns.find((run) =>
+          const liveRun = authoritativeRuns.find((run) =>
             ["queued", "scheduled_retry", "running"].includes(run.status),
           );
-          const terminalRun = [...lockedRuns]
+          const terminalRun = [...authoritativeRuns]
             .filter((run) => ["succeeded", "failed", "cancelled", "timed_out"].includes(run.status))
             .sort((left, right) =>
               (right.finishedAt?.getTime() ?? right.updatedAt.getTime()) -
@@ -4180,7 +4881,7 @@ export function recoveryService(
             )[0] ?? null;
           if (!timedOut && (liveRun || !terminalRun)) return { kind: "stale" as const };
 
-          const queuedRunIds = lockedRuns
+          const queuedRunIds = authoritativeRuns
             .filter((run) => ["queued", "scheduled_retry"].includes(run.status))
             .map((run) => run.id);
           const queuedRuns = queuedRunIds.length > 0
@@ -4307,6 +5008,7 @@ export function recoveryService(
               reason: "Cancelled because the bounded recovery action timed out",
               suppressImmediateRecovery: true,
               force: true,
+              requireTransition: true,
             });
           } catch (error) {
             cancellationFailed = true;
@@ -4350,6 +5052,7 @@ export function recoveryService(
     lookbackHours?: number;
   }) {
     const now = new Date();
+    const terminalSourceRecoveryActions = await reconcileTerminalSourceRecoveryActions(now);
     const legacyRecoveryDeliveries = await reconcileLegacySourceScopedRecoveryDeliveries(now);
     const exhaustedRecoveryActions = await escalateExhaustedRecoveryActions(now);
     const findings = await collectIssueGraphLivenessFindings(now);
@@ -4384,6 +5087,12 @@ export function recoveryService(
       retiredRecoveryIssueIds: obsoleteRecoveryCleanup.retiredIssueIds,
       exhaustedRecoveryActionsEscalated: exhaustedRecoveryActions.escalated,
       exhaustedRecoveryActionIds: exhaustedRecoveryActions.actionIds,
+      terminalSourceRecoveryActionsReconciled: terminalSourceRecoveryActions.reconciled,
+      terminalSourceRecoveryActionsResolved: terminalSourceRecoveryActions.resolved,
+      terminalSourceRecoveryActionsCancelled: terminalSourceRecoveryActions.cancelled,
+      terminalSourceRecoveryActionIds: terminalSourceRecoveryActions.actionIds,
+      terminalSourceRecoveryActionReconciliationFailed: terminalSourceRecoveryActions.failed,
+      terminalSourceRecoveryActionReconciliationFailedIds: terminalSourceRecoveryActions.failedActionIds,
       legacyRecoveryDeliveriesMigrated: legacyRecoveryDeliveries.migrated,
       legacyRecoveryActionIds: legacyRecoveryDeliveries.actionIds,
       legacyRecoveryReplacementRunIds: legacyRecoveryDeliveries.replacementRunIds,
@@ -4449,6 +5158,7 @@ export function recoveryService(
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
     buildIssueGraphLivenessAutoRecoveryPreview,
+    reconcileTerminalSourceRecoveryActions,
     reconcileLegacySourceScopedRecoveryDeliveries,
     reconcileIssueGraphLiveness,
     readRecoveryTimerIntervalMs,

@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, jsonb, integer, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -36,5 +37,19 @@ export const agentWakeupRequests = pgTable(
       table.requestedAt,
     ),
     agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(table.agentId, table.requestedAt),
+    companyRecoveryActionIdx: index("agent_wakeup_requests_company_recovery_action_id_idx")
+      .on(
+        table.companyId,
+        sql`(${table.payload} ->> 'recoveryActionId')`,
+        table.id,
+      )
+      .where(sql`${table.payload} ->> 'recoveryActionId' is not null`),
+    companyNestedRecoveryActionIdx: index("agent_wakeup_requests_company_nested_recovery_action_id_idx")
+      .on(
+        table.companyId,
+        sql`(${table.payload} -> '_paperclipWakeContext' ->> 'recoveryActionId')`,
+        table.id,
+      )
+      .where(sql`${table.payload} -> '_paperclipWakeContext' ->> 'recoveryActionId' is not null`),
   }),
 );

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentWakeupRequests,
@@ -420,6 +420,549 @@ describeEmbeddedPostgres("bounded recovery action watchdog", () => {
           }),
         }),
       ]);
+  });
+
+  it("reconciles terminal-source actions without delivery evidence and stays repeat-safe", async () => {
+    const doneStranded = await seedBoundedAction({
+      timeoutAt: null,
+      runStatus: "queued",
+    });
+    const cancelledStranded = await seedBoundedAction({
+      timeoutAt: null,
+      runStatus: "queued",
+    });
+    const doneMissingDisposition = await seedBoundedAction({
+      timeoutAt: null,
+      runStatus: "queued",
+    });
+    const seeded = [doneStranded, cancelledStranded, doneMissingDisposition];
+    await db.delete(heartbeatRuns).where(inArray(heartbeatRuns.id, seeded.map((entry) => entry.runId)));
+    await db.delete(agentWakeupRequests).where(
+      inArray(agentWakeupRequests.id, seeded.map((entry) => entry.wakeupId)),
+    );
+    await db.update(issues).set({ status: "done" }).where(
+      inArray(issues.id, [doneStranded.issueId, doneMissingDisposition.issueId]),
+    );
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, cancelledStranded.issueId));
+    await db
+      .update(issueRecoveryActions)
+      .set({
+        status: "escalated",
+        ownerType: "board",
+        ownerAgentId: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(issueRecoveryActions.id, cancelledStranded.actionId));
+    await db
+      .update(issueRecoveryActions)
+      .set({
+        kind: "missing_disposition",
+        cause: "successful_run_missing_state",
+        fingerprint: `successful_run_missing_state:${doneMissingDisposition.issueId}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(issueRecoveryActions.id, doneMissingDisposition.actionId));
+    await db.update(agents).set({ status: "terminated" }).where(
+      inArray(agents.id, [doneStranded.agentId, doneMissingDisposition.agentId]),
+    );
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const result = await recovery.reconcileIssueGraphLiveness({ force: true });
+
+    expect(result).toMatchObject({
+      terminalSourceRecoveryActionsReconciled: 3,
+      terminalSourceRecoveryActionsResolved: 2,
+      terminalSourceRecoveryActionsCancelled: 1,
+      terminalSourceRecoveryActionReconciliationFailed: 0,
+      legacyRecoveryDeliveriesMigrated: 0,
+    });
+    expect(result.terminalSourceRecoveryActionIds).toEqual(expect.arrayContaining([
+      doneStranded.actionId,
+      cancelledStranded.actionId,
+      doneMissingDisposition.actionId,
+    ]));
+    await expect(db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, doneStranded.actionId)))
+      .resolves.toEqual([
+        expect.objectContaining({
+          status: "resolved",
+          outcome: "restored",
+          evidence: expect.objectContaining({
+            terminalSourceReconciliation: expect.objectContaining({
+              sourceIssueStatus: "done",
+              cancelledRunIds: [],
+              cancelledWakeupIds: [],
+            }),
+          }),
+        }),
+      ]);
+    await expect(
+      db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, cancelledStranded.actionId)),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        status: "cancelled",
+        outcome: "cancelled",
+        evidence: expect.objectContaining({
+          terminalSourceReconciliation: expect.objectContaining({
+            sourceIssueStatus: "cancelled",
+            previousActionStatus: "escalated",
+          }),
+        }),
+      }),
+    ]);
+    await expect(
+      db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, doneMissingDisposition.actionId)),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        status: "resolved",
+        cause: "successful_run_missing_state",
+      }),
+    ]);
+    const afterFirstPass = await db
+      .select({ id: issueRecoveryActions.id, updatedAt: issueRecoveryActions.updatedAt })
+      .from(issueRecoveryActions)
+      .where(inArray(issueRecoveryActions.id, seeded.map((entry) => entry.actionId)));
+
+    await expect(recovery.reconcileTerminalSourceRecoveryActions()).resolves.toMatchObject({
+      reconciled: 0,
+      actionIds: [],
+      failed: 0,
+    });
+    const afterRepeat = await db
+      .select({ id: issueRecoveryActions.id, updatedAt: issueRecoveryActions.updatedAt })
+      .from(issueRecoveryActions)
+      .where(inArray(issueRecoveryActions.id, seeded.map((entry) => entry.actionId)));
+    expect(afterRepeat).toEqual(afterFirstPass);
+  });
+
+  it("closes a terminal source before legacy migration and preserves terminal delivery history", async () => {
+    const seeded = await seedBoundedAction({
+      timeoutAt: null,
+      runStatus: "queued",
+    });
+    const historicalWakeupId = randomUUID();
+    const historicalRunId = randomUUID();
+    const finishedAt = new Date(Date.now() - 60_000);
+    await db.insert(agentWakeupRequests).values({
+      id: historicalWakeupId,
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      source: "automation",
+      reason: "source_scoped_recovery_action",
+      status: "completed",
+      runId: historicalRunId,
+      payload: {
+        issueId: seeded.issueId,
+        sourceIssueId: seeded.issueId,
+        recoveryActionId: seeded.actionId,
+        recoveryCause: "terminated_owner",
+      },
+      finishedAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: historicalRunId,
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      invocationSource: "automation",
+      status: "succeeded",
+      wakeupRequestId: historicalWakeupId,
+      contextSnapshot: {
+        issueId: seeded.issueId,
+        taskId: seeded.issueId,
+        sourceIssueId: seeded.issueId,
+        recoveryActionId: seeded.actionId,
+        recoveryCause: "terminated_owner",
+        source: "issue_recovery_action",
+        wakeReason: "source_scoped_recovery_action",
+      },
+      startedAt: finishedAt,
+      finishedAt,
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, seeded.issueId));
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const result = await recovery.reconcileIssueGraphLiveness({ force: true });
+
+    expect(result).toMatchObject({
+      terminalSourceRecoveryActionsReconciled: 1,
+      terminalSourceRecoveryActionsResolved: 1,
+      legacyRecoveryDeliveriesMigrated: 0,
+      legacyRecoveryReplacementRunIds: [],
+    });
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))
+      .resolves.toEqual([
+        expect.objectContaining({
+          status: "cancelled",
+          errorCode: "recovery_source_issue_terminal",
+        }),
+      ]);
+    await expect(db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeupId)))
+      .resolves.toEqual([expect.objectContaining({ status: "cancelled" })]);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, historicalRunId)))
+      .resolves.toEqual([expect.objectContaining({ status: "succeeded", finishedAt })]);
+    await expect(db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, historicalWakeupId)))
+      .resolves.toEqual([expect.objectContaining({ status: "completed", finishedAt })]);
+    await expect(db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seeded.actionId)))
+      .resolves.toEqual([
+        expect.objectContaining({
+          status: "resolved",
+          evidence: expect.objectContaining({
+            terminalSourceReconciliation: expect.objectContaining({
+              cancelledRunIds: [seeded.runId],
+              cancelledWakeupIds: [seeded.wakeupId],
+            }),
+          }),
+        }),
+    ]);
+  });
+
+  it("cancels a malformed legacy run through its authoritative linked recovery wake before closing the action", async () => {
+    const seeded = await seedBoundedAction({
+      timeoutAt: null,
+      runStatus: "queued",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          recoveryActionId: seeded.actionId,
+          recoveryAttempt: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, seeded.issueId));
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const result = await recovery.reconcileTerminalSourceRecoveryActions();
+
+    expect(result).toMatchObject({
+      reconciled: 1,
+      resolved: 1,
+      cancelledRunIds: [seeded.runId],
+      cancelledWakeupIds: [seeded.wakeupId],
+      failed: 0,
+    });
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))
+      .resolves.toEqual([expect.objectContaining({
+        status: "cancelled",
+        errorCode: "recovery_source_issue_terminal",
+      })]);
+    await expect(db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seeded.actionId)))
+      .resolves.toEqual([expect.objectContaining({ status: "resolved", outcome: "restored" })]);
+  });
+
+  it("stops a running delivery before cancelling recovery for a cancelled source", async () => {
+    const seeded = await seedBoundedAction({
+      timeoutAt: null,
+      runStatus: "running",
+    });
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, seeded.issueId));
+    const cancelRun = vi.fn(async (runId: string) => {
+      await expect(db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seeded.actionId)))
+        .resolves.toEqual([expect.objectContaining({ status: "active" })]);
+      const finishedAt = new Date();
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt,
+          errorCode: "recovery_source_issue_terminal",
+          updatedAt: finishedAt,
+        })
+        .where(eq(heartbeatRuns.id, runId));
+      await db
+        .update(agentWakeupRequests)
+        .set({ status: "cancelled", finishedAt, updatedAt: finishedAt })
+        .where(eq(agentWakeupRequests.id, seeded.wakeupId));
+    });
+    const recovery = recoveryService(db, {
+      enqueueWakeup: vi.fn(async () => null),
+      cancelRun,
+    });
+
+    const result = await recovery.reconcileTerminalSourceRecoveryActions();
+
+    expect(cancelRun).toHaveBeenCalledWith(seeded.runId, expect.objectContaining({
+      reason: "Cancelled because the recovery source issue is terminal",
+      suppressImmediateRecovery: true,
+      force: true,
+      errorCode: "recovery_source_issue_terminal",
+    }));
+    expect(result).toMatchObject({
+      reconciled: 1,
+      resolved: 0,
+      cancelled: 1,
+      actionIds: [seeded.actionId],
+      cancelledRunIds: [seeded.runId],
+      cancelledWakeupIds: [seeded.wakeupId],
+      failed: 0,
+    });
+    await expect(db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seeded.actionId)))
+      .resolves.toEqual([
+        expect.objectContaining({
+          status: "cancelled",
+          outcome: "cancelled",
+          evidence: expect.objectContaining({
+            terminalSourceReconciliation: expect.objectContaining({
+              sourceIssueStatus: "cancelled",
+              cancelledRunIds: [seeded.runId],
+            }),
+          }),
+        }),
+    ]);
+  });
+
+  it("does not report a naturally completed run as cancelled when completion wins the control race", async () => {
+    const seeded = await seedBoundedAction({
+      timeoutAt: null,
+      runStatus: "running",
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, seeded.issueId));
+    const cancelRun = vi.fn(async (runId: string) => {
+      const finishedAt = new Date();
+      await db
+        .update(heartbeatRuns)
+        .set({ status: "succeeded", finishedAt, error: null, errorCode: null, updatedAt: finishedAt })
+        .where(eq(heartbeatRuns.id, runId));
+      await db
+        .update(agentWakeupRequests)
+        .set({ status: "completed", finishedAt, error: null, updatedAt: finishedAt })
+        .where(eq(agentWakeupRequests.id, seeded.wakeupId));
+      return { status: "succeeded" };
+    });
+    const recovery = recoveryService(db, {
+      enqueueWakeup: vi.fn(async () => null),
+      cancelRun,
+    });
+
+    const result = await recovery.reconcileTerminalSourceRecoveryActions();
+
+    expect(cancelRun).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      reconciled: 1,
+      resolved: 1,
+      cancelledRunIds: [],
+      cancelledWakeupIds: [],
+      failed: 0,
+    });
+    await expect(db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seeded.actionId)))
+      .resolves.toEqual([expect.objectContaining({
+        status: "resolved",
+        evidence: expect.objectContaining({
+          terminalSourceReconciliation: expect.objectContaining({
+            cancelledRunIds: [],
+            cancelledWakeupIds: [],
+          }),
+        }),
+      })]);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))
+      .resolves.toEqual([expect.objectContaining({ status: "succeeded" })]);
+  });
+
+  it("preserves ordinary carrier runs when recovery or manager wakes were only coalesced into them", async () => {
+    const recoveryCarrier = await seedBoundedAction({
+      timeoutAt: null,
+      runStatus: "queued",
+    });
+    const managerCarrier = await seedBoundedAction({
+      timeoutAt: null,
+      runStatus: "queued",
+    });
+    const seeded = [recoveryCarrier, managerCarrier];
+    await db.delete(heartbeatRuns).where(inArray(heartbeatRuns.id, seeded.map((entry) => entry.runId)));
+    await db.delete(agentWakeupRequests).where(
+      inArray(agentWakeupRequests.id, seeded.map((entry) => entry.wakeupId)),
+    );
+
+    const ordinaryWakeupIds = [randomUUID(), randomUUID()];
+    const carrierRunIds = [randomUUID(), randomUUID()];
+    const coalescedWakeupIds = [randomUUID(), randomUUID()];
+    for (const [index, entry] of seeded.entries()) {
+      await db.insert(agentWakeupRequests).values({
+        id: ordinaryWakeupIds[index]!,
+        companyId: entry.companyId,
+        agentId: entry.agentId,
+        source: "assignment",
+        reason: "issue_assigned",
+        status: "claimed",
+        runId: carrierRunIds[index]!,
+        payload: { issueId: entry.issueId },
+      });
+      await db.insert(heartbeatRuns).values({
+        id: carrierRunIds[index]!,
+        companyId: entry.companyId,
+        agentId: entry.agentId,
+        invocationSource: "assignment",
+        status: "running",
+        wakeupRequestId: ordinaryWakeupIds[index]!,
+        contextSnapshot: index === 0
+          ? {
+              issueId: entry.issueId,
+              taskId: entry.issueId,
+              sourceIssueId: entry.issueId,
+              recoveryActionId: entry.actionId,
+              recoveryAttempt: 1,
+              source: "issue_recovery_action",
+              wakeReason: "source_scoped_recovery_action",
+            }
+          : {
+              issueId: entry.issueId,
+              taskId: entry.issueId,
+              sourceIssueId: entry.issueId,
+              recoveryActionId: entry.actionId,
+              source: "issue.comment",
+              wakeReason: "issue_commented",
+            },
+        startedAt: new Date(),
+      });
+      await db.insert(agentWakeupRequests).values({
+        id: coalescedWakeupIds[index]!,
+        companyId: entry.companyId,
+        agentId: entry.agentId,
+        source: "automation",
+        reason: index === 0 ? "source_scoped_recovery_action" : "issue_execution_same_name",
+        status: "coalesced",
+        runId: carrierRunIds[index]!,
+        payload: {
+          issueId: entry.issueId,
+          sourceIssueId: entry.issueId,
+          recoveryActionId: entry.actionId,
+          ...(index === 1 ? { managerEscalation: true } : {}),
+        },
+        finishedAt: new Date(),
+      });
+    }
+    await db.update(issues).set({ status: "done" }).where(
+      inArray(issues.id, seeded.map((entry) => entry.issueId)),
+    );
+    const cancelRun = vi.fn();
+    const recovery = recoveryService(db, {
+      enqueueWakeup: vi.fn(async () => null),
+      cancelRun,
+    });
+
+    const result = await recovery.reconcileTerminalSourceRecoveryActions();
+
+    expect(result).toMatchObject({
+      reconciled: 2,
+      resolved: 2,
+      cancelled: 0,
+      cancelledRunIds: [],
+      cancelledWakeupIds: [],
+      failed: 0,
+    });
+    expect(cancelRun).not.toHaveBeenCalled();
+    await expect(db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.id, carrierRunIds)))
+      .resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: carrierRunIds[0], status: "running" }),
+        expect.objectContaining({ id: carrierRunIds[1], status: "running" }),
+      ]));
+    await expect(db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, ordinaryWakeupIds)))
+      .resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: ordinaryWakeupIds[0], status: "claimed" }),
+        expect.objectContaining({ id: ordinaryWakeupIds[1], status: "claimed" }),
+      ]));
+    await expect(db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, coalescedWakeupIds)))
+      .resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: coalescedWakeupIds[0], status: "coalesced" }),
+        expect.objectContaining({ id: coalescedWakeupIds[1], status: "coalesced" }),
+    ]));
+  });
+
+  it("preserves an unlinked carrier whose mutable context looks recovery-scoped", async () => {
+    const seeded = await seedBoundedAction({
+      timeoutAt: null,
+      runStatus: "queued",
+    });
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeupId));
+    const carrierRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: carrierRunId,
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      invocationSource: "assignment",
+      status: "running",
+      wakeupRequestId: null,
+      contextSnapshot: {
+        issueId: seeded.issueId,
+        taskId: seeded.issueId,
+        sourceIssueId: seeded.issueId,
+        recoveryActionId: seeded.actionId,
+        recoveryAttempt: 1,
+        recoveryCause: "terminated_owner",
+        source: "issue_recovery_action",
+        wakeReason: "source_scoped_recovery_action",
+      },
+      startedAt: new Date(),
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, seeded.issueId));
+    const cancelRun = vi.fn();
+    const recovery = recoveryService(db, {
+      enqueueWakeup: vi.fn(async () => null),
+      cancelRun,
+    });
+
+    await expect(recovery.reconcileTerminalSourceRecoveryActions()).resolves.toMatchObject({
+      reconciled: 1,
+      resolved: 1,
+      cancelledRunIds: [],
+      cancelledWakeupIds: [],
+    });
+    expect(cancelRun).not.toHaveBeenCalled();
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, carrierRunId)))
+      .resolves.toEqual([expect.objectContaining({ status: "running", wakeupRequestId: null })]);
+  });
+
+  it("escalates a timed-out action without cancelling an ordinary coalesced carrier", async () => {
+    const seeded = await seedBoundedAction({
+      timeoutAt: new Date(Date.now() - 60_000),
+      runStatus: "running",
+    });
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        source: "assignment",
+        reason: "issue_assigned",
+        payload: { issueId: seeded.issueId },
+      })
+      .where(eq(agentWakeupRequests.id, seeded.wakeupId));
+    const coalescedWakeupId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: coalescedWakeupId,
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      source: "automation",
+      reason: "source_scoped_recovery_action",
+      status: "coalesced",
+      runId: seeded.runId,
+      payload: {
+        issueId: seeded.issueId,
+        sourceIssueId: seeded.issueId,
+        recoveryActionId: seeded.actionId,
+        recoveryAttempt: 1,
+        recoveryCause: "terminated_owner",
+      },
+      finishedAt: new Date(),
+    });
+    const cancelRun = vi.fn();
+    const recovery = recoveryService(db, {
+      enqueueWakeup: vi.fn(async () => null),
+      cancelRun,
+    });
+
+    const result = await recovery.reconcileIssueGraphLiveness({ force: true });
+
+    expect(result.exhaustedRecoveryActionsEscalated).toBe(1);
+    expect(result.exhaustedRecoveryActionIds).toContain(seeded.actionId);
+    expect(cancelRun).not.toHaveBeenCalled();
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))
+      .resolves.toEqual([expect.objectContaining({ status: "running" })]);
+    await expect(db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeupId)))
+      .resolves.toEqual([expect.objectContaining({ status: "queued", reason: "issue_assigned" })]);
+    await expect(db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, coalescedWakeupId)))
+      .resolves.toEqual([expect.objectContaining({ status: "coalesced" })]);
+    await expect(db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seeded.actionId)))
+      .resolves.toEqual([expect.objectContaining({ status: "escalated", ownerType: "board" })]);
   });
 
   it("keeps a valid terminal predecessor as history when an exact live current delivery exists", async () => {
