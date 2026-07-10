@@ -225,44 +225,9 @@ export function AttentionQueueRow({
 
         {/* Controls: kept as siblings (not inside the clickable header) so they
             never toggle expand and stay valid interactive targets. */}
-        <div className="flex shrink-0 flex-col items-end self-end gap-1" data-attention-actions="true">
-          {expandable && !expanded && verbs.length > 0 && (
-            <div className="flex flex-wrap justify-end gap-1" aria-label="Decision actions">
-              {verbs.map((verb) => (
-                <Button
-                  key={verb.id}
-                  type="button"
-                  variant={decisionVerbVariant(verb)}
-                  size="xs"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleExpand();
-                  }}
-                >
-                  {verb.label}
-                </Button>
-              ))}
-            </div>
-          )}
-
-          <div className="flex items-start justify-end gap-1">
-            {!inline && href && (
-              <Button asChild variant="outline" size="xs">
-                <Link to={href}>
-                  Open
-                  <ExternalLink className="h-3 w-3" />
-                </Link>
-              </Button>
-            )}
-
-            {isHidden ? (
-              onRestore && (
-                <Button type="button" variant="outline" size="xs" onClick={() => onRestore(item)}>
-                  <RotateCcw className="h-3 w-3" />
-                  Restore
-                </Button>
-              )
-            ) : (
+        <div className="flex shrink-0 self-stretch flex-col items-end justify-between gap-2" data-attention-controls="true">
+          <div className="flex justify-end" data-attention-menu="true">
+            {!isHidden && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -291,6 +256,45 @@ export function AttentionQueueRow({
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
+          </div>
+
+          <div className="mt-auto flex flex-col items-end gap-1" data-attention-actions="true">
+            {expandable && !expanded && verbs.length > 0 && (
+              <div className="flex flex-wrap justify-end gap-1" aria-label="Decision actions">
+                {verbs.map((verb) => (
+                  <Button
+                    key={verb.id}
+                    type="button"
+                    variant={decisionVerbVariant(verb)}
+                    size="xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleExpand();
+                    }}
+                  >
+                    {verb.label}
+                  </Button>
+                ))}
+              </div>
+            )}
+
+            <div className="flex items-start justify-end gap-1">
+              {!inline && href && (
+                <Button asChild variant="outline" size="xs">
+                  <Link to={href}>
+                    Open
+                    <ExternalLink className="h-3 w-3" />
+                  </Link>
+                </Button>
+              )}
+
+              {isHidden && onRestore && (
+                <Button type="button" variant="outline" size="xs" onClick={() => onRestore(item)}>
+                  <RotateCcw className="h-3 w-3" />
+                  Restore
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       </div>

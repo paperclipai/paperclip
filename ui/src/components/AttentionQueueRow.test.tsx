@@ -229,7 +229,15 @@ describe("AttentionQueueRow", () => {
     expect(decisionActions?.textContent).toContain("Reject");
 
     const actionArea = decisionActions?.closest('[data-attention-actions="true"]');
-    expect(actionArea?.getAttribute("class")).toContain("self-end");
+    expect(actionArea?.getAttribute("class")).toContain("mt-auto");
+
+    const controls = decisionActions?.closest('[data-attention-controls="true"]');
+    expect(controls?.getAttribute("class")).toContain("self-stretch");
+    expect(controls?.getAttribute("class")).toContain("justify-between");
+
+    const rowMenu = container?.querySelector('[aria-label="Row actions"]');
+    expect(rowMenu?.closest('[data-attention-menu="true"]')).toBeTruthy();
+    expect(rowMenu?.closest('[data-attention-actions="true"]')).toBeNull();
 
     const buttons = Array.from(decisionActions?.querySelectorAll("button") ?? []);
     expect(buttons.find((button) => button.textContent === "Approve")?.getAttribute("data-variant")).toBe(
