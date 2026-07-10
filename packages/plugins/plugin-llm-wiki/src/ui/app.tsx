@@ -20,6 +20,15 @@ import {
   type PluginSettingsPageProps,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
+import {
+  forceCenter,
+  forceCollide,
+  forceLink,
+  forceManyBody,
+  forceSimulation,
+  type SimulationLinkDatum,
+  type SimulationNodeDatum,
+} from "d3-force";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type AnchorHTMLAttributes, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactElement, type ReactNode, type WheelEvent as ReactWheelEvent } from "react";
 import { readIngestOperationIssueId, uploadIssueAttachmentFile } from "./issue-attachments.js";
 
@@ -1883,6 +1892,7 @@ type KnowledgeGraphLayoutNode = KnowledgeGraphNode & {
   y: number;
   radius: number;
   color: string;
+  degree: number;
 };
 
 type KnowledgeGraphLayoutEdge = KnowledgeGraphEdge & {
@@ -1905,6 +1915,22 @@ type KnowledgeGraphViewport = {
 type KnowledgeGraphPoint = {
   x: number;
   y: number;
+};
+
+type KnowledgeGraphSettings = {
+  textFadeThreshold: number;
+  nodeScale: number;
+  linkScale: number;
+  centerForce: number;
+  repelForce: number;
+  linkForce: number;
+  linkDistance: number;
+};
+
+type KnowledgeGraphForceNode = KnowledgeGraphLayoutNode & SimulationNodeDatum;
+
+type KnowledgeGraphForceLink = SimulationLinkDatum<KnowledgeGraphForceNode> & {
+  edge: KnowledgeGraphEdge;
 };
 
 type KnowledgeGraphDragState =
@@ -1946,6 +1972,15 @@ const GRAPH_MIN_SCALE = 0.12;
 const GRAPH_MAX_SCALE = 8;
 const GRAPH_GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const DEFAULT_KNOWLEDGE_GRAPH_VIEWPORT: KnowledgeGraphViewport = { x: 19, y: 19, scale: 0.62 };
+const DEFAULT_KNOWLEDGE_GRAPH_SETTINGS: KnowledgeGraphSettings = {
+  textFadeThreshold: 0.82,
+  nodeScale: 1,
+  linkScale: 1,
+  centerForce: 0.12,
+  repelForce: 5.2,
+  linkForce: 0.34,
+  linkDistance: 1,
+};
 
 const graphKindLabels: Record<KnowledgeGraphNodeKind, string> = {
   company: "Company",
@@ -2030,6 +2065,14 @@ function zoomKnowledgeGraphViewportAtPoint(
   };
 }
 
+function knowledgeGraphNodeVisualScale(viewportScale: number): number {
+  return 1 / Math.max(1, clampKnowledgeGraphScale(viewportScale));
+}
+
+function knowledgeGraphLabelVisualScale(viewportScale: number): number {
+  return 1 / clampKnowledgeGraphScale(viewportScale);
+}
+
 function metadataString(metadata: Record<string, unknown>, key: string): string | null {
   const value = metadata[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -2089,15 +2132,17 @@ function isKnowledgeGraphEdgeFocused(edge: KnowledgeGraphLayoutEdge, selectedNod
   return Boolean(selectedNodeId && (edge.from === selectedNodeId || edge.to === selectedNodeId));
 }
 
-function graphNodeRadius(node: KnowledgeGraphNode): number {
-  const base = node.kind === "company" ? 1.25
-    : node.kind === "space" ? 0.95
-    : node.kind === "project" ? 0.78
-    : node.kind === "issue" ? 0.34
-    : node.kind === "agent" ? 0.42
-    : node.kind === "wiki_page" || node.kind === "source" ? 0.32
-    : 0.3;
-  return Math.min(1.7, Math.max(0.22, base + Math.sqrt(Math.max(0, node.weight)) * 0.04));
+function graphNodeRadius(node: KnowledgeGraphNode, degree: number, nodeScale = 1): number {
+  const base = node.kind === "company" ? 0.72
+    : node.kind === "space" ? 0.58
+    : node.kind === "project" ? 0.5
+    : node.kind === "issue" ? 0.27
+    : node.kind === "agent" ? 0.3
+    : node.kind === "wiki_page" || node.kind === "source" ? 0.25
+    : 0.24;
+  const importance = Math.sqrt(Math.max(0, degree)) * 0.055
+    + Math.sqrt(Math.max(0, node.weight)) * 0.018;
+  return Math.min(1.15, Math.max(0.2, (base + importance) * nodeScale));
 }
 
 function isKnowledgeGraphHistoricalNode(node: KnowledgeGraphNode): boolean {
@@ -2213,6 +2258,73 @@ function buildRenderableKnowledgeGraphEdges(
     .map(({ edge, rank }) => ({ ...edge, renderRank: rank }));
 }
 
+function normalizeKnowledgeGraphSettings(settings?: Partial<KnowledgeGraphSettings>): KnowledgeGraphSettings {
+  return { ...DEFAULT_KNOWLEDGE_GRAPH_SETTINGS, ...settings };
+}
+
+function knowledgeGraphLinkDistance(edge: KnowledgeGraphEdge, settings: KnowledgeGraphSettings): number {
+  const structural = edge.kind === "contains" || edge.kind === "project_issue" || edge.kind === "parent_child";
+  const baseDistance = structural ? 7.2 : edge.kind === "assigned_to" ? 8.5 : 10.5;
+  return baseDistance * settings.linkDistance;
+}
+
+function knowledgeGraphLinkStrength(edge: KnowledgeGraphEdge, settings: KnowledgeGraphSettings): number {
+  const structural = edge.kind === "contains" || edge.kind === "project_issue" || edge.kind === "parent_child";
+  const semanticBoost = edge.kind === "wiki_link" || edge.kind === "source_ref" ? 0.86 : 0.72;
+  return Math.min(0.92, settings.linkForce * (structural ? 1.12 : semanticBoost) * Math.max(0.72, Math.min(1.35, edge.weight)));
+}
+
+function runKnowledgeGraphForceLayout(
+  nodes: KnowledgeGraphLayoutNode[],
+  edges: KnowledgeGraphEdge[],
+  settings: KnowledgeGraphSettings,
+): KnowledgeGraphLayoutNode[] {
+  if (nodes.length < 2) return nodes;
+
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const forceNodes: KnowledgeGraphForceNode[] = nodes.map((node) => ({ ...node }));
+  const forceLinks: KnowledgeGraphForceLink[] = edges
+    .filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to) && edge.from !== edge.to)
+    .map((edge) => ({ source: edge.from, target: edge.to, edge }));
+
+  const simulation = forceSimulation<KnowledgeGraphForceNode>(forceNodes)
+    .force("center", forceCenter<KnowledgeGraphForceNode>(50, 50).strength(settings.centerForce))
+    .force(
+      "charge",
+      forceManyBody<KnowledgeGraphForceNode>()
+        .strength((node) => -settings.repelForce * (1 + Math.min(2.4, node.degree * 0.035)))
+        .distanceMin(1.1)
+        .distanceMax(38),
+    )
+    .force(
+      "links",
+      forceLink<KnowledgeGraphForceNode, KnowledgeGraphForceLink>(forceLinks)
+        .id((node) => node.id)
+        .distance((link) => knowledgeGraphLinkDistance(link.edge, settings))
+        .strength((link) => knowledgeGraphLinkStrength(link.edge, settings)),
+    )
+    .force(
+      "collision",
+      forceCollide<KnowledgeGraphForceNode>()
+        .radius((node) => node.radius + 0.48)
+        .strength(0.88)
+        .iterations(2),
+    )
+    .velocityDecay(0.42)
+    .alphaDecay(0.035)
+    .stop();
+
+  const tickCount = Math.min(220, Math.max(120, Math.round(220 - Math.log2(nodes.length + 1) * 12)));
+  simulation.tick(tickCount);
+  simulation.stop();
+
+  return forceNodes.map((node) => ({
+    ...node,
+    x: Number.isFinite(node.x) ? node.x ?? 50 : 50,
+    y: Number.isFinite(node.y) ? node.y ?? 50 : 50,
+  }));
+}
+
 function buildKnowledgeGraphLayout(
   data: KnowledgeGraphData | null | undefined,
   input: {
@@ -2220,9 +2332,11 @@ function buildKnowledgeGraphLayout(
     query: string;
     selectedNodeId: string | null;
     showHistory: boolean;
+    settings?: Partial<KnowledgeGraphSettings>;
   },
 ): KnowledgeGraphLayout {
   if (!data) return { nodes: [], edges: [], selectedNode: null, visibleKindCounts: {} };
+  const settings = normalizeKnowledgeGraphSettings(input.settings);
   const normalizedQuery = input.query.trim().toLowerCase();
   const baseNodeIds = new Set<string>();
   const matchingIds = new Set<string>();
@@ -2264,6 +2378,11 @@ function buildKnowledgeGraphLayout(
   for (const edge of visibleEdges) {
     visibleNodeIds.add(edge.from);
     visibleNodeIds.add(edge.to);
+  }
+  const degreeByNodeId = new Map<string, number>();
+  for (const edge of visibleEdges) {
+    degreeByNodeId.set(edge.from, (degreeByNodeId.get(edge.from) ?? 0) + 1);
+    degreeByNodeId.set(edge.to, (degreeByNodeId.get(edge.to) ?? 0) + 1);
   }
 
   const projectNodes = data.nodes
@@ -2334,25 +2453,30 @@ function buildKnowledgeGraphLayout(
         ...node,
         x: position.x,
         y: position.y,
-        radius: graphNodeRadius(node),
+        radius: graphNodeRadius(node, degreeByNodeId.get(node.id) ?? 0, settings.nodeScale),
         color: knowledgeNodeColor(node),
+        degree: degreeByNodeId.get(node.id) ?? 0,
       };
     });
 
-  const selectedNode = layoutNodes.find((node) => node.id === input.selectedNodeId)
-    ?? layoutNodes.find((node) => matchingIds.has(node.id))
-    ?? layoutNodes.find((node) => node.kind === "project")
-    ?? layoutNodes[0]
+  const forceLayoutNodes = runKnowledgeGraphForceLayout(layoutNodes, visibleEdges, settings);
+
+  const selectedNode = forceLayoutNodes.find((node) => node.id === input.selectedNodeId)
+    ?? forceLayoutNodes.find((node) => matchingIds.has(node.id))
+    ?? forceLayoutNodes.find((node) => node.kind === "project")
+    ?? forceLayoutNodes[0]
     ?? null;
 
-  const layoutEdges = buildRenderableKnowledgeGraphEdges(layoutNodes, visibleEdges, selectedNode?.id ?? input.selectedNodeId);
-  return { nodes: layoutNodes, edges: layoutEdges, selectedNode, visibleKindCounts };
+  const layoutEdges = buildRenderableKnowledgeGraphEdges(forceLayoutNodes, visibleEdges, selectedNode?.id ?? input.selectedNodeId);
+  return { nodes: forceLayoutNodes, edges: layoutEdges, selectedNode, visibleKindCounts };
 }
 
 export const knowledgeGraphTestUtils = {
   buildKnowledgeGraphLayout,
   fitKnowledgeGraphViewport,
   isKnowledgeGraphHistoricalNode,
+  knowledgeGraphLabelVisualScale,
+  knowledgeGraphNodeVisualScale,
 };
 
 function graphNodeSubtitle(node: KnowledgeGraphNode | null): string {
@@ -2384,6 +2508,38 @@ function GraphStat({ label, value }: { label: string; value: number }) {
   );
 }
 
+function GraphRangeControl({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 88px", alignItems: "center", gap: 10, fontSize: 11, color: tokens.muted }}>
+      <span>{label}</span>
+      <input
+        type="range"
+        aria-label={label}
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(event) => onChange(Number(event.currentTarget.value))}
+        style={{ width: "100%", accentColor: "oklch(0.72 0.12 260)" }}
+      />
+    </label>
+  );
+}
+
 function KnowledgeGraphView({
   data,
   loading,
@@ -2400,6 +2556,8 @@ function KnowledgeGraphView({
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [enabledKinds, setEnabledKinds] = useState<KnowledgeGraphNodeKind[]>([...DEFAULT_GRAPH_FILTER_KINDS]);
   const [showHistory, setShowHistory] = useState(false);
+  const [graphSettingsOpen, setGraphSettingsOpen] = useState(false);
+  const [graphSettings, setGraphSettings] = useState<KnowledgeGraphSettings>(DEFAULT_KNOWLEDGE_GRAPH_SETTINGS);
   const [viewport, setViewport] = useState<KnowledgeGraphViewport>(DEFAULT_KNOWLEDGE_GRAPH_VIEWPORT);
   const [dragState, setDragState] = useState<KnowledgeGraphDragState | null>(null);
   const [nodeOffsets, setNodeOffsets] = useState<Record<string, KnowledgeGraphPoint>>({});
@@ -2407,16 +2565,35 @@ function KnowledgeGraphView({
   const lastGraphFitKeyRef = useRef<string | null>(null);
   const isMobile = useIsMobileLayout();
   const deferredQuery = useDeferredValue(query);
+  const layoutSettings = useMemo<KnowledgeGraphSettings>(() => ({
+    ...DEFAULT_KNOWLEDGE_GRAPH_SETTINGS,
+    nodeScale: graphSettings.nodeScale,
+    centerForce: graphSettings.centerForce,
+    repelForce: graphSettings.repelForce,
+    linkForce: graphSettings.linkForce,
+    linkDistance: graphSettings.linkDistance,
+  }), [graphSettings.centerForce, graphSettings.linkDistance, graphSettings.linkForce, graphSettings.nodeScale, graphSettings.repelForce]);
+  const deferredGraphSettings = useDeferredValue(layoutSettings);
   const enabledKindSet = useMemo(() => new Set(enabledKinds), [enabledKinds]);
-  const graph = useMemo(
+  const layoutGraph = useMemo(
     () => buildKnowledgeGraphLayout(data, {
       enabledKinds: enabledKindSet,
       query: deferredQuery,
-      selectedNodeId,
+      selectedNodeId: null,
       showHistory,
+      settings: deferredGraphSettings,
     }),
-    [data, enabledKindSet, deferredQuery, selectedNodeId, showHistory],
+    [data, deferredGraphSettings, enabledKindSet, deferredQuery, showHistory],
   );
+  const graph = useMemo((): KnowledgeGraphLayout => {
+    const selectedNode = layoutGraph.nodes.find((node) => node.id === selectedNodeId)
+      ?? layoutGraph.selectedNode;
+    return {
+      ...layoutGraph,
+      selectedNode,
+      edges: buildRenderableKnowledgeGraphEdges(layoutGraph.nodes, layoutGraph.edges, selectedNode?.id ?? null),
+    };
+  }, [layoutGraph, selectedNodeId]);
   const availableKindCounts = useMemo(() => {
     const counts: Partial<Record<KnowledgeGraphNodeKind, number>> = {};
     for (const node of data?.nodes ?? []) {
@@ -2430,8 +2607,18 @@ function KnowledgeGraphView({
     [data?.nodes],
   );
   const graphFitKey = useMemo(
-    () => [data?.checkedAt ?? "none", [...enabledKinds].sort().join(","), showHistory ? "history" : "active", deferredQuery].join(":"),
-    [data?.checkedAt, deferredQuery, enabledKinds, showHistory],
+    () => [
+      data?.checkedAt ?? "none",
+      [...enabledKinds].sort().join(","),
+      showHistory ? "history" : "active",
+      deferredQuery,
+      deferredGraphSettings.centerForce,
+      deferredGraphSettings.repelForce,
+      deferredGraphSettings.linkForce,
+      deferredGraphSettings.linkDistance,
+      deferredGraphSettings.nodeScale,
+    ].join(":"),
+    [data?.checkedAt, deferredGraphSettings, deferredQuery, enabledKinds, showHistory],
   );
   const positionedNodes = useMemo(
     () => graph.nodes.map((node) => {
@@ -2481,6 +2668,9 @@ function KnowledgeGraphView({
     return <div style={{ padding: 28, color: tokens.muted, fontSize: 13 }}>No graph data.</div>;
   }
 
+  const updateGraphSetting = (key: keyof KnowledgeGraphSettings, value: number) => {
+    setGraphSettings((current) => ({ ...current, [key]: value }));
+  };
   const toggleKind = (kind: KnowledgeGraphNodeKind) => {
     setEnabledKinds((current) => {
       if (current.includes(kind)) return current.filter((entry) => entry !== kind);
@@ -2576,6 +2766,16 @@ function KnowledgeGraphView({
     cursor: "pointer",
   };
   const focusedNodeIdForEdges = hoveredNodeId ?? selectedNode?.id ?? null;
+  const hoverNeighborIds = new Set<string>();
+  if (hoveredNodeId) {
+    hoverNeighborIds.add(hoveredNodeId);
+    for (const edge of graph.edges) {
+      if (edge.from === hoveredNodeId) hoverNeighborIds.add(edge.to);
+      if (edge.to === hoveredNodeId) hoverNeighborIds.add(edge.from);
+    }
+  }
+  const nodeVisualScale = knowledgeGraphNodeVisualScale(viewport.scale);
+  const labelVisualScale = knowledgeGraphLabelVisualScale(viewport.scale);
   const edgeDensity = viewport.scale < 0.55 ? 0.55 : viewport.scale < 0.85 ? 0.85 : 1.05;
   const backgroundEdgeBudget = Math.min(700, Math.max(220, Math.round(positionedNodes.length * edgeDensity)));
   const backgroundEdges = graph.edges
@@ -2598,8 +2798,8 @@ function KnowledgeGraphView({
         x2={to.x}
         y2={to.y}
         stroke={knowledgeEdgeColor(edge)}
-        strokeWidth={knowledgeEdgeWidth(edge, focused)}
-        opacity={knowledgeEdgeOpacity(edge, focused)}
+        strokeWidth={knowledgeEdgeWidth(edge, focused) * graphSettings.linkScale}
+        opacity={hoveredNodeId && !focused ? 0.1 : knowledgeEdgeOpacity(edge, focused)}
       />
     );
   };
@@ -2701,6 +2901,20 @@ function KnowledgeGraphView({
                     gap: 6,
                   }}
                 >
+                  <button
+                    type="button"
+                    aria-label="Graph display and force settings"
+                    aria-expanded={graphSettingsOpen}
+                    title="Graph settings"
+                    onClick={() => setGraphSettingsOpen((current) => !current)}
+                    style={{
+                      ...graphControlButtonStyle,
+                      borderColor: graphSettingsOpen ? tokens.fg : tokens.border,
+                      background: graphSettingsOpen ? "oklch(0.23 0.02 260 / 0.96)" : graphControlButtonStyle.background,
+                    }}
+                  >
+                    <SlidersHorizontalIcon size={15} />
+                  </button>
                   <button type="button" aria-label="Zoom in" title="Zoom in" onClick={() => zoomGraphBy(1.18)} style={graphControlButtonStyle}>
                     <ZoomInIcon size={15} />
                   </button>
@@ -2731,6 +2945,47 @@ function KnowledgeGraphView({
                     {zoomLabel}
                   </span>
                 </div>
+                {graphSettingsOpen ? (
+                  <div
+                    role="dialog"
+                    aria-label="Graph settings"
+                    style={{
+                      position: "absolute",
+                      top: 50,
+                      right: 10,
+                      zIndex: 3,
+                      width: "min(280px, calc(100% - 20px))",
+                      padding: 12,
+                      borderRadius: 8,
+                      border: `1px solid ${tokens.border}`,
+                      background: "oklch(0.145 0.01 260 / 0.97)",
+                      boxShadow: "0 16px 42px oklch(0 0 0 / 0.42)",
+                      display: "grid",
+                      gap: 9,
+                      backdropFilter: "blur(12px)",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                      <strong style={{ fontSize: 12 }}>Display</strong>
+                      <button
+                        type="button"
+                        onClick={() => setGraphSettings(DEFAULT_KNOWLEDGE_GRAPH_SETTINGS)}
+                        style={{ border: 0, background: "transparent", color: tokens.muted, padding: 0, fontSize: 10, cursor: "pointer" }}
+                      >
+                        Restore defaults
+                      </button>
+                    </div>
+                    <GraphRangeControl label="Text fade threshold" value={graphSettings.textFadeThreshold} min={0.35} max={1.6} step={0.05} onChange={(value) => updateGraphSetting("textFadeThreshold", value)} />
+                    <GraphRangeControl label="Node size" value={graphSettings.nodeScale} min={0.65} max={1.7} step={0.05} onChange={(value) => updateGraphSetting("nodeScale", value)} />
+                    <GraphRangeControl label="Link thickness" value={graphSettings.linkScale} min={0.45} max={2} step={0.05} onChange={(value) => updateGraphSetting("linkScale", value)} />
+                    <div style={{ height: 1, background: tokens.border, margin: "2px 0" }} />
+                    <strong style={{ fontSize: 12 }}>Forces</strong>
+                    <GraphRangeControl label="Center force" value={graphSettings.centerForce} min={0.03} max={0.32} step={0.01} onChange={(value) => updateGraphSetting("centerForce", value)} />
+                    <GraphRangeControl label="Repel force" value={graphSettings.repelForce} min={1.5} max={10} step={0.25} onChange={(value) => updateGraphSetting("repelForce", value)} />
+                    <GraphRangeControl label="Link force" value={graphSettings.linkForce} min={0.08} max={0.8} step={0.02} onChange={(value) => updateGraphSetting("linkForce", value)} />
+                    <GraphRangeControl label="Link distance" value={graphSettings.linkDistance} min={0.6} max={1.8} step={0.05} onChange={(value) => updateGraphSetting("linkDistance", value)} />
+                  </div>
+                ) : null}
                 <svg
                   ref={graphSvgRef}
                   viewBox="0 0 100 100"
@@ -2763,18 +3018,24 @@ function KnowledgeGraphView({
                     {positionedNodes.map((node) => {
                       const selected = node.id === selectedNode?.id;
                       const hovered = node.id === hoveredNodeId;
+                      const connectedToHover = hoverNeighborIds.has(node.id);
+                      const dimmed = Boolean(hoveredNodeId && !connectedToHover);
                       const draggingNode = dragState?.type === "node" && dragState.nodeId === node.id;
                       const queryMatched = Boolean(deferredQuery.trim() && graphSearchText(node).includes(deferredQuery.trim().toLowerCase()));
+                      const hubVisibilityBoost = Math.min(0.58, Math.log2(node.degree + 1) * 0.12);
                       const labelVisible = selected
                         || hovered
                         || queryMatched
-                        || GRAPH_ANCHOR_KINDS.has(node.kind)
-                        || (node.kind === "project" && viewport.scale >= 0.55);
+                        || (connectedToHover && Boolean(hoveredNodeId))
+                        || (!dimmed && viewport.scale + hubVisibilityBoost >= graphSettings.textFadeThreshold)
+                        || (!dimmed && GRAPH_ANCHOR_KINDS.has(node.kind) && viewport.scale >= graphSettings.textFadeThreshold * 0.62);
                       return (
                         <g
                           key={node.id}
                           role="button"
+                          aria-label={`${node.label}, ${graphKindLabels[node.kind]}`}
                           tabIndex={0}
+                          transform={`translate(${node.x} ${node.y})`}
                           onPointerDown={(event) => handleNodePointerDown(event, node)}
                           onPointerEnter={() => setHoveredNodeId(node.id)}
                           onPointerLeave={() => setHoveredNodeId((current) => current === node.id ? null : current)}
@@ -2790,34 +3051,35 @@ function KnowledgeGraphView({
                           style={{ cursor: draggingNode ? "grabbing" : "grab" }}
                         >
                           <title>{`${node.label}${node.sublabel ? ` · ${node.sublabel}` : ""}`}</title>
-                          <circle
-                            cx={node.x}
-                            cy={node.y}
-                            r={Math.max(2.3, node.radius + 1.3)}
-                            fill="transparent"
-                          />
-                          <circle
-                            className="pc-knowledge-node"
-                            cx={node.x}
-                            cy={node.y}
-                            r={selected ? node.radius + 0.38 : hovered ? node.radius + 0.2 : node.radius}
-                            fill={node.kind === "company" ? "transparent" : node.color}
-                            stroke={selected || hovered ? tokens.primary : node.color}
-                            strokeWidth={selected ? 0.4 : hovered ? 0.28 : node.kind === "company" ? 0.32 : 0.12}
-                            opacity={selected || hovered ? 1 : node.kind === "document" || node.kind === "work_product" ? 0.58 : 0.82}
-                          />
+                          <g transform={`scale(${nodeVisualScale})`}>
+                            <circle r={Math.max(1.65, node.radius + 0.9)} fill="transparent" />
+                            <circle
+                              className="pc-knowledge-node"
+                              r={selected ? node.radius + 0.22 : hovered ? node.radius + 0.13 : node.radius}
+                              fill={node.kind === "company" ? "transparent" : node.color}
+                              stroke={selected || hovered ? tokens.primary : node.color}
+                              strokeWidth={selected ? 0.24 : hovered ? 0.18 : node.kind === "company" ? 0.2 : 0.09}
+                              opacity={dimmed ? 0.16 : selected || hovered ? 1 : node.kind === "document" || node.kind === "work_product" ? 0.54 : 0.8}
+                            />
+                          </g>
                           {labelVisible ? (
-                            <text
-                              x={node.x}
-                              y={node.y + Math.max(1.4, node.radius + 1.2)}
-                              textAnchor="middle"
-                              fill={selected || hovered ? tokens.fg : "oklch(0.92 0 0 / 0.82)"}
-                              fontSize={selected || hovered ? 1.15 : node.kind === "company" ? 1.25 : 0.9}
-                              fontFamily={fontStack}
-                              style={{ pointerEvents: "none" }}
-                            >
-                              {node.label.length > 16 ? `${node.label.slice(0, 15)}...` : node.label}
-                            </text>
+                            <g transform={`scale(${labelVisualScale})`}>
+                              <text
+                                y={Math.max(1.5, node.radius + 1.15)}
+                                textAnchor="middle"
+                                fill={selected || hovered ? tokens.fg : connectedToHover ? "oklch(0.96 0 0 / 0.9)" : "oklch(0.92 0 0 / 0.74)"}
+                                fontSize={selected || hovered ? 1.7 : 1.5}
+                                fontWeight={selected || hovered || node.degree >= 8 ? 600 : 450}
+                                fontFamily={fontStack}
+                                paintOrder="stroke"
+                                stroke="oklch(0.09 0.005 260 / 0.88)"
+                                strokeWidth={0.32}
+                                strokeLinejoin="round"
+                                style={{ pointerEvents: "none" }}
+                              >
+                                {node.label.length > 28 ? `${node.label.slice(0, 27)}…` : node.label}
+                              </text>
+                            </g>
                           ) : null}
                         </g>
                       );

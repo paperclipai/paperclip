@@ -120,4 +120,28 @@ describe("knowledge graph layout", () => {
     expect(Math.min(...transformed.map((point) => point.y))).toBeGreaterThanOrEqual(7.9);
     expect(Math.max(...transformed.map((point) => point.y))).toBeLessThanOrEqual(92.1);
   });
+
+  it("uses graph topology to size hubs and produce finite force-directed positions", () => {
+    const layout = knowledgeGraphTestUtils.buildKnowledgeGraphLayout(graphData, {
+      enabledKinds: new Set(["project", "issue", "wiki_page", "agent", "document"]),
+      query: "",
+      selectedNodeId: null,
+      showHistory: true,
+    });
+    const activeIssue = layout.nodes.find((entry) => entry.id === "issue:active");
+    const doneIssue = layout.nodes.find((entry) => entry.id === "issue:done");
+
+    expect(activeIssue?.degree).toBe(2);
+    expect(doneIssue?.degree).toBe(1);
+    expect(activeIssue?.radius ?? 0).toBeGreaterThan(doneIssue?.radius ?? 0);
+    expect(layout.nodes.every((entry) => Number.isFinite(entry.x) && Number.isFinite(entry.y))).toBe(true);
+  });
+
+  it("keeps nodes and labels at a stable on-screen size at deep zoom", () => {
+    expect(knowledgeGraphTestUtils.knowledgeGraphNodeVisualScale(0.5)).toBe(1);
+    expect(knowledgeGraphTestUtils.knowledgeGraphNodeVisualScale(8)).toBeCloseTo(0.125);
+    expect(knowledgeGraphTestUtils.knowledgeGraphLabelVisualScale(8)).toBeCloseTo(0.125);
+    expect(8 * knowledgeGraphTestUtils.knowledgeGraphNodeVisualScale(8)).toBeCloseTo(1);
+    expect(8 * knowledgeGraphTestUtils.knowledgeGraphLabelVisualScale(8)).toBeCloseTo(1);
+  });
 });
