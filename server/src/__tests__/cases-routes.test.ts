@@ -600,6 +600,22 @@ describeEmbeddedPostgres("cases routes", () => {
     expect(activeList.body).toHaveLength(1);
     expect(activeList.body[0].id).toBe(created.body.id);
 
+    const [project] = await db.insert(projects).values({ companyId: company.id, name: "Launch" }).returning();
+    const [projectCase] = await db.insert(cases).values({
+      companyId: company.id,
+      projectId: project!.id,
+      caseNumber: 50,
+      identifier: `${company.issuePrefix.toUpperCase()}-C50`,
+      caseType: "brief",
+      title: "Project brief",
+      status: "draft",
+    }).returning();
+    const multiFiltered = await http
+      .get(`/api/companies/${company.id}/cases`)
+      .query({ types: ["incident", "brief"], statuses: ["in_progress", "draft"], projectIds: [project!.id], includeNoProject: "true" })
+      .expect(200);
+    expect(multiFiltered.body.map((row: { id: string }) => row.id).sort()).toEqual([created.body.id, projectCase!.id].sort());
+
     await db.insert(cases).values(Array.from({ length: 205 }, (_, index) => ({
       companyId: company.id,
       caseNumber: 100 + index,

@@ -569,6 +569,7 @@ describe("Cases list", () => {
       JSON.stringify({
         statusFilters: ["in_progress", "done"],
         typeFilters: ["blog_post", "docs_page"],
+        projectFilters: ["project-1", "__all__"],
       }),
     );
     mockCasesApi.list.mockResolvedValue([
@@ -581,6 +582,12 @@ describe("Cases list", () => {
     const root = renderPage(container);
 
     await waitForAssertion(() => {
+      expect(mockCasesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        types: ["blog_post", "docs_page"],
+        statuses: ["in_progress", "done"],
+        projectIds: ["project-1"],
+        includeNoProject: true,
+      }));
       expect(container.textContent).toContain("Blog active");
       expect(container.textContent).toContain("Docs done");
       expect(container.textContent).not.toContain("Tweet active");

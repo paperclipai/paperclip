@@ -784,12 +784,23 @@ export function Cases() {
 
   const usesDefaultStatusFilter = sameStatusSet(viewState.statusFilters, DEFAULT_STATUS_FILTERS);
 
-  const listFilters = useMemo(() => ({
-    labelId: viewState.labelFilter === ALL ? undefined : viewState.labelFilter,
-    q: viewState.search.trim() || undefined,
-    includeAncestors: viewState.treeView ? true : undefined,
-    limit: 200,
-  }), [viewState.labelFilter, viewState.search, viewState.treeView]);
+  const listFilters = useMemo(() => {
+    const projectIds = viewState.projectFilters.filter((projectId) => projectId !== ALL);
+    const statusFilters = usesDefaultStatusFilter || viewState.statusFilters.length === CASE_STATUSES.length
+      ? undefined
+      : viewState.statusFilters;
+    return {
+      types: viewState.typeFilters.length > 0 ? viewState.typeFilters : undefined,
+      status: usesDefaultStatusFilter ? "active" : undefined,
+      statuses: statusFilters,
+      projectIds: projectIds.length > 0 ? projectIds : undefined,
+      includeNoProject: viewState.projectFilters.includes(ALL) || undefined,
+      labelId: viewState.labelFilter === ALL ? undefined : viewState.labelFilter,
+      q: viewState.search.trim() || undefined,
+      includeAncestors: viewState.treeView ? true : undefined,
+      limit: 200,
+    };
+  }, [usesDefaultStatusFilter, viewState.labelFilter, viewState.projectFilters, viewState.search, viewState.statusFilters, viewState.treeView, viewState.typeFilters]);
   const casesQuery = useQuery({
     queryKey: [...queryKeys.cases.list(selectedCompanyId ?? ""), listFilters],
     queryFn: () => casesApi.list(selectedCompanyId!, listFilters),

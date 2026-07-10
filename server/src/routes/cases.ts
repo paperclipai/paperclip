@@ -82,11 +82,17 @@ const upsertCaseDocumentSchema = z.object({
   baseRevisionId: z.string().uuid().nullable().optional(),
 }).strict();
 
+const queryListParamSchema = z.union([z.string(), z.array(z.string())]).optional();
+
 const listCasesQuerySchema = z.object({
   type: z.string().trim().min(1).max(120).optional(),
+  types: queryListParamSchema,
   status: z.string().trim().min(1).max(120).optional(),
+  statuses: queryListParamSchema,
   project: z.string().uuid().optional(),
   projectId: z.string().uuid().optional(),
+  projectIds: queryListParamSchema,
+  includeNoProject: z.enum(["true", "false", "1", "0"]).optional(),
   label: z.string().uuid().optional(),
   labelId: z.string().uuid().optional(),
   parent: z.string().uuid().optional(),
@@ -138,6 +144,11 @@ function parseDocumentKey(raw: string | undefined) {
 
 function parseBooleanQuery(value: unknown) {
   return value === true || value === "true" || value === "1";
+}
+
+function parseQueryList(value: string | string[] | undefined): string[] {
+  const values = Array.isArray(value) ? value : value ? [value] : [];
+  return values.flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
 }
 
 function annotationActorInput(req: Request) {
@@ -713,17 +724,36 @@ export function caseRoutes(db: Db, storage: StorageService) {
     if (!parsed.success) throw badRequest("Invalid case list query", parsed.error.issues);
     const query = parsed.data;
     const filters = [eq(cases.companyId, companyId)];
-    if (query.type) filters.push(eq(cases.caseType, query.type));
-    if (query.status === "active") {
+    const typeFilters = parseQueryList(query.types ?? query.type);
+    if (typeFilters.length === 1) filters.push(eq(cases.caseType, typeFilters[0]!));
+    else if (typeFilters.length > 1) filters.push(inArray(cases.caseType, typeFilters));
+
+    const statusFilters = parseQueryList(query.statuses ?? (query.status === "active" ? undefined : query.status));
+    if (query.status === "active" && statusFilters.length === 0) {
       filters.push(sql`${cases.status} not in ('done', 'cancelled')`);
-    } else if (query.status) {
-      if (!CASE_STATUSES.includes(query.status as (typeof CASE_STATUSES)[number])) {
-        throw badRequest("Invalid case status");
+    } else if (statusFilters.length > 0) {
+      for (const status of statusFilters) {
+        if (!CASE_STATUSES.includes(status as (typeof CASE_STATUSES)[number])) {
+          throw badRequest("Invalid case status");
+        }
       }
-      filters.push(eq(cases.status, query.status));
+      filters.push(statusFilters.length === 1 ? eq(cases.status, statusFilters[0]!) : inArray(cases.status, statusFilters));
     }
-    const projectId = query.projectId ?? query.project;
-    if (projectId) filters.push(eq(cases.projectId, projectId));
+
+    const projectFilters = parseQueryList(query.projectIds ?? query.projectId ?? query.project);
+    for (const projectId of projectFilters) {
+      if (!isUuidLike(projectId)) throw badRequest("Invalid project id");
+    }
+    const includeNoProject = parseBooleanQuery(query.includeNoProject);
+    if (projectFilters.length > 0 && includeNoProject) {
+      filters.push(or(inArray(cases.projectId, projectFilters), isNull(cases.projectId))!);
+    } else if (projectFilters.length === 1) {
+      filters.push(eq(cases.projectId, projectFilters[0]!));
+    } else if (projectFilters.length > 1) {
+      filters.push(inArray(cases.projectId, projectFilters));
+    } else if (includeNoProject) {
+      filters.push(isNull(cases.projectId));
+    }
     if (query.parent) filters.push(eq(cases.parentCaseId, query.parent));
     const labelId = query.labelId ?? query.label;
     if (labelId) {

@@ -208,8 +208,12 @@ export interface IssueCaseLink {
 
 export interface ListCasesParams {
   type?: string;
+  types?: string[];
   status?: string;
+  statuses?: string[];
   projectId?: string;
+  projectIds?: string[];
+  includeNoProject?: boolean;
   labelId?: string;
   /** Filter to direct children of a parent case id (P4 children tree). */
   parent?: string;
@@ -218,11 +222,19 @@ export interface ListCasesParams {
   limit?: number;
 }
 
+function appendAll(search: URLSearchParams, key: string, values: readonly string[] | undefined) {
+  for (const value of values ?? []) search.append(key, value);
+}
+
 function toQuery(params: ListCasesParams): string {
   const search = new URLSearchParams();
   if (params.type) search.set("type", params.type);
+  appendAll(search, "types", params.types);
   if (params.status) search.set("status", params.status);
+  appendAll(search, "statuses", params.statuses);
   if (params.projectId) search.set("projectId", params.projectId);
+  appendAll(search, "projectIds", params.projectIds);
+  if (params.includeNoProject) search.set("includeNoProject", "true");
   if (params.labelId) search.set("labelId", params.labelId);
   if (params.parent) search.set("parent", params.parent);
   if (params.q) search.set("q", params.q);
