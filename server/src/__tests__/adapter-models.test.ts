@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { models as claudeFallbackModels } from "@paperclipai/adapter-claude-local";
 import { resetClaudeModelsCacheForTests } from "@paperclipai/adapter-claude-local/server";
@@ -17,7 +20,11 @@ vi.mock("acpx/runtime", () => ({
 }));
 
 describe("adapter model listing", () => {
-  beforeEach(() => {
+  let isolatedCodexHome: string;
+
+  beforeEach(async () => {
+    isolatedCodexHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-models-"));
+    process.env.CODEX_HOME = isolatedCodexHome;
     delete process.env.OPENAI_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_BASE_URL;
@@ -30,6 +37,11 @@ describe("adapter model listing", () => {
     setCursorModelsRunnerForTests(null);
     resetOpenCodeModelsCacheForTests();
     vi.restoreAllMocks();
+  });
+
+  afterEach(async () => {
+    delete process.env.CODEX_HOME;
+    await fs.rm(isolatedCodexHome, { recursive: true, force: true });
   });
 
   it("returns an empty list for unknown adapters", async () => {
@@ -53,6 +65,43 @@ describe("adapter model listing", () => {
     expect(models.some((model) => model.id === "gpt-5.6-terra")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("reads visible Codex cache models without an OpenAI API key", async () => {
+    await fs.writeFile(
+      path.join(isolatedCodexHome, "models_cache.json"),
+      JSON.stringify({
+        models: [
+          { slug: "gpt-cache-visible", display_name: "Visible cached Codex model", visibility: "list" },
+          { slug: "gpt-cache-hidden", display_name: "Hidden cached Codex model", visibility: "hidden" },
+        ],
+      }),
+    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const models = await listAdapterModels("codex_local");
+
+    expect(models).toContainEqual({ id: "gpt-cache-visible", label: "Visible cached Codex model" });
+    expect(models.some((model) => model.id === "gpt-cache-hidden")).toBe(false);
+    expect(models.some((model) => model.id === "codex-mini-latest")).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("re-reads the Codex cache when models are refreshed", async () => {
+    const cacheFile = path.join(isolatedCodexHome, "models_cache.json");
+    await fs.writeFile(cacheFile, JSON.stringify({
+      models: [{ slug: "gpt-cache-before-refresh", visibility: "list" }],
+    }));
+
+    const initial = await listAdapterModels("codex_local");
+    await fs.writeFile(cacheFile, JSON.stringify({
+      models: [{ slug: "gpt-cache-after-refresh", visibility: "list" }],
+    }));
+    const refreshed = await refreshAdapterModels("codex_local");
+
+    expect(initial.some((model) => model.id === "gpt-cache-before-refresh")).toBe(true);
+    expect(refreshed.some((model) => model.id === "gpt-cache-after-refresh")).toBe(true);
+    expect(refreshed.some((model) => model.id === "gpt-cache-before-refresh")).toBe(false);
   });
 
   it("returns claude fallback models including the latest Opus alias when no Anthropic key is available", async () => {
