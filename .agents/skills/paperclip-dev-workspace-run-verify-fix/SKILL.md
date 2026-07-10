@@ -3,7 +3,7 @@ name: paperclip-dev-workspace-run-verify-fix
 description: >
   Run, verify, reseed, and repair Paperclip isolated dev workspace services. Use
   when asked to start or fix a managed project/worktree service and prove health,
-  login readiness, cloned data, and runtime visibility.
+  login readiness, cloned data, runtime visibility, and correct port ownership.
 ---
 
 # Paperclip Dev Workspace Run / Verify / Fix
@@ -26,12 +26,27 @@ Success means all of these are true:
   expected URL
 - the served workspace app also knows about that service and shows it as
   `running` / `healthy`
+- the process that owns the service port really belongs to the target
+  workspace: `readlink /proc/<pid>/cwd` resolves inside the target worktree,
+  not a sibling workspace
 
 If any item fails, keep fixing. Do not mark the issue done because one probe
 passed.
 
 ## Hard rules
 
+- The master checkout `/srv/paperclip/home/paperclipai/paperclip` (the primary
+  repo with the real instance `.env`) is never a workspace repair target. Never
+  point a worktree runtime service at it, never `git worktree add` into it or
+  under `<master>/.paperclip/worktrees/`, and never edit its `.env` while
+  repairing a workspace. Managed workspaces run in their own folders, for
+  example `~/.paperclip-worktrees/instances/<slug>/…`.
+- Never trust a `running` / `healthy` runtime row or a passing `/api/health`
+  alone. The `service:paperclip-dev` port is pinned in service config, so a
+  sibling workspace's process can own the port and still answer health checks.
+  Confirm the port owner's real cwd (`readlink /proc/<pid>/cwd`) before and
+  after every repair; the runtime row's recorded `cwd` and `pid` can be
+  fabricated by port adoption.
 - Read `doc/DEVELOPING.md` before running Paperclip CLI, dev server, worktree,
   database, build, or test commands.
 - Use the Paperclip CLI and API as the source of truth for worktree and
@@ -75,15 +90,19 @@ workspace that should be freshly ready.
 1. Confirm the latest issue comment and restate the success condition in your
    own words.
 2. Inspect current runtime state from the main control plane.
-3. Stop any managed instance of the target runtime service.
-4. Reseed the worktree with a full clone from the primary instance when there
+3. Check the target port for conflicts: identify the current port owner and
+   its real cwd, and check whether any sibling workspace's runtime row also
+   claims the same port (see "Port conflicts and workspace identity").
+4. Stop any managed instance of the target runtime service.
+5. Reseed the worktree with a full clone from the primary instance when there
    is any doubt about database completeness.
-5. Start the runtime service through the managed runtime API.
-6. Verify health, bootstrap state, login readiness, populated data, and runtime
-   visibility from both the main control plane and served workspace app.
-7. If a verification item fails, diagnose that exact failure and loop back to
+6. Start the runtime service through the managed runtime API.
+7. Verify health, bootstrap state, login readiness, populated data, runtime
+   visibility, and port-owner identity from both the main control plane and
+   served workspace app.
+8. If a verification item fails, diagnose that exact failure and loop back to
    the narrowest repair step.
-8. Comment on the issue and set the final disposition.
+9. Comment on the issue and set the final disposition.
 
 ## Managed start / stop
 
@@ -109,7 +128,61 @@ curl -sS -X POST \
 ```
 
 If the API returns an existing service, treat that as a candidate only. Verify
-its real `/api/health` before trusting it.
+its real `/api/health` and its port-owner identity before trusting it.
+
+## Port conflicts and workspace identity
+
+`service:paperclip-dev` pins an explicit port in service config, so every
+workspace that realizes that service claims the same port. On start, service
+adoption will adopt whatever process already owns the port when its command
+line looks similar — and it records the *requested* cwd, not the owner's real
+cwd. Two consequences:
+
+- multiple workspaces can hold `running` rows for the same port while only one
+  process exists; whichever workspace URL you open, you get that one process
+- the runtime row's `cwd`, `pid`, and health can all look correct while the
+  URL actually serves a sibling worktree's app
+
+Identity check — run this before trusting any existing service and again after
+every start or restart:
+
+```sh
+pid=$(lsof -nP -iTCP:"$SERVICE_PORT" -sTCP:LISTEN -t | head -1)
+readlink "/proc/$pid/cwd"
+```
+
+The resolved cwd must be inside the target worktree (the dev server usually
+runs in `<worktree>/server`). Only `/proc/<pid>/cwd` is authoritative. Do not
+accept the runtime row's `cwd` field, a root `200`, or a healthy `/api/health`
+as proof of identity — a squatting sibling passes all three.
+
+If the port owner is a sibling workspace's process (port squat):
+
+1. Do not kill the sibling's process directly; it may be that workspace's
+   legitimate service.
+2. Decide which workspace should own the pinned port right now — normally the
+   workspace named in the issue.
+3. Use the managed `restart` action for the target service, then re-run the
+   identity check:
+
+```sh
+curl -sS -X POST \
+  "$PAPERCLIP_API_URL/api/execution-workspaces/$EXECUTION_WORKSPACE_ID/runtime-services/restart" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  --data-binary '{"workspaceCommandId":"service:paperclip-dev"}'
+```
+
+4. If two workspaces genuinely need to run at the same time, they cannot share
+   a pinned port. Stop the one that is not needed, say in your issue comment
+   which workspace now owns the port, and escalate the pinned-port collision
+   as a product issue instead of looping restarts.
+
+Before declaring success, also fetch the sibling workspaces you suspect and
+compare their `runtimeServices[].port` values: more than one `running` row
+claiming the target port across workspaces is always a conflict to resolve,
+not a state to work around.
 
 ## Full database reseed
 
@@ -233,6 +306,35 @@ verification was delegated and why.
 
 ## Common failures and fixes
 
+### Service URL serves a different workspace (port squat)
+
+Symptom: the workspace URL loads a working Paperclip app, but it is a sibling
+worktree's app — wrong branch, wrong data, or the UI keeps bouncing you into
+another workspace's pages.
+
+Likely cause: the pinned service port is owned by another workspace's process
+and start-time adoption attached that process to this workspace's runtime row.
+Health checks pass because the sibling app is genuinely healthy.
+
+Fix: run the identity check from "Port conflicts and workspace identity",
+managed-restart the target service, and re-verify that `/proc/<pid>/cwd` of
+the port owner resolves inside the target worktree.
+
+Verify: identity check passes, and one workspace-specific record served
+through the URL (branch, issue key, or workspace id) matches the target
+workspace.
+
+### Recorded port drifts after an ad hoc start
+
+Symptom: the runtime row and the actual listener disagree about the port, or a
+previously pinned port changed after someone started the app by hand.
+
+Likely cause: an unmanaged `pnpm dev` (for example with `--bind lan`) picks its
+own port instead of using the managed pinned port.
+
+Fix: stop the unmanaged process, then managed start. Verify the recorded URL
+port equals the bound port and the identity check passes.
+
 ### Setup gate appears
 
 Symptom: the page says no admin has claimed the instance.
@@ -322,6 +424,25 @@ the cloned app state itself must be repaired, use normal Paperclip issue/run
 transitions first. Do not hide the condition with raw DB edits; report the
 exact guard or missing row if it blocks the normal path.
 
+## Recurring gotchas from past repairs
+
+Each of these has burned a previous repair; check them before deep debugging.
+
+- Worktree instance logs live at
+  `~/.paperclip-worktrees/instances/<slug>/logs`. Read them before guessing at
+  login or startup failures.
+- Probing the service through a LAN or tailscale IP can return `403` while
+  `127.0.0.1` (or the `paperclip-dev` hostname) works. Probe loopback first
+  before concluding auth is broken.
+- Browser QA that lands on a blank company path (for example `/FOR/...`)
+  should switch to a company key that exists in the cloned data (for example
+  `/PAP/...`) before concluding the reseed failed.
+- A `409` on runtime or issue mutations usually means another live run holds
+  the ownership lock. Do not force it; wait or coordinate through the issue.
+- After a full reseed the cloned DB can contain copied runtime-service rows
+  that do not match local processes. Re-run managed start and the identity
+  check instead of trusting copied rows.
+
 ## When code changes are required
 
 Make a code change only when the normal operational repair exposes a product
@@ -329,6 +450,9 @@ bug. Examples from this failure class:
 
 - local port owner detection used the wrong `lsof` arguments
 - service adoption trusted root `200` instead of `/api/health`
+- port-owner adoption recorded the requested cwd instead of verifying the
+  owner's real `/proc/<pid>/cwd`, so a sibling workspace's process was adopted
+- pinned service ports collided across sibling workspaces
 - unhealthy adopted services were not terminated/replaced
 - reseeded runtime-service ids were not reconciled with local process registry
 
@@ -360,6 +484,7 @@ Fix:
 Verified:
 - main control plane shows <service> running/healthy at <url>
 - served workspace app shows the same service running/healthy
+- port owner identity: /proc/<pid>/cwd resolves inside the target worktree
 - <url>/api/health is ok with bootstrapStatus ready
 - root page returns 200 and no setup gate
 - dev login verified by <agent browser / QA / user> without posting credentials
