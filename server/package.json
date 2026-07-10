@@ -35,7 +35,7 @@
     "dev": "tsx src/index.ts",
     "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx ./scripts/dev-watch.ts",
     "prepare:ui-dist": "bash ../scripts/prepare-server-ui-dist.sh",
-    "build": "tsc && mkdir -p dist/onboarding-assets && cp -R src/onboarding-assets/. dist/onboarding-assets/",
+    "build": "tsc && mkdir -p dist/onboarding-assets dist/registrations dist/security && cp -R src/onboarding-assets/. dist/onboarding-assets/ && for f in src/registrations/*.json; do cp \"$f\" \"dist/${f#src/}\"; done && for f in src/security/*.yaml; do cp \"$f\" \"dist/${f#src/}\"; done",
     "prepack": "pnpm run prepare:ui-dist",
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
