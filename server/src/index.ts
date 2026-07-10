@@ -847,13 +847,47 @@ export async function startServer(): Promise<StartedServer> {
         { reason: heartbeatSchedulingSuppression.reason },
         "heartbeat scheduling suppressed for this runtime instance",
       );
+      // Stale-lock cleanup is pure DB hygiene with zero model/agent spend, so it
+      // must run even while scheduling is suppressed. Otherwise a run killed during
+      // a rate-limit outage leaves a permanent execution lock that no cleanup path
+      // clears until suppression lifts — an issue's assignee can then never
+      // transition it ("run ownership conflict"). Reap dead runs (in
+      // suppressed/no-spend mode) then sweep their now-terminal locks.
+      const suppressedLockHygiene = (async () => {
+        try {
+          const reaped = await heartbeat.reapOrphanedRuns({
+            reapStuckNonTerminalRuns: config.stuckRunLockReapEnabled,
+            stuckRunStaleThresholdMs: config.stuckRunLockStaleThresholdMs,
+            suppressed: true,
+          });
+          if (reaped.reaped > 0 || reaped.stuckFinalized > 0) {
+            logger.warn({ ...reaped }, "startup suppressed lock hygiene finalized orphaned runs");
+          }
+          const swept = await heartbeat.sweepStaleIssueLocks();
+          if (swept.cleared > 0) {
+            logger.warn({ ...swept }, "startup suppressed stale-lock sweeper cleared issue locks");
+          }
+        } catch (err) {
+          logger.error({ err }, "startup suppressed lock hygiene failed");
+        }
+      })();
+      trackHeartbeatSchedulerWork(suppressedLockHygiene);
+      await suppressedLockHygiene;
     } else {
       const startupHeartbeatRecovery = (async () => {
         for (let attempt = 1; attempt <= 2; attempt++) {
           try {
-            const result = await heartbeat.reapOrphanedRuns();
+            const result = await heartbeat.reapOrphanedRuns({
+              reapStuckNonTerminalRuns: config.stuckRunLockReapEnabled,
+              stuckRunStaleThresholdMs: config.stuckRunLockStaleThresholdMs,
+            });
             logger.info(
-              { reaped: result.reaped, runIds: result.runIds },
+              {
+                reaped: result.reaped,
+                runIds: result.runIds,
+                stuckFinalized: result.stuckFinalized,
+                stuckRunIds: result.stuckRunIds,
+              },
               "startup reap of orphaned heartbeat runs complete",
             );
             break;
@@ -981,9 +1015,15 @@ export async function startServer(): Promise<StartedServer> {
       if (heartbeatSchedulerStopped) return;
       if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
         // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-        // persisted queued work is still being driven forward.
+        // persisted queued work is still being driven forward. Also finalizes runs
+        // stuck non-terminal with a dead process so the sweep below can clear their
+        // execution lock.
         trackHeartbeatSchedulerWork(heartbeat
-          .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+          .reapOrphanedRuns({
+            staleThresholdMs: 5 * 60 * 1000,
+            reapStuckNonTerminalRuns: config.stuckRunLockReapEnabled,
+            stuckRunStaleThresholdMs: config.stuckRunLockStaleThresholdMs,
+          })
           .then(() => heartbeat.promoteDueScheduledRetries())
           .then(async (promotion) => {
             await heartbeat.resumeQueuedRuns();
@@ -1034,6 +1074,32 @@ export async function startServer(): Promise<StartedServer> {
           })
           .catch((err) => {
             logger.error({ err }, "periodic heartbeat recovery failed");
+          }));
+      } else {
+        // Even while scheduling is suppressed, run stale-lock hygiene (reap dead
+        // runs + sweep their now-terminal locks). This is pure DB maintenance with
+        // zero model/agent spend, so it is safe during a rate-limit outage — and is
+        // exactly the window in which permanent locks would otherwise accumulate for
+        // the whole outage. The spend-y recovery steps above stay gated behind
+        // suppression.
+        trackHeartbeatSchedulerWork(heartbeat
+          .reapOrphanedRuns({
+            staleThresholdMs: 5 * 60 * 1000,
+            reapStuckNonTerminalRuns: config.stuckRunLockReapEnabled,
+            stuckRunStaleThresholdMs: config.stuckRunLockStaleThresholdMs,
+            suppressed: true,
+          })
+          .then(async () => {
+            const swept = await heartbeat.sweepStaleIssueLocks();
+            if (swept.cleared > 0) {
+              logger.warn(
+                { ...swept },
+                "periodic suppressed stale-lock sweeper cleared issue locks",
+              );
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "periodic suppressed lock hygiene failed");
           }));
       }
       })();

@@ -624,7 +624,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(heartbeatRuns.id, runId));
 
     const result = await reaperHeartbeat.reapOrphanedRuns({ staleThresholdMs: 1 });
-    expect(result).toEqual({ reaped: 0, runIds: [] });
+    expect(result).toEqual({ reaped: 0, runIds: [], stuckFinalized: 0, stuckRunIds: [] });
 
     const activeRun = await reaperHeartbeat.getRun(runId);
     expect(activeRun?.status).toBe("running");
