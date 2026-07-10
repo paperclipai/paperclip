@@ -892,7 +892,7 @@ describe("IssueChatThread", () => {
     requestAnimationFrameMock.mockRestore();
   });
 
-  it("scrolls loaded hash targets through the virtualized message index", () => {
+  it("scrolls loaded hash targets through the virtualized message index when initial hash scrolling is enabled", () => {
     const root = createRoot(container);
     const targetComment = issueChatLongThreadComments.at(-1);
     expect(targetComment).toBeDefined();
@@ -911,6 +911,7 @@ describe("IssueChatThread", () => {
             onAdd={async () => {}}
             showComposer={false}
             showJumpToLatest={false}
+            autoScrollToHashOnInitialLoad
             enableLiveTranscriptPolling={false}
             transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
             hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
