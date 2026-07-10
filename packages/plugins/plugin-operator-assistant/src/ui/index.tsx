@@ -94,6 +94,7 @@ export function OperatorAssistantDrawer() {
   const [actionError, setActionError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const processedEventCount = useRef(0);
+  const autoStartCompanyId = useRef<string | null>(null);
 
   const chatState = usePluginData<ChatState>("chat-state", {
     ...(companyId ? { companyId } : {}),
@@ -118,7 +119,15 @@ export function OperatorAssistantDrawer() {
   }, [channel]);
 
   useEffect(() => {
-    if (!companyId || chatState.loading || chatState.error || chatState.data?.session || starting) return;
+    if (
+      !companyId
+      || chatState.loading
+      || chatState.error
+      || chatState.data?.session
+      || starting
+      || autoStartCompanyId.current === companyId
+    ) return;
+    autoStartCompanyId.current = companyId;
     setStarting(true);
     setActionError(null);
     void startChat({ companyId }).then((result) => {
