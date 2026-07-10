@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -1560,8 +1560,23 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       return toIssueWatchdog(updated);
     },
 
-    reconcileTaskWatchdogs: async (opts: { companyId?: string | null; runId?: string | null } = {}) => {
-      const rows = await listActiveWatchdogsForCompany(opts.companyId ?? null);
+    reconcileTaskWatchdogs: async (opts: {
+      companyId?: string | null;
+      runId?: string | null;
+      issueCreatedAtGte?: Date | null;
+    } = {}) => {
+      let rows = await listActiveWatchdogsForCompany(opts.companyId ?? null);
+      if (opts.issueCreatedAtGte) {
+        const eligibleIssueIds = new Set((await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(
+            inArray(issues.id, rows.map((row) => row.issueId)),
+            gte(issues.createdAt, opts.issueCreatedAtGte),
+          )))
+          .map((issue) => issue.id));
+        rows = rows.filter((row) => eligibleIssueIds.has(row.issueId));
+      }
       const result = {
         checked: 0,
         triggered: 0,

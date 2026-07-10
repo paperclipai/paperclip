@@ -133,6 +133,16 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     return { companyId, agentId, issueId };
   }
 
+  async function armWorktreeRunExecution(cutoff: Date) {
+    await instanceSettingsService(db, {
+      runtimeEnv: {
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_INSTANCE_ID: "test-worktree",
+      },
+      now: () => cutoff,
+    }).updateExperimental({ enableWorktreeRunExecution: true });
+  }
+
   async function waitForCompletedRun(runId: string, agentId: string) {
     let latestStatus: string | null = null;
     let latestLastRunId: string | null = null;
@@ -242,6 +252,48 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
       .then((rows) => rows[0]?.count ?? 0);
     expect(runningCount).toBe(0);
   });
+
+  it("skips pre-cutoff system wakes but allows user wakes in an armed worktree", async () => {
+    const { agentId, issueId } = await insertAgentAndIssue();
+    await armWorktreeRunExecution(new Date(Date.now() + 1_000));
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_INSTANCE_ID: "test-worktree",
+      },
+    });
+
+    const systemRun = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      payload: { issueId },
+      contextSnapshot: { issueId },
+      requestedByActorType: "system",
+    });
+    expect(systemRun).toBeNull();
+
+    const skippedWake = await db
+      .select({ reason: agentWakeupRequests.reason, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .orderBy(sql`${agentWakeupRequests.createdAt} desc`)
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    expect(skippedWake).toMatchObject({ reason: "heartbeat.worktree_execution_cutoff" });
+    expect(skippedWake?.payload).toMatchObject({
+      heartbeatSkip: { reason: "worktree_execution_cutoff", issueId },
+    });
+
+    const userRun = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "user",
+      payload: { issueId },
+      contextSnapshot: { issueId, skipIssueComment: true },
+      requestedByActorType: "user",
+      requestedByActorId: "operator",
+    });
+    expect(userRun).not.toBeNull();
+    await heartbeat.waitForRunExecutionDrain(userRun!.id);
+  }, 10_000);
 
   it("still creates live-plane assignment runs when suppression is not active", async () => {
     const { agentId, issueId } = await insertAgentAndIssue();
