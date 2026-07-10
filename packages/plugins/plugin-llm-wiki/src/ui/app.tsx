@@ -1909,6 +1909,8 @@ type KnowledgeGraphLayout = {
 };
 
 type KnowledgeGraphMode = "brain" | "operations";
+// Keep semantic note links and operational workflow edges as separate views;
+// mixing them makes large companies' issue volume drown out the wiki topology.
 
 type KnowledgeGraphConnectionStats = {
   incoming: number;
