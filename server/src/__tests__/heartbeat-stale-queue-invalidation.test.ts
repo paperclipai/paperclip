@@ -90,38 +90,29 @@ async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
 }
 
 async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createDb>) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      await db.delete(companySkills);
-      await db.delete(issueComments);
-      await db.delete(issueDocuments);
-      await db.delete(documentRevisions);
-      await db.delete(documents);
-      await db.delete(issueRelations);
-      await db.delete(issueTreeHolds);
-      await db.delete(issues);
-      await db.delete(heartbeatRunEvents);
-      await db.delete(activityLog);
-      await db.delete(heartbeatRuns);
-      await db.delete(agentWakeupRequests);
-      await db.delete(agentRuntimeState);
-      await db.delete(projects);
-      await db.delete(agents);
-      await db.delete(companies);
-      return;
-    } catch (error) {
-      const isLateCommentRace =
-        error instanceof Error &&
-        error.message.includes("issue_comments_issue_id_issues_id_fk");
-      if (!isLateCommentRace || attempt === 4) {
-        throw error;
-      }
+  await db.transaction(async (tx) => {
+    // Heartbeat completion can write an issue-thread comment shortly after the
+    // run leaves queued/running. Keep late writers outside the interval between
+    // deleting comments and their parent issues so FK cleanup is deterministic.
+    await tx.execute(sql.raw('LOCK TABLE "issue_comments" IN ACCESS EXCLUSIVE MODE'));
 
-      // Heartbeat completion can write issue-thread comments shortly after the
-      // run leaves queued/running. Retry the dependent deletes once those land.
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-  }
+    await tx.delete(companySkills);
+    await tx.delete(issueComments);
+    await tx.delete(issueDocuments);
+    await tx.delete(documentRevisions);
+    await tx.delete(documents);
+    await tx.delete(issueRelations);
+    await tx.delete(issueTreeHolds);
+    await tx.delete(issues);
+    await tx.delete(heartbeatRunEvents);
+    await tx.delete(activityLog);
+    await tx.delete(heartbeatRuns);
+    await tx.delete(agentWakeupRequests);
+    await tx.delete(agentRuntimeState);
+    await tx.delete(projects);
+    await tx.delete(agents);
+    await tx.delete(companies);
+  });
 }
 
 type SeedOptions = {
@@ -162,14 +153,15 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       provider: "test",
       model: "test-model",
     }));
-    runningProcesses.clear();
     let idlePolls = 0;
     for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns);
+      const [runs, agentRows] = await Promise.all([
+        db.select({ status: heartbeatRuns.status }).from(heartbeatRuns),
+        db.select({ status: agents.status }).from(agents),
+      ]);
       const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
+      const hasRunningAgent = agentRows.some((agent) => agent.status === "running");
+      if (!hasActiveRun && !hasRunningAgent) {
         idlePolls += 1;
         if (idlePolls >= 3) break;
       } else {
@@ -178,6 +170,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
+    runningProcesses.clear();
     await cleanupHeartbeatInvalidationFixture(db);
   });
 

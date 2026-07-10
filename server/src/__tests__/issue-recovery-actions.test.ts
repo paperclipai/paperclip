@@ -290,12 +290,33 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
     expect(recoveryIssues).toHaveLength(0);
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
-    expect(enqueueWakeup.mock.calls[0]?.[1]?.payload).toMatchObject({
+    expect(enqueueWakeup).toHaveBeenCalledTimes(4);
+
+    const recoveryOwnerWakeups = enqueueWakeup.mock.calls.filter(
+      (call) => call[1]?.reason === "source_scoped_recovery_action",
+    );
+    expect(recoveryOwnerWakeups).toHaveLength(2);
+    expect(recoveryOwnerWakeups.map((call) => call[0])).toEqual([managerId, managerId]);
+    expect(recoveryOwnerWakeups[0]?.[1]?.payload).toMatchObject({
       issueId: sourceIssue.id,
       sourceIssueId: sourceIssue.id,
       recoveryCause: "stranded_assigned_issue",
     });
+
+    const returnOwnerWakeups = enqueueWakeup.mock.calls.filter(
+      (call) => call[1]?.contextSnapshot?.managerEscalationRoute === "return_owner",
+    );
+    expect(returnOwnerWakeups).toHaveLength(2);
+    expect(returnOwnerWakeups.map((call) => call[0])).toEqual([coderId, coderId]);
+    expect(returnOwnerWakeups[0]?.[1]).toMatchObject({
+      reason: "issue_commented",
+      payload: {
+        issueId: sourceIssue.id,
+        sourceIssueId: sourceIssue.id,
+        managerEscalation: true,
+      },
+    });
+    expect(new Set(enqueueWakeup.mock.calls.map((call) => call[1]?.idempotencyKey)).size).toBe(4);
   });
 
   it("reuses the same source-scoped action when latest run IDs change while the cause stays the same", async () => {
@@ -344,13 +365,32 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       attemptCount: 2,
     });
     expect(actionRows[0]?.evidence).toMatchObject({ latestRunId: secondLatestRun.id });
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
-    expect(enqueueWakeup.mock.calls[1]?.[1]?.payload).toMatchObject({
+    expect(enqueueWakeup).toHaveBeenCalledTimes(4);
+
+    const recoveryOwnerWakeups = enqueueWakeup.mock.calls.filter(
+      (call) => call[1]?.reason === "source_scoped_recovery_action",
+    );
+    expect(recoveryOwnerWakeups).toHaveLength(2);
+    expect(recoveryOwnerWakeups.map((call) => call[0])).toEqual([managerId, managerId]);
+    expect(recoveryOwnerWakeups[1]?.[1]?.payload).toMatchObject({
       issueId: sourceIssue.id,
       sourceIssueId: sourceIssue.id,
       strandedRunId: secondLatestRun.id,
       recoveryCause: "stranded_assigned_issue",
     });
+
+    const returnOwnerWakeups = enqueueWakeup.mock.calls.filter(
+      (call) => call[1]?.contextSnapshot?.managerEscalationRoute === "return_owner",
+    );
+    expect(returnOwnerWakeups).toHaveLength(2);
+    expect(returnOwnerWakeups.map((call) => call[0])).toEqual([coderId, coderId]);
+    expect(returnOwnerWakeups[1]?.[1]?.contextSnapshot).toMatchObject({
+      sourceIssueId: sourceIssue.id,
+      strandedRunId: secondLatestRun.id,
+      recoveryCause: "stranded_assigned_issue",
+      managerEscalationRoute: "return_owner",
+    });
+    expect(new Set(enqueueWakeup.mock.calls.map((call) => call[1]?.idempotencyKey)).size).toBe(4);
   });
 
   it("keeps the source issue blocked when source-scoped wakeup is claimed synchronously", async () => {
