@@ -58,6 +58,7 @@ import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
+import { createSeoDocGovernanceScheduler } from "./services/seo-doc-governance-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
@@ -274,6 +275,7 @@ export async function createApp(
     jobStore,
     workerManager,
   });
+  const seoDocGovernanceScheduler = createSeoDocGovernanceScheduler({ db });
   const toolDispatcher = createPluginToolDispatcher({
     workerManager,
     lifecycleManager: lifecycle,
@@ -454,6 +456,7 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
+  seoDocGovernanceScheduler.start();
   let feedbackExportShuttingDown = false;
   let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
   const disableFeedbackExportFlushes = () => {
@@ -570,6 +573,7 @@ export async function createApp(
     disableFeedbackExportFlushes();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
+    seoDocGovernanceScheduler.stop();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
   };
