@@ -1,5 +1,6 @@
 import {
   ClipboardPaste,
+  FlaskConical,
   Layers,
   Network,
   ScrollText,
@@ -28,12 +29,16 @@ export const ADVANCED_TABS = [
 ] as const;
 
 // The pre-Apps developer surface, kept reachable behind the Advanced door.
+// `smoke-lab` (PAP-13343 / S2) is experimental — hidden from the sidebar unless
+// `experimental.enableSmokeLab` is on (see `isExperimentalToolTab` +
+// `useSmokeLabEnabled`), and the route/tab itself gates on the same flag.
 export const DEVELOPER_TABS = [
   { key: "gateways", label: "Gateways", icon: Network },
   { key: "profiles", label: "Profiles", icon: Layers },
   { key: "policies", label: "Rules", icon: Shield },
   { key: "runtime", label: "Health", icon: Server },
   { key: "audit", label: "Activity", icon: ScrollText },
+  { key: "smoke-lab", label: "Smoke Lab", icon: FlaskConical },
 ] as const;
 
 export const TOOL_TABS = [...ADVANCED_TABS, ...DEVELOPER_TABS] as const;
@@ -42,4 +47,9 @@ export type ToolTabKey = (typeof TOOL_TABS)[number]["key"];
 
 export function isAdvancedSetupTab(tab: ToolTabKey): boolean {
   return ADVANCED_TABS.some((t) => t.key === tab);
+}
+
+/** Developer tabs hidden behind an experimental flag (gated in the sidebar). */
+export function isExperimentalToolTab(tab: ToolTabKey): boolean {
+  return tab === "smoke-lab";
 }

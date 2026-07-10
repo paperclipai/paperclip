@@ -11,6 +11,7 @@ import { AuditTab } from "./AuditTab";
 import { GatewaysTab } from "./GatewaysTab";
 import { PasteConfigTab } from "./PasteConfigTab";
 import { RunYourOwnTab } from "./RunYourOwnTab";
+import { SmokeLabTab } from "./SmokeLabTab";
 import {
   ADVANCED_TABS,
   TOOL_TABS,
@@ -31,6 +32,8 @@ function renderTab(tab: ToolTabKey, companyId: string) {
       return <AuditTab companyId={companyId} />;
     case "gateways":
       return <GatewaysTab companyId={companyId} />;
+    case "smoke-lab":
+      return <SmokeLabTab companyId={companyId} />;
     case "paste-config":
       return <PasteConfigTab companyId={companyId} />;
     case "run-your-own":

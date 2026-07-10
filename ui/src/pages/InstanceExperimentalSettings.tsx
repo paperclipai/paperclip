@@ -245,6 +245,7 @@ export function InstanceExperimentalSettings() {
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
+  const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
     experimentalQuery.data?.enableIssueGraphLivenessAutoRecovery === true;
@@ -519,6 +520,25 @@ export function InstanceExperimentalSettings() {
             }
             disabled={toggleMutation.isPending}
             aria-label="Toggle server info debug view experimental setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Smoke Lab</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Add a "Smoke Lab" tab under Apps → Developer and an "Integration smoke" card on the
+              dashboard for exercising every integration path against deterministic local fixtures
+              (fake OAuth provider + loopback MCP servers). Local, non-production only.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableSmokeLab}
+            onCheckedChange={() => toggleMutation.mutate({ enableSmokeLab: !enableSmokeLab })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle smoke lab experimental setting"
           />
         </div>
       </section>

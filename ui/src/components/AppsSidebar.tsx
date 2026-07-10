@@ -5,7 +5,8 @@ import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
-import { DEVELOPER_TABS, advancedTabHref } from "@/pages/tools/tool-tabs";
+import { DEVELOPER_TABS, advancedTabHref, isExperimentalToolTab } from "@/pages/tools/tool-tabs";
+import { useSmokeLabEnabled } from "@/hooks/useSmokeLabEnabled";
 import { useReviewCount } from "@/pages/apps/useReviewCount";
 import { SidebarNavItem } from "./SidebarNavItem";
 
@@ -32,6 +33,10 @@ export function AppsSidebar() {
   const { isMobile, setSidebarOpen } = useSidebar();
 
   const reviewCount = useReviewCount();
+  const { enabled: smokeLabEnabled } = useSmokeLabEnabled();
+  const developerTabs = DEVELOPER_TABS.filter(
+    (tab) => !isExperimentalToolTab(tab.key) || smokeLabEnabled,
+  );
 
   const runtimeSlots = useQuery({
     queryKey: queryKeys.tools.runtimeSlots(selectedCompanyId ?? "__none__"),
@@ -84,7 +89,7 @@ export function AppsSidebar() {
           Advanced setup for developers. Most teams never open this.
         </p>
         <div className="flex flex-col gap-0.5">
-          {DEVELOPER_TABS.map((tab) => (
+          {developerTabs.map((tab) => (
             <SidebarNavItem
               key={tab.key}
               to={advancedTabHref(tab.key)}
