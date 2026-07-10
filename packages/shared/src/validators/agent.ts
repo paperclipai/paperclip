@@ -36,16 +36,41 @@ export const upsertAgentInstructionsFileSchema = z.object({
 
 export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructionsFileSchema>;
 
+export const adapterFallbackTriggerSchema = z.enum(["provider_quota", "max_turns"]);
+
+export const adapterFallbackConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  agentId: z.string().uuid().optional(),
+  on: z.array(adapterFallbackTriggerSchema).optional(),
+  when: z.enum(["immediate", "retries_exhausted"]).optional(),
+}).strict();
+
+export type AdapterFallbackConfig = z.infer<typeof adapterFallbackConfigSchema>;
+
 const adapterConfigSchema = z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
   const envValue = value.env;
-  if (envValue === undefined) return;
-  const parsed = envConfigSchema.safeParse(envValue);
-  if (!parsed.success) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "adapterConfig.env must be a map of valid env bindings",
-      path: ["env"],
-    });
+  if (envValue !== undefined) {
+    const parsed = envConfigSchema.safeParse(envValue);
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "adapterConfig.env must be a map of valid env bindings",
+        path: ["env"],
+      });
+    }
+  }
+
+  const fallbackValue = value.fallback;
+  if (fallbackValue !== undefined) {
+    const parsedFallback = adapterFallbackConfigSchema.safeParse(fallbackValue);
+    if (!parsedFallback.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "adapterConfig.fallback must be an object with optional enabled (boolean), agentId (uuid), on (array of provider_quota|max_turns), and when (immediate|retries_exhausted) and no unknown keys",
+        path: ["fallback"],
+      });
+    }
   }
 });
 
