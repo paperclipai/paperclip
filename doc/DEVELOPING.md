@@ -106,6 +106,14 @@ pnpm test
 pnpm test:watch
 ```
 
+Critical database-backed orchestration and governance checks also have a focused, fail-closed path:
+
+```sh
+pnpm test:governance-guardrails
+```
+
+Run this command as a non-root user. Unlike the broad local suite, it treats an unavailable embedded PostgreSQL runtime as a failure instead of silently skipping the database-backed checks. The release verification gate and PR workflow both run this command.
+
 Browser suites stay separate:
 
 ```sh

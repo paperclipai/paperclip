@@ -21,6 +21,7 @@
     "test:run": "pnpm run preflight:workspace-links && node scripts/run-vitest-stable.mjs",
     "test:run:general": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk build && node scripts/run-vitest-stable.mjs --mode general",
     "test:run:serialized": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk build && node scripts/run-vitest-stable.mjs --mode serialized",
+    "test:governance-guardrails": "pnpm run preflight:workspace-links && node scripts/run-governance-guardrails.mjs",
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
     "issue-references:backfill": "pnpm run preflight:workspace-links && tsx scripts/backfill-issue-reference-mentions.ts",

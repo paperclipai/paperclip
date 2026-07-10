@@ -88,6 +88,9 @@ jobs:
       - name: Typecheck workspaces whose build scripts skip TypeScript
         run: pnpm run typecheck:build-gaps
 
+      - name: Run fail-closed governance guardrails
+        run: pnpm test:governance-guardrails
+
       - name: Run general test suites
         run: pnpm test:run:general
 

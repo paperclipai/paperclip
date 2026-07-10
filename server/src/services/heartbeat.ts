@@ -63,6 +63,7 @@ import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
+import { buildRunSkillTelemetry } from "./skill-run-telemetry.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { mcpOauthService } from "./mcp-oauth.js";
@@ -8063,6 +8064,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       runScopedMentionedSkillKeys,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
+    const runSkillTelemetry = buildRunSkillTelemetry({
+      runtimeEntries: runtimeSkillEntries,
+      effectiveConfig: effectiveResolvedConfig,
+      mentionedSkillKeys: runScopedMentionedSkillKeys,
+    });
+    context.paperclipSkillTelemetry = runSkillTelemetry;
     let runtimeConfig = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
@@ -8481,6 +8488,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         stream: "system",
         level: "info",
         message: "run started",
+      });
+      await appendRunEvent(currentRun, seq++, {
+        eventType: "skills.runtime.prepared",
+        stream: "system",
+        level: "info",
+        message: "runtime skills prepared",
+        payload: runSkillTelemetry as unknown as Record<string, unknown>,
       });
 
       handle = await runLogStore.begin({

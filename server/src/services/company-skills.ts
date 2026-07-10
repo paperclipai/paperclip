@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, companySkills, pluginManagedResources } from "@paperclipai/db";
@@ -717,6 +718,11 @@ function resolveBundledSkillsRoot() {
     path.resolve(process.cwd(), "skills"),
     path.resolve(moduleDir, "../../../skills"),
   ];
+}
+
+function readBundledSkillRequired(markdown: string) {
+  const { frontmatter } = parseFrontmatterMarkdown(markdown);
+  return frontmatter.required !== false;
 }
 
 function matchesRequestedSkill(relativeSkillPath: string, requestedSkillSlug: string | null) {
@@ -1581,6 +1587,7 @@ export function companySkillService(db: Db) {
           metadata: {
             ...(skill.metadata ?? {}),
             sourceKind: "paperclip_bundled",
+            required: readBundledSkillRequired(skill.markdown),
           },
         })))
         .catch(() => [] as ImportedSkill[]);
@@ -2214,14 +2221,15 @@ export function companySkillService(db: Db) {
       if (!source) continue;
 
       const managedByPluginKey = managedPluginKeyBySkillId.get(skill.id) ?? null;
+      const bundledRequired = sourceKind === "paperclip_bundled" && meta.required !== false;
       const pluginRequired = Boolean(managedByPluginKey) && meta.required === true;
-      const required = sourceKind === "paperclip_bundled" || pluginRequired;
+      const required = bundledRequired || pluginRequired;
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
         source,
         required,
-        requiredReason: sourceKind === "paperclip_bundled"
+        requiredReason: bundledRequired
           ? "Bundled Paperclip skills are always available for local adapters."
           : pluginRequired
             ? `Required for all agents by the ${managedByPluginKey} plugin.`
@@ -2394,6 +2402,41 @@ export function companySkillService(db: Db) {
         metadata,
         updatedAt: new Date(),
       };
+      if (existing && isDeepStrictEqual(
+        {
+          companyId: existing.companyId,
+          key: existing.key,
+          slug: existing.slug,
+          name: existing.name,
+          description: existing.description,
+          markdown: existing.markdown,
+          sourceType: existing.sourceType,
+          sourceLocator: existing.sourceLocator,
+          sourceRef: existing.sourceRef,
+          trustLevel: existing.trustLevel,
+          compatibility: existing.compatibility,
+          fileInventory: existing.fileInventory,
+          metadata: existing.metadata,
+        },
+        {
+          companyId: values.companyId,
+          key: values.key,
+          slug: values.slug,
+          name: values.name,
+          description: values.description,
+          markdown: values.markdown,
+          sourceType: values.sourceType,
+          sourceLocator: values.sourceLocator,
+          sourceRef: values.sourceRef,
+          trustLevel: values.trustLevel,
+          compatibility: values.compatibility,
+          fileInventory: values.fileInventory,
+          metadata: values.metadata,
+        },
+      )) {
+        out.push(existing);
+        continue;
+      }
       const row = existing
         ? await db
           .update(companySkills)

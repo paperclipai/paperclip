@@ -27,6 +27,7 @@ import {
   principalPermissionGrants,
   companyMemberships,
   companySkills,
+  improvementSuggestions,
   documents,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
@@ -276,6 +277,7 @@ export function companyService(db: Db) {
     remove: (id: string) =>
       db.transaction(async (tx) => {
         // Delete from child tables in dependency order
+        await tx.delete(improvementSuggestions).where(eq(improvementSuggestions.companyId, id));
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));

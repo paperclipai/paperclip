@@ -47,6 +47,13 @@ export {
   type UpsertIssueFeedbackVote,
 } from "./feedback.js";
 export {
+  improvementSuggestionEvidenceSchema,
+  createImprovementSuggestionSchema,
+  reviewImprovementSuggestionSchema,
+  type CreateImprovementSuggestion,
+  type ReviewImprovementSuggestion,
+} from "./improvement-suggestion.js";
+export {
   sidebarOrderPreferenceSchema,
   upsertSidebarOrderPreferenceSchema,
   type UpsertSidebarOrderPreference,

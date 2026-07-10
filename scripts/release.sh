@@ -203,6 +203,7 @@ if [ "$skip_verify" = false ]; then
   release_info "==> Step 1/7: Verification gate..."
   cd "$REPO_ROOT"
   pnpm -r typecheck
+  pnpm test:governance-guardrails
   pnpm test:run
   pnpm build
 else

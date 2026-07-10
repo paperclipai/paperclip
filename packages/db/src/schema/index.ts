@@ -76,6 +76,7 @@ export { credentialAccessGrants } from "./credential_access_grants.js";
 export { companySecretBindings } from "./company_secret_bindings.js";
 export { secretAccessEvents } from "./secret_access_events.js";
 export { companySkills } from "./company_skills.js";
+export { improvementSuggestions } from "./improvement_suggestions.js";
 export { companyMcpServers } from "./company_mcp_servers.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";

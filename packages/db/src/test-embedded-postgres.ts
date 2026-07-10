@@ -138,7 +138,13 @@ export async function getEmbeddedPostgresTestSupport(): Promise<EmbeddedPostgres
   if (!embeddedPostgresSupportPromise) {
     embeddedPostgresSupportPromise = probeEmbeddedPostgresSupport();
   }
-  return await embeddedPostgresSupportPromise;
+  const support = await embeddedPostgresSupportPromise;
+  if (!support.supported && process.env.PAPERCLIP_REQUIRE_EMBEDDED_POSTGRES === "true") {
+    throw new Error(
+      `Embedded PostgreSQL is required for this guardrail suite and could not start: ${support.reason ?? "unsupported environment"}. Run the suite as a non-root user on a supported host.`,
+    );
+  }
+  return support;
 }
 
 export async function startEmbeddedPostgresTestDatabase(

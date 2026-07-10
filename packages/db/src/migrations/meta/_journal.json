@@ -764,6 +764,13 @@
       "when": 1783305720000,
       "tag": "0108_issue_execution_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1783641600000,
+      "tag": "0109_improvement_suggestions",
+      "breakpoints": true
     }
   ]
 }

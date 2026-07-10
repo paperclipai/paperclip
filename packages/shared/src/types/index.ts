@@ -23,6 +23,20 @@ export type {
   FeedbackTraceBundleFile,
   FeedbackTraceBundle,
 } from "./feedback.js";
+export {
+  IMPROVEMENT_SUGGESTION_ORIGIN_KINDS,
+  IMPROVEMENT_SUGGESTION_STATUSES,
+  IMPROVEMENT_TARGET_LAYERS,
+  IMPROVEMENT_EVIDENCE_KINDS,
+} from "./improvement-suggestion.js";
+export type {
+  ImprovementSuggestion,
+  ImprovementSuggestionEvidence,
+  ImprovementSuggestionOriginKind,
+  ImprovementSuggestionStatus,
+  ImprovementTargetLayer,
+  ImprovementEvidenceKind,
+} from "./improvement-suggestion.js";
 export type {
   InstanceExperimentalSettings,
   InstanceGeneralSettings,

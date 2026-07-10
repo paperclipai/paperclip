@@ -98,6 +98,49 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     });
   });
 
+  it("keeps unchanged bundled inventory rows stable and honors required: false", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await svc.list(companyId);
+    const paperclipDev = await db
+      .select()
+      .from(companySkills)
+      .where(eq(companySkills.key, "paperclipai/paperclip/paperclip-dev"))
+      .then((rows) => rows.find((row) => row.companyId === companyId) ?? null);
+    expect(paperclipDev?.metadata).toMatchObject({
+      sourceKind: "paperclip_bundled",
+      required: false,
+    });
+
+    const sentinelUpdatedAt = new Date("2000-01-01T00:00:00.000Z");
+    await db
+      .update(companySkills)
+      .set({ updatedAt: sentinelUpdatedAt })
+      .where(eq(companySkills.id, paperclipDev!.id));
+
+    const runtimeEntries = await svc.listRuntimeSkillEntries(companyId, { materializeMissing: false });
+    const refreshed = await db
+      .select()
+      .from(companySkills)
+      .where(eq(companySkills.id, paperclipDev!.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(refreshed?.updatedAt.toISOString()).toBe(sentinelUpdatedAt.toISOString());
+    expect(runtimeEntries.find((entry) => entry.key === paperclipDev!.key)).toMatchObject({
+      required: false,
+      requiredReason: null,
+    });
+    expect(runtimeEntries.find((entry) => entry.key === "paperclipai/paperclip/paperclip")).toMatchObject({
+      required: true,
+    });
+  });
+
   it("prevents deleting bundled Paperclip skills even when no agent uses them", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();

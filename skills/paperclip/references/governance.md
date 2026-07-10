@@ -2,7 +2,7 @@
 
 Paperclip has three instruction layers. Putting a rule in the wrong layer is how the same mistake repeats across companies.
 
-- **Root (bundled) Paperclip skills** — universal factory invariants. Inherited by every company, read-only, always synced to agents. Changed only in the Paperclip codebase.
+- **Root (bundled) Paperclip skills** — universal factory invariants. Inherited by every company and read-only. Skills are required by default; maintainer-only operational skills can declare `required: false` and remain available without being synced to every agent. Changed only in the Paperclip codebase.
 - **Company skills** — repeatable procedures local to one company's domain.
 - **`AGENTS.md` / agent prompts** — role identity for one agent.
 
@@ -63,4 +63,23 @@ Then determine the durable fix and record it:
 }
 ```
 
-Post the classification as a comment on the failed issue, and create the follow-up improvement issue when `should_create_followup_issue` is true (respect the two-level topology: improvement issues are new parent issues or lanes under an ops/governance parent, never grandchildren). For `durable_fix_target: root_skill` or `orchestration_code`, the follow-up issue should request board/instance-owner review since the fix lives outside the company.
+Post the classification as a comment on the failed issue. Then record an evidence-backed improvement suggestion with `POST /api/companies/{companyId}/improvement-suggestions`. Include the target layer, proposed change, at least one evidence reference, and `sourceIssueId` when applicable. Suggestions created by agents enter `pending_review`; only the board can accept or reject them through `POST /api/companies/{companyId}/improvement-suggestions/{suggestionId}/review`.
+
+```json
+{
+  "targetLayer": "agent_prompt | company_skill | root_skill | orchestration_code | qa_gate | workspace_guard | company_sop",
+  "title": "Short improvement title",
+  "summary": "What failed or drifted and why this is systemic",
+  "proposedChange": "The durable behavior or guardrail to add",
+  "evidence": [
+    { "kind": "issue | comment | run | log | document | file | url | other", "ref": "stable reference", "note": "why it matters" }
+  ],
+  "sourceIssueId": "optional issue UUID"
+}
+```
+
+Board review payloads use `{ "decision": "accept | reject", "note": "decision rationale" }`. A suggestion can be decided only once; later review attempts fail instead of rewriting the original decision.
+
+Board-created records are stored separately as `board_directed` changes and are accepted at creation. They do not masquerade as agent-detected suggestions and cannot be sent through the suggestion review queue. This preserves the difference between an operator directive and an agent's recommendation in the audit trail.
+
+Create the follow-up improvement issue when `should_create_followup_issue` is true (respect the two-level topology: improvement issues are new parent issues or lanes under an ops/governance parent, never grandchildren). Link that issue in the suggestion evidence. For `durable_fix_target: root_skill` or `orchestration_code`, the follow-up issue and suggestion should request board/instance-owner review since the fix lives outside the company.
