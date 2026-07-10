@@ -15,8 +15,10 @@ const mockSecretService = vi.hoisted(() => ({
   disableProviderConfig: vi.fn(),
   setDefaultProviderConfig: vi.fn(),
   checkProviderConfigHealth: vi.fn(),
+  list: vi.fn(),
   getById: vi.fn(),
   create: vi.fn(),
+  rotate: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
   previewRemoteImport: vi.fn(),
@@ -25,6 +27,7 @@ const mockSecretService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(async () => true),
+  hasPermission: vi.fn(async () => true),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -57,6 +60,10 @@ describe("secret routes", () => {
       mock.mockReset();
     }
     mockLogActivity.mockReset();
+    mockAccessService.canUser.mockReset();
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.hasPermission.mockReset();
+    mockAccessService.hasPermission.mockResolvedValue(true);
   });
 
   it("returns provider health checks for board callers with company access", async () => {
@@ -94,6 +101,106 @@ describe("secret routes", () => {
 
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toMatch(/Managed secrets cannot set externalRef/);
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows an agent with secrets:manage to list secret metadata", async () => {
+    mockSecretService.list.mockResolvedValue([
+      {
+        id: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        name: "n8n API key",
+        key: "n8n-api-key",
+        provider: "local_encrypted",
+        status: "active",
+        managedMode: "paperclip_managed",
+        latestVersion: 1,
+      },
+    ]);
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    })).get("/api/companies/company-1/secrets");
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-1",
+      "secrets:manage",
+    );
+    expect(mockSecretService.list).toHaveBeenCalledWith("company-1");
+  });
+
+  it("creates a secret for an authorized agent and records agent attribution without logging the value", async () => {
+    mockSecretService.create.mockResolvedValue({
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      name: "n8n API key",
+      key: "n8n-api-key",
+      provider: "local_encrypted",
+      status: "active",
+      managedMode: "paperclip_managed",
+      latestVersion: 1,
+    });
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    })).post("/api/companies/company-1/secrets").send({
+      name: "n8n API key",
+      managedMode: "paperclip_managed",
+      value: "never-log-this-value",
+    });
+
+    expect(res.status).toBe(201);
+    expect(mockSecretService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        name: "n8n API key",
+        value: "never-log-this-value",
+      }),
+      { userId: null, agentId: "agent-1" },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorType: "agent",
+        actorId: "agent-1",
+        agentId: "agent-1",
+        runId: "run-1",
+        action: "secret.created",
+        details: { name: "n8n API key", provider: "local_encrypted" },
+      }),
+    );
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("never-log-this-value");
+  });
+
+  it("rejects an agent without secrets:manage before reading or creating secrets", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(false);
+    const actor = {
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+    };
+
+    const listRes = await request(createApp(actor)).get("/api/companies/company-1/secrets");
+    const createRes = await request(createApp(actor)).post("/api/companies/company-1/secrets").send({
+      name: "n8n API key",
+      managedMode: "paperclip_managed",
+      value: "secret-value",
+    });
+
+    expect(listRes.status).toBe(403);
+    expect(listRes.body).toEqual({ error: "Missing permission: secrets:manage" });
+    expect(createRes.status).toBe(403);
+    expect(createRes.body).toEqual({ error: "Missing permission: secrets:manage" });
+    expect(mockSecretService.list).not.toHaveBeenCalled();
     expect(mockSecretService.create).not.toHaveBeenCalled();
   });
 

@@ -10,8 +10,7 @@ import {
   updateSecretSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
-import { forbidden } from "../errors.js";
+import { assertBoard, assertCompanyAccess, getActorInfo, requirePermission } from "./authz.js";
 import { accessService, logActivity, secretService } from "../services/index.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 
@@ -228,24 +227,16 @@ export function secretRoutes(db: Db) {
   });
 
   router.get("/companies/:companyId/secrets", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await requirePermission(req, access, companyId, "secrets:manage");
     const secrets = await svc.list(companyId);
     res.json(secrets);
   });
 
   router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") {
-      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
-        const allowed = await access.canUser(companyId, req.actor.userId, "secrets:manage");
-        if (!allowed) throw forbidden("Missing permission: secrets:manage");
-      }
-    } else {
-      throw forbidden("Board access required");
-    }
+    await requirePermission(req, access, companyId, "secrets:manage");
+    const actor = getActorInfo(req);
 
     const created = await svc.create(
       companyId,
@@ -261,13 +252,18 @@ export function secretRoutes(db: Db) {
         providerVersionRef: req.body.providerVersionRef,
         providerMetadata: req.body.providerMetadata,
       },
-      { userId: req.actor.userId ?? "board", agentId: null },
+      {
+        userId: actor.actorType === "user" ? actor.actorId : null,
+        agentId: actor.agentId,
+      },
     );
 
     await logActivity(db, {
       companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
       action: "secret.created",
       entityType: "secret",
       entityId: created.id,
@@ -355,19 +351,12 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
-    if (req.actor.type === "board") {
-      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
-        const allowed = await access.canUser(existing.companyId, req.actor.userId, "secrets:manage");
-        if (!allowed) throw forbidden("Missing permission: secrets:manage");
-      }
-    } else {
-      throw forbidden("Board access required");
-    }
+    await requirePermission(req, access, existing.companyId, "secrets:manage");
     if (existing.status === "deleted") {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
+    const actor = getActorInfo(req);
 
     const rotated = await svc.rotate(
       id,
@@ -377,13 +366,18 @@ export function secretRoutes(db: Db) {
         providerVersionRef: req.body.providerVersionRef,
         providerConfigId: req.body.providerConfigId,
       },
-      { userId: req.actor.userId ?? "board", agentId: null },
+      {
+        userId: actor.actorType === "user" ? actor.actorId : null,
+        agentId: actor.agentId,
+      },
     );
 
     await logActivity(db, {
       companyId: rotated.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
       action: "secret.rotated",
       entityType: "secret",
       entityId: rotated.id,
@@ -400,15 +394,7 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
-    if (req.actor.type === "board") {
-      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
-        const allowed = await access.canUser(existing.companyId, req.actor.userId, "secrets:manage");
-        if (!allowed) throw forbidden("Missing permission: secrets:manage");
-      }
-    } else {
-      throw forbidden("Board access required");
-    }
+    await requirePermission(req, access, existing.companyId, "secrets:manage");
     if (existing.status === "deleted") {
       res.status(404).json({ error: "Secret not found" });
       return;
@@ -428,11 +414,14 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
+    const actor = getActorInfo(req);
 
     await logActivity(db, {
       companyId: updated.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
       action: "secret.updated",
       entityType: "secret",
       entityId: updated.id,
@@ -475,26 +464,21 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
-    if (req.actor.type === "board") {
-      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
-        const allowed = await access.canUser(existing.companyId, req.actor.userId, "secrets:manage");
-        if (!allowed) throw forbidden("Missing permission: secrets:manage");
-      }
-    } else {
-      throw forbidden("Board access required");
-    }
+    await requirePermission(req, access, existing.companyId, "secrets:manage");
 
     const removed = await svc.remove(id);
     if (!removed) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
+    const actor = getActorInfo(req);
 
     await logActivity(db, {
       companyId: removed.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
       action: "secret.deleted",
       entityType: "secret",
       entityId: removed.id,

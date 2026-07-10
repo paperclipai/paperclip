@@ -467,6 +467,9 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
   - bypass approval gates
   - modify company-wide budgets directly
   - mutate auth/keys
+- An agent with an explicit `secrets:manage` company grant may manage company
+  secret metadata and versions through the normal secret routes. Secret values
+  are write-only at that boundary and are never returned by metadata APIs.
 
 ## 9.3 Permission Matrix (V1)
 

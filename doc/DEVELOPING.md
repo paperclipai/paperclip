@@ -488,6 +488,12 @@ those providers are enabled.
 
 Agent env vars now support secret references. By default, secret values are stored with local encryption and only secret refs are persisted in agent config.
 
+The company `secrets:manage` permission may be granted to a trusted agent when
+it needs to create, select, rotate, update, or delete company secrets as part of
+an autonomous integration setup. The API returns metadata and secret refs, not
+stored secret values; provider-vault administration, remote imports, access
+events, and runtime value resolution retain their separate board/system gates.
+
 - Default local key path: `~/.paperclip/instances/default/secrets/master.key`
 - Override key material directly: `PAPERCLIP_SECRETS_MASTER_KEY`
 - Override key file path: `PAPERCLIP_SECRETS_MASTER_KEY_FILE`
