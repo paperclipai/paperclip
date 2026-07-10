@@ -7,6 +7,7 @@ const CREATED_AGENT_ID = "22222222-2222-4222-8222-222222222222";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(async () => []),
 }));
 
 const mockInteractionService = vi.hoisted(() => ({
@@ -51,6 +52,7 @@ function registerModuleMocks() {
         agent: { id: raw },
       })),
     }),
+    budgetService: () => ({}),
     clampIssueListLimit: (value: number) => value,
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     ISSUE_LIST_MAX_LIMIT: 1000,

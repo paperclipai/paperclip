@@ -87,6 +87,7 @@ function registerModuleMocks() {
     }),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    budgetService: () => ({}),
     documentService: () => ({}),
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     goalService: () => ({}),

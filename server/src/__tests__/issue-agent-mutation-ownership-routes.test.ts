@@ -17,6 +17,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getRelationSummaries: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  list: vi.fn(async () => []),
   listAttachments: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   remove: vi.fn(),
@@ -101,6 +102,7 @@ function registerRouteMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    budgetService: () => ({}),
     companyService: () => mockCompanyService,
     documentService: () => mockDocumentService,
     executionWorkspaceService: () => ({}),

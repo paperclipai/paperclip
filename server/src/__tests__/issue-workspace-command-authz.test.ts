@@ -95,6 +95,7 @@ function registerRouteMocks() {
     }),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    budgetService: () => ({}),
     documentService: () => ({}),
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     feedbackService: () => mockFeedbackService,

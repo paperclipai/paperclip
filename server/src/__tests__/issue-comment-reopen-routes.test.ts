@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(async () => []),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
@@ -83,6 +84,17 @@ vi.mock("../telemetry.js", () => ({
   getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
 }));
 
+vi.mock("../services/image-reference-guardrails.js", () => ({
+  resolveIssueImageReferenceGuardrail: vi.fn(async () => ({
+    required: false,
+    issueScopeIds: [],
+    boardText: "",
+    candidateAttachmentIds: [],
+    candidateAssetIds: [],
+  })),
+  hasReferenceBackedImageGenerationEvidence: vi.fn(async () => false),
+}));
+
 vi.mock("../services/access.js", () => ({
   accessService: () => mockAccessService,
 }));
@@ -121,6 +133,7 @@ vi.mock("../services/index.js", () => ({
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  budgetService: () => ({}),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
   feedbackService: () => mockFeedbackService,

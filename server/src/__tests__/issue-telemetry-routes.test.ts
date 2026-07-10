@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(async () => []),
   getWakeableParentAfterChildCompletion: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   update: vi.fn(),
@@ -26,6 +27,17 @@ function registerModuleMocks() {
     getTelemetryClient: mockGetTelemetryClient,
   }));
 
+  vi.doMock("../services/image-reference-guardrails.js", () => ({
+    resolveIssueImageReferenceGuardrail: vi.fn(async () => ({
+      required: false,
+      issueScopeIds: [],
+      boardText: "",
+      candidateAttachmentIds: [],
+      candidateAssetIds: [],
+    })),
+    hasReferenceBackedImageGenerationEvidence: vi.fn(async () => false),
+  }));
+
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
@@ -35,6 +47,7 @@ function registerModuleMocks() {
       hasPermission: vi.fn(),
     }),
     agentService: () => mockAgentService,
+    budgetService: () => ({}),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({}),
@@ -119,6 +132,7 @@ describe("issue telemetry routes", () => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/image-reference-guardrails.js");
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");

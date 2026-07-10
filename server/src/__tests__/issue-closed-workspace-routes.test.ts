@@ -81,6 +81,7 @@ function registerServiceMocks() {
     agentService: () => ({
       getById: vi.fn(async () => null),
     }),
+    budgetService: () => ({}),
     documentService: () => ({}),
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     feedbackService: () => ({
