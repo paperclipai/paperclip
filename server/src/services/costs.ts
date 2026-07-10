@@ -1,7 +1,17 @@
 import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import {
+  activityLog,
+  agents,
+  companies,
+  costEvents,
+  heartbeatRuns,
+  issues,
+  projects,
+  routineRuns,
+  routines,
+} from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 
@@ -15,6 +25,20 @@ const SUBSCRIPTION_BILLING_TYPES = ["subscription_included", "subscription_overa
 
 function sumAsNumber(column: typeof costEvents.costCents | typeof costEvents.inputTokens | typeof costEvents.cachedInputTokens | typeof costEvents.outputTokens) {
   return sql<number>`coalesce(sum(${column}), 0)::double precision`;
+}
+
+function costRangeConditions(companyId: string, range?: CostDateRange) {
+  const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+  if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+  if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+  return conditions;
+}
+
+function runCreatedRangeConditions(companyId: string, range?: CostDateRange) {
+  const conditions: ReturnType<typeof eq>[] = [eq(heartbeatRuns.companyId, companyId)];
+  if (range?.from) conditions.push(gte(heartbeatRuns.createdAt, range.from));
+  if (range?.to) conditions.push(lte(heartbeatRuns.createdAt, range.to));
+  return conditions;
 }
 
 function currentUtcMonthWindow(now = new Date()) {
@@ -363,6 +387,108 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions))
         .groupBy(costEvents.biller)
         .orderBy(desc(sumAsNumber(costEvents.costCents)));
+    },
+
+    topRuns: async (companyId: string, range?: CostDateRange, limit = 25) => {
+      const conditions = [
+        ...costRangeConditions(companyId, range),
+        isNotNull(costEvents.heartbeatRunId),
+      ];
+      const inputTokens = sumAsNumber(costEvents.inputTokens);
+      const cachedInputTokens = sumAsNumber(costEvents.cachedInputTokens);
+      const outputTokens = sumAsNumber(costEvents.outputTokens);
+      const costCents = sumAsNumber(costEvents.costCents);
+      const totalTokens = sql<number>`(${inputTokens} + ${outputTokens})`;
+      const issueId = sql<string | null>`coalesce(${costEvents.issueId}::text, ${heartbeatRuns.contextSnapshot} ->> 'issueId')`;
+
+      return db
+        .select({
+          heartbeatRunId: costEvents.heartbeatRunId,
+          agentId: costEvents.agentId,
+          agentName: agents.name,
+          issueId,
+          issueIdentifier: issues.identifier,
+          issueTitle: issues.title,
+          projectId: sql<string | null>`coalesce(${costEvents.projectId}::text, ${issues.projectId}::text)`,
+          projectName: projects.name,
+          routineId: routines.id,
+          routineTitle: routines.title,
+          invocationSource: heartbeatRuns.invocationSource,
+          wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`,
+          triggerDetail: heartbeatRuns.triggerDetail,
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          retryOfRunId: heartbeatRuns.retryOfRunId,
+          createdAt: heartbeatRuns.createdAt,
+          startedAt: heartbeatRuns.startedAt,
+          finishedAt: heartbeatRuns.finishedAt,
+          resultSummary: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'summary', 500)`,
+          providerCount: sql<number>`count(distinct ${costEvents.provider})::int`,
+          modelCount: sql<number>`count(distinct ${costEvents.model})::int`,
+          costCents,
+          inputTokens,
+          cachedInputTokens,
+          uncachedInputTokens: sql<number>`greatest(${inputTokens} - ${cachedInputTokens}, 0)`,
+          outputTokens,
+          totalTokens,
+          costEventCount: sql<number>`count(${costEvents.id})::int`,
+        })
+        .from(costEvents)
+        .innerJoin(heartbeatRuns, eq(costEvents.heartbeatRunId, heartbeatRuns.id))
+        .leftJoin(agents, eq(costEvents.agentId, agents.id))
+        .leftJoin(issues, sql`${issues.id}::text = ${issueId}`)
+        .leftJoin(projects, sql`${projects.id}::text = coalesce(${costEvents.projectId}::text, ${issues.projectId}::text)`)
+        .leftJoin(routineRuns, eq(routineRuns.linkedIssueId, issues.id))
+        .leftJoin(routines, eq(routines.id, routineRuns.routineId))
+        .where(and(...conditions))
+        .groupBy(
+          costEvents.heartbeatRunId,
+          costEvents.agentId,
+          agents.name,
+          costEvents.issueId,
+          costEvents.projectId,
+          heartbeatRuns.id,
+          issues.id,
+          projects.id,
+          routines.id,
+        )
+        .orderBy(desc(totalTokens))
+        .limit(limit);
+    },
+
+    zeroTokenFailedRuns: async (companyId: string, range?: CostDateRange, limit = 25) => {
+      const issueId = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+
+      return db
+        .select({
+          heartbeatRunId: heartbeatRuns.id,
+          agentId: heartbeatRuns.agentId,
+          agentName: agents.name,
+          issueId,
+          issueIdentifier: issues.identifier,
+          issueTitle: issues.title,
+          invocationSource: heartbeatRuns.invocationSource,
+          wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`,
+          triggerDetail: heartbeatRuns.triggerDetail,
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          error: sql<string | null>`left(${heartbeatRuns.error}, 500)`,
+          retryOfRunId: heartbeatRuns.retryOfRunId,
+          createdAt: heartbeatRuns.createdAt,
+          startedAt: heartbeatRuns.startedAt,
+          finishedAt: heartbeatRuns.finishedAt,
+        })
+        .from(heartbeatRuns)
+        .leftJoin(costEvents, eq(costEvents.heartbeatRunId, heartbeatRuns.id))
+        .leftJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+        .leftJoin(issues, sql`${issues.id}::text = ${issueId}`)
+        .where(and(
+          ...runCreatedRangeConditions(companyId, range),
+          eq(heartbeatRuns.status, "failed"),
+          isNull(costEvents.id),
+        ))
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(limit);
     },
 
     /**

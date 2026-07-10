@@ -13,6 +13,8 @@ import {
   heartbeatRuns,
   issues,
   projects,
+  routineRuns,
+  routines,
 } from "@paperclipai/db";
 import { costService } from "../services/costs.ts";
 import { financeService } from "../services/finance.ts";
@@ -83,6 +85,8 @@ const mockCostService = vi.hoisted(() => ({
     runtimeMs: 0,
   }),
   windowSpend: vi.fn().mockResolvedValue([]),
+  topRuns: vi.fn().mockResolvedValue([]),
+  zeroTokenFailedRuns: vi.fn().mockResolvedValue([]),
   byProject: vi.fn().mockResolvedValue([]),
 }));
 const mockFinanceService = vi.hoisted(() => ({
@@ -270,6 +274,33 @@ describe("cost routes", () => {
     });
   });
 
+  it("returns compact top token runs", async () => {
+    mockCostService.topRuns.mockResolvedValueOnce([{ heartbeatRunId: "run-1", totalTokens: 123 }]);
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/top-runs")
+      .query({ from: "2026-02-01T00:00:00.000Z", to: "2026-02-28T23:59:59.999Z", limit: "10" });
+
+    expect(res.status).toBe(200);
+    expect(mockCostService.topRuns).toHaveBeenCalledWith("company-1", {
+      from: new Date("2026-02-01T00:00:00.000Z"),
+      to: new Date("2026-02-28T23:59:59.999Z"),
+    }, 10);
+    expect(res.body).toEqual([{ heartbeatRunId: "run-1", totalTokens: 123 }]);
+  });
+
+  it("returns zero-token failed runs", async () => {
+    mockCostService.zeroTokenFailedRuns.mockResolvedValueOnce([{ heartbeatRunId: "run-2", errorCode: "adapter_failed" }]);
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/zero-token-failed-runs")
+      .query({ limit: "5" });
+
+    expect(res.status).toBe(200);
+    expect(mockCostService.zeroTokenFailedRuns).toHaveBeenCalledWith("company-1", undefined, 5);
+    expect(res.body).toEqual([{ heartbeatRunId: "run-2", errorCode: "adapter_failed" }]);
+  });
+
   it("returns 400 for invalid finance event list limits", async () => {
     const { parseCostLimit } = await loadCostParsers();
     expect(() => parseCostLimit({ limit: "0" })).toThrow(/invalid 'limit'/i);
@@ -420,6 +451,8 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
   afterEach(async () => {
     await db.delete(financeEvents);
     await db.delete(costEvents);
+    await db.delete(routineRuns);
+    await db.delete(routines);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
@@ -505,6 +538,161 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byAgentRow?.inputTokens).toBe(4_000_000_000);
     expect(byProjectRow?.costCents).toBe(4_000_000_000);
     expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
+  });
+
+  it("ranks top runs by tokens and lists zero-token failed runs separately", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const routineId = randomUUID();
+    const highRunId = randomUUID();
+    const lowRunId = randomUUID();
+    const failedRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Token Project",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Routine issue",
+      status: "in_progress",
+      priority: "medium",
+      issueNumber: 10,
+      identifier: "TST-10",
+    });
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      projectId,
+      title: "Daily report",
+      status: "active",
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: highRunId,
+        companyId,
+        agentId,
+        invocationSource: "routine",
+        status: "succeeded",
+        createdAt: new Date("2026-04-10T00:00:00.000Z"),
+        startedAt: new Date("2026-04-10T00:00:00.000Z"),
+        finishedAt: new Date("2026-04-10T00:01:00.000Z"),
+        contextSnapshot: { issueId, wakeReason: "routine_triggered" },
+        resultJson: { summary: "Published token report." },
+      },
+      {
+        id: lowRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        createdAt: new Date("2026-04-10T00:05:00.000Z"),
+      },
+      {
+        id: failedRunId,
+        companyId,
+        agentId,
+        invocationSource: "source_scoped_recovery_action",
+        status: "failed",
+        errorCode: "adapter_failed",
+        error: "Adapter failed before model usage.",
+        createdAt: new Date("2026-04-10T00:10:00.000Z"),
+      },
+    ]);
+    await db.insert(routineRuns).values({
+      companyId,
+      routineId,
+      source: "schedule",
+      status: "completed",
+      linkedIssueId: issueId,
+      triggeredAt: new Date("2026-04-10T00:00:00.000Z"),
+    });
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        issueId,
+        projectId,
+        heartbeatRunId: highRunId,
+        provider: "openai",
+        biller: "chatgpt",
+        billingType: "subscription_included",
+        model: "gpt-5.5",
+        inputTokens: 1000,
+        cachedInputTokens: 800,
+        outputTokens: 50,
+        costCents: 0,
+        occurredAt: new Date("2026-04-10T00:00:30.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        heartbeatRunId: lowRunId,
+        provider: "openai",
+        biller: "chatgpt",
+        billingType: "subscription_included",
+        model: "gpt-5.5",
+        inputTokens: 10,
+        cachedInputTokens: 1,
+        outputTokens: 2,
+        costCents: 0,
+        occurredAt: new Date("2026-04-10T00:05:30.000Z"),
+      },
+    ]);
+
+    const range = {
+      from: new Date("2026-04-10T00:00:00.000Z"),
+      to: new Date("2026-04-10T23:59:59.999Z"),
+    };
+
+    const topRuns = await costs.topRuns(companyId, range, 2);
+    expect(topRuns.map((row) => row.heartbeatRunId)).toEqual([highRunId, lowRunId]);
+    expect(topRuns[0]).toMatchObject({
+      agentName: "Cost Agent",
+      issueIdentifier: "TST-10",
+      projectName: "Token Project",
+      routineId,
+      routineTitle: "Daily report",
+      costCents: 0,
+      inputTokens: 1000,
+      cachedInputTokens: 800,
+      uncachedInputTokens: 200,
+      outputTokens: 50,
+      totalTokens: 1050,
+      resultSummary: "Published token report.",
+    });
+
+    const failedRuns = await costs.zeroTokenFailedRuns(companyId, range, 5);
+    expect(failedRuns).toHaveLength(1);
+    expect(failedRuns[0]).toMatchObject({
+      heartbeatRunId: failedRunId,
+      agentName: "Cost Agent",
+      errorCode: "adapter_failed",
+      error: "Adapter failed before model usage.",
+    });
   });
 
   it("aggregates issue costs across recursive descendants only", async () => {

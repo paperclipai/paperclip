@@ -274,6 +274,26 @@ export function costRoutes(
     res.json(rows);
   });
 
+  router.get("/companies/:companyId/costs/top-runs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    const range = parseCostDateRange(req.query);
+    const limit = parseCostLimit(req.query);
+    const rows = await costs.topRuns(companyId, range, limit);
+    res.json(rows);
+  });
+
+  router.get("/companies/:companyId/costs/zero-token-failed-runs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    const range = parseCostDateRange(req.query);
+    const limit = parseCostLimit(req.query);
+    const rows = await costs.zeroTokenFailedRuns(companyId, range, limit);
+    res.json(rows);
+  });
+
   router.get("/companies/:companyId/costs/quota-windows", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
