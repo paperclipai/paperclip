@@ -484,7 +484,7 @@ export async function runCodexLogin(input: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, acquireLaunchPermit, onSpawn, authToken } = ctx;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -1015,6 +1015,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       timeoutSec,
       graceSec,
+      acquireLaunchPermit,
       onSpawn,
       onLog: async (stream, chunk) => {
         if (stream !== "stderr") {

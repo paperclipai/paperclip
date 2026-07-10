@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -94,6 +95,8 @@ interface AcpxPreparedRuntime {
   remoteExecutionIdentity: Record<string, unknown> | null;
   skillPromptInstructions: string;
   skillsIdentity: Record<string, unknown>;
+  controlCancelPath: string;
+  controlPidPath: string;
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
@@ -592,6 +595,12 @@ async function writeAgentWrapper(input: {
     "  source \"$env_file\"",
     "  set +a",
     "fi",
+    "if [[ -n \"${PAPERCLIP_ACPX_CANCEL_FILE:-}\" && -f \"$PAPERCLIP_ACPX_CANCEL_FILE\" ]]; then exit 130; fi",
+    "if [[ -n \"${PAPERCLIP_ACPX_PID_FILE:-}\" ]]; then printf '%s\\n' \"$$\" > \"$PAPERCLIP_ACPX_PID_FILE\"; fi",
+    // Checking again after publishing the pid closes the race between the
+    // first marker check and a control-plane abort. Once this check passes,
+    // the abort handler can kill the published pid before or after exec.
+    "if [[ -n \"${PAPERCLIP_ACPX_CANCEL_FILE:-}\" && -f \"$PAPERCLIP_ACPX_CANCEL_FILE\" ]]; then exit 130; fi",
     `exec ${input.agentCommandShell} "$@"`,
     "",
   ].join("\n");
@@ -673,11 +682,22 @@ async function buildRuntime(input: {
   const timeoutSec = asNumber(config.timeoutSec, DEFAULT_ACPX_LOCAL_TIMEOUT_SEC);
   const stateDir = path.resolve(asString(config.stateDir, "") || defaultStateDir(agent.companyId, agent.id));
   await fs.mkdir(stateDir, { recursive: true });
+  const controlDir = path.join(stateDir, "control");
+  const controlKey = shortHash({ runId });
+  const controlCancelPath = path.join(controlDir, `${controlKey}.cancelled`);
+  const controlPidPath = path.join(controlDir, `${controlKey}.pid`);
+  await fs.mkdir(controlDir, { recursive: true });
+  await Promise.all([
+    fs.rm(controlCancelPath, { force: true }),
+    fs.rm(controlPidPath, { force: true }),
+  ]);
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent), PAPERCLIP_RUN_ID: runId };
+  env.PAPERCLIP_ACPX_CANCEL_FILE = controlCancelPath;
+  env.PAPERCLIP_ACPX_PID_FILE = controlPidPath;
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim()) ||
     (typeof context.issueId === "string" && context.issueId.trim()) ||
@@ -817,6 +837,8 @@ async function buildRuntime(input: {
       ...skillsIdentity,
       commandNotes: skillCommandNotes,
     },
+    controlCancelPath,
+    controlPidPath,
   };
 }
 
@@ -1121,7 +1143,50 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
   const warmHandles = deps.warmHandles ?? defaultWarmHandles;
 
   return async function executeAcpxLocal(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+    const submitWithLaunchPermit = async <T>(submit: () => T): Promise<T> => {
+      const releaseLaunchPermit = await ctx.acquireLaunchPermit?.();
+      try {
+        const submitted = submit();
+        releaseLaunchPermit?.();
+        return submitted;
+      } catch (error) {
+        releaseLaunchPermit?.();
+        throw error;
+      }
+    };
     const prepared = await buildRuntime({ ctx });
+    let cancelActiveTurn: ((reason: string) => Promise<void>) | null = null;
+    let controller: AbortController | null = null;
+    let timeout: NodeJS.Timeout | null = null;
+    let timedOut = false;
+    const cleanupControlFiles = () => {
+      rmSync(prepared.controlCancelPath, { force: true });
+      rmSync(prepared.controlPidPath, { force: true });
+    };
+    const cancelFromControlPlane = () => {
+      // The ACPX public runtime does not expose an AbortSignal during
+      // ensureSession. The managed wrapper marker closes the pre-spawn race;
+      // the pid file lets us terminate a process whose startup handshake is
+      // already in progress.
+      try {
+        mkdirSync(path.dirname(prepared.controlCancelPath), { recursive: true });
+        writeFileSync(prepared.controlCancelPath, `${Date.now()}\n`, { mode: 0o600 });
+      } catch {
+        // A later launch permit/status check still suppresses the turn.
+      }
+      try {
+        const pid = Number.parseInt(readFileSync(prepared.controlPidPath, "utf8").trim(), 10);
+        if (Number.isInteger(pid) && pid > 0) process.kill(pid, "SIGTERM");
+      } catch {
+        // The wrapper may not have published a pid yet; it will observe the
+        // cancellation marker before executing the real agent command.
+      }
+      controller?.abort(ctx.signal?.reason);
+      const cancel = cancelActiveTurn as ((reason: string) => Promise<void>) | null;
+      if (cancel) void cancel("Cancelled by the Paperclip control plane").catch(() => undefined);
+    };
+    ctx.signal?.addEventListener("abort", cancelFromControlPlane, { once: true });
+    if (ctx.signal?.aborted) cancelFromControlPlane();
     const warmIdleMs = asNumber(ctx.config.warmHandleIdleMs, DEFAULT_ACPX_LOCAL_WARM_HANDLE_IDLE_MS);
     await cleanupIdleHandles({ handles: warmHandles, now: now(), idleMs: warmIdleMs });
 
@@ -1138,6 +1203,50 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       timeoutMs: prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined,
     };
     const runtime = cached?.runtime ?? createRuntime(runtimeOptions);
+    const ensureSession = async (
+      input: Parameters<AcpRuntime["ensureSession"]>[0],
+    ): Promise<AcpRuntimeHandle> => {
+      const pending = runtime.ensureSession(input);
+      if (!ctx.signal) return await pending;
+
+      return await new Promise<AcpRuntimeHandle>((resolve, reject) => {
+        let settled = false;
+        const cleanup = () => ctx.signal?.removeEventListener("abort", onAbort);
+        const onAbort = () => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          // If ACPX finishes negotiating a handle after Paperclip cancelled,
+          // close it in the background. Cancellation itself must not wait on
+          // an opaque startup handshake that has no public abort API.
+          void pending.then((lateHandle) => runtime.close({
+            handle: lateHandle,
+            reason: "paperclip cancelled during ACPX session startup",
+            discardPersistentState: true,
+          })).catch(() => undefined).finally(cleanupControlFiles);
+          reject(new Error("ACPX session startup cancelled by the Paperclip control plane"));
+        };
+        ctx.signal!.addEventListener("abort", onAbort, { once: true });
+        if (ctx.signal!.aborted) {
+          onAbort();
+          return;
+        }
+        void pending.then(
+          (nextHandle) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(nextHandle);
+          },
+          (error) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(error);
+          },
+        );
+      });
+    };
     if (cached) clearWarmHandleTimer(cached);
     if (!canResume && asString(previousParams.runtimeSessionName, "")) {
       await ctx.onLog(
@@ -1153,7 +1262,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
     try {
       if (!handle) {
         try {
-          handle = await runtime.ensureSession({
+          handle = await ensureSession({
             sessionKey: prepared.sessionKey,
             agent: prepared.acpxAgent,
             mode: prepared.mode,
@@ -1161,6 +1270,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
             resumeSessionId,
           });
         } catch (err) {
+          if (ctx.signal?.aborted) throw err;
           if (!resumeSessionId || !isResumeFailure(err)) throw err;
           clearSession = true;
           resumedSession = false;
@@ -1168,7 +1278,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
             "stdout",
             `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
           );
-          handle = await runtime.ensureSession({
+          handle = await ensureSession({
             sessionKey: prepared.sessionKey,
             agent: prepared.acpxAgent,
             mode: prepared.mode,
@@ -1180,6 +1290,8 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       const classified = classifyError(err);
       const message = err instanceof Error ? err.message : String(err);
       await emitAcpxLog(ctx, { type: "acpx.error", message, ...classified.errorMeta });
+      ctx.signal?.removeEventListener("abort", cancelFromControlPlane);
+      if (!ctx.signal?.aborted) cleanupControlFiles();
       return {
         exitCode: 1,
         signal: null,
@@ -1195,6 +1307,8 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
     }
 
     if (!handle) {
+      ctx.signal?.removeEventListener("abort", cancelFromControlPlane);
+      cleanupControlFiles();
       return {
         exitCode: 1,
         signal: null,
@@ -1229,6 +1343,8 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         clearWarmHandleTimer(existing);
         warmHandles.delete(prepared.sessionKey);
       }
+      ctx.signal?.removeEventListener("abort", cancelFromControlPlane);
+      cleanupControlFiles();
       return {
         exitCode: 1,
         signal: null,
@@ -1286,14 +1402,11 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       });
     }
 
-    let cancelActiveTurn: ((reason: string) => Promise<void>) | null = null;
-    let controller: AbortController | null = null;
-    let timeout: NodeJS.Timeout | null = null;
-    let timedOut = false;
     const textParts: string[] = [];
     try {
       const timeoutMs = prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined;
       controller = new AbortController();
+      if (ctx.signal?.aborted) cancelFromControlPlane();
       if (timeoutMs) {
         timeout = setTimeout(() => {
           timedOut = true;
@@ -1301,14 +1414,14 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
           void cancelActiveTurn?.(`Timed out after ${prepared.timeoutSec}s`).catch(() => {});
         }, timeoutMs);
       }
-      const turn = runtime.startTurn({
+      const turn = await submitWithLaunchPermit(() => runtime.startTurn({
         handle: sessionHandle,
         text: runPrompt,
         mode: "prompt",
         requestId: ctx.runId,
         timeoutMs,
         signal: controller?.signal,
-      });
+      }));
       cancelActiveTurn = async (reason: string) => {
         await turn.cancel({ reason });
       };
@@ -1442,6 +1555,10 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         resultJson: { phase: "turn" },
         summary: message,
       };
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      ctx.signal?.removeEventListener("abort", cancelFromControlPlane);
+      cleanupControlFiles();
     }
   };
 }

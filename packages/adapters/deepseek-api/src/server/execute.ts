@@ -123,23 +123,41 @@ async function streamChatCompletion(params: {
   body: Record<string, unknown>;
   signal: AbortSignal;
   onLog: AdapterExecutionContext["onLog"];
+  acquireLaunchPermit?: AdapterExecutionContext["acquireLaunchPermit"];
 }): Promise<{
   text: string;
   usage: DeepSeekUsage | null;
   model: string | null;
 }> {
   const url = `${params.baseUrl.replace(/\/$/, "")}/chat/completions`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "text/event-stream",
-      authorization: `Bearer ${params.apiKey}`,
-    },
-    body: JSON.stringify({ ...params.body, stream: true }),
-    signal: params.signal,
-  });
+  const releaseLaunchPermit = await params.acquireLaunchPermit?.();
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "text/event-stream",
+        authorization: `Bearer ${params.apiKey}`,
+      },
+      body: JSON.stringify({ ...params.body, stream: true }),
+      signal: params.signal,
+    });
+    releaseLaunchPermit?.();
+    return await readChatCompletionResponse(response, params);
+  } catch (error) {
+    releaseLaunchPermit?.();
+    throw error;
+  }
+}
 
+async function readChatCompletionResponse(
+  response: Response,
+  params: { onLog: AdapterExecutionContext["onLog"] },
+): Promise<{
+  text: string;
+  usage: DeepSeekUsage | null;
+  model: string | null;
+}> {
   if (!response.ok || !response.body) {
     const errText = await response.text().catch(() => "");
     const err = new Error(
@@ -266,6 +284,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutSec * 1000);
+  const abortFromControlPlane = () => controller.abort(ctx.signal?.reason);
+  ctx.signal?.addEventListener("abort", abortFromControlPlane, { once: true });
+  if (ctx.signal?.aborted) abortFromControlPlane();
 
   try {
     const { text, usage, model: respondedModel } = await streamChatCompletion({
@@ -274,6 +295,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       body,
       signal: controller.signal,
       onLog: ctx.onLog,
+      acquireLaunchPermit: ctx.acquireLaunchPermit,
     });
 
     await ctx.onLog("stdout", "\n");
@@ -302,12 +324,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
+      const cancelled = ctx.signal?.aborted === true;
       return {
         exitCode: null,
         signal: null,
-        timedOut: true,
-        errorMessage: `DeepSeek API request timed out after ${timeoutSec}s`,
-        errorCode: "deepseek_api_timeout",
+        timedOut: !cancelled,
+        errorMessage: cancelled
+          ? "DeepSeek API request cancelled by the control plane"
+          : `DeepSeek API request timed out after ${timeoutSec}s`,
+        errorCode: cancelled ? "cancelled" : "deepseek_api_timeout",
       };
     }
     const message = err instanceof Error ? err.message : String(err);
@@ -339,5 +364,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   } finally {
     clearTimeout(timer);
+    ctx.signal?.removeEventListener("abort", abortFromControlPlane);
   }
 }

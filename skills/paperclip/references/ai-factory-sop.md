@@ -66,14 +66,16 @@ Topology says how work fans out; these invariants say what must travel with it. 
 
 **1. Intake.** The receiving manager identifies: user objective, business reason, task type, source-of-truth materials, constraints, non-goals, acceptance checks, required evidence, and missing context. If the request is ambiguous, ask questions or create a discovery task — do not delegate execution with vague context.
 
-**2. Planning.** Planning produces the work breakdown, assignees, blockers, and — critically — the contract each task will be judged against. A list of task titles is not a plan.
+**2. Planning and capability gate.** Planning produces the work breakdown, assignees, blockers, and — critically — the contract each task will be judged against. Before dispatch, verify each assignee has the required adapter/runtime, desired company skills, MCP or credential access, and execution environment. Route missing setup to one bounded provisioning lane instead of repeatedly waking an incapable executor. A list of task titles is not a plan.
 
 **3. Delegation.** Each child lane is created with a concise human-readable `description` plus the full hidden `executionContract` (objective, source-of-truth, constraints, acceptance checks, evidence required, block-if-missing list, manager reasoning summary).
 
 **4. Executor preflight.** Before starting, the executor verifies the contract exists, source-of-truth is reachable, and block-if-missing items are present. Preflight failure → `blocked` with exact missing items named.
 
-**5. Execution.** Work against the contract; record evidence as you go.
+**5. Execution.** Work against the contract; record evidence as you go. Register required outputs as issue documents, work products, attachments, previews, files, or external links. A progress comment alone is communication, not proof of deliverable completion.
 
-**6. QA.** QA compares output to the contract: source-of-truth used, must-preserve preserved, must-not-change untouched, acceptance checks passing with evidence. Fail wrong-problem work regardless of polish.
+**6. QA and disposition.** QA compares output to the contract: source-of-truth used, must-preserve preserved, must-not-change untouched, acceptance checks passing with evidence, and required outputs registered. Fail wrong-problem work regardless of polish. Leave exactly one machine-visible next path: done, a typed review/approval owner, a bounded monitor, or a first-class blocker.
+
+**Agent termination is a typed handoff, not reassignment by guess.** Paperclip contains the terminated identity first: cancel queued work, pause owned routines, disable their triggers, revoke keys, quiesce owner-bound monitors/review principals, and preserve the original source-task ownership as evidence. It then opens a bounded recovery action owned by an exact role/capability peer when available, otherwise a reporting coordinator, otherwise the board. The recovery owner coordinates; it does not inherit the source task automatically. It must explicitly accept or repair/reassign the lane and resolve the recovery action only after a real next path exists. Owned routines receive a separate typed routine-recovery issue containing routine, trigger schedule, revision, and secret-reference metadata; every routine must be accepted/reassigned or archived before that recovery closes. Timed-out or no-disposition recovery runs escalate to the board queue.
 
 **7. Incident learning.** If work failed, drifted, or needed rework, classify the incident and route the durable fix to the right layer (agent prompt vs company skill vs root skill vs code). See `references/governance.md`.

@@ -94,6 +94,12 @@ services:
   server:
     build: .
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 30s
     ports:
       - "3100:3100"
     environment:

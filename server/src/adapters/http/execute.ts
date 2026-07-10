@@ -14,17 +14,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const controller = new AbortController();
   const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  const abortFromControlPlane = () => controller.abort(ctx.signal?.reason);
+  ctx.signal?.addEventListener("abort", abortFromControlPlane, { once: true });
+  if (ctx.signal?.aborted) abortFromControlPlane();
 
   try {
-    const res = await fetch(url, {
-      method,
-      headers: {
-        "content-type": "application/json",
-        ...headers,
-      },
-      body: JSON.stringify(body),
-      ...(timer ? { signal: controller.signal } : {}),
-    });
+    const releaseLaunchPermit = await ctx.acquireLaunchPermit?.();
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method,
+        headers: {
+          "content-type": "application/json",
+          ...headers,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      releaseLaunchPermit?.();
+    } catch (error) {
+      releaseLaunchPermit?.();
+      throw error;
+    }
 
     if (!res.ok) {
       throw new Error(`HTTP invoke failed with status ${res.status}`);
@@ -37,17 +48,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       summary: `HTTP ${method} ${url}`,
     };
   } catch (err) {
-    if (timer && err instanceof Error && err.name === "AbortError") {
+    if (err instanceof Error && err.name === "AbortError") {
+      const cancelled = ctx.signal?.aborted === true;
       return {
         exitCode: null,
         signal: null,
-        timedOut: true,
-        errorMessage: `HTTP ${method} ${url} timed out after ${timeoutMs}ms`,
-        errorCode: "timeout",
+        timedOut: !cancelled,
+        errorMessage: cancelled
+          ? `HTTP ${method} ${url} cancelled by the control plane`
+          : `HTTP ${method} ${url} timed out after ${timeoutMs}ms`,
+        errorCode: cancelled ? "cancelled" : "timeout",
       };
     }
     throw err;
   } finally {
     if (timer) clearTimeout(timer);
+    ctx.signal?.removeEventListener("abort", abortFromControlPlane);
   }
 }

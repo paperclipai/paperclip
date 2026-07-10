@@ -411,6 +411,8 @@ export interface PluginEnvironmentRealizeWorkspaceResult {
 }
 
 export interface PluginEnvironmentExecuteParams extends PluginEnvironmentDriverBaseParams {
+  /** Stable host-generated id used to cancel an execution after submission. */
+  executionId?: string;
   lease: PluginEnvironmentLease;
   command: string;
   args?: string[];
@@ -418,6 +420,11 @@ export interface PluginEnvironmentExecuteParams extends PluginEnvironmentDriverB
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
+}
+
+export interface PluginEnvironmentCancelExecutionParams extends PluginEnvironmentDriverBaseParams {
+  executionId: string;
+  lease: PluginEnvironmentLease;
 }
 
 export interface PluginEnvironmentExecuteResult {
@@ -530,6 +537,10 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentExecuteParams,
     result: PluginEnvironmentExecuteResult,
   ];
+  environmentCancelExecution: [
+    params: PluginEnvironmentCancelExecutionParams,
+    result: void,
+  ];
 }
 
 /** Union of all host→worker method names. */
@@ -561,6 +572,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentDestroyLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
+  "environmentCancelExecution",
 ] as const;
 
 // ---------------------------------------------------------------------------

@@ -215,7 +215,7 @@ async function readSavedSessionCwd(input: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, acquireLaunchPermit, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -711,6 +711,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env: executionTargetIsRemote ? env : runtimeEnv,
       timeoutSec,
       graceSec,
+      acquireLaunchPermit,
       onSpawn,
       onLog: bufferedOnLog,
     });

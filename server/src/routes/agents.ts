@@ -246,7 +246,17 @@ export function agentRoutes(
   ] as const;
 
   const router = Router();
-  const svc = agentService(db);
+  const heartbeat = heartbeatService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
+  const svc = agentService(db, {
+    cancelRecoveryRun: (runId) => heartbeat.cancelRun(runId, {
+      reason: "Cancelled because a newer recovery generation is being created",
+      suppressImmediateRecovery: true,
+      force: true,
+      skipQueueAdvance: true,
+    }),
+  });
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
@@ -255,14 +265,38 @@ export function agentRoutes(
   const environmentRuntime = environmentRuntimeService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
-  const heartbeat = heartbeatService(db, {
-    pluginWorkerManager: options.pluginWorkerManager,
-  });
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
   const mcpOauthSvc = mcpOauthService(db);
   const companyMcpSvc = companyMcpServerService(db);
+
+  async function driveTerminationRecoveryQueues(companyId: string, terminatedAgentId: string) {
+    const recoveryOwnerIds = await svc.listQueuedTerminationRecoveryOwnerIds?.(
+      companyId,
+      terminatedAgentId,
+    ) ?? [];
+    for (const recoveryOwnerId of recoveryOwnerIds) {
+      try {
+        await heartbeat.driveQueuedRunsForAgent(recoveryOwnerId);
+      } catch (error) {
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: recoveryOwnerId,
+          action: "agent.termination_recovery_kick_failed",
+          entityType: "agent",
+          entityId: recoveryOwnerId,
+          details: {
+            terminatedAgentId,
+            durableQueuedRunPreserved: true,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        });
+      }
+    }
+  }
   const credentialsSvc = credentialService(db);
   const instructions = agentInstructionsService();
   const companySkills = companySkillService(db);
@@ -1943,12 +1977,25 @@ export function agentRoutes(
 
     const issuesSvc = issueService(db);
     const recoveryActionsSvc = issueRecoveryActionService(db);
-    const rows = await issuesSvc.list(req.actor.companyId, {
-      assigneeAgentId: req.actor.agentId,
-      status: "todo,in_progress,blocked",
-      includeRoutineExecutions: true,
-      limit: ISSUE_LIST_DEFAULT_LIMIT,
-    });
+    const [assignedRows, recoveryOwnedRows] = await Promise.all([
+      issuesSvc.list(req.actor.companyId, {
+        assigneeAgentId: req.actor.agentId,
+        status: "todo,in_progress,blocked",
+        includeRoutineExecutions: true,
+        limit: ISSUE_LIST_DEFAULT_LIMIT,
+      }),
+      issuesSvc.list(req.actor.companyId, {
+        recoveryOwnerAgentId: req.actor.agentId,
+        status: "backlog,todo,in_progress,in_review,blocked",
+        includeRoutineExecutions: true,
+        limit: ISSUE_LIST_DEFAULT_LIMIT,
+      }),
+    ]);
+    const rows = [...new Map(
+      [...assignedRows, ...recoveryOwnedRows].map((issue) => [issue.id, issue]),
+    ).values()]
+      .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime())
+      .slice(0, ISSUE_LIST_DEFAULT_LIMIT);
     const issueIds = rows.map((issue) => issue.id);
     const [dependencyReadiness, recoveryActionByIssue] = await Promise.all([
       issuesSvc.listDependencyReadiness(req.actor.companyId, issueIds),
@@ -2859,6 +2906,9 @@ export function agentRoutes(
           // switch so switching runtimes doesn't silently drop the agent's
           // external MCP config (and delete its secret bindings).
           "mcpServers",
+          // Company skill selections are part of the agent's Paperclip
+          // identity and must survive runtime/adapter changes too.
+          "paperclipSkillSync",
         ] as const;
         for (const key of ADAPTER_AGNOSTIC_KEYS) {
           if (rawEffectiveAdapterConfig[key] === undefined && existingAdapterConfig[key] !== undefined) {
@@ -2937,10 +2987,23 @@ export function agentRoutes(
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
         source: "patch",
       },
+      terminationAudit: {
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        source: "patch",
+      },
     });
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
+    }
+    if (patchData.status === "terminated") {
+      // PATCH is a first-class termination path too. Containment in the agent
+      // service prevents new work, while this stops already claimed/running work.
+      await heartbeat.cancelActiveForAgent(id, "Cancelled due to agent termination");
+      await driveTerminationRecoveryQueues(agent.companyId, id);
     }
     if (touchesAdapterConfiguration) {
       const agentEnv = asRecord(agent.adapterConfig)?.env;
@@ -3510,13 +3573,21 @@ export function agentRoutes(
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
-    const agent = await svc.terminate(id);
+    const actor = getActorInfo(req);
+    const agent = await svc.terminate(id, {
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      source: "agent_detail",
+    });
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
 
     await heartbeat.cancelActiveForAgent(id);
+    await driveTerminationRecoveryQueues(agent.companyId, id);
 
     await logActivity(db, {
       companyId: agent.companyId,

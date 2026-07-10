@@ -23,6 +23,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
   leaseMetadata: Record<string, unknown> | null;
   lease?: EnvironmentLease | null;
   environmentRuntime?: EnvironmentRuntimeService | null;
+  signal?: AbortSignal;
 }): Promise<AdapterExecutionTarget | null> {
   if (input.environment.driver === "local") {
     return {
@@ -86,6 +87,8 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 env: commandInput.env,
                 stdin: commandInput.stdin,
                 timeoutMs: commandInput.timeoutMs,
+                acquireLaunchPermit: commandInput.acquireLaunchPermit,
+                signal: input.signal,
               });
               if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
               if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);

@@ -32,8 +32,9 @@ class MockChildProcess extends EventEmitter {
   };
   kill = vi.fn();
 
-  constructor(input: { code?: number; signal?: string | null; stdout?: string; stderr?: string }) {
+  constructor(input: { code?: number; signal?: string | null; stdout?: string; stderr?: string; autoClose?: boolean }) {
     super();
+    if (input.autoClose === false) return;
     queueMicrotask(() => {
       if (input.stdout) this.stdout.emit("data", input.stdout);
       if (input.stderr) this.stderr.emit("data", input.stderr);
@@ -60,6 +61,45 @@ describe("exe.dev sandbox provider plugin", () => {
     });
     expect(plugin.definition.onEnvironmentAcquireLease).toBeTypeOf("function");
     expect(plugin.definition.onEnvironmentExecute).toBeTypeOf("function");
+    expect(plugin.definition.onEnvironmentCancelExecution).toBeTypeOf("function");
+  });
+
+  it("cancels an active SSH execution by stable execution id", async () => {
+    const child = new MockChildProcess({ autoClose: false });
+    spawnMock.mockReturnValueOnce(child);
+    const base = {
+      driverKey: "exe-dev",
+      companyId: "company-1",
+      environmentId: "env-1",
+      issueId: null,
+      config: { apiKey: "api-key", timeoutMs: 300_000 },
+      executionId: "execution-1",
+      lease: {
+        providerLeaseId: "paperclip-env-run",
+        metadata: {
+          vmName: "paperclip-env-run",
+          sshDest: "paperclip-env-run.exe.xyz",
+          remoteCwd: "/workspace",
+        },
+      },
+    };
+
+    const execution = plugin.definition.onEnvironmentExecute?.({
+      ...base,
+      command: "agent",
+      args: ["run"],
+    });
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+    const cancellation = plugin.definition.onEnvironmentCancelExecution?.(base);
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    child.emit("close", null, "SIGTERM");
+
+    await expect(cancellation).resolves.toBeUndefined();
+    await expect(execution).resolves.toMatchObject({
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: false,
+    });
   });
 
   it("normalizes config and emits SSH guidance warnings", async () => {

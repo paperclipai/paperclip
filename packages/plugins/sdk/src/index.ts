@@ -161,6 +161,7 @@ export type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentCancelExecutionParams,
   PluginModalBoundsRequest,
   PluginRenderCloseEvent,
   PluginLauncherRenderContextSnapshot,

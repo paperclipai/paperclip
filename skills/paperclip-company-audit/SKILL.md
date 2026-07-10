@@ -21,6 +21,8 @@ Use the Paperclip API (see the `paperclip` skill for auth and endpoints) to insp
 - `GET /api/companies/{companyId}/skills` — installed skills, source badges, compatibility
 - `GET /api/agents/{agentId}/skills` — per-agent skill assignment
 - Recent issues (`GET /api/companies/{companyId}/issues?...` plus `GET /api/issues/{issueId}` for sampled children), including `done`, `blocked`, and `in_review` — inspect child `executionContract` fields and QA comments
+- Recent heartbeat/wakeup telemetry — compare requested, available, and prepared skills; count repeated skipped wakes by issue/reason rather than treating them as harmless noise
+- Routines and triggers — flag enabled triggers or active routines owned by terminated/uninvokable agents, and distinguish recurring work from watchdogs that should be bounded issue monitors
 - Agent `AGENTS.md`/instructions where accessible
 
 ## Audit areas
@@ -32,6 +34,8 @@ Manager/CEO present? Executors for the company's actual work types? QA assigned 
 ### 2. Skill coverage and health
 
 Root (bundled) Paperclip skills present and synced? Company skills exist for recurring domain work? Any skill malformed (bad frontmatter, missing name/description), assigned but unavailable, unassigned where needed, duplicated, or contradicting root invariants?
+
+Do not infer assignment health from the company skill catalog. Compare each live agent's desired skills with runtime telemetry. A desired count that drops to zero after an adapter/config revision, or company skills that are available but never requested/prepared, is a critical persistence gap.
 
 ### 3. Handoff quality
 
@@ -45,9 +49,15 @@ Sample agent-to-agent progress comments that contain `Next owner:`. A healthy co
 
 Do QA comments reference the contract's acceptance checks? Is evidence linked? Any passes where output plausibly solved a different problem than the objective? Does QA ever fail work (a QA lane that never fails anything is a gap, not a strength)?
 
+Count issue execution decisions and registered work products/documents for sampled contracted work. A rich contract with no machine-visible review decision or required output is stored context, not enforced QA.
+
 ### 5. Recovery quality
 
-Are blocked issues monitored and escalated, or do they rot? Dead/paused assignees detected? Repeated failure patterns visible across issues?
+Are blocked issues monitored and escalated, or do they rot? Dead/paused assignees detected? Repeated failure patterns visible across issues? Group skipped wake requests by issue and reason; repeated `issue_dependencies_blocked` wakes indicate a recovery hot loop, not healthy liveness. Verify scheduled issue monitors are treated as active waiting paths and that bounded blocked monitors can fire without reopening deliverable work.
+
+Build a capability/access matrix for sampled dispatches: required adapter/runtime, desired company skill, MCP/credential, environment, and actual assignee. Repeatedly dispatching to an owner that cannot reach the required system is an orchestration failure even if another executive agent happens to have access.
+
+Check lifecycle cleanup: terminated agents must not own active routines or enabled triggers. A recurring health/watchdog routine that creates a fresh board issue every tick should be replaced by a bounded monitor on the existing issue unless each occurrence is genuinely new work.
 
 ### 6. Governance quality
 
@@ -78,6 +88,7 @@ Follow each JSON report with a prose section explaining the top three gaps with 
 ## Rules
 
 - Evidence or it didn't happen: cite issue identifiers, agent names, skill keys.
+- Quantify board rescue: cite manual reassignments, status reopens, blocker edits, and repeated follow-up comments needed to obtain the intended result. That is factory toil, not proof the workflow worked.
 - Audit the practice, not just the config: a skill being installed says nothing about whether agents follow it — read real issues.
 - Do not fix things during the audit. Report; recommend; let remediation be delegated as separate contracted lanes.
 - If asked to audit on a recurring basis, set up a routine (see the `paperclip` skill's routines reference).

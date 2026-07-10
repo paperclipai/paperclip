@@ -441,6 +441,12 @@ type PaperclipWakeImageReferenceGuardrail = {
 
 type PaperclipWakePayload = {
   reason: string | null;
+  recoveryActionId: string | null;
+  recoveryCause: string | null;
+  sourceIssueId: string | null;
+  terminatedAgentId: string | null;
+  routineRecoveryIssueId: string | null;
+  routineIds: string[];
   issue: PaperclipWakeIssue | null;
   imageReferenceGuardrail: PaperclipWakeImageReferenceGuardrail | null;
   executionContract: Record<string, unknown> | null;
@@ -712,6 +718,12 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
 
   return {
     reason: asString(payload.reason, "").trim() || null,
+    recoveryActionId: asString(payload.recoveryActionId, "").trim() || null,
+    recoveryCause: asString(payload.recoveryCause, "").trim() || null,
+    sourceIssueId: asString(payload.sourceIssueId, "").trim() || null,
+    terminatedAgentId: asString(payload.terminatedAgentId, "").trim() || null,
+    routineRecoveryIssueId: asString(payload.routineRecoveryIssueId, "").trim() || null,
+    routineIds: asStringArray(payload.routineIds).map((id) => id.trim()).filter(Boolean),
     issue: normalizePaperclipWakeIssue(payload.issue),
     imageReferenceGuardrail,
     executionContract,
@@ -824,6 +836,27 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.reason === "source_scoped_recovery_action") {
+    lines.push(
+      "",
+      "RECOVERY ACTION CONTRACT:",
+      `- recovery action id: ${normalized.recoveryActionId ?? "missing"}`,
+      `- recovery cause: ${normalized.recoveryCause ?? "unknown"}`,
+      `- source issue id: ${normalized.sourceIssueId ?? normalized.issue?.id ?? "unknown"}`,
+      "- This is a coordination wake, not implicit ownership of the source task. Do not checkout or execute a source issue assigned to another agent.",
+      "- Fetch `GET /api/issues/{sourceIssueId}/recovery-actions`, verify that the active action names you as owner, and inspect its evidence/nextAction before changing anything.",
+      "- Choose an explicit disposition: accept the source handoff through `POST /api/issues/{sourceIssueId}/recovery-actions/accept`, repair/reassign through an authorized coordination path, or leave the bounded action active so its watchdog escalates to the board.",
+      "- Resolve the action only after the source has a real executable/review/monitor path. Never claim success while the recovery action remains active.",
+    );
+    if (normalized.recoveryCause === "terminated_routine_owner") {
+      lines.push(
+        `- routine recovery issue id: ${normalized.routineRecoveryIssueId ?? normalized.issue?.id ?? "unknown"}`,
+        `- routine ids: ${normalized.routineIds.length > 0 ? normalized.routineIds.join(", ") : "missing"}`,
+        "- Read `executionContract.routineRecovery`; explicitly self-accept/reassign or archive every listed routine, restore only intended triggers, verify schedule/secret references, then resolve the recovery issue/action.",
+      );
+    }
+    lines.push("");
   }
   if (normalized.executionContract) {
     lines.push(
@@ -2106,6 +2139,7 @@ export async function runChildProcess(
     graceSec: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
+    acquireLaunchPermit?: () => Promise<() => void>;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
@@ -2139,14 +2173,21 @@ export async function runChildProcess(
       remoteExecution: opts.remoteExecution ?? null,
       remoteEnv: opts.remoteExecution ? opts.env : null,
     })
-      .then((target) => {
-        const child = spawn(target.command, target.args, {
-          cwd: target.cwd ?? opts.cwd,
-          env: mergedEnv,
-          detached: process.platform !== "win32",
-          shell: false,
-          stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
-        }) as ChildProcessWithEvents;
+      .then(async (target) => {
+        const releaseLaunchPermit = await opts.acquireLaunchPermit?.();
+        let child: ChildProcessWithEvents;
+        try {
+          child = spawn(target.command, target.args, {
+            cwd: target.cwd ?? opts.cwd,
+            env: mergedEnv,
+            detached: process.platform !== "win32",
+            shell: false,
+            stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+          }) as ChildProcessWithEvents;
+        } catch (error) {
+          releaseLaunchPermit?.();
+          throw error;
+        }
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
 
@@ -2158,6 +2199,7 @@ export async function runChildProcess(
             : Promise.resolve();
 
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
+        releaseLaunchPermit?.();
 
         let timedOut = false;
         let stdout = "";

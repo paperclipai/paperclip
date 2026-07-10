@@ -179,7 +179,7 @@ async function buildGeminiSkillsDir(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, acquireLaunchPermit, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -623,6 +623,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env,
       timeoutSec,
       graceSec,
+      acquireLaunchPermit,
       onSpawn,
       onLog,
     });

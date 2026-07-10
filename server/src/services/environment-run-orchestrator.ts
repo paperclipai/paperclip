@@ -342,6 +342,7 @@ export function environmentRunOrchestrator(
     executionWorkspace: RealizedExecutionWorkspace;
     effectiveExecutionWorkspaceMode: string | null;
     persistedExecutionWorkspace: ExecutionWorkspace | null;
+    signal?: AbortSignal;
   }): Promise<EnvironmentRealizationResult> {
     const {
       environment,
@@ -428,6 +429,7 @@ export function environmentRunOrchestrator(
             SHELL: "/bin/bash",
           },
           timeoutMs: 300_000,
+          signal: input.signal,
         });
         if (provisionResult.exitCode !== 0 || provisionResult.timedOut) {
           throw new Error(formatProvisionFailureDetail(provisionResult));
@@ -481,6 +483,7 @@ export function environmentRunOrchestrator(
         leaseMetadata: (lease.metadata as Record<string, unknown> | null) ?? null,
         lease,
         environmentRuntime,
+        signal: input.signal,
       });
     } catch (err) {
       throw new EnvironmentRunError(

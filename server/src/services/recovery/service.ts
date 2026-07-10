@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -8,6 +8,7 @@ import {
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   approvals,
@@ -34,6 +35,7 @@ import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { issueService } from "../issues.js";
+import { publishLiveEvent } from "../live-events.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
@@ -51,6 +53,7 @@ import {
 } from "./origins.js";
 import {
   classifyIssueGraphLiveness,
+  hasScheduledMonitor,
   issueLivenessPendingInteractionExpiresAt,
   type IssueLivenessFinding,
 } from "./issue-graph-liveness.js";
@@ -70,6 +73,7 @@ const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueR
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const ISSUE_GRAPH_LIVENESS_RECOVERY_ACTION_OWNER_STATUSES = new Set(["active", "idle", "running"]);
+const STRANDED_RECOVERY_ACTION_TIMEOUT_MS = 15 * 60 * 1000;
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -397,7 +401,20 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
-export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+type RecoveryRunCancellation = (
+  runId: string,
+  options: {
+    reason: string;
+    suppressImmediateRecovery: boolean;
+    force: boolean;
+    errorCode?: string;
+  },
+) => Promise<unknown>;
+
+export function recoveryService(
+  db: Db,
+  deps: { enqueueWakeup: RecoveryWakeup; cancelRun?: RecoveryRunCancellation },
+) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -1644,6 +1661,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     const now = new Date();
+    const timeoutAt = ownerAgentId
+      ? new Date(now.getTime() + STRANDED_RECOVERY_ACTION_TIMEOUT_MS)
+      : null;
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
       sourceIssueId: input.issue.id,
@@ -1672,17 +1692,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           type: "wake_owner",
           reason: "source_scoped_recovery_action",
           ownerAgentId,
+          maxAttempts: 1,
+          timeoutAt: timeoutAt!.toISOString(),
         }
         : {
           type: "board_escalation",
           reason: "no_invokable_recovery_owner",
-        },
+      },
       monitorPolicy: null,
-      maxAttempts: null,
+      maxAttempts: ownerAgentId ? 1 : null,
+      timeoutAt,
       lastAttemptAt: now,
     });
 
-    return action;
+    // `upsertSourceScoped` preserves typed routine-termination authority if it
+    // won a race with this generic reconciler. Treat that as a skip instead of
+    // emitting generic comments/wakes against the typed action.
+    return action.cause === recoveryCause ? action : null;
   }
 
   async function enqueueSourceScopedStrandedRecoveryWake(input: {
@@ -1701,6 +1727,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issueId: input.issue.id,
         sourceIssueId: input.issue.id,
         recoveryActionId: input.action.id,
+        recoveryAttempt: input.action.attemptCount,
         strandedRunId: input.latestRun?.id ?? null,
         recoveryCause: input.recoveryCause,
       }),
@@ -1713,6 +1740,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         skipIssueComment: true,
         source: "issue_recovery_action",
         recoveryActionId: input.action.id,
+        recoveryAttempt: input.action.attemptCount,
         sourceIssueId: input.issue.id,
         strandedRunId: input.latestRun?.id ?? null,
         recoveryCause: input.recoveryCause,
@@ -2029,6 +2057,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
+    if (!recoveryAction) return null;
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
@@ -2186,6 +2215,42 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ),
       );
 
+    const dependencyBlockedIssueIds = new Set<string>();
+    const candidateIdsByCompany = new Map<string, string[]>();
+    for (const issue of candidates) {
+      const issueIds = candidateIdsByCompany.get(issue.companyId) ?? [];
+      issueIds.push(issue.id);
+      candidateIdsByCompany.set(issue.companyId, issueIds);
+    }
+    for (const [companyId, issueIds] of candidateIdsByCompany) {
+      const readinessByIssueId = await issuesSvc.listDependencyReadiness(companyId, issueIds);
+      for (const [issueId, readiness] of readinessByIssueId) {
+        if (!readiness.isDependencyReady) dependencyBlockedIssueIds.add(issueId);
+      }
+    }
+
+    const typedRoutineRecoveryCandidateIds = candidates
+      .filter((issue) =>
+        issue.originKind === "harness_liveness_escalation" &&
+        issue.originId?.startsWith("agent_termination_routine_handoff:"),
+      )
+      .map((issue) => issue.id);
+    const typedRoutineRecoveryAuthorityIssueIds = new Set(
+      typedRoutineRecoveryCandidateIds.length > 0
+        ? await db
+            .select({ issueId: issueRecoveryActions.sourceIssueId })
+            .from(issueRecoveryActions)
+            .where(
+              and(
+                inArray(issueRecoveryActions.sourceIssueId, typedRoutineRecoveryCandidateIds),
+                eq(issueRecoveryActions.cause, "terminated_routine_owner"),
+                inArray(issueRecoveryActions.status, ["active", "escalated"]),
+              ),
+            )
+            .then((rows) => rows.map((row) => row.issueId))
+        : [],
+    );
+
     const result = {
       assignmentDispatched: 0,
       dispatchRequeued: 0,
@@ -2209,6 +2274,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       const agent = await getAgent(agentId);
       if (!agent || agent.companyId !== issue.companyId || !isAgentInvokable(agent)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // Typed routine handoffs already have a bounded recovery authority and
+      // watchdog. Feeding them through generic assignment recovery would
+      // create an unbounded second lane and could overwrite the typed action's
+      // cause/fingerprint after that retry fails.
+      if (typedRoutineRecoveryAuthorityIssueIds.has(issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // The heartbeat dependency gate already keeps these issues parked and
+      // wakes them when the last blocker resolves. Re-enqueuing from recovery
+      // would only create a skipped wake on every reconciliation sweep.
+      if (dependencyBlockedIssueIds.has(issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // A valid future monitor is an explicit waiting path, not stranded work.
+      // The shared predicate also rejects overdue, exhausted, or unbounded
+      // blocked monitors so genuine recovery is not suppressed indefinitely.
+      if (hasScheduledMonitor(issue, Date.now())) {
         result.skipped += 1;
         continue;
       }
@@ -2575,6 +2665,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               status: issueRecoveryActions.status,
               ownerAgentId: issueRecoveryActions.ownerAgentId,
               ownerUserId: issueRecoveryActions.ownerUserId,
+              timeoutAt: issueRecoveryActions.timeoutAt,
               ownerAgentCompanyId: agents.companyId,
               ownerAgentStatus: agents.status,
             })
@@ -2617,6 +2708,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }];
     });
     const activeRecoveryActionWaitingPaths = recoveryActionRows.flatMap((row) => {
+      if (row.timeoutAt && row.timeoutAt <= now) return [];
       if (row.ownerUserId) {
         return [{ companyId: row.companyId, issueId: row.issueId, status: row.status }];
       }
@@ -3255,12 +3347,1011 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return { kind: "created" as const, escalationIssueId: escalation.id };
   }
 
+  type LegacyRecoveryDeliveryCandidate = {
+    actionId: string;
+    companyId: string;
+    sourceIssueId: string;
+    ownerAgentId: string | null;
+    actionAttemptCount: number;
+    actionUpdatedAt: Date;
+    runIds: string[];
+    wakeupIds: string[];
+  };
+
+  const liveRecoveryRunStatuses = ["queued", "scheduled_retry", "running"] as const;
+  const terminalRecoveryRunStatuses = ["succeeded", "failed", "cancelled", "timed_out"] as const;
+  const durableRecoveryRunStatuses = [
+    ...liveRecoveryRunStatuses,
+    ...terminalRecoveryRunStatuses,
+  ] as const;
+
+  /**
+   * Pre-generation and stale source-scoped deliveries cannot be admitted by
+   * the current claim gate. A terminal malformed delivery is also invisible to
+   * the bounded-action watchdog because it has no exact current generation.
+   * Migrate both live and terminal legacy deliveries before startup resumes
+   * queued work. The transaction follows the global order: owner agent ->
+   * wakeups -> runs -> source issue -> recovery action. Running work is stopped
+   * only after those database locks have been released.
+   */
+  async function reconcileLegacySourceScopedRecoveryDeliveries(now = new Date()) {
+    const legacyRows = await db
+      .select({
+        actionId: issueRecoveryActions.id,
+        companyId: issueRecoveryActions.companyId,
+        sourceIssueId: issueRecoveryActions.sourceIssueId,
+        ownerAgentId: issueRecoveryActions.ownerAgentId,
+        actionAttemptCount: issueRecoveryActions.attemptCount,
+        actionUpdatedAt: issueRecoveryActions.updatedAt,
+        runId: heartbeatRuns.id,
+        runStatus: heartbeatRuns.status,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      })
+      .from(issueRecoveryActions)
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.companyId, issueRecoveryActions.companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId' = ${issueRecoveryActions.id}::text`,
+        ),
+      )
+      .leftJoin(agentWakeupRequests, eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId))
+      .where(
+        and(
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          inArray(heartbeatRuns.status, [...durableRecoveryRunStatuses]),
+          or(
+            sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryAttempt' is null`,
+            sql`${agentWakeupRequests.payload} ->> 'recoveryAttempt' is null`,
+            sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryAttempt' is distinct from ${issueRecoveryActions.attemptCount}::text`,
+            sql`${heartbeatRuns.contextSnapshot} ->> 'source' is distinct from 'issue_recovery_action'`,
+            sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' is distinct from 'source_scoped_recovery_action'`,
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' is distinct from ${issueRecoveryActions.sourceIssueId}::text`,
+            sql`${heartbeatRuns.contextSnapshot} ->> 'taskId' is distinct from ${issueRecoveryActions.sourceIssueId}::text`,
+            sql`${heartbeatRuns.contextSnapshot} ->> 'sourceIssueId' is distinct from ${issueRecoveryActions.sourceIssueId}::text`,
+            sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryCause' is distinct from ${issueRecoveryActions.cause}`,
+            sql`${heartbeatRuns.agentId} is distinct from ${issueRecoveryActions.ownerAgentId}`,
+            sql`${agentWakeupRequests.agentId} is distinct from ${issueRecoveryActions.ownerAgentId}`,
+            sql`${agentWakeupRequests.reason} is distinct from 'source_scoped_recovery_action'`,
+            sql`${agentWakeupRequests.runId} is distinct from ${heartbeatRuns.id}`,
+            sql`${agentWakeupRequests.payload} ->> 'issueId' is distinct from ${issueRecoveryActions.sourceIssueId}::text`,
+            sql`${agentWakeupRequests.payload} ->> 'sourceIssueId' is distinct from ${issueRecoveryActions.sourceIssueId}::text`,
+            sql`${agentWakeupRequests.payload} ->> 'recoveryActionId' is distinct from ${issueRecoveryActions.id}::text`,
+            sql`${agentWakeupRequests.payload} ->> 'recoveryAttempt' is distinct from ${issueRecoveryActions.attemptCount}::text`,
+            sql`${agentWakeupRequests.payload} ->> 'recoveryCause' is distinct from ${issueRecoveryActions.cause}`,
+          )!,
+        ),
+      )
+      .orderBy(asc(issueRecoveryActions.id), asc(heartbeatRuns.id));
+
+    // Do not repeatedly lock a valid historical terminal predecessor merely
+    // because its attempt is older than an exact current delivery. Live
+    // malformed rows for the same action remain candidates and are cleaned up
+    // transactionally below. This is only an advisory pre-filter; the locked
+    // transaction performs the same exact-current check again before writing.
+    const legacyActionIds = [...new Set(legacyRows.map((row) => row.actionId))];
+    const exactCurrentActionIds = new Set(
+      legacyActionIds.length === 0
+        ? []
+        : await db
+            .selectDistinct({ actionId: issueRecoveryActions.id })
+            .from(issueRecoveryActions)
+            .innerJoin(
+              heartbeatRuns,
+              and(
+                eq(heartbeatRuns.companyId, issueRecoveryActions.companyId),
+                sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId' = ${issueRecoveryActions.id}::text`,
+              ),
+            )
+            .innerJoin(agentWakeupRequests, eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId))
+            .where(
+              and(
+                inArray(issueRecoveryActions.id, legacyActionIds),
+                inArray(issueRecoveryActions.status, ["active", "escalated"]),
+                inArray(heartbeatRuns.status, [...durableRecoveryRunStatuses]),
+                sql`${heartbeatRuns.contextSnapshot} ->> 'source' = 'issue_recovery_action'`,
+                sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'source_scoped_recovery_action'`,
+                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueRecoveryActions.sourceIssueId}::text`,
+                sql`${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${issueRecoveryActions.sourceIssueId}::text`,
+                sql`${heartbeatRuns.contextSnapshot} ->> 'sourceIssueId' = ${issueRecoveryActions.sourceIssueId}::text`,
+                sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryAttempt' = ${issueRecoveryActions.attemptCount}::text`,
+                sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryCause' = ${issueRecoveryActions.cause}`,
+                sql`${heartbeatRuns.agentId} = ${issueRecoveryActions.ownerAgentId}`,
+                sql`${agentWakeupRequests.agentId} = ${issueRecoveryActions.ownerAgentId}`,
+                eq(agentWakeupRequests.reason, "source_scoped_recovery_action"),
+                sql`${agentWakeupRequests.runId} = ${heartbeatRuns.id}`,
+                sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueRecoveryActions.sourceIssueId}::text`,
+                sql`${agentWakeupRequests.payload} ->> 'sourceIssueId' = ${issueRecoveryActions.sourceIssueId}::text`,
+                sql`${agentWakeupRequests.payload} ->> 'recoveryActionId' = ${issueRecoveryActions.id}::text`,
+                sql`${agentWakeupRequests.payload} ->> 'recoveryAttempt' = ${issueRecoveryActions.attemptCount}::text`,
+                sql`${agentWakeupRequests.payload} ->> 'recoveryCause' = ${issueRecoveryActions.cause}`,
+              ),
+            )
+            .then((rows) => rows.map((row) => row.actionId)),
+    );
+
+    const candidatesByAction = new Map<string, LegacyRecoveryDeliveryCandidate>();
+    for (const row of legacyRows) {
+      if (
+        terminalRecoveryRunStatuses.includes(
+          row.runStatus as (typeof terminalRecoveryRunStatuses)[number],
+        ) && exactCurrentActionIds.has(row.actionId)
+      ) {
+        continue;
+      }
+      const candidate = candidatesByAction.get(row.actionId) ?? {
+        actionId: row.actionId,
+        companyId: row.companyId,
+        sourceIssueId: row.sourceIssueId,
+        ownerAgentId: row.ownerAgentId,
+        actionAttemptCount: row.actionAttemptCount,
+        actionUpdatedAt: row.actionUpdatedAt,
+        runIds: [],
+        wakeupIds: [],
+      };
+      candidate.runIds.push(row.runId);
+      if (row.wakeupRequestId) candidate.wakeupIds.push(row.wakeupRequestId);
+      candidatesByAction.set(row.actionId, candidate);
+    }
+
+    const migratedActionIds: string[] = [];
+    const replacementRunIds: string[] = [];
+    const cancelledLegacyRunIds: string[] = [];
+    const failedActionIds: string[] = [];
+
+    for (const candidate of candidatesByAction.values()) {
+      let migration: {
+        actionId: string;
+        companyId: string;
+        sourceIssueId: string;
+        recoveryAttempt: number;
+        replacementRunId: string | null;
+        cancelledRunIds: string[];
+        disposition:
+          | "replacement_queued"
+          | "escalated_timeout"
+          | "escalated_owner_unavailable"
+          | "source_resolved"
+          | "source_cancelled"
+          | "current_delivery_preserved"
+          | "already_escalated";
+      } | null = null;
+
+      for (let pass = 0; pass < 3 && !migration; pass += 1) {
+        const result = await db.transaction(async (tx) => {
+          const lockedOwner = candidate.ownerAgentId
+            ? await tx
+                .select({ id: agents.id, status: agents.status })
+                .from(agents)
+                .where(
+                  and(
+                    eq(agents.id, candidate.ownerAgentId),
+                    eq(agents.companyId, candidate.companyId),
+                  ),
+                )
+                .for("update")
+                .then((rows) => rows[0] ?? null)
+            : null;
+
+          const wakeupLockPredicates = [
+            sql`${agentWakeupRequests.payload} ->> 'recoveryActionId' = ${candidate.actionId}`,
+          ];
+          if (candidate.wakeupIds.length > 0) {
+            wakeupLockPredicates.push(inArray(agentWakeupRequests.id, candidate.wakeupIds));
+          }
+          const lockedWakeups = await tx
+            .select({
+              id: agentWakeupRequests.id,
+              agentId: agentWakeupRequests.agentId,
+              status: agentWakeupRequests.status,
+              reason: agentWakeupRequests.reason,
+              payload: agentWakeupRequests.payload,
+              runId: agentWakeupRequests.runId,
+            })
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.companyId, candidate.companyId),
+                or(...wakeupLockPredicates)!,
+              ),
+            )
+            .orderBy(asc(agentWakeupRequests.id))
+            .for("update");
+
+          const lockedRuns = await tx
+            .select({
+              id: heartbeatRuns.id,
+              agentId: heartbeatRuns.agentId,
+              status: heartbeatRuns.status,
+              wakeupRequestId: heartbeatRuns.wakeupRequestId,
+              contextSnapshot: heartbeatRuns.contextSnapshot,
+            })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, candidate.companyId),
+                sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId' = ${candidate.actionId}`,
+              ),
+            )
+            .orderBy(asc(heartbeatRuns.id))
+            .for("update");
+
+          const lockedIssue = await tx
+            .select({ id: issues.id, status: issues.status })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.id, candidate.sourceIssueId),
+                eq(issues.companyId, candidate.companyId),
+              ),
+            )
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+
+          const action = await tx
+            .select()
+            .from(issueRecoveryActions)
+            .where(
+              and(
+                eq(issueRecoveryActions.id, candidate.actionId),
+                eq(issueRecoveryActions.companyId, candidate.companyId),
+              ),
+            )
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+          if (
+            !action ||
+            !["active", "escalated"].includes(action.status) ||
+            action.sourceIssueId !== candidate.sourceIssueId ||
+            action.ownerAgentId !== candidate.ownerAgentId ||
+            action.attemptCount !== candidate.actionAttemptCount ||
+            action.updatedAt.getTime() !== candidate.actionUpdatedAt.getTime()
+          ) {
+            return { kind: "stale" as const };
+          }
+
+          const wakeupsById = new Map(lockedWakeups.map((wakeup) => [wakeup.id, wakeup]));
+          const previousEvidence = parseObject(action.evidence);
+          const previousMigration = parseObject(
+            previousEvidence.legacyRecoveryGenerationMigration,
+          );
+          const previouslyConsumedTerminalRunIds = new Set(
+            previousMigration.recoveryAttempt === action.attemptCount &&
+              Array.isArray(previousMigration.consumedTerminalRunIds)
+              ? previousMigration.consumedTerminalRunIds.filter(
+                  (runId): runId is string => typeof runId === "string",
+                )
+              : [],
+          );
+          const isExactCurrentDelivery = (run: (typeof lockedRuns)[number]) => {
+            const context = parseObject(run.contextSnapshot);
+            if (context.recoveryActionId !== action.id) {
+              return false;
+            }
+            const wakeup = run.wakeupRequestId ? wakeupsById.get(run.wakeupRequestId) ?? null : null;
+            const wakePayload = parseObject(wakeup?.payload);
+            return (
+              context.wakeReason === "source_scoped_recovery_action" &&
+              context.source === "issue_recovery_action" &&
+              context.issueId === action.sourceIssueId &&
+              context.taskId === action.sourceIssueId &&
+              context.sourceIssueId === action.sourceIssueId &&
+              context.recoveryAttempt === action.attemptCount &&
+              context.recoveryCause === action.cause &&
+              run.agentId === action.ownerAgentId &&
+              wakeup?.agentId === action.ownerAgentId &&
+              wakeup.reason === "source_scoped_recovery_action" &&
+              wakeup.runId === run.id &&
+              wakePayload.issueId === action.sourceIssueId &&
+              wakePayload.sourceIssueId === action.sourceIssueId &&
+              wakePayload.recoveryActionId === action.id &&
+              wakePayload.recoveryAttempt === action.attemptCount &&
+              wakePayload.recoveryCause === action.cause
+            );
+          };
+          const exactCurrentRuns = lockedRuns.filter((run) =>
+            durableRecoveryRunStatuses.includes(
+              run.status as (typeof durableRecoveryRunStatuses)[number],
+            ) && isExactCurrentDelivery(run),
+          );
+          const hasExplicitLiveCurrentDelivery = exactCurrentRuns.some((run) =>
+            liveRecoveryRunStatuses.includes(
+              run.status as (typeof liveRecoveryRunStatuses)[number],
+            ),
+          );
+          const hasExplicitTerminalCurrentDelivery = exactCurrentRuns.some((run) =>
+            terminalRecoveryRunStatuses.includes(
+              run.status as (typeof terminalRecoveryRunStatuses)[number],
+            ),
+          );
+          const hasExplicitCurrentDelivery =
+            hasExplicitLiveCurrentDelivery || hasExplicitTerminalCurrentDelivery;
+
+          const candidateRunIds = new Set(candidate.runIds);
+          const legacyRuns = lockedRuns.filter((run) => {
+            if (isExactCurrentDelivery(run)) return false;
+            if (
+              terminalRecoveryRunStatuses.includes(
+                run.status as (typeof terminalRecoveryRunStatuses)[number],
+              ) && previouslyConsumedTerminalRunIds.has(run.id)
+            ) {
+              return false;
+            }
+            const wasSelectedAsCandidate = candidateRunIds.has(run.id);
+            return wasSelectedAsCandidate || liveRecoveryRunStatuses.includes(
+              run.status as (typeof liveRecoveryRunStatuses)[number],
+            );
+          });
+          if (!legacyRuns.some((run) => candidateRunIds.has(run.id))) {
+            return { kind: "stale" as const };
+          }
+
+          const hasLegacyLiveDelivery = legacyRuns.some((run) =>
+            liveRecoveryRunStatuses.includes(
+              run.status as (typeof liveRecoveryRunStatuses)[number],
+            ),
+          );
+          // A terminal predecessor can be stale relative to the action's
+          // current attempt while still being a valid historical delivery. If
+          // an exact live replacement already exists, leave the predecessor
+          // untouched. If an exact current terminal delivery exists, leave it
+          // for the bounded watchdog to escalate instead of manufacturing a
+          // new generation. Live malformed deliveries are still cancelled so
+          // they cannot race the exact current delivery.
+          if (hasExplicitCurrentDelivery && !hasLegacyLiveDelivery) {
+            return { kind: "stale" as const };
+          }
+
+          const runningRunIds = legacyRuns
+            .filter((run) => run.status === "running")
+            .map((run) => run.id);
+          if (runningRunIds.length > 0) {
+            return { kind: "cancel_running" as const, runIds: runningRunIds };
+          }
+
+          const recoveryAttempt = Math.max(1, action.attemptCount);
+
+          const cancellableLegacyRunIds = legacyRuns
+            .filter((run) => ["queued", "scheduled_retry"].includes(run.status))
+            .map((run) => run.id);
+          const cancelledRuns = cancellableLegacyRunIds.length > 0
+            ? await tx
+                .update(heartbeatRuns)
+                .set({
+                  status: "cancelled",
+                  finishedAt: now,
+                  error: "Cancelled because this legacy recovery delivery had no explicit recovery generation",
+                  errorCode: "legacy_recovery_generation_migrated",
+                  updatedAt: now,
+                })
+                .where(
+                  and(
+                    eq(heartbeatRuns.companyId, action.companyId),
+                    inArray(heartbeatRuns.id, cancellableLegacyRunIds),
+                    inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+                  ),
+                )
+                .returning({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId })
+            : [];
+          const cancellableWakeupIds = [
+            ...new Set(
+              cancelledRuns
+                .map((run) => run.wakeupRequestId)
+                .filter((id): id is string => Boolean(id)),
+            ),
+          ];
+          if (cancellableWakeupIds.length > 0) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "cancelled",
+                finishedAt: now,
+                error: "Cancelled because this legacy recovery delivery had no explicit recovery generation",
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  inArray(agentWakeupRequests.id, cancellableWakeupIds),
+                  inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
+                ),
+              );
+          }
+
+          const templateRun = legacyRuns.find((run) => candidateRunIds.has(run.id)) ?? legacyRuns[0]!;
+          const templateWakeup = templateRun.wakeupRequestId
+            ? wakeupsById.get(templateRun.wakeupRequestId) ?? null
+            : null;
+          const ownerInvokable = Boolean(
+            lockedOwner && !["paused", "terminated", "pending_approval"].includes(lockedOwner.status),
+          );
+          const actionExpired = Boolean(action.timeoutAt && action.timeoutAt <= now);
+          const sourceOpen = Boolean(lockedIssue && !["done", "cancelled"].includes(lockedIssue.status));
+          const shouldCreateReplacement =
+            !hasExplicitCurrentDelivery &&
+            action.status === "active" &&
+            action.ownerType === "agent" &&
+            Boolean(action.ownerAgentId) &&
+            ownerInvokable &&
+            !actionExpired &&
+            sourceOpen;
+
+          let replacementRunId: string | null = null;
+          let replacementWakeupId: string | null = null;
+          if (shouldCreateReplacement && action.ownerAgentId) {
+            const contextSnapshot = {
+              ...parseObject(templateRun.contextSnapshot),
+              issueId: action.sourceIssueId,
+              taskId: action.sourceIssueId,
+              sourceIssueId: action.sourceIssueId,
+              recoveryActionId: action.id,
+              recoveryAttempt,
+              wakeReason: "source_scoped_recovery_action",
+              source: "issue_recovery_action",
+              recoveryCause: action.cause,
+              skipIssueComment: true,
+            };
+            const payload = {
+              ...parseObject(templateWakeup?.payload),
+              issueId: action.sourceIssueId,
+              sourceIssueId: action.sourceIssueId,
+              recoveryActionId: action.id,
+              recoveryAttempt,
+              recoveryCause: action.cause,
+            };
+            const replacementWakeup = await tx
+              .insert(agentWakeupRequests)
+              .values({
+                companyId: action.companyId,
+                agentId: action.ownerAgentId,
+                source: "automation",
+                triggerDetail: "system",
+                reason: "source_scoped_recovery_action",
+                payload,
+                status: "queued",
+                requestedByActorType: "system",
+                requestedByActorId: null,
+                idempotencyKey: `legacy_recovery_generation:${action.id}:${recoveryAttempt}`,
+                updatedAt: now,
+              })
+              .returning()
+              .then((rows) => rows[0]);
+            const replacementRun = await tx
+              .insert(heartbeatRuns)
+              .values({
+                companyId: action.companyId,
+                agentId: action.ownerAgentId,
+                invocationSource: "automation",
+                triggerDetail: "system",
+                status: "queued",
+                wakeupRequestId: replacementWakeup.id,
+                contextSnapshot,
+                updatedAt: now,
+              })
+              .returning()
+              .then((rows) => rows[0]);
+            await tx
+              .update(agentWakeupRequests)
+              .set({ runId: replacementRun.id, updatedAt: now })
+              .where(eq(agentWakeupRequests.id, replacementWakeup.id));
+            replacementRunId = replacementRun.id;
+            replacementWakeupId = replacementWakeup.id;
+          }
+
+          const shouldResolveForCompletedSource =
+            action.status === "active" &&
+            !hasExplicitLiveCurrentDelivery &&
+            lockedIssue?.status === "done";
+          const shouldCancelForMissingOrCancelledSource =
+            action.status === "active" &&
+            !hasExplicitLiveCurrentDelivery &&
+            (!lockedIssue || lockedIssue.status === "cancelled");
+          const shouldEscalateWithoutReplacement =
+            action.status === "active" &&
+            !hasExplicitLiveCurrentDelivery &&
+            sourceOpen &&
+            !replacementRunId &&
+            (actionExpired ||
+              action.ownerType !== "agent" ||
+              !action.ownerAgentId ||
+              !ownerInvokable);
+          const disposition = replacementRunId
+            ? "replacement_queued" as const
+            : shouldResolveForCompletedSource
+              ? "source_resolved" as const
+              : shouldCancelForMissingOrCancelledSource
+                ? "source_cancelled" as const
+                : shouldEscalateWithoutReplacement
+                  ? actionExpired
+                    ? "escalated_timeout" as const
+                    : "escalated_owner_unavailable" as const
+                  : hasExplicitLiveCurrentDelivery
+                    ? "current_delivery_preserved" as const
+                  : "already_escalated" as const;
+
+          const consumedTerminalRunIds = [
+            ...new Set([
+              ...previouslyConsumedTerminalRunIds,
+              ...legacyRuns
+                .filter((run) => terminalRecoveryRunStatuses.includes(
+                  run.status as (typeof terminalRecoveryRunStatuses)[number],
+                ))
+                .map((run) => run.id),
+            ]),
+          ];
+          const terminalTemplateRun = legacyRuns.find((run) =>
+            terminalRecoveryRunStatuses.includes(
+              run.status as (typeof terminalRecoveryRunStatuses)[number],
+            ),
+          ) ?? null;
+          const escalationReason = disposition === "escalated_timeout"
+            ? "timeout"
+            : disposition === "escalated_owner_unavailable"
+              ? "recovery_owner_not_invokable"
+              : null;
+          const migrationEvidence = {
+            migratedAt: now.toISOString(),
+            recoveryAttempt,
+            legacyRunIds: legacyRuns.map((run) => run.id),
+            legacyWakeupIds: legacyRuns
+              .map((run) => run.wakeupRequestId)
+              .filter((id): id is string => Boolean(id)),
+            cancelledQueuedRunIds: cancelledRuns.map((run) => run.id),
+            consumedTerminalRunIds,
+            replacementRunId,
+            replacementWakeupId,
+            disposition,
+          };
+          await tx
+            .update(issueRecoveryActions)
+            .set({
+              attemptCount: recoveryAttempt,
+              evidence: {
+                ...previousEvidence,
+                legacyRecoveryGenerationMigration: migrationEvidence,
+                ...(escalationReason
+                  ? {
+                      boundedRecoveryEscalation: {
+                        reason: escalationReason,
+                        previousOwnerAgentId: action.ownerAgentId,
+                        terminalRunId: terminalTemplateRun?.id ?? null,
+                        terminalRunStatus: terminalTemplateRun?.status ?? null,
+                        escalatedAt: now.toISOString(),
+                        source: "legacy_recovery_generation_migration",
+                      },
+                    }
+                  : {}),
+              },
+              ...(replacementRunId ? { lastAttemptAt: now } : {}),
+              ...(shouldResolveForCompletedSource
+                ? {
+                    status: "resolved",
+                    outcome: "restored",
+                    resolutionNote:
+                      "Recovery action resolved because the source issue was already completed during legacy-delivery migration.",
+                    resolvedAt: now,
+                  }
+                : {}),
+              ...(shouldCancelForMissingOrCancelledSource
+                ? {
+                    status: "cancelled",
+                    outcome: "cancelled",
+                    resolutionNote:
+                      "Recovery action cancelled because the source issue was missing or cancelled during legacy-delivery migration.",
+                    resolvedAt: now,
+                  }
+                : {}),
+              ...(shouldEscalateWithoutReplacement
+                ? {
+                    status: "escalated",
+                    ownerType: "board",
+                    ownerAgentId: null,
+                    ownerUserId: null,
+                    nextAction:
+                      "Board action required: assign a capable recovery owner or record an intentional source-issue disposition.",
+                    wakePolicy: {
+                      type: "board_escalation",
+                      reason: actionExpired
+                        ? "recovery_action_timeout"
+                        : "recovery_owner_not_invokable",
+                    },
+                  }
+                : {}),
+              updatedAt: now,
+            })
+            .where(eq(issueRecoveryActions.id, action.id));
+
+          return {
+            kind: "migrated" as const,
+            actionId: action.id,
+            companyId: action.companyId,
+            sourceIssueId: action.sourceIssueId,
+            recoveryAttempt,
+            replacementRunId,
+            cancelledRunIds: cancelledRuns.map((run) => run.id),
+            disposition,
+          };
+        });
+
+        if (result.kind === "stale") break;
+        if (result.kind === "migrated") {
+          migration = result;
+          break;
+        }
+        if (!deps.cancelRun) {
+          logger.error(
+            { recoveryActionId: candidate.actionId, runIds: result.runIds },
+            "cannot migrate running legacy recovery delivery without heartbeat cancellation",
+          );
+          failedActionIds.push(candidate.actionId);
+          break;
+        }
+        let cancellationFailed = false;
+        for (const runId of result.runIds) {
+          try {
+            await deps.cancelRun(runId, {
+              reason: "Cancelled because this legacy recovery delivery had no explicit recovery generation",
+              suppressImmediateRecovery: true,
+              force: true,
+              errorCode: "legacy_recovery_generation_migrated",
+            });
+            cancelledLegacyRunIds.push(runId);
+          } catch (error) {
+            cancellationFailed = true;
+            logger.error(
+              { err: error, recoveryActionId: candidate.actionId, runId },
+              "failed to stop running legacy recovery delivery",
+            );
+          }
+        }
+        if (cancellationFailed) {
+          failedActionIds.push(candidate.actionId);
+          break;
+        }
+      }
+
+      if (!migration) continue;
+      migratedActionIds.push(migration.actionId);
+      cancelledLegacyRunIds.push(...migration.cancelledRunIds);
+      if (migration.replacementRunId) replacementRunIds.push(migration.replacementRunId);
+      await logActivity(db, {
+        companyId: migration.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: migration.replacementRunId,
+        action: "issue.recovery_action_generation_migrated",
+        entityType: "issue",
+        entityId: migration.sourceIssueId,
+        details: {
+          source: "recovery_legacy_generation_migration",
+          recoveryActionId: migration.actionId,
+          recoveryAttempt: migration.recoveryAttempt,
+          replacementRunId: migration.replacementRunId,
+          cancelledLegacyRunIds: migration.cancelledRunIds,
+          disposition: migration.disposition,
+        },
+      });
+    }
+
+    const result = {
+      migrated: migratedActionIds.length,
+      actionIds: migratedActionIds,
+      replacementRunIds,
+      cancelledLegacyRunIds: [...new Set(cancelledLegacyRunIds)],
+      failed: [...new Set(failedActionIds)].length,
+      failedActionIds: [...new Set(failedActionIds)],
+    };
+    if (result.migrated > 0 || result.failed > 0) {
+      logger.warn(result, "reconciled legacy source-scoped recovery deliveries");
+    }
+    return result;
+  }
+
+  async function escalateExhaustedRecoveryActions(now: Date) {
+    const candidates = await db
+      .select({
+        id: issueRecoveryActions.id,
+        companyId: issueRecoveryActions.companyId,
+        sourceIssueId: issueRecoveryActions.sourceIssueId,
+        attemptCount: issueRecoveryActions.attemptCount,
+      })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.status, "active"),
+          or(
+            lte(issueRecoveryActions.timeoutAt, now),
+            and(
+              sql`exists (
+                select 1
+                from ${heartbeatRuns}
+                where ${heartbeatRuns.companyId} = ${issueRecoveryActions.companyId}
+                  and ${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId' = ${issueRecoveryActions.id}::text
+                  and ${heartbeatRuns.contextSnapshot} ->> 'recoveryAttempt' = ${issueRecoveryActions.attemptCount}::text
+                  and ${heartbeatRuns.status} in ('succeeded', 'failed', 'cancelled', 'timed_out')
+              )`,
+              sql`not exists (
+                select 1
+                from ${heartbeatRuns}
+                where ${heartbeatRuns.companyId} = ${issueRecoveryActions.companyId}
+                  and ${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId' = ${issueRecoveryActions.id}::text
+                  and ${heartbeatRuns.contextSnapshot} ->> 'recoveryAttempt' = ${issueRecoveryActions.attemptCount}::text
+                  and ${heartbeatRuns.status} in ('queued', 'scheduled_retry', 'running')
+              )`,
+            )!,
+          )!,
+        ),
+      )
+      .orderBy(asc(issueRecoveryActions.updatedAt));
+
+    const escalatedActionIds: string[] = [];
+    for (const candidate of candidates) {
+      let escalated: {
+        id: string;
+        companyId: string;
+        sourceIssueId: string;
+        runId: string | null;
+        details: Record<string, unknown>;
+      } | null = null;
+
+      // A run can be promoted from queued to running between candidate
+      // discovery and row locking. If that happens, release all database
+      // locks, stop it through the heartbeat control plane, then retry the
+      // same generation. Never move authorization to the board while external
+      // work from the expired generation is still executing.
+      for (let pass = 0; pass < 3 && !escalated; pass += 1) {
+        const result = await db.transaction(async (tx) => {
+          // Match termination's global order: wakeups -> runs -> source issue
+          // -> recovery action. Candidate generation is a stale-safe pre-read;
+          // the action is revalidated after every prerequisite row is locked.
+          const lockedWakeups = await tx
+            .select({ id: agentWakeupRequests.id })
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.companyId, candidate.companyId),
+                sql`${agentWakeupRequests.payload} ->> 'recoveryActionId' = ${candidate.id}`,
+                sql`${agentWakeupRequests.payload} ->> 'recoveryAttempt' = ${candidate.attemptCount}::text`,
+              ),
+            )
+            .orderBy(asc(agentWakeupRequests.id))
+            .for("update");
+
+          const lockedRuns = await tx
+            .select({
+              id: heartbeatRuns.id,
+              status: heartbeatRuns.status,
+              wakeupRequestId: heartbeatRuns.wakeupRequestId,
+              finishedAt: heartbeatRuns.finishedAt,
+              updatedAt: heartbeatRuns.updatedAt,
+            })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, candidate.companyId),
+                sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId' = ${candidate.id}`,
+                sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryAttempt' = ${candidate.attemptCount}::text`,
+              ),
+            )
+            .orderBy(asc(heartbeatRuns.id))
+            .for("update");
+
+          await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.id, candidate.sourceIssueId),
+                eq(issues.companyId, candidate.companyId),
+              ),
+            )
+            .for("update");
+
+          const action = await tx
+            .select()
+            .from(issueRecoveryActions)
+            .where(eq(issueRecoveryActions.id, candidate.id))
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+          if (
+            !action ||
+            action.status !== "active" ||
+            action.attemptCount !== candidate.attemptCount
+          ) {
+            return { kind: "stale" as const };
+          }
+
+          const timedOut = Boolean(action.timeoutAt && action.timeoutAt <= now);
+          const runningRunIds = lockedRuns
+            .filter((run) => run.status === "running")
+            .map((run) => run.id);
+          if (timedOut && runningRunIds.length > 0) {
+            return { kind: "cancel_running" as const, runIds: runningRunIds };
+          }
+
+          const liveRun = lockedRuns.find((run) =>
+            ["queued", "scheduled_retry", "running"].includes(run.status),
+          );
+          const terminalRun = [...lockedRuns]
+            .filter((run) => ["succeeded", "failed", "cancelled", "timed_out"].includes(run.status))
+            .sort((left, right) =>
+              (right.finishedAt?.getTime() ?? right.updatedAt.getTime()) -
+              (left.finishedAt?.getTime() ?? left.updatedAt.getTime()),
+            )[0] ?? null;
+          if (!timedOut && (liveRun || !terminalRun)) return { kind: "stale" as const };
+
+          const queuedRunIds = lockedRuns
+            .filter((run) => ["queued", "scheduled_retry"].includes(run.status))
+            .map((run) => run.id);
+          const queuedRuns = queuedRunIds.length > 0
+            ? await tx
+                .update(heartbeatRuns)
+                .set({
+                  status: "cancelled",
+                  finishedAt: now,
+                  error: "Cancelled because the bounded recovery action escalated to the board",
+                  errorCode: "recovery_action_escalated",
+                  updatedAt: now,
+                })
+                .where(
+                  and(
+                    eq(heartbeatRuns.companyId, action.companyId),
+                    inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+                    inArray(
+                      heartbeatRuns.id,
+                      queuedRunIds,
+                    ),
+                  ),
+                )
+                .returning({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId })
+            : [];
+          const wakeupIds = queuedRuns
+            .map((run) => run.wakeupRequestId)
+            .filter((id): id is string => Boolean(id));
+          const lockedWakeupIds = new Set(lockedWakeups.map((wakeup) => wakeup.id));
+          const cancellableWakeupIds = wakeupIds.filter((id) => lockedWakeupIds.has(id));
+          if (cancellableWakeupIds.length > 0) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "cancelled",
+                finishedAt: now,
+                error: "Cancelled because the bounded recovery action escalated to the board",
+                updatedAt: now,
+              })
+              .where(inArray(agentWakeupRequests.id, cancellableWakeupIds));
+          }
+
+          const previousEvidence = parseObject(action.evidence);
+          const updated = await tx
+            .update(issueRecoveryActions)
+            .set({
+              status: "escalated",
+              ownerType: "board",
+              ownerAgentId: null,
+              ownerUserId: null,
+              evidence: {
+                ...previousEvidence,
+                boundedRecoveryEscalation: {
+                  reason: timedOut ? "timeout" : "terminal_run_without_disposition",
+                  previousOwnerAgentId: action.ownerAgentId,
+                  terminalRunId: terminalRun?.id ?? null,
+                  terminalRunStatus: terminalRun?.status ?? null,
+                  escalatedAt: now.toISOString(),
+                },
+              },
+              nextAction: "Board action required: assign a capable recovery owner or record an intentional source-issue disposition.",
+              wakePolicy: {
+                type: "board_escalation",
+                reason: timedOut ? "recovery_action_timeout" : "recovery_run_finished_without_disposition",
+              },
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(issueRecoveryActions.id, action.id),
+                eq(issueRecoveryActions.status, "active"),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (!updated) return { kind: "stale" as const };
+
+          const activityDetails = {
+            recoveryActionId: action.id,
+            source: "recovery_action_watchdog",
+            reason: timedOut ? "timeout" : "terminal_run_without_disposition",
+            previousOwnerAgentId: action.ownerAgentId,
+            terminalRunId: terminalRun?.id ?? null,
+            terminalRunStatus: terminalRun?.status ?? null,
+            cancelledQueuedRunIds: queuedRuns.map((run) => run.id),
+            recoveryAttempt: action.attemptCount,
+          };
+          await tx.insert(activityLog).values({
+            companyId: action.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: null,
+            runId: terminalRun?.id ?? null,
+            action: "issue.recovery_action_escalated",
+            entityType: "issue",
+            entityId: action.sourceIssueId,
+            details: activityDetails,
+          });
+          return {
+            kind: "escalated" as const,
+            id: updated.id,
+            companyId: action.companyId,
+            sourceIssueId: action.sourceIssueId,
+            runId: terminalRun?.id ?? null,
+            details: activityDetails,
+          };
+        });
+
+        if (result.kind === "escalated") {
+          escalated = result;
+          break;
+        }
+        if (result.kind !== "cancel_running") break;
+        if (!deps.cancelRun) {
+          logger.error(
+            { recoveryActionId: candidate.id, runIds: result.runIds },
+            "cannot escalate expired recovery action without heartbeat cancellation",
+          );
+          break;
+        }
+        let cancellationFailed = false;
+        for (const runId of result.runIds) {
+          try {
+            await deps.cancelRun(runId, {
+              reason: "Cancelled because the bounded recovery action timed out",
+              suppressImmediateRecovery: true,
+              force: true,
+            });
+          } catch (error) {
+            cancellationFailed = true;
+            logger.error(
+              { err: error, recoveryActionId: candidate.id, runId },
+              "failed to stop timed-out recovery run",
+            );
+          }
+        }
+        if (cancellationFailed) break;
+      }
+
+      if (escalated) {
+        escalatedActionIds.push(escalated.id);
+        publishLiveEvent({
+          companyId: escalated.companyId,
+          type: "activity.logged",
+          payload: {
+            actorType: "system",
+            actorId: "system",
+            action: "issue.recovery_action_escalated",
+            entityType: "issue",
+            entityId: escalated.sourceIssueId,
+            agentId: null,
+            runId: escalated.runId,
+            details: escalated.details,
+          },
+        });
+      }
+    }
+
+    return {
+      escalated: escalatedActionIds.length,
+      actionIds: escalatedActionIds,
+    };
+  }
+
   async function reconcileIssueGraphLiveness(opts?: {
     runId?: string | null;
     force?: boolean;
     lookbackHours?: number;
   }) {
     const now = new Date();
+    const legacyRecoveryDeliveries = await reconcileLegacySourceScopedRecoveryDeliveries(now);
+    const exhaustedRecoveryActions = await escalateExhaustedRecoveryActions(now);
     const findings = await collectIssueGraphLivenessFindings(now);
     const experimentalSettings = await instanceSettings.getExperimental();
     const autoRecoveryEnabled = asBoolean(
@@ -3291,6 +4382,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       failed: 0,
       failedIssueIds: [] as string[],
       retiredRecoveryIssueIds: obsoleteRecoveryCleanup.retiredIssueIds,
+      exhaustedRecoveryActionsEscalated: exhaustedRecoveryActions.escalated,
+      exhaustedRecoveryActionIds: exhaustedRecoveryActions.actionIds,
+      legacyRecoveryDeliveriesMigrated: legacyRecoveryDeliveries.migrated,
+      legacyRecoveryActionIds: legacyRecoveryDeliveries.actionIds,
+      legacyRecoveryReplacementRunIds: legacyRecoveryDeliveries.replacementRunIds,
+      legacyRecoveryDeliveryMigrationFailed: legacyRecoveryDeliveries.failed,
+      legacyRecoveryDeliveryMigrationFailedActionIds: legacyRecoveryDeliveries.failedActionIds,
     };
 
     if (!autoRecoveryEnabled) {
@@ -3351,6 +4449,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
     buildIssueGraphLivenessAutoRecoveryPreview,
+    reconcileLegacySourceScopedRecoveryDeliveries,
     reconcileIssueGraphLiveness,
     readRecoveryTimerIntervalMs,
   };

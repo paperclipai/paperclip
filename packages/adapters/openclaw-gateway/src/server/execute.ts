@@ -1049,6 +1049,18 @@ function extractResultText(value: unknown): string | null {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const submitWithLaunchPermit = async <T>(submit: () => T | Promise<T>): Promise<T> => {
+    const releaseLaunchPermit = await ctx.acquireLaunchPermit?.();
+    try {
+      const submitted = submit();
+      const result = await submitted;
+      releaseLaunchPermit?.();
+      return result;
+    } catch (error) {
+      releaseLaunchPermit?.();
+      throw error;
+    }
+  };
   const urlValue = asString(ctx.config.url, "").trim();
   if (!urlValue) {
     return {
@@ -1246,8 +1258,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onEvent,
       onLog: ctx.onLog,
     });
+    const closeGatewayOnAbort = () => client.close();
+    ctx.signal?.addEventListener("abort", closeGatewayOnAbort, { once: true });
 
     try {
+      if (ctx.signal?.aborted) {
+        throw new Error("OpenClaw gateway run cancelled by the control plane");
+      }
       deviceIdentity = disableDeviceAuth ? null : resolveDeviceIdentity(parseObject(ctx.config));
       if (deviceIdentity) {
         await ctx.onLog(
@@ -1260,7 +1277,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       await ctx.onLog("stdout", `[openclaw-gateway] connecting to ${parsedUrl.toString()}\n`);
 
-      const hello = await client.connect((nonce) => {
+      const hello = await submitWithLaunchPermit(() => client.connect((nonce) => {
         const signedAtMs = Date.now();
         const connectParams: Record<string, unknown> = {
           minProtocol: PROTOCOL_VERSION,
@@ -1306,16 +1323,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           };
         }
         return connectParams;
-      }, connectTimeoutMs);
+      }, connectTimeoutMs));
 
       await ctx.onLog(
         "stdout",
         `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
       );
 
-      const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {
-        timeoutMs: connectTimeoutMs,
-      });
+      const acceptedPayload = await submitWithLaunchPermit(() =>
+        client.request<Record<string, unknown>>("agent", agentParams, {
+          timeoutMs: connectTimeoutMs,
+        }),
+      );
+      if (ctx.signal?.aborted) {
+        throw new Error("OpenClaw gateway run cancelled by the control plane");
+      }
 
       latestResultPayload = acceptedPayload;
 
@@ -1493,6 +1515,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: asRecord(latestResultPayload),
       };
     } finally {
+      ctx.signal?.removeEventListener("abort", closeGatewayOnAbort);
       client.close();
     }
   }

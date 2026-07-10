@@ -195,7 +195,15 @@ describe("buildAgentUpdatePatch", () => {
 
   it("preserves adapter-agnostic keys when changing adapter types", () => {
     const patch = buildAgentUpdatePatch(
-      makeAgent(),
+      {
+        ...makeAgent(),
+        adapterConfig: {
+          ...makeAgent().adapterConfig,
+          paperclipSkillSync: {
+            desiredSkills: ["company/acme/deployment", "company/acme/qa"],
+          },
+        },
+      },
       makeOverlay({
         adapterType: "codex_local",
         adapterConfig: {
@@ -215,6 +223,9 @@ describe("buildAgentUpdatePatch", () => {
           },
         },
         promptTemplate: "Work the issue.",
+        paperclipSkillSync: {
+          desiredSkills: ["company/acme/deployment", "company/acme/qa"],
+        },
         model: "gpt-5.4",
         dangerouslyBypassApprovalsAndSandbox: true,
       },

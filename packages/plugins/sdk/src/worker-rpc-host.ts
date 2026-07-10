@@ -79,6 +79,7 @@ import type {
   ExecuteToolParams,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentCancelExecutionParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentReleaseLeaseParams,
@@ -1251,6 +1252,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "environmentExecute":
         return handleEnvironmentExecute(params as PluginEnvironmentExecuteParams);
 
+      case "environmentCancelExecution":
+        return handleEnvironmentCancelExecution(params as PluginEnvironmentCancelExecutionParams);
+
       default:
         throw Object.assign(
           new Error(`Unknown method: ${method}`),
@@ -1292,6 +1296,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentDestroyLease) supportedMethods.push("environmentDestroyLease");
     if (plugin.definition.onEnvironmentRealizeWorkspace) supportedMethods.push("environmentRealizeWorkspace");
     if (plugin.definition.onEnvironmentExecute) supportedMethods.push("environmentExecute");
+    if (plugin.definition.onEnvironmentCancelExecution) supportedMethods.push("environmentCancelExecution");
 
     return { ok: true, supportedMethods };
   }
@@ -1498,6 +1503,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw methodNotImplemented("environmentExecute");
     }
     return plugin.definition.onEnvironmentExecute(params);
+  }
+
+  async function handleEnvironmentCancelExecution(params: PluginEnvironmentCancelExecutionParams) {
+    if (!plugin.definition.onEnvironmentCancelExecution) {
+      throw methodNotImplemented("environmentCancelExecution");
+    }
+    return plugin.definition.onEnvironmentCancelExecution(params);
   }
 
   // -----------------------------------------------------------------------

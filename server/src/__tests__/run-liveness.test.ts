@@ -58,6 +58,23 @@ describe("run liveness classifier", () => {
     expect(classification.lastUsefulActionAt).toBe(latestEvidenceAt);
   });
 
+  it("does not treat a progress comment alone as concrete execution", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "I will inspect the implementation next and then run the tests.",
+      },
+      issueCommentBodies: ["Status: starting investigation. Next action: inspect the implementation."],
+      evidence: {
+        issueCommentsCreated: 1,
+        latestEvidenceAt: new Date("2026-04-18T12:00:00Z"),
+      },
+    });
+
+    expect(classification.livenessState).toBe("plan_only");
+    expect(classification.lastUsefulActionAt).toBeNull();
+  });
+
   it("does not treat workspace operations alone as concrete progress", () => {
     const classification = classifyRunLiveness({
       ...baseInput,

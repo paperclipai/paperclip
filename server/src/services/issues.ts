@@ -229,6 +229,7 @@ export function deriveIssueCommentRunLogAttribution(
 export interface IssueFilters {
   status?: string | readonly string[];
   assigneeAgentId?: string;
+  recoveryOwnerAgentId?: string;
   participantAgentId?: string;
   assigneeUserId?: string;
   touchedByUserId?: string;
@@ -3287,6 +3288,16 @@ export function issueService(db: Db) {
       if (filters?.assigneeAgentId) {
         conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
       }
+      if (filters?.recoveryOwnerAgentId) {
+        conditions.push(sql<boolean>`exists (
+          select 1
+          from ${issueRecoveryActions}
+          where ${issueRecoveryActions.companyId} = ${companyId}
+            and ${issueRecoveryActions.sourceIssueId} = ${issues.id}
+            and ${issueRecoveryActions.ownerAgentId} = ${filters.recoveryOwnerAgentId}
+            and ${issueRecoveryActions.status} in ('active', 'escalated')
+        )`);
+      }
       if (filters?.participantAgentId) {
         conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
       }
@@ -3304,12 +3315,26 @@ export function issueService(db: Db) {
       }
       if (awaitingDecisionForUserId) {
         conditions.push(
-          and(
-            eq(issues.status, "blocked"),
-            or(
-              eq(issues.assigneeUserId, awaitingDecisionForUserId),
-              eq(issues.createdByUserId, awaitingDecisionForUserId),
-            )!,
+          or(
+            and(
+              eq(issues.status, "blocked"),
+              or(
+                eq(issues.assigneeUserId, awaitingDecisionForUserId),
+                eq(issues.createdByUserId, awaitingDecisionForUserId),
+              )!,
+            ),
+            // A board-owned recovery action is first-class board work even
+            // when source ownership/status is intentionally preserved. Put it
+            // in the same "Needs you" queue so watchdog escalations cannot be
+            // hidden in an otherwise ordinary todo/in-review issue.
+            sql`exists (
+              select 1
+              from ${issueRecoveryActions}
+              where ${issueRecoveryActions.companyId} = ${companyId}
+                and ${issueRecoveryActions.sourceIssueId} = ${issues.id}
+                and ${issueRecoveryActions.ownerType} = 'board'
+                and ${issueRecoveryActions.status} in ('active', 'escalated')
+            )`,
           )!,
         );
       }

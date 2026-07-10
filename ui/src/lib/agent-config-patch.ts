@@ -41,6 +41,9 @@ const ADAPTER_AGNOSTIC_KEYS = [
   "timeoutSec",
   "graceSec",
   "bootstrapPromptTemplate",
+  // Skill selections belong to the Paperclip agent identity, not to one
+  // adapter implementation. Keep them when operators switch runtimes.
+  "paperclipSkillSync",
 ] as const;
 
 function omitUndefinedEntries(value: Record<string, unknown>) {

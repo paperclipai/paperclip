@@ -205,6 +205,31 @@ describe("materializePaperclipSkillCopy", () => {
 });
 
 describe("runChildProcess", () => {
+  it("does not spawn when the launch permit rejects", async () => {
+    let spawnObserved = false;
+    await expect(
+      runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", "process.stdout.write('should not start')"],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+          acquireLaunchPermit: async () => {
+            throw new Error("run cancelled before spawn");
+          },
+          onSpawn: async () => {
+            spawnObserved = true;
+          },
+        },
+      ),
+    ).rejects.toThrow("run cancelled before spawn");
+    expect(spawnObserved).toBe(false);
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),
@@ -475,6 +500,34 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Use direct child issues only for bounded parent-level parallelism");
     expect(prompt).toContain("never create grandchildren");
     expect(prompt).toContain("named unblock owner/action");
+  });
+
+  it("renders an explicit coordination contract for source-scoped recovery wakes", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "source_scoped_recovery_action",
+      recoveryActionId: "11111111-1111-4111-8111-111111111111",
+      recoveryCause: "terminated_routine_owner",
+      sourceIssueId: "22222222-2222-4222-8222-222222222222",
+      terminatedAgentId: "33333333-3333-4333-8333-333333333333",
+      routineRecoveryIssueId: "22222222-2222-4222-8222-222222222222",
+      routineIds: ["44444444-4444-4444-8444-444444444444"],
+      issue: {
+        id: "22222222-2222-4222-8222-222222222222",
+        identifier: "PAP-4000",
+        title: "Recover terminated automations",
+        status: "todo",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("RECOVERY ACTION CONTRACT");
+    expect(prompt).toContain("coordination wake, not implicit ownership");
+    expect(prompt).toContain("/recovery-actions/accept");
+    expect(prompt).toContain("Never claim success while the recovery action remains active");
+    expect(prompt).toContain("executionContract.routineRecovery");
+    expect(prompt).toContain("44444444-4444-4444-8444-444444444444");
   });
 
   it("renders planning-mode directives for assignment and comment wakes", () => {

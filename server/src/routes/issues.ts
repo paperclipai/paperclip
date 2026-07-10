@@ -2,16 +2,22 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agents as agentRows,
   assets as assetRows,
   executionWorkspaces,
+  heartbeatRuns as heartbeatRunRows,
   issueExecutionDecisions,
+  issueRecoveryActions as issueRecoveryActionRows,
   issueRelations,
   issues as issueRows,
   projectWorkspaces,
+  routines as routineRows,
+  routineRevisions as routineRevisionRows,
+  routineTriggers as routineTriggerRows,
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
@@ -135,11 +141,33 @@ import {
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { routineRecoveryTriggerDispositionMarker } from "../services/routines.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+const acceptIssueRecoveryActionSchema = z.object({
+  actionId: z.string().uuid(),
+}).strict();
+
+function recoveryRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function normalizedRecoveryCapability(value: unknown) {
+  return typeof value === "string"
+    ? value.trim().toLocaleLowerCase().replace(/\s+/g, " ")
+    : "";
+}
+
+function sameRecoveryInventory(left: string[], right: string[]) {
+  if (left.length !== right.length) return false;
+  const expected = new Set(left);
+  return right.every((value) => expected.has(value));
+}
 const generateIssueImageSchema = z.object({
   prompt: z.string().trim().min(1).max(12000),
   referenceImageAttachmentIds: z.array(z.string().uuid()).max(PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS).optional().default([]),
@@ -1497,6 +1525,16 @@ export function issueRoutes(
     searchService?: CompanySearchService;
     searchRateLimiter?: CompanySearchRateLimiter;
     pluginWorkerManager?: PluginWorkerManager;
+    afterRecoveryResolveLocksBeforeMutation?: (input: {
+      issueId: string;
+      recoveryActionId: string;
+    }) => Promise<void> | void;
+    afterRecoveryAuthorizationBeforeMutation?: (input: {
+      issueId: string;
+      recoveryActionId: string;
+      attemptCount: number;
+      mutation: "accept" | "resolve";
+    }) => Promise<void> | void;
   } = {},
 ) {
   const router = Router();
@@ -2286,7 +2324,7 @@ export function issueRoutes(
     );
     if (allowedByGrant) return true;
 
-    const companyAgents = await agentsSvc.list(companyId);
+    const companyAgents = await agentsSvc.list(companyId, { includeTerminated: true });
     const agentsById = new Map(companyAgents.map((agent) => [agent.id, agent]));
     const actorAgent = agentsById.get(actorAgentId);
     if (!actorAgent) return false;
@@ -2397,6 +2435,54 @@ export function issueRoutes(
       });
     }
     return true;
+  }
+
+  async function activeRecoveryActionAuthorization(
+    req: Request,
+    issue: { id: string; companyId: string },
+    requestedActionId?: string | null,
+  ) {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId) return null;
+    const action = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+    if (
+      !action ||
+      (requestedActionId && action.id !== requestedActionId) ||
+      action.status !== "active" ||
+      action.ownerType !== "agent" ||
+      action.ownerAgentId !== req.actor.agentId ||
+      (action.timeoutAt !== null && action.timeoutAt <= new Date())
+    ) {
+      return null;
+    }
+    const run = await db
+      .select({
+        id: heartbeatRunRows.id,
+        status: heartbeatRunRows.status,
+        contextSnapshot: heartbeatRunRows.contextSnapshot,
+      })
+      .from(heartbeatRunRows)
+      .where(
+        and(
+          eq(heartbeatRunRows.id, req.actor.runId),
+          eq(heartbeatRunRows.companyId, issue.companyId),
+          eq(heartbeatRunRows.agentId, req.actor.agentId),
+          eq(heartbeatRunRows.status, "running"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    const context = run?.contextSnapshot;
+    if (
+      !run ||
+      !context ||
+      context.recoveryActionId !== action.id ||
+      context.recoveryAttempt !== action.attemptCount ||
+      context.source !== "issue_recovery_action" ||
+      context.wakeReason !== "source_scoped_recovery_action" ||
+      (context.issueId !== issue.id && context.sourceIssueId !== issue.id)
+    ) {
+      return null;
+    }
+    return action;
   }
 
   function assertStructuredCommentFieldsAllowed(
@@ -3141,6 +3227,160 @@ export function issueRoutes(
     });
   });
 
+  router.post(
+    "/issues/:id/recovery-actions/accept",
+    validate(acceptIssueRecoveryActionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await svc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, existing.companyId);
+      const authorization = await activeRecoveryActionAuthorization(
+        req,
+        existing,
+        req.body.actionId,
+      );
+      if (!authorization || req.actor.type !== "agent" || !req.actor.agentId) {
+        throw forbidden("Only the active recovery owner may accept this handoff from its recovery run");
+      }
+      await opts.afterRecoveryAuthorizationBeforeMutation?.({
+        issueId: existing.id,
+        recoveryActionId: authorization.id,
+        attemptCount: authorization.attemptCount,
+        mutation: "accept",
+      });
+      const actor = getActorInfo(req);
+      const ownerAgentId = req.actor.agentId;
+      const result = await db.transaction(async (tx) => {
+        // Match termination's lock order: agent -> issue -> recovery action.
+        const lockedOwner = await tx
+          .select({ id: agentRows.id, status: agentRows.status })
+          .from(agentRows)
+          .where(
+            and(
+              eq(agentRows.id, ownerAgentId),
+              eq(agentRows.companyId, existing.companyId),
+            ),
+          )
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (
+          !lockedOwner ||
+          ["paused", "terminated", "pending_approval"].includes(lockedOwner.status)
+        ) {
+          throw conflict("Recovery owner is no longer invokable");
+        }
+        const lockedIssue = await tx
+          .select()
+          .from(issueRows)
+          .where(and(eq(issueRows.id, id), eq(issueRows.companyId, existing.companyId)))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedIssue || ["done", "cancelled"].includes(lockedIssue.status)) {
+          throw conflict("Source issue is no longer open for recovery acceptance");
+        }
+        const lockedAction = await tx
+          .select()
+          .from(issueRecoveryActionRows)
+          .where(
+            and(
+              eq(issueRecoveryActionRows.id, authorization.id),
+              eq(issueRecoveryActionRows.companyId, existing.companyId),
+              eq(issueRecoveryActionRows.sourceIssueId, id),
+            ),
+          )
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (
+          !lockedAction ||
+          lockedAction.status !== "active" ||
+          lockedAction.ownerAgentId !== ownerAgentId ||
+          lockedAction.attemptCount !== authorization.attemptCount ||
+          (lockedAction.timeoutAt !== null && lockedAction.timeoutAt <= new Date())
+        ) {
+          throw conflict("Recovery action ownership changed; reload the source issue");
+        }
+        if (lockedAction.cause === "terminated_routine_owner") {
+          throw conflict(
+            "Routine-owner recovery must disposition its typed routine and trigger inventory before resolving",
+          );
+        }
+        if (lockedIssue.executionRunId) {
+          const executionRun = await tx
+            .select({ id: heartbeatRunRows.id, agentId: heartbeatRunRows.agentId, status: heartbeatRunRows.status })
+            .from(heartbeatRunRows)
+            .where(eq(heartbeatRunRows.id, lockedIssue.executionRunId))
+            .then((rows) => rows[0] ?? null);
+          if (
+            executionRun &&
+            ["queued", "scheduled_retry", "running"].includes(executionRun.status) &&
+            executionRun.agentId !== ownerAgentId
+          ) {
+            throw conflict("The terminated owner's execution is still being cancelled; retry acceptance shortly");
+          }
+        }
+
+        const issue = await svc.update(
+          id,
+          {
+            assigneeAgentId: ownerAgentId,
+            assigneeUserId: null,
+            actorAgentId: ownerAgentId,
+          },
+          tx,
+        );
+        if (!issue) throw notFound("Issue not found");
+        const recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
+          {
+            companyId: existing.companyId,
+            sourceIssueId: id,
+            actionId: lockedAction.id,
+            status: "resolved",
+            outcome: "restored",
+            resolutionNote: `Recovery owner ${ownerAgentId} explicitly accepted the terminated-owner handoff.`,
+          },
+          tx,
+        );
+        if (!recoveryAction) throw conflict("Recovery action changed during acceptance");
+        return { issue, recoveryAction };
+      });
+
+      await logActivity(db, {
+        companyId: result.issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.recovery_action_resolved",
+        entityType: "issue",
+        entityId: result.issue.id,
+        details: {
+          recoveryActionId: result.recoveryAction.id,
+          outcome: "restored",
+          source: "recovery_action_acceptance",
+          previousAssigneeAgentId: existing.assigneeAgentId,
+          assigneeAgentId: ownerAgentId,
+        },
+      });
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue: result.issue,
+        reason: "issue_assigned",
+        mutation: "recovery_action_acceptance",
+        contextSource: "issue.recovery_action_acceptance",
+        requestedByActorType: "agent",
+        requestedByActorId: ownerAgentId,
+      });
+      res.json({
+        issue: { ...result.issue, activeRecoveryAction: null },
+        recoveryAction: result.recoveryAction,
+      });
+    },
+  );
+
   router.post("/issues/:id/recovery-actions/resolve", validate(resolveIssueRecoveryActionSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
@@ -3149,12 +3389,57 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
 
     const { actionId, outcome, sourceIssueStatus, resolutionNote } = req.body;
+    const recoveryAuthorization = await activeRecoveryActionAuthorization(
+      req,
+      existing,
+      actionId ?? null,
+    );
+    if (!recoveryAuthorization && !(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (recoveryAuthorization) {
+      await opts.afterRecoveryAuthorizationBeforeMutation?.({
+        issueId: existing.id,
+        recoveryActionId: recoveryAuthorization.id,
+        attemptCount: recoveryAuthorization.attemptCount,
+        mutation: "resolve",
+      });
+    }
     if (outcome === "false_positive" || outcome === "cancelled") {
       assertBoard(req);
     }
+
+    // Routine recovery must lock its typed inventory before the source issue
+    // and action, matching termination's agent -> routine -> trigger -> issue
+    // -> action order. Pre-read only identifies which rows to lock; every
+    // action/contract field is revalidated after those locks are held.
+    const preflightAction = recoveryAuthorization ??
+      await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id);
+    const preflightExecutionContract = recoveryRecord(existing.executionContract);
+    const preflightRoutineRecovery = recoveryRecord(preflightExecutionContract.routineRecovery);
+    const preflightRoutineIds = preflightAction?.cause === "terminated_routine_owner" &&
+      Array.isArray(preflightRoutineRecovery.routines)
+      ? preflightRoutineRecovery.routines
+          .map((entry) => recoveryRecord(entry).id)
+          .filter((value): value is string => typeof value === "string")
+      : [];
+    const preflightTriggerIds = preflightAction?.cause === "terminated_routine_owner" &&
+      Array.isArray(preflightRoutineRecovery.triggers)
+      ? preflightRoutineRecovery.triggers
+          .map((entry) => recoveryRecord(entry).id)
+          .filter((value): value is string => typeof value === "string")
+      : [];
+    const preflightRoutineAssignees = preflightRoutineIds.length > 0
+      ? await db
+          .select({ id: routineRows.id, assigneeAgentId: routineRows.assigneeAgentId })
+          .from(routineRows)
+          .where(
+            and(
+              eq(routineRows.companyId, existing.companyId),
+              inArray(routineRows.id, preflightRoutineIds),
+            ),
+          )
+      : [];
 
     const actor = getActorInfo(req);
     const updateFields: Record<string, unknown> = sourceIssueStatus ? { status: sourceIssueStatus } : {};
@@ -3169,9 +3454,288 @@ export function issueRoutes(
       actorType: req.actor.type,
       actorAgentId: actor.agentId ?? null,
     });
+    const preflightReviewerAgentId = sourceIssueStatus === "in_review"
+      ? updateFields.assigneeAgentId === undefined
+        ? existing.assigneeAgentId ?? null
+        : typeof updateFields.assigneeAgentId === "string"
+          ? updateFields.assigneeAgentId
+          : null
+      : null;
 
     const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
     const result = await db.transaction(async (tx) => {
+      let recoveryOwnerAgentId: string | null = null;
+      if (recoveryAuthorization) {
+        recoveryOwnerAgentId = recoveryAuthorization.ownerAgentId;
+        if (!recoveryOwnerAgentId) {
+          throw forbidden("Recovery action no longer has an agent owner");
+        }
+      }
+      const agentIdsToLock = [...new Set([
+        recoveryOwnerAgentId,
+        preflightReviewerAgentId,
+        ...preflightRoutineAssignees.map((routine) => routine.assigneeAgentId),
+      ].filter((value): value is string => Boolean(value)))].sort();
+      const lockedAgents = agentIdsToLock.length > 0
+        ? await tx
+          .select({
+            id: agentRows.id,
+            status: agentRows.status,
+            role: agentRows.role,
+            capabilities: agentRows.capabilities,
+          })
+          .from(agentRows)
+          .where(and(eq(agentRows.companyId, existing.companyId), inArray(agentRows.id, agentIdsToLock)))
+          .orderBy(asc(agentRows.id))
+          .for("update")
+        : [];
+      const lockedAgentsById = new Map(lockedAgents.map((agent) => [agent.id, agent]));
+      if (recoveryAuthorization) {
+        const lockedOwner = recoveryOwnerAgentId
+          ? lockedAgentsById.get(recoveryOwnerAgentId) ?? null
+          : null;
+        if (
+          !lockedOwner ||
+          ["paused", "terminated", "pending_approval"].includes(lockedOwner.status)
+        ) {
+          throw conflict("Recovery owner is no longer invokable");
+        }
+      }
+
+      const lockedRoutineStates = preflightRoutineIds.length > 0
+        ? await tx
+            .select({
+              id: routineRows.id,
+              status: routineRows.status,
+              assigneeAgentId: routineRows.assigneeAgentId,
+              updatedAt: routineRows.updatedAt,
+            })
+            .from(routineRows)
+            .where(
+              and(
+                eq(routineRows.companyId, existing.companyId),
+                inArray(routineRows.id, preflightRoutineIds),
+              ),
+            )
+            .orderBy(asc(routineRows.id))
+            .for("update")
+        : [];
+      for (const routine of lockedRoutineStates) {
+        if (
+          routine.assigneeAgentId &&
+          !lockedAgentsById.has(routine.assigneeAgentId)
+        ) {
+          throw conflict("Routine recovery ownership changed while resolution was waiting; retry");
+        }
+      }
+      const lockedTriggerStates = preflightTriggerIds.length > 0
+        ? await tx
+            .select({
+              id: routineTriggerRows.id,
+              routineId: routineTriggerRows.routineId,
+              enabled: routineTriggerRows.enabled,
+              updatedAt: routineTriggerRows.updatedAt,
+            })
+            .from(routineTriggerRows)
+            .where(
+              and(
+                eq(routineTriggerRows.companyId, existing.companyId),
+                inArray(routineTriggerRows.id, preflightTriggerIds),
+              ),
+            )
+            .orderBy(asc(routineTriggerRows.id))
+            .for("update")
+        : [];
+
+      // Match termination's lock order: agents -> routines -> triggers -> source issue -> recovery action.
+      const lockedIssue = await tx
+        .select()
+        .from(issueRows)
+        .where(and(eq(issueRows.id, existing.id), eq(issueRows.companyId, existing.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!lockedIssue) throw notFound("Issue not found");
+      const lockedActionPredicates = [
+        eq(issueRecoveryActionRows.companyId, existing.companyId),
+        eq(issueRecoveryActionRows.sourceIssueId, existing.id),
+        inArray(issueRecoveryActionRows.status, ["active", "escalated"]),
+      ];
+      if (actionId) lockedActionPredicates.push(eq(issueRecoveryActionRows.id, actionId));
+      const lockedAction = await tx
+        .select()
+        .from(issueRecoveryActionRows)
+        .where(and(...lockedActionPredicates))
+        .orderBy(desc(issueRecoveryActionRows.updatedAt))
+        .limit(1)
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!lockedAction) throw notFound("Active recovery action not found");
+      if (
+        recoveryAuthorization &&
+        (lockedAction.id !== recoveryAuthorization.id ||
+          lockedAction.status !== "active" ||
+          lockedAction.ownerAgentId !== recoveryOwnerAgentId ||
+          lockedAction.attemptCount !== recoveryAuthorization.attemptCount ||
+          (lockedAction.timeoutAt !== null && lockedAction.timeoutAt <= new Date()))
+      ) {
+        throw forbidden("Recovery action ownership changed; reload the source issue");
+      }
+      if (preflightAction?.cause === "terminated_routine_owner") {
+        const lockedExecutionContract = recoveryRecord(lockedIssue.executionContract);
+        const lockedRoutineRecovery = recoveryRecord(lockedExecutionContract.routineRecovery);
+        const lockedRoutineIds = Array.isArray(lockedRoutineRecovery.routines)
+          ? lockedRoutineRecovery.routines
+              .map((entry) => recoveryRecord(entry).id)
+              .filter((value): value is string => typeof value === "string")
+          : [];
+        const lockedTriggerIds = Array.isArray(lockedRoutineRecovery.triggers)
+          ? lockedRoutineRecovery.triggers
+              .map((entry) => recoveryRecord(entry).id)
+              .filter((value): value is string => typeof value === "string")
+          : [];
+        if (
+          lockedAction.id !== preflightAction.id ||
+          lockedAction.cause !== "terminated_routine_owner" ||
+          lockedAction.attemptCount !== preflightAction.attemptCount ||
+          !sameRecoveryInventory(lockedRoutineIds, preflightRoutineIds) ||
+          !sameRecoveryInventory(lockedTriggerIds, preflightTriggerIds) ||
+          lockedRoutineStates.length !== preflightRoutineIds.length ||
+          lockedTriggerStates.length !== preflightTriggerIds.length
+        ) {
+          throw conflict("Routine recovery inventory or action generation changed; retry resolution");
+        }
+      }
+      await opts.afterRecoveryResolveLocksBeforeMutation?.({
+        issueId: existing.id,
+        recoveryActionId: lockedAction.id,
+      });
+
+      if (lockedAction.cause === "terminated_routine_owner") {
+        if (!resolutionNote?.trim()) {
+          throw unprocessable("Routine recovery resolution requires an explicit disposition note");
+        }
+        const executionContract = recoveryRecord(lockedIssue.executionContract);
+        const routineRecovery = recoveryRecord(executionContract.routineRecovery);
+        const routineIds = Array.isArray(routineRecovery.routines)
+          ? routineRecovery.routines
+              .map((entry) => recoveryRecord(entry).id)
+              .filter((value): value is string => typeof value === "string")
+          : [];
+        const triggerIds = Array.isArray(routineRecovery.triggers)
+          ? routineRecovery.triggers
+              .map((entry) => recoveryRecord(entry).id)
+              .filter((value): value is string => typeof value === "string")
+          : [];
+        if (routineIds.length === 0) {
+          throw unprocessable("Routine recovery contract has no typed routine inventory");
+        }
+        const routineStates = lockedRoutineStates.map((routine) => {
+          const assignee = routine.assigneeAgentId
+            ? lockedAgentsById.get(routine.assigneeAgentId) ?? null
+            : null;
+          return {
+            ...routine,
+            assigneeStatus: assignee?.status ?? null,
+            assigneeRole: assignee?.role ?? null,
+            assigneeCapabilities: assignee?.capabilities ?? null,
+          };
+        });
+        const routinesById = new Map(routineStates.map((routine) => [routine.id, routine]));
+        const terminatedRole = normalizedRecoveryCapability(routineRecovery.terminatedAgentRole);
+        const terminatedCapabilities = normalizedRecoveryCapability(
+          routineRecovery.terminatedAgentCapabilities,
+        );
+        for (const routineId of routineIds) {
+          const routine = routinesById.get(routineId);
+          if (!routine) throw unprocessable(`Routine recovery inventory is missing routine ${routineId}`);
+          if (routine.status === "archived") {
+            if (routine.updatedAt <= lockedAction.createdAt) {
+              throw unprocessable(`Routine ${routineId} was not explicitly archived after recovery opened`);
+            }
+            continue;
+          }
+          const assigneeInvokable = Boolean(
+            routine.assigneeAgentId &&
+            routine.assigneeAgentId !== lockedAction.previousOwnerAgentId &&
+            routine.assigneeStatus &&
+            !["paused", "terminated", "pending_approval"].includes(routine.assigneeStatus),
+          );
+          const capabilityMatches =
+            normalizedRecoveryCapability(routine.assigneeRole) === terminatedRole &&
+            normalizedRecoveryCapability(routine.assigneeCapabilities) === terminatedCapabilities;
+          if (!assigneeInvokable || !capabilityMatches || routine.updatedAt <= lockedAction.createdAt) {
+            throw unprocessable(
+              `Routine ${routineId} must be explicitly assigned to an invokable exact-role/capability owner or archived`,
+            );
+          }
+        }
+        if (triggerIds.length > 0) {
+          const dispositionRevisions = await tx
+            .select({
+              routineId: routineRevisionRows.routineId,
+              changeSummary: routineRevisionRows.changeSummary,
+              createdAt: routineRevisionRows.createdAt,
+            })
+            .from(routineRevisionRows)
+            .where(
+              and(
+                eq(routineRevisionRows.companyId, existing.companyId),
+                inArray(routineRevisionRows.routineId, routineIds),
+              ),
+            );
+          const triggersById = new Map(lockedTriggerStates.map((trigger) => [trigger.id, trigger]));
+          for (const triggerId of triggerIds) {
+            const trigger = triggersById.get(triggerId);
+            if (!trigger) throw unprocessable(`Routine recovery inventory is missing trigger ${triggerId}`);
+            const routine = routinesById.get(trigger.routineId);
+            if (routine?.status === "archived") {
+              if (trigger.enabled) {
+                throw unprocessable(`Archived routine trigger ${triggerId} must remain disabled`);
+              }
+              continue;
+            }
+            const dispositionMarker = routineRecoveryTriggerDispositionMarker(
+              { actionId: lockedAction.id, attemptCount: lockedAction.attemptCount },
+              trigger.id,
+              trigger.enabled,
+            );
+            const hasActionSpecificDisposition = dispositionRevisions.some((revision) =>
+              revision.routineId === trigger.routineId &&
+              revision.createdAt > lockedAction.createdAt &&
+              revision.changeSummary?.includes(dispositionMarker),
+            );
+            if (!hasActionSpecificDisposition) {
+              throw unprocessable(`Routine trigger ${triggerId} needs an explicit restore-or-disable disposition`);
+            }
+          }
+        }
+      }
+
+      if (lockedAction.cause === "terminated_owner" && sourceIssueStatus === "in_review") {
+        const reviewerAgentId = updateFields.assigneeAgentId === undefined
+          ? lockedIssue.assigneeAgentId
+          : typeof updateFields.assigneeAgentId === "string"
+            ? updateFields.assigneeAgentId
+            : null;
+        const reviewerUserId = updateFields.assigneeUserId === undefined
+          ? lockedIssue.assigneeUserId
+          : typeof updateFields.assigneeUserId === "string"
+            ? updateFields.assigneeUserId
+            : null;
+        const reviewer = reviewerAgentId
+          ? lockedAgentsById.get(reviewerAgentId) ?? null
+          : null;
+        if (reviewerAgentId && !reviewer) {
+          throw conflict("Review ownership changed while recovery resolution was waiting; retry");
+        }
+        if (
+          !reviewerUserId &&
+          (!reviewer || ["paused", "terminated", "pending_approval"].includes(reviewer.status))
+        ) {
+          throw unprocessable("Terminated-owner recovery cannot enter in_review without a live reviewer");
+        }
+      }
+
       let issue = existing;
       if (outcome === "blocked") {
         const unresolvedBlockers = await tx

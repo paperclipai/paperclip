@@ -53,7 +53,7 @@ function createMockRun(options: MockRunOptions = {}) {
     durationMs: waitResult.durationMs ?? null,
     git: waitResult.git ?? null,
     supports(capability: string) {
-      return capability === "stream" || capability === "wait";
+      return capability === "stream" || capability === "wait" || capability === "cancel";
     },
     async *stream() {
       for (const message of streamMessages) yield message;
@@ -62,6 +62,7 @@ function createMockRun(options: MockRunOptions = {}) {
     async wait() {
       return waitResult;
     },
+    cancel: vi.fn(async () => {}),
   };
 }
 
@@ -344,5 +345,38 @@ describe("cursor_cloud execute", () => {
         cursorRunId: "run-cancelled",
       },
     });
+  });
+
+  it("releases the launch permit at send submission and cancels a run handle that arrives after abort", async () => {
+    const controller = new AbortController();
+    const releaseLaunchPermit = vi.fn();
+    let resolveSend!: (run: ReturnType<typeof createMockRun>) => void;
+    const sendSubmission = new Promise<ReturnType<typeof createMockRun>>((resolve) => {
+      resolveSend = resolve;
+    });
+    const lateRun = createMockRun({ id: "run-late", agentId: "agent-late", status: "running" });
+    const sdkAgent = createMockSdkAgent({ agentId: "agent-late" });
+    sdkAgent.send.mockImplementation(() => sendSubmission);
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext({
+      signal: controller.signal,
+      acquireLaunchPermit: vi.fn(async () => releaseLaunchPermit),
+    });
+
+    const execution = execute(ctx);
+    await vi.waitFor(() => expect(sdkAgent.send).toHaveBeenCalledTimes(1));
+    expect(releaseLaunchPermit).toHaveBeenCalledTimes(1);
+    expect(sdkAgent.send).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      idempotencyKey: "run-heartbeat-1",
+    }));
+
+    controller.abort();
+    await expect(execution).resolves.toMatchObject({
+      exitCode: 1,
+      errorMessage: "Cursor cloud run cancelled by the control plane",
+    });
+
+    resolveSend(lateRun);
+    await vi.waitFor(() => expect(lateRun.cancel).toHaveBeenCalledTimes(1));
   });
 });

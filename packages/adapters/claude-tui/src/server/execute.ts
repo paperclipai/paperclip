@@ -73,7 +73,7 @@ function buildPermissionArgs(input: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onMeta, onSpawn, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onMeta, acquireLaunchPermit, onSpawn, authToken } = ctx;
   const onLog = ctx.onLog ?? (async () => {});
 
   const executionTarget = readAdapterExecutionTarget({
@@ -334,6 +334,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       timeoutSec,
       graceSec,
+      acquireLaunchPermit,
       onSpawn,
       onLog,
     });

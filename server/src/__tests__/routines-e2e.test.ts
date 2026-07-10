@@ -14,6 +14,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   instanceSettings,
+  issueRecoveryActions,
   issues,
   principalPermissionGrants,
   projectWorkspaces,
@@ -27,6 +28,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { accessService } from "../services/access.js";
+import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 
 function registerRoutineServiceMock() {
   vi.doMock("../services/routines.js", async () => {
@@ -96,6 +98,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(issueRecoveryActions);
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(heartbeatRunEvents);
@@ -498,5 +501,243 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode: "isolated_workspace" },
     });
+  });
+
+  it("lets a terminated-owner recovery run self-accept only listed routines with the exact recovery context", async () => {
+    const { companyId, agentId: recoveryOwnerId, projectId, userId } = await seedFixture();
+    const terminatedAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: terminatedAgentId,
+      companyId,
+      name: "Terminated Automation Owner",
+      role: "engineer",
+      status: "idle",
+      reportsTo: recoveryOwnerId,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const boardApp = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+    const createRoutine = async (title: string) => {
+      const response = await request(boardApp)
+        .post(`/api/companies/${companyId}/routines`)
+        .send({
+          projectId,
+          title,
+          assigneeAgentId: terminatedAgentId,
+          status: "paused",
+        });
+      expect([200, 201], JSON.stringify(response.body)).toContain(response.status);
+      return response.body as { id: string };
+    };
+    const allowedRoutine = await createRoutine("Allowed recovery routine");
+    const unlistedRoutine = await createRoutine("Unlisted recovery routine");
+    const wrongContextRoutine = await createRoutine("Wrong-context recovery routine");
+    const recoveryOwnerRevision = await request(boardApp)
+      .patch(`/api/routines/${allowedRoutine.id}`)
+      .send({ assigneeAgentId: recoveryOwnerId })
+      .expect(200);
+    await request(boardApp)
+      .patch(`/api/routines/${allowedRoutine.id}`)
+      .send({ assigneeAgentId: terminatedAgentId })
+      .expect(200);
+    const typedTriggerResponse = await request(boardApp)
+      .post(`/api/routines/${allowedRoutine.id}/triggers`)
+      .send({
+        kind: "schedule",
+        label: "Typed recovery schedule",
+        cronExpression: "0 * * * *",
+        timezone: "UTC",
+        enabled: false,
+      })
+      .expect(201);
+    const typedTriggerId = typedTriggerResponse.body.trigger.id as string;
+    await db
+      .update(agents)
+      .set({ status: "terminated" })
+      .where(eq(agents.id, terminatedAgentId));
+
+    const recoveryIssueId = randomUUID();
+    const prefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: recoveryIssueId,
+      companyId,
+      title: "Disposition terminated owner's routines",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: recoveryOwnerId,
+      issueNumber: 1,
+      identifier: `${prefix}-1`,
+      originKind: "harness_liveness_escalation",
+      originId: `agent_termination_routine_handoff:${terminatedAgentId}`,
+      originFingerprint: `agent_termination_routine_handoff:${terminatedAgentId}:test`,
+      executionContract: {
+        schemaVersion: 1,
+        contractType: "routine_termination_handoff",
+        routineRecovery: {
+          terminatedAgentId,
+          routines: [{ id: allowedRoutine.id }, { id: wrongContextRoutine.id }],
+          triggers: [{ id: typedTriggerId }],
+        },
+      },
+    });
+    const recoveryAction = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId: recoveryIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: recoveryOwnerId,
+      previousOwnerAgentId: terminatedAgentId,
+      cause: "terminated_routine_owner",
+      fingerprint: `terminated-routine-owner:${terminatedAgentId}`,
+      nextAction: "Explicitly accept or archive every paused routine.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const validRunId = randomUUID();
+    const wrongContextRunId = randomUUID();
+    const baseContext = {
+      issueId: recoveryIssueId,
+      sourceIssueId: recoveryIssueId,
+      source: "issue_recovery_action",
+      wakeReason: "source_scoped_recovery_action",
+      recoveryCause: "terminated_routine_owner",
+      recoveryActionId: recoveryAction.id,
+      recoveryAttempt: recoveryAction.attemptCount,
+      routineRecoveryIssueId: recoveryIssueId,
+      terminatedAgentId,
+      routineIds: [allowedRoutine.id, wrongContextRoutine.id],
+    };
+    await db.insert(heartbeatRuns).values([
+      {
+        id: validRunId,
+        companyId,
+        agentId: recoveryOwnerId,
+        invocationSource: "assignment",
+        status: "running",
+        startedAt: new Date(),
+        contextSnapshot: baseContext,
+      },
+      {
+        id: wrongContextRunId,
+        companyId,
+        agentId: recoveryOwnerId,
+        invocationSource: "assignment",
+        status: "running",
+        startedAt: new Date(),
+        contextSnapshot: {
+          ...baseContext,
+          terminatedAgentId: randomUUID(),
+        },
+      },
+    ]);
+    const validRecoveryApp = await createApp({
+      type: "agent",
+      agentId: recoveryOwnerId,
+      companyId,
+      runId: validRunId,
+      source: "agent_jwt",
+    });
+    const wrongContextApp = await createApp({
+      type: "agent",
+      agentId: recoveryOwnerId,
+      companyId,
+      runId: wrongContextRunId,
+      source: "agent_jwt",
+    });
+
+    await request(validRecoveryApp)
+      .patch(`/api/routines/${unlistedRoutine.id}`)
+      .send({ description: "Must not be accepted" })
+      .expect(403);
+    await request(wrongContextApp)
+      .patch(`/api/routines/${wrongContextRoutine.id}`)
+      .send({ description: "Must not be accepted" })
+      .expect(403);
+    const deleteTypedTrigger = await request(validRecoveryApp)
+      .delete(`/api/routine-triggers/${typedTriggerId}`);
+    expect(deleteTypedTrigger.status).toBe(409);
+    expect(deleteTypedTrigger.body.error).toContain("Typed recovery triggers cannot be deleted");
+    const restoreWithoutTypedTrigger = await request(validRecoveryApp)
+      .post(`/api/routines/${allowedRoutine.id}/revisions/${recoveryOwnerRevision.body.latestRevisionId}/restore`);
+    expect(restoreWithoutTypedTrigger.status).toBe(409);
+    expect(restoreWithoutTypedTrigger.body.error).toContain("removes typed trigger inventory");
+    await expect(db.select().from(routineTriggers).where(eq(routineTriggers.id, typedTriggerId)))
+      .resolves.toHaveLength(1);
+
+    const accepted = await request(validRecoveryApp)
+      .patch(`/api/routines/${allowedRoutine.id}`)
+      .send({
+        assigneeAgentId: recoveryOwnerId,
+        description: "Accepted by the bounded routine recovery lane.",
+      })
+      .expect(200);
+
+    expect(accepted.body).toMatchObject({
+      id: allowedRoutine.id,
+      assigneeAgentId: recoveryOwnerId,
+      description: "Accepted by the bounded routine recovery lane.",
+      status: "paused",
+    });
+
+    const ordinaryRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: ordinaryRunId,
+      companyId,
+      agentId: recoveryOwnerId,
+      invocationSource: "manual",
+      status: "running",
+      startedAt: new Date(),
+      contextSnapshot: {
+        source: "manual",
+        wakeReason: "manual",
+      },
+    });
+    const ordinaryOwnerApp = await createApp({
+      type: "agent",
+      agentId: recoveryOwnerId,
+      companyId,
+      runId: ordinaryRunId,
+      source: "agent_jwt",
+    });
+    const ordinaryDelete = await request(ordinaryOwnerApp)
+      .delete(`/api/routine-triggers/${typedTriggerId}`);
+    expect(ordinaryDelete.status).toBe(409);
+    expect(ordinaryDelete.body.error).toContain("Typed recovery triggers cannot be deleted");
+    const ordinaryRestore = await request(ordinaryOwnerApp)
+      .post(`/api/routines/${allowedRoutine.id}/revisions/${recoveryOwnerRevision.body.latestRevisionId}/restore`);
+    expect(ordinaryRestore.status).toBe(409);
+    expect(ordinaryRestore.body.error).toContain("removes typed trigger inventory");
+    await expect(db.select().from(routineTriggers).where(eq(routineTriggers.id, typedTriggerId)))
+      .resolves.toHaveLength(1);
+
+    const persisted = await db
+      .select({
+        id: routines.id,
+        assigneeAgentId: routines.assigneeAgentId,
+        description: routines.description,
+      })
+      .from(routines);
+    expect(persisted).toEqual(expect.arrayContaining([
+      {
+        id: allowedRoutine.id,
+        assigneeAgentId: recoveryOwnerId,
+        description: "Accepted by the bounded routine recovery lane.",
+      },
+      expect.objectContaining({
+        id: unlistedRoutine.id,
+        assigneeAgentId: terminatedAgentId,
+      }),
+      expect.objectContaining({
+        id: wrongContextRoutine.id,
+        assigneeAgentId: terminatedAgentId,
+      }),
+    ]));
   });
 });

@@ -253,7 +253,7 @@ An `in_review` issue is stalled when it has no typed participant, no pending int
 
 ### Issue monitors
 
-An issue monitor is a one-shot deferred action path for agent-owned issues in `in_progress` or `in_review`.
+An issue monitor is a one-shot deferred action path for agent-owned issues in `in_progress`, `in_review`, or `blocked`. A blocked monitor must include `maxAttempts` or `timeoutAt`; unbounded polling is not a valid blocked-work path.
 
 Use a monitor when the current assignee owns a future check against an async system or external service. Examples include Greptile review loops, GitHub checks, Vercel deployments, or provider jobs where the agent should come back later and decide what happens next.
 
@@ -265,7 +265,7 @@ Monitor policy lives under `executionPolicy.monitor` and includes:
 - `externalRef`: optional external-service reference input; Paperclip treats it as secret-adjacent, redacts it before persistence/visibility, and omits it from activity and wake payloads
 - `timeoutAt`, `maxAttempts`, and `recoveryPolicy`: optional recovery hints for bounded waits
 
-Monitors are not recurring intervals. When a monitor fires, Paperclip clears the scheduled monitor and queues an `issue_monitor_due` wake for the assignee. If the external service is still pending, the assignee must explicitly re-arm the monitor with a new `nextCheckAt`. If the issue moves to `done`, `cancelled`, an invalid status, or a human/unassigned owner, the monitor is cleared.
+Monitors are not recurring intervals. When a monitor fires, Paperclip clears the scheduled monitor and queues an `issue_monitor_due` wake for the assignee. A blocked monitor runs in bounded interaction mode: it does not auto-checkout or reopen the issue while first-class blockers remain. If the external service is still pending, the assignee must explicitly re-arm the monitor with a new `nextCheckAt`. If the issue moves to `done`, `cancelled`, an invalid status, or a human/unassigned owner, the monitor is cleared.
 
 Because `serviceName` and `notes` remain visible in issue activity and wake context, operators should keep them short and non-secret. Put enough context for the assignee to know what to inspect, but do not include signed URLs, bearer tokens, customer secrets, tenant-private identifiers, or provider links with embedded credentials.
 
@@ -280,6 +280,7 @@ This is explicit waiting state.
 A healthy `blocked` issue has an explicit waiting path:
 
 - first-class blockers exist, and each unresolved leaf has a valid action path under this contract
+- the current agent owner has a valid bounded issue monitor for a future external-state check
 - the issue has an explicit recovery action that itself has a live or waiting path
 - the issue is waiting on a pending interaction, linked approval, human owner, or clearly named external owner/action
 

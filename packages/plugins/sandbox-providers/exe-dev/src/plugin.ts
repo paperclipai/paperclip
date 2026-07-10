@@ -2,10 +2,11 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { definePlugin } from "@paperclipai/plugin-sdk";
 import type {
   PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentCancelExecutionParams,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
@@ -68,6 +69,47 @@ const SSH_SIGKILL_GRACE_MS = 250;
 const MAX_VM_RECORD_DEPTH = 4;
 const EXE_DEV_SSH_ONBOARDING_MARKER = "Please complete registration by running: ssh exe.dev";
 const EXE_DEV_SSH_EMAIL_PROMPT = "Please enter your email address:";
+const PENDING_EXECUTION_CANCELLATION_TTL_MS = 60_000;
+
+interface ActiveSshExecution {
+  child: ChildProcess;
+  finished: Promise<void>;
+}
+
+const activeSshExecutions = new Map<string, ActiveSshExecution>();
+const pendingExecutionCancellations = new Map<string, NodeJS.Timeout>();
+
+function rememberPendingExecutionCancellation(executionId: string): void {
+  const existing = pendingExecutionCancellations.get(executionId);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => pendingExecutionCancellations.delete(executionId), PENDING_EXECUTION_CANCELLATION_TTL_MS);
+  timer.unref?.();
+  pendingExecutionCancellations.set(executionId, timer);
+}
+
+function consumePendingExecutionCancellation(executionId: string): boolean {
+  const timer = pendingExecutionCancellations.get(executionId);
+  if (!timer) return false;
+  clearTimeout(timer);
+  pendingExecutionCancellations.delete(executionId);
+  return true;
+}
+
+async function cancelSshExecution(executionId: string): Promise<void> {
+  const active = activeSshExecutions.get(executionId);
+  if (!active) {
+    rememberPendingExecutionCancellation(executionId);
+    return;
+  }
+  active.child.kill("SIGTERM");
+  const killTimer = setTimeout(() => active.child.kill("SIGKILL"), SSH_SIGKILL_GRACE_MS);
+  killTimer.unref?.();
+  try {
+    await active.finished;
+  } finally {
+    clearTimeout(killTimer);
+  }
+}
 
 // exe.dev's `--setup-script` runs at VM init as the unprivileged `exedev` user, which
 // has passwordless sudo. The Paperclip sandbox callback bridge is a Node script, so
@@ -505,16 +547,32 @@ async function runSshCommand(
   config: ExeDevDriverConfig,
   vm: ExeDevVmRecord,
   remoteCommand: string,
-  options: { stdin?: string; timeoutMs?: number } = {},
+  options: { stdin?: string; timeoutMs?: number; executionId?: string } = {},
 ): Promise<SshExecutionResult> {
   const timeoutMs = options.timeoutMs ?? config.timeoutMs;
   const identity = await prepareSshIdentity(config);
 
   try {
+    if (options.executionId && consumePendingExecutionCancellation(options.executionId)) {
+      return {
+        exitCode: null,
+        signal: "SIGTERM",
+        timedOut: false,
+        stdout: "",
+        stderr: "Execution cancelled before SSH submission.",
+      };
+    }
     return await new Promise((resolve, reject) => {
       const child = spawn("ssh", buildSshArgs(config, vm, remoteCommand, identity.sshIdentityFile), {
         stdio: [options.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
       });
+      let resolveFinished!: () => void;
+      const finished = new Promise<void>((done) => {
+        resolveFinished = done;
+      });
+      if (options.executionId) {
+        activeSshExecutions.set(options.executionId, { child, finished });
+      }
       let stdout = "";
       let stderr = "";
       let timedOut = false;
@@ -538,11 +596,15 @@ async function runSshCommand(
       child.on("error", (error) => {
         if (timer) clearTimeout(timer);
         if (killTimer) clearTimeout(killTimer);
+        if (options.executionId) activeSshExecutions.delete(options.executionId);
+        resolveFinished();
         reject(error);
       });
       child.on("close", (code, signal) => {
         if (timer) clearTimeout(timer);
         if (killTimer) clearTimeout(killTimer);
+        if (options.executionId) activeSshExecutions.delete(options.executionId);
+        resolveFinished();
         resolve({
           exitCode: timedOut ? null : code,
           signal,
@@ -787,6 +849,12 @@ const plugin = definePlugin({
     await deleteVm(config, params.providerLeaseId);
   },
 
+  async onEnvironmentCancelExecution(
+    params: PluginEnvironmentCancelExecutionParams,
+  ): Promise<void> {
+    await cancelSshExecution(params.executionId);
+  },
+
   async onEnvironmentRealizeWorkspace(
     params: PluginEnvironmentRealizeWorkspaceParams,
   ): Promise<PluginEnvironmentRealizeWorkspaceResult> {
@@ -858,7 +926,11 @@ const plugin = definePlugin({
       config,
       vm,
       `sh -c ${shellQuote(command)}`,
-      { stdin: params.stdin, timeoutMs: params.timeoutMs ?? config.timeoutMs },
+      {
+        stdin: params.stdin,
+        timeoutMs: params.timeoutMs ?? config.timeoutMs,
+        executionId: params.executionId,
+      },
     );
 
     return {

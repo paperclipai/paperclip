@@ -534,6 +534,133 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentReleaseLease", expect.anything(), 31234);
   });
 
+  it("cancels an already-submitted plugin sandbox execution by stable execution id", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: false,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Cancellable Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "paperclip.fake-plugin-sandbox-provider",
+      packageName: "@paperclipai/plugin-fake-sandbox",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "paperclip.fake-plugin-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Fake Plugin Sandbox Provider",
+        description: "Test fake plugin provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [{
+          driverKey: "fake-plugin",
+          kind: "sandbox_provider",
+          displayName: "Fake Plugin",
+          configSchema: { type: "object" },
+        }],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    let resolveExecution!: (result: {
+      exitCode: number;
+      signal: null;
+      timedOut: boolean;
+      stdout: string;
+      stderr: string;
+    }) => void;
+    const blockedExecution = new Promise<{
+      exitCode: number;
+      signal: null;
+      timedOut: boolean;
+      stdout: string;
+      stderr: string;
+    }>((resolve) => {
+      resolveExecution = resolve;
+    });
+    const call = vi.fn(async (_pluginId: string, method: string, params: any) => {
+      if (method === "environmentAcquireLease") {
+        return {
+          providerLeaseId: "sandbox-cancellable",
+          metadata: { provider: "fake-plugin", remoteCwd: "/workspace" },
+        };
+      }
+      if (method === "environmentExecute") return await blockedExecution;
+      if (method === "environmentCancelExecution") return undefined;
+      throw new Error(`Unexpected plugin method: ${method}`);
+    });
+    const workerManager = {
+      isRunning: vi.fn(() => true),
+      getWorker: vi.fn(() => ({
+        supportedMethods: ["environmentExecute", "environmentCancelExecution"],
+      })),
+      call,
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+    const controller = new AbortController();
+    const releaseLaunchPermit = vi.fn();
+    const execution = runtimeWithPlugin.execute({
+      environment,
+      lease: acquired.lease,
+      command: "agent",
+      args: ["run"],
+      cwd: "/workspace",
+      signal: controller.signal,
+      acquireLaunchPermit: vi.fn(async () => releaseLaunchPermit),
+    });
+
+    await vi.waitFor(() => expect(call).toHaveBeenCalledWith(
+      pluginId,
+      "environmentExecute",
+      expect.objectContaining({ executionId: expect.any(String) }),
+      31234,
+    ));
+    expect(releaseLaunchPermit).toHaveBeenCalledTimes(1);
+    const executeParams = call.mock.calls.find((entry) => entry[1] === "environmentExecute")?.[2];
+
+    controller.abort();
+    await expect(execution).rejects.toMatchObject({ name: "AbortError" });
+    expect(call).toHaveBeenCalledWith(
+      pluginId,
+      "environmentCancelExecution",
+      expect.objectContaining({
+        executionId: executeParams.executionId,
+        lease: expect.objectContaining({ providerLeaseId: "sandbox-cancellable" }),
+      }),
+      5_000,
+    );
+
+    resolveExecution({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" });
+  });
+
   it("uses resolved secret-ref config for plugin-backed sandbox execute and release", async () => {
     const pluginId = randomUUID();
     const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();

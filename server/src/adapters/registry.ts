@@ -148,6 +148,7 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import { runningProcesses } from "./utils.js";
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -448,11 +449,45 @@ const piLocalAdapter: ServerAdapterModule = {
 // intentional until hermes ships a matching AdapterExecutionContext type.
 const executeHermesLocal = hermesExecute as unknown as ServerAdapterModule["execute"];
 
+async function executeHermesWithLaunchRegistration(
+  ctx: Parameters<ServerAdapterModule["execute"]>[0],
+) {
+  const releaseLaunchPermit = await ctx.acquireLaunchPermit?.();
+  let released = false;
+  let registrationPoll: ReturnType<typeof setInterval> | null = null;
+  const releaseOnce = () => {
+    if (released) return;
+    released = true;
+    if (registrationPoll) clearInterval(registrationPoll);
+    registrationPoll = null;
+    releaseLaunchPermit?.();
+  };
+
+  try {
+    const execution = executeHermesLocal(ctx);
+    if (releaseLaunchPermit) {
+      registrationPoll = setInterval(() => {
+        if (runningProcesses.has(ctx.runId)) releaseOnce();
+      }, 5);
+      registrationPoll.unref?.();
+    }
+    try {
+      return await execution;
+    } finally {
+      // Failures before spawn must not strand the launch lock.
+      releaseOnce();
+    }
+  } catch (error) {
+    releaseOnce();
+    throw error;
+  }
+}
+
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: async (ctx) => {
     const normalizedCtx = normalizeHermesConfig(ctx);
-    if (!normalizedCtx.authToken) return executeHermesLocal(normalizedCtx);
+    if (!normalizedCtx.authToken) return executeHermesWithLaunchRegistration(normalizedCtx);
 
     const existingConfig = (normalizedCtx.agent.adapterConfig ?? {}) as Record<string, unknown>;
     const existingEnv =
@@ -496,7 +531,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
       },
     };
 
-    return executeHermesLocal(patchedCtx);
+    return executeHermesWithLaunchRegistration(patchedCtx);
   },
   testEnvironment: (ctx) => hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
   sessionCodec: hermesSessionCodec,

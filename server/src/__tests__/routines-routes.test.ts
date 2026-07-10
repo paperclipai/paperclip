@@ -122,6 +122,25 @@ const mockAccessService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackRoutineCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+const mockDbSelect = vi.hoisted(() => vi.fn());
+
+function emptySelectQuery() {
+  const rows = Promise.resolve<unknown[]>([]);
+  const query = {
+    from: vi.fn(),
+    innerJoin: vi.fn(),
+    where: vi.fn(),
+    orderBy: vi.fn(),
+    limit: vi.fn(),
+    then: rows.then.bind(rows),
+  };
+  query.from.mockReturnValue(query);
+  query.innerJoin.mockReturnValue(query);
+  query.where.mockReturnValue(query);
+  query.orderBy.mockReturnValue(query);
+  query.limit.mockReturnValue(query);
+  return query;
+}
 
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
@@ -165,7 +184,7 @@ async function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", routineRoutes({} as any));
+  app.use("/api", routineRoutes({ select: mockDbSelect } as any));
   app.use(errorHandler);
   return app;
 }
@@ -185,6 +204,7 @@ describe("routine routes", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
+    mockDbSelect.mockImplementation(() => emptySelectQuery());
     mockRoutineService.list.mockResolvedValue([routine]);
     mockRoutineService.create.mockResolvedValue(routine);
     mockRoutineService.get.mockResolvedValue(routine);
@@ -237,6 +257,7 @@ describe("routine routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockRoutineService.listRevisions).toHaveBeenCalledWith(routineId);
+    expect(mockDbSelect).not.toHaveBeenCalled();
     expect(res.body[0]).toMatchObject({ id: revisionId, revisionNumber: 1 });
   });
 
@@ -283,6 +304,7 @@ describe("routine routes", () => {
       agentId,
       userId: null,
       runId: "88888888-8888-4888-8888-888888888888",
+      routineRecoveryAuthorization: null,
     });
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "routine.revision_restored",
@@ -331,6 +353,7 @@ describe("routine routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("tasks:assign");
     expect(mockRoutineService.update).not.toHaveBeenCalled();
+    expect(mockDbSelect).not.toHaveBeenCalled();
   });
 
   it("requires tasks:assign permission to reactivate a routine", async () => {
@@ -352,6 +375,7 @@ describe("routine routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("tasks:assign");
     expect(mockRoutineService.update).not.toHaveBeenCalled();
+    expect(mockDbSelect).not.toHaveBeenCalled();
   });
 
   it("requires tasks:assign permission to create a trigger", async () => {
@@ -374,6 +398,7 @@ describe("routine routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("tasks:assign");
     expect(mockRoutineService.createTrigger).not.toHaveBeenCalled();
+    expect(mockDbSelect).not.toHaveBeenCalled();
   });
 
   it("requires tasks:assign permission to update a trigger", async () => {
@@ -394,6 +419,7 @@ describe("routine routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("tasks:assign");
     expect(mockRoutineService.updateTrigger).not.toHaveBeenCalled();
+    expect(mockDbSelect).not.toHaveBeenCalled();
   });
 
   it("requires tasks:assign permission to manually run a routine", async () => {
@@ -412,6 +438,7 @@ describe("routine routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("tasks:assign");
     expect(mockRoutineService.runRoutine).not.toHaveBeenCalled();
+    expect(mockDbSelect).not.toHaveBeenCalled();
   });
 
   it("passes the board actor through when manually running a routine", async () => {
@@ -434,6 +461,8 @@ describe("routine routes", () => {
     }, {
       agentId: null,
       userId: "board-user",
+      runId: null,
+      routineRecoveryAuthorization: null,
     });
   });
 

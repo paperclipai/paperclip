@@ -12,6 +12,7 @@ import {
   environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueRecoveryActions,
   issueRelations,
   issues,
 } from "@paperclipai/db";
@@ -52,6 +53,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
+    await db.delete(issueRecoveryActions);
     await db.delete(issues);
     await db.delete(agentTaskSessions);
     await db.delete(heartbeatRuns);
@@ -315,6 +317,134 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .where(eq(heartbeatRuns.id, scheduled.run.id))
       .then((rows) => rows[0] ?? null);
     expect(promotedRun?.status).toBe("queued");
+  });
+
+  it("preserves source-scoped recovery authority across bounded retries", async () => {
+    const companyId = randomUUID();
+    const recoveryOwnerId = randomUUID();
+    const terminatedOwnerId = randomUUID();
+    const issueId = randomUUID();
+    const actionId = randomUUID();
+    const sourceRunId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Recovery Retry Co",
+      issuePrefix: `RR${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: recoveryOwnerId,
+        companyId,
+        name: "Recovery Retry Owner",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: terminatedOwnerId,
+        companyId,
+        name: "Terminated Retry Source",
+        role: "engineer",
+        status: "terminated",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Bounded recovery retry",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: terminatedOwnerId,
+    });
+    await db.insert(issueRecoveryActions).values({
+      id: actionId,
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: recoveryOwnerId,
+      previousOwnerAgentId: terminatedOwnerId,
+      cause: "terminated_owner",
+      fingerprint: `retry-recovery:${issueId}`,
+      nextAction: "Continue the exact bounded recovery generation.",
+      attemptCount: 1,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: sourceRunId,
+      companyId,
+      agentId: recoveryOwnerId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "transient recovery failure",
+      errorCode: "adapter_failed",
+      finishedAt: now,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        sourceIssueId: issueId,
+        recoveryActionId: actionId,
+        recoveryAttempt: 1,
+        recoveryCause: "terminated_owner",
+        source: "issue_recovery_action",
+        wakeReason: "source_scoped_recovery_action",
+      },
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(sourceRunId, {
+      now,
+      random: () => 0.5,
+      wakeReason: "bounded_transient_retry",
+    });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .then((rows) => rows[0]);
+    expect(retryRun.contextSnapshot).toMatchObject({
+      issueId,
+      taskId: issueId,
+      sourceIssueId: issueId,
+      recoveryActionId: actionId,
+      recoveryAttempt: 1,
+      recoveryCause: "terminated_owner",
+      source: "issue_recovery_action",
+      wakeReason: "source_scoped_recovery_action",
+      retryReason: "transient_failure",
+    });
+    await expect(db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retryRun.wakeupRequestId!)))
+      .resolves.toEqual([
+        expect.objectContaining({
+          reason: "source_scoped_recovery_action",
+          payload: expect.objectContaining({
+            issueId,
+            sourceIssueId: issueId,
+            recoveryActionId: actionId,
+            recoveryAttempt: 1,
+            recoveryCause: "terminated_owner",
+          }),
+        }),
+      ]);
+    await expect(heartbeat.promoteDueScheduledRetries(scheduled.dueAt))
+      .resolves.toEqual({ promoted: 1, runIds: [retryRun.id] });
+    await expect(db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, retryRun.id)))
+      .resolves.toEqual([{ status: "queued" }]);
+    await expect(db.select({ status: issueRecoveryActions.status }).from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actionId)))
+      .resolves.toEqual([{ status: "active" }]);
   });
 
   it("schedules max-turn continuations with distinct retry metadata", async () => {

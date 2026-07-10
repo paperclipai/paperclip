@@ -307,6 +307,84 @@ describeEmbeddedPostgres("activity service", () => {
     });
   });
 
+  it("does not treat a progress comment activity as concrete backfill evidence", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const createdAt = new Date("2026-04-18T20:06:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Implement the orchestration fix",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      contextSnapshot: { issueId },
+      resultJson: { summary: "I will inspect the code next and then implement the fix." },
+      livenessState: null,
+      livenessReason: null,
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      createdByRunId: runId,
+      body: "Status: starting investigation. Next action: inspect the implementation.",
+      createdAt,
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: issueId,
+      runId,
+      createdAt,
+    });
+
+    const service = activityService(db);
+    const { run: backfilledRun } = await waitForIssueRun(
+      service,
+      companyId,
+      issueId,
+      (entry) => entry.runId === runId && entry.livenessState === "plan_only",
+    );
+
+    expect(backfilledRun).toMatchObject({
+      runId,
+      livenessState: "plan_only",
+      livenessReason: "Run described runnable future work without concrete action evidence",
+      lastUsefulActionAt: null,
+    });
+  });
+
   it("does not backfill document evidence from a different run", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

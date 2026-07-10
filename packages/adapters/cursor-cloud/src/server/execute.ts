@@ -320,6 +320,17 @@ async function getAttachedRun(input: {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta } = ctx;
+  const submitWithLaunchPermit = async <T>(submit: () => Promise<T>): Promise<T> => {
+    const releaseLaunchPermit = await ctx.acquireLaunchPermit?.();
+    try {
+      const submitted = submit();
+      releaseLaunchPermit?.();
+      return submitted;
+    } catch (error) {
+      releaseLaunchPermit?.();
+      throw error;
+    }
+  };
   const envConfig = asStringEnvMap(config.env);
   const apiKey = asString(envConfig.CURSOR_API_KEY, "").trim();
   if (!apiKey) {
@@ -461,12 +472,63 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let sdkAgent: SDKAgent | null = null;
   let run: Run | null = null;
   let streamError: string | null = null;
+  const cancellationError = () => new Error("Cursor cloud run cancelled by the control plane");
+  const cancelActiveCursorRun = () => {
+    if (run?.supports("cancel")) {
+      void run.cancel().catch(() => undefined);
+    }
+  };
+  const awaitRunSubmission = async (submission: Promise<Run>): Promise<Run> => {
+    const signal = ctx.signal;
+    if (!signal) return await submission;
+    if (signal.aborted) {
+      void submission.then((submittedRun) => submittedRun.cancel()).catch(() => undefined);
+      throw cancellationError();
+    }
+
+    return await new Promise<Run>((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => signal.removeEventListener("abort", onAbort);
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        // Cursor does not expose an AbortSignal for Agent.send. If the HTTP
+        // response (and therefore the stable run id) arrives after Paperclip
+        // cancelled, cancel that run immediately and do not wait for it here.
+        void submission.then((submittedRun) => submittedRun.cancel()).catch(() => undefined);
+        reject(cancellationError());
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      void submission.then(
+        (submittedRun) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve(submittedRun);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(error);
+        },
+      );
+    });
+  };
+  ctx.signal?.addEventListener("abort", cancelActiveCursorRun, { once: true });
   try {
+    if (ctx.signal?.aborted) throw new Error("Cursor cloud run cancelled by the control plane");
     const attachedRun = canReuseSession
       ? await getAttachedRun({ apiKey, session })
       : null;
 
     if (attachedRun) {
+      run = attachedRun;
+      if (ctx.signal?.aborted) {
+        cancelActiveCursorRun();
+        throw new Error("Cursor cloud run cancelled by the control plane");
+      }
       await emitStatus(onLog, "running", `Reattached to existing Cursor run ${attachedRun.id}.`);
       await onLog("stdout", eventLine({
         type: "cursor_cloud.init",
@@ -486,14 +548,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "running",
         `Prior Cursor run ${attachedRun.id} finished; sending heartbeat follow-up so this wake's context is not dropped.`,
       );
+      run = null;
     }
 
+    // Agent.create/resume only prepares an SDK handle (plus optional model
+    // validation); the actual cloud work is submitted by send(). Do not hold
+    // the launch lock across those non-cancellable preparation requests.
     sdkAgent = canReuseSession && session
       ? await Agent.resume(session.cursorAgentId, agentOptions)
       : await Agent.create(agentOptions);
-    run = await sdkAgent.send(finalPrompt, {
+    const runSubmission = submitWithLaunchPermit(() => sdkAgent!.send(finalPrompt, {
       ...(model ? { model } : {}),
-    });
+      idempotencyKey: ctx.runId,
+    }));
+    run = await awaitRunSubmission(runSubmission);
+    if (ctx.signal?.aborted) {
+      await run.cancel().catch(() => undefined);
+      throw new Error("Cursor cloud run cancelled by the control plane");
+    }
     await onLog("stdout", eventLine({
       type: "cursor_cloud.init",
       sessionId: sdkAgent.agentId,
@@ -596,6 +668,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
     };
   } finally {
+    ctx.signal?.removeEventListener("abort", cancelActiveCursorRun);
     if (sdkAgent) {
       try {
         await sdkAgent[Symbol.asyncDispose]();

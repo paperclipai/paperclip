@@ -269,6 +269,13 @@ describe("issue graph liveness classifier", () => {
           title: "Paused unblock work",
           status: "todo",
           assigneeAgentId: "blocker-agent",
+          monitorNextCheckAt: "2099-04-30T19:00:00.000Z",
+          executionPolicy: {
+            monitor: {
+              nextCheckAt: "2099-04-30T19:00:00.000Z",
+              maxAttempts: 2,
+            },
+          },
         }),
       ],
       relations: blocks,
@@ -291,6 +298,34 @@ describe("issue graph liveness classifier", () => {
       agents: [agent(), manager, agent({ id: "blocker-agent", name: "Errored", status: "error" })],
     });
     expect(errored[0]?.state).toBe("blocked_by_uninvokable_assignee");
+  });
+
+  it("prioritizes an uninvokable review owner over a future monitor waiting path", () => {
+    const findings = classifyIssueGraphLiveness({
+      now: "2026-07-10T12:00:00.000Z",
+      issues: [issue({
+        status: "in_review",
+        assigneeAgentId: "retired-reviewer",
+        monitorNextCheckAt: "2099-04-30T19:00:00.000Z",
+        executionPolicy: {
+          monitor: {
+            nextCheckAt: "2099-04-30T19:00:00.000Z",
+            maxAttempts: 2,
+          },
+        },
+      })],
+      relations: [],
+      agents: [
+        agent({ id: "retired-reviewer", name: "Retired Reviewer", status: "terminated" }),
+        manager,
+      ],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      state: "blocked_by_uninvokable_assignee",
+      recoveryIssueId: blockedId,
+    });
   });
 
   it("detects invalid in_review execution participant", () => {
@@ -393,7 +428,7 @@ describe("issue graph liveness classifier", () => {
 
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatchObject({
-      state: "in_review_without_action_path",
+      state: "blocked_by_uninvokable_assignee",
       recommendedOwnerAgentId: managerId,
     });
     expect(findings[0]?.recommendedOwnerCandidates).toEqual([

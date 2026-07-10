@@ -51,6 +51,7 @@ import type { PluginContext } from "./types.js";
 import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentCancelExecutionParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
   PluginEnvironmentLease,
@@ -285,6 +286,11 @@ export interface PluginDefinition {
   onEnvironmentExecute?(
     params: PluginEnvironmentExecuteParams,
   ): Promise<PluginEnvironmentExecuteResult>;
+
+  /** Called when the host cancels an already-submitted environment command. */
+  onEnvironmentCancelExecution?(
+    params: PluginEnvironmentCancelExecutionParams,
+  ): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

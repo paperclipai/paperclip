@@ -404,6 +404,9 @@ describe("agent instructions bundle routes", () => {
         instructionsRootPath: "/tmp/agent-1",
         instructionsEntryFile: "AGENTS.md",
         instructionsFilePath: "/tmp/agent-1/AGENTS.md",
+        paperclipSkillSync: {
+          desiredSkills: ["company/acme/deployment", "company/acme/qa"],
+        },
         model: "gpt-5.4",
       },
     });
@@ -412,6 +415,7 @@ describe("agent instructions bundle routes", () => {
       .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
       .send({
         adapterType: "claude_local",
+        replaceAdapterConfig: true,
         adapterConfig: {
           model: "claude-sonnet-4",
         },
@@ -428,6 +432,9 @@ describe("agent instructions bundle routes", () => {
           instructionsRootPath: "/tmp/agent-1",
           instructionsEntryFile: "AGENTS.md",
           instructionsFilePath: "/tmp/agent-1/AGENTS.md",
+          paperclipSkillSync: {
+            desiredSkills: ["company/acme/deployment", "company/acme/qa"],
+          },
         }),
       }),
       expect.any(Object),

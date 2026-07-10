@@ -47,7 +47,7 @@ Agent transitions to `in_review` or `done` are hard-blocked for detected board r
 
 Follow these steps every time you wake up:
 
-**Scoped-wake fast path.** If the user message includes a **"Paperclip Resume Delta"** or **"Paperclip Wake Payload"** section that names a specific issue, **skip Steps 1–4 entirely**. Go straight to **Step 5 (Checkout)** for that issue, then continue with Steps 6–9. The scoped wake already tells you which issue to work on — do NOT call `/api/agents/me`, do NOT fetch your inbox, do NOT pick work. Just checkout, read the wake context, do the work, and update.
+**Scoped-wake fast path.** If the user message includes a **"Paperclip Resume Delta"** or **"Paperclip Wake Payload"** section that names a specific issue, **skip Steps 1–4 entirely**. Go straight to **Step 5 (Checkout)** for that issue, then continue with Steps 6–9. The scoped wake already tells you which issue to work on — do NOT call `/api/agents/me`, do NOT fetch your inbox, do NOT pick work. Just checkout, read the wake context, do the work, and update. Exception: a `source_scoped_recovery_action` is a coordination wake, so follow the recovery-action path below before checkout; never checkout a source issue still assigned to another agent.
 
 **Step 1 — Identity.** If not already in context, `GET /api/agents/me` to get your id, companyId, role, chainOfCommand, and budget.
 
@@ -70,6 +70,8 @@ Overrides and special cases:
 - `PAPERCLIP_WAKE_REASON=next_owner_handoff` → this issue was assigned to you from another agent's `Next owner:` handoff. Read `PAPERCLIP_WAKE_COMMENT_ID` first, then checkout and continue from the stated next action.
 - `PAPERCLIP_WAKE_REASON=issue_commented` with `PAPERCLIP_WAKE_COMMENT_ID` → read the comment, then checkout and address the feedback (applies to `in_review` too).
 - `PAPERCLIP_WAKE_REASON=child_blocked_manager_escalation` → a direct report's child execution lane is blocked. Read the parent escalation comment and child lane, propose concrete recovery options, resolve or reassign when authorized, and escalate through your own `reportsTo` chain. If you are the top-level CEO and a human decision is required, create an issue-thread interaction or approval for the board.
+- `PAPERCLIP_WAKE_REASON=source_scoped_recovery_action` → this is a bounded coordination handoff, not implicit source-task ownership. Read `recoveryActionId`, `recoveryCause`, and `sourceIssueId` from `PAPERCLIP_WAKE_PAYLOAD_JSON`; fetch `GET /api/issues/{sourceIssueId}/recovery-actions` and verify the active action names you as owner. Do not checkout or execute a source issue assigned to another agent. Explicitly accept it with `POST /api/issues/{sourceIssueId}/recovery-actions/accept` only when you are capable and ready to own it, or repair/reassign the path through an authorized manager lane. Resolve the action only after a real execution/review/monitor path exists. Never claim success while it remains active; if no safe disposition exists, leave it active for the bounded watchdog to escalate to the board.
+- `recoveryCause=terminated_routine_owner` → read `executionContract.routineRecovery` on the recovery issue. During this recovery run, explicitly self-accept/reassign or archive every listed routine, restore only intended triggers, verify schedule and secret-reference metadata, then resolve the recovery issue/action. A paused routine plus an acknowledgement is not recovery.
 - Wake payload says `dependency-blocked interaction: yes` → the issue is still blocked for deliverable work. Do not try to unblock it. Read the comment, name the unresolved blocker(s), and respond/triage via comments or documents. Use the scoped wake context rather than treating a checkout failure as a blocker.
 - **Blocked-task dedup:** before touching a `blocked` task, check the thread. If your most recent comment was a blocked-status update and no one has replied since, skip entirely — do not checkout, do not re-comment. Only re-engage on new context (comment, status change, event wake).
 - Nothing assigned and no specific interaction or manager-escalation wake → exit the heartbeat.
@@ -83,6 +85,8 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLI
 ```
 
 If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
+
+For `source_scoped_recovery_action`, checkout only when the recovery issue/source is already assigned to you. Otherwise use the recovery-action GET/accept/resolve endpoints; the action owner is authorized only within the matching recovery run and does not receive general mutation rights over someone else's task.
 
 **Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
 
@@ -269,6 +273,8 @@ For the exact catalog, assignment, OAuth, permission, and verification workflow,
 
 Routines are recurring tasks. Each time a routine fires it creates an execution issue assigned to the routine's agent — the agent picks it up in the normal heartbeat flow.
 
+Do not use a routine as a watchdog for one existing issue. If work is waiting for a bounded external condition (deployment, approval, vendor response, service recovery), schedule a bounded issue monitor on that issue through `executionPolicy.monitor` so the same owner and contract resume without creating board noise. Use a routine only when every occurrence is genuinely a new unit of work that deserves its own execution issue.
+
 - Create and manage routines with the routines API — agents can only manage routines assigned to themselves.
 - Add triggers per routine: `schedule` (cron), `webhook`, or `api` (manual).
 - Control concurrency and catch-up behaviour with `concurrencyPolicy` and `catchUpPolicy`.
@@ -295,6 +301,8 @@ For commands, response fields, and MCP tools, read:
 - **Leave a next action.** Every progress comment should make clear what is complete, what remains, and who owns the next step.
 - **AI Factory SOP: no recursive sub-issues.** Create bounded direct child execution lanes only from main parent issues and rely on Paperclip wake events or comments for completion. Execution lanes must never create child issues or grandchildren.
 - **Execution contracts on every delegation.** Child issues you create carry a contract; delegated work you pick up gets a preflight check; QA reviews against the contract, and fails work that solves the wrong problem no matter how polished. Missing context is a blocker, not permission to invent. See `references/execution-contract.md`.
+- **Capability before dispatch.** Before assigning a lane, verify the target agent has the required adapter/runtime, desired company skills, MCP/credential access, and environment access. If not, route to a capable owner or create one bounded provisioning lane first; do not wake an incapable agent repeatedly and ask the board to bridge the gap.
+- **Outputs are first-class.** A success comment is not the deliverable. Attach or register the required document, work product, preview, file, or external link and include acceptance-check evidence before marking work complete.
 - **Repeated failures become durable fixes.** When work fails or needs rework, classify the incident and route the fix to the right layer (agent prompt, company skill, or a root-skill/orchestration change request) per `references/governance.md`. Do not only fix the task; fix the mechanism.
 - **Preserve workspace continuity for follow-ups.** Direct child lanes inherit execution workspace from `parentId` server-side. For sibling lanes or non-child follow-ups on the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId` explicitly.
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
@@ -404,6 +412,9 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Get task + ancestors                  | `GET /api/issues/:issueId`                                                                                                      |
 | Compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                                                                    |
 | Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                                                         |
+| Read active recovery action           | `GET /api/issues/:issueId/recovery-actions`                                                                                     |
+| Explicitly accept recovery ownership  | `POST /api/issues/:issueId/recovery-actions/accept` with `{ "actionId": "..." }`                                               |
+| Resolve recovery after disposition    | `POST /api/issues/:issueId/recovery-actions/resolve`                                                                            |
 | Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`                                       |
 | Add comment                           | `POST /api/issues/:issueId/comments`                                                                                            |
 | Issue-thread interactions             | `GET\|POST /api/issues/:issueId/interactions` • `POST /api/issues/:issueId/interactions/:interactionId/{accept,reject,respond}` |

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issueRecoveryActions } from "@paperclipai/db";
 import type {
@@ -179,6 +179,16 @@ export function issueRecoveryActionService(db: Db) {
     const now = new Date();
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
+      // A typed routine-termination handoff is an authority boundary, not a
+      // generic stranded-work action. Generic reconciliation must never
+      // declassify it in place; its bounded watchdog and explicit resolution
+      // path own the lifecycle until that action is terminal.
+      if (
+        existing.cause === "terminated_routine_owner" &&
+        input.cause !== "terminated_routine_owner"
+      ) {
+        return existing;
+      }
       const [updated] = await db
         .update(issueRecoveryActions)
         .set({
@@ -209,6 +219,9 @@ export function issueRecoveryActionService(db: Db) {
           and(
             eq(issueRecoveryActions.id, existing.id),
             inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+            input.cause === "terminated_routine_owner"
+              ? undefined
+              : ne(issueRecoveryActions.cause, "terminated_routine_owner"),
           ),
         )
         .returning();

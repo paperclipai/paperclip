@@ -4,13 +4,13 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   companySecretBindings,
-  companySecretVersions,
   companySecrets,
   executionWorkspaces,
   goals,
   heartbeatRuns,
   issueInboxArchives,
   issueReadStates,
+  issueRecoveryActions,
   issues,
   pluginManagedResources,
   plugins,
@@ -53,7 +53,6 @@ import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
 import { secretService } from "./secrets.js";
-import { getSecretProvider } from "../secrets/provider-registry.js";
 import { parseCron, validateCron } from "./cron.js";
 import { heartbeatService } from "./heartbeat.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
@@ -75,9 +74,40 @@ const WEEKDAY_INDEX: Record<string, number> = {
   Sat: 6,
 };
 
-type Actor = { agentId?: string | null; userId?: string | null; runId?: string | null };
+export type RoutineRecoveryMutationAuthorization = {
+  actorType: "agent" | "board";
+  actionId: string;
+  attemptCount: number;
+  recoveryIssueId: string;
+  terminatedAgentId: string;
+  ownerAgentId: string | null;
+  runId: string | null;
+  routineIds: string[];
+  triggerIds: string[];
+};
+
+type Actor = {
+  agentId?: string | null;
+  userId?: string | null;
+  runId?: string | null;
+  routineRecoveryAuthorization?: RoutineRecoveryMutationAuthorization | null;
+};
 type RoutineRow = typeof routines.$inferSelect;
 type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
+
+export function routineRecoveryTriggerDispositionMarker(
+  authorization: Pick<RoutineRecoveryMutationAuthorization, "actionId" | "attemptCount">,
+  triggerId: string,
+  enabled: boolean,
+) {
+  return [
+    "paperclip-recovery-trigger-disposition",
+    authorization.actionId,
+    authorization.attemptCount,
+    triggerId,
+    enabled ? "enabled" : "disabled",
+  ].join(":");
+}
 
 interface RoutineTriggerSecretRestoreMaterial extends RoutineTriggerSecretMaterial {
   triggerId: string;
@@ -612,17 +642,287 @@ export function routineService(
     return routine;
   }
 
+  function validateAssignableAgent(
+    companyId: string,
+    agent: { id: string; companyId: string; status: string } | null,
+  ) {
+    if (!agent) throw notFound("Assignee agent not found");
+    if (agent.companyId !== companyId) throw unprocessable("Assignee must belong to same company");
+    if (agent.status === "pending_approval") throw conflict("Cannot assign routines to pending approval agents");
+    if (agent.status === "terminated") throw conflict("Cannot assign routines to terminated agents");
+    return agent;
+  }
+
   async function assertAssignableAgent(companyId: string, agentId: string | null | undefined) {
-    if (!agentId) return;
+    if (!agentId) return null;
     const agent = await db
       .select({ id: agents.id, companyId: agents.companyId, status: agents.status })
       .from(agents)
       .where(eq(agents.id, agentId))
       .then((rows) => rows[0] ?? null);
-    if (!agent) throw notFound("Assignee agent not found");
-    if (agent.companyId !== companyId) throw unprocessable("Assignee must belong to same company");
-    if (agent.status === "pending_approval") throw conflict("Cannot assign routines to pending approval agents");
-    if (agent.status === "terminated") throw conflict("Cannot assign routines to terminated agents");
+    return validateAssignableAgent(companyId, agent);
+  }
+
+  async function lockAssignableAgent(executor: Db, companyId: string, agentId: string | null | undefined) {
+    if (!agentId) return null;
+    const locked = await lockAgentRows(executor, [agentId]);
+    return validateAssignableAgent(companyId, locked.get(agentId) ?? null);
+  }
+
+  async function lockAssignableAgentForDispatch(
+    executor: Db,
+    companyId: string,
+    agentId: string | null | undefined,
+  ) {
+    if (!agentId) return null;
+    const agent = await executor
+      .select({ id: agents.id, companyId: agents.companyId, status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      // SHARE blocks termination's status update while remaining compatible
+      // with the foreign-key KEY SHARE locks taken by issue/run inserts.
+      .for("share")
+      .then((rows) => rows[0] ?? null);
+    return validateAssignableAgent(companyId, agent);
+  }
+
+  async function lockAgentRows(executor: Db, agentIds: Array<string | null | undefined>) {
+    const ids = Array.from(new Set(agentIds.filter((id): id is string => Boolean(id)))).sort();
+    if (ids.length === 0) {
+      return new Map<string, { id: string; companyId: string; status: string }>();
+    }
+    const rows = await executor
+      .select({ id: agents.id, companyId: agents.companyId, status: agents.status })
+      .from(agents)
+      .where(inArray(agents.id, ids))
+      .orderBy(asc(agents.id))
+      .for("update")
+      .then((result) => result);
+    return new Map(rows.map((row) => [row.id, row]));
+  }
+
+  function recoveryInventoryIds(value: unknown, key: "routines" | "triggers") {
+    const contract = isPlainRecord(value) ? value : null;
+    const recovery = contract && isPlainRecord(contract.routineRecovery)
+      ? contract.routineRecovery
+      : null;
+    const entries = recovery && Array.isArray(recovery[key]) ? recovery[key] : [];
+    return entries
+      .map((entry) => isPlainRecord(entry) && typeof entry.id === "string" ? entry.id : null)
+      .filter((id): id is string => Boolean(id));
+  }
+
+  function sameStringSet(left: string[], right: string[]) {
+    if (left.length !== right.length) return false;
+    const expected = new Set(left);
+    return right.every((value) => expected.has(value));
+  }
+
+  async function lockActiveTerminatedOwnerTriggerInventory(
+    executor: Db,
+    companyId: string,
+    triggerIds: string[],
+  ) {
+    const requestedTriggerIds = Array.from(new Set(triggerIds)).sort();
+    if (requestedTriggerIds.length === 0) return [];
+
+    // This is intentionally a pre-read. Once a matching inventory is found,
+    // the issue and action are locked separately in the same order used by
+    // agent termination: agents -> routines -> triggers -> issues -> actions.
+    // Avoiding FOR UPDATE on a join also keeps Postgres from choosing a lock
+    // order for us.
+    const candidateRows = await executor
+      .select({
+        issueId: issues.id,
+        executionContract: issues.executionContract,
+      })
+      .from(issueRecoveryActions)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.id, issueRecoveryActions.sourceIssueId),
+          eq(issues.companyId, issueRecoveryActions.companyId),
+        ),
+      )
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.cause, "terminated_routine_owner"),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        ),
+      )
+      .orderBy(asc(issues.id), asc(issueRecoveryActions.id));
+    const requestedTriggerIdSet = new Set(requestedTriggerIds);
+    const candidateIssueIds = Array.from(new Set(
+      candidateRows
+        .filter((row) =>
+          recoveryInventoryIds(row.executionContract, "triggers")
+            .some((triggerId) => requestedTriggerIdSet.has(triggerId)),
+        )
+        .map((row) => row.issueId),
+    )).sort();
+    if (candidateIssueIds.length === 0) return [];
+
+    const lockedIssues = await executor
+      .select({ id: issues.id, executionContract: issues.executionContract })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, candidateIssueIds)))
+      .orderBy(asc(issues.id))
+      .for("update");
+    const lockedIssueInventory = new Map(
+      lockedIssues.map((issue) => [
+        issue.id,
+        recoveryInventoryIds(issue.executionContract, "triggers")
+          .filter((triggerId) => requestedTriggerIdSet.has(triggerId)),
+      ]),
+    );
+    const matchingLockedIssueIds = lockedIssues
+      .filter((issue) => (lockedIssueInventory.get(issue.id)?.length ?? 0) > 0)
+      .map((issue) => issue.id)
+      .sort();
+    if (matchingLockedIssueIds.length === 0) return [];
+
+    const lockedActions = await executor
+      .select({ id: issueRecoveryActions.id, sourceIssueId: issueRecoveryActions.sourceIssueId })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          inArray(issueRecoveryActions.sourceIssueId, matchingLockedIssueIds),
+          eq(issueRecoveryActions.cause, "terminated_routine_owner"),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        ),
+      )
+      .orderBy(asc(issueRecoveryActions.id))
+      .for("update");
+    const protectedTriggerIds = new Set<string>();
+    for (const action of lockedActions) {
+      for (const triggerId of lockedIssueInventory.get(action.sourceIssueId) ?? []) {
+        protectedTriggerIds.add(triggerId);
+      }
+    }
+    return [...protectedTriggerIds].sort();
+  }
+
+  async function lockAndValidateRoutineRecoveryAuthorization(
+    executor: Db,
+    routine: Pick<RoutineRow, "id" | "companyId">,
+    actor: Actor,
+  ) {
+    const authorization = actor.routineRecoveryAuthorization;
+    if (!authorization) return null;
+    if (!authorization.routineIds.includes(routine.id)) {
+      throw forbidden("Routine is outside the active recovery inventory");
+    }
+    if (
+      authorization.actorType === "agent" &&
+      (!actor.agentId ||
+        actor.agentId !== authorization.ownerAgentId ||
+        !actor.runId ||
+        actor.runId !== authorization.runId)
+    ) {
+      throw forbidden("Routine recovery authorization no longer matches the acting agent run");
+    }
+
+    if (authorization.actorType === "agent") {
+      const run = await executor
+        .select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.id, authorization.runId!),
+            eq(heartbeatRuns.companyId, routine.companyId),
+            eq(heartbeatRuns.agentId, authorization.ownerAgentId!),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      const context = isPlainRecord(run?.contextSnapshot) ? run.contextSnapshot : null;
+      if (
+        !run ||
+        run.status !== "running" ||
+        context?.source !== "issue_recovery_action" ||
+        context?.wakeReason !== "source_scoped_recovery_action" ||
+        context?.recoveryCause !== "terminated_routine_owner" ||
+        context?.recoveryActionId !== authorization.actionId ||
+        context?.recoveryAttempt !== authorization.attemptCount ||
+        context?.routineRecoveryIssueId !== authorization.recoveryIssueId ||
+        context?.terminatedAgentId !== authorization.terminatedAgentId ||
+        !Array.isArray(context?.routineIds) ||
+        !context.routineIds.includes(routine.id)
+      ) {
+        throw forbidden("Routine recovery delivery is no longer active");
+      }
+    }
+
+    const recoveryIssue = await executor
+      .select({
+        id: issues.id,
+        assigneeAgentId: issues.assigneeAgentId,
+        originKind: issues.originKind,
+        originId: issues.originId,
+        executionContract: issues.executionContract,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.id, authorization.recoveryIssueId),
+          eq(issues.companyId, routine.companyId),
+        ),
+      )
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (
+      !recoveryIssue ||
+      recoveryIssue.originKind !== "harness_liveness_escalation" ||
+      recoveryIssue.originId !== `agent_termination_routine_handoff:${authorization.terminatedAgentId}` ||
+      (authorization.actorType === "agent" && recoveryIssue.assigneeAgentId !== authorization.ownerAgentId)
+    ) {
+      throw forbidden("Routine recovery issue ownership changed");
+    }
+    const contractRoutineIds = recoveryInventoryIds(recoveryIssue.executionContract, "routines");
+    const contractTriggerIds = recoveryInventoryIds(recoveryIssue.executionContract, "triggers");
+    if (
+      !sameStringSet(contractRoutineIds, authorization.routineIds) ||
+      !sameStringSet(contractTriggerIds, authorization.triggerIds) ||
+      !contractRoutineIds.includes(routine.id)
+    ) {
+      throw conflict("Routine recovery inventory changed; reload before mutating routines");
+    }
+
+    const action = await executor
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.id, authorization.actionId),
+          eq(issueRecoveryActions.companyId, routine.companyId),
+          eq(issueRecoveryActions.sourceIssueId, authorization.recoveryIssueId),
+        ),
+      )
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (
+      !action ||
+      action.cause !== "terminated_routine_owner" ||
+      action.attemptCount !== authorization.attemptCount ||
+      (authorization.actorType === "agent" &&
+        (action.status !== "active" || action.ownerAgentId !== authorization.ownerAgentId)) ||
+      (authorization.actorType === "board" && !["active", "escalated"].includes(action.status)) ||
+      (authorization.actorType === "agent" && action.timeoutAt !== null && action.timeoutAt <= new Date())
+    ) {
+      throw forbidden("Routine recovery action changed or expired; reload before mutating routines");
+    }
+    return authorization;
+  }
+
+  function assertPrelockedRoutineAssignee(
+    routine: Pick<RoutineRow, "assigneeAgentId">,
+    prelockedAgentIds: Set<string>,
+  ) {
+    if (routine.assigneeAgentId && !prelockedAgentIds.has(routine.assigneeAgentId)) {
+      throw conflict("Routine assignee changed while waiting for the lifecycle lock; retry the update");
+    }
   }
 
   async function assertRestorableAssignee(
@@ -960,80 +1260,83 @@ export function routineService(
       .then((rows) => rows[0] ?? null);
   }
 
-  async function createWebhookSecret(
+  async function prepareWebhookSecret(
     companyId: string,
     routineId: string,
     actor: Actor,
-    executor?: Db,
   ) {
     const secretValue = crypto.randomBytes(24).toString("hex");
     const providerId = getConfiguredSecretProvider();
-    const input = {
-      name: `routine-${routineId}-${crypto.randomBytes(6).toString("hex")}`,
+    const name = `routine-${routineId}-${crypto.randomBytes(6).toString("hex")}`;
+    // Provider I/O is intentionally completed before any agent/routine row
+    // lock. secretService.create has provider-write rollback compensation.
+    const secret = await secretsSvc.create(companyId, {
+      name,
+      key: name,
       provider: providerId,
       value: secretValue,
+      managedMode: "paperclip_managed",
       description: `Webhook auth for routine ${routineId}`,
-    };
-    const provider = getSecretProvider(input.provider);
-    const prepared = await provider.createSecret({
-      value: input.value,
-      externalRef: null,
-      context: {
-        companyId,
-        secretKey: input.name,
-        secretName: input.name,
-        version: 1,
-      },
-    });
-
-    const insertSecret = async (secretDb: Db) => {
-      const secret = await secretDb
-        .insert(companySecrets)
-        .values({
-          companyId,
-          key: input.name,
-          name: input.name,
-          provider: input.provider,
-          status: "active",
-          managedMode: "paperclip_managed",
-          externalRef: prepared.externalRef,
-          providerMetadata: null,
-          latestVersion: 1,
-          description: input.description,
-          lastRotatedAt: new Date(),
-          createdByAgentId: actor.agentId ?? null,
-          createdByUserId: actor.userId ?? null,
-        })
-        .returning()
-        .then((rows) => rows[0]);
-
-      await secretDb.insert(companySecretVersions).values({
-        secretId: secret.id,
-        version: 1,
-        material: prepared.material,
-        valueSha256: prepared.valueSha256,
-        fingerprintSha256: prepared.fingerprintSha256 ?? prepared.valueSha256,
-        providerVersionRef: prepared.providerVersionRef ?? null,
-        status: "current",
-        createdByAgentId: actor.agentId ?? null,
-        createdByUserId: actor.userId ?? null,
-      });
-
-      await secretDb.insert(companySecretBindings).values({
-        companyId,
-        secretId: secret.id,
-        targetType: "routine",
-        targetId: routineId,
-        configPath: routineWebhookSecretConfigPath(secret.id),
-      });
-
-      return secret;
-    };
-
-    const secret = executor
-      ? await insertSecret(executor)
-      : await db.transaction(async (tx) => insertSecret(tx as unknown as Db));
+    }, actor);
     return { secret, secretValue };
+  }
+
+  async function bindPreparedWebhookSecret(
+    executor: Db,
+    companyId: string,
+    routineId: string,
+    secretId: string,
+  ) {
+    await executor.insert(companySecretBindings).values({
+      companyId,
+      secretId,
+      targetType: "routine",
+      targetId: routineId,
+      configPath: routineWebhookSecretConfigPath(secretId),
+    });
+  }
+
+  async function cleanupPreparedWebhookSecret(
+    prepared: Awaited<ReturnType<typeof prepareWebhookSecret>>,
+    originalError?: unknown,
+  ) {
+    try {
+      await secretsSvc.remove(prepared.secret.id);
+    } catch (cleanupError) {
+      logger.error(
+        { err: cleanupError, secretId: prepared.secret.id },
+        "failed to compensate prepared routine webhook secret",
+      );
+      if (originalError !== undefined) {
+        throw new AggregateError(
+          [originalError, cleanupError],
+          "Routine webhook mutation failed and prepared-secret cleanup also failed",
+        );
+      }
+      throw cleanupError;
+    }
+    if (originalError !== undefined) throw originalError;
+  }
+
+  async function cleanupPreparedWebhookSecrets(
+    preparedSecrets: Iterable<Awaited<ReturnType<typeof prepareWebhookSecret>>>,
+    originalError: unknown,
+  ): Promise<never> {
+    const cleanupErrors: unknown[] = [];
+    for (const prepared of preparedSecrets) {
+      try {
+        await cleanupPreparedWebhookSecret(prepared);
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [originalError, ...cleanupErrors],
+        `Routine webhook mutation failed and ${cleanupErrors.length} prepared-secret cleanup operation(s) failed`,
+      );
+    }
+    throw originalError;
   }
 
   async function resolveTriggerSecret(trigger: typeof routineTriggers.$inferSelect, companyId: string) {
@@ -1105,13 +1408,17 @@ export function routineService(
     executionWorkspaceSettings?: Record<string, unknown> | null;
     actor?: Actor;
   }) {
-    const projectId = input.projectId ?? input.routine.projectId ?? null;
-    const assigneeAgentId = input.assigneeAgentId ?? input.routine.assigneeAgentId ?? null;
+    const routine = await getRoutineById(input.routine.id);
+    if (!routine || routine.companyId !== input.routine.companyId) {
+      throw notFound("Routine not found");
+    }
+    const projectId = input.projectId ?? routine.projectId ?? null;
+    const assigneeAgentId = input.assigneeAgentId ?? routine.assigneeAgentId ?? null;
     if (!assigneeAgentId) {
       throw unprocessable("Default agent required");
     }
     const automaticVariables: Record<string, string | number | boolean> = {};
-    if (input.executionWorkspaceId && routineUsesWorkspaceBranch(input.routine)) {
+    if (input.executionWorkspaceId && routineUsesWorkspaceBranch(routine)) {
       const workspace = await db
         .select({
           branchName: executionWorkspaces.branchName,
@@ -1121,7 +1428,7 @@ export function routineService(
         .where(
           and(
             eq(executionWorkspaces.id, input.executionWorkspaceId),
-            eq(executionWorkspaces.companyId, input.routine.companyId),
+            eq(executionWorkspaces.companyId, routine.companyId),
           ),
         )
         .then((rows) => rows[0] ?? null);
@@ -1130,20 +1437,20 @@ export function routineService(
         automaticVariables[WORKSPACE_BRANCH_ROUTINE_VARIABLE] = branchName;
       }
     }
-    const resolvedVariables = resolveRoutineVariableValues(input.routine.variables ?? [], {
+    const resolvedVariables = resolveRoutineVariableValues(routine.variables ?? [], {
       ...input,
       automaticVariables,
     });
     const allVariables = { ...getBuiltinRoutineVariableValues(), ...automaticVariables, ...resolvedVariables };
-    const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
-    const description = interpolateRoutineTemplate(input.routine.description, allVariables);
+    const title = interpolateRoutineTemplate(routine.title, allVariables) ?? routine.title;
+    const description = interpolateRoutineTemplate(routine.description, allVariables);
     const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
-    const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
+    const managedRoutineBinding = await getManagedRoutineBinding(routine);
     const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
     const issueOriginKind = managedIssueTemplate?.surfaceVisibility === "plugin_operation" && managedRoutineBinding
       ? pluginOperationIssueOriginKind(managedRoutineBinding.pluginKey)
       : "routine_execution";
-    const issueOriginId = managedIssueTemplate?.originId ?? input.routine.id;
+    const issueOriginId = managedIssueTemplate?.originId ?? routine.id;
     const issueBillingCode = managedIssueTemplate?.billingCode ?? null;
     const dispatchFingerprint = createRoutineDispatchFingerprint({
       payload: triggerPayload,
@@ -1157,9 +1464,63 @@ export function routineService(
     });
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
-      await tx.execute(
-        sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
-      );
+      // Lifecycle mutations take the agent lock before the routine lock. Use
+      // the same order for dispatch so termination cannot deadlock with a run
+      // that is being created.
+      await lockAssignableAgentForDispatch(txDb, routine.companyId, assigneeAgentId);
+      const lockedRoutine = await txDb
+        .select()
+        .from(routines)
+        .where(and(eq(routines.id, routine.id), eq(routines.companyId, routine.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!lockedRoutine) throw notFound("Routine not found");
+      if (lockedRoutine.latestRevisionId !== routine.latestRevisionId) {
+        throw conflict("Routine changed while dispatching; retry the run");
+      }
+      const lockedAssigneeAgentId = input.assigneeAgentId ?? lockedRoutine.assigneeAgentId ?? null;
+      if (lockedAssigneeAgentId !== assigneeAgentId) {
+        throw conflict("Routine assignee changed while dispatching; retry the run");
+      }
+      if (lockedRoutine.status === "archived") throw conflict("Routine is archived");
+      if (
+        (input.source === "schedule" || input.source === "webhook") &&
+        lockedRoutine.status !== "active"
+      ) {
+        throw conflict("Routine trigger is not active");
+      }
+      const trigger = input.trigger
+        ? await txDb
+            .select()
+            .from(routineTriggers)
+            .where(and(
+              eq(routineTriggers.id, input.trigger.id),
+              eq(routineTriggers.routineId, lockedRoutine.id),
+              eq(routineTriggers.companyId, lockedRoutine.companyId),
+            ))
+            .for("update")
+            .then((rows) => rows[0] ?? null)
+        : null;
+      if (input.trigger && !trigger) throw conflict("Routine trigger is not active");
+      if (trigger && !trigger.enabled) throw conflict("Routine trigger is not active");
+      if (
+        trigger &&
+        input.trigger &&
+        (
+          trigger.kind !== input.trigger.kind ||
+          trigger.cronExpression !== input.trigger.cronExpression ||
+          trigger.timezone !== input.trigger.timezone ||
+          trigger.publicId !== input.trigger.publicId ||
+          trigger.secretId !== input.trigger.secretId ||
+          trigger.signingMode !== input.trigger.signingMode ||
+          trigger.replayWindowSec !== input.trigger.replayWindowSec
+        )
+      ) {
+        throw conflict("Routine trigger changed while dispatching; retry the run");
+      }
+      if (input.actor) {
+        await lockAndValidateRoutineRecoveryAuthorization(txDb, lockedRoutine, input.actor);
+      }
 
       if (input.idempotencyKey) {
         const existing = await txDb
@@ -1167,11 +1528,11 @@ export function routineService(
           .from(routineRuns)
           .where(
             and(
-              eq(routineRuns.companyId, input.routine.companyId),
-              eq(routineRuns.routineId, input.routine.id),
+              eq(routineRuns.companyId, routine.companyId),
+              eq(routineRuns.routineId, routine.id),
               eq(routineRuns.source, input.source),
               eq(routineRuns.idempotencyKey, input.idempotencyKey),
-              input.trigger ? eq(routineRuns.triggerId, input.trigger.id) : isNull(routineRuns.triggerId),
+              trigger ? eq(routineRuns.triggerId, trigger.id) : isNull(routineRuns.triggerId),
             ),
           )
           .orderBy(desc(routineRuns.createdAt))
@@ -1185,9 +1546,9 @@ export function routineService(
       const [createdRun] = await txDb
         .insert(routineRuns)
         .values({
-          companyId: input.routine.companyId,
-          routineId: input.routine.id,
-          triggerId: input.trigger?.id ?? null,
+          companyId: routine.companyId,
+          routineId: routine.id,
+          triggerId: trigger?.id ?? null,
           source: input.source,
           status: "received",
           triggeredAt,
@@ -1197,21 +1558,21 @@ export function routineService(
         })
         .returning();
 
-      const nextRunAt = input.trigger?.kind === "schedule" && input.trigger.cronExpression && input.trigger.timezone
-        ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
+      const nextRunAt = trigger?.kind === "schedule" && trigger.cronExpression && trigger.timezone
+        ? nextCronTickInTimeZone(trigger.cronExpression, trigger.timezone, triggeredAt)
         : undefined;
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+        const activeIssue = await findLiveExecutionIssue(routine, txDb, dispatchFingerprint, {
           kind: issueOriginKind,
           id: issueOriginId,
         });
-        if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+        if (activeIssue && routine.concurrencyPolicy !== "always_enqueue") {
+          const status = routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
             await touchIssueForUserInbox(txDb, {
-              companyId: input.routine.companyId,
+              companyId: routine.companyId,
               issueId: activeIssue.id,
               userId: manualRunnerUserId,
               touchedAt: triggeredAt,
@@ -1224,7 +1585,7 @@ export function routineService(
             completedAt: triggeredAt,
           }, txDb);
           await updateRoutineTouchedState({
-            routineId: input.routine.id,
+            routineId: routine.id,
             triggerId: input.trigger?.id ?? null,
             triggeredAt,
             status,
@@ -1235,14 +1596,14 @@ export function routineService(
         }
 
         try {
-          createdIssue = await issueSvc.create(input.routine.companyId, {
+          createdIssue = await issueSvc.create(routine.companyId, {
             projectId,
-            goalId: input.routine.goalId,
-            parentId: input.routine.parentIssueId,
+            goalId: routine.goalId,
+            parentId: routine.parentIssueId,
             title,
             description,
             status: "todo",
-            priority: input.routine.priority,
+            priority: routine.priority,
             assigneeAgentId,
             createdByAgentId: input.source === "manual" ? input.actor?.agentId ?? null : null,
             createdByUserId: manualRunnerUserId,
@@ -1263,19 +1624,19 @@ export function routineService(
             (error as { code?: string }).code === "23505" &&
             "constraint" in error &&
             (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq";
-          if (!isOpenExecutionConflict || input.routine.concurrencyPolicy === "always_enqueue") {
+          if (!isOpenExecutionConflict || routine.concurrencyPolicy === "always_enqueue") {
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+          const existingIssue = await findLiveExecutionIssue(routine, txDb, dispatchFingerprint, {
             kind: issueOriginKind,
             id: issueOriginId,
           });
           if (!existingIssue) throw error;
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+          const status = routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
             await touchIssueForUserInbox(txDb, {
-              companyId: input.routine.companyId,
+              companyId: routine.companyId,
               issueId: existingIssue.id,
               userId: manualRunnerUserId,
               touchedAt: triggeredAt,
@@ -1288,8 +1649,8 @@ export function routineService(
             completedAt: triggeredAt,
           }, txDb);
           await updateRoutineTouchedState({
-            routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
+            routineId: routine.id,
+            triggerId: trigger?.id ?? null,
             triggeredAt,
             status,
             issueId: existingIssue.id,
@@ -1313,8 +1674,8 @@ export function routineService(
           linkedIssueId: createdIssue.id,
         }, txDb);
         await updateRoutineTouchedState({
-          routineId: input.routine.id,
-          triggerId: input.trigger?.id ?? null,
+          routineId: routine.id,
+          triggerId: trigger?.id ?? null,
           triggeredAt,
           status: "issue_created",
           issueId: createdIssue.id,
@@ -1332,8 +1693,8 @@ export function routineService(
           completedAt: new Date(),
         }, txDb);
         await updateRoutineTouchedState({
-          routineId: input.routine.id,
-          triggerId: input.trigger?.id ?? null,
+          routineId: routine.id,
+          triggerId: trigger?.id ?? null,
           triggeredAt,
           status: "failed",
           nextRunAt,
@@ -1346,21 +1707,21 @@ export function routineService(
       const actorId = input.source === "schedule" ? "routine-scheduler" : "routine-webhook";
       try {
         await logActivity(db, {
-          companyId: input.routine.companyId,
+          companyId: routine.companyId,
           actorType: "system",
           actorId,
           action: "routine.run_triggered",
           entityType: "routine_run",
           entityId: run.id,
           details: {
-            routineId: input.routine.id,
+            routineId: routine.id,
             triggerId: input.trigger?.id ?? null,
             source: run.source,
             status: run.status,
           },
         });
       } catch (err) {
-        logger.warn({ err, routineId: input.routine.id, runId: run.id }, "failed to log automated routine run");
+        logger.warn({ err, routineId: routine.id, runId: run.id }, "failed to log automated routine run");
       }
     }
 
@@ -1527,6 +1888,7 @@ export function routineService(
       const status = normalizeDraftRoutineStatus(input.status, input.assigneeAgentId);
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        await lockAssignableAgent(txDb, companyId, input.assigneeAgentId ?? null);
         const [created] = await txDb
           .insert(routines)
           .values({
@@ -1595,6 +1957,21 @@ export function routineService(
       }
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        const needsAssigneeLifecycleLock =
+          patch.assigneeAgentId !== undefined ||
+          patch.status === "active" ||
+          Boolean(actor.routineRecoveryAuthorization);
+        const targetAssigneeAgentId = patch.assigneeAgentId !== undefined
+          ? patch.assigneeAgentId
+          : existing.assigneeAgentId;
+        const prelockedAgents = needsAssigneeLifecycleLock
+          ? await lockAgentRows(txDb, [
+              existing.assigneeAgentId,
+              targetAssigneeAgentId,
+              actor.routineRecoveryAuthorization?.ownerAgentId,
+            ])
+          : new Map<string, { id: string; companyId: string; status: string }>();
+        const prelockedAgentIds = new Set(prelockedAgents.keys());
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${id} for update`);
         const locked = await txDb
           .select()
@@ -1602,6 +1979,13 @@ export function routineService(
           .where(eq(routines.id, id))
           .then((rows) => rows[0] ?? null);
         if (!locked) return null;
+        if (needsAssigneeLifecycleLock) {
+          // Agent rows are always locked before the routine row. If ownership
+          // drifted after the pre-read, abort instead of taking a new agent lock
+          // after the routine lock (which would invert termination lock order).
+          assertPrelockedRoutineAssignee(locked, prelockedAgentIds);
+        }
+        await lockAndValidateRoutineRecoveryAuthorization(txDb, locked, actor);
 
         if (patch.baseRevisionId && patch.baseRevisionId !== locked.latestRevisionId) {
           throw conflict("Routine was updated by someone else", {
@@ -1609,19 +1993,47 @@ export function routineService(
           });
         }
 
+        const lockedNextProjectId = patch.projectId === undefined ? locked.projectId : patch.projectId;
+        const lockedNextAssigneeAgentId = patch.assigneeAgentId === undefined
+          ? locked.assigneeAgentId
+          : patch.assigneeAgentId;
+        const lockedRequestedStatus = patch.status ?? locked.status;
+        if (lockedRequestedStatus === "active") {
+          assertRoutineCanEnable(lockedRequestedStatus, lockedNextAssigneeAgentId);
+        }
+        const lockedNextStatus = patch.assigneeAgentId === undefined
+          ? lockedRequestedStatus
+          : normalizeDraftRoutineStatus(lockedRequestedStatus, lockedNextAssigneeAgentId);
+        const lockedNextTitle = patch.title ?? locked.title;
+        const lockedNextDescription = patch.description === undefined ? locked.description : patch.description;
+        const lockedNextVariables = syncRoutineVariablesWithTemplate(
+          [lockedNextTitle, lockedNextDescription],
+          patch.variables === undefined ? locked.variables : sanitizeRoutineVariableInputs(patch.variables),
+        );
+        assertRoutineVariableDefinitions(lockedNextVariables);
+        if (enabledScheduleTriggers) {
+          assertScheduleCompatibleVariables(lockedNextVariables);
+        }
+        if (needsAssigneeLifecycleLock && lockedNextAssigneeAgentId) {
+          validateAssignableAgent(
+            locked.companyId,
+            prelockedAgents.get(lockedNextAssigneeAgentId) ?? null,
+          );
+        }
+
         const candidate: RoutineRow = {
           ...locked,
-          projectId: nextProjectId,
+          projectId: lockedNextProjectId,
           goalId: patch.goalId === undefined ? locked.goalId : patch.goalId,
           parentIssueId: patch.parentIssueId === undefined ? locked.parentIssueId : patch.parentIssueId,
-          title: nextTitle,
-          description: nextDescription,
-          assigneeAgentId: nextAssigneeAgentId,
+          title: lockedNextTitle,
+          description: lockedNextDescription,
+          assigneeAgentId: lockedNextAssigneeAgentId,
           priority: patch.priority ?? locked.priority,
-          status: nextStatus,
+          status: lockedNextStatus,
           concurrencyPolicy: patch.concurrencyPolicy ?? locked.concurrencyPolicy,
           catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
-          variables: nextVariables,
+          variables: lockedNextVariables,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
@@ -1684,6 +2096,7 @@ export function routineService(
       const routine = await getRoutineById(routineId);
       if (!routine) throw notFound("Routine not found");
 
+      let preparedWebhookSecret: Awaited<ReturnType<typeof prepareWebhookSecret>> | null = null;
       let secretMaterial: RoutineTriggerSecretMaterial | null = null;
       let secretId: string | null = null;
       let publicId: string | null = null;
@@ -1700,50 +2113,91 @@ export function routineService(
 
       if (input.kind === "webhook") {
         publicId = crypto.randomBytes(12).toString("hex");
-        const created = await createWebhookSecret(routine.companyId, routine.id, actor);
-        secretId = created.secret.id;
+        preparedWebhookSecret = await prepareWebhookSecret(routine.companyId, routine.id, actor);
+        secretId = preparedWebhookSecret.secret.id;
         secretMaterial = {
           webhookUrl: `${process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${publicId}/fire`,
-          webhookSecret: created.secretValue,
+          webhookSecret: preparedWebhookSecret.secretValue,
         };
       }
 
-      const { trigger, revision } = await db.transaction(async (tx) => {
-        const txDb = tx as unknown as Db;
-        await tx.execute(sql`select id from ${routines} where ${routines.id} = ${routine.id} for update`);
-        const [createdTrigger] = await txDb
-          .insert(routineTriggers)
-          .values({
-            companyId: routine.companyId,
-            routineId: routine.id,
-            kind: input.kind,
-            label: input.label ?? null,
-            enabled: input.enabled ?? true,
-            cronExpression: input.kind === "schedule" ? input.cronExpression : null,
-            timezone: input.kind === "schedule" ? (input.timezone || "UTC") : null,
-            nextRunAt,
-            publicId,
-            secretId,
-            signingMode: input.kind === "webhook" ? input.signingMode : null,
-            replayWindowSec: input.kind === "webhook" ? input.replayWindowSec : null,
-            lastRotatedAt: input.kind === "webhook" ? new Date() : null,
-            createdByAgentId: actor.agentId ?? null,
-            createdByUserId: actor.userId ?? null,
-            updatedByAgentId: actor.agentId ?? null,
-            updatedByUserId: actor.userId ?? null,
-          })
-          .returning();
-        const latestRoutine = await txDb.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0] ?? routine);
-        const appended = await appendRoutineRevision(txDb, latestRoutine, actor, {
-          changeSummary: `Created ${input.kind} trigger`,
+      let result: {
+        trigger: typeof routineTriggers.$inferSelect;
+        revision: RoutineRevision;
+        secretMaterial: RoutineTriggerSecretMaterial | null;
+      };
+      try {
+        result = await db.transaction(async (tx) => {
+          const txDb = tx as unknown as Db;
+          const prelockedAgents = await lockAgentRows(txDb, [
+            routine.assigneeAgentId,
+            actor.routineRecoveryAuthorization?.ownerAgentId,
+          ]);
+          const prelockedAgentIds = new Set(prelockedAgents.keys());
+          await tx.execute(sql`select id from ${routines} where ${routines.id} = ${routine.id} for update`);
+          const lockedRoutine = await txDb
+            .select()
+            .from(routines)
+            .where(eq(routines.id, routine.id))
+            .then((rows) => rows[0] ?? null);
+          if (!lockedRoutine) throw notFound("Routine not found");
+          assertPrelockedRoutineAssignee(lockedRoutine, prelockedAgentIds);
+          await lockAndValidateRoutineRecoveryAuthorization(txDb, lockedRoutine, actor);
+          if ((input.enabled ?? true) && lockedRoutine.assigneeAgentId) {
+            validateAssignableAgent(
+              lockedRoutine.companyId,
+              prelockedAgents.get(lockedRoutine.assigneeAgentId) ?? null,
+            );
+          }
+          if (input.kind === "schedule") {
+            assertScheduleCompatibleVariables(lockedRoutine.variables ?? []);
+          }
+          if (preparedWebhookSecret) {
+            await bindPreparedWebhookSecret(
+              txDb,
+              lockedRoutine.companyId,
+              lockedRoutine.id,
+              preparedWebhookSecret.secret.id,
+            );
+          }
+          const [createdTrigger] = await txDb
+            .insert(routineTriggers)
+            .values({
+              companyId: lockedRoutine.companyId,
+              routineId: lockedRoutine.id,
+              kind: input.kind,
+              label: input.label ?? null,
+              enabled: input.enabled ?? true,
+              cronExpression: input.kind === "schedule" ? input.cronExpression : null,
+              timezone: input.kind === "schedule" ? (input.timezone || "UTC") : null,
+              nextRunAt,
+              publicId,
+              secretId,
+              signingMode: input.kind === "webhook" ? input.signingMode : null,
+              replayWindowSec: input.kind === "webhook" ? input.replayWindowSec : null,
+              lastRotatedAt: input.kind === "webhook" ? new Date() : null,
+              createdByAgentId: actor.agentId ?? null,
+              createdByUserId: actor.userId ?? null,
+              updatedByAgentId: actor.agentId ?? null,
+              updatedByUserId: actor.userId ?? null,
+            })
+            .returning();
+          const appended = await appendRoutineRevision(txDb, lockedRoutine, actor, {
+            changeSummary: `Created ${input.kind} trigger`,
+          });
+          return { trigger: createdTrigger, revision: appended.revision, secretMaterial };
         });
-        return { trigger: createdTrigger, revision: appended.revision };
-      });
+      } catch (error) {
+        if (preparedWebhookSecret) {
+          await cleanupPreparedWebhookSecret(preparedWebhookSecret, error);
+        }
+        throw error;
+      }
 
       return {
-        trigger: trigger as RoutineTrigger,
-        secretMaterial,
-        revision,
+        trigger: result.trigger as RoutineTrigger,
+        secretMaterial: result.secretMaterial,
+        revision: result.revision,
       };
     },
 
@@ -1754,46 +2208,68 @@ export function routineService(
     ): Promise<{ trigger: RoutineTrigger; revision: RoutineRevision } | null> => {
       const existing = await getTriggerById(id);
       if (!existing) return null;
-
-      let nextRunAt = existing.nextRunAt;
-      let cronExpression = existing.cronExpression;
-      let timezone = existing.timezone;
-
-      if (existing.kind === "schedule") {
-        const routine = await getRoutineById(existing.routineId);
-        if (!routine) throw notFound("Routine not found");
-        if (patch.cronExpression !== undefined) {
-          if (patch.cronExpression == null) throw unprocessable("Scheduled triggers require cronExpression");
-          const error = validateCron(patch.cronExpression);
-          if (error) throw unprocessable(error);
-          cronExpression = patch.cronExpression;
-        }
-        if (patch.timezone !== undefined) {
-          if (patch.timezone == null) throw unprocessable("Scheduled triggers require timezone");
-          assertTimeZone(patch.timezone);
-          timezone = patch.timezone;
-        }
-        if (cronExpression && timezone) {
-          nextRunAt = nextCronTickInTimeZone(cronExpression, timezone, new Date());
-        }
-        if ((patch.enabled ?? existing.enabled) === true) {
-          assertScheduleCompatibleVariables(routine.variables ?? []);
-        }
-      }
+      const preReadRoutine = await getRoutineById(existing.routineId);
+      if (!preReadRoutine) throw notFound("Routine not found");
 
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        const prelockedAgents = await lockAgentRows(txDb, [
+          preReadRoutine.assigneeAgentId,
+          actor.routineRecoveryAuthorization?.ownerAgentId,
+        ]);
+        const prelockedAgentIds = new Set(prelockedAgents.keys());
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${existing.routineId} for update`);
+        const routine = await txDb
+          .select()
+          .from(routines)
+          .where(eq(routines.id, existing.routineId))
+          .then((rows) => rows[0] ?? null);
+        if (!routine) throw notFound("Routine not found");
+        assertPrelockedRoutineAssignee(routine, prelockedAgentIds);
+        const lockedTrigger = await txDb
+          .select()
+          .from(routineTriggers)
+          .where(and(eq(routineTriggers.id, id), eq(routineTriggers.routineId, routine.id)))
+          .then((rows) => rows[0] ?? null);
+        if (!lockedTrigger) return null;
+        const recoveryAuthorization = await lockAndValidateRoutineRecoveryAuthorization(txDb, routine, actor);
+
+        const lockedEnabled = patch.enabled ?? lockedTrigger.enabled;
+        let lockedCronExpression = lockedTrigger.cronExpression;
+        let lockedTimezone = lockedTrigger.timezone;
+        let lockedNextRunAt = lockedTrigger.nextRunAt;
+        if (lockedTrigger.kind === "schedule") {
+          lockedCronExpression = patch.cronExpression === undefined
+            ? lockedTrigger.cronExpression
+            : patch.cronExpression;
+          lockedTimezone = patch.timezone === undefined ? lockedTrigger.timezone : patch.timezone;
+          if (!lockedCronExpression) throw unprocessable("Scheduled triggers require cronExpression");
+          if (!lockedTimezone) throw unprocessable("Scheduled triggers require timezone");
+          const cronError = validateCron(lockedCronExpression);
+          if (cronError) throw unprocessable(cronError);
+          assertTimeZone(lockedTimezone);
+          lockedNextRunAt = nextCronTickInTimeZone(lockedCronExpression, lockedTimezone, new Date());
+          if (lockedEnabled) assertScheduleCompatibleVariables(routine.variables ?? []);
+        }
+        if (lockedEnabled && routine.assigneeAgentId) {
+          validateAssignableAgent(
+            routine.companyId,
+            prelockedAgents.get(routine.assigneeAgentId) ?? null,
+          );
+        }
+
         const [updated] = await txDb
           .update(routineTriggers)
           .set({
-            label: patch.label === undefined ? existing.label : patch.label,
-            enabled: patch.enabled ?? existing.enabled,
-            cronExpression,
-            timezone,
-            nextRunAt,
-            signingMode: patch.signingMode === undefined ? existing.signingMode : patch.signingMode,
-            replayWindowSec: patch.replayWindowSec === undefined ? existing.replayWindowSec : patch.replayWindowSec,
+            label: patch.label === undefined ? lockedTrigger.label : patch.label,
+            enabled: lockedEnabled,
+            cronExpression: lockedCronExpression,
+            timezone: lockedTimezone,
+            nextRunAt: lockedNextRunAt,
+            signingMode: patch.signingMode === undefined ? lockedTrigger.signingMode : patch.signingMode,
+            replayWindowSec: patch.replayWindowSec === undefined
+              ? lockedTrigger.replayWindowSec
+              : patch.replayWindowSec,
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
             updatedAt: new Date(),
@@ -1801,14 +2277,15 @@ export function routineService(
           .where(eq(routineTriggers.id, id))
           .returning();
         if (!updated) return null;
-        const routine = await txDb
-          .select()
-          .from(routines)
-          .where(eq(routines.id, existing.routineId))
-          .then((rows) => rows[0] ?? null);
-        if (!routine) throw notFound("Routine not found");
         const appended = await appendRoutineRevision(txDb, routine, actor, {
-          changeSummary: `Updated ${existing.kind} trigger`,
+          changeSummary:
+            recoveryAuthorization && patch.enabled !== undefined
+              ? routineRecoveryTriggerDispositionMarker(
+                  recoveryAuthorization,
+                  lockedTrigger.id,
+                  lockedEnabled,
+                )
+              : `Updated ${lockedTrigger.kind} trigger`,
         });
         return { trigger: updated as RoutineTrigger, revision: appended.revision };
       });
@@ -1817,16 +2294,47 @@ export function routineService(
     deleteTrigger: async (id: string, actor: Actor = {}): Promise<{ deleted: boolean; revision: RoutineRevision | null }> => {
       const existing = await getTriggerById(id);
       if (!existing) return { deleted: false, revision: null };
+      const preReadRoutine = await getRoutineById(existing.routineId);
+      if (!preReadRoutine) throw notFound("Routine not found");
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        const prelockedAgents = await lockAgentRows(txDb, [
+          preReadRoutine.assigneeAgentId,
+          actor.routineRecoveryAuthorization?.ownerAgentId,
+        ]);
+        const prelockedAgentIds = new Set(prelockedAgents.keys());
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${existing.routineId} for update`);
-        await txDb.delete(routineTriggers).where(eq(routineTriggers.id, id));
         const routine = await txDb
           .select()
           .from(routines)
           .where(eq(routines.id, existing.routineId))
           .then((rows) => rows[0] ?? null);
         if (!routine) throw notFound("Routine not found");
+        assertPrelockedRoutineAssignee(routine, prelockedAgentIds);
+        const lockedTrigger = await txDb
+          .select({ id: routineTriggers.id })
+          .from(routineTriggers)
+          .where(and(eq(routineTriggers.id, id), eq(routineTriggers.routineId, routine.id)))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedTrigger) return { deleted: false, revision: null };
+        const protectedTriggerIds = await lockActiveTerminatedOwnerTriggerInventory(
+          txDb,
+          routine.companyId,
+          [lockedTrigger.id],
+        );
+        if (protectedTriggerIds.includes(lockedTrigger.id)) {
+          throw conflict(
+            "Typed recovery triggers cannot be deleted; explicitly enable or disable the trigger instead",
+          );
+        }
+        const recoveryAuthorization = await lockAndValidateRoutineRecoveryAuthorization(txDb, routine, actor);
+        if (recoveryAuthorization?.triggerIds.includes(lockedTrigger.id)) {
+          throw conflict(
+            "Typed recovery triggers cannot be deleted; explicitly enable or disable the trigger instead",
+          );
+        }
+        await txDb.delete(routineTriggers).where(eq(routineTriggers.id, id));
         const appended = await appendRoutineRevision(txDb, routine, actor, {
           changeSummary: `Deleted ${existing.kind} trigger`,
         });
@@ -1922,9 +2430,63 @@ export function routineService(
       const snapshot = targetRevision.snapshot as RoutineRevisionSnapshotV1;
       const routineSnapshot = snapshot.routine;
       await assertRestorableAssignee(existingRoutine.companyId, routineSnapshot.assigneeAgentId, actor);
+      if (existingRoutine.latestRevisionId === targetRevision.id) {
+        throw conflict("Selected revision is already the latest revision", {
+          currentRevisionId: existingRoutine.latestRevisionId,
+        });
+      }
 
-      return db.transaction(async (tx) => {
+      const preflightTriggerIds = await db
+        .select({ id: routineTriggers.id })
+        .from(routineTriggers)
+        .where(
+          and(
+            eq(routineTriggers.companyId, existingRoutine.companyId),
+            eq(routineTriggers.routineId, existingRoutine.id),
+          ),
+        )
+        .then((rows) => new Set(rows.map((row) => row.id)));
+      const webhookSnapshotsNeedingSecrets = snapshot.triggers.filter(
+        (trigger) => trigger.kind === "webhook" && !preflightTriggerIds.has(trigger.id),
+      );
+      const preparedWebhookSecrets = new Map<
+        string,
+        {
+          publicId: string;
+          prepared: Awaited<ReturnType<typeof prepareWebhookSecret>>;
+          secretMaterial: RoutineTriggerSecretRestoreMaterial;
+        }
+      >();
+      try {
+        for (const trigger of webhookSnapshotsNeedingSecrets) {
+          const publicId = crypto.randomBytes(12).toString("hex");
+          const prepared = await prepareWebhookSecret(existingRoutine.companyId, existingRoutine.id, actor);
+          preparedWebhookSecrets.set(trigger.id, {
+            publicId,
+            prepared,
+            secretMaterial: {
+              triggerId: trigger.id,
+              webhookUrl: `${process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${publicId}/fire`,
+              webhookSecret: prepared.secretValue,
+            },
+          });
+        }
+      } catch (error) {
+        return cleanupPreparedWebhookSecrets(
+          [...preparedWebhookSecrets.values()].map((entry) => entry.prepared),
+          error,
+        );
+      }
+
+      try {
+        return await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        const prelockedAgents = await lockAgentRows(txDb, [
+          existingRoutine.assigneeAgentId,
+          routineSnapshot.assigneeAgentId,
+          actor.routineRecoveryAuthorization?.ownerAgentId,
+        ]);
+        const prelockedAgentIds = new Set(prelockedAgents.keys());
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${existingRoutine.id} for update`);
         const locked = await txDb
           .select()
@@ -1932,31 +2494,76 @@ export function routineService(
           .where(eq(routines.id, existingRoutine.id))
           .then((rows) => rows[0] ?? null);
         if (!locked) throw notFound("Routine not found");
-        if (locked.latestRevisionId === targetRevision.id) {
-          throw conflict("Selected revision is already the latest revision", {
+        assertPrelockedRoutineAssignee(locked, prelockedAgentIds);
+        if (locked.latestRevisionId !== existingRoutine.latestRevisionId) {
+          throw conflict("Routine changed while webhook secrets were prepared; retry the restore", {
             currentRevisionId: locked.latestRevisionId,
           });
         }
-
+        if (routineSnapshot.assigneeAgentId) {
+          validateAssignableAgent(
+            locked.companyId,
+            prelockedAgents.get(routineSnapshot.assigneeAgentId) ?? null,
+          );
+        }
         const currentTriggers = await txDb
           .select({ id: routineTriggers.id })
           .from(routineTriggers)
-          .where(and(eq(routineTriggers.companyId, locked.companyId), eq(routineTriggers.routineId, locked.id)));
+          .where(and(eq(routineTriggers.companyId, locked.companyId), eq(routineTriggers.routineId, locked.id)))
+          .orderBy(asc(routineTriggers.id))
+          .for("update");
         const currentTriggerIds = new Set(currentTriggers.map((trigger) => trigger.id));
+        if (
+          currentTriggerIds.size !== preflightTriggerIds.size ||
+          [...currentTriggerIds].some((triggerId) => !preflightTriggerIds.has(triggerId))
+        ) {
+          throw conflict("Routine triggers changed while webhook secrets were prepared; retry the restore");
+        }
+        const snapshotTriggerIds = new Set(snapshot.triggers.map((trigger) => trigger.id));
+        const omittedCurrentTriggerIds = [...currentTriggerIds]
+          .filter((triggerId) => !snapshotTriggerIds.has(triggerId))
+          .sort();
+        const protectedOmittedTriggerIds = await lockActiveTerminatedOwnerTriggerInventory(
+          txDb,
+          locked.companyId,
+          omittedCurrentTriggerIds,
+        );
+        if (protectedOmittedTriggerIds.length > 0) {
+          throw conflict(
+            "Routine recovery cannot restore a revision that removes typed trigger inventory; explicitly enable or disable each trigger instead",
+            { triggerIds: protectedOmittedTriggerIds },
+          );
+        }
+        const recoveryAuthorization = await lockAndValidateRoutineRecoveryAuthorization(txDb, locked, actor);
+        const omittedTypedTriggerIds = recoveryAuthorization
+          ? recoveryAuthorization.triggerIds.filter(
+              (triggerId) => currentTriggerIds.has(triggerId) && !snapshotTriggerIds.has(triggerId),
+            )
+          : [];
+        if (omittedTypedTriggerIds.length > 0) {
+          throw conflict(
+            "Routine recovery cannot restore a revision that removes typed trigger inventory; explicitly enable or disable each trigger instead",
+            { triggerIds: omittedTypedTriggerIds },
+          );
+        }
         const missingWebhookTriggers = snapshot.triggers
           .filter((trigger) => trigger.kind === "webhook" && !currentTriggerIds.has(trigger.id));
         const recreatedWebhookSecrets = new Map<string, { publicId: string; secretId: string; secretMaterial: RoutineTriggerSecretRestoreMaterial }>();
         for (const trigger of missingWebhookTriggers) {
-          const publicId = crypto.randomBytes(12).toString("hex");
-          const created = await createWebhookSecret(locked.companyId, locked.id, actor, txDb);
+          const preparedEntry = preparedWebhookSecrets.get(trigger.id);
+          if (!preparedEntry) {
+            throw conflict("Routine trigger state changed while webhook secrets were prepared; retry the restore");
+          }
+          await bindPreparedWebhookSecret(
+            txDb,
+            locked.companyId,
+            locked.id,
+            preparedEntry.prepared.secret.id,
+          );
           recreatedWebhookSecrets.set(trigger.id, {
-            publicId,
-            secretId: created.secret.id,
-            secretMaterial: {
-              triggerId: trigger.id,
-              webhookUrl: `${process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${publicId}/fire`,
-              webhookSecret: created.secretValue,
-            },
+            publicId: preparedEntry.publicId,
+            secretId: preparedEntry.prepared.secret.id,
+            secretMaterial: preparedEntry.secretMaterial,
           });
         }
 
@@ -1982,7 +2589,6 @@ export function routineService(
           .where(eq(routines.id, locked.id))
           .returning();
 
-        const snapshotTriggerIds = new Set(snapshot.triggers.map((trigger) => trigger.id));
         if (snapshotTriggerIds.size === 0) {
           await txDb
             .delete(routineTriggers)
@@ -2040,8 +2646,24 @@ export function routineService(
           }
         }
 
+        const recoveryDispositionMarkers = recoveryAuthorization
+          ? snapshot.triggers
+              .filter((trigger) => recoveryAuthorization.triggerIds.includes(trigger.id))
+              .map((trigger) =>
+                routineRecoveryTriggerDispositionMarker(
+                  recoveryAuthorization,
+                  trigger.id,
+                  trigger.enabled,
+                ),
+              )
+          : [];
         const appended = await appendRoutineRevision(txDb, restoredRoutine ?? locked, actor, {
-          changeSummary: `Restored from revision ${targetRevision.revisionNumber}`,
+          changeSummary: recoveryDispositionMarkers.length > 0
+            ? [
+                `Restored from revision ${targetRevision.revisionNumber}`,
+                ...recoveryDispositionMarkers,
+              ].join("\n")
+            : `Restored from revision ${targetRevision.revisionNumber}`,
           restoredFromRevisionId: targetRevision.id,
         });
         return {
@@ -2051,7 +2673,13 @@ export function routineService(
           restoredFromRevisionNumber: targetRevision.revisionNumber,
           secretMaterials: [...recreatedWebhookSecrets.values()].map((entry) => entry.secretMaterial),
         };
-      });
+        });
+      } catch (error) {
+        return cleanupPreparedWebhookSecrets(
+          [...preparedWebhookSecrets.values()].map((entry) => entry.prepared),
+          error,
+        );
+      }
     },
 
     runRoutine: async (id: string, input: RunRoutine, actor?: Actor) => {

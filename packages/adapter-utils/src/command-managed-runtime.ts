@@ -18,6 +18,7 @@ export interface CommandManagedRuntimeRunner {
     stdin?: string;
     timeoutMs?: number;
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+    acquireLaunchPermit?: () => Promise<() => void>;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
   }): Promise<RunProcessResult>;
 }

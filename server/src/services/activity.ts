@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -28,6 +28,11 @@ export interface ActivityFilters {
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
 const MAX_ACTIVITY_LIMIT = 500;
+const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
+  "environment.lease_acquired",
+  "environment.lease_released",
+  "issue.comment_added",
+];
 
 export function normalizeActivityLimit(limit: number | undefined) {
   if (!Number.isFinite(limit)) return DEFAULT_ACTIVITY_LIMIT;
@@ -259,7 +264,13 @@ export function activityService(db: Db) {
           latestAt: sql<Date | null>`max(${activityLog.createdAt})`,
         })
         .from(activityLog)
-        .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, run.id)));
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.runId, run.id),
+            notInArray(activityLog.action, LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS),
+          ),
+        );
 
       const [eventStats] = await db
         .select({

@@ -61,7 +61,7 @@ type TransitionResult = {
 const COMPLETED_STATUS: IssueExecutionState["status"] = "completed";
 const PENDING_STATUS: IssueExecutionState["status"] = "pending";
 const CHANGES_REQUESTED_STATUS: IssueExecutionState["status"] = "changes_requested";
-const MONITOR_INVALID_MESSAGE = "Monitor can only be scheduled on issues assigned to an agent in in_progress or in_review";
+const MONITOR_INVALID_MESSAGE = "Monitor can only be scheduled on issues assigned to an agent in in_progress, in_review, or blocked; blocked monitors require maxAttempts or timeoutAt";
 const MONITOR_BOUNDS_EXHAUSTED_MESSAGE = "Monitor bounds are already exhausted";
 export const REDACTED_ISSUE_MONITOR_EXTERNAL_REF = "[redacted]";
 
@@ -251,18 +251,27 @@ function buildClearedMonitorState(input: {
   };
 }
 
-function issueAllowsMonitor(status: string, assigneeAgentId: string | null, assigneeUserId: string | null) {
-  return Boolean(assigneeAgentId) && !assigneeUserId && (status === "in_progress" || status === "in_review");
+function issueAllowsMonitor(
+  status: string,
+  assigneeAgentId: string | null,
+  assigneeUserId: string | null,
+  monitor: IssueExecutionMonitorPolicy | null,
+) {
+  if (!assigneeAgentId || assigneeUserId) return false;
+  if (status === "in_progress" || status === "in_review") return true;
+  if (status !== "blocked" || !monitor) return false;
+  return monitor.maxAttempts != null || monitor.timeoutAt != null;
 }
 
 function monitorClearReasonForIssue(
   status: string,
   assigneeAgentId: string | null,
   assigneeUserId: string | null,
+  monitor: IssueExecutionMonitorPolicy | null,
 ): IssueExecutionMonitorClearReason | null {
   if (status === "done") return "done";
   if (status === "cancelled") return "cancelled";
-  if (!issueAllowsMonitor(status, assigneeAgentId, assigneeUserId)) {
+  if (!issueAllowsMonitor(status, assigneeAgentId, assigneeUserId, monitor)) {
     if (assigneeUserId || !assigneeAgentId) return "invalid_assignee";
     return "invalid_status";
   }
@@ -895,7 +904,7 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
       ? parseIssueExecutionState(stagePatch.executionState)
       : existingState;
   const invalidReason = input.policy?.monitor
-    ? monitorClearReasonForIssue(nextStatus, assigneeAgentId, assigneeUserId)
+    ? monitorClearReasonForIssue(nextStatus, assigneeAgentId, assigneeUserId, input.policy.monitor)
     : null;
 
   let targetMonitorState = currentMonitorState;
@@ -947,7 +956,7 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
       clearReason:
         input.monitorExplicitlyUpdated
           ? "manual"
-          : monitorClearReasonForIssue(nextStatus, assigneeAgentId, assigneeUserId) ?? "manual",
+          : monitorClearReasonForIssue(nextStatus, assigneeAgentId, assigneeUserId, previousPolicy.monitor) ?? "manual",
       clearedAt: new Date(),
     });
   }
@@ -966,7 +975,12 @@ export function buildInitialIssueMonitorFields(input: {
   assigneeUserId?: string | null;
 }) {
   if (!input.policy?.monitor) return {};
-  if (!issueAllowsMonitor(input.status, input.assigneeAgentId ?? null, input.assigneeUserId ?? null)) {
+  if (!issueAllowsMonitor(
+    input.status,
+    input.assigneeAgentId ?? null,
+    input.assigneeUserId ?? null,
+    input.policy.monitor,
+  )) {
     throw unprocessable(MONITOR_INVALID_MESSAGE);
   }
   const exhaustedReason = exhaustedMonitorClearReason({

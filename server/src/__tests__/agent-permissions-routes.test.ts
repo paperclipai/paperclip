@@ -12,6 +12,7 @@ vi.mock("acpx/runtime", () => ({
 
 const agentId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
+const recoveryOwnerId = "33333333-3333-4333-8333-333333333333";
 
 const baseAgent = {
   id: agentId,
@@ -45,6 +46,8 @@ const mockAgentService = vi.hoisted(() => ({
   activatePendingApproval: vi.fn(),
   update: vi.fn(),
   updatePermissions: vi.fn(),
+  terminate: vi.fn(),
+  listQueuedTerminationRecoveryOwnerIds: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
 }));
@@ -72,6 +75,8 @@ const mockHeartbeatService = vi.hoisted(() => ({
   resetRuntimeSession: vi.fn(),
   getRun: vi.fn(),
   cancelRun: vi.fn(),
+  cancelActiveForAgent: vi.fn(),
+  driveQueuedRunsForAgent: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -308,6 +313,8 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.activatePendingApproval.mockReset();
     mockAgentService.update.mockReset();
     mockAgentService.updatePermissions.mockReset();
+    mockAgentService.terminate.mockReset();
+    mockAgentService.listQueuedTerminationRecoveryOwnerIds.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
     mockAgentService.resolveByReference.mockReset();
     mockAccessService.canUser.mockReset();
@@ -323,6 +330,8 @@ describe.sequential("agent permission routes", () => {
     mockHeartbeatService.resetRuntimeSession.mockReset();
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
+    mockHeartbeatService.cancelActiveForAgent.mockReset();
+    mockHeartbeatService.driveQueuedRunsForAgent.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
@@ -355,6 +364,8 @@ describe.sequential("agent permission routes", () => {
     });
     mockAgentService.update.mockResolvedValue(baseAgent);
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
+    mockAgentService.terminate.mockResolvedValue({ ...baseAgent, status: "terminated" });
+    mockAgentService.listQueuedTerminationRecoveryOwnerIds.mockResolvedValue([]);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAccessService.getMembership.mockResolvedValue({
@@ -399,7 +410,74 @@ describe.sequential("agent permission routes", () => {
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
     });
+    mockHeartbeatService.cancelActiveForAgent.mockResolvedValue(0);
+    mockHeartbeatService.driveQueuedRunsForAgent.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
+  });
+
+  it("cancels active heartbeat work before driving recovery owners when the generic agent patch terminates the agent", async () => {
+    mockAgentService.update.mockResolvedValue({
+      ...baseAgent,
+      status: "terminated",
+    });
+    mockAgentService.listQueuedTerminationRecoveryOwnerIds.mockResolvedValue([recoveryOwnerId]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ status: "terminated" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.cancelActiveForAgent).toHaveBeenCalledWith(
+      agentId,
+      "Cancelled due to agent termination",
+    );
+    expect(mockAgentService.listQueuedTerminationRecoveryOwnerIds).toHaveBeenCalledWith(
+      companyId,
+      agentId,
+    );
+    expect(mockHeartbeatService.driveQueuedRunsForAgent).toHaveBeenCalledWith(recoveryOwnerId);
+    expect(mockHeartbeatService.cancelActiveForAgent.mock.invocationCallOrder[0]).toBeLessThan(
+      mockHeartbeatService.driveQueuedRunsForAgent.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("cancels active heartbeat work before driving recovery owners on explicit termination", async () => {
+    mockAgentService.listQueuedTerminationRecoveryOwnerIds.mockResolvedValue([recoveryOwnerId]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/terminate`)
+      .send({}));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.terminate).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({ source: "agent_detail" }),
+    );
+    expect(mockHeartbeatService.cancelActiveForAgent).toHaveBeenCalledWith(agentId);
+    expect(mockAgentService.listQueuedTerminationRecoveryOwnerIds).toHaveBeenCalledWith(
+      companyId,
+      agentId,
+    );
+    expect(mockHeartbeatService.driveQueuedRunsForAgent).toHaveBeenCalledWith(recoveryOwnerId);
+    expect(mockHeartbeatService.cancelActiveForAgent.mock.invocationCallOrder[0]).toBeLessThan(
+      mockHeartbeatService.driveQueuedRunsForAgent.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("redacts agent detail for authenticated company members without agent admin permission", async () => {

@@ -16,6 +16,8 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueRelations,
+  issueRecoveryActions,
   issues,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
@@ -105,6 +107,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     await db.delete(issueDocuments);
     await db.delete(documents);
     await db.delete(activityLog);
+    await db.delete(issueRecoveryActions);
     await db.delete(environmentLeases);
     await db.delete(workspaceRuntimeServices);
     await db.delete(issues);
@@ -137,7 +140,8 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
   async function seedFixture(input?: {
     agentStatus?: "active" | "paused";
-    issueStatus?: "in_progress" | "in_review";
+    wakeOnDemand?: boolean;
+    issueStatus?: "in_progress" | "in_review" | "blocked";
     monitorAttemptCount?: number;
     monitor?: Record<string, unknown>;
   }) {
@@ -177,7 +181,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       runtimeConfig: {
         heartbeat: {
           enabled: false,
-          wakeOnDemand: true,
+          wakeOnDemand: input?.wakeOnDemand ?? true,
         },
       },
       permissions: {},
@@ -242,6 +246,12 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     const result = await heartbeat.tickTimers(tickAt);
 
     expect(result.enqueued).toBe(1);
+    expect(result.monitorDeliveries).toEqual({
+      queued: 1,
+      coalesced: 0,
+      deferred: 0,
+      skipped: 0,
+    });
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
     expect(issue.monitorNextCheckAt).toBeNull();
@@ -267,6 +277,60 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(activityLog.entityId, issueId))
       .then((rows) => rows.map((row) => row.action));
     expect(activity).toContain("issue.monitor_triggered");
+  });
+
+  it("runs a bounded monitor for blocked work without reopening the issue", async () => {
+    const { companyId, issueId, agentId } = await seedFixture({
+      issueStatus: "blocked",
+      monitor: { maxAttempts: 1 },
+    });
+    const blockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "External blocker",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    const result = await heartbeat.tickTimers(tickAt);
+
+    expect(result.enqueued).toBe(1);
+    await waitForHeartbeatIdle();
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.status).toBe("blocked");
+    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(issue.monitorAttemptCount).toBe(1);
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.reason).toBe("issue_monitor_due");
+    expect(wakeup?.status).toBe("completed");
+
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, wakeup!.runId!))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("succeeded");
+    expect(run?.contextSnapshot).toMatchObject({
+      issueId,
+      wakeReason: "issue_monitor_due",
+      source: "issue.monitor",
+      dependencyBlockedInteraction: true,
+    });
   });
 
   it("lets the board trigger a scheduled issue monitor immediately", async () => {
@@ -315,7 +379,418 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     });
   });
 
-  it("clears due monitors that cannot be dispatched and records a skip", async () => {
+  it("preserves a due monitor as a deferred follow-up while the same owner is already running", async () => {
+    const { companyId, issueId, agentId } = await seedFixture();
+    const activeWakeupId = randomUUID();
+    const activeRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: activeWakeupId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "claimed",
+      runId: activeRunId,
+      claimedAt: new Date(),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId: activeWakeupId,
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      startedAt: new Date(),
+    });
+    await db
+      .update(issues)
+      .set({
+        executionRunId: activeRunId,
+        executionAgentNameKey: "monitor bot",
+        executionLockedAt: new Date(),
+      })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.triggerIssueMonitor(issueId, {
+      now: new Date("2026-04-11T12:00:00.000Z"),
+      actorType: "user",
+      actorId: "local-board",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "triggered",
+      deliveryDisposition: "deferred",
+      runId: null,
+    });
+    const deferred = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.status, "deferred_issue_execution"))
+      .then((rows) => rows[0] ?? null);
+    expect(deferred?.id).toBe(result.wakeupRequestId);
+    expect(deferred?.payload).toMatchObject({
+      issueId,
+      _paperclipWakeContext: {
+        issueId,
+        wakeReason: "issue_monitor_due",
+      },
+    });
+
+    const triggerActivity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.find((row) => row.action === "issue.monitor_triggered") ?? null);
+    expect(triggerActivity?.details).toMatchObject({ deliveryDisposition: "deferred" });
+
+    await heartbeat.cancelRun(activeRunId, {
+      suppressImmediateRecovery: true,
+      reason: "Complete active run for monitor follow-up test",
+    });
+    await waitForHeartbeatIdle();
+
+    const promotedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferred!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(promotedWake?.status).toBe("completed");
+    const promotedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, promotedWake!.runId!))
+      .then((rows) => rows[0] ?? null);
+    expect(promotedRun?.status).toBe("succeeded");
+    expect(promotedRun?.contextSnapshot).toMatchObject({
+      issueId,
+      wakeReason: "issue_monitor_due",
+    });
+  });
+
+  it("keeps a human deferred comment separate when a later monitor generation becomes stale", async () => {
+    const { companyId, issueId, agentId } = await seedFixture();
+    const activeWakeupId = randomUUID();
+    const activeRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: activeWakeupId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "claimed",
+      runId: activeRunId,
+      claimedAt: new Date(),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId: activeWakeupId,
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      startedAt: new Date(),
+    });
+    await db
+      .update(issues)
+      .set({
+        executionRunId: activeRunId,
+        executionAgentNameKey: "monitor bot",
+        executionLockedAt: new Date(),
+      })
+      .where(eq(issues.id, issueId));
+    const comment = await db
+      .insert(issueComments)
+      .values({
+        companyId,
+        issueId,
+        body: "Please preserve this human follow-up.",
+        authorType: "user",
+        authorUserId: "local-board",
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    const heartbeat = heartbeatService(db);
+    expect(await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId: comment.id },
+      contextSnapshot: {
+        issueId,
+        commentId: comment.id,
+        wakeReason: "issue_commented",
+        source: "issue.comment",
+      },
+    })).toBeNull();
+    const humanDeferred = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.status, "deferred_issue_execution"))
+      .then((rows) => rows[0]);
+
+    const monitorResult = await heartbeat.triggerIssueMonitor(issueId, {
+      now: new Date("2026-04-11T12:00:00.000Z"),
+      actorType: "user",
+      actorId: "local-board",
+    });
+    expect(monitorResult).toMatchObject({ deliveryDisposition: "deferred" });
+    const deferredBeforeReschedule = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.status, "deferred_issue_execution"));
+    expect(deferredBeforeReschedule).toHaveLength(2);
+    expect(monitorResult.wakeupRequestId).not.toBe(humanDeferred.id);
+
+    const replacementCheckAt = new Date("2026-04-11T14:30:00.000Z");
+    const source = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    await db
+      .update(issues)
+      .set({
+        monitorNextCheckAt: replacementCheckAt,
+        monitorWakeRequestedAt: null,
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [],
+          monitor: {
+            nextCheckAt: replacementCheckAt.toISOString(),
+            notes: "Replacement generation",
+            scheduledBy: "board",
+          },
+        },
+        executionState: {
+          ...parseIssueExecutionState(source.executionState),
+          monitor: {
+            status: "scheduled",
+            nextCheckAt: replacementCheckAt.toISOString(),
+            lastTriggeredAt: source.monitorLastTriggeredAt?.toISOString() ?? null,
+            attemptCount: source.monitorAttemptCount ?? 0,
+            notes: "Replacement generation",
+            scheduledBy: "board",
+            kind: null,
+            serviceName: null,
+            externalRef: null,
+            timeoutAt: null,
+            maxAttempts: null,
+            recoveryPolicy: null,
+            clearedAt: null,
+            clearReason: null,
+          },
+        },
+      })
+      .where(eq(issues.id, issueId));
+
+    await heartbeat.cancelRun(activeRunId, {
+      suppressImmediateRecovery: true,
+      reason: "Release deferred signal isolation test",
+    });
+    await waitForHeartbeatIdle();
+
+    const deferredDeadline = Date.now() + 3_000;
+    while (Date.now() < deferredDeadline) {
+      const monitorStatus = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, monitorResult.wakeupRequestId!))
+        .then((rows) => rows[0]?.status ?? null);
+      if (monitorStatus !== "deferred_issue_execution") break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    const [humanAfter, monitorAfter] = await Promise.all([
+      db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, humanDeferred.id))
+        .then((rows) => rows[0]),
+      db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, monitorResult.wakeupRequestId!))
+        .then((rows) => rows[0]),
+    ]);
+    expect(humanAfter.status).toBe("completed");
+    expect(humanAfter.runId).not.toBeNull();
+    expect(monitorAfter).toMatchObject({
+      status: "cancelled",
+      runId: null,
+    });
+    expect(monitorAfter.error).toContain("generation changed");
+    const humanRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, humanAfter.runId!))
+      .then((rows) => rows[0]);
+    expect(humanRun.contextSnapshot).toMatchObject({
+      issueId,
+      wakeReason: "issue_commented",
+    });
+  });
+
+  it("does not dispatch or overwrite a claimed monitor after reassignment", async () => {
+    const { companyId, issueId, agentId } = await seedFixture();
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: replacementAgentId,
+      companyId,
+      name: "Replacement Monitor",
+      role: "engineer",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
+      permissions: {},
+    });
+    seededAgentIds.add(replacementAgentId);
+
+    let releaseClaim!: () => void;
+    let claimObserved!: () => void;
+    const observed = new Promise<void>((resolve) => { claimObserved = resolve; });
+    const release = new Promise<void>((resolve) => { releaseClaim = resolve; });
+    const heartbeat = heartbeatService(db, {
+      afterIssueMonitorClaim: async () => {
+        claimObserved();
+        await release;
+      },
+    });
+
+    const dispatch = heartbeat.triggerIssueMonitor(issueId, {
+      now: new Date("2026-04-11T12:00:00.000Z"),
+      actorType: "user",
+      actorId: "local-board",
+    });
+    await observed;
+    await db
+      .update(issues)
+      .set({
+        assigneeAgentId: replacementAgentId,
+        monitorNextCheckAt: null,
+        monitorWakeRequestedAt: null,
+        executionPolicy: { mode: "normal", commentRequired: true, stages: [] },
+      })
+      .where(eq(issues.id, issueId));
+    releaseClaim();
+
+    await expect(dispatch).resolves.toMatchObject({
+      outcome: "skipped",
+      reason: "issue_monitor_claim_stale",
+    });
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    expect(issue.assigneeAgentId).toBe(replacementAgentId);
+    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(issue.monitorWakeRequestedAt).toBeNull();
+    const oldOwnerRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(oldOwnerRuns).toHaveLength(0);
+  });
+
+  it("does not consume a replacement schedule installed after the old monitor was claimed", async () => {
+    const { issueId, agentId } = await seedFixture();
+    const replacementCheckAt = new Date("2026-04-11T13:30:00.000Z");
+
+    let releaseClaim!: () => void;
+    let claimObserved!: () => void;
+    const observed = new Promise<void>((resolve) => { claimObserved = resolve; });
+    const release = new Promise<void>((resolve) => { releaseClaim = resolve; });
+    const heartbeat = heartbeatService(db, {
+      afterIssueMonitorClaim: async () => {
+        claimObserved();
+        await release;
+      },
+    });
+
+    const dispatch = heartbeat.triggerIssueMonitor(issueId, {
+      now: new Date("2026-04-11T12:00:00.000Z"),
+      actorType: "user",
+      actorId: "local-board",
+    });
+    await observed;
+    const current = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    await db
+      .update(issues)
+      .set({
+        monitorNextCheckAt: replacementCheckAt,
+        monitorWakeRequestedAt: null,
+        monitorNotes: "Replacement schedule",
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [],
+          monitor: {
+            nextCheckAt: replacementCheckAt.toISOString(),
+            notes: "Replacement schedule",
+            scheduledBy: "board",
+          },
+        },
+        executionState: {
+          ...parseIssueExecutionState(current.executionState),
+          monitor: {
+            status: "scheduled",
+            nextCheckAt: replacementCheckAt.toISOString(),
+            lastTriggeredAt: null,
+            attemptCount: 0,
+            notes: "Replacement schedule",
+            scheduledBy: "board",
+            kind: null,
+            serviceName: null,
+            externalRef: null,
+            timeoutAt: null,
+            maxAttempts: null,
+            recoveryPolicy: null,
+            clearedAt: null,
+            clearReason: null,
+          },
+        },
+      })
+      .where(eq(issues.id, issueId));
+    releaseClaim();
+
+    await expect(dispatch).resolves.toMatchObject({
+      outcome: "skipped",
+      reason: "issue_monitor_claim_stale",
+    });
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(replacementCheckAt.toISOString());
+    expect(issue.monitorWakeRequestedAt).toBeNull();
+    expect(issue.monitorNotes).toBe("Replacement schedule");
+    expect(normalizeIssueExecutionPolicy(issue.executionPolicy)?.monitor?.nextCheckAt)
+      .toBe(replacementCheckAt.toISOString());
+    const runs = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+  });
+
+  it("clears a permanently unavailable owner only after creating a durable board recovery path", async () => {
     const { issueId } = await seedFixture({ agentStatus: "paused" });
     const heartbeat = heartbeatService(db);
     const tickAt = new Date("2026-04-11T12:31:00.000Z");
@@ -336,7 +811,88 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .from(activityLog)
       .where(eq(activityLog.entityId, issueId))
       .then((rows) => rows.map((row) => row.action));
-    expect(activity).toContain("issue.monitor_skipped");
+    expect(activity).toContain("issue.monitor_recovery_board_path_created");
+    const action = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(action).toMatchObject({
+      status: "escalated",
+      ownerType: "board",
+      ownerAgentId: null,
+      cause: "issue_monitor_dispatch_skipped",
+    });
+  });
+
+  it("treats wake-on-demand disablement as permanent and creates a typed recovery path", async () => {
+    const { issueId } = await seedFixture({ wakeOnDemand: false });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+
+    expect(result.skipped).toBe(1);
+    const [issue, action] = await Promise.all([
+      db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]!),
+      db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(action).toMatchObject({
+      status: "escalated",
+      ownerType: "board",
+      cause: "issue_monitor_dispatch_skipped",
+    });
+  });
+
+  it("rearms transient monitor admission failures instead of clearing the only waiting path", async () => {
+    const { companyId, issueId } = await seedFixture();
+    await db.update(companies).set({ status: "paused" }).where(eq(companies.id, companyId));
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    const result = await heartbeat.tickTimers(tickAt);
+
+    expect(result.skipped).toBe(1);
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe("2026-04-11T12:36:00.000Z");
+    expect(issue.monitorWakeRequestedAt).toBeNull();
+    expect(normalizeIssueExecutionPolicy(issue.executionPolicy)?.monitor?.nextCheckAt)
+      .toBe("2026-04-11T12:36:00.000Z");
+    expect(normalizeIssueExecutionPolicy(issue.executionPolicy)?.monitor).toMatchObject({
+      maxAttempts: 3,
+      timeoutAt: "2026-04-12T12:31:00.000Z",
+    });
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+      status: "scheduled",
+      nextCheckAt: "2026-04-11T12:36:00.000Z",
+      attemptCount: 1,
+      maxAttempts: 3,
+      timeoutAt: "2026-04-12T12:31:00.000Z",
+    });
+    expect(issue.monitorAttemptCount).toBe(1);
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions).toHaveLength(0);
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.map((row) => row.action));
+    expect(activity).toContain("issue.monitor_rearmed");
   });
 
   it("clears exhausted monitors and queues bounded owner recovery instead of another due check", async () => {
@@ -385,6 +941,316 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(activity).not.toContain("issue.monitor_triggered");
   });
 
+  it.each([
+    {
+      label: "exhausted",
+      monitorAttemptCount: 1,
+      monitor: { maxAttempts: 1, recoveryPolicy: "wake_owner" },
+      clearReason: "max_attempts_exhausted",
+      expectedAttemptCount: 2,
+    },
+    {
+      label: "timed-out",
+      monitorAttemptCount: 0,
+      monitor: {
+        timeoutAt: "2026-04-11T12:00:00.000Z",
+        recoveryPolicy: "wake_owner",
+      },
+      clearReason: "timeout_exceeded",
+      expectedAttemptCount: 1,
+    },
+  ])(
+    "runs $label owner recovery as a bounded interaction without reopening dependency-blocked work",
+    async ({ monitorAttemptCount, monitor, clearReason, expectedAttemptCount }) => {
+      const { companyId, issueId, agentId } = await seedFixture({
+        issueStatus: "blocked",
+        monitorAttemptCount,
+        monitor,
+      });
+      const blockerIssueId = randomUUID();
+      await db.insert(issues).values({
+        id: blockerIssueId,
+        companyId,
+        title: "External dependency",
+        status: "in_progress",
+        priority: "medium",
+      });
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blockerIssueId,
+        relatedIssueId: issueId,
+        type: "blocks",
+      });
+
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+
+      expect(result.enqueued).toBe(0);
+      expect(result.skipped).toBe(1);
+      await waitForHeartbeatIdle();
+
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]!);
+      expect(issue.status).toBe("blocked");
+      expect(issue.monitorNextCheckAt).toBeNull();
+      expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+        status: "cleared",
+        clearReason,
+      });
+
+      const wakeup = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, agentId))
+        .then((rows) => rows.find((row) => row.reason === "issue_monitor_recovery") ?? null);
+      expect(wakeup?.status).toBe("completed");
+
+      const run = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, wakeup!.runId!))
+        .then((rows) => rows[0] ?? null);
+      expect(run?.status).toBe("succeeded");
+      expect(run?.contextSnapshot).toMatchObject({
+        issueId,
+        source: "issue.monitor.recovery",
+        wakeReason: "issue_monitor_recovery",
+        monitorAttemptCount: expectedAttemptCount,
+        clearReason,
+        dependencyBlockedInteraction: true,
+      });
+
+      const activity = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.entityId, issueId))
+        .then((rows) => rows.map((row) => row.action));
+      expect(activity).toContain("issue.monitor_recovery_wake_queued");
+      expect(activity).not.toContain("issue.monitor_recovery_wake_skipped");
+    },
+  );
+
+  it("creates a durable board path when the configured recovery owner cannot be woken", async () => {
+    const { issueId } = await seedFixture({
+      wakeOnDemand: false,
+      monitorAttemptCount: 1,
+      monitor: {
+        maxAttempts: 1,
+        recoveryPolicy: "wake_owner",
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+
+    expect(result.enqueued).toBe(0);
+    expect(result.skipped).toBe(1);
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.map((row) => row.action));
+    expect(activity).toContain("issue.monitor_recovery_board_path_created");
+    expect(activity).not.toContain("issue.monitor_recovery_wake_queued");
+    const action = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(action).toMatchObject({
+      status: "escalated",
+      ownerType: "board",
+      ownerAgentId: null,
+      cause: "issue_monitor_max_attempts_exhausted",
+    });
+  });
+
+  it.each([
+    "wake_owner",
+    "create_recovery_issue",
+  ] as const)(
+    "routes %s exhaustion to a durable board action when the owner terminates after monitor claim",
+    async (recoveryPolicy) => {
+      const { issueId, agentId } = await seedFixture({
+        monitorAttemptCount: 1,
+        monitor: { maxAttempts: 1, recoveryPolicy },
+      });
+      let releaseClaim!: () => void;
+      let claimObserved!: () => void;
+      const observed = new Promise<void>((resolve) => { claimObserved = resolve; });
+      const release = new Promise<void>((resolve) => { releaseClaim = resolve; });
+      const heartbeat = heartbeatService(db, {
+        afterIssueMonitorClaim: async ({ issueId: claimedIssueId }) => {
+          if (claimedIssueId !== issueId) return;
+          claimObserved();
+          await release;
+        },
+      });
+
+      const tick = heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+      await observed;
+      await db
+        .update(agents)
+        .set({ status: "terminated" })
+        .where(eq(agents.id, agentId));
+      releaseClaim();
+      await tick;
+
+      const [source, action, recoveryIssue, monitorWake] = await Promise.all([
+        db
+          .select()
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0]!),
+        db
+          .select()
+          .from(issueRecoveryActions)
+          .where(eq(issueRecoveryActions.sourceIssueId, issueId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select()
+          .from(issues)
+          .where(eq(issues.originId, issueId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select()
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.reason, "issue_monitor_recovery"))
+          .then((rows) => rows[0] ?? null),
+      ]);
+      expect(source).toMatchObject({ status: "in_progress", assigneeAgentId: agentId });
+      expect(action).toMatchObject({
+        status: "escalated",
+        ownerType: "board",
+        ownerAgentId: null,
+        cause: "issue_monitor_max_attempts_exhausted",
+      });
+      expect(monitorWake).toBeNull();
+      if (recoveryPolicy === "create_recovery_issue") {
+        expect(recoveryIssue).toMatchObject({ assigneeAgentId: null });
+        expect(action?.recoveryIssueId).toBe(recoveryIssue?.id);
+      } else {
+        expect(recoveryIssue).toBeNull();
+      }
+    },
+  );
+
+  it("atomically assigns a bounded recovery action to an invokable manager without mutating source ownership", async () => {
+    const { companyId, issueId, agentId } = await seedFixture({
+      monitorAttemptCount: 1,
+      monitor: { maxAttempts: 1, recoveryPolicy: "wake_owner" },
+    });
+    const managerAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: managerAgentId,
+      companyId,
+      name: "Monitor Recovery Manager",
+      role: "manager",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
+      permissions: {},
+    });
+    seededAgentIds.add(managerAgentId);
+    await db.update(agents).set({ reportsTo: managerAgentId }).where(eq(agents.id, agentId));
+
+    let releaseClaim!: () => void;
+    let claimObserved!: () => void;
+    const observed = new Promise<void>((resolve) => { claimObserved = resolve; });
+    const release = new Promise<void>((resolve) => { releaseClaim = resolve; });
+    const heartbeat = heartbeatService(db, {
+      afterIssueMonitorClaim: async ({ issueId: claimedIssueId }) => {
+        if (claimedIssueId !== issueId) return;
+        claimObserved();
+        await release;
+      },
+    });
+
+    const tick = heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+    await observed;
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, agentId));
+    releaseClaim();
+    await tick;
+    await waitForHeartbeatIdle();
+
+    const [source, action] = await Promise.all([
+      db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]!),
+      db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+    expect(source).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    expect(action).toMatchObject({
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: managerAgentId,
+      maxAttempts: 1,
+    });
+  });
+
+  it("does not admit an unbounded monitor recovery through the dependency interaction gate", async () => {
+    const { companyId, issueId, agentId } = await seedFixture({ issueStatus: "blocked" });
+    const blockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "Unresolved external dependency",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_monitor_recovery",
+      payload: { issueId },
+      contextSnapshot: {
+        issueId,
+        source: "issue.monitor.recovery",
+        wakeReason: "issue_monitor_recovery",
+        monitorAttemptCount: 1,
+        clearReason: "timeout_exceeded",
+        timeoutAt: "2099-01-01T00:00:00.000Z",
+      },
+    });
+
+    expect(run).toBeNull();
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      reason: "issue_dependencies_blocked",
+    });
+    const runs = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+  });
+
   it("clears timed-out monitors and creates a visible recovery issue when requested", async () => {
     const { issueId, companyId } = await seedFixture({
       monitor: {
@@ -419,6 +1285,147 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     });
     expect(["todo", "in_progress"]).toContain(recoveryIssue?.status);
   });
+
+  it.each([
+    { recoveryPolicy: "create_recovery_issue" as const, concurrentChange: "reassign" as const },
+    { recoveryPolicy: "escalate_to_board" as const, concurrentChange: "reschedule" as const },
+  ])(
+    "serializes $recoveryPolicy recovery with a concurrent source $concurrentChange",
+    async ({ recoveryPolicy, concurrentChange }) => {
+      const { companyId, issueId, agentId } = await seedFixture({
+        monitorAttemptCount: 1,
+        monitor: { maxAttempts: 1, recoveryPolicy },
+      });
+      let replacementAgentId: string | null = null;
+      if (concurrentChange === "reassign") {
+        replacementAgentId = randomUUID();
+        await db.insert(agents).values({
+          id: replacementAgentId,
+          companyId,
+          name: "Concurrent Replacement",
+          role: "engineer",
+          status: "active",
+          adapterType: "process",
+          adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+          runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
+          permissions: {},
+        });
+        seededAgentIds.add(replacementAgentId);
+      }
+
+      let releaseRecovery!: () => void;
+      let clearObserved!: () => void;
+      const observed = new Promise<void>((resolve) => { clearObserved = resolve; });
+      const release = new Promise<void>((resolve) => { releaseRecovery = resolve; });
+      const heartbeat = heartbeatService(db, {
+        afterIssueMonitorClearBeforeRecovery: async ({ issueId: lockedIssueId }) => {
+          if (lockedIssueId !== issueId) return;
+          clearObserved();
+          await release;
+        },
+      });
+
+      const tick = heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+      await observed;
+
+      const replacementCheckAt = new Date("2026-04-11T14:00:00.000Z");
+      let sourceUpdateSettled = false;
+      const sourceUpdate = (concurrentChange === "reassign"
+        ? db
+            .update(issues)
+            .set({ assigneeAgentId: replacementAgentId })
+            .where(eq(issues.id, issueId))
+        : db
+            .update(issues)
+            .set({
+              monitorNextCheckAt: replacementCheckAt,
+              monitorWakeRequestedAt: null,
+              executionPolicy: {
+                mode: "normal",
+                commentRequired: true,
+                stages: [],
+                monitor: {
+                  nextCheckAt: replacementCheckAt.toISOString(),
+                  scheduledBy: "board",
+                  notes: "Concurrent replacement schedule",
+                  maxAttempts: 1,
+                  recoveryPolicy,
+                },
+              },
+              executionState: {
+                status: "idle",
+                currentStageId: null,
+                currentStageIndex: null,
+                currentStageType: null,
+                currentParticipant: null,
+                returnAssignee: null,
+                completedStageIds: [],
+                lastDecisionId: null,
+                lastDecisionOutcome: null,
+                monitor: {
+                  status: "scheduled",
+                  nextCheckAt: replacementCheckAt.toISOString(),
+                  lastTriggeredAt: null,
+                  attemptCount: 0,
+                  notes: "Concurrent replacement schedule",
+                  scheduledBy: "board",
+                  kind: null,
+                  serviceName: null,
+                  externalRef: null,
+                  timeoutAt: null,
+                  maxAttempts: 1,
+                  recoveryPolicy,
+                  clearedAt: null,
+                  clearReason: null,
+                },
+              },
+            })
+            .where(eq(issues.id, issueId)))
+        .then(() => { sourceUpdateSettled = true; });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(sourceUpdateSettled).toBe(false);
+      releaseRecovery();
+      await Promise.all([tick, sourceUpdate]);
+
+      if (recoveryPolicy === "create_recovery_issue") {
+        const recoveryIssues = await db
+          .select()
+          .from(issues)
+          .where(eq(issues.originId, issueId));
+        expect(recoveryIssues).toHaveLength(1);
+        expect(recoveryIssues[0]).toMatchObject({
+          originKind: "stranded_issue_recovery",
+          assigneeAgentId: agentId,
+        });
+      } else {
+        const escalationComments = await db
+          .select()
+          .from(issueComments)
+          .where(eq(issueComments.issueId, issueId));
+        expect(escalationComments.filter((comment) =>
+          comment.body.includes("Paperclip cleared the scheduled external-service monitor"),
+        )).toHaveLength(1);
+        const source = await db
+          .select()
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0]!);
+        expect(source.monitorNextCheckAt?.toISOString()).toBe(replacementCheckAt.toISOString());
+        const recoveryAction = await db
+          .select()
+          .from(issueRecoveryActions)
+          .where(eq(issueRecoveryActions.sourceIssueId, issueId))
+          .then((rows) => rows[0] ?? null);
+        expect(recoveryAction).toMatchObject({
+          status: "escalated",
+          ownerType: "board",
+          ownerAgentId: null,
+          cause: "issue_monitor_max_attempts_exhausted",
+        });
+      }
+    },
+  );
 
   it("omits external monitor refs from wake payloads and activity details", async () => {
     const { issueId, agentId } = await seedFixture({

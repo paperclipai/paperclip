@@ -85,6 +85,8 @@ export async function runChildProcess(
     timeoutSec: number;
     graceSec: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+    acquireLaunchPermit?: () => Promise<() => void>;
+    onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   },
 ): Promise<RunProcessResult> {
   return _runChildProcess(runId, command, args, {

@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -25,6 +25,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { issueService } from "../services/issues.ts";
+import { agentService } from "../services/agents.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import * as providerRegistry from "../secrets/provider-registry.ts";
 import { routineService } from "../services/routines.ts";
@@ -185,6 +186,57 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
 
+  async function waitForBlockedAgentRowLock(timeoutMs = 2_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const rows = await db.execute(sql`
+        select count(*)::int as waiting
+        from pg_stat_activity
+        where datname = current_database()
+          and wait_event_type = 'Lock'
+          and query ilike '%agents%'
+          and query ilike '%for update%'
+      `) as unknown as Array<{ waiting: number }>;
+      if (Number(rows[0]?.waiting ?? 0) > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("Timed out waiting for the routine mutation to block on the assignee row lock");
+  }
+
+  async function waitForBlockedDispatchAgentLock(timeoutMs = 2_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const rows = await db.execute(sql`
+        select count(*)::int as waiting
+        from pg_stat_activity
+        where datname = current_database()
+          and wait_event_type = 'Lock'
+          and query ilike '%agents%'
+          and query ilike '%for share%'
+      `) as unknown as Array<{ waiting: number }>;
+      if (Number(rows[0]?.waiting ?? 0) > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("Timed out waiting for routine dispatch to block on the assignee lifecycle lock");
+  }
+
+  async function waitForBlockedDispatchTriggerLock(timeoutMs = 2_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const rows = await db.execute(sql`
+        select count(*)::int as waiting
+        from pg_stat_activity
+        where datname = current_database()
+          and wait_event_type = 'Lock'
+          and query ilike '%routine_triggers%'
+          and query ilike '%for update%'
+      `) as unknown as Array<{ waiting: number }>;
+      if (Number(rows[0]?.waiting ?? 0) > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("Timed out waiting for routine dispatch to revalidate its trigger lock");
+  }
+
   it("filters listed routines by project", async () => {
     const { companyId, agentId, projectId, routine, svc } = await seedFixture();
     const otherProjectId = randomUUID();
@@ -288,6 +340,469 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routine.projectId).toBeNull();
     expect(routine.assigneeAgentId).toBeNull();
     expect(routine.status).toBe("paused");
+  });
+
+  it("serializes routine creation with termination and revalidates the assignee after unlock", async () => {
+    const { agentId, companyId, projectId, svc } = await seedFixture();
+    let releaseTermination!: () => void;
+    let markTerminationStaged!: () => void;
+    const releaseTerminationPromise = new Promise<void>((resolve) => {
+      releaseTermination = resolve;
+    });
+    const terminationStaged = new Promise<void>((resolve) => {
+      markTerminationStaged = resolve;
+    });
+    const terminationTransaction = db.transaction(async (tx) => {
+      await tx
+        .update(agents)
+        .set({ status: "terminated" })
+        .where(eq(agents.id, agentId));
+      markTerminationStaged();
+      await releaseTerminationPromise;
+    });
+    await terminationStaged;
+
+    const createRoutine = svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "termination race routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+    try {
+      await waitForBlockedAgentRowLock();
+    } finally {
+      releaseTermination();
+      await terminationTransaction;
+    }
+
+    await expect(createRoutine).rejects.toMatchObject({
+      status: 409,
+      message: "Cannot assign routines to terminated agents",
+    });
+    await expect(db.select().from(routines).where(eq(routines.title, "termination race routine")))
+      .resolves.toHaveLength(0);
+  });
+
+  it("does not create a routine issue when termination wins an in-flight dispatch", async () => {
+    const { agentId, routine, svc } = await seedFixture();
+    let releaseTermination!: () => void;
+    let markTerminationStaged!: () => void;
+    const releaseTerminationPromise = new Promise<void>((resolve) => {
+      releaseTermination = resolve;
+    });
+    const terminationStaged = new Promise<void>((resolve) => {
+      markTerminationStaged = resolve;
+    });
+    const terminationTransaction = db.transaction(async (tx) => {
+      await tx
+        .update(agents)
+        .set({ status: "terminated" })
+        .where(eq(agents.id, agentId));
+      markTerminationStaged();
+      await releaseTerminationPromise;
+    });
+    await terminationStaged;
+
+    const dispatch = svc.runRoutine(routine.id, { source: "manual" });
+    try {
+      await waitForBlockedDispatchAgentLock();
+    } finally {
+      releaseTermination();
+      await terminationTransaction;
+    }
+
+    await expect(dispatch).rejects.toMatchObject({
+      status: 409,
+      message: "Cannot assign routines to terminated agents",
+    });
+    await expect(db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id)))
+      .resolves.toHaveLength(0);
+    await expect(db.select().from(issues).where(eq(issues.originId, routine.id)))
+      .resolves.toHaveLength(0);
+  });
+
+  it("does not dispatch after its trigger is disabled concurrently", async () => {
+    const { routine, svc } = await seedFixture();
+    const created = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+      enabled: true,
+    }, {});
+    let releaseDisable!: () => void;
+    let markDisableStaged!: () => void;
+    const disableReleased = new Promise<void>((resolve) => {
+      releaseDisable = resolve;
+    });
+    const disableStaged = new Promise<void>((resolve) => {
+      markDisableStaged = resolve;
+    });
+    const disableTransaction = db.transaction(async (tx) => {
+      await tx
+        .update(routineTriggers)
+        .set({ enabled: false, updatedAt: new Date() })
+        .where(eq(routineTriggers.id, created.trigger.id));
+      markDisableStaged();
+      await disableReleased;
+    });
+    await disableStaged;
+
+    const dispatch = svc.runRoutine(routine.id, {
+      source: "manual",
+      triggerId: created.trigger.id,
+    });
+    try {
+      await waitForBlockedDispatchTriggerLock();
+    } finally {
+      releaseDisable();
+      await disableTransaction;
+    }
+
+    await expect(dispatch).rejects.toMatchObject({
+      status: 409,
+      message: "Routine trigger is not active",
+    });
+    await expect(db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id)))
+      .resolves.toHaveLength(0);
+    await expect(db.select().from(issues).where(eq(issues.originId, routine.id)))
+      .resolves.toHaveLength(0);
+  });
+
+  it("does not dispatch after its trigger is deleted concurrently", async () => {
+    const { routine, svc } = await seedFixture();
+    const created = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+      enabled: true,
+    }, {});
+    let releaseDelete!: () => void;
+    let markDeleteStaged!: () => void;
+    const deleteReleased = new Promise<void>((resolve) => {
+      releaseDelete = resolve;
+    });
+    const deleteStaged = new Promise<void>((resolve) => {
+      markDeleteStaged = resolve;
+    });
+    const deleteTransaction = db.transaction(async (tx) => {
+      await tx.delete(routineTriggers).where(eq(routineTriggers.id, created.trigger.id));
+      markDeleteStaged();
+      await deleteReleased;
+    });
+    await deleteStaged;
+
+    const dispatch = svc.runRoutine(routine.id, {
+      source: "manual",
+      triggerId: created.trigger.id,
+    });
+    try {
+      await waitForBlockedDispatchTriggerLock();
+    } finally {
+      releaseDelete();
+      await deleteTransaction;
+    }
+
+    await expect(dispatch).rejects.toMatchObject({
+      status: 409,
+      message: "Routine trigger is not active",
+    });
+    await expect(db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id)))
+      .resolves.toHaveLength(0);
+    await expect(db.select().from(issues).where(eq(issues.originId, routine.id)))
+      .resolves.toHaveLength(0);
+  });
+
+  it("serializes routine reassignment with termination and preserves the original assignee", async () => {
+    const { companyId, agentId, routine, svc } = await seedFixture();
+    const targetAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: targetAgentId,
+      companyId,
+      name: "TerminatingTarget",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    let releaseTermination!: () => void;
+    let markTerminationStaged!: () => void;
+    const releaseTerminationPromise = new Promise<void>((resolve) => {
+      releaseTermination = resolve;
+    });
+    const terminationStaged = new Promise<void>((resolve) => {
+      markTerminationStaged = resolve;
+    });
+    const terminationTransaction = db.transaction(async (tx) => {
+      await tx
+        .update(agents)
+        .set({ status: "terminated" })
+        .where(eq(agents.id, targetAgentId));
+      markTerminationStaged();
+      await releaseTerminationPromise;
+    });
+    await terminationStaged;
+
+    const updateRoutine = svc.update(routine.id, { assigneeAgentId: targetAgentId }, {});
+    try {
+      await waitForBlockedAgentRowLock();
+    } finally {
+      releaseTermination();
+      await terminationTransaction;
+    }
+
+    await expect(updateRoutine).rejects.toMatchObject({
+      status: 409,
+      message: "Cannot assign routines to terminated agents",
+    });
+    await expect(svc.get(routine.id)).resolves.toMatchObject({
+      assigneeAgentId: agentId,
+      status: "active",
+    });
+  });
+
+  it("serializes routine activation with termination and leaves the routine paused", async () => {
+    const { agentId, routine, svc } = await seedFixture();
+    const paused = await svc.update(routine.id, { status: "paused" }, {});
+    let releaseTermination!: () => void;
+    let markTerminationStaged!: () => void;
+    const releaseTerminationPromise = new Promise<void>((resolve) => {
+      releaseTermination = resolve;
+    });
+    const terminationStaged = new Promise<void>((resolve) => {
+      markTerminationStaged = resolve;
+    });
+    const terminationTransaction = db.transaction(async (tx) => {
+      await tx
+        .update(agents)
+        .set({ status: "terminated" })
+        .where(eq(agents.id, agentId));
+      markTerminationStaged();
+      await releaseTerminationPromise;
+    });
+    await terminationStaged;
+
+    const activateRoutine = svc.update(
+      routine.id,
+      { status: "active", baseRevisionId: paused?.latestRevisionId },
+      {},
+    );
+    try {
+      await waitForBlockedAgentRowLock();
+    } finally {
+      releaseTermination();
+      await terminationTransaction;
+    }
+
+    await expect(activateRoutine).rejects.toMatchObject({
+      status: 409,
+      message: "Cannot assign routines to terminated agents",
+    });
+    await expect(svc.get(routine.id)).resolves.toMatchObject({
+      status: "paused",
+      latestRevisionId: paused?.latestRevisionId,
+    });
+  });
+
+  it("aborts activation without reversing lock order when the assignee drifts", async () => {
+    const { agentId, companyId, routine, svc } = await seedFixture();
+    await svc.update(routine.id, { status: "paused" }, {});
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: replacementAgentId,
+      companyId,
+      name: "ConcurrentReplacement",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    let releaseOriginalAgent!: () => void;
+    let markOriginalAgentLocked!: () => void;
+    const releaseOriginalAgentPromise = new Promise<void>((resolve) => {
+      releaseOriginalAgent = resolve;
+    });
+    const originalAgentLocked = new Promise<void>((resolve) => {
+      markOriginalAgentLocked = resolve;
+    });
+    const agentLock = db.transaction(async (tx) => {
+      await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, agentId)).for("update");
+      markOriginalAgentLocked();
+      await releaseOriginalAgentPromise;
+    });
+    await originalAgentLocked;
+
+    const activateRoutine = svc.update(routine.id, { status: "active" }, {});
+    await waitForBlockedAgentRowLock();
+    await db
+      .update(routines)
+      .set({ assigneeAgentId: replacementAgentId, status: "paused" })
+      .where(eq(routines.id, routine.id));
+    await db
+      .update(agents)
+      .set({ status: "terminated" })
+      .where(eq(agents.id, replacementAgentId));
+    releaseOriginalAgent();
+    await agentLock;
+
+    await expect(activateRoutine).rejects.toMatchObject({
+      status: 409,
+      message: "Routine assignee changed while waiting for the lifecycle lock; retry the update",
+    });
+    await expect(svc.get(routine.id)).resolves.toMatchObject({
+      assigneeAgentId: replacementAgentId,
+      status: "paused",
+    });
+  });
+
+  it("does not create an enabled trigger after the assignee terminates", async () => {
+    const { agentId, routine, svc } = await seedFixture();
+    let releaseTermination!: () => void;
+    let markTerminationStaged!: () => void;
+    const releaseTerminationPromise = new Promise<void>((resolve) => {
+      releaseTermination = resolve;
+    });
+    const terminationStaged = new Promise<void>((resolve) => {
+      markTerminationStaged = resolve;
+    });
+    const terminationTransaction = db.transaction(async (tx) => {
+      await tx.update(agents).set({ status: "terminated" }).where(eq(agents.id, agentId));
+      markTerminationStaged();
+      await releaseTerminationPromise;
+    });
+    await terminationStaged;
+
+    const createTrigger = svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+      enabled: true,
+    }, {});
+    try {
+      await waitForBlockedAgentRowLock();
+    } finally {
+      releaseTermination();
+      await terminationTransaction;
+    }
+
+    await expect(createTrigger).rejects.toMatchObject({
+      status: 409,
+      message: "Cannot assign routines to terminated agents",
+    });
+    await expect(db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routine.id)))
+      .resolves.toHaveLength(0);
+  });
+
+  it("does not re-enable a trigger after the assignee terminates", async () => {
+    const { agentId, routine, svc } = await seedFixture();
+    const created = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+      enabled: false,
+    }, {});
+    let releaseTermination!: () => void;
+    let markTerminationStaged!: () => void;
+    const releaseTerminationPromise = new Promise<void>((resolve) => {
+      releaseTermination = resolve;
+    });
+    const terminationStaged = new Promise<void>((resolve) => {
+      markTerminationStaged = resolve;
+    });
+    const terminationTransaction = db.transaction(async (tx) => {
+      await tx.update(agents).set({ status: "terminated" }).where(eq(agents.id, agentId));
+      markTerminationStaged();
+      await releaseTerminationPromise;
+    });
+    await terminationStaged;
+
+    const enableTrigger = svc.updateTrigger(created.trigger.id, { enabled: true }, {});
+    try {
+      await waitForBlockedAgentRowLock();
+    } finally {
+      releaseTermination();
+      await terminationTransaction;
+    }
+
+    await expect(enableTrigger).rejects.toMatchObject({
+      status: 409,
+      message: "Cannot assign routines to terminated agents",
+    });
+    await expect(svc.getTrigger(created.trigger.id)).resolves.toMatchObject({ enabled: false });
+  });
+
+  it("does not disable a trigger that was transferred before the former assignee terminated", async () => {
+    const { agentId, companyId, routine, svc } = await seedFixture();
+    const targetAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: targetAgentId,
+      companyId,
+      name: "ReplacementOwner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const created = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+      enabled: true,
+    }, {});
+
+    let releaseTransfer!: () => void;
+    let markTransferStaged!: () => void;
+    const releaseTransferPromise = new Promise<void>((resolve) => {
+      releaseTransfer = resolve;
+    });
+    const transferStaged = new Promise<void>((resolve) => {
+      markTransferStaged = resolve;
+    });
+    const transferTransaction = db.transaction(async (tx) => {
+      const txSvc = routineService(tx as unknown as typeof db);
+      const updated = await txSvc.update(routine.id, { assigneeAgentId: targetAgentId }, {});
+      markTransferStaged();
+      await releaseTransferPromise;
+      return updated;
+    });
+    await transferStaged;
+
+    const terminateFormerOwner = agentService(db).terminate(agentId, {
+      actorType: "system",
+      actorId: "test",
+      source: "concurrency_test",
+    });
+    try {
+      await waitForBlockedAgentRowLock();
+    } finally {
+      releaseTransfer();
+      await transferTransaction;
+    }
+    await terminateFormerOwner;
+
+    await expect(svc.get(routine.id)).resolves.toMatchObject({
+      assigneeAgentId: targetAgentId,
+      status: "active",
+    });
+    await expect(svc.getTrigger(created.trigger.id)).resolves.toMatchObject({ enabled: true });
+    await expect(db.select().from(agents).where(eq(agents.id, agentId)))
+      .resolves.toEqual([expect.objectContaining({ status: "terminated" })]);
   });
 
   it("creates revision 1 on routine create and appends revisions for real updates only", async () => {
@@ -1227,6 +1742,46 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues).toHaveLength(1);
   });
 
+  it("dispatches a claimed scheduled trigger after its runtime timestamps advance", async () => {
+    const { routine, svc } = await seedFixture();
+    const created = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "* * * * *",
+      timezone: "UTC",
+      enabled: true,
+    }, {});
+    const now = new Date("2026-07-11T12:00:30.000Z");
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: new Date("2026-07-11T12:00:00.000Z") })
+      .where(eq(routineTriggers.id, created.trigger.id));
+
+    await expect(svc.tickScheduledTriggers(now)).resolves.toEqual({ triggered: 1 });
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      triggerId: created.trigger.id,
+      source: "schedule",
+      status: "issue_created",
+    });
+  });
+
+  it("allows concurrent webhook deliveries to serialize without stale-trigger rejection", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "webhook",
+      signingMode: "none",
+    }, {});
+
+    const [first, second] = await Promise.all([
+      svc.firePublicTrigger(trigger.publicId!, { payload: { delivery: "same-event" } }),
+      svc.firePublicTrigger(trigger.publicId!, { payload: { delivery: "same-event" } }),
+    ]);
+
+    expect([first.status, second.status].sort()).toEqual(["coalesced", "issue_created"]);
+    expect(first.linkedIssueId).toBe(second.linkedIssueId);
+  });
+
   it("fails the run and cleans up the execution issue when wakeup queueing fails", async () => {
     const { routine, svc } = await seedFixture({
       wakeup: async () => {
@@ -1354,6 +1909,191 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         id: trigger.secretId,
         provider: "aws_secrets_manager",
       });
+    } finally {
+      getSecretProviderSpy.mockRestore();
+    }
+  });
+
+  it("does not hold lifecycle locks during webhook provider I/O and compensates a rejected create", async () => {
+    process.env.PAPERCLIP_SECRETS_PROVIDER = "aws_secrets_manager";
+    let releaseProviderWrite!: () => void;
+    let markProviderWriteStarted!: () => void;
+    const providerWriteRelease = new Promise<void>((resolve) => {
+      releaseProviderWrite = resolve;
+    });
+    const providerWriteStarted = new Promise<void>((resolve) => {
+      markProviderWriteStarted = resolve;
+    });
+    const deleteOrArchive = vi.fn(async () => undefined);
+    const originalGetSecretProvider = providerRegistry.getSecretProvider;
+    const getSecretProviderSpy = vi.spyOn(providerRegistry, "getSecretProvider").mockImplementation((provider) => {
+      if (provider !== "aws_secrets_manager") return originalGetSecretProvider(provider);
+      return {
+        id: "aws_secrets_manager",
+        descriptor: () => ({
+          id: "aws_secrets_manager",
+          label: "AWS Secrets Manager",
+          supportsManaged: true,
+          supportsExternalReference: true,
+        }),
+        validateConfig: async () => ({ ok: true, warnings: [] }),
+        createSecret: async ({ value }) => {
+          markProviderWriteStarted();
+          await providerWriteRelease;
+          return {
+            material: { source: "managed", secretId: "arn:aws:secretsmanager:prepared", versionId: "v1" },
+            valueSha256: `sha:${value}`,
+            fingerprintSha256: `sha:${value}`,
+            externalRef: "arn:aws:secretsmanager:prepared",
+            providerVersionRef: "v1",
+          };
+        },
+        createVersion: async ({ value }) => ({
+          material: { source: "managed", secretId: "arn:aws:secretsmanager:prepared", versionId: "v2" },
+          valueSha256: `sha:${value}`,
+          fingerprintSha256: `sha:${value}`,
+          externalRef: "arn:aws:secretsmanager:prepared",
+          providerVersionRef: "v2",
+        }),
+        linkExternalSecret: async ({ externalRef, providerVersionRef }) => ({
+          material: { source: "external", secretId: externalRef, versionId: providerVersionRef ?? null },
+          valueSha256: "external",
+          fingerprintSha256: "external",
+          externalRef,
+          providerVersionRef: providerVersionRef ?? null,
+        }),
+        resolveVersion: async () => "resolved-secret",
+        deleteOrArchive,
+        healthCheck: async () => ({
+          provider: "aws_secrets_manager",
+          status: "ok",
+          message: "stubbed",
+        }),
+      };
+    });
+
+    try {
+      const { agentId, routine, svc } = await seedFixture();
+      const createTrigger = svc.createTrigger(routine.id, {
+        kind: "webhook",
+        signingMode: "hmac_sha256",
+        replayWindowSec: 300,
+      }, {});
+      void createTrigger.catch(() => undefined);
+      await providerWriteStarted;
+
+      const termination = agentService(db).terminate(agentId, {
+        actorType: "system",
+        actorId: "test",
+        source: "provider_delay_test",
+      });
+      await expect(Promise.race([
+        termination,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("termination waited on provider I/O")), 1_000)),
+      ])).resolves.toMatchObject({ status: "terminated" });
+
+      releaseProviderWrite();
+      await expect(createTrigger).rejects.toMatchObject({
+        status: 409,
+        message: "Cannot assign routines to terminated agents",
+      });
+      expect(deleteOrArchive).toHaveBeenCalledTimes(1);
+      await expect(db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routine.id)))
+        .resolves.toHaveLength(0);
+      await expect(db.select().from(companySecrets)).resolves.toHaveLength(0);
+    } finally {
+      releaseProviderWrite?.();
+      getSecretProviderSpy.mockRestore();
+    }
+  });
+
+  it("attempts every prepared webhook cleanup when a multi-secret restore rolls back", async () => {
+    const { routine, svc } = await seedFixture();
+    const first = await svc.createTrigger(routine.id, {
+      kind: "webhook",
+      signingMode: "bearer",
+      replayWindowSec: 300,
+    }, {});
+    const second = await svc.createTrigger(routine.id, {
+      kind: "webhook",
+      signingMode: "bearer",
+      replayWindowSec: 300,
+    }, {});
+    const targetRevisionId = second.revision.id;
+    await svc.deleteTrigger(first.trigger.id, {});
+    await svc.deleteTrigger(second.trigger.id, {});
+
+    process.env.PAPERCLIP_SECRETS_PROVIDER = "aws_secrets_manager";
+    let createCount = 0;
+    const deleteOrArchive = vi.fn(async () => {
+      if (deleteOrArchive.mock.calls.length === 1) {
+        throw new Error("first provider cleanup failed");
+      }
+    });
+    const originalGetSecretProvider = providerRegistry.getSecretProvider;
+    const getSecretProviderSpy = vi.spyOn(providerRegistry, "getSecretProvider").mockImplementation((provider) => {
+      if (provider !== "aws_secrets_manager") return originalGetSecretProvider(provider);
+      return {
+        id: "aws_secrets_manager",
+        descriptor: () => ({
+          id: "aws_secrets_manager",
+          label: "AWS Secrets Manager",
+          supportsManaged: true,
+          supportsExternalReference: true,
+        }),
+        validateConfig: async () => ({ ok: true, warnings: [] }),
+        createSecret: async ({ value }) => {
+          createCount += 1;
+          if (createCount === 2) {
+            await svc.update(routine.id, { description: "Concurrent restore mutation" }, {});
+          }
+          return {
+            material: {
+              source: "managed",
+              secretId: `arn:aws:secretsmanager:restore-${createCount}`,
+              versionId: "v1",
+            },
+            valueSha256: `sha:${value}`,
+            fingerprintSha256: `sha:${value}`,
+            externalRef: `arn:aws:secretsmanager:restore-${createCount}`,
+            providerVersionRef: "v1",
+          };
+        },
+        createVersion: async ({ value }) => ({
+          material: { source: "managed", secretId: "arn:aws:secretsmanager:version", versionId: "v2" },
+          valueSha256: `sha:${value}`,
+          fingerprintSha256: `sha:${value}`,
+          externalRef: "arn:aws:secretsmanager:version",
+          providerVersionRef: "v2",
+        }),
+        linkExternalSecret: async ({ externalRef, providerVersionRef }) => ({
+          material: { source: "external", secretId: externalRef, versionId: providerVersionRef ?? null },
+          valueSha256: "external",
+          fingerprintSha256: "external",
+          externalRef,
+          providerVersionRef: providerVersionRef ?? null,
+        }),
+        resolveVersion: async () => "resolved-secret",
+        deleteOrArchive,
+        healthCheck: async () => ({
+          provider: "aws_secrets_manager",
+          status: "ok",
+          message: "stubbed",
+        }),
+      };
+    });
+
+    try {
+      await expect(svc.restoreRevision(routine.id, targetRevisionId, {})).rejects.toMatchObject({
+        name: "AggregateError",
+      });
+      expect(createCount).toBe(2);
+      expect(deleteOrArchive).toHaveBeenCalledTimes(2);
+      const remainingAwsSecrets = await db
+        .select({ status: companySecrets.status })
+        .from(companySecrets)
+        .where(eq(companySecrets.provider, "aws_secrets_manager"));
+      expect(remainingAwsSecrets).toEqual([{ status: "deleted" }]);
     } finally {
       getSecretProviderSpy.mockRestore();
     }

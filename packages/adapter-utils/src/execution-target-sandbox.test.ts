@@ -41,6 +41,7 @@ describe("sandbox adapter execution targets", () => {
         stdin?: string;
         timeoutMs?: number;
         onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+        acquireLaunchPermit?: () => Promise<() => void>;
         onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
       }) => {
         counter += 1;
@@ -52,6 +53,7 @@ describe("sandbox adapter execution targets", () => {
           timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
           graceSec: 5,
           onLog: input.onLog ?? (async () => {}),
+          acquireLaunchPermit: input.acquireLaunchPermit,
           onSpawn: input.onSpawn
             ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
             : undefined,
@@ -82,6 +84,7 @@ describe("sandbox adapter execution targets", () => {
       timeoutMs: 30_000,
       runner,
     };
+    const acquireLaunchPermit = vi.fn(async () => () => undefined);
 
     expect(adapterExecutionTargetToRemoteSpec(target)).toBeNull();
 
@@ -92,6 +95,7 @@ describe("sandbox adapter execution targets", () => {
       timeoutSec: 5,
       graceSec: 1,
       onLog: async () => {},
+      acquireLaunchPermit,
     });
 
     expect(result.stdout).toBe("ok\n");
@@ -102,6 +106,7 @@ describe("sandbox adapter execution targets", () => {
       env: { TOKEN: "token" },
       stdin: "prompt",
       timeoutMs: 5000,
+      acquireLaunchPermit,
     }));
     expect(adapterExecutionTargetSessionIdentity(target)).toEqual({
       transport: "sandbox",

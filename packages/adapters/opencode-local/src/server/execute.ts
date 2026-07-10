@@ -91,6 +91,7 @@ async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   env: Record<string, string>;
   timeoutSec: number;
   graceSec: number;
+  acquireLaunchPermit?: AdapterExecutionContext["acquireLaunchPermit"];
 }) {
   const model = requireOpenCodeModelId(input.model);
   const defaultProbeTimeoutSec =
@@ -110,6 +111,7 @@ async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
       env: input.env,
       timeoutSec: probeTimeoutSec,
       graceSec: input.graceSec,
+      acquireLaunchPermit: input.acquireLaunchPermit,
       onLog: async () => {},
     },
   );
@@ -198,7 +200,7 @@ async function buildOpenCodeSkillsDir(config: Record<string, unknown>): Promise<
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, acquireLaunchPermit, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -462,6 +464,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         env: preparedRuntimeConfig.env,
         timeoutSec,
         graceSec,
+        acquireLaunchPermit,
       });
     }
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
@@ -612,6 +615,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stdin: prompt,
         timeoutSec,
         graceSec,
+        acquireLaunchPermit,
         onSpawn,
         onLog,
       });

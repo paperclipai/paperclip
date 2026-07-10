@@ -184,12 +184,12 @@ function normalizeEvidence(evidence: Partial<RunLivenessEvidenceInput> | null | 
 
 export function hasConcreteActionEvidence(evidence: Partial<RunLivenessEvidenceInput> | null | undefined) {
   const normalized = normalizeEvidence(evidence);
-  // Workspace creation is setup evidence, not task progress by itself. It can
-  // appear in reasons alongside durable activity, but it must not prevent a
-  // planning-only or empty run from receiving a bounded continuation.
+  // Comments communicate state, but a status/progress comment alone does not
+  // prove that deliverable work happened. Workspace creation is setup evidence
+  // for the same reason. Both can appear in the evidence summary alongside a
+  // durable artifact or action, but neither may suppress bounded continuation.
   return (
-    normalized.issueCommentsCreated +
-      normalized.documentRevisionsCreated +
+    normalized.documentRevisionsCreated +
       normalized.workProductsCreated +
       normalized.activityEventsCreated +
       normalized.toolOrActionEventsCreated >
@@ -298,7 +298,12 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
   const usefulOutput = hasUsefulOutput(input);
   const concreteEvidence = hasConcreteActionEvidence(evidence);
   const planExempt = isPlanningOrDocumentTask(input.issue) || evidence.planDocumentRevisionsCreated > 0;
-  const lastUsefulActionAt = concreteEvidence ? evidence.latestEvidenceAt : null;
+  // Terminal issue state is itself the disposition. Preserve the latest
+  // recorded run evidence timestamp for the completed ledger even when that
+  // evidence was a final comment rather than deliverable progress.
+  const lastUsefulActionAt = concreteEvidence || issueStatus === "done" || issueStatus === "cancelled"
+    ? evidence.latestEvidenceAt
+    : null;
 
   const output = (state: RunLivenessState, reason: string, nextAction: string | null = null): RunLivenessClassification => ({
     livenessState: state,

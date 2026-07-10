@@ -159,6 +159,8 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
+  acquireLaunchPermit?: () => Promise<() => void>;
+  signal?: AbortSignal;
 }
 
 export interface EnvironmentRuntimeDriver {
@@ -679,27 +681,106 @@ function createSandboxEnvironmentDriver(
             provider: providerKey,
           });
           const sanitizedConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
-          return await pluginWorkerManager.call(pluginId, "environmentExecute", {
-            driverKey: providerKey,
-            companyId: input.lease.companyId,
-            environmentId: input.environment.id,
-            issueId: input.lease.issueId,
-            config: sanitizedConfig,
-            lease: {
-              providerLeaseId: input.lease.providerLeaseId,
-              metadata: input.lease.metadata ?? undefined,
-              expiresAt: input.lease.expiresAt?.toISOString() ?? null,
-            },
-            command: input.command,
-            args: input.args,
-            cwd: input.cwd,
-            env: input.env,
-            stdin: input.stdin,
-            timeoutMs: input.timeoutMs,
-          }, resolvePluginExecuteRpcTimeoutMs({
-            requestedTimeoutMs: input.timeoutMs,
-            config: sanitizedConfig,
-          }));
+          input.signal?.throwIfAborted();
+          const executionId = randomUUID();
+          const releaseLaunchPermit = await input.acquireLaunchPermit?.();
+          try {
+            input.signal?.throwIfAborted();
+            const execution = pluginWorkerManager.call(pluginId, "environmentExecute", {
+              driverKey: providerKey,
+              companyId: input.lease.companyId,
+              environmentId: input.environment.id,
+              issueId: input.lease.issueId,
+              config: sanitizedConfig,
+              executionId,
+              lease: {
+                providerLeaseId: input.lease.providerLeaseId,
+                metadata: input.lease.metadata ?? undefined,
+                expiresAt: input.lease.expiresAt?.toISOString() ?? null,
+              },
+              command: input.command,
+              args: input.args,
+              cwd: input.cwd,
+              env: input.env,
+              stdin: input.stdin,
+              timeoutMs: input.timeoutMs,
+            }, resolvePluginExecuteRpcTimeoutMs({
+              requestedTimeoutMs: input.timeoutMs,
+              config: sanitizedConfig,
+            }));
+            // PluginWorkerManager.call synchronously writes the JSON-RPC request
+            // before returning its promise, which is the sandbox submission ack.
+            releaseLaunchPermit?.();
+            if (!input.signal) return await execution;
+
+            return await new Promise<PluginEnvironmentExecuteResult>((resolve, reject) => {
+              let settled = false;
+              const cleanup = () => input.signal?.removeEventListener("abort", onAbort);
+              const settle = <T>(callback: (value: T) => void, value: T) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                callback(value);
+              };
+              const cancelSubmittedExecution = async () => {
+                const worker = pluginWorkerManager.getWorker(pluginId);
+                if (worker?.supportedMethods.includes("environmentCancelExecution")) {
+                  await pluginWorkerManager.call(pluginId, "environmentCancelExecution", {
+                    driverKey: providerKey,
+                    companyId: input.lease.companyId,
+                    environmentId: input.environment.id,
+                    issueId: input.lease.issueId,
+                    config: sanitizedConfig,
+                    executionId,
+                    lease: {
+                      providerLeaseId: input.lease.providerLeaseId,
+                      metadata: input.lease.metadata ?? undefined,
+                      expiresAt: input.lease.expiresAt?.toISOString() ?? null,
+                    },
+                  }, 5_000);
+                  return;
+                }
+
+                // Older providers do not have command-level cancellation.
+                // Force-destroying the lease is the only containment boundary
+                // that guarantees an external command cannot keep running.
+                if (worker?.supportedMethods.includes("environmentDestroyLease")) {
+                  await pluginWorkerManager.call(pluginId, "environmentDestroyLease", {
+                    driverKey: providerKey,
+                    companyId: input.lease.companyId,
+                    environmentId: input.environment.id,
+                    issueId: input.lease.issueId,
+                    config: sanitizedConfig,
+                    providerLeaseId: input.lease.providerLeaseId,
+                    leaseMetadata: input.lease.metadata ?? undefined,
+                  }, 5_000);
+                  return;
+                }
+                throw new Error(
+                  `Sandbox provider ${providerKey} cannot cancel execution ${executionId} or destroy its lease`,
+                );
+              };
+              const onAbort = () => {
+                void cancelSubmittedExecution().then(
+                  () => {
+                    const error = new Error("Sandbox execution cancelled by the Paperclip control plane");
+                    error.name = "AbortError";
+                    settle(reject, error);
+                  },
+                  (error) => settle(reject, error),
+                );
+              };
+              input.signal!.addEventListener("abort", onAbort, { once: true });
+              if (input.signal!.aborted) onAbort();
+              void execution.then(
+                (result) => settle(resolve, result),
+                (error) => settle(reject, error),
+              );
+            });
+          } catch (error) {
+            releaseLaunchPermit?.();
+            throw error;
+          }
         }
       }
       throw new Error("Sandbox driver does not support direct command execution for built-in providers.");

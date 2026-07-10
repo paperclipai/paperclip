@@ -136,6 +136,14 @@ export interface AdapterExecutionContext {
   };
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
+  /**
+   * Acquires a short-lived permit immediately before an adapter launches a
+   * process or submits equivalent remote work. The returned callback releases
+   * the permit after the launch has been registered.
+   */
+  acquireLaunchPermit?: () => Promise<() => void>;
+  /** Aborted when the control plane cancels or terminates this run. */
+  signal?: AbortSignal;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
 }

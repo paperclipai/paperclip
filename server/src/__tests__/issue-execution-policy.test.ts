@@ -1386,7 +1386,43 @@ describe("issue execution policy transitions", () => {
       });
     });
 
-    it("rejects explicitly scheduling a monitor on an invalid issue state", () => {
+    it("schedules an explicitly bounded monitor on a blocked issue", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [],
+        monitor: {
+          nextCheckAt: "2099-04-11T12:30:00.000Z",
+          notes: "Check whether the blocker has cleared",
+          maxAttempts: 2,
+        },
+      })!;
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "blocked",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: null,
+          executionState: null,
+          monitorAttemptCount: 0,
+          monitorNextCheckAt: null,
+        },
+        policy,
+        previousPolicy: null,
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        monitorExplicitlyUpdated: true,
+      });
+
+      expect(result.patch.monitorNextCheckAt).toEqual(new Date("2099-04-11T12:30:00.000Z"));
+      expect(result.patch.executionState).toMatchObject({
+        monitor: {
+          status: "scheduled",
+          maxAttempts: 2,
+        },
+      });
+    });
+
+    it("rejects an unbounded monitor on a blocked issue", () => {
       const policy = normalizeIssueExecutionPolicy({
         stages: [],
         monitor: {

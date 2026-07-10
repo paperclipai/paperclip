@@ -13,6 +13,7 @@ import {
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "../services/recovery/index.ts";
+import { hasScheduledMonitor } from "../services/recovery/issue-graph-liveness.ts";
 
 const companyId = "company-1";
 const agentId = "agent-1";
@@ -166,6 +167,34 @@ describe("recovery classifier boundary", () => {
 
     expect(overdue[0]?.state).toBe("in_review_without_action_path");
     expect(exhausted[0]?.state).toBe("in_review_without_action_path");
+  });
+
+  it("only treats a future blocked monitor as waiting when it is explicitly bounded", () => {
+    const baseIssue = {
+      id: issueId,
+      companyId,
+      identifier: "PAP-2946",
+      title: "Wait for a bounded external unblock check",
+      status: "blocked",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      monitorNextCheckAt: "2026-04-30T19:00:00.000Z",
+      monitorAttemptCount: 0,
+    };
+    const nowMs = Date.parse("2026-04-30T18:00:00.000Z");
+
+    expect(hasScheduledMonitor({
+      ...baseIssue,
+      executionPolicy: { monitor: { nextCheckAt: baseIssue.monitorNextCheckAt, maxAttempts: 2 } },
+    }, nowMs)).toBe(true);
+    expect(hasScheduledMonitor({ ...baseIssue, executionPolicy: null }, nowMs)).toBe(false);
+    expect(hasScheduledMonitor({
+      ...baseIssue,
+      monitorAttemptCount: 2,
+      executionPolicy: { monitor: { nextCheckAt: baseIssue.monitorNextCheckAt, maxAttempts: 2 } },
+    }, nowMs)).toBe(false);
   });
 
   it("keeps run liveness continuation decision parity with the compatibility export", () => {

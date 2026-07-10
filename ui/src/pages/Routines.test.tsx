@@ -498,7 +498,7 @@ describe("Routines page", () => {
     });
   });
 
-  it("passes company mention options to the routine description editor", async () => {
+  it("passes user and project mention options to the routine description editor", async () => {
     routinesListMock.mockResolvedValue([]);
     issuesListMock.mockResolvedValue([]);
 
@@ -551,8 +551,6 @@ describe("Routines page", () => {
 
     expect(callsWithMentions.at(-1)?.map((mention) => mention.id)).toEqual([
       "user:user-1",
-      "agent:agent-1",
-      "agent:agent-2",
       "project:project-1",
       "project:project-2",
     ]);

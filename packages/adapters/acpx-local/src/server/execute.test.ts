@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAcpxLocalExecutor } from "./execute.js";
 
 const tempRoots: string[] = [];
@@ -96,6 +96,76 @@ async function runExecutor(
 }
 
 describe("acpx_local runtime skill isolation", () => {
+  it("cancels while ACPX session startup is blocked without holding the launch permit or starting a turn", async () => {
+    const root = await makeTempRoot();
+    const controller = new AbortController();
+    let resolveEnsureStarted!: () => void;
+    const ensureStarted = new Promise<void>((resolve) => {
+      resolveEnsureStarted = resolve;
+    });
+    let resolveEnsureResult!: (value: {
+      backendSessionId: string;
+      agentSessionId: string;
+      runtimeSessionName: string;
+    }) => void;
+    const ensureResult = new Promise<{
+      backendSessionId: string;
+      agentSessionId: string;
+      runtimeSessionName: string;
+    }>((resolve) => {
+      resolveEnsureResult = resolve;
+    });
+    const startTurn = vi.fn();
+    const close = vi.fn(async () => {});
+    const acquireLaunchPermit = vi.fn(async () => vi.fn());
+    const execute = createAcpxLocalExecutor({
+      createRuntime: () => ({
+        ensureSession: () => {
+          resolveEnsureStarted();
+          return ensureResult;
+        },
+        startTurn,
+        close,
+      }) as never,
+    });
+
+    const execution = execute({
+      runId: "run-cancel-startup",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir: path.join(root, "state"),
+      },
+      context: {},
+      signal: controller.signal,
+      acquireLaunchPermit,
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    await ensureStarted;
+    controller.abort();
+    await expect(Promise.race([
+      execution,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("cancellation timed out")), 1_000)),
+    ])).resolves.toMatchObject({
+      exitCode: 1,
+      errorMessage: "ACPX session startup cancelled by the Paperclip control plane",
+      resultJson: { phase: "ensure_session" },
+    });
+    expect(acquireLaunchPermit).not.toHaveBeenCalled();
+    expect(startTurn).not.toHaveBeenCalled();
+
+    resolveEnsureResult({
+      backendSessionId: "late-backend",
+      agentSessionId: "late-agent",
+      runtimeSessionName: "late-runtime",
+    });
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+  });
+
   it.skipIf(process.platform === "win32")("materializes ACPX Claude skills without symlinked descendants", async () => {
     const root = await makeTempRoot();
     const skillRoot = path.join(root, "skills");

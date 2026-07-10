@@ -206,7 +206,10 @@ function monitorFromIssue(issue: IssueLivenessIssueInput) {
   return { policyMonitor, stateMonitor };
 }
 
-function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
+export function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
+  if (!issue.assigneeAgentId || issue.assigneeUserId) return false;
+  if (!["in_progress", "in_review", "blocked"].includes(issue.status)) return false;
+
   const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
   if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
 
@@ -215,6 +218,9 @@ function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
   if (timeoutAtMs !== null && timeoutAtMs <= nowMs) return false;
 
   const maxAttempts = readPositiveInteger(policyMonitor?.maxAttempts ?? stateMonitor?.maxAttempts);
+  // A blocked issue must carry an explicit bound so a monitor cannot become an
+  // indefinite polling lane. Other eligible states remain one-shot compatible.
+  if (issue.status === "blocked" && timeoutAtMs === null && maxAttempts === null) return false;
   const stateAttemptCount = readPositiveInteger(stateMonitor?.attemptCount) ?? 0;
   const attemptCount = issue.monitorAttemptCount ?? stateAttemptCount;
   if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
@@ -447,6 +453,32 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     dependencyPath: IssueLivenessIssueInput[],
   ): IssueLivenessFinding | null {
     if (reviewIssue.status !== "in_review") return null;
+    if (reviewIssue.assigneeAgentId) {
+      const reviewAssignee = agentsById.get(reviewIssue.assigneeAgentId);
+      if (
+        !reviewAssignee ||
+        reviewAssignee.companyId !== reviewIssue.companyId ||
+        !isInvokableAgent(reviewAssignee)
+      ) {
+        const ownerCandidates = ownerCandidatesForRecoveryIssue(reviewIssue, input.agents, agentsById, {
+          includeStalledAssignee: false,
+        });
+        return finding({
+          issue: source,
+          state: "blocked_by_uninvokable_assignee",
+          reason: reviewAssignee
+            ? `${issueLabel(reviewIssue)} is in review, but its assignee is ${reviewAssignee.status}.`
+            : `${issueLabel(reviewIssue)} is in review, but its assignee no longer exists.`,
+          dependencyPath,
+          recoveryIssue: reviewIssue,
+          recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+          recommendedOwnerCandidates: ownerCandidates,
+          recommendedAction:
+            `Assign ${issueLabel(reviewIssue)} to an invokable review owner and restore a typed review, interaction, or recovery path.`,
+          blockerIssueId: reviewIssue.id,
+        });
+      }
+    }
     if (hasExplicitWaitingPath(reviewIssue)) return null;
 
     const ownerCandidates = ownerCandidatesForRecoveryIssue(reviewIssue, input.agents, agentsById, {
@@ -531,6 +563,26 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       });
     }
 
+    if (blocker.assigneeAgentId) {
+      const blockerAgent = agentsById.get(blocker.assigneeAgentId);
+      if (!blockerAgent || blockerAgent.companyId !== source.companyId || !isInvokableAgent(blockerAgent)) {
+        return finding({
+          issue: source,
+          state: "blocked_by_uninvokable_assignee",
+          reason: blockerAgent
+            ? `${issueLabel(source)} is blocked by ${issueLabel(blocker)}, but its assignee is ${blockerAgent.status}.`
+            : `${issueLabel(source)} is blocked by ${issueLabel(blocker)}, but its assignee no longer exists.`,
+          dependencyPath,
+          recoveryIssue: blocker,
+          recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+          recommendedOwnerCandidates: ownerCandidates,
+          recommendedAction:
+            `Review ${issueLabel(blocker)} and assign it to an active owner or replace the blocker with an actionable issue.`,
+          blockerIssueId: blocker.id,
+        });
+      }
+    }
+
     if (hasExplicitWaitingPath(blocker)) return null;
 
     if (blocker.status === "in_review") {
@@ -568,24 +620,6 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     }
 
     if (!blocker.assigneeAgentId) return null;
-
-    const blockerAgent = agentsById.get(blocker.assigneeAgentId);
-    if (!blockerAgent || blockerAgent.companyId !== source.companyId || !isInvokableAgent(blockerAgent)) {
-      return finding({
-        issue: source,
-        state: "blocked_by_uninvokable_assignee",
-        reason: blockerAgent
-          ? `${issueLabel(source)} is blocked by ${issueLabel(blocker)}, but its assignee is ${blockerAgent.status}.`
-          : `${issueLabel(source)} is blocked by ${issueLabel(blocker)}, but its assignee no longer exists.`,
-        dependencyPath,
-        recoveryIssue: blocker,
-        recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
-        recommendedOwnerCandidates: ownerCandidates,
-        recommendedAction:
-          `Review ${issueLabel(blocker)} and assign it to an active owner or replace the blocker with an actionable issue.`,
-        blockerIssueId: blocker.id,
-      });
-    }
 
     return null;
   }
