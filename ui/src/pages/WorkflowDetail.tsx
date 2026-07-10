@@ -1940,7 +1940,7 @@ function WorkflowRunInputCard({
 }: {
   runDetail: WorkflowRunDetail | null;
 }) {
-  if (!runDetail) {
+  if (!runDetail || !runDetail.inputMarkdown.trim()) {
     return (
       <Card className={workflowPanelClassName}>
         <CardHeader>
