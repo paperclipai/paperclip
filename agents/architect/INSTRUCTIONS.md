@@ -146,7 +146,7 @@ These are hard rules. Past Architect runs have wasted 60+ minutes wrestling with
    git diff --exit-code assets/schemas/   # empty = no drift; commit the regen if non-empty
    ```
    If a task description tells you to run `generate_schemas`/tests with `--no-default-features`, ignore that flag and use the default profile — flag the substitution in your task comment.
-7. **Detached-build liveness — probe `/proc`, never trust a grep.** Deciding "is the detached `verifyrun-{task-id}` build still alive?" via `pgrep -af verifyrun-{id}` (or `ps | grep`) false-negatives intermittently (snapshot race / wrapper interference) — each false negative triggers a wasteful duplicate relaunch that then stacks on the flock. The reliable primitive is a direct pid probe: at launch capture the wrapper PID with `$!` into `/tmp/verify-{id}.pid`, then check `test -d /proc/"$(cat /tmp/verify-{id}.pid)"` (true = alive → exit and wait). Do NOT use `kill -0` (the sandbox denies `kill`). Only relaunch when ALL of: sentinel absent, `pgrep -af cargo | grep verifyrun-{id}` empty, AND the log mtime is stale (not ~now). A build blocked on `flock /tmp/cargo-global.lock` behind a sibling can sit 20–40 min showing only the startup `echo` — that is RUNNING, not dead.
+7. **Detached-build liveness — probe `/proc`, never trust a grep.** Deciding "is the detached `verifyrun-{task-id}` build still alive?" via `pgrep -af verifyrun-{id}` (or `ps | grep`) false-negatives intermittently (snapshot race / wrapper interference) — each false negative triggers a wasteful duplicate relaunch that then stacks on the flock. The reliable primitive is a direct pid probe: at launch the wrapper records its own PID into `$VERIFY_DIR/{id}.pid`, then check `test -d /proc/"$(cat "$VERIFY_DIR/{id}.pid")"` (true = alive → exit and wait). Do NOT use `kill -0` (the sandbox denies `kill`). Only relaunch when ALL of: sentinel absent, `pgrep -af cargo | grep verifyrun-{id}` empty, AND the log mtime is stale (not ~now). A build blocked on `flock /tmp/cargo-global.lock` behind a sibling can sit 20–40 min showing only the startup `echo` — that is RUNNING, not dead.
 8. **Wedged global build lock = sccache fd leak; `sccache --stop-server` to release (NOT slow cargo).** If every `flock /tmp/cargo-global.lock` proc is blocked in state `S`, `rustc` count ~0, and `grep FLOCK /proc/locks` shows a holder PID that `ps` says is DEAD (kept alive by `/proc/$(pgrep -x sccache)/fdinfo/*` → `/tmp/cargo-global.lock`), the lock is wedged forever — the "cargo's just slow, wait it out" rule does NOT apply. An under-flock cargo cold-started the sccache daemon, which inherited the lock's fd. Unblock with `sccache --stop-server` (standard CLI, safe when `rustc` count is 0). It recurs unless a server is pre-started **outside** any flock (session init / `~/.profile`) — escalate to operator for the durable fix; do not loop stop/starting.
 9. **Pipeline-wide `cargo` exit-101 "rustc X not supported by <packages>" = stale toolchain pin, escalate.** When check fails at *dependency resolution* (before compiling) with `rustc N.NN is not supported by the following packages: <dep>@ver requires rustc M.MM`, and there is NO error in your changed files, a dep-MSRV bump landed on main without the matching `rust-toolchain.toml` channel bump — main is internally inconsistent for ALL tasks. This is an operator/main-level fix (bump the pin, or revert the dep bump). Do NOT run the fix→relaunch loop (no code error to fix — it just re-hits the wall and burns quota) and do NOT land red; escalate via task comment.
 10. **The detached build bootstraps its own environment — the `source`/`export`/`unset` statements at the head of the launch block are load-bearing, do not "simplify" them away.** The agent runner's shell is non-login and non-interactive, so it sources neither `~/.profile` (login shells only) nor `~/.bashrc` (early-returns when non-interactive). It inherits the **paperclip daemon's** environment, which is whatever the daemon was started with — and that is the trap: the daemon is long-lived, so its env is a snapshot of `~/.profile` from whenever it last restarted, not of `~/.profile` today.
@@ -158,7 +158,7 @@ These are hard rules. Past Architect runs have wasted 60+ minutes wrestling with
 ### Procedure
 
 1. Step 0 precondition gate already passed (you're in the task worktree on the right branch). If no task assigned and no CI failures, exit immediately.
-2. **Check the sentinel FIRST (§Cargo discipline rule 2 state machine).** `EXIT=/tmp/verify-{task-id}.exit`. Branch on its presence/value before touching cargo:
+2. **Check the sentinel FIRST (§Cargo discipline rule 2 state machine).** `VERIFY_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/paperclip-verify"; EXIT="$VERIFY_DIR/{task-id}.exit"`. Branch on its presence/value before touching cargo:
    - **absent + build running** (`pgrep -f verifyrun-{task-id}`) → exit the run (build in flight, a later wake lands it).
    - **absent + no build** → launch the detached `&&` chain (which orphan-guards first: an already-merged-PR task cleans its sentinels and exits without launching — AA-1751), then exit the run.
    - **present, `0`** → cargo passed → go to step 3 then §Landing.
@@ -234,8 +234,9 @@ fi
 #     so the operator can confirm no interaction. Bounded progress beats a
 #     perfect gate that never lands. (The old "converges as long as main isn't
 #     advancing faster than a build" assumption is exactly what broke.)
-BASE=/tmp/verify-{task-id}.base
-FRESH=/tmp/verify-{task-id}.freshness   # count of freshness re-verifies done so far
+VERIFY_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/paperclip-verify"; mkdir -p "$VERIFY_DIR"
+BASE="$VERIFY_DIR/{task-id}.base"
+FRESH="$VERIFY_DIR/{task-id}.freshness"   # count of freshness re-verifies done so far
 FRESHNESS_CAP=2
 git fetch -q origin main
 if [ ! -f "$BASE" ] || [ "$(git rev-parse origin/main)" != "$(cat "$BASE")" ]; then
@@ -249,8 +250,8 @@ if [ ! -f "$BASE" ] || [ "$(git rev-parse origin/main)" != "$(cat "$BASE")" ]; t
     # Under the cap → re-verify: bump the counter, drop the sentinel, relaunch
     # the detached build, exit. A later wake re-evaluates the sentinel.
     echo "$((N + 1))" > "$FRESH"
-    rm -f "/tmp/verify-{task-id}.exit"
-    setsid bash -c 'echo verifyrun-{task-id}; . "$HOME/.cargo/env" 2>/dev/null || true; export PATH="$HOME/.local/bin:$PATH"; unset CARGO_TARGET_DIR; command -v cargo >/dev/null && command -v sccache >/dev/null || { echo "ENV BROKEN: cargo/sccache still not on PATH after bootstrap — this is NOT a build failure, do not edit Rust; escalate to operator"; echo 96 > /tmp/verify-{task-id}.exit; exit 96; }; cd "${PAPERCLIP_PROJECT}/.paperclip/worktrees/{task-id}" || { echo "ENV BROKEN: worktree missing or PAPERCLIP_PROJECT unset"; echo 97 > /tmp/verify-{task-id}.exit; exit 97; }; sccache --start-server >/dev/null 2>&1 || true; flock /tmp/cargo-global.lock nice -n19 ionice -c3 taskset -c 0-5 bash -c "CARGO_INCREMENTAL=0 cargo clippy && CARGO_INCREMENTAL=0 cargo test --lib"; echo $? > /tmp/verify-{task-id}.exit; curl -fsS -X POST "$PAPERCLIP_API_URL/api/agents/$PAPERCLIP_AGENT_ID/wakeup" -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Content-Type: application/json" -d "{\"source\":\"automation\",\"triggerDetail\":\"callback\",\"reason\":\"verify-sentinel-ready\"}" >/dev/null 2>&1 || true' >> "/tmp/verify-{task-id}.log" 2>&1 &
+    rm -f "$VERIFY_DIR/{task-id}.exit"
+    setsid bash -c 'S="${XDG_CACHE_HOME:-$HOME/.cache}/paperclip-verify"; mkdir -p "$S"; echo verifyrun-{task-id}; echo $$ > "$S/{task-id}.pid"; . "$HOME/.cargo/env" 2>/dev/null || true; export PATH="$HOME/.local/bin:$PATH"; unset CARGO_TARGET_DIR; command -v cargo >/dev/null && command -v sccache >/dev/null || { echo "ENV BROKEN: cargo/sccache still not on PATH after bootstrap — this is NOT a build failure, do not edit Rust; escalate to operator"; echo 96 > "$S/{task-id}.exit"; exit 96; }; cd "${PAPERCLIP_PROJECT}/.paperclip/worktrees/{task-id}" || { echo "ENV BROKEN: worktree missing or PAPERCLIP_PROJECT unset"; echo 97 > "$S/{task-id}.exit"; exit 97; }; sccache --start-server >/dev/null 2>&1 || true; flock /tmp/cargo-global.lock nice -n19 ionice -c3 taskset -c 0-5 bash -c "CARGO_INCREMENTAL=0 cargo clippy && CARGO_INCREMENTAL=0 cargo test --lib"; echo $? > "$S/{task-id}.exit"; curl -fsS -X POST "$PAPERCLIP_API_URL/api/agents/$PAPERCLIP_AGENT_ID/wakeup" -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Content-Type: application/json" -d "{\"source\":\"automation\",\"triggerDetail\":\"callback\",\"reason\":\"verify-sentinel-ready\"}" >/dev/null 2>&1 || true' >> "$VERIFY_DIR/{task-id}.log" 2>&1 &
     echo "origin/main advanced (freshness re-verify $((N + 1))/$FRESHNESS_CAP) — re-verifying against current main; a later wake lands it"
     exit 0
   fi
@@ -293,7 +294,7 @@ git ls-remote --exit-code --heads origin "task/{task-id}" >/dev/null \
   || { echo "NO REMOTE BRANCH task/{task-id} — push failed silently"; exit 1; }
 gh pr list --head "task/{task-id}" --state all --json number -q '.[0].number' | grep -q . \
   || { echo "NO PR CREATED for task/{task-id} — run failed"; exit 1; }
-rm -f "/tmp/verify-{task-id}.exit" "/tmp/verify-{task-id}.base" "/tmp/verify-{task-id}.freshness"   # clear sentinel + base + freshness counter so a stray re-wake won't re-land
+rm -f "$VERIFY_DIR/{task-id}.exit" "$VERIFY_DIR/{task-id}.base" "$VERIFY_DIR/{task-id}.freshness" "$VERIFY_DIR/{task-id}.pid"   # clear sentinel + base + freshness counter so a stray re-wake won't re-land
 echo "PR confirmed for task/{task-id}"
 ```
 
