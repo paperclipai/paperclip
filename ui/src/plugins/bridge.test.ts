@@ -34,6 +34,7 @@ function clickEvent(
     altKey: false,
     ctrlKey: false,
     shiftKey: false,
+    preventDefault: () => undefined,
     currentTarget: {
       hasAttribute: () => false,
     },
@@ -75,7 +76,7 @@ describe("plugin host navigation", () => {
   });
 });
 
-describe("useHostNavigation mobile drawer behavior", () => {
+describe("useHostNavigation narrow drawer behavior", () => {
   // React 19's `act` requires the env flag and React DOM client.
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -99,12 +100,13 @@ describe("useHostNavigation mobile drawer behavior", () => {
       writable: true,
       value: width,
     });
-    if (typeof window.matchMedia !== "function") {
-      Object.defineProperty(window, "matchMedia", {
-        configurable: true,
-        writable: true,
-        value: (query: string) => ({
-          matches: /max-width:\s*767px/.test(query) ? width < 768 : false,
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      writable: true,
+      value: (query: string) => {
+        const maxWidth = query.match(/max-width:\s*(\d+)px/)?.[1];
+        return {
+          matches: maxWidth ? width <= Number.parseInt(maxWidth, 10) : false,
           media: query,
           onchange: null,
           addEventListener: () => undefined,
@@ -112,9 +114,9 @@ describe("useHostNavigation mobile drawer behavior", () => {
           addListener: () => undefined,
           removeListener: () => undefined,
           dispatchEvent: () => false,
-        }),
-      });
-    }
+        };
+      },
+    });
   }
 
   it("closes the sidebar drawer on mobile after a same-origin navigate()", () => {
@@ -199,6 +201,50 @@ describe("useHostNavigation mobile drawer behavior", () => {
 
     act(() => nav!.navigate("/wiki?section=ingest"));
     expect(sidebar!.sidebarOpen).toBe(true);
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("closes the tablet drawer when a plugin Wiki link is clicked", () => {
+    setViewport(900);
+
+    let nav: ReturnType<typeof useHostNavigation> | null = null;
+    let sidebar: ReturnType<typeof useSidebar> | null = null;
+    function Probe() {
+      nav = useHostNavigation();
+      sidebar = useSidebar();
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        React.createElement(
+          MemoryRouter,
+          { initialEntries: ["/PAP/dashboard"] },
+          React.createElement(
+            SidebarProvider,
+            null,
+            React.createElement(
+              PluginBridgeContext.Provider,
+              { value: makeBridgeValue() },
+              React.createElement(Probe),
+            ),
+          ),
+        ),
+      );
+    });
+
+    expect(sidebar!.isMobile).toBe(false);
+    expect(sidebar!.isNarrow).toBe(true);
+    act(() => sidebar!.setSidebarOpen(true));
+
+    act(() => nav!.linkProps("/wiki?section=graph").onClick(clickEvent()));
+    expect(sidebar!.sidebarOpen).toBe(false);
 
     act(() => root.unmount());
     container.remove();

@@ -479,7 +479,7 @@ export function useHostContext(): PluginHostContext {
 export function useHostNavigation(): HostNavigation {
   const { hostContext } = usePluginBridgeContext();
   const routerNavigate = useRouterNavigate();
-  const { isMobile, setSidebarOpen } = useSidebar();
+  const { isNarrow, setSidebarOpen } = useSidebar();
   const companyPrefix = hostContext.companyPrefix;
 
   const resolveHref = useCallback(
@@ -496,11 +496,12 @@ export function useHostNavigation(): HostNavigation {
         return;
       }
       routerNavigate(sameOriginPath, options as NavigateOptions | undefined);
-      // Mirror host sidebar behavior: tapping a link inside the mobile drawer
-      // dismisses the drawer so the user can see the destination page.
-      if (isMobile) setSidebarOpen(false);
+      // The host sidebar is off-canvas below the lg breakpoint (1024px), not
+      // only on phone-sized viewports. Dismiss it after plugin navigation so
+      // the destination is not left hidden behind the still-open drawer.
+      if (isNarrow) setSidebarOpen(false);
     },
-    [isMobile, resolveHref, routerNavigate, setSidebarOpen],
+    [isNarrow, resolveHref, routerNavigate, setSidebarOpen],
   );
 
   const linkProps = useCallback(
