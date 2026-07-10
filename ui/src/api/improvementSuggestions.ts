@@ -43,4 +43,10 @@ export const improvementSuggestionsApi = {
     `/companies/${companyId}/improvement-suggestions/${suggestionId}/review`,
     input,
   ),
+  createImplementationIssue: (companyId: string, suggestionId: string) =>
+    api.post<{
+      suggestion: ImprovementSuggestion;
+      issue: NonNullable<ImprovementSuggestion["implementationIssue"]>;
+      created: boolean;
+    }>(`/companies/${companyId}/improvement-suggestions/${suggestionId}/implementation-issue`, {}),
 };

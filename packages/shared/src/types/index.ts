@@ -37,6 +37,7 @@ export type {
   ImprovementSuggestion,
   InstanceImprovementSuggestion,
   ImprovementSuggestionEvidence,
+  ImprovementImplementationIssueSummary,
   ImprovementSuggestionOriginKind,
   ImprovementSuggestionStatus,
   ImprovementTargetLayer,

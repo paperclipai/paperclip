@@ -32,6 +32,8 @@ When a vote is marked for sharing, Paperclip immediately tries to upload the tra
 
 The company improvement inbox shows every Helpful and Needs work vote, including votes without a note and votes kept local.
 
+After an improvement suggestion is accepted, select **Create implementation issue** on its card. Paperclip creates one linked, high-priority AI task containing the approved change, review note, evidence, and completion requirements. Company-level improvements prefer the company CEO as owner; instance-level Paperclip improvements prefer an available engineering or QA owner in the source company. If no suitable agent is available, the issue is created unassigned in the backlog. Creating the issue again is safe: Paperclip returns the existing linked issue instead of creating a duplicate.
+
 ### Quick report (terminal)
 
 ```bash
@@ -84,6 +86,16 @@ curl http://127.0.0.1:3102/api/companies/<companyId>/improvement-suggestions
 ```bash
 curl http://127.0.0.1:3102/api/improvement-suggestions
 ```
+
+**Create the implementation issue for an accepted suggestion:**
+```bash
+curl -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{}' \
+  http://127.0.0.1:3102/api/companies/<companyId>/improvement-suggestions/<suggestionId>/implementation-issue
+```
+
+Pass `{ "assigneeAgentId": "<agentId>" }` to choose a specific company agent. Paperclip wakes an assigned agent through the normal issue-assignment path. This action creates governed work; it does not directly edit skills, prompts, SOPs, or Paperclip code.
 
 **Get the full export bundle for a trace:**
 ```bash

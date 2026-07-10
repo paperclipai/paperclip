@@ -21,6 +21,7 @@ export const improvementSuggestions = pgTable(
     sourceIssueId: uuid("source_issue_id").references(() => issues.id, { onDelete: "set null" }),
     sourceRunId: uuid("source_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     sourceFeedbackVoteId: uuid("source_feedback_vote_id").references(() => feedbackVotes.id, { onDelete: "set null" }),
+    implementationIssueId: uuid("implementation_issue_id").references(() => issues.id, { onDelete: "set null" }),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
     reviewedByUserId: text("reviewed_by_user_id"),
@@ -46,6 +47,9 @@ export const improvementSuggestions = pgTable(
     ),
     sourceFeedbackVoteUniqueIdx: uniqueIndex("improvement_suggestions_source_feedback_vote_idx").on(
       table.sourceFeedbackVoteId,
+    ),
+    implementationIssueUniqueIdx: uniqueIndex("improvement_suggestions_implementation_issue_idx").on(
+      table.implementationIssueId,
     ),
   }),
 );

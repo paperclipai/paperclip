@@ -13,6 +13,7 @@ export type {
   ImprovementSuggestion,
   InstanceImprovementSuggestion,
   ImprovementSuggestionEvidence,
+  ImprovementImplementationIssueSummary,
   ImprovementSuggestionOriginKind,
   ImprovementSuggestionStatus,
   ImprovementTargetLayer,
@@ -23,8 +24,10 @@ export {
   improvementSuggestionEvidenceSchema,
   createImprovementSuggestionSchema,
   reviewImprovementSuggestionSchema,
+  createImprovementImplementationIssueSchema,
   type CreateImprovementSuggestion,
   type ReviewImprovementSuggestion,
+  type CreateImprovementImplementationIssue,
 } from "./validators/improvement-suggestion.js";
 export {
   COMPANY_STATUSES,

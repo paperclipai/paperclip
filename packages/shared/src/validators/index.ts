@@ -50,8 +50,10 @@ export {
   improvementSuggestionEvidenceSchema,
   createImprovementSuggestionSchema,
   reviewImprovementSuggestionSchema,
+  createImprovementImplementationIssueSchema,
   type CreateImprovementSuggestion,
   type ReviewImprovementSuggestion,
+  type CreateImprovementImplementationIssue,
 } from "./improvement-suggestion.js";
 export {
   sidebarOrderPreferenceSchema,

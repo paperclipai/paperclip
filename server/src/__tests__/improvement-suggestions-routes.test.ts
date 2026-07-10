@@ -8,11 +8,14 @@ const mockService = vi.hoisted(() => ({
   get: vi.fn(),
   create: vi.fn(),
   review: vi.fn(),
+  createImplementationIssue: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("../services/index.js", () => ({
   improvementSuggestionService: () => mockService,
+  heartbeatService: () => ({ wakeup: mockWakeup }),
   logActivity: mockLogActivity,
 }));
 
@@ -43,6 +46,8 @@ function suggestion(originKind: "board_directed" | "agent_detected" | "feedback_
     sourceIssueId,
     sourceRunId: null,
     sourceFeedbackVoteId: null,
+    implementationIssueId: null,
+    implementationIssue: null,
     createdByAgentId: originKind === "agent_detected" ? "agent-1" : null,
     createdByUserId: originKind === "board_directed" ? "board-user" : null,
     reviewedByUserId: null,
@@ -207,6 +212,44 @@ describe("improvement suggestion routes", () => {
       action: "improvement.suggestion.accepted",
       entityId: suggestionId,
       runId: null,
+    }));
+  });
+
+  it("creates and audits a linked implementation issue idempotently", async () => {
+    const accepted = suggestion("agent_detected", "accepted");
+    const issue = {
+      id: "33333333-3333-4333-8333-333333333333",
+      identifier: "PAP-42",
+      title: "[Improvement] Expire stale waiting paths",
+      status: "todo",
+      assigneeAgentId: "agent-1",
+      workItemType: "ai_task",
+    };
+    mockService.createImplementationIssue.mockResolvedValue({
+      suggestion: { ...accepted, implementationIssueId: issue.id, implementationIssue: issue },
+      issue,
+      created: true,
+    });
+    const response = await request(await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post(`/api/companies/company-1/improvement-suggestions/${suggestionId}/implementation-issue`)
+      .send({});
+
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(mockService.createImplementationIssue).toHaveBeenCalledWith(
+      "company-1",
+      suggestionId,
+      {},
+      { userId: "board-user", localImplicit: true },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "improvement.implementation_issue_created",
+      entityId: suggestionId,
     }));
   });
 

@@ -24,5 +24,10 @@ export const reviewImprovementSuggestionSchema = z.object({
   note: z.string().trim().min(1).max(8_000),
 });
 
+export const createImprovementImplementationIssueSchema = z.object({
+  assigneeAgentId: z.string().uuid().optional().nullable(),
+});
+
 export type CreateImprovementSuggestion = z.infer<typeof createImprovementSuggestionSchema>;
 export type ReviewImprovementSuggestion = z.infer<typeof reviewImprovementSuggestionSchema>;
+export type CreateImprovementImplementationIssue = z.infer<typeof createImprovementImplementationIssueSchema>;

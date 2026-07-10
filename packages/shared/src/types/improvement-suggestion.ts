@@ -62,6 +62,14 @@ export interface ImprovementSuggestionEvidence {
   note: string | null;
 }
 
+export interface ImprovementImplementationIssueSummary {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  assigneeAgentId: string | null;
+}
+
 export interface ImprovementSuggestion {
   id: string;
   companyId: string;
@@ -76,6 +84,8 @@ export interface ImprovementSuggestion {
   sourceIssueId: string | null;
   sourceRunId: string | null;
   sourceFeedbackVoteId: string | null;
+  implementationIssueId: string | null;
+  implementationIssue: ImprovementImplementationIssueSummary | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   reviewedByUserId: string | null;

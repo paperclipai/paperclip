@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -192,6 +193,62 @@ describeEmbeddedPostgres("improvement suggestion governance workflow", () => {
       decision: "reject",
       note: "Directives do not enter the suggestion review queue.",
     }, { userId: "board-user" })).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("creates one linked implementation issue for an accepted suggestion", async () => {
+    const seeded = await seed();
+    const svc = improvementSuggestionService(db);
+    await db.insert(companyMemberships).values({
+      companyId: seeded.companyId,
+      principalType: "user",
+      principalId: "board-user",
+      status: "active",
+      membershipRole: "owner",
+    });
+    const accepted = await svc.create(seeded.companyId, {
+      targetLayer: "company_skill",
+      title: "Require source checks",
+      summary: "The company repeatedly accepted work without checking the source.",
+      proposedChange: "Add a source verification checklist to the company skill.",
+      evidence: [{ kind: "issue", ref: seeded.issueId, note: "Original failure" }],
+      sourceIssueId: seeded.issueId,
+    }, {
+      type: "board",
+      userId: "board-user",
+    });
+
+    const first = await svc.createImplementationIssue(
+      seeded.companyId,
+      accepted.id,
+      {},
+      { userId: "board-user" },
+    );
+    expect(first.created).toBe(true);
+    expect(first.issue).toMatchObject({
+      companyId: seeded.companyId,
+      originKind: "improvement_suggestion",
+      originId: accepted.id,
+      status: "todo",
+      assigneeAgentId: seeded.agentId,
+      parentId: null,
+    });
+    expect(first.issue.description).toContain("Add a source verification checklist to the company skill.");
+    expect(first.suggestion.implementationIssue).toMatchObject({ id: first.issue.id });
+
+    const second = await svc.createImplementationIssue(
+      seeded.companyId,
+      accepted.id,
+      {},
+      { userId: "board-user" },
+    );
+    expect(second.created).toBe(false);
+    expect(second.issue.id).toBe(first.issue.id);
+
+    const linkedIssues = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.originId, accepted.id));
+    expect(linkedIssues).toHaveLength(1);
   });
 
   it("reserves root-level directives and reviews for instance administrators", async () => {

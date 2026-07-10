@@ -134,6 +134,13 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    improvementSuggestionOriginIdx: uniqueIndex("issues_improvement_suggestion_origin_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(
+        sql`${table.originKind} = 'improvement_suggestion'
+          and ${table.originId} is not null
+          and ${table.hiddenAt} is null`,
+      ),
     activeProductivityReviewIdx: uniqueIndex("issues_active_productivity_review_uq")
       .on(table.companyId, table.originKind, table.originId)
       .where(

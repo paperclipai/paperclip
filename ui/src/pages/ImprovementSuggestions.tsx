@@ -5,7 +5,7 @@ import type {
   ImprovementSuggestion,
   InstanceImprovementSuggestion,
 } from "@paperclipai/shared";
-import { BrainCircuit, Building2, Check, MessageSquareWarning, ShieldCheck, X } from "lucide-react";
+import { BrainCircuit, Building2, Check, ExternalLink, MessageSquareWarning, ShieldCheck, Wrench, X } from "lucide-react";
 import { improvementSuggestionsApi } from "@/api/improvementSuggestions";
 import { accessApi } from "@/api/access";
 import { Badge } from "@/components/ui/badge";
@@ -72,12 +72,16 @@ function SuggestionCard({
   companyName,
   canReview,
   onReview,
+  onImplement,
+  implementing,
 }: {
   suggestion: ImprovementSuggestion;
   companyPrefix: string;
   companyName?: string;
   canReview: boolean;
   onReview: (suggestion: ImprovementSuggestion, decision: "accept" | "reject") => void;
+  onImplement: (suggestion: ImprovementSuggestion) => void;
+  implementing: boolean;
 }) {
   return (
     <article className="rounded-xl border border-border bg-card p-5">
@@ -138,11 +142,41 @@ function SuggestionCard({
             </div>
           ) : null}
         </div>
-      ) : suggestion.reviewNote ? (
-        <div className="mt-4 border-t border-border/70 pt-4 text-xs text-muted-foreground">
-          Review note: {suggestion.reviewNote}
+      ) : (
+        <div className="mt-4 space-y-3 border-t border-border/70 pt-4">
+          {suggestion.reviewNote ? (
+            <div className="text-xs text-muted-foreground">Review note: {suggestion.reviewNote}</div>
+          ) : null}
+          {suggestion.implementationIssue ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background/60 p-3">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Implementation issue</div>
+                <div className="mt-1 text-sm font-medium text-foreground">
+                  {suggestion.implementationIssue.identifier ?? suggestion.implementationIssue.title}
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">{suggestion.implementationIssue.status.replace("_", " ")}</span>
+                </div>
+              </div>
+              <Button asChild size="sm" variant="outline">
+                <Link to={`/${companyPrefix}/issues/${suggestion.implementationIssue.id}`}>
+                  Open issue <ExternalLink className="ml-1.5 h-3.5 w-3.5" />
+                </Link>
+              </Button>
+            </div>
+          ) : suggestion.status === "accepted" ? (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs text-muted-foreground">
+                Create a linked top-level issue with the approved direction, evidence, completion checks, and an automatically selected owner.
+              </p>
+              {canReview ? (
+                <Button size="sm" onClick={() => onImplement(suggestion)} disabled={implementing}>
+                  <Wrench className="mr-1.5 h-3.5 w-3.5" />
+                  {implementing ? "Creating..." : "Create implementation issue"}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      )}
     </article>
   );
 }
@@ -257,6 +291,17 @@ export function CompanyImprovementSuggestions() {
       ]);
     },
   });
+  const implementationMutation = useMutation({
+    mutationFn: (suggestion: ImprovementSuggestion) =>
+      improvementSuggestionsApi.createImplementationIssue(suggestion.companyId, suggestion.id),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.improvementSuggestions.company(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.improvementSuggestions.instance }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) }),
+      ]);
+    },
+  });
 
   const suggestions = suggestionsQuery.data ?? [];
   const filteredSuggestions = scope === "all"
@@ -285,10 +330,10 @@ export function CompanyImprovementSuggestions() {
         </p>
       </div>
 
-      {(suggestionsQuery.error || feedbackQuery.error || reviewMutation.error) ? (
+      {(suggestionsQuery.error || feedbackQuery.error || reviewMutation.error || implementationMutation.error) ? (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          {(suggestionsQuery.error ?? feedbackQuery.error ?? reviewMutation.error) instanceof Error
-            ? (suggestionsQuery.error ?? feedbackQuery.error ?? reviewMutation.error as Error).message
+          {(suggestionsQuery.error ?? feedbackQuery.error ?? reviewMutation.error ?? implementationMutation.error) instanceof Error
+            ? (suggestionsQuery.error ?? feedbackQuery.error ?? reviewMutation.error ?? implementationMutation.error as Error).message
             : "Failed to load improvement data."}
         </div>
       ) : null}
@@ -324,6 +369,8 @@ export function CompanyImprovementSuggestions() {
             companyPrefix={selectedCompany.issuePrefix}
             canReview={canReviewCompanySuggestion(suggestion, boardAccessQuery.data)}
             onReview={(item, decision) => { setReviewState({ suggestion: item, decision }); setReviewNote(""); }}
+            onImplement={(item) => implementationMutation.mutate(item)}
+            implementing={implementationMutation.isPending && implementationMutation.variables?.id === suggestion.id}
           />
         ))}
       </section>
@@ -378,6 +425,13 @@ export function InstanceImprovementSuggestions() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.improvementSuggestions.instance });
     },
   });
+  const implementationMutation = useMutation({
+    mutationFn: (suggestion: ImprovementSuggestion) =>
+      improvementSuggestionsApi.createImplementationIssue(suggestion.companyId, suggestion.id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.improvementSuggestions.instance });
+    },
+  });
 
   const suggestions = suggestionsQuery.data ?? [];
   const pending = suggestions.filter((item) => item.status === "pending_review").length;
@@ -400,10 +454,10 @@ export function InstanceImprovementSuggestions() {
         <SummaryBox label="Pending instance review" value={pending} hint="requires instance admin" />
         <SummaryBox label="Companies represented" value={companies} hint="cross-company evidence" />
       </div>
-      {(suggestionsQuery.error || reviewMutation.error) ? (
+      {(suggestionsQuery.error || reviewMutation.error || implementationMutation.error) ? (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          {(suggestionsQuery.error ?? reviewMutation.error) instanceof Error
-            ? (suggestionsQuery.error ?? reviewMutation.error as Error).message
+          {(suggestionsQuery.error ?? reviewMutation.error ?? implementationMutation.error) instanceof Error
+            ? (suggestionsQuery.error ?? reviewMutation.error ?? implementationMutation.error as Error).message
             : "Failed to load instance improvements."}
         </div>
       ) : null}
@@ -418,6 +472,8 @@ export function InstanceImprovementSuggestions() {
             companyName={suggestion.companyName}
             canReview
             onReview={(item, decision) => { setReviewState({ suggestion: item, decision }); setReviewNote(""); }}
+            onImplement={(item) => implementationMutation.mutate(item)}
+            implementing={implementationMutation.isPending && implementationMutation.variables?.id === suggestion.id}
           />
         ))}
       </section>
