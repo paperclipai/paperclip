@@ -164,49 +164,49 @@ export function AttentionQueueRow({
             </span>
           )}
 
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                <Icon className={cn("h-3.5 w-3.5", tone.icon)} />
-                {meta.label}
-              </span>
-              {sevBadge && (
-                <span
-                  className={cn(
-                    "inline-flex items-center rounded-sm border px-1.5 py-px text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow)",
-                    sevBadge.className,
-                  )}
-                >
-                  {sevBadge.label}
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                  <Icon className={cn("h-3.5 w-3.5", tone.icon)} />
+                  {meta.label}
                 </span>
-              )}
-              {item.relatedIssue?.identifier && (
-                <Link
-                  to={item.relatedIssue.href ?? "#"}
-                  className="font-mono text-(length:--text-nano) text-muted-foreground hover:text-foreground"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {item.relatedIssue.identifier}
-                </Link>
-              )}
-              {isHidden && snoozedUntil ? (
-                <span
-                  className="ml-auto inline-flex items-center gap-1 text-(length:--text-nano) text-muted-foreground"
-                  title={`Reappears ${new Date(snoozedUntil).toLocaleString()}`}
-                >
-                  <AlarmClock className="h-3 w-3" />
-                  Reappears {reappearLabel(snoozedUntil)}
-                </span>
-              ) : (
-                <span className="ml-auto inline-flex items-center gap-1 text-(length:--text-nano) text-muted-foreground">
-                  <Clock className="h-3 w-3" />
-                  {relativeTime(item.activityAt)}
-                </span>
-              )}
-            </div>
+                {sevBadge && (
+                  <span
+                    className={cn(
+                      "inline-flex items-center rounded-sm border px-1.5 py-px text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow)",
+                      sevBadge.className,
+                    )}
+                  >
+                    {sevBadge.label}
+                  </span>
+                )}
+                {item.relatedIssue?.identifier && (
+                  <Link
+                    to={item.relatedIssue.href ?? "#"}
+                    className="font-mono text-(length:--text-nano) text-muted-foreground hover:text-foreground"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {item.relatedIssue.identifier}
+                  </Link>
+                )}
+                {isHidden && snoozedUntil ? (
+                  <span
+                    className="ml-auto inline-flex items-center gap-1 text-(length:--text-nano) text-muted-foreground"
+                    title={`Reappears ${new Date(snoozedUntil).toLocaleString()}`}
+                  >
+                    <AlarmClock className="h-3 w-3" />
+                    Reappears {reappearLabel(snoozedUntil)}
+                  </span>
+                ) : (
+                  <span className="ml-auto inline-flex items-center gap-1 text-(length:--text-nano) text-muted-foreground">
+                    <Clock className="h-3 w-3" />
+                    {relativeTime(item.activityAt)}
+                  </span>
+                )}
+              </div>
 
-            <div className="mt-1 flex items-start gap-3">
-              <div className="min-w-0 flex-1">
+              <div className="mt-1">
                 <span className="block truncate text-sm font-medium text-foreground" title={item.subject.title ?? undefined}>
                   {item.subject.title ?? meta.label}
                 </span>
@@ -232,10 +232,9 @@ export function AttentionQueueRow({
                   </div>
                 )}
               </div>
-
-              {images.length > 0 && <ThumbnailStack images={images} />}
             </div>
 
+            {images.length > 0 && <ThumbnailStack images={images} />}
           </div>
         </div>
 

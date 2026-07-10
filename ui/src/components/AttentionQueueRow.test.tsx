@@ -220,6 +220,31 @@ describe("AttentionQueueRow", () => {
     );
   });
 
+  it("centers thumbnails beside the full card text stack", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          detail: {
+            kind: "generic",
+            summaryExcerpt: "Visual evidence attached.",
+            images: [{ assetId: "asset-1", alt: "Screenshot" }],
+          },
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const image = container?.querySelector('img[alt="Screenshot"]');
+    expect(image?.getAttribute("src")).toBe("/api/assets/asset-1/content");
+
+    const thumbnailStack = image?.parentElement?.parentElement;
+    expect(thumbnailStack?.getAttribute("class")).toContain("items-center");
+    expect(thumbnailStack?.parentElement?.getAttribute("class")).toContain("items-center");
+  });
+
   it("does not expose a toggle button for non-inline rows", () => {
     render(
       <AttentionQueueRow
