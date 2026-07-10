@@ -424,6 +424,25 @@ function completedAtForStatus(status: string, previous?: Date | null) {
   return null;
 }
 
+type PatchCaseBody = z.infer<typeof patchCaseSchema>;
+
+export function buildCasePatchUpdateValues(
+  body: PatchCaseBody,
+  caseRow: Pick<typeof cases.$inferSelect, "status" | "completedAt">,
+  now: Date,
+) {
+  const status = body.status ?? caseRow.status;
+  return {
+    ...(Object.hasOwn(body, "projectId") ? { projectId: body.projectId ?? null } : {}),
+    ...(body.title !== undefined ? { title: body.title } : {}),
+    ...(Object.hasOwn(body, "summary") ? { summary: body.summary ?? null } : {}),
+    ...(body.status !== undefined ? { status, completedAt: completedAtForStatus(status, caseRow.completedAt) } : {}),
+    ...(body.fields !== undefined ? { fields: body.fields } : {}),
+    ...(Object.hasOwn(body, "parentCaseId") ? { parentCaseId: body.parentCaseId ?? null } : {}),
+    updatedAt: now,
+  };
+}
+
 async function loadCaseDetail(db: CaseRouteDb, row: typeof cases.$inferSelect) {
   const [labelRows, linkRows, documentRows, attachmentRows] = await Promise.all([
     db
@@ -1417,17 +1436,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
       if (nextLabelIds) await assertLabelsBelongToCompany(tx, caseRow.companyId, nextLabelIds);
 
       const now = new Date();
-      const status = body.status ?? caseRow.status;
-      const [row] = await tx.update(cases).set({
-        ...(Object.hasOwn(body, "projectId") ? { projectId: body.projectId ?? null } : {}),
-        ...(body.title !== undefined ? { title: body.title } : {}),
-        ...(Object.hasOwn(body, "summary") ? { summary: body.summary ?? null } : {}),
-        ...(body.status !== undefined ? { status } : {}),
-        ...(body.fields !== undefined ? { fields: body.fields } : {}),
-        ...(Object.hasOwn(body, "parentCaseId") ? { parentCaseId: body.parentCaseId ?? null } : {}),
-        completedAt: body.status !== undefined ? completedAtForStatus(status, caseRow.completedAt) : caseRow.completedAt,
-        updatedAt: now,
-      }).where(eq(cases.id, caseRow.id)).returning();
+      const [row] = await tx.update(cases).set(buildCasePatchUpdateValues(body, caseRow, now)).where(eq(cases.id, caseRow.id)).returning();
 
       if (nextLabelIds) {
         await lockCaseLabels(tx, { companyId: caseRow.companyId, caseId: caseRow.id });

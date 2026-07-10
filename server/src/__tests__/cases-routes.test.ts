@@ -32,7 +32,7 @@ import {
 import { errorHandler } from "../middleware/error-handler.js";
 import { actorMiddleware } from "../middleware/auth.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
-import { caseRoutes } from "../routes/cases.js";
+import { buildCasePatchUpdateValues, caseRoutes } from "../routes/cases.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import type { StorageService } from "../storage/types.js";
 
@@ -46,6 +46,18 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 describeEmbeddedPostgres("cases routes", () => {
+  it("omits completedAt from non-status case patches", () => {
+    const now = new Date("2026-07-10T00:00:00.000Z");
+    const completedAt = new Date("2026-07-09T00:00:00.000Z");
+
+    expect(buildCasePatchUpdateValues({ title: "Rename" }, { status: "todo", completedAt: null }, now)).not.toHaveProperty("completedAt");
+    expect(buildCasePatchUpdateValues({ title: "Rename" }, { status: "done", completedAt }, now)).not.toHaveProperty("completedAt");
+
+    const statusPatch = buildCasePatchUpdateValues({ status: "done" }, { status: "todo", completedAt: null }, now);
+    expect(statusPatch).toHaveProperty("completedAt");
+    expect(statusPatch.completedAt).toBeInstanceOf(Date);
+  });
+
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const previousAgentJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
