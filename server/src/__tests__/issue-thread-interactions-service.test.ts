@@ -57,7 +57,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await tempDb?.cleanup();
   });
 
-  it("accepts suggested tasks by creating a rooted issue tree under the current issue", async () => {
+  it("accepts suggested tasks as direct execution lanes under the current issue", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
     const issueId = randomUUID();
@@ -109,15 +109,14 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         version: 1,
         tasks: [
           {
-            clientKey: "root",
-            title: "Create the root follow-up",
+            clientKey: "implementation",
+            title: "Create the implementation follow-up",
             workMode: "planning",
             assigneeAgentId,
           },
           {
-            clientKey: "child",
-            parentClientKey: "root",
-            title: "Create the nested follow-up",
+            clientKey: "qa",
+            title: "Create the QA follow-up",
           },
         ],
       },
@@ -141,8 +140,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(accepted.interaction.result).toMatchObject({
       version: 1,
       createdTasks: [
-        expect.objectContaining({ clientKey: "root", parentIssueId: issueId }),
-        expect.objectContaining({ clientKey: "child" }),
+        expect.objectContaining({ clientKey: "implementation", parentIssueId: issueId }),
+        expect.objectContaining({ clientKey: "qa", parentIssueId: issueId }),
       ],
     });
     expect(accepted.createdIssues).toEqual([
@@ -164,19 +163,18 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       .where(eq(issues.companyId, companyId));
     expect(createdIssueRows).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ title: "Create the root follow-up", workMode: "planning" }),
-        expect.objectContaining({ title: "Create the nested follow-up", workMode: "standard" }),
+        expect.objectContaining({ title: "Create the implementation follow-up", workMode: "planning" }),
+        expect.objectContaining({ title: "Create the QA follow-up", workMode: "standard" }),
       ]),
     );
 
     const children = await issuesSvc.list(companyId, { parentId: issueId });
-    expect(children).toHaveLength(1);
-    expect(children[0]?.title).toBe("Create the root follow-up");
-
-    const nestedChildren = await issuesSvc.list(companyId, { parentId: children[0]!.id });
-    expect(nestedChildren).toHaveLength(1);
-    expect(nestedChildren[0]?.title).toBe("Create the nested follow-up");
-    expect(nestedChildren[0]?.requestDepth).toBe(4);
+    expect(children).toHaveLength(2);
+    expect(children.map((child) => child.title).sort()).toEqual([
+      "Create the implementation follow-up",
+      "Create the QA follow-up",
+    ].sort());
+    expect(children.every((child) => child.requestDepth === 3)).toBe(true);
 
     const listed = await interactionsSvc.listForIssue(issueId);
     expect(listed).toHaveLength(1);
@@ -192,7 +190,119 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
 
     const childrenAfterDuplicateAccept = await issuesSvc.list(companyId, { parentId: issueId });
-    expect(childrenAfterDuplicateAccept).toHaveLength(1);
+    expect(childrenAfterDuplicateAccept).toHaveLength(2);
+  });
+
+  it("preserves the agent proposer as child origin when the board accepts suggested tasks", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const proposerAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Preserve delegation origin",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: proposerAgentId,
+      companyId,
+      name: "Manager",
+      role: "manager",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const missingContract = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "suggest_tasks",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        tasks: [{ clientKey: "implementation", title: "Implement without a contract" }],
+      },
+    }, { agentId: proposerAgentId });
+
+    await expect(interactionsSvc.acceptSuggestedTasks({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, missingContract.id, {}, { userId: "local-board" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({ code: "invalid_execution_contract" }),
+    });
+    expect((await interactionsSvc.getById(missingContract.id))?.status).toBe("pending");
+
+    const executionContract = {
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "implementation",
+      core: {
+        objective: "Implement the accepted manager proposal.",
+        why: "The board accepted the manager's execution lane.",
+        sourceOfTruth: { issueIds: [issueId] },
+        acceptanceChecks: ["Child preserves the proposer identity"],
+        handoffNotes: { managerReasoning: "The manager authored this proposal." },
+      },
+    };
+    const validProposal = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "suggest_tasks",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        tasks: [{
+          clientKey: "implementation",
+          title: "Implement with a contract",
+          executionContract,
+        }],
+      },
+    }, { agentId: proposerAgentId });
+
+    const accepted = await interactionsSvc.acceptSuggestedTasks({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, validProposal.id, {}, { userId: "local-board" });
+    const createdIssueId = accepted.createdIssues[0]!.id;
+    const [createdIssue] = await db
+      .select({
+        createdByAgentId: issues.createdByAgentId,
+        createdByUserId: issues.createdByUserId,
+        executionContract: issues.executionContract,
+      })
+      .from(issues)
+      .where(eq(issues.id, createdIssueId));
+
+    expect(createdIssue).toMatchObject({
+      createdByAgentId: proposerAgentId,
+      createdByUserId: null,
+      executionContract: expect.objectContaining({ revision: 1 }),
+    });
+    expect(accepted.interaction).toMatchObject({
+      createdByAgentId: proposerAgentId,
+      resolvedByUserId: "local-board",
+    });
   });
 
   it("accepts a selected subset of suggested tasks and records the skipped drafts", async () => {
@@ -239,9 +349,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
             title: "Create the root follow-up",
           },
           {
-            clientKey: "child",
-            parentClientKey: "root",
-            title: "Create the nested follow-up",
+            clientKey: "qa",
+            title: "Create the QA follow-up",
           },
           {
             clientKey: "sibling",
@@ -269,7 +378,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       createdTasks: [
         expect.objectContaining({ clientKey: "root", parentIssueId: issueId }),
       ],
-      skippedClientKeys: ["child", "sibling"],
+      skippedClientKeys: ["qa", "sibling"],
     });
 
     const children = await issuesSvc.list(companyId, { parentId: issueId });
@@ -277,7 +386,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(children[0]?.title).toBe("Create the root follow-up");
   });
 
-  it("rejects partial acceptance when a selected task omits its selected-tree parent", async () => {
+  it("rejects nested suggested-task graphs before they are persisted", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
     const issueId = randomUUID();
@@ -306,42 +415,31 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       priority: "medium",
     });
 
-    const created = await interactionsSvc.create({
-      id: issueId,
-      companyId,
-    }, {
-      kind: "suggest_tasks",
-      continuationPolicy: "wake_assignee",
-      payload: {
-        version: 1,
-        tasks: [
-          {
-            clientKey: "root",
-            title: "Create the root follow-up",
-          },
-          {
-            clientKey: "child",
-            parentClientKey: "root",
-            title: "Create the nested follow-up",
-          },
-        ],
-      },
-    }, {
-      userId: "local-board",
-    });
-
     await expect(
-      interactionsSvc.acceptSuggestedTasks({
+      interactionsSvc.create({
         id: issueId,
         companyId,
-        goalId,
-        projectId: null,
-      }, created.id, {
-        selectedClientKeys: ["child"],
+      }, {
+        kind: "suggest_tasks",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          tasks: [
+            {
+              clientKey: "root",
+              title: "Create the root follow-up",
+            },
+            {
+              clientKey: "child",
+              parentClientKey: "root",
+              title: "Create the nested follow-up",
+            },
+          ],
+        },
       }, {
         userId: "local-board",
       }),
-    ).rejects.toThrow("requires its parent");
+    ).rejects.toThrow("parentClientKey graphs are not supported");
   });
 
   it("persists validated answers for ask_user_questions interactions", async () => {

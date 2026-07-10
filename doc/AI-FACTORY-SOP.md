@@ -49,5 +49,7 @@ The issue service rejects:
 
 - creating a child under an issue that already has `parentId`;
 - creating more than 10 direct children under one parent.
+- accepting or creating `suggest_tasks` interactions that use `parentClientKey` to propose nested graphs;
+- re-parenting an issue in a way that would turn an existing execution lane into a parent or a parent with lanes into a child.
 
 UI surfaces should hide sub-issue creation for execution lanes, but backend enforcement is authoritative.

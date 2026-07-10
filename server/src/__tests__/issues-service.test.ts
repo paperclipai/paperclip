@@ -2519,7 +2519,134 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
 
     expect(issue.description).toBe("Human-readable QA brief.");
-    expect(issue.executionContract).toEqual(executionContract);
+    expect(issue.executionContract).toEqual({ ...executionContract, revision: 1 });
+  });
+
+  it("rejects malformed execution contracts in direct service create and update calls", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await expect(svc.create(companyId, {
+      title: "Malformed contract",
+      status: "todo",
+      executionContract: { schemaVersion: "two" } as unknown as Record<string, unknown>,
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "invalid_execution_contract_schema" },
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Valid contract",
+      status: "todo",
+      executionContract: makeValidExecutionContract(),
+    });
+    await expect(svc.update(issue.id, {
+      executionContract: { schemaVersion: 2, extensions: ["invalid"] } as unknown as Record<string, unknown>,
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "invalid_execution_contract_schema" },
+    });
+  });
+
+  it("revisions editable contracts and freezes them after execution begins", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Revisioned contract",
+      status: "todo",
+      executionContract: makeValidExecutionContract(),
+    });
+    expect(issue.executionContract).toMatchObject({ revision: 1 });
+
+    const updated = await svc.update(issue.id, {
+      executionContract: makeValidExecutionContract({ taskType: "qa" }),
+    });
+    expect(updated?.executionContract).toMatchObject({
+      revision: 2,
+      supersedesRevision: 1,
+      taskType: "qa",
+    });
+
+    const echoedCurrentRevision = await svc.update(issue.id, {
+      executionContract: {
+        ...(updated!.executionContract as Record<string, unknown>),
+        taskType: "release",
+      },
+    });
+    expect(echoedCurrentRevision?.executionContract).toMatchObject({
+      revision: 3,
+      supersedesRevision: 2,
+      taskType: "release",
+    });
+
+    await svc.update(issue.id, { status: "in_review" });
+    await expect(svc.update(issue.id, {
+      executionContract: makeValidExecutionContract({ taskType: "implementation" }),
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "execution_contract_frozen", currentRevision: 3 },
+    });
+  });
+
+  it("validates agent-origin child contracts again when they are updated", async () => {
+    const companyId = randomUUID();
+    const parentIssueId = randomUUID();
+    const creatorAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: creatorAgentId,
+      companyId,
+      name: "Manager",
+      role: "manager",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent issue",
+      status: "todo",
+      priority: "medium",
+    });
+    const child = await svc.create(companyId, {
+      parentId: parentIssueId,
+      title: "Agent child",
+      status: "todo",
+      createdByAgentId: creatorAgentId,
+      executionContract: makeValidExecutionContract(),
+    });
+
+    await expect(svc.update(child.id, {
+      executionContract: {
+        schemaVersion: 2,
+        contractType: "delegated_task",
+        taskType: "implementation",
+        core: { objective: "Missing the rest of the manager handoff." },
+      },
+      actorUserId: "local-board",
+    })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({ code: "invalid_execution_contract" }),
+    });
   });
 
   it("copies legacy markdown execution contracts into hidden data while preserving descriptions on create", async () => {
@@ -2827,6 +2954,8 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     const companyId = randomUUID();
     const parentIssueId = randomUUID();
     const childIssueId = randomUUID();
+    const otherParentIssueId = randomUUID();
+    const leafIssueId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -2851,6 +2980,20 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
         status: "todo",
         priority: "medium",
       },
+      {
+        id: otherParentIssueId,
+        companyId,
+        title: "Other main parent",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: leafIssueId,
+        companyId,
+        title: "Leaf main issue",
+        status: "todo",
+        priority: "medium",
+      },
     ]);
 
     await expect(svc.create(companyId, {
@@ -2864,6 +3007,17 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       title: "Helper grandchild attempt",
       status: "todo",
     })).rejects.toMatchObject({ status: 422 });
+
+    await expect(svc.update(leafIssueId, {
+      parentId: childIssueId,
+    })).rejects.toMatchObject({ status: 422 });
+
+    await expect(svc.update(parentIssueId, {
+      parentId: otherParentIssueId,
+    })).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("cannot become child issues"),
+    });
   });
 
   it("caps direct execution lanes under a parent issue", async () => {

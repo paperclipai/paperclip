@@ -83,7 +83,34 @@ export interface IssueAssigneeAdapterOverrides {
   useProjectWorkspace?: boolean;
 }
 
-export type IssueExecutionContract = Record<string, unknown>;
+export interface IssueExecutionContractCore extends Record<string, unknown> {
+  objective?: string;
+  why?: string;
+  owner?: string | Record<string, unknown>;
+  sourceOfTruth?: unknown;
+  source_of_truth?: unknown;
+  acceptanceChecks?: unknown;
+  acceptance_checks?: unknown;
+  constraints?: unknown;
+  evidenceRequired?: unknown;
+  evidence_required?: unknown;
+  handoffNotes?: Record<string, unknown>;
+  handoff_notes?: Record<string, unknown>;
+}
+
+export interface IssueExecutionContract extends Record<string, unknown> {
+  schemaVersion?: number;
+  schema_version?: number;
+  revision?: number;
+  supersedesRevision?: number | null;
+  supersedes_revision?: number | null;
+  contractType?: string;
+  contract_type?: string;
+  taskType?: string;
+  task_type?: string;
+  core?: IssueExecutionContractCore;
+  extensions?: Record<string, unknown> | null;
+}
 
 export type DocumentFormat = "markdown";
 

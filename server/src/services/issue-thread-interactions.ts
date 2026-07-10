@@ -190,6 +190,17 @@ function buildTaskCreationOrder(tasks: ReadonlyArray<SuggestTasksInteraction["pa
   return ordered;
 }
 
+function assertSuggestedTasksAreDirect(
+  tasks: ReadonlyArray<SuggestTasksInteraction["payload"]["tasks"][number]>,
+) {
+  const nestedTask = tasks.find((task) => Boolean(task.parentClientKey));
+  if (nestedTask) {
+    throw unprocessable(
+      `Suggested task ${nestedTask.clientKey} is nested. Suggested tasks must be direct execution lanes; parentClientKey graphs are not supported.`,
+    );
+  }
+}
+
 function resolveSelectedSuggestedTasks(args: {
   interaction: SuggestTasksInteraction;
   selectedClientKeys?: AcceptIssueThreadInteraction["selectedClientKeys"];
@@ -680,6 +691,9 @@ export function issueThreadInteractionService(db: Db) {
           target: data.payload.target ?? null,
         });
       }
+      if (data.kind === "suggest_tasks") {
+        assertSuggestedTasksAreDirect(data.payload.tasks);
+      }
 
       let created: IssueThreadInteractionRow;
       try {
@@ -775,6 +789,15 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       const interaction = hydrateInteraction(current) as SuggestTasksInteraction;
+      assertSuggestedTasksAreDirect(interaction.payload.tasks);
+      // Accepting a proposal resolves the interaction, but it does not become
+      // the origin of the proposed work. Preserve the proposer so a board
+      // acceptance cannot turn an agent-authored child into a human-authored
+      // child and bypass the delegated execution-contract guardrail.
+      const taskCreatorAgentId = current.createdByAgentId ?? null;
+      const taskCreatorUserId = taskCreatorAgentId
+        ? null
+        : current.createdByUserId ?? actor.userId ?? null;
       const { selectedTasks, skippedClientKeys } = resolveSelectedSuggestedTasks({
         interaction,
         selectedClientKeys: input.selectedClientKeys,
@@ -847,10 +870,10 @@ export function issueThreadInteractionService(db: Db) {
             goalId: task.goalId ?? issue.goalId,
             billingCode: task.billingCode ?? null,
             executionContract: task.executionContract ?? null,
-            createdByAgentId: actor.agentId ?? null,
-            createdByUserId: actor.userId ?? null,
-            actorAgentId: actor.agentId ?? null,
-            actorUserId: actor.userId ?? null,
+            createdByAgentId: taskCreatorAgentId,
+            createdByUserId: taskCreatorUserId,
+            actorAgentId: taskCreatorAgentId,
+            actorUserId: taskCreatorUserId,
           } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
 
           const parentIdentifier = createdByClientKey.get(task.parentClientKey ?? "")?.identifier

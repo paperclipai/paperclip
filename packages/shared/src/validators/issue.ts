@@ -67,34 +67,74 @@ export const issueAssigneeAdapterOverridesSchema = z
   })
   .strict();
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
+const executionContractRevisionSchema = z.number().int().min(1).max(1_000_000);
+const executionContractSchemaVersionSchema = z.number().int().min(1).max(1000);
+const executionContractTextSchema = z.string().trim().min(1).max(20_000);
+const executionContractStructuredContentSchema = z.union([
+  executionContractTextSchema,
+  z.array(z.unknown()).max(500),
+  z.record(z.unknown()),
+]);
 
-export const issueExecutionContractSchema = z.record(z.unknown()).superRefine((value, ctx) => {
-  const schemaVersion = value.schemaVersion ?? value.schema_version;
-  if (
-    schemaVersion !== undefined &&
-    (
-      typeof schemaVersion !== "number" ||
-      !Number.isInteger(schemaVersion) ||
-      schemaVersion < 1 ||
-      schemaVersion > 1000
-    )
-  ) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "executionContract schemaVersion must be a positive integer",
-      path: [Object.prototype.hasOwnProperty.call(value, "schemaVersion") ? "schemaVersion" : "schema_version"],
-    });
-  }
+const executionContractHandoffNotesSchema = z.object({
+  managerReasoning: executionContractTextSchema.optional(),
+  manager_reasoning: executionContractTextSchema.optional(),
+  currentBlocker: executionContractTextSchema.nullable().optional(),
+  current_blocker: executionContractTextSchema.nullable().optional(),
+  nextAction: executionContractTextSchema.nullable().optional(),
+  next_action: executionContractTextSchema.nullable().optional(),
+}).passthrough();
 
-  for (const key of ["core", "extensions"] as const) {
-    if (value[key] !== undefined && value[key] !== null && !isPlainRecord(value[key])) {
+const issueExecutionContractCoreSchema = z.object({
+  objective: executionContractTextSchema.optional(),
+  why: executionContractTextSchema.optional(),
+  owner: z.union([executionContractTextSchema, z.record(z.unknown())]).optional(),
+  sourceOfTruth: executionContractStructuredContentSchema.optional(),
+  source_of_truth: executionContractStructuredContentSchema.optional(),
+  acceptanceChecks: executionContractStructuredContentSchema.optional(),
+  acceptance_checks: executionContractStructuredContentSchema.optional(),
+  constraints: executionContractStructuredContentSchema.optional(),
+  evidenceRequired: executionContractStructuredContentSchema.optional(),
+  evidence_required: executionContractStructuredContentSchema.optional(),
+  handoffNotes: executionContractHandoffNotesSchema.optional(),
+  handoff_notes: executionContractHandoffNotesSchema.optional(),
+}).passthrough();
+
+/**
+ * The execution-contract envelope is explicit for fields Paperclip interprets,
+ * while passthrough objects preserve forward compatibility for manager- or
+ * plugin-owned fields. This keeps malformed canonical fields out without
+ * turning the core control plane into an extension-schema registry.
+ */
+export const issueExecutionContractSchema = z.object({
+  schemaVersion: executionContractSchemaVersionSchema.optional(),
+  schema_version: executionContractSchemaVersionSchema.optional(),
+  revision: executionContractRevisionSchema.optional(),
+  supersedesRevision: executionContractRevisionSchema.nullable().optional(),
+  supersedes_revision: executionContractRevisionSchema.nullable().optional(),
+  contractType: executionContractTextSchema.optional(),
+  contract_type: executionContractTextSchema.optional(),
+  taskType: executionContractTextSchema.optional(),
+  task_type: executionContractTextSchema.optional(),
+  core: issueExecutionContractCoreSchema.optional(),
+  extensions: z.record(z.unknown()).optional().nullable(),
+}).passthrough().superRefine((value, ctx) => {
+  const aliasPairs = [
+    ["schemaVersion", "schema_version"],
+    ["supersedesRevision", "supersedes_revision"],
+    ["contractType", "contract_type"],
+    ["taskType", "task_type"],
+  ] as const;
+  for (const [canonical, legacy] of aliasPairs) {
+    if (
+      value[canonical] !== undefined &&
+      value[legacy] !== undefined &&
+      value[canonical] !== value[legacy]
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: `executionContract ${key} must be an object`,
-        path: [key],
+        message: `executionContract ${canonical} and ${legacy} must match when both are provided`,
+        path: [canonical],
       });
     }
   }

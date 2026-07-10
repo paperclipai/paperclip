@@ -19,7 +19,10 @@ Shipped in enforce mode. In the issue service, when an **agent** creates an issu
 
 - Read the hidden `executionContract` field. Legacy `## Execution Contract` description blocks may still be extracted for compatibility, but new delegation validation should target the JSON field.
 - Validate required fields: `schemaVersion`, `contractType`, `taskType`, `core.objective`, `core.why`, non-empty `core.sourceOfTruth`, non-empty `core.acceptanceChecks`, `core.handoffNotes.managerReasoning`.
+- Parse the API envelope with explicit types for canonical fields while keeping unknown extension fields forward-compatible. Direct service callers receive the same structural validation as HTTP callers.
 - Enforce-mode behavior: reject with `422` and a field-level error message when missing/invalid, mirroring the existing two-level topology enforcement (which already rejects grandchildren and >10 lanes — precedent for hard orchestration gates in this service).
+- Revalidate agent-origin child contracts when they are edited. Board acceptance of an agent-authored `suggest_tasks` proposal preserves the proposing agent as the child origin, so acceptance cannot downgrade the handoff into the human-created exemption.
+- Store `revision: 1` on new contracts. Before execution begins, each changed contract advances exactly one revision and records `supersedesRevision`; clients may omit revision metadata or echo the current revision, and compare-and-swap persistence rejects stale/concurrent revision races. Once an issue has started or left the pre-execution statuses, its contract is frozen and a replacement issue is required for a superseding handoff.
 - Human-created issues are exempt (agents reconstruct contracts for human requests, per the skill).
 - Future rollback flag, if needed: per-company setting (`instance_settings` or company metadata) `requireExecutionContracts: enforce | warn | off`. The current server behavior is hard enforcement for agent-created child lanes.
 

@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { isDeepStrictEqual } from "node:util";
 import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -49,6 +50,7 @@ import {
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
+  issueExecutionContractSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
@@ -318,6 +320,27 @@ async function assertChildIssueCreationAllowed(
   return parent;
 }
 
+async function assertIssueParentUpdateAllowed(
+  dbOrTx: DbReader,
+  existing: IssueRow,
+  nextParentId: string,
+) {
+  if (nextParentId === existing.id) {
+    throw unprocessable("An issue cannot be its own parent");
+  }
+  await assertChildIssueCreationAllowed(dbOrTx, existing.companyId, nextParentId);
+
+  const [{ childCount }] = await dbOrTx
+    .select({ childCount: sql<number>`count(*)::int` })
+    .from(issues)
+    .where(and(eq(issues.companyId, existing.companyId), eq(issues.parentId, existing.id)));
+  if (childCount > 0) {
+    throw unprocessable(
+      "Main issues with execution lanes cannot become child issues. Paperclip supports only one child level.",
+    );
+  }
+}
+
 type IssueRow = typeof issues.$inferSelect;
 type IssueLabelRow = typeof labels.$inferSelect;
 type IssueActiveRunRow = {
@@ -461,6 +484,117 @@ function normalizeExecutionContractValue(value: unknown): Record<string, unknown
   return isRecord(value) ? value : null;
 }
 
+function parseExecutionContractValue(value: unknown): Record<string, unknown> | null {
+  if (value == null) return null;
+  const parsed = issueExecutionContractSchema.safeParse(value);
+  if (!parsed.success) {
+    throw unprocessable("Invalid executionContract", {
+      code: "invalid_execution_contract_schema",
+      issues: parsed.error.issues,
+    });
+  }
+  return parsed.data;
+}
+
+function executionContractRevision(value: Record<string, unknown> | null | undefined) {
+  const revision = value?.revision;
+  return typeof revision === "number" && Number.isInteger(revision) && revision > 0 ? revision : null;
+}
+
+function executionContractSupersedesRevision(value: Record<string, unknown>) {
+  const revision = value.supersedesRevision ?? value.supersedes_revision;
+  return typeof revision === "number" && Number.isInteger(revision) && revision > 0 ? revision : null;
+}
+
+function prepareInitialExecutionContract(
+  value: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!value) return null;
+  const requestedRevision = executionContractRevision(value);
+  if (requestedRevision !== null && requestedRevision !== 1) {
+    throw unprocessable("A new executionContract must start at revision 1", {
+      code: "invalid_execution_contract_revision",
+      expectedRevision: 1,
+      receivedRevision: requestedRevision,
+    });
+  }
+  if (executionContractSupersedesRevision(value) !== null) {
+    throw unprocessable("A new executionContract cannot supersede an earlier revision", {
+      code: "invalid_execution_contract_revision",
+      expectedSupersedesRevision: null,
+    });
+  }
+  return {
+    ...value,
+    revision: 1,
+  };
+}
+
+function issueExecutionContractIsFrozen(issue: IssueRow) {
+  return Boolean(
+    issue.startedAt ||
+    issue.checkoutRunId ||
+    issue.executionRunId ||
+    !["backlog", "todo"].includes(issue.status),
+  );
+}
+
+function prepareUpdatedExecutionContract(input: {
+  existing: IssueRow;
+  next: Record<string, unknown> | null;
+}): Record<string, unknown> | null {
+  const previous = normalizeExecutionContractValue(input.existing.executionContract);
+  if (isDeepStrictEqual(previous, input.next)) return input.next;
+  if (previous && issueExecutionContractIsFrozen(input.existing)) {
+    throw conflict(
+      "executionContract is frozen once issue execution begins; create a replacement issue for a superseding contract",
+      {
+        code: "execution_contract_frozen",
+        currentRevision: executionContractRevision(previous) ?? 1,
+      },
+    );
+  }
+  if (!input.next) return null;
+  if (!previous) return prepareInitialExecutionContract(input.next);
+
+  const currentRevision = executionContractRevision(previous) ?? 1;
+  const expectedRevision = currentRevision + 1;
+  const requestedRevision = executionContractRevision(input.next);
+  const requestedSupersedesRevision = executionContractSupersedesRevision(input.next);
+  const echoedCurrentRevision = requestedRevision === currentRevision;
+  if (
+    requestedRevision !== null &&
+    requestedRevision !== currentRevision &&
+    requestedRevision !== expectedRevision
+  ) {
+    throw unprocessable("executionContract revision must identify the current or next revision", {
+      code: "invalid_execution_contract_revision",
+      expectedRevision,
+      currentRevision,
+      receivedRevision: requestedRevision,
+    });
+  }
+  const previousSupersedesRevision = executionContractSupersedesRevision(previous);
+  const expectedRequestedSupersedesRevision = echoedCurrentRevision
+    ? previousSupersedesRevision
+    : currentRevision;
+  if (
+    requestedSupersedesRevision !== null &&
+    requestedSupersedesRevision !== expectedRequestedSupersedesRevision
+  ) {
+    throw unprocessable("executionContract supersedesRevision must reference the current revision", {
+      code: "invalid_execution_contract_revision",
+      expectedSupersedesRevision: expectedRequestedSupersedesRevision,
+      receivedSupersedesRevision: requestedSupersedesRevision,
+    });
+  }
+  return {
+    ...input.next,
+    revision: expectedRevision,
+    supersedesRevision: currentRevision,
+  };
+}
+
 function extractJsonObjectFromMarkdown(value: string): Record<string, unknown> | null {
   const fenced = value.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fenced?.[1]?.trim() ?? (() => {
@@ -517,13 +651,13 @@ function resolveExecutionContractFields(input: {
   if (input.executionContract !== undefined) {
     return {
       ...(hasDescription ? { description } : {}),
-      executionContract: normalizeExecutionContractValue(input.executionContract),
+      executionContract: parseExecutionContractValue(input.executionContract),
     };
   }
   if (extracted) {
     return {
       description,
-      executionContract: extracted.executionContract,
+      executionContract: parseExecutionContractValue(extracted.executionContract),
     };
   }
   return hasDescription ? { description } : {};
@@ -3688,7 +3822,7 @@ export function issueService(db: Db) {
       });
       issueData.description = contractFields.description ?? null;
       if (Object.prototype.hasOwnProperty.call(contractFields, "executionContract")) {
-        issueData.executionContract = contractFields.executionContract ?? null;
+        issueData.executionContract = prepareInitialExecutionContract(contractFields.executionContract);
       } else {
         delete issueData.executionContract;
       }
@@ -3963,7 +4097,31 @@ export function issueService(db: Db) {
         issueData.description = contractFields.description ?? null;
       }
       if (Object.prototype.hasOwnProperty.call(contractFields, "executionContract")) {
-        issueData.executionContract = contractFields.executionContract ?? null;
+        issueData.executionContract = prepareUpdatedExecutionContract({
+          existing,
+          next: contractFields.executionContract ?? null,
+        });
+      }
+      const parentWillChange = issueData.parentId !== undefined && issueData.parentId !== existing.parentId;
+      if (parentWillChange && issueData.parentId) {
+        await assertIssueParentUpdateAllowed(dbOrTx, existing, issueData.parentId);
+      }
+      const executionContractWillChange = Object.prototype.hasOwnProperty.call(
+        contractFields,
+        "executionContract",
+      );
+      const nextParentId = issueData.parentId !== undefined ? issueData.parentId : existing.parentId;
+      if (
+        nextParentId &&
+        (parentWillChange || executionContractWillChange) &&
+        (existing.createdByAgentId || actorAgentId)
+      ) {
+        assertDelegatedIssueExecutionContract(
+          executionContractWillChange
+            ? issueData.executionContract ?? null
+            : normalizeExecutionContractValue(existing.executionContract),
+          { parentId: nextParentId },
+        );
       }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
@@ -4182,13 +4340,25 @@ export function issueService(db: Db) {
           projectGoalId: nextProjectGoalId,
           defaultGoalId: defaultCompanyGoal?.id ?? null,
         });
+        const executionContractCompareAndSwap = executionContractWillChange
+          ? existing.executionContract == null
+            ? and(eq(issues.id, id), isNull(issues.executionContract))
+            : and(eq(issues.id, id), eq(issues.executionContract, existing.executionContract))
+          : eq(issues.id, id);
         const updated = await tx
           .update(issues)
           .set(patch)
-          .where(eq(issues.id, id))
+          .where(executionContractCompareAndSwap)
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
-        if (!updated) return null;
+        if (!updated) {
+          if (executionContractWillChange) {
+            throw conflict("executionContract changed while this revision was being updated", {
+              code: "execution_contract_revision_conflict",
+            });
+          }
+          return null;
+        }
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
