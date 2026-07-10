@@ -31,9 +31,20 @@ jobs:
           # Diff the PR branch against its merge base so recent base-branch commits
           # do not masquerade as changes made by the PR itself.
           changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
+
+          # A lockfile change is legitimate when a manifest also changed in the
+          # same PR (i.e. a dependency was added/removed/updated). Only block
+          # when the lockfile is the *sole* dependency-related change, which
+          # indicates a hand-edit with no corresponding manifest modification.
+          # Pattern mirrors the "Validate dependency resolution" step below.
+          manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$'
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
-            echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
-            exit 1
+            if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
+              echo "pnpm-lock.yaml changed alongside a manifest — legitimate dependency update, allowing."
+            else
+              echo "pnpm-lock.yaml changed without any manifest change. Do not hand-edit the lockfile; let CI own it (refresh-lockfile workflow) or update a package.json and let pnpm regenerate it."
+              exit 1
+            fi
           fi
 
       - name: Setup pnpm
