@@ -37,6 +37,9 @@ function makeSecret(id: string, overrides: Partial<CompanySecret> = {}): Company
   return {
     id,
     companyId: "co",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
     key: id,
     name: id.toUpperCase(),
     provider: "local_encrypted",
@@ -692,8 +695,8 @@ describe("EnvironmentVariablesEditor", () => {
     ).toBeTruthy();
   });
 
-  it("opens the store popover from the source dropdown Text→Secret (with a value) and keeps it open (PAP-12478)", () => {
-    // Regression: switching a *non-empty* Text row to "Secret reference" via the
+  it("opens the store popover from the source dropdown Text→Company secret (with a value) and keeps it open (PAP-12478)", () => {
+    // Regression: switching a *non-empty* Text row to "Company secret" via the
     // in-field Value source dropdown must open the anchored store-as-secret
     // popover (§6.3) — value preserved, not discarded. This is the same nested
     // DropdownMenu→Popover open-while-closing race as the ⋯ and picker paths
@@ -714,9 +717,9 @@ describe("EnvironmentVariablesEditor", () => {
     pointerClick(sourceButton!);
     settleFakeTimers();
     const secretItem = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((el) =>
-      el.textContent?.includes("Secret reference"),
+      el.textContent?.includes("Company secret"),
     );
-    expect(secretItem, "Secret reference menu item should be present").toBeTruthy();
+    expect(secretItem, "Company secret menu item should be present").toBeTruthy();
     pointerClick(secretItem!);
     settleFakeTimers();
     // The store popover is open (heading rendered) and stays open — it must not

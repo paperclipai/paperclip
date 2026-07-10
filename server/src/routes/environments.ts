@@ -11,10 +11,12 @@ import {
   redactEnvironmentCustomImageSetupSession,
   redactEnvironmentCustomImageTemplate,
   startEnvironmentCustomImageSetupSessionSchema,
+  type EnvironmentDeleteBlastRadius,
   updateEnvironmentSchema,
 } from "@paperclipai/shared";
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
+import { logger } from "../middleware/logger.js";
 import {
   environmentCustomImageService,
   issueService,
@@ -270,6 +272,39 @@ export function environmentRoutes(
     return details;
   }
 
+  function environmentDeleteBlockMessage(impact: EnvironmentDeleteBlastRadius): string | null {
+    if (impact.staticReferences.isManagedLocal) {
+      return "Cannot delete the managed local environment.";
+    }
+    if (impact.staticReferences.isInstanceDefault) {
+      return "Cannot delete the current instance default environment. Set a new default environment before deleting this one.";
+    }
+    return null;
+  }
+
+  function rejectEnvironmentDelete(input: {
+    actor: ReturnType<typeof getActorInfo>;
+    environment: { id: string; driver: string };
+    impact: EnvironmentDeleteBlastRadius;
+  }): never {
+    const message =
+      environmentDeleteBlockMessage(input.impact)
+      ?? "Environment delete is currently blocked. Refresh the environment and retry.";
+    logger.warn(
+      {
+        environmentId: input.environment.id,
+        environmentDriver: input.environment.driver,
+        deleteBlockedReasons: input.impact.deleteBlockedReasons,
+        actorType: input.actor.actorType,
+        actorId: input.actor.actorId,
+        agentId: input.actor.agentId,
+        runId: input.actor.runId,
+      },
+      "environment delete rejected by guard",
+    );
+    throw conflict(message, { deleteBlockedReasons: input.impact.deleteBlockedReasons });
+  }
+
   function setupSessionActivityDetails(session: {
     id: string;
     environmentId: string;
@@ -332,6 +367,16 @@ export function environmentRoutes(
       driver: req.query.driver as string | undefined,
     });
     res.json(rows.map((row) => presentEnvironmentForRead(req, row)));
+  });
+
+  router.get("/environments/:id/delete-blast-radius", async (req, res) => {
+    assertCanAccessInstanceEnvironments(req);
+    const impact = await svc.getDeleteBlastRadius(req.params.id as string);
+    if (!impact) {
+      res.status(404).json({ error: "Environment not found" });
+      return;
+    }
+    res.json(impact);
   });
 
   router.get("/companies/:companyId/environments/capabilities", async (req, res) => {
@@ -762,24 +807,48 @@ export function environmentRoutes(
       return;
     }
     assertCanAccessInstanceEnvironments(req);
+    const actor = getActorInfo(req);
+    const impact = await svc.getDeleteBlastRadius(existing.id);
+    if (!impact) {
+      res.status(404).json({ error: "Environment not found" });
+      return;
+    }
+    if (!impact.canDelete) {
+      rejectEnvironmentDelete({ actor, environment: existing, impact });
+    }
+
+    const removed = await svc.removeIfDeletable(existing.id);
+    if (!removed) {
+      const latestImpact = await svc.getDeleteBlastRadius(existing.id);
+      if (!latestImpact) {
+        res.status(404).json({ error: "Environment not found" });
+        return;
+      }
+      rejectEnvironmentDelete({ actor, environment: existing, impact: latestImpact });
+    }
     const companyIds = await instanceSettings.listCompanyIds();
     await Promise.all(
       companyIds.flatMap((companyId) => [
         executionWorkspaces.clearEnvironmentSelection(companyId, existing.id),
         issues.clearExecutionWorkspaceEnvironmentSelection(companyId, existing.id),
         projects.clearExecutionWorkspaceEnvironmentSelection(companyId, existing.id),
+        secrets.syncEnvBindingsForTarget(
+          companyId,
+          { targetType: "environment", targetId: existing.id },
+          {},
+        ),
+        secrets.syncSecretRefsForTarget(
+          companyId,
+          { targetType: "environment", targetId: existing.id },
+          [],
+          { replaceAll: true },
+        ),
       ]),
     );
-    const removed = await svc.remove(existing.id);
-    if (!removed) {
-      res.status(404).json({ error: "Environment not found" });
-      return;
-    }
     const secretId = readSshEnvironmentPrivateKeySecretId(existing);
     if (secretId) {
       await secrets.remove(secretId);
     }
-    const actor = getActorInfo(req);
     await logInstanceEnvironmentActivity({
       actor,
       action: "environment.deleted",

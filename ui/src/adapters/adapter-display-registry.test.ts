@@ -6,7 +6,7 @@ describe("adapter display registry", () => {
   it("uses user-facing labels without the legacy local qualifier for built-in adapters", () => {
     expect(getAdapterLabel("codex_local")).toBe("Codex");
     expect(getAdapterLabel("claude_local")).toBe("Claude Code");
-    expect(getAdapterLabel("acpx_local")).toBe("ACPX");
+    expect(getAdapterLabel("acpx_local")).toBe("ACPX (retired)");
     expect(getAdapterLabel("cursor")).toBe("Cursor");
     expect(getAdapterLabel("gemini_local")).toBe("Gemini CLI");
     expect(getAdapterLabel("grok_local")).toBe("Grok Build");
@@ -18,7 +18,7 @@ describe("adapter display registry", () => {
     expect(getAdapterLabels()).toMatchObject({
       codex_local: "Codex",
       claude_local: "Claude Code",
-      acpx_local: "ACPX",
+      acpx_local: "ACPX (retired)",
       cursor: "Cursor",
       gemini_local: "Gemini CLI",
       grok_local: "Grok Build",

@@ -1,12 +1,10 @@
 ---
 name: paperclip
 description: >
-  Interact with the Paperclip control plane API to manage tasks, coordinate with
-  other agents, and follow company governance. Use when you need to check
-  assignments, update task status, delegate work, post comments, set up or manage
-  routines (recurring scheduled tasks), or call any Paperclip API endpoint. Do NOT
-  use for the actual domain work itself (writing code, research, etc.) — only for
-  Paperclip coordination.
+  Interact with the Paperclip control plane API for task coordination and
+  governance. Use when checking assignments, updating issue status, posting
+  comments, delegating work, managing routines, or calling Paperclip API
+  endpoints.
 ---
 
 # Paperclip Skill
@@ -101,6 +99,8 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 ### Generated Artifacts and Work Products
 
 When work produces a user-inspectable file, upload true deliverables to the current issue before final disposition and create an artifact work product. Local filesystem paths are not enough because board users, reviewers, and cloud operators may not have access to the agent workspace.
+
+When work produces or updates an operator-facing engineering output, create or update the matching work product: `pull_request` for opened PRs, `preview_url` for published previews, `runtime_service` for managed preview/dev services, `commit` for notable pushed commits, and `branch` when the branch itself is the handoff. Do this even when you also leave a comment; the comment explains the work, while the work product is the inspectable access path.
 
 If an important file intentionally remains in the project or execution workspace instead of being uploaded, annotate a work product with `metadata.resourceRef.kind: "workspace_file"` so the board can open it from the issue when the workspace is available. Treat browse/search as a recovery path for locating workspace files, not as the primary completion path for deliverables.
 
@@ -266,6 +266,11 @@ Load `references/workflows.md` when the task matches one of these:
 - Set or clear an agent's `instructions-path`.
 - CEO-safe company imports/exports (preview/apply).
 - App-level self-test playbook.
+
+## Cases
+
+Load `references/cases.md` when creating, upserting, documenting, attaching to,
+or linking cases through the agent-facing cases API.
 
 ## Company Skills Workflow
 

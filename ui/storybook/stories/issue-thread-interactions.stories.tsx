@@ -26,6 +26,7 @@ import {
   pendingRequestConfirmationInteraction,
   pendingSuggestedTasksInteraction,
   planApprovalAcceptedRequestConfirmationInteraction,
+  planApprovalResumeFailedRequestConfirmationInteraction,
   rejectedNoReasonRequestConfirmationInteraction,
   rejectedRequestCheckboxConfirmationInteraction,
   rejectedRequestConfirmationInteraction,
@@ -552,6 +553,24 @@ export const RequestConfirmationPlanApprovalConfirmed: Story = {
   ),
 };
 
+export const RequestConfirmationPlanApprovalResumeFailed: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Plan approval resume failed"
+        description="The approval remains accepted, but the failed continuation is visibly amber and needs attention."
+      >
+        <IssueThreadInteractionCard
+          interaction={planApprovalResumeFailedRequestConfirmationInteraction}
+          agentMap={storybookAgentMap}
+          currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+          userLabelMap={boardUserLabels}
+        />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
 export const RequestConfirmationFailed: Story = {
   render: () => (
     <StoryFrame>
@@ -746,7 +765,7 @@ export const ReviewSurface: Story = {
         <div className="grid gap-6 xl:grid-cols-2">
           <ScenarioCard
             title="Pending"
-            description="Answers stay local across the whole form and only wake the assignee once after final submit."
+            description="Answers stay local across the whole form until the operator submits the final response."
           >
             <InteractiveAskUserQuestionsCard />
           </ScenarioCard>

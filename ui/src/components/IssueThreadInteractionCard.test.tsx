@@ -14,6 +14,7 @@ import {
   disabledDeclineReasonRequestConfirmationInteraction,
   failedRequestConfirmationInteraction,
   pendingRequestConfirmationInteraction,
+  planApprovalResumeFailedRequestConfirmationInteraction,
   pendingSuggestedTasksInteraction,
   staleTargetRequestConfirmationInteraction,
   rejectedSuggestedTasksInteraction,
@@ -318,7 +319,7 @@ describe("IssueThreadInteractionCard", () => {
     );
   });
 
-  it("labels accept-only continuation policies in the card header", () => {
+  it("does not expose continuation wake policy labels in the card header", () => {
     const host = renderCard({
       interaction: {
         ...pendingRequestConfirmationInteraction,
@@ -326,7 +327,8 @@ describe("IssueThreadInteractionCard", () => {
       },
     });
 
-    expect(host.textContent).toContain("Wakes on confirm");
+    expect(host.textContent).not.toContain("Wakes on confirm");
+    expect(host.textContent).not.toContain("Wakes assignee");
   });
 
   it("renders request confirmation target links and stale-target expiry", () => {
@@ -416,6 +418,19 @@ describe("IssueThreadInteractionCard", () => {
 
     act(() => root?.unmount());
     accepted.remove();
+    root = null;
+
+    const resumeFailed = renderCard({
+      interaction: planApprovalResumeFailedRequestConfirmationInteraction,
+    });
+    expect((resumeFailed.firstElementChild as HTMLElement).className).toContain("border-amber-500/70");
+    expect(resumeFailed.textContent).toContain("Approved — agent resume failed");
+    expect(resumeFailed.textContent).toContain("Agent resume failed");
+    expect(resumeFailed.textContent).toContain("Paperclip needs attention before the agent can resume this approved work.");
+    expect(resumeFailed.textContent).toContain("adapter_failed");
+
+    act(() => root?.unmount());
+    resumeFailed.remove();
     root = null;
 
     const rejected = renderCard({

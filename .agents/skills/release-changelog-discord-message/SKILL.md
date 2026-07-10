@@ -1,11 +1,9 @@
 ---
 name: release-changelog-discord-message
 description: >
-  Write the Discord release announcement for a stable Paperclip release. Companion
-  to `release-changelog` — that skill produces the file at `releases/vYYYY.MDD.P.md`;
-  this one turns that file into a single copy-pasteable Discord post in dotta's
-  voice and attaches it as the `discord_announcement` document on the release
-  issue.
+  Write the Discord announcement for a stable Paperclip release from the release
+  changelog. Use when a release issue needs a copy-pasteable dotta-voice Discord
+  post or refreshed discord_announcement document.
 ---
 
 # Release Discord Announcement Skill
@@ -43,6 +41,7 @@ current Paperclip work — not invented.
 A single fenced markdown code block, ready to paste into Discord. Attached as
 issue document key `discord_announcement` on the release issue, and pasted
 verbatim into a comment on that issue so the human can copy it out.
+When Cases are enabled, also upsert the social child case described below.
 
 ```bash
 PUT /api/issues/{releaseIssueId}/documents/discord_announcement
@@ -177,17 +176,70 @@ Mimic this register; do not invent a "professional" tone.
 
 1. Read the matching `releases/vYYYY.MDD.P.md` produced by `release-changelog`.
    Use the version and contributor list from that file — never re-derive them.
-2. Read the **release issue thread** (the one assigned to you that ran the
+2. Resolve the parent `release` case with key `paperclip-release:vYYYY.MDD.P`.
+   If it does not exist and Cases are enabled, create it using the schema in
+   `.agents/skills/release-changelog/SKILL.md` before creating child cases.
+3. Read the **release issue thread** (the one assigned to you that ran the
    release routine) — comments + linked issues + recent issues in the company
    are the source for `WHATS NEXT` and `What's on my mind`. Pull real themes,
    not invented ones.
-3. Re-read the three verbatim examples below — they're the canonical voice.
-4. Draft the announcement using the template above.
-5. PUT it as the `discord_announcement` document on the release issue (see
+4. Re-read the three verbatim examples below — they're the canonical voice.
+5. Draft the announcement using the template above.
+6. PUT it as the `discord_announcement` document on the release issue (see
    "Output" above). If updating, send the latest `baseRevisionId`.
-6. Post a comment on the release issue that includes the announcement inside a
+7. Upsert the `tweet_storm` child case with `parentCaseId` set to the release
+   case id, then PUT its `body` document to the announcement body.
+8. Post a comment on the release issue that includes the announcement inside a
    single fenced markdown code block, so dotta can copy-paste it into Discord
    without opening the document.
+
+## Tweet Storm Case Schema
+
+Use this child case for the Discord/social announcement thread. The key must be
+stable so retries update the same child case:
+
+```http
+POST /api/companies/:companyId/cases
+{
+  "caseType": "tweet_storm",
+  "key": "paperclip-release:vYYYY.MDD.P:tweet-storm",
+  "title": "Paperclip vYYYY.MDD.P tweet storm",
+  "summary": "Social announcement thread for Paperclip vYYYY.MDD.P.",
+  "status": "in_review",
+  "parentCaseId": "<release-case-id>",
+  "fields": {
+    "schema_version": 1,
+    "version": "vYYYY.MDD.P",
+    "channel": "x",
+    "discord_source": true,
+    "post_count": 1,
+    "target_audience": ["operators", "contributors", "agent-company builders"],
+    "links": {
+      "release_notes": "https://github.com/paperclipai/paperclip/blob/master/releases/vYYYY.MDD.P.md",
+      "official_account": "https://x.com/papercliping"
+    },
+    "review": {
+      "needs_human_copy_paste": true,
+      "approved_by": null
+    }
+  }
+}
+```
+
+Then write the body document:
+
+```http
+PUT /api/cases/:tweetStormCaseId/documents/body
+{
+  "title": "Paperclip vYYYY.MDD.P tweet storm body",
+  "format": "markdown",
+  "body": "<announcement body>",
+  "changeSummary": "Draft social announcement"
+}
+```
+
+If updating an existing document, fetch the case and pass the latest
+`baseRevisionId`.
 
 Do not publish to Discord. This skill only prepares the artifact.
 

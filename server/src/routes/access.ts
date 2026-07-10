@@ -4366,7 +4366,9 @@ export function accessRoutes(
 
       const created = await agents.createApiKey(
         joinRequest.createdAgentId,
-        "initial-join-key"
+        "initial-join-key",
+        { kind: "standard" },
+        { responsibleUserId: joinRequest.approvedByUserId ?? joinRequest.requestingUserId ?? null },
       );
 
       await logActivity(db, {
@@ -4378,8 +4380,9 @@ export function accessRoutes(
         entityId: created.id,
         details: {
           agentId: joinRequest.createdAgentId,
-          joinRequestId: requestId
-        }
+          joinRequestId: requestId,
+          responsibleUserId: created.responsibleUserId,
+        },
       });
 
       res.status(201).json({

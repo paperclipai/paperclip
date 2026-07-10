@@ -116,7 +116,7 @@ function createAskUserQuestionsInteraction(
     kind: "ask_user_questions",
     title: "Resolve open UX decisions before Phase 1",
     summary:
-      "This form stays local until the operator submits it, so the assignee only wakes once after the whole answer set is ready.",
+      "This form stays local until the operator submits it, so the responsible only wakes once after the whole answer set is ready.",
     status: "pending",
     continuationPolicy: "wake_assignee",
     createdByAgentId: "agent-codex",
@@ -192,7 +192,7 @@ function createRequestConfirmationInteraction(
     kind: "request_confirmation",
     title: "Approve the proposed plan",
     summary:
-      "The assignee is waiting on a direct board decision before continuing from the plan document.",
+      "The responsible is waiting on a direct board decision before continuing from the plan document.",
     status: "pending",
     continuationPolicy: "wake_assignee",
     createdByAgentId: "agent-codex",
@@ -204,7 +204,7 @@ function createRequestConfirmationInteraction(
     resolvedAt: null,
     payload: {
       version: 1,
-      prompt: "Approve the plan and let the assignee start implementation?",
+      prompt: "Approve the plan and let the responsible start implementation?",
       acceptLabel: "Approve plan",
       rejectLabel: "Request revisions",
       rejectRequiresReason: true,
@@ -390,7 +390,7 @@ export const pendingRequestConfirmationInteraction = createRequestConfirmationIn
 export const genericPendingRequestConfirmationInteraction = createRequestConfirmationInteraction({
   id: "interaction-confirmation-generic-pending",
   title: "Confirm next step",
-  summary: "The assignee needs a lightweight yes or no before continuing.",
+  summary: "The responsible needs a lightweight yes or no before continuing.",
   continuationPolicy: "none",
   payload: {
     version: 1,
@@ -443,7 +443,7 @@ export const planApprovalAcceptedRequestConfirmationInteraction = createRequestC
   updatedAt: new Date("2026-04-20T14:34:00.000Z"),
   payload: {
     version: 1,
-    prompt: "Approve the plan and let the assignee start implementation?",
+    prompt: "Approve the plan and let the responsible start implementation?",
     acceptLabel: "Approve plan",
     rejectLabel: "Request changes",
     rejectRequiresReason: true,
@@ -459,6 +459,24 @@ export const planApprovalAcceptedRequestConfirmationInteraction = createRequestC
   result: {
     version: 1,
     outcome: "accepted",
+  },
+});
+
+export const planApprovalResumeFailedRequestConfirmationInteraction = createRequestConfirmationInteraction({
+  ...planApprovalAcceptedRequestConfirmationInteraction,
+  id: "interaction-confirmation-plan-resume-failed",
+  result: {
+    version: 1,
+    outcome: "accepted",
+    resumeFailure: {
+      status: "needs_attention",
+      errorCode: "adapter_failed",
+      attempt: 3,
+      maxAttempts: 3,
+      runId: "11111111-1111-4111-8111-222222222222",
+      recoveryActionId: "33333333-3333-4333-8333-333333333333",
+      updatedAt: "2026-04-20T14:45:00.000Z",
+    },
   },
 });
 
@@ -509,7 +527,7 @@ export const staleTargetRequestConfirmationInteraction = createRequestConfirmati
   updatedAt: new Date("2026-04-20T14:40:00.000Z"),
   payload: {
     version: 1,
-    prompt: "Approve the plan and let the assignee start implementation?",
+    prompt: "Approve the plan and let the responsible start implementation?",
     acceptLabel: "Approve plan",
     rejectLabel: "Request revisions",
     rejectRequiresReason: true,

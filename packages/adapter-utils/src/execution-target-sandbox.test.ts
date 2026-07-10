@@ -10,6 +10,9 @@ import {
   adapterExecutionTargetToRemoteSpec,
   adapterExecutionTargetUsesPaperclipBridge,
   ensureAdapterExecutionTargetCommandResolvable,
+  formatAdapterExecutionTimeoutErrorMessage,
+  formatAdapterExecutionTimeoutStartLogLine,
+  resolveAdapterExecutionTargetTimeout,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
@@ -163,6 +166,10 @@ describe("sandbox adapter execution targets", () => {
       runner: createLocalSandboxRunner(),
     };
 
+    // The sandbox default is a 4h wall-clock backstop matching the recovery
+    // watchdog critical threshold (ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS);
+    // the output-inactivity monitor remains the primary hang detector.
+    expect(DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC).toBe(4 * 60 * 60);
     expect(resolveAdapterExecutionTargetTimeoutSec(sandboxTarget, 0)).toBe(
       DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
     );
@@ -182,6 +189,121 @@ describe("sandbox adapter execution targets", () => {
         strictHostKeyChecking: true,
       },
     }, 0)).toBe(0);
+    expect(resolveAdapterExecutionTargetTimeoutSec({ kind: "local" }, 0)).toBe(0);
+  });
+
+  it("reports which knob produced the resolved timeout", () => {
+    const sandboxTarget: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner: createLocalSandboxRunner(),
+    };
+
+    expect(resolveAdapterExecutionTargetTimeout(sandboxTarget, 0)).toEqual({
+      timeoutSec: DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
+      source: "sandbox_default",
+    });
+    expect(resolveAdapterExecutionTargetTimeout(sandboxTarget, 90)).toEqual({
+      timeoutSec: 90,
+      source: "configured",
+    });
+    expect(resolveAdapterExecutionTargetTimeout({ kind: "local" }, 0)).toEqual({
+      timeoutSec: 0,
+      source: "unlimited",
+    });
+    // Fractional (sub-second) configured timeouts are preserved rather than
+    // floored to 0, which would silently mean "no timeout".
+    expect(resolveAdapterExecutionTargetTimeout({ kind: "local" }, 0.01)).toEqual({
+      timeoutSec: 0.01,
+      source: "configured",
+    });
+    expect(resolveAdapterExecutionTargetTimeout(sandboxTarget, 0.5)).toEqual({
+      timeoutSec: 0.5,
+      source: "configured",
+    });
+  });
+
+  it("treats a negative timeoutSec as the explicit no-timeout opt-out, even on sandbox targets", () => {
+    const sandboxTarget: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner: createLocalSandboxRunner(),
+    };
+
+    expect(resolveAdapterExecutionTargetTimeout(sandboxTarget, -1)).toEqual({
+      timeoutSec: 0,
+      source: "configured",
+    });
+    expect(resolveAdapterExecutionTargetTimeout({ kind: "local" }, -1)).toEqual({
+      timeoutSec: 0,
+      source: "configured",
+    });
+    expect(resolveAdapterExecutionTargetTimeoutSec(sandboxTarget, -1)).toBe(0);
+
+    // Explicit zero intentionally does NOT opt out: the adapter config UI
+    // persists the schema default of 0 for untouched fields, so a stored
+    // timeoutSec=0 cannot be read as operator intent. It keeps the sandbox
+    // backstop; the documented opt-out is a negative value.
+    expect(resolveAdapterExecutionTargetTimeout(sandboxTarget, 0)).toEqual({
+      timeoutSec: DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
+      source: "sandbox_default",
+    });
+    // Unset behaves like zero.
+    expect(resolveAdapterExecutionTargetTimeout(sandboxTarget, undefined)).toEqual({
+      timeoutSec: DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
+      source: "sandbox_default",
+    });
+    expect(resolveAdapterExecutionTargetTimeout({ kind: "local" }, undefined)).toEqual({
+      timeoutSec: 0,
+      source: "unlimited",
+    });
+  });
+
+  it("formats self-describing timeout errors naming the timer and knob", () => {
+    expect(
+      formatAdapterExecutionTimeoutErrorMessage({
+        timeoutSec: DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
+        source: "sandbox_default",
+      }),
+    ).toBe(
+      "Run exceeded the adapter execution timeout (timeoutSec=14400, sandbox default). " +
+        "Set adapterConfig.timeoutSec to raise it.",
+    );
+    expect(
+      formatAdapterExecutionTimeoutErrorMessage({ timeoutSec: 1800, source: "configured" }),
+    ).toBe(
+      "Run exceeded the adapter execution timeout (timeoutSec=1800, configured via adapterConfig.timeoutSec). " +
+        "Set adapterConfig.timeoutSec to raise it.",
+    );
+  });
+
+  it("formats the start-of-run timeout log line with the resolved value and source", () => {
+    expect(
+      formatAdapterExecutionTimeoutStartLogLine({
+        timeoutSec: DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
+        source: "sandbox_default",
+      }),
+    ).toBe(
+      "Adapter execution timeout: timeoutSec=14400 (sandbox default; set adapterConfig.timeoutSec to override).",
+    );
+    expect(
+      formatAdapterExecutionTimeoutStartLogLine({ timeoutSec: 900, source: "configured" }),
+    ).toBe(
+      "Adapter execution timeout: timeoutSec=900 (configured via adapterConfig.timeoutSec; set adapterConfig.timeoutSec to override).",
+    );
+    expect(
+      formatAdapterExecutionTimeoutStartLogLine({ timeoutSec: 0, source: "unlimited" }),
+    ).toBe(
+      "Adapter execution timeout: none (no adapter wall-clock timeout for this target; set adapterConfig.timeoutSec to add one).",
+    );
+    // Negative opt-out resolves to { timeoutSec: 0, source: "configured" }.
+    expect(
+      formatAdapterExecutionTimeoutStartLogLine({ timeoutSec: 0, source: "configured" }),
+    ).toBe(
+      "Adapter execution timeout: none (explicitly disabled via adapterConfig.timeoutSec; set it to a positive value to add one).",
+    );
   });
 
   it("uses the caller timeout override when installing a missing sandbox command", async () => {
@@ -892,7 +1014,9 @@ describe("sandbox adapter execution targets", () => {
     try {
       expect(bridge).not.toBeNull();
       expect(runner.execute).toHaveBeenCalled();
-      expect(runner.execute.mock.calls.some(([input]) => input.timeoutMs === 1_800_000)).toBe(true);
+      expect(
+        runner.execute.mock.calls.some(([input]) => input.timeoutMs === DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC * 1000),
+      ).toBe(true);
     } finally {
       await bridge?.stop();
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));

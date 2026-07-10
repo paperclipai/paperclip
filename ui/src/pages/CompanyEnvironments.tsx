@@ -424,6 +424,7 @@ function EnvironmentCustomImageBrowserTerminal({
       lineHeight: 1.35,
       scrollback: CUSTOM_IMAGE_TERMINAL_SCROLLBACK_ROWS,
       theme: {
+        // token-extraction: allowlisted — xterm.js terminal theme config; functional third-party option object, not a rendered CSS value.
         background: "#0a0a0a",
         foreground: "#f5f5f5",
         cursor: "#22d3ee",
@@ -620,7 +621,7 @@ function EnvironmentCustomImageBrowserTerminal({
           tabIndex={0}
           onFocus={() => xtermRef.current?.focus()}
           onClick={() => xtermRef.current?.focus()}
-          className="h-[18rem] w-full overflow-hidden bg-neutral-950 outline-none sm:h-[22rem] [&_.xterm-cursor-bar]:!border-l-2 [&_.xterm-cursor-bar]:!border-l-cyan-300 [&_.xterm-cursor-layer_.xterm-cursor]:!bg-cyan-300 [&_.xterm-helper-textarea]:!opacity-0 [&_.xterm-screen]:focus:outline-none [&_.xterm-viewport]:!overflow-y-auto [&_.xterm]:h-full"
+          className="h-(--sz-18rem) w-full overflow-hidden bg-neutral-950 outline-none sm:h-(--sz-22rem) [&_.xterm-cursor-bar]:!border-l-2 [&_.xterm-cursor-bar]:!border-l-cyan-300 [&_.xterm-cursor-layer_.xterm-cursor]:!bg-cyan-300 [&_.xterm-helper-textarea]:!opacity-0 [&_.xterm-screen]:focus:outline-none [&_.xterm-viewport]:!overflow-y-auto [&_.xterm]:h-full"
         />
       </div>
       {errorMessage ? (
@@ -679,10 +680,12 @@ function sessionStatusCopy(status: EnvironmentCustomImageSetupSession["status"])
 
 function EnvironmentImageTemplatePanel({
   environment,
+  companyId,
   providerCapability,
   providerDisplayName,
 }: {
   environment: Environment;
+  companyId: string;
   providerCapability: EnvironmentProviderCapability | null | undefined;
   providerDisplayName: string;
 }) {
@@ -693,7 +696,7 @@ function EnvironmentImageTemplatePanel({
 
   const overviewQuery = useQuery({
     queryKey: overviewKey,
-    queryFn: () => environmentsApi.customImageTemplate(environment.id),
+    queryFn: () => environmentsApi.customImageTemplate(environment.id, companyId),
     enabled: state.kind === "supported",
     retry: false,
   });
@@ -721,9 +724,11 @@ function EnvironmentImageTemplatePanel({
 
   const startSetupMutation = useMutation({
     mutationFn: (input: { templateId?: string | null } = {}) =>
-      environmentsApi.startCustomImageSetupSession(environment.id, {
-        templateId: input.templateId ?? null,
-      }),
+      environmentsApi.startCustomImageSetupSession(
+        environment.id,
+        companyId,
+        { templateId: input.templateId ?? null },
+      ),
     onSuccess: (result) => {
       queryClient.setQueryData(overviewKey, (current: typeof overviewQuery.data) => ({
         activeTemplate: current?.activeTemplate ?? null,
@@ -798,7 +803,7 @@ function EnvironmentImageTemplatePanel({
   });
 
   const rollbackTemplateMutation = useMutation({
-    mutationFn: () => environmentsApi.rollbackCustomImageTemplate(environment.id),
+    mutationFn: () => environmentsApi.rollbackCustomImageTemplate(environment.id, companyId),
     onSuccess: (result) => {
       queryClient.setQueryData(overviewKey, (current: typeof overviewQuery.data) => ({
         activeTemplate: result.activeTemplate,
@@ -822,7 +827,7 @@ function EnvironmentImageTemplatePanel({
   });
 
   const disableTemplateMutation = useMutation({
-    mutationFn: () => environmentsApi.disableCustomImageTemplate(environment.id),
+    mutationFn: () => environmentsApi.disableCustomImageTemplate(environment.id, companyId),
     onSuccess: (template) => {
       queryClient.setQueryData(overviewKey, (current: typeof overviewQuery.data) => ({
         activeTemplate: null,
@@ -938,7 +943,7 @@ function EnvironmentImageTemplatePanel({
             <summary className="cursor-pointer select-none font-medium text-foreground">
               SSH command fallback
             </summary>
-            <code className="mt-2 block overflow-x-auto whitespace-nowrap text-[11px] leading-5">
+            <code className="mt-2 block overflow-x-auto whitespace-nowrap text-(length:--text-micro) leading-5">
               {connectionCommand}
             </code>
           </details>
@@ -1377,7 +1382,7 @@ export function CompanyEnvironments() {
             <div className="space-y-1">
               <div className="text-sm font-medium">Default</div>
             </div>
-            <div className="min-w-[18rem] flex-1">
+            <div className="min-w-(--sz-18rem) flex-1">
               <select
                 className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                 value={instanceDefaultEnvironmentId}
@@ -1474,7 +1479,7 @@ export function CompanyEnvironments() {
                   >
                     <div className="font-medium">{probe.summary}</div>
                     {probe.details?.error && typeof probe.details.error === "string" ? (
-                      <div className="mt-1 font-mono text-[11px]">{probe.details.error}</div>
+                      <div className="mt-1 font-mono text-(length:--text-micro)">{probe.details.error}</div>
                     ) : null}
                   </div>
                 ) : null}
@@ -1494,7 +1499,7 @@ export function CompanyEnvironments() {
           closeEnvironmentDialog();
         }}
       >
-        <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+        <DialogContent className="flex max-h-(--sz-calc-18) flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
           <DialogHeader className="border-b border-border/60 px-6 pb-4 pr-12 pt-6">
             <DialogTitle>{editingEnvironmentId ? "Edit environment" : "Add environment"}</DialogTitle>
             <DialogDescription>
@@ -1697,7 +1702,8 @@ export function CompanyEnvironments() {
 
               {editingEnvironment &&
               editingEnvironment.driver === "sandbox" &&
-              environmentForm.driver === "sandbox" ? (
+              environmentForm.driver === "sandbox" &&
+              selectedCompanyId ? (
                 <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
                   <div className="text-sm font-medium">Custom image</div>
                   <div className="text-xs text-muted-foreground">
@@ -1706,6 +1712,7 @@ export function CompanyEnvironments() {
                   </div>
                   <EnvironmentImageTemplatePanel
                     environment={editingEnvironment}
+                    companyId={selectedCompanyId}
                     providerCapability={editingSandboxCapability}
                     providerDisplayName={editingSandboxDisplayName}
                   />
