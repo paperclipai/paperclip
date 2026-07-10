@@ -6,6 +6,7 @@ import {
   type PluginContext,
 } from "@paperclipai/plugin-sdk";
 import { ASSISTANT_AGENT_KEY, PLUGIN_ID } from "./manifest.js";
+import { AgentAnswerAccumulator } from "./agent-output.js";
 import { buildGroundedPrompt, retrieveEvidence, type AssistantEvidence } from "./retrieval.js";
 
 type ChatSessionRow = {
@@ -177,24 +178,33 @@ async function sendChatMessage(ctx: PluginContext, input: {
   });
 
   let answer = "";
+  const output = new AgentAnswerAccumulator();
   let finalized = false;
   try {
     const sendResult = await ctx.agents.sessions.sendMessage(session.agent_session_id, input.companyId, {
       prompt,
       reason: "Answer a read-only company question from retrieved evidence",
       onEvent: (event) => {
-        if (event.eventType === "chunk" && event.stream !== "stderr" && event.message) answer += event.message;
-        ctx.streams.emit(channel, {
-          type: "assistant.agent-event",
-          chatSessionId: input.chatSessionId,
-          eventType: event.eventType,
-          stream: event.stream,
-          message: event.message,
-          runId: event.runId,
-          seq: event.seq,
-        });
+        if (event.eventType === "chunk" && event.stream === "stdout" && event.message) {
+          for (const text of output.push(event.message)) {
+            const separator = answer ? "\n\n" : "";
+            answer += `${separator}${text}`;
+            ctx.streams.emit(channel, {
+              type: "assistant.agent-event",
+              chatSessionId: input.chatSessionId,
+              eventType: "chunk",
+              stream: "stdout",
+              message: `${separator}${text}`,
+              runId: event.runId,
+              seq: event.seq,
+            });
+          }
+        }
         if (!terminalEvent(event) || finalized) return;
         finalized = true;
+        for (const text of output.finish()) {
+          answer += `${answer ? "\n\n" : ""}${text}`;
+        }
         const failed = event.eventType === "error";
         const finalAnswer = answer.trim() || (failed
           ? `The assistant run failed: ${event.message ?? "unknown error"}`
