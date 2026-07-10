@@ -4514,14 +4514,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     let findings = await collectIssueGraphLivenessFindings();
     if (opts?.issueCreatedAtGte) {
-      const eligibleIssueIds = new Set((await db
-        .select({ id: issues.id })
-        .from(issues)
-        .where(and(
-          inArray(issues.id, [...new Set(findings.map((finding) => finding.recoveryIssueId))]),
-          gte(issues.createdAt, opts.issueCreatedAtGte),
-        )))
-        .map((issue) => issue.id));
+      const findingIssueIds = [...new Set(findings.map((finding) => finding.recoveryIssueId))];
+      const eligibleIssueIds = new Set(
+        findingIssueIds.length === 0
+          ? []
+          : (await db
+              .select({ id: issues.id })
+              .from(issues)
+              .where(and(
+                inArray(issues.id, findingIssueIds),
+                gte(issues.createdAt, opts.issueCreatedAtGte),
+              )))
+              .map((issue) => issue.id),
+      );
       findings = findings.filter((finding) => eligibleIssueIds.has(finding.recoveryIssueId));
     }
     const experimentalSettings = await instanceSettings.getExperimental();

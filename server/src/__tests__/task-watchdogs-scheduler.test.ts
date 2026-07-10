@@ -663,4 +663,16 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
     expect(watchdogIssues).toHaveLength(1);
   });
+
+  it("handles an armed cutoff when no watchdogs are active", async () => {
+    const companyId = await seedCompany();
+    const { service } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({
+      companyId,
+      issueCreatedAtGte: new Date(),
+    });
+
+    expect(result).toMatchObject({ checked: 0, triggered: 0 });
+  });
 });

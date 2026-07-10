@@ -1567,14 +1567,19 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     } = {}) => {
       let rows = await listActiveWatchdogsForCompany(opts.companyId ?? null);
       if (opts.issueCreatedAtGte) {
-        const eligibleIssueIds = new Set((await db
-          .select({ id: issues.id })
-          .from(issues)
-          .where(and(
-            inArray(issues.id, rows.map((row) => row.issueId)),
-            gte(issues.createdAt, opts.issueCreatedAtGte),
-          )))
-          .map((issue) => issue.id));
+        const watchdogIssueIds = [...new Set(rows.map((row) => row.issueId))];
+        const eligibleIssueIds = new Set(
+          watchdogIssueIds.length === 0
+            ? []
+            : (await db
+                .select({ id: issues.id })
+                .from(issues)
+                .where(and(
+                  inArray(issues.id, watchdogIssueIds),
+                  gte(issues.createdAt, opts.issueCreatedAtGte),
+                )))
+                .map((issue) => issue.id),
+        );
         rows = rows.filter((row) => eligibleIssueIds.has(row.issueId));
       }
       const result = {
