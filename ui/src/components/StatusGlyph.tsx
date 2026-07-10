@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import type { ComponentProps, CSSProperties } from "react";
 import { cn } from "../lib/utils";
 import { taskStatusIconVar, taskStatusIconVarDefault } from "../lib/status-colors";
 
@@ -39,11 +39,10 @@ export type StatusGlyphStatus =
   | "cancelled"
   | "in_queue";
 
-interface StatusGlyphProps {
+interface StatusGlyphProps extends Omit<ComponentProps<"svg">, "title"> {
   status: string;
   /** sm 14 / md 16 / lg 20. Default `md`. */
   size?: StatusGlyphSize;
-  className?: string;
   /** Accessible label; when set the SVG gets `role="img"`, else it's decorative. */
   title?: string;
 }
@@ -117,20 +116,26 @@ function glyphBody(status: string) {
   }
 }
 
-export function StatusGlyph({ status, size = "md", className, title }: StatusGlyphProps) {
+export function StatusGlyph({ status, size = "md", className, title, style, ...rest }: StatusGlyphProps) {
   const px = SIZE_PX[size];
   const cssVar = taskStatusIconVar[status] ?? taskStatusIconVarDefault;
   const a11y = title
     ? ({ role: "img", "aria-label": title } as const)
     : ({ "aria-hidden": true } as const);
+  // `rest` (incl. `ref`) must land on the <svg> so the glyph composes when a
+  // call site slots it into an interactive primitive (e.g. Radix `asChild`,
+  // which injects onClick, aria-*, data-state, ref via Slot). Silently
+  // dropping unknown props is what once left every icon-only status picker
+  // rendered as a dead, unclickable <svg>.
   return (
     <svg
       width={px}
       height={px}
       viewBox="0 0 24 24"
       className={cn("inline-block shrink-0 align-middle", className)}
-      style={{ color: `var(${cssVar})` } as CSSProperties}
+      style={{ color: `var(${cssVar})`, ...style } as CSSProperties}
       {...a11y}
+      {...rest}
     >
       {title ? <title>{title}</title> : null}
       {glyphBody(status)}
