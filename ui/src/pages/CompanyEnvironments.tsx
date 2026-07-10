@@ -21,6 +21,7 @@ import {
   environmentsApi,
   type EnvironmentCustomImageConnectionPayload,
   type EnvironmentCustomImageSetupSessionResult,
+  type EnvironmentUpdateResult,
 } from "@/api/environments";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { secretsApi } from "@/api/secrets";
@@ -203,6 +204,12 @@ function formatDateTime(value: string | Date | null | undefined): string | null 
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
   return Number.isNaN(date.getTime()) ? null : date.toLocaleString();
+}
+
+function formatShortId(value: string): string {
+  const normalized = value.trim();
+  if (normalized.length <= 12) return normalized;
+  return `${normalized.slice(0, 12)}…`;
 }
 
 function readConnectionCommand(payload: EnvironmentCustomImageConnectionPayload | null | undefined): string | null {
@@ -928,13 +935,18 @@ function EnvironmentImageTemplatePanel({
               size="sm"
               variant="ghost"
               onClick={() => cancelSetupMutation.mutate(session.id)}
-              disabled={isMutating || isCapturing}
+              disabled={isMutating}
             >
               <X className="mr-1.5 h-3.5 w-3.5" />
               Cancel
             </Button>
           </div>
         </div>
+        {isCapturing ? (
+          <div className="mt-2 text-xs text-muted-foreground">
+            Capture is in progress. If this state remains after a refresh or interrupted request, cancel it to return to the active template controls.
+          </div>
+        ) : null}
         {session.status === "waiting_for_user" && connectionPayload?.type === "ssh" ? (
           <EnvironmentCustomImageBrowserTerminal autoConnect sessionId={session.id} />
         ) : null}
@@ -961,6 +973,8 @@ function EnvironmentImageTemplatePanel({
   }
 
   if (activeTemplate) {
+    const templateRef = activeTemplate.templateRef?.trim() || null;
+    const templateOutOfSync = overview?.activeTemplateMatchesConfig === false;
     return (
       <div className="mt-3 border-t border-border/60 pt-3" data-testid={`custom-image-template-state-${environment.id}`}>
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -968,9 +982,28 @@ function EnvironmentImageTemplatePanel({
             <div className="text-xs font-medium">Active template</div>
             <div className="text-xs text-muted-foreground">
               {providerDisplayName} · {activeTemplate.templateKind}
+              {" · "}
+              <span
+                className="break-all font-mono text-foreground"
+                title={templateRef
+                  ? `Provider ${activeTemplate.templateKind} ref ${templateRef} (Paperclip template ${activeTemplate.id})`
+                  : activeTemplate.id}
+              >
+                {templateRef ?? `id ${formatShortId(activeTemplate.id)}`}
+              </span>
               {capturedAt ? ` · captured ${capturedAt}` : ""}
               {lastUsedAt ? ` · last used ${lastUsedAt}` : ""}
             </div>
+            {templateOutOfSync ? (
+              <div
+                className="text-xs text-destructive"
+                data-testid={`custom-image-template-out-of-sync-${environment.id}`}
+              >
+                Not in use — the environment configuration changed since this image was
+                captured. Runs fall back to the base configuration until you capture a new
+                image.
+              </div>
+            ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -1109,6 +1142,9 @@ export function CompanyEnvironments() {
       await queryClient.invalidateQueries({
         queryKey: queryKeys.environments.list(selectedCompanyId!),
       });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.environments.customImageTemplate(environment.id),
+      });
       setEnvironmentDialogOpen(false);
       setEditingEnvironmentId(null);
       setEnvironmentForm(createEmptyEnvironmentForm());
@@ -1119,6 +1155,20 @@ export function CompanyEnvironments() {
         body: `${environment.name} is ready.`,
         tone: "success",
       });
+      const reconciliation = (environment as EnvironmentUpdateResult).customImageReconciliation;
+      if (reconciliation?.action === "relinked") {
+        pushToast({
+          title: "Custom image kept active",
+          body: "The captured image was re-linked to the updated configuration automatically.",
+          tone: "info",
+        });
+      } else if (reconciliation?.action === "detached") {
+        pushToast({
+          title: "Custom image no longer applies",
+          body: "This change alters what the captured image was built from. Runs use the base configuration until you capture a new image.",
+          tone: "warn",
+        });
+      }
     },
     onError: (error) => {
       pushToast({
@@ -1150,7 +1200,7 @@ export function CompanyEnvironments() {
   });
 
   const environmentProbeMutation = useMutation({
-    mutationFn: async (environmentId: string) => await environmentsApi.probe(environmentId),
+    mutationFn: async (environmentId: string) => await environmentsApi.probe(environmentId, selectedCompanyId),
     onMutate: (environmentId) => {
       setTestingEnvironmentId(environmentId);
     },

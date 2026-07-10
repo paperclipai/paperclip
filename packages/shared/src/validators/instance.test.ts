@@ -28,6 +28,20 @@ describe("instance experimental settings validators", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 
     expect(settings.enableWorktreeRunExecution).toBe(false);
+    expect(settings.worktreeRunExecutionActivatedAt).toBeNull();
+    expect(settings.worktreeRunExecutionActivationInstanceId).toBeNull();
+  });
+
+  it("strips server-managed worktree run execution fields from patches", () => {
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({
+        enableWorktreeRunExecution: true,
+        worktreeRunExecutionActivatedAt: "2026-07-10T12:00:00.000Z",
+        worktreeRunExecutionActivationInstanceId: "copied-instance",
+      }),
+    ).toEqual({
+      enableWorktreeRunExecution: true,
+    });
   });
 
   it("defaults built-in agents off", () => {

@@ -76,6 +76,8 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
     enableWorktreeRunExecution: false,
+    worktreeRunExecutionActivatedAt: null,
+    worktreeRunExecutionActivationInstanceId: null,
   };
 }
 
@@ -92,6 +94,21 @@ function setWorktreeRuntimeMeta(enabled: boolean) {
       document.head.appendChild(meta);
     }
     meta.setAttribute("content", "true");
+  } else if (meta) {
+    meta.remove();
+  }
+}
+
+function setWorktreeInstanceIdMeta(instanceId: string | null) {
+  const name = "paperclip-instance-id";
+  let meta = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`);
+  if (instanceId) {
+    if (!meta) {
+      meta = document.createElement("meta");
+      meta.setAttribute("name", name);
+      document.head.appendChild(meta);
+    }
+    meta.setAttribute("content", instanceId);
   } else if (meta) {
     meta.remove();
   }
@@ -137,6 +154,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     root = null;
     container.remove();
     setWorktreeRuntimeMeta(false);
+    setWorktreeInstanceIdMeta(null);
     vi.clearAllMocks();
   });
 
@@ -302,6 +320,69 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
       enableWorktreeRunExecution: true,
     });
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("shows the cutoff-copy for the worktree run-execution toggle when off", async () => {
+    setWorktreeRuntimeMeta(true);
+    await renderPage();
+
+    expect(container.textContent).toContain(
+      "Only tasks created after enabling will run automatically",
+    );
+    expect(container.textContent).toContain("Toggling off and on resets the cutoff.");
+    // Off => no armed banner and no fail-closed hint.
+    expect(container.textContent).not.toContain("Running tasks created after");
+    expect(container.textContent).not.toContain("Execution is suppressed");
+  });
+
+  it("shows the armed timestamp when the flag matches the current instance", async () => {
+    setWorktreeRuntimeMeta(true);
+    setWorktreeInstanceIdMeta("inst-current");
+    currentExperimentalSettings = {
+      ...currentExperimentalSettings,
+      enableWorktreeRunExecution: true,
+      worktreeRunExecutionActivatedAt: "2026-07-10T18:34:00.000Z",
+      worktreeRunExecutionActivationInstanceId: "inst-current",
+    };
+    await renderPage();
+
+    expect(container.textContent).toContain("Running tasks created after");
+    expect(container.textContent).not.toContain("Execution is suppressed");
+    const toggle = container.querySelector<HTMLButtonElement>(WORKTREE_RUN_EXECUTION_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("fails closed with a re-enable hint when the flag was armed in another instance", async () => {
+    setWorktreeRuntimeMeta(true);
+    setWorktreeInstanceIdMeta("inst-current");
+    currentExperimentalSettings = {
+      ...currentExperimentalSettings,
+      enableWorktreeRunExecution: true,
+      worktreeRunExecutionActivatedAt: "2026-07-10T18:34:00.000Z",
+      worktreeRunExecutionActivationInstanceId: "inst-other",
+    };
+    await renderPage();
+
+    expect(container.textContent).toContain("Execution is suppressed");
+    expect(container.textContent).toContain("armed in a different instance");
+    expect(container.textContent).toContain("Toggle it off and back on");
+    expect(container.textContent).not.toContain("Running tasks created after");
+  });
+
+  it("fails closed with a re-enable hint when the activation cutoff is missing", async () => {
+    setWorktreeRuntimeMeta(true);
+    setWorktreeInstanceIdMeta("inst-current");
+    currentExperimentalSettings = {
+      ...currentExperimentalSettings,
+      enableWorktreeRunExecution: true,
+      worktreeRunExecutionActivatedAt: null,
+      worktreeRunExecutionActivationInstanceId: null,
+    };
+    await renderPage();
+
+    expect(container.textContent).toContain("Execution is suppressed");
+    expect(container.textContent).toContain("missing its activation cutoff");
+    expect(container.textContent).not.toContain("Running tasks created after");
   });
 
   it("renders and patches the Built-in Agents experimental toggle", async () => {
