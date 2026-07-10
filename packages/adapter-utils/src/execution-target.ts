@@ -1343,8 +1343,49 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   let stopping = false;
   let stdinSeq = 0;
   let pollTimer: NodeJS.Timeout | null = null;
+  const pendingRemoteEvents: Array<{
+    type?: string;
+    stream?: "stdout" | "stderr";
+    data?: string;
+    code?: number | null;
+    signal?: string | null;
+    message?: string;
+  }> = [];
   const token = createSandboxCallbackBridgeToken(18);
   const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-proxy-"));
+
+  const writeRemoteEventToSocket = (event: (typeof pendingRemoteEvents)[number]) => {
+    if (!socket) return false;
+    socket.write(jsonLine(event));
+    if (event.type === "exit") {
+      stopping = true;
+      socket.end();
+    } else if (event.type === "error") {
+      stopping = true;
+      socket.destroy();
+    }
+    return true;
+  };
+
+  const deliverRemoteEvent = (event: (typeof pendingRemoteEvents)[number]) => {
+    if (socket) {
+      writeRemoteEventToSocket(event);
+      return;
+    }
+    pendingRemoteEvents.push(event);
+    if (event.type === "exit" || event.type === "error") {
+      stopping = true;
+    }
+  };
+
+  const flushPendingRemoteEvents = () => {
+    if (!socket) return;
+    while (pendingRemoteEvents.length > 0 && socket) {
+      const event = pendingRemoteEvents.shift();
+      if (event) writeRemoteEventToSocket(event);
+    }
+  };
+
   const server = net.createServer((nextSocket) => {
     if (socket) {
       nextSocket.destroy();
@@ -1352,6 +1393,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     }
     socket = nextSocket;
     nextSocket.setEncoding("utf8");
+    flushPendingRemoteEvents();
     nextSocket.on("data", (chunk) => {
       socketBuffer += chunk;
       const split = splitJsonLines(socketBuffer);
@@ -1394,19 +1436,13 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           signal?: string | null;
           message?: string;
         };
-        socket?.write(jsonLine(parsed));
-        if (parsed.type === "exit") {
-          stopping = true;
-          socket?.end();
-          return;
-        }
+        deliverRemoteEvent(parsed);
+        if (parsed.type === "exit" || parsed.type === "error") return;
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await onLog("stderr", `[paperclip] ACP process session bridge poll failed: ${message}\n`);
-      socket?.write(jsonLine({ type: "error", message }));
-      stopping = true;
-      socket?.destroy();
+      deliverRemoteEvent({ type: "error", message });
       return;
     } finally {
       if (!stopping) {

@@ -240,6 +240,53 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
+  it("buffers sandbox process session output until the local proxy connects", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-buffer-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "fast-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdout.write('early-out\\n');",
+        "process.stderr.write('early-err\\n');",
+        "setTimeout(() => process.exit(0), 20);",
+      ].join("\n"),
+      "utf8",
+    );
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-buffer",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("early-out\n");
+      expect(result.stderr).toBe("early-err\n");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
   it("applies the remote sandbox fallback when adapter timeoutSec is unset", () => {
     const sandboxTarget: AdapterSandboxExecutionTarget = {
       kind: "remote",
