@@ -26,6 +26,14 @@ describe("pause durability: continuation retry classification", () => {
     expect(c.maxAttempts).toBeGreaterThan(0);
   });
 
+  it("provider quota/session/rate-limit failures retry as transient infra", () => {
+    for (const code of ["provider_quota_exhausted", "provider_session_limit", "provider_rate_limited"]) {
+      const c = classifyContinuationFailure(run(code));
+      expect(c.kind).toBe("transient_infra");
+      expect(c.maxAttempts).toBeGreaterThan(0);
+    }
+  });
+
   it("generic cancelled (non-pause cancellation) is NOT non-retryable", () => {
     // non-pause cancellations (the internal invokability cancel and budget pause) keep errorCode "cancelled" -> default branch
     expect(classifyContinuationFailure(run("cancelled")).kind).toBe("default");

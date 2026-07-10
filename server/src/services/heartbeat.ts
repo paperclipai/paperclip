@@ -390,7 +390,13 @@ function readHeartbeatRunErrorFamily(
   if (run.errorCode === "provider_quota") {
     return "provider_quota";
   }
-  if (run.errorCode === "codex_transient_upstream" || run.errorCode === "claude_transient_upstream") {
+  if (
+    run.errorCode === "codex_transient_upstream" ||
+    run.errorCode === "claude_transient_upstream" ||
+    run.errorCode === "provider_quota_exhausted" ||
+    run.errorCode === "provider_session_limit" ||
+    run.errorCode === "provider_rate_limited"
+  ) {
     return "transient_upstream";
   }
   return null;

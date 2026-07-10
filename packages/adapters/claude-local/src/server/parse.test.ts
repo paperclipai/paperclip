@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyClaudeProviderLimit,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeProviderQuotaError,
@@ -51,7 +52,7 @@ describe("isClaudeTransientUpstreamError", () => {
       isClaudeTransientUpstreamError({
         errorMessage: "You're out of extra usage · resets 4pm (America/Chicago)",
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("classifies Claude session-limit windows as provider quota and extracts the retry time", () => {
@@ -59,7 +60,7 @@ describe("isClaudeTransientUpstreamError", () => {
     const errorMessage = "You've hit your session limit - resets at 4pm (America/Chicago).";
 
     expect(isClaudeProviderQuotaError({ errorMessage })).toBe(true);
-    expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(false);
+    expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(true);
     expect(extractClaudeRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
       "2026-04-22T21:00:00.000Z",
     );
@@ -149,6 +150,44 @@ describe("isClaudeTransientUpstreamError", () => {
         },
       }),
     ).toBe(false);
+  });
+});
+
+describe("classifyClaudeProviderLimit", () => {
+  it("classifies Claude session-limit wording separately from generic transient failures", () => {
+    expect(
+      classifyClaudeProviderLimit({
+        errorMessage: "You've hit your session limit. Try again after 4pm (America/Chicago).",
+      }),
+    ).toMatchObject({
+      errorCode: "provider_session_limit",
+      provider: "anthropic",
+    });
+  });
+
+  it("classifies quota and rate-limit failures with provider-level codes", () => {
+    expect(
+      classifyClaudeProviderLimit({
+        errorMessage: "You're out of extra usage · resets 4pm (America/Chicago)",
+      })?.errorCode,
+    ).toBe("provider_quota_exhausted");
+    expect(
+      classifyClaudeProviderLimit({
+        parsed: {
+          errors: [{ type: "rate_limit_error", message: "Rate limit reached for requests." }],
+        },
+      })?.errorCode,
+    ).toBe("provider_rate_limited");
+  });
+
+  it("keeps generic overloaded failures unclassified", () => {
+    expect(
+      classifyClaudeProviderLimit({
+        parsed: {
+          errors: [{ type: "overloaded_error", message: "Overloaded_error: API is overloaded." }],
+        },
+      }),
+    ).toBeNull();
   });
 });
 

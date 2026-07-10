@@ -46,11 +46,11 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseClaudeStreamJson,
+  classifyClaudeProviderLimit,
   describeClaudeFailure,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
-  isClaudeProviderQuotaError,
   isClaudeRefusalResult,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
@@ -864,41 +864,53 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     if (!parsed) {
       const fallbackErrorMessage = parseFallbackErrorMessage(proc);
-      const providerQuota =
+      const providerLimit =
         !loginMeta.requiresLogin &&
-        (proc.exitCode ?? 0) !== 0 &&
-        isClaudeProviderQuotaError({
-          parsed: null,
-          stdout: proc.stdout,
-          stderr: proc.stderr,
-          errorMessage: fallbackErrorMessage,
-        });
+        (proc.exitCode ?? 0) !== 0
+          ? classifyClaudeProviderLimit({
+              parsed: null,
+              stdout: proc.stdout,
+              stderr: proc.stderr,
+              errorMessage: fallbackErrorMessage,
+            })
+          : null;
       const transientUpstream =
         !loginMeta.requiresLogin &&
-        !providerQuota &&
         (proc.exitCode ?? 0) !== 0 &&
-        isClaudeTransientUpstreamError({
-          parsed: null,
-          stdout: proc.stdout,
-          stderr: proc.stderr,
-          errorMessage: fallbackErrorMessage,
-        });
-      const transientRetryNotBefore = providerQuota || transientUpstream
+        (providerLimit !== null ||
+          isClaudeTransientUpstreamError({
+            parsed: null,
+            stdout: proc.stdout,
+            stderr: proc.stderr,
+            errorMessage: fallbackErrorMessage,
+          }));
+      const transientRetryNotBefore = transientUpstream
         ? extractClaudeRetryNotBefore({
             parsed: null,
             stdout: proc.stdout,
             stderr: proc.stderr,
             errorMessage: fallbackErrorMessage,
-          })
+        })
         : null;
       const errorCode = loginMeta.requiresLogin
         ? "claude_auth_required"
-        : providerQuota
-        ? "provider_quota"
         : transientUpstream
-        ? "claude_transient_upstream"
+        ? providerLimit?.errorCode ?? "claude_transient_upstream"
         : null;
-      const errorFamily = providerQuota ? "provider_quota" : transientUpstream ? "transient_upstream" : null;
+      const providerRetryMeta = providerLimit
+        ? {
+            provider: providerLimit.provider,
+            retryGuidance: providerLimit.retryGuidance,
+            ...(transientRetryNotBefore ? { resetAt: transientRetryNotBefore.toISOString() } : {}),
+          }
+        : null;
+      const mergedErrorMeta = errorMeta || providerRetryMeta
+        ? {
+            ...(errorMeta ?? {}),
+            ...(providerRetryMeta ?? {}),
+          }
+        : errorMeta;
+      const errorFamily = transientUpstream ? "transient_upstream" : null;
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
@@ -907,19 +919,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorCode,
         errorFamily,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
-        errorMeta,
+        errorMeta: mergedErrorMeta,
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
           ...(errorFamily ? { errorFamily } : {}),
+          ...(providerRetryMeta ?? {}),
           ...(transientRetryNotBefore
             ? { retryNotBefore: transientRetryNotBefore.toISOString() }
             : {}),
           ...(transientRetryNotBefore
             ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() }
-            : {}),
-          ...(providerQuota && transientRetryNotBefore
-            ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
             : {}),
         },
         clearSession: Boolean(opts.clearSessionOnMissingSession),
@@ -977,30 +987,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
-    const providerQuota =
+    const providerLimit =
       failed &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
-      !poisonedPreviousMessageId &&
-      isClaudeProviderQuotaError({
-        parsed,
-        stdout: proc.stdout,
-        stderr: proc.stderr,
-        errorMessage,
-      });
+      !poisonedPreviousMessageId
+        ? classifyClaudeProviderLimit({
+            parsed,
+            stdout: proc.stdout,
+            stderr: proc.stderr,
+            errorMessage,
+          })
+        : null;
     const transientUpstream =
       failed &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
       !poisonedPreviousMessageId &&
-      !providerQuota &&
-      isClaudeTransientUpstreamError({
-        parsed,
-        stdout: proc.stdout,
-        stderr: proc.stderr,
-        errorMessage,
-      });
-    const transientRetryNotBefore = providerQuota || transientUpstream
+      (providerLimit !== null ||
+        isClaudeTransientUpstreamError({
+          parsed,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage,
+        }));
+    const transientRetryNotBefore = transientUpstream
       ? extractClaudeRetryNotBefore({
           parsed,
           stdout: proc.stdout,
@@ -1014,16 +1025,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? "max_turns_exhausted"
       : failed && poisonedPreviousMessageId
       ? "claude_poisoned_previous_message_id"
-      : providerQuota
-      ? "provider_quota"
       : transientUpstream
-      ? "claude_transient_upstream"
+      ? providerLimit?.errorCode ?? "claude_transient_upstream"
       : claudeRefusal
       ? "claude_refusal"
       : null;
-    const errorFamily = providerQuota
-      ? "provider_quota"
-      : transientUpstream
+    const providerRetryMeta = providerLimit
+      ? {
+          provider: providerLimit.provider,
+          retryGuidance: providerLimit.retryGuidance,
+          ...(transientRetryNotBefore ? { resetAt: transientRetryNotBefore.toISOString() } : {}),
+        }
+      : null;
+    const mergedErrorMeta = errorMeta || providerRetryMeta
+      ? {
+          ...(errorMeta ?? {}),
+          ...(providerRetryMeta ?? {}),
+        }
+      : errorMeta;
+    const errorFamily = transientUpstream
       ? "transient_upstream"
       : claudeRefusal
       ? "model_refusal"
@@ -1034,9 +1054,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(failed && poisonedPreviousMessageId ? { stopReason: "claude_poisoned_previous_message_id" } : {}),
       ...(claudeRefusal ? { stopReason: "refusal", errorFamily: "model_refusal" } : {}),
       ...(errorFamily ? { errorFamily } : {}),
+      ...(providerRetryMeta ?? {}),
       ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
-      ...(providerQuota && transientRetryNotBefore ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
     };
 
     return {
@@ -1047,7 +1067,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorCode: resolvedErrorCode,
       errorFamily,
       retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
-      errorMeta,
+      errorMeta: mergedErrorMeta,
       usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
