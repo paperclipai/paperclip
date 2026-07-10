@@ -1,5 +1,5 @@
 import { and, desc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { QueryableDb } from "@paperclipai/db";
 import {
   agents,
   approvals,
@@ -79,7 +79,7 @@ function normalizeScopeName(scopeType: BudgetScopeType, name: string) {
   return name.trim().length > 0 ? name : scopeType;
 }
 
-async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: string): Promise<ScopeRecord> {
+async function resolveScopeRecord(db: QueryableDb, scopeType: BudgetScopeType, scopeId: string): Promise<ScopeRecord> {
   if (scopeType === "company") {
     const row = await db
       .select({
@@ -141,7 +141,7 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
 }
 
 async function computeObservedAmount(
-  db: Db,
+  db: QueryableDb,
   policy: Pick<PolicyRow, "companyId" | "scopeType" | "scopeId" | "windowKind" | "metric">,
 ) {
   if (policy.metric !== "billed_cents") return 0;
@@ -191,7 +191,7 @@ function buildApprovalPayload(input: {
 }
 
 async function markApprovalStatus(
-  db: Db,
+  db: QueryableDb,
   approvalId: string | null,
   status: "approved" | "rejected",
   decisionNote: string | null | undefined,
@@ -210,11 +210,11 @@ async function markApprovalStatus(
     .where(eq(approvals.id, approvalId));
 }
 
-export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
+export function budgetService(db: QueryableDb, hooks: BudgetServiceHooks = {}) {
   async function pauseScopeForBudget(policy: PolicyRow) {
     const now = new Date();
     if (policy.scopeType === "agent") {
-      await db
+      const [result] = await db
         .update(agents)
         .set({
           status: "paused",
@@ -222,23 +222,45 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           pausedAt: now,
           updatedAt: now,
         })
-        .where(and(eq(agents.id, policy.scopeId), inArray(agents.status, ["active", "idle", "running", "error"])));
+        .where(and(eq(agents.id, policy.scopeId), inArray(agents.status, ["active", "idle", "running", "error"])))
+        .returning({ id: agents.id });
+      if (!result) return;
+      await logActivity(db, {
+        companyId: policy.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "budget.pause_agent",
+        entityType: "agent",
+        entityId: policy.scopeId,
+        details: { reason: "budget", budgetPolicyId: policy.id },
+      });
       return;
     }
 
     if (policy.scopeType === "project") {
-      await db
+      const [result] = await db
         .update(projects)
         .set({
           pauseReason: "budget",
           pausedAt: now,
           updatedAt: now,
         })
-        .where(eq(projects.id, policy.scopeId));
+        .where(eq(projects.id, policy.scopeId))
+        .returning({ id: projects.id });
+      if (!result) return;
+      await logActivity(db, {
+        companyId: policy.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "budget.pause_project",
+        entityType: "project",
+        entityId: policy.scopeId,
+        details: { reason: "budget", budgetPolicyId: policy.id },
+      });
       return;
     }
 
-    await db
+    const [result] = await db
       .update(companies)
       .set({
         status: "paused",
@@ -246,7 +268,18 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         pausedAt: now,
         updatedAt: now,
       })
-      .where(eq(companies.id, policy.scopeId));
+      .where(eq(companies.id, policy.scopeId))
+      .returning({ id: companies.id });
+    if (!result) return;
+    await logActivity(db, {
+      companyId: policy.companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "budget.pause_company",
+      entityType: "company",
+      entityId: policy.scopeId,
+      details: { reason: "budget", budgetPolicyId: policy.id },
+    });
   }
 
   async function pauseAndCancelScopeForBudget(policy: PolicyRow) {
@@ -261,7 +294,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
   async function resumeScopeFromBudget(policy: PolicyRow) {
     const now = new Date();
     if (policy.scopeType === "agent") {
-      await db
+      const [result] = await db
         .update(agents)
         .set({
           status: "idle",
@@ -269,23 +302,45 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           pausedAt: null,
           updatedAt: now,
         })
-        .where(and(eq(agents.id, policy.scopeId), eq(agents.pauseReason, "budget")));
+        .where(and(eq(agents.id, policy.scopeId), eq(agents.pauseReason, "budget")))
+        .returning({ id: agents.id });
+      if (!result) return;
+      await logActivity(db, {
+        companyId: policy.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "budget.resume_agent",
+        entityType: "agent",
+        entityId: policy.scopeId,
+        details: { budgetPolicyId: policy.id },
+      });
       return;
     }
 
     if (policy.scopeType === "project") {
-      await db
+      const [result] = await db
         .update(projects)
         .set({
           pauseReason: null,
           pausedAt: null,
           updatedAt: now,
         })
-        .where(and(eq(projects.id, policy.scopeId), eq(projects.pauseReason, "budget")));
+        .where(and(eq(projects.id, policy.scopeId), eq(projects.pauseReason, "budget")))
+        .returning({ id: projects.id });
+      if (!result) return;
+      await logActivity(db, {
+        companyId: policy.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "budget.resume_project",
+        entityType: "project",
+        entityId: policy.scopeId,
+        details: { budgetPolicyId: policy.id },
+      });
       return;
     }
 
-    await db
+    const [result] = await db
       .update(companies)
       .set({
         status: "active",
@@ -293,7 +348,18 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         pausedAt: null,
         updatedAt: now,
       })
-      .where(and(eq(companies.id, policy.scopeId), eq(companies.pauseReason, "budget")));
+      .where(and(eq(companies.id, policy.scopeId), eq(companies.pauseReason, "budget")))
+      .returning({ id: companies.id });
+    if (!result) return;
+    await logActivity(db, {
+      companyId: policy.companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "budget.resume_company",
+      entityType: "company",
+      entityId: policy.scopeId,
+      details: { budgetPolicyId: policy.id },
+    });
   }
 
   async function getPolicyRow(policyId: string) {
@@ -408,6 +474,13 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         amountObserved,
         status: "open",
         approvalId: approval?.id ?? null,
+      })
+      .onConflictDoNothing({
+        target: [
+          budgetIncidents.policyId,
+          budgetIncidents.windowStart,
+          budgetIncidents.thresholdType,
+        ],
       })
       .returning()
       .then((rows) => rows[0] ?? null);

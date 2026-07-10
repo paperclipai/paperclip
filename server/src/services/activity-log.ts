@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import type { QueryableDb } from "@paperclipai/db";
 import { activityLog } from "@paperclipai/db";
 import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
@@ -62,7 +62,7 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
-export async function logActivity(db: Db, input: LogActivityInput) {
+export async function logActivity(db: QueryableDb, input: LogActivityInput) {
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
   };
