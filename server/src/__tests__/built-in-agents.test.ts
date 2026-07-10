@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   activityLog,
@@ -32,6 +35,7 @@ import {
   builtInAgentService,
   deriveBuiltInAgentStatus,
   listBuiltInAgentDefinitions,
+  readBuiltInTextWithFallback,
   reconcileBuiltInAgentsOnStartup,
   validateBuiltInAgentDefinitions,
 } from "../services/built-in-agents.ts";
@@ -50,6 +54,55 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres built-in agent tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
+
+describe("built-in agent asset loading", () => {
+  it("uses the first readable candidate path", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "paperclip-built-in-agent-"));
+    try {
+      const first = path.join(dir, "missing.md");
+      const second = path.join(dir, "asset.md");
+      writeFileSync(second, "asset text", "utf8");
+
+      expect(readBuiltInTextWithFallback(`asset:${randomUUID()}`, [first, second], "fallback text")).toBe("asset text");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back instead of throwing when built-in agent files are missing", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const label = `missing:${randomUUID()}`;
+
+    try {
+      expect(readBuiltInTextWithFallback(label, [path.join(tmpdir(), label, "AGENTS.md")], "fallback text")).toBe(
+        "fallback text",
+      );
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Built-in agent asset ${label} was not readable`));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("warns about non-missing read errors before falling back", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = mkdtempSync(path.join(tmpdir(), "paperclip-built-in-agent-"));
+    const label = "unreadable:" + randomUUID();
+
+    try {
+      const directoryPath = path.join(dir, "asset.md");
+      mkdirSync(directoryPath);
+
+      expect(readBuiltInTextWithFallback(label, [directoryPath], "fallback text")).toBe("fallback text");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("read error on " + directoryPath + ":"));
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Built-in agent asset " + label + " was not readable"),
+      );
+    } finally {
+      warn.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describeEmbeddedPostgres("built-in agents", () => {
   let db!: ReturnType<typeof createDb>;
