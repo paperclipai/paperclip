@@ -3414,6 +3414,49 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     };
   }
 
+  function isSmokeLabOAuthFixture(connection: typeof toolConnections.$inferSelect) {
+    const config = asRecord(connection.config);
+    const oauth = oauthConfig(connection);
+    return config.smokeLabFixture === "oauth-http" && oauth.smokeLabFixture === true;
+  }
+
+  function smokeLabOAuthEndpoints(
+    connection: typeof toolConnections.$inferSelect,
+    redirectUri?: string,
+  ): OAuthProviderEndpoints | null {
+    if (!isSmokeLabOAuthFixture(connection) || !redirectUri) return null;
+    let origin: string;
+    try {
+      origin = new URL(redirectUri).origin;
+    } catch {
+      return null;
+    }
+    const oauthBasePath = `/api/companies/${encodeURIComponent(connection.companyId)}/smoke-lab/oauth`;
+    return {
+      provider: "smoke_lab",
+      scopes: normalizeOauthScopes(oauthConfig(connection).scopes),
+      authorizationUrl: new URL(`${oauthBasePath}/authorize`, origin).toString(),
+      tokenUrl: new URL(`${oauthBasePath}/token`, origin).toString(),
+      metadataUrl: null,
+      grantType: "authorization_code",
+    };
+  }
+
+  function oauthClientForConnection(
+    connection: typeof toolConnections.$inferSelect,
+    provider: string,
+  ) {
+    if (isSmokeLabOAuthFixture(connection) && provider === "smoke_lab") {
+      return {
+        clientIdEnv: "SMOKE_LAB_FIXED_CLIENT_ID",
+        clientSecretEnv: "SMOKE_LAB_FIXED_CLIENT_SECRET",
+        clientId: "paperclip-smoke-lab",
+        clientSecret: null,
+      };
+    }
+    return oauthClientConfig(provider);
+  }
+
   function base64UrlSha256(input: string) {
     return createHash("sha256").update(input).digest("base64url");
   }
@@ -3480,9 +3523,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
   }
 
-  function assertNotSmokeLabOAuthEndpoints(endpoints: OAuthProviderEndpoints) {
+  function assertNotSmokeLabOAuthEndpoints(
+    connection: typeof toolConnections.$inferSelect,
+    endpoints: OAuthProviderEndpoints,
+  ) {
     const blockedUrl = [endpoints.authorizationUrl, endpoints.tokenUrl, endpoints.metadataUrl].find(isSmokeLabOAuthUrl);
-    if (blockedUrl) {
+    if (blockedUrl && !isSmokeLabOAuthFixture(connection)) {
       throw unprocessable("Smoke Lab OAuth provider cannot be used for tool app sign-in");
     }
   }
@@ -3660,14 +3706,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function oauthEndpointsForConnection(
     connection: typeof toolConnections.$inferSelect,
     challenge?: string | null,
+    redirectUri?: string,
   ): Promise<OAuthProviderEndpoints> {
+    const smokeLabEndpoints = smokeLabOAuthEndpoints(connection, redirectUri);
     const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
     const galleryEntry = sourceTemplateKey ? getToolAppGalleryEntry(sourceTemplateKey) : null;
-    const endpoints = galleryEntry?.authKind === "oauth" && galleryEntry.oauth
+    const endpoints = smokeLabEndpoints
+      ?? (galleryEntry?.authKind === "oauth" && galleryEntry.oauth
       ? await oauthProviderEndpoints(galleryEntry)
-      : await discoverOAuthEndpoints(connection, challenge);
+      : await discoverOAuthEndpoints(connection, challenge));
     if (!endpoints) throw unprocessable("This app connection does not advertise OAuth sign in");
-    assertNotSmokeLabOAuthEndpoints(endpoints);
+    assertNotSmokeLabOAuthEndpoints(connection, endpoints);
     return endpoints;
   }
 
@@ -3789,7 +3838,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         reconnectUrl: connectionReconnectUrl(connection),
       });
     }
-    const client = oauthClientConfig(oauth.provider);
+    const client = oauthClientForConnection(connection, oauth.provider);
     if (!client.clientId) throw unprocessable(`OAuth client id is not configured for ${oauth.provider}`);
     const refreshToken = refreshRef
       ? await secrets.resolveSecretValue(connection.companyId, refreshRef.secretId, refreshRef.versionSelector ?? "latest", {
@@ -4488,11 +4537,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   ): Promise<ToolOAuthStartResult> {
     const connection = await getConnectionRow(connectionId, companyId);
     if (connection.status === "archived") throw conflict("Archived app connections cannot start sign in");
-    const endpoints = await oauthEndpointsForConnection(connection);
+    const endpoints = await oauthEndpointsForConnection(connection, null, input.redirectUri);
     if (endpoints.grantType === "client_credentials") {
       throw unprocessable("This app uses shared machine credentials and does not need browser sign in");
     }
-    const client = oauthClientConfig(endpoints.provider);
+    const client = oauthClientForConnection(connection, endpoints.provider);
     if (!client.clientId) throw unprocessable(`OAuth client id is not configured for ${endpoints.provider}`);
 
     await db.delete(toolOauthStates).where(lt(toolOauthStates.expiresAt, new Date()));
@@ -4584,8 +4633,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let connection = await getConnectionRow(stateRow.connectionId, stateRow.companyId);
     const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
     const galleryEntry = sourceTemplateKey ? getToolAppGalleryEntry(sourceTemplateKey) : null;
-    const endpoints = await oauthEndpointsForConnection(connection);
-    const client = oauthClientConfig(endpoints.provider);
+    const endpoints = await oauthEndpointsForConnection(connection, null, input.redirectUri);
+    const client = oauthClientForConnection(connection, endpoints.provider);
     if (!client.clientId) throw unprocessable(`OAuth client id is not configured for ${endpoints.provider}`);
 
     const token = await exchangeOAuthToken({
@@ -4648,7 +4697,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       .update(toolConnections)
       .set({
         status: "active",
-        enabled: false,
+        enabled: isSmokeLabOAuthFixture(connection) ? true : false,
         config: nextConfig,
         transportConfig: nextConfig,
         credentialSecretRefs: nextCredentialSecretRefs,

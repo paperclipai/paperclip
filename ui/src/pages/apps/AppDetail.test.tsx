@@ -17,6 +17,7 @@ const listActionRequestsMock = vi.hoisted(() => vi.fn());
 const updateConnectionMock = vi.hoisted(() => vi.fn());
 const finishAppMock = vi.hoisted(() => vi.fn());
 const refreshCatalogMock = vi.hoisted(() => vi.fn());
+const startOAuthMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockParams = vi.hoisted(() => ({ connectionId: "conn-1", tab: "setup" as string | undefined }));
 const navigateComponentMock = vi.hoisted(() => vi.fn());
@@ -38,6 +39,7 @@ vi.mock("@/api/tools", () => ({
       finishAppMock(companyId, connectionId, input),
     archiveConnection: vi.fn(),
     refreshCatalog: (connectionId: string) => refreshCatalogMock(connectionId),
+    startOAuth: (connectionId: string) => startOAuthMock(connectionId),
     reconnectConnection: vi.fn(),
   },
 }));
@@ -227,6 +229,12 @@ describe("AppDetail", () => {
     updateConnectionMock.mockResolvedValue(connection({ enabled: false }));
     finishAppMock.mockResolvedValue({});
     refreshCatalogMock.mockResolvedValue({ discoveredCount: 0, quarantinedCount: 0, catalog: [] });
+    startOAuthMock.mockResolvedValue({
+      connectionId: "conn-1",
+      provider: "smoke_lab",
+      authorizationUrl: "http://example.test/oauth",
+      expiresAt: "2026-07-10T00:00:00.000Z",
+    });
   });
 
   afterEach(() => {
@@ -313,6 +321,29 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("Agents can use this app");
     expect(container.textContent).not.toContain("Read repo");
     expect(container.textContent).not.toContain("Action permissions");
+  });
+
+  it("shows the Smoke OAuth connection action for the installed HTTP fixture", async () => {
+    getConnectionMock.mockResolvedValue(connection({
+      name: "Smoke Lab HTTP MCP fixture",
+      config: {
+        smokeLabFixture: "oauth-http",
+        oauth: {
+          provider: "smoke_lab",
+          smokeLabFixture: true,
+          scopes: ["smoke:openid"],
+        },
+      },
+    }));
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Connect with Smoke OAuth");
+    expect(
+      Array.from(container.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Connect with Smoke OAuth",
+      ),
+    ).toBe(true);
   });
 
   it("lets Google Sheets connections add spreadsheet links from setup", async () => {

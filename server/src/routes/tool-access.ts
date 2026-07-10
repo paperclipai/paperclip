@@ -293,6 +293,10 @@ export function toolAccessRoutes(
         catalogEntryCount: result.catalog.length,
       },
     });
+    if (req.get("accept")?.includes("text/html")) {
+      res.redirect(303, `/apps/${result.connection.id}/setup?oauth=connected`);
+      return;
+    }
     res.json(result);
   });
 

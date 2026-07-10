@@ -4019,6 +4019,93 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(companySecrets)).resolves.toHaveLength(0);
   });
 
+  it("starts OAuth only for the marked Smoke Lab HTTP fixture", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: "paperclip.smoke-lab.http-fixture",
+      name: "Smoke Lab HTTP MCP fixture",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: "Smoke Lab HTTP MCP fixture",
+      transport: "remote_http",
+      status: "active",
+      enabled: true,
+      healthStatus: "ok",
+      config: {
+        smokeLabFixture: "oauth-http",
+        url: "http://smoke-fixture.test/mcp",
+        oauth: {
+          provider: "smoke_lab",
+          smokeLabFixture: true,
+          scopes: ["smoke:openid", "smoke:profile", "smoke:email"],
+        },
+      },
+      transportConfig: {},
+      credentialSecretRefs: [],
+      credentialRefs: [],
+    }).returning();
+
+    const result = await service.startOAuth(company.id, connection!.id, {
+      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    });
+
+    const authorizationUrl = new URL(result.authorizationUrl);
+    expect(`${authorizationUrl.origin}${authorizationUrl.pathname}`).toBe(
+      `http://paperclip.test/api/companies/${company.id}/smoke-lab/oauth/authorize`,
+    );
+    expect(authorizationUrl.searchParams.get("client_id")).toBe("paperclip-smoke-lab");
+    expect(authorizationUrl.searchParams.get("scope")).toBe("smoke:openid smoke:profile smoke:email");
+    await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(1);
+
+    const state = authorizationUrl.searchParams.get("state");
+    expect(state).toBeTruthy();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).endsWith("/smoke-lab/oauth/token")) {
+        return {
+          ok: true,
+          json: async () => ({
+            access_token: "smoke-access-token",
+            refresh_token: "smoke-refresh-token",
+            token_type: "Bearer",
+            scope: "smoke:openid smoke:profile smoke:email",
+          }),
+        } as Response;
+      }
+      if (String(url) === "http://smoke-fixture.test/mcp") {
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [{ name: "todo.list", annotations: { readOnlyHint: true } }] },
+        });
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+
+    await service.completeOAuthCallback({
+      state: state!,
+      code: "smoke-code",
+      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    });
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+      `http://paperclip.test/api/companies/${company.id}/smoke-lab/oauth/token`,
+    );
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain("http://smoke-fixture.test/mcp");
+    const [updatedConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+    expect(updatedConnection).toMatchObject({ enabled: true });
+    expect(updatedConnection!.config).toMatchObject({
+      oauth: expect.objectContaining({ connectedAt: expect.any(String) }),
+    });
+  });
+
   it("connects gallery apps and finishes access profiles, bindings, and ask-first policies", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);

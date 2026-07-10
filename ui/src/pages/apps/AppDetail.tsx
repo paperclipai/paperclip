@@ -203,6 +203,19 @@ export function AppDetail() {
       }),
   });
 
+  const startOAuth = useMutation({
+    mutationFn: () => toolsApi.startOAuth(connectionId),
+    onSuccess: ({ authorizationUrl }) => {
+      window.location.assign(authorizationUrl);
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn't start sign-in",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      }),
+  });
+
   const removeApp = useMutation({
     mutationFn: () => toolsApi.archiveConnection(connectionId),
     onSuccess: () => {
@@ -355,6 +368,8 @@ export function AppDetail() {
           onToggleApp={() => toggleEnabled.mutate()}
           configUpdateDisabled={updateConfig.isPending}
           onUpdateConfig={(config) => updateConfig.mutate(config)}
+          oauthStartDisabled={startOAuth.isPending}
+          onStartOAuth={() => startOAuth.mutate()}
         />
       )}
       {activeTab === "review" && (

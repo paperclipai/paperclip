@@ -83,7 +83,7 @@ fixture connection's tabs: **Setup**, **Test**, **Review**, **Activity**
 | Step | What you do | What you should see |
 |---|---|---|
 | **connect** | Open the fixture connection (for P1, complete the fake OAuth consent). | Connection shows as active/connected. |
-| **discover-catalog** | Open **Setup**. | The tool catalog lists the path's tools (e.g. `todo.list`). |
+| **discover-catalog** | Open **Permissions**. | The action list includes the path's tools (e.g. `todo.list`). |
 | **allowed-read** | **Test** tab → run the read tool. | Decision badge **Allowed**; the call returns without error. |
 | **ask-first-write** | **Test** tab → run the write tool (with a *require-approval* policy in force). | Decision **Ask first**; a pending request appears in **Review**. |
 | **approve** | **Review** tab → approve the pending write. | The request clears; the call completes. |
@@ -106,18 +106,18 @@ The per-path tools are:
 This is the richest path — do it by hand once and the rest are variations.
 
 1. **Connect via the fake OAuth provider.**
-   - From **Apps** (`/{PREFIX}/apps`), open the **HTTP fixture** connection, go to
-     **Setup**, and start its OAuth connect. The fake provider's **real consent
-     page** opens — a page clearly headed *"Smoke OAuth"* / *"SMOKE TEST — not a
-     real provider"*.
+   - From **Apps → Connections** (`/{PREFIX}/apps`), open **Smoke Lab HTTP MCP
+     fixture**, then choose **Setup**. In the **Connect with Smoke OAuth** card,
+     click **Connect with Smoke OAuth**. The fake provider's **real consent page**
+   opens — a page clearly headed *"Smoke OAuth"* / *"SMOKE TEST — not a real
+   provider"*.
    - The **email is pre-filled** (`smoke@paperclip.test`). Type the password
      `smoke-password` and submit.
-   - **You should see:** the provider accepts the credentials and redirects back
-     with an authorization `code` (the redirect target is a dead loopback callback
-     — that's expected; the point is the consent succeeded). Wrong credentials are
-     rejected with a `403`.
-2. **Discover the catalog.** On **Setup**, confirm `todo.list` and `todo.add`
-   appear in the tool list.
+   - **You should see:** the provider accepts the credentials and returns you to
+     this connection's **Setup** tab with the card changed to **Connected with
+     Smoke OAuth**. Wrong credentials are rejected with a `403`.
+2. **Discover the catalog.** Open **Permissions** and confirm `todo.list` and
+   `todo.add` appear in the action list.
 3. **Allowed read.** **Test** tab → pick the smoke test agent → run **`todo.list`**.
    **You should see:** an **Allowed** badge and a result with no error.
 4. **Ask-first write → approve.** With a *require-approval* policy on `todo.add`,

@@ -34,6 +34,7 @@ export const SMOKE_LAB_DEMO_PASSWORD = "smoke-password";
 export const SMOKE_LAB_BANNER = "SMOKE TEST - not a real provider";
 export const SMOKE_LAB_OAUTH_SCOPES = ["smoke:openid", "smoke:profile", "smoke:email"] as const;
 export const SMOKE_LAB_OAUTH_SCOPE = SMOKE_LAB_OAUTH_SCOPES.join(" ");
+export const SMOKE_LAB_OAUTH_CLIENT_ID = "paperclip-smoke-lab";
 
 // The fixture servers live at repo-root scripts/mcp-fixtures/servers. Resolve them
 // relative to this module, NOT process.cwd(): the workspace runtime boots the server
@@ -1026,10 +1027,16 @@ export function smokeLabService(db: Db, options: {
         name: HTTP_CONNECTION_NAME,
         transport: "remote_http",
         config: {
+          smokeLabFixture: "oauth-http",
           service: "smoke-lab.http-mcp-fixture",
           url: httpSidecar ? `${httpSidecar.url}/mcp` : null,
           catalogUrl: httpSidecar ? `${httpSidecar.url}/catalog` : null,
           toolCallUrl: httpSidecar ? `${httpSidecar.url}/tools/call` : null,
+          oauth: {
+            provider: "smoke_lab",
+            smokeLabFixture: true,
+            scopes: [...SMOKE_LAB_OAUTH_SCOPES],
+          },
         },
         transportConfig: { loopbackOnly: true, managedBy: "smoke-lab-sidecar" },
         actor,

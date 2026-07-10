@@ -13,6 +13,8 @@ export function SetupPanel({
   appToggleDisabled,
   onUpdateConfig,
   configUpdateDisabled,
+  onStartOAuth,
+  oauthStartDisabled,
 }: Pick<
   AppDetailSectionProps,
   "connection" | "galleryEntry"
@@ -21,8 +23,13 @@ export function SetupPanel({
   appToggleDisabled: boolean;
   onUpdateConfig: (config: Record<string, unknown>) => void;
   configUpdateDisabled: boolean;
+  onStartOAuth: () => void;
+  oauthStartDisabled: boolean;
 }) {
   const description = galleryEntry?.description ?? galleryEntry?.tagline ?? null;
+  const oauth = connection.config?.oauth;
+  const hasOAuthSignIn = Boolean(oauth && typeof oauth === "object" && !Array.isArray(oauth));
+  const isSmokeLabFixture = connection.config?.smokeLabFixture === "oauth-http";
   return (
     <div className="space-y-6">
       {description && (
@@ -35,8 +42,49 @@ export function SetupPanel({
           onUpdateConfig={onUpdateConfig}
         />
       )}
+      {hasOAuthSignIn && (
+        <OAuthConnectionSection
+          connected={Boolean((oauth as Record<string, unknown>).connectedAt)}
+          isSmokeLabFixture={isSmokeLabFixture}
+          disabled={oauthStartDisabled}
+          onStart={onStartOAuth}
+        />
+      )}
       <AppLifecycleSection connection={connection} disabled={appToggleDisabled} onToggle={onToggleApp} />
     </div>
+  );
+}
+
+function OAuthConnectionSection({
+  connected,
+  isSmokeLabFixture,
+  disabled,
+  onStart,
+}: {
+  connected: boolean;
+  isSmokeLabFixture: boolean;
+  disabled: boolean;
+  onStart: () => void;
+}) {
+  const providerName = isSmokeLabFixture ? "Smoke OAuth" : "OAuth";
+  return (
+    <section className="rounded-xl border border-border bg-card px-5 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h2 className="text-sm font-bold text-foreground">
+            {connected ? `Connected with ${providerName}` : `Connect with ${providerName}`}
+          </h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            {connected
+              ? "Sign in again to replace this connection's OAuth session."
+              : "Open the provider's consent page to finish connecting this app."}
+          </p>
+        </div>
+        <Button type="button" disabled={disabled} onClick={onStart}>
+          {connected ? "Reconnect" : `Connect with ${providerName}`}
+        </Button>
+      </div>
+    </section>
   );
 }
 
