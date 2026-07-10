@@ -215,7 +215,7 @@ export function WhatNeedsMe() {
   const handleDismiss = (item: AttentionItem) => {
     setPendingHide((prev) => new Set(prev).add(item.id));
     dismiss(item.dismissalKey);
-    if (expandedId === item.id) setExpandedId(null);
+    setExpandedId((previous) => (previous === item.id ? null : previous));
     // ~8s undo window; restores the row in place via T1's DELETE endpoint.
     pushToast({
       id: `attention-dismiss-${item.id}`,
