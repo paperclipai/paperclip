@@ -1124,22 +1124,6 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     [
-      "issue create",
-      (app: express.Express) =>
-        request(app).post(`/api/companies/${companyId}/issues`).send({
-          title: "Downstream source work",
-          assigneeAdapterOverrides: { modelProfile: "cheap" },
-        }),
-    ],
-    [
-      "child issue create",
-      (app: express.Express) =>
-        request(app).post(`/api/issues/${issueId}/children`).send({
-          title: "Downstream child source work",
-          assigneeAdapterOverrides: { modelProfile: "cheap" },
-        }),
-    ],
-    [
       "issue update",
       (app: express.Express) =>
         request(app).patch(`/api/issues/${issueId}`).send({
@@ -1165,6 +1149,53 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.create).not.toHaveBeenCalled();
     expect(mockIssueService.createChild).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "top-level issue creation",
+      (app: express.Express) =>
+        request(app).post(`/api/companies/${companyId}/issues`).send({
+          title: "Executable recovery follow-up",
+        }),
+    ],
+    [
+      "child issue creation",
+      (app: express.Express) =>
+        request(app).post(`/api/issues/${issueId}/children`).send({
+          title: "Executable recovery child",
+        }),
+    ],
+    [
+      "accepted-plan decomposition",
+      (app: express.Express) =>
+        request(app).post(`/api/issues/${issueId}/accepted-plan-decompositions`).send({
+          acceptedPlanRevisionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          children: [
+            { title: "Executable accepted-plan child" },
+          ],
+        }),
+    ],
+  ])("blocks cheap status-only recovery runs from %s", async (_name, sendRequest) => {
+    const app = await createApp(
+      ownerActor(),
+      createRunContextDb({
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      }),
+    );
+
+    const res = await sendRequest(app);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("cannot create executable issues or accepted-plan decompositions");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+    expect(mockIssueService.createChild).not.toHaveBeenCalled();
+    expect(mockIssueService.decomposeAcceptedPlan).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("defaults agent-created root follow-up issues to inherit the current run workspace", async () => {
