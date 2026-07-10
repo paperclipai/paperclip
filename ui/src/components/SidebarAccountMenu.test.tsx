@@ -116,4 +116,47 @@ describe("SidebarAccountMenu", () => {
       root.unmount();
     });
   });
+
+  it("renders as an avatar-only trigger when collapsed", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu
+            collapsed
+            deploymentMode="authenticated"
+            instanceSettingsTarget="/instance/settings/general"
+            version="1.2.3"
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const trigger = container.querySelector('button[aria-label="Open account menu"]');
+    expect(trigger).not.toBeNull();
+    expect(trigger?.className).toContain("w-12");
+    expect(trigger?.textContent).toContain("JE");
+    expect(trigger?.querySelector(".min-w-0")).toBeNull();
+    expect(trigger?.getAttribute("title")).toBe("Jane Example");
+    expect(container.querySelector(".sr-only")?.textContent).toBe("Jane Example");
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Edit profile");
+    expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
+      .toContain("w-72");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

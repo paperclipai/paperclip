@@ -17,6 +17,9 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSetSelectedCompanyId = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
+const mockSidebarState = vi.hoisted(() => ({
+  sidebarOpen: true,
+}));
 const mockCompanyState = vi.hoisted(() => ({
   companies: [{ id: "company-1", issuePrefix: "PAP", name: "Paperclip" }],
   selectedCompany: { id: "company-1", issuePrefix: "PAP", name: "Paperclip" },
@@ -101,7 +104,9 @@ vi.mock("./DevRestartBanner", () => ({
 }));
 
 vi.mock("./SidebarAccountMenu", () => ({
-  SidebarAccountMenu: () => <div>Account menu</div>,
+  SidebarAccountMenu: ({ collapsed }: { collapsed?: boolean }) => (
+    <div data-testid="account-menu" data-collapsed={String(Boolean(collapsed))}>Account menu</div>
+  ),
 }));
 
 vi.mock("../plugins/slots", async () => {
@@ -172,7 +177,7 @@ vi.mock("../context/OrgContext", () => ({
 
 vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({
-    sidebarOpen: true,
+    sidebarOpen: mockSidebarState.sidebarOpen,
     setSidebarOpen: mockSetSidebarOpen,
     toggleSidebar: vi.fn(),
     isMobile: false,
@@ -240,6 +245,7 @@ describe("Layout", () => {
     });
     mockPluginSlots.slots = [];
     mockPluginSlotContexts.length = 0;
+    mockSidebarState.sidebarOpen = true;
   });
 
   afterEach(() => {
@@ -272,6 +278,37 @@ describe("Layout", () => {
     expect(container.textContent).not.toContain(
       "Sign-in is required and this instance is intended for private-network access.",
     );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders one clickable desktop rail when the sidebar is collapsed", async () => {
+    mockSidebarState.sidebarOpen = false;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const expandButton = container.querySelector<HTMLButtonElement>('button[aria-label="Expand sidebar"]');
+    expect(expandButton).not.toBeNull();
+    expect(expandButton?.closest(".w-16")).not.toBeNull();
+    expect(container.querySelector('[data-testid="account-menu"]')?.getAttribute("data-collapsed")).toBe("true");
+
+    await act(async () => {
+      expandButton?.click();
+    });
+    expect(mockSetSidebarOpen).toHaveBeenCalledWith(true);
 
     await act(async () => {
       root.unmount();

@@ -24,6 +24,7 @@ const PROFILE_SETTINGS_PATH = "/instance/settings/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
 
 interface SidebarAccountMenuProps {
+  collapsed?: boolean;
   deploymentMode?: DeploymentMode;
   instanceSettingsTarget: string;
   open?: boolean;
@@ -102,6 +103,7 @@ function MenuAction({ label, description, icon: Icon, onClick, href, external = 
 }
 
 export function SidebarAccountMenu({
+  collapsed = false,
   deploymentMode,
   instanceSettingsTarget,
   open: controlledOpen,
@@ -141,26 +143,44 @@ export function SidebarAccountMenu({
   }
 
   return (
-    <div className="border-t border-r border-border bg-background px-3 py-2">
+    <div
+      className={cn(
+        "border-t border-r border-border bg-background py-2 transition-[width,padding] duration-100 ease-out",
+        collapsed ? "w-16 px-2" : "w-full px-3",
+      )}
+    >
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground"
+            className={cn(
+              "flex items-center text-[13px] font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground",
+              collapsed
+                ? "h-12 w-12 justify-center rounded-md p-0"
+                : "w-full gap-2.5 px-3 py-2 text-left",
+            )}
             aria-label="Open account menu"
+            title={collapsed ? displayName : undefined}
           >
             <Avatar size="sm">
               {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
               <AvatarFallback>{initials}</AvatarFallback>
             </Avatar>
-            <span className="min-w-0 flex-1 truncate">{displayName}</span>
+            {collapsed ? (
+              <span className="sr-only">{displayName}</span>
+            ) : (
+              <span className="min-w-0 flex-1 truncate">{displayName}</span>
+            )}
           </button>
         </PopoverTrigger>
         <PopoverContent
           side="top"
           align="start"
           sideOffset={10}
-          className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-1rem)] overflow-hidden rounded-t-2xl rounded-b-none border-border p-0 shadow-2xl"
+          className={cn(
+            "max-w-[calc(100vw-1rem)] overflow-hidden rounded-t-2xl rounded-b-none border-border p-0 shadow-2xl",
+            collapsed ? "w-72" : "w-[var(--radix-popover-trigger-width)]",
+          )}
         >
           <div className="h-24 bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--accent))_55%,hsl(var(--muted))_100%)]" />
           <div className="-mt-8 px-4 pb-4">
