@@ -12,6 +12,8 @@ import {
   Repeat,
   GitBranch,
   Settings,
+  MessageSquare,
+  FileText,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -121,6 +123,8 @@ export function Sidebar() {
 
         <SidebarSection label="Company">
           <SidebarNavItem to="/org" label="Org" icon={Network} />
+          <SidebarNavItem to="/assistant" label="Assistant" icon={MessageSquare} />
+          <SidebarNavItem to="/digest" label="Digest" icon={FileText} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />

@@ -25,6 +25,7 @@ import { linearOsSyncRoutes } from "./routes/linear-os-sync.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { costRoutes } from "./routes/costs.js";
+import { assistantRoutes } from "./routes/assistant.js";
 import { billingRoutes } from "./routes/billing.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
@@ -210,6 +211,7 @@ export async function createApp(
     }),
   );
   api.use("/companies", companyRoutes(db, opts.storageService));
+  api.use(assistantRoutes(db));
   api.use(companySkillRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager, storageService: opts.storageService }));
   api.use(assetRoutes(db, opts.storageService));
