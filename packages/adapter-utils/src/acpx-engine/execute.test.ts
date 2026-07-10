@@ -13,6 +13,7 @@ import {
   parseGeminiVersionParts,
   rewriteGeminiAcpFlagForVersion,
 } from "./execute.js";
+import { runChildProcess } from "../server-utils.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -47,6 +48,44 @@ async function createSkill(root: string, name: string, body = `---\nrequired: fa
     runtimeName: name,
     source: skillDir,
     required: false,
+  };
+}
+
+function createLocalSandboxRunner(
+  onExecute?: (input: {
+    command: string;
+    args?: string[];
+    cwd?: string;
+    env?: Record<string, string>;
+  }) => void,
+) {
+  let counter = 0;
+  return {
+    execute: async (input: {
+      command: string;
+      args?: string[];
+      cwd?: string;
+      env?: Record<string, string>;
+      stdin?: string;
+      timeoutMs?: number;
+      onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+    }) => {
+      counter += 1;
+      onExecute?.(input);
+      const command = input.command === "bash" ? "/bin/bash" : input.command;
+      return await runChildProcess(`acpx-sandbox-run-${counter}`, command, input.args ?? [], {
+        cwd: input.cwd ?? process.cwd(),
+        env: input.env ?? {},
+        stdin: input.stdin,
+        timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+        graceSec: 5,
+        onLog: input.onLog ?? (async () => {}),
+        onSpawn: input.onSpawn
+          ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
+          : undefined,
+      });
+    },
   };
 }
 
@@ -562,12 +601,13 @@ describe("shared ACPX engine runtime behavior", () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const localCwd = path.join(root, "worktree");
-    const remoteCwd = "/workspace/paperclip";
+    const remoteCwd = path.join(root, "remote-workspace");
     await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
 
     let sessionPayload: Record<string, unknown> | null = null;
-    const runner = {
-      execute: async (input: { args?: string[]; env?: Record<string, string> }) => {
+    const runner = createLocalSandboxRunner(
+      (input: { args?: string[]; env?: Record<string, string> }) => {
         if (input.env?.PAPERCLIP_SANDBOX_EXEC_CHANNEL === "bridge") {
           const script = input.args?.[1] ?? "";
           const match = script.match(/PAPERCLIP_PROCESS_SESSION_COMMAND_B64='([^']+)'/);
@@ -575,21 +615,13 @@ describe("shared ACPX engine runtime behavior", () => {
             sessionPayload = JSON.parse(Buffer.from(match[1]!, "base64").toString("utf8")) as Record<string, unknown>;
           }
         }
-        return {
-          exitCode: 0,
-          signal: null,
-          timedOut: false,
-          stdout: "",
-          stderr: "",
-          pid: null,
-          startedAt: new Date().toISOString(),
-        };
       },
-    };
+    );
 
     await runExecutor(
       { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
       {
+        authToken: "real-run-jwt",
         executionTarget: {
           kind: "remote",
           transport: "sandbox",
@@ -605,6 +637,15 @@ describe("shared ACPX engine runtime behavior", () => {
       args: ["-lc", "exec node ./fake-acp.js"],
       cwd: remoteCwd,
     });
+    const payloadEnv = ((sessionPayload as Record<string, unknown> | null)?.env ?? {}) as Record<string, unknown>;
+    expect(payloadEnv).toMatchObject({
+      PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
+    });
+    expect(String(payloadEnv.PAPERCLIP_API_URL ?? "")).toMatch(
+      /^http:\/\/127\.0\.0\.1:\d+$/,
+    );
+    expect(payloadEnv.PAPERCLIP_API_KEY).toBeTruthy();
+    expect(payloadEnv.PAPERCLIP_API_KEY).not.toBe("real-run-jwt");
   });
 
   it.skipIf(process.platform === "win32")("drops benign ACP nes/close cleanup stderr but keeps it in the run log", async () => {

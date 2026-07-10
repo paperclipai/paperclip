@@ -12,7 +12,9 @@ import {
   formatAdapterExecutionTimeoutStartLogLine,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeout,
+  startAdapterExecutionTargetPaperclipBridge,
   startAdapterExecutionTargetProcessSessionBridge,
+  type AdapterExecutionTargetPaperclipBridgeHandle,
   type AdapterExecutionTargetProcessSessionBridgeHandle,
   type AdapterExecutionTargetTimeoutResolution,
 } from "@paperclipai/adapter-utils/execution-target";
@@ -115,6 +117,7 @@ interface AcpxPreparedRuntime {
   agentCommand: string | null;
   agentRegistry: AcpAgentRegistry;
   processSessionBridge: AdapterExecutionTargetProcessSessionBridgeHandle | null;
+  paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null;
   remoteExecutionIdentity: Record<string, unknown> | null;
   skillPromptInstructions: string;
   skillsIdentity: Record<string, unknown>;
@@ -1102,29 +1105,56 @@ async function buildRuntime(input: {
       })
     : null;
   const wrapperPath = wrapper?.wrapperPath ?? null;
+  let paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null = null;
+  if (
+    executionTarget?.kind === "remote" &&
+    executionTarget.transport === "sandbox" &&
+    Boolean(executionTarget.runner) &&
+    agentCommandShell
+  ) {
+    paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId,
+      target: { ...executionTarget, streamRunLogs: false },
+      runtimeRootDir: null,
+      adapterKey: input.engine.adapterType,
+      timeoutSec,
+      hostApiToken: env.PAPERCLIP_API_KEY,
+      onLog: input.ctx.onLog,
+    });
+    if (paperclipBridge) {
+      Object.assign(env, paperclipBridge.env);
+      await input.ctx.onLog("stdout", "[paperclip] Sandbox ACP API callback bridge enabled for this run.\n");
+    }
+  }
   const runtimeEnv = Object.fromEntries(
     Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  const processSessionBridge =
-    executionTarget?.kind === "remote" &&
-    executionTarget.transport === "sandbox" &&
-    Boolean(executionTarget.runner) &&
-    agentCommandShell
-      ? await startAdapterExecutionTargetProcessSessionBridge({
-          runId,
-          target: executionTarget,
-          runtimeRootDir: null,
-          adapterKey: input.engine.adapterType,
-          command: "sh",
-          args: ["-lc", `exec ${agentCommandShell}`],
-          cwd: effectiveExecutionCwd,
-          env: runtimeEnv,
-          timeoutSec,
-          onLog: input.ctx.onLog,
-        })
-      : null;
+  let processSessionBridge: AdapterExecutionTargetProcessSessionBridgeHandle | null = null;
+  try {
+    processSessionBridge =
+      executionTarget?.kind === "remote" &&
+      executionTarget.transport === "sandbox" &&
+      Boolean(executionTarget.runner) &&
+      agentCommandShell
+        ? await startAdapterExecutionTargetProcessSessionBridge({
+            runId,
+            target: executionTarget,
+            runtimeRootDir: null,
+            adapterKey: input.engine.adapterType,
+            command: "sh",
+            args: ["-lc", `exec ${agentCommandShell}`],
+            cwd: effectiveExecutionCwd,
+            env: runtimeEnv,
+            timeoutSec,
+            onLog: input.ctx.onLog,
+          })
+        : null;
+  } catch (err) {
+    await paperclipBridge?.stop().catch(() => {});
+    throw err;
+  }
   const overrideCommand = processSessionBridge?.agentCommand ?? wrapperPath;
   const overrides = overrideCommand ? { [acpxAgent]: overrideCommand } : undefined;
   const agentRegistry = createAgentRegistry({ overrides });
@@ -1180,6 +1210,7 @@ async function buildRuntime(input: {
     agentCommand,
     agentRegistry,
     processSessionBridge,
+    paperclipBridge,
     remoteExecutionIdentity,
     skillPromptInstructions,
     skillsIdentity: {
@@ -1241,8 +1272,11 @@ async function applySessionConfigOptions(input: {
   }
 }
 
-async function cleanupProcessSessionBridge(prepared: AcpxPreparedRuntime): Promise<void> {
-  await prepared.processSessionBridge?.stop().catch(() => {});
+async function cleanupRemoteBridges(prepared: AcpxPreparedRuntime): Promise<void> {
+  await Promise.allSettled([
+    prepared.processSessionBridge?.stop(),
+    prepared.paperclipBridge?.stop(),
+  ]);
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -1735,7 +1769,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         err,
         phase: "ensure_session",
       });
-      await cleanupProcessSessionBridge(prepared);
+      await cleanupRemoteBridges(prepared);
       return {
         exitCode: 1,
         signal: null,
@@ -1751,7 +1785,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     }
 
     if (!handle) {
-      await cleanupProcessSessionBridge(prepared);
+      await cleanupRemoteBridges(prepared);
       return {
         exitCode: 1,
         signal: null,
@@ -1789,7 +1823,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         clearWarmHandleTimer(existing);
         warmHandles.delete(prepared.sessionKey);
       }
-      await cleanupProcessSessionBridge(prepared);
+      await cleanupRemoteBridges(prepared);
       return {
         exitCode: 1,
         signal: null,
@@ -1954,7 +1988,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         stopReason: terminalStopReason,
         message: errorMessage,
       });
-      await cleanupProcessSessionBridge(prepared);
+      await cleanupRemoteBridges(prepared);
       return {
         exitCode: terminal.status === "completed" ? 0 : 1,
         signal: timedOut ? "SIGTERM" : null,
@@ -2006,7 +2040,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         phase: "turn",
         messageOverride,
       });
-      await cleanupProcessSessionBridge(prepared);
+      await cleanupRemoteBridges(prepared);
       return {
         exitCode: 1,
         signal: timedOut ? "SIGTERM" : null,
