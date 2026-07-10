@@ -81,6 +81,7 @@ describe("useLiveRunTranscripts", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     globalThis.WebSocket = OriginalWebSocket;
   });
 
@@ -218,6 +219,44 @@ describe("useLiveRunTranscripts", () => {
 
     await act(async () => {
       root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("stops polling active runs after a persisted-log 404", async () => {
+    vi.useFakeTimers();
+    logMock.mockReset();
+    logMock.mockRejectedValue(new ApiError("Run log not found", 404, { error: "Run log not found" }));
+
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-stale", status: "running", adapterType: "codex_local" }],
+        logPollIntervalMs: 10,
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(30);
       await Promise.resolve();
     });
 
