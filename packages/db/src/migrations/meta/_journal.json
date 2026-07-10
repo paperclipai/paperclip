@@ -1135,6 +1135,13 @@
       "when": 1783633200000,
       "tag": "0163_smoke_lab_results",
       "breakpoints": true
+    },
+    {
+      "idx": 162,
+      "version": "7",
+      "when": 1783633300000,
+      "tag": "0164_environment_custom_image_instance_scope_cleanup",
+      "breakpoints": true
     }
   ]
 }

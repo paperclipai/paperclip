@@ -4612,12 +4612,13 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
     .where(
       and(
         eq(workspaceRuntimeServices.provider, "local_process"),
-        inArray(workspaceRuntimeServices.status, ["starting", "running"]),
+        inArray(workspaceRuntimeServices.status, ["starting", "running", "stopped"]),
       ),
     );
 
   if (rows.length === 0) return { reconciled: 0, adopted: 0, stopped: 0 };
 
+  let reconciled = 0;
   let adopted = 0;
   let stopped = 0;
   for (const row of rows) {
@@ -4697,9 +4698,14 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
           lastSeenAt: record.lastUsedAt,
         });
         await persistRuntimeServiceRecord(db, record);
+        reconciled += 1;
         adopted += 1;
         continue;
       }
+    }
+
+    if (row.status === "stopped") {
+      continue;
     }
 
     const now = new Date();
@@ -4720,10 +4726,11 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
     if (registryRecord) {
       await removeLocalServiceRegistryRecord(registryRecord.serviceKey);
     }
+    reconciled += 1;
     stopped += 1;
   }
 
-  return { reconciled: rows.length, adopted, stopped };
+  return { reconciled, adopted, stopped };
 }
 
 export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
