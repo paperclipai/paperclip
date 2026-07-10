@@ -901,7 +901,14 @@ const plugin = definePlugin({
       });
       return {
         providerLeaseId: sandbox.id,
-        metadata: leaseMetadata({ config, sandbox, shellCommand, remoteCwd, resumedLease: false, workspaceSentinel }),
+        metadata: leaseMetadata({
+          config,
+          sandbox,
+          shellCommand,
+          remoteCwd,
+          resumedLease: false,
+          workspaceSentinel,
+        }),
       };
     } catch (error) {
       await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
@@ -933,7 +940,14 @@ const plugin = definePlugin({
       const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
       return {
         providerLeaseId: sandbox.id,
-        metadata: leaseMetadata({ config, sandbox, shellCommand, remoteCwd, resumedLease: true, workspaceSentinel }),
+        metadata: leaseMetadata({
+          config,
+          sandbox,
+          shellCommand,
+          remoteCwd,
+          resumedLease: true,
+          workspaceSentinel,
+        }),
       };
     } catch (error) {
       await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);

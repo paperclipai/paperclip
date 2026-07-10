@@ -1,7 +1,9 @@
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -16,12 +18,15 @@ import {
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
+  startAdapterExecutionTargetProcessSessionBridge,
   startAdapterExecutionTargetPaperclipBridge,
   type AdapterSandboxExecutionTarget,
 } from "./execution-target.js";
 import { createSandboxRunLogTailFactory } from "./sandbox-run-log-stream.js";
 import { runChildProcess } from "./server-utils.js";
 import { shellQuote } from "./ssh.js";
+
+const execFileAsync = promisify(execFile);
 
 describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
@@ -99,6 +104,36 @@ describe("sandbox adapter execution targets", () => {
     throw new Error(message);
   }
 
+  async function runProxyWithInput(command: string, input: string): Promise<{ stdout: string; stderr: string; code: number | null }> {
+    const child = spawn(command, [], { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.stdin.end(input);
+    const code = await new Promise<number | null>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error("Timed out waiting for process session proxy."));
+      }, 5000);
+      child.on("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.on("exit", (exitCode) => {
+        clearTimeout(timeout);
+        resolve(exitCode);
+      });
+    });
+    return { stdout, stderr, code };
+  }
+
   function combinedStream(
     events: Array<{ stream: "stdout" | "stderr"; chunk: string }>,
     stream: "stdout" | "stderr",
@@ -156,6 +191,53 @@ describe("sandbox adapter execution targets", () => {
       leaseId: "lease-1",
       remoteCwd: "/workspace",
     });
+  });
+
+  it("bridges bidirectional sandbox process sessions through a local ACPX-spawnable proxy", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "fake-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdin.on('data', (chunk) => {",
+        "  process.stdout.write('out:' + chunk.toString());",
+        "  process.stderr.write('err:' + chunk.toString());",
+        "});",
+      ].join("\n"),
+      "utf8",
+    );
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      const result = await runProxyWithInput(bridge!.agentCommand, "hello\n");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("out:hello\n");
+      expect(result.stderr).toBe("err:hello\n");
+    } finally {
+      await bridge?.stop();
+    }
   });
 
   it("applies the remote sandbox fallback when adapter timeoutSec is unset", () => {

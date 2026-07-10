@@ -558,6 +558,55 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(wrapper).toContain("exec node ./fake-acp.js");
   });
 
+  it("starts sandbox ACP process sessions in the remote execution cwd", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = "/workspace/paperclip";
+    await fs.mkdir(localCwd, { recursive: true });
+
+    let sessionPayload: Record<string, unknown> | null = null;
+    const runner = {
+      execute: async (input: { args?: string[]; env?: Record<string, string> }) => {
+        if (input.env?.PAPERCLIP_SANDBOX_EXEC_CHANNEL === "bridge") {
+          const script = input.args?.[1] ?? "";
+          const match = script.match(/PAPERCLIP_PROCESS_SESSION_COMMAND_B64='([^']+)'/);
+          if (match) {
+            sessionPayload = JSON.parse(Buffer.from(match[1]!, "base64").toString("utf8")) as Record<string, unknown>;
+          }
+        }
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        };
+      },
+    };
+
+    await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      {
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner,
+        },
+      },
+    );
+
+    expect(sessionPayload).toMatchObject({
+      command: "sh",
+      args: ["-lc", "exec node ./fake-acp.js"],
+      cwd: remoteCwd,
+    });
+  });
+
   it.skipIf(process.platform === "win32")("drops benign ACP nes/close cleanup stderr but keeps it in the run log", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
