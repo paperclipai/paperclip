@@ -14,6 +14,7 @@ import type { Agent, AttentionDetailImage, AttentionItem } from "@paperclipai/sh
 import { Link } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { approvalsApi } from "../api/approvals";
+import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import {
   attentionDetailImages,
@@ -104,7 +105,6 @@ export function AttentionQueueRow({
   // whole-header click has somewhere to go (plan §5). Non-inline rows keep the
   // explicit Open button and never toggle on a stray click.
   const expandable = inline;
-  const verbs = item.decisionVerbs.slice(0, 3);
 
   const activate = () => {
     if (expandable) onToggleExpand();
@@ -255,24 +255,7 @@ export function AttentionQueueRow({
           </div>
 
           <div className="mt-auto flex flex-col items-end gap-1" data-attention-actions="true">
-            {expandable && !expanded && verbs.length > 0 && (
-              <div className="flex flex-wrap justify-end gap-1" aria-label="Decision actions">
-                {verbs.map((verb) => (
-                  <Button
-                    key={verb.id}
-                    type="button"
-                    variant={decisionVerbVariant(verb)}
-                    size="xs"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onToggleExpand();
-                    }}
-                  >
-                    {verb.label}
-                  </Button>
-                ))}
-              </div>
-            )}
+            {!expanded && <CompactDecisionActions item={item} companyId={companyId} />}
 
             <div className="flex items-start justify-end gap-1">
               {!inline && href && (
@@ -308,6 +291,92 @@ export function AttentionQueueRow({
       )}
     </div>
   );
+}
+
+type CompactDecisionAction = "approve" | "reject" | "request_revision";
+
+function compactDecisionAction(item: AttentionItem, verbId: string): CompactDecisionAction | null {
+  if (item.sourceKind === "approval" && (verbId === "approve" || verbId === "reject" || verbId === "request_revision")) {
+    return verbId;
+  }
+  if (item.sourceKind === "join_request" && (verbId === "approve" || verbId === "reject")) {
+    return verbId;
+  }
+  return null;
+}
+
+function CompactDecisionActions({ item, companyId }: { item: AttentionItem; companyId: string }) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  const actions = item.decisionVerbs
+    .slice(0, 3)
+    .flatMap((verb) => {
+      const action = compactDecisionAction(item, verb.id);
+      return action ? [{ action, label: verb.label, id: verb.id }] : [];
+    });
+
+  const decision = useMutation<unknown, Error, CompactDecisionAction>({
+    mutationFn: (action: CompactDecisionAction) => {
+      if (item.sourceKind === "approval") {
+        if (action === "approve") return approvalsApi.approve(item.subject.id);
+        if (action === "reject") return approvalsApi.reject(item.subject.id);
+        return approvalsApi.requestRevision(item.subject.id);
+      }
+      if (item.sourceKind === "join_request") {
+        return action === "approve"
+          ? accessApi.approveJoinRequest(companyId, item.subject.id)
+          : accessApi.rejectJoinRequest(companyId, item.subject.id);
+      }
+      throw new Error("This decision must be completed from its detail view.");
+    },
+    onSuccess: (_result, action) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
+      if (item.sourceKind === "approval") {
+        queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
+      } else {
+        queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(companyId) });
+      }
+      pushToast({
+        title: item.sourceKind === "approval" ? `Approval ${decisionLabel(action)}` : `Join request ${decisionLabel(action)}`,
+        tone: "success",
+      });
+    },
+    onError: (error, action) => {
+      pushToast({
+        title: `Could not ${decisionLabel(action)}`,
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      });
+    },
+  });
+
+  if (actions.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap justify-end gap-1" aria-label="Decision actions">
+      {actions.map(({ action, id, label }) => (
+        <Button
+          key={id}
+          type="button"
+          variant={decisionVerbVariant({ id, label, description: "" })}
+          size="xs"
+          disabled={decision.isPending}
+          onClick={(event) => {
+            event.stopPropagation();
+            decision.mutate(action);
+          }}
+        >
+          {decision.isPending && decision.variables === action && <Loader2 className="h-3 w-3 animate-spin" />}
+          {label}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
+function decisionLabel(action: CompactDecisionAction): string {
+  if (action === "request_revision") return "sent for revision";
+  return action === "approve" ? "approved" : "rejected";
 }
 
 function decisionVerbVariant(verb: AttentionItem["decisionVerbs"][number]): "default" | "outline" | "destructive" {

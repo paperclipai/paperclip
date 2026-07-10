@@ -6,12 +6,23 @@ import type { AnchorHTMLAttributes, ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AttentionItem, AttentionSourceKind } from "@paperclipai/shared";
+import { approvalsApi } from "../api/approvals";
+import { ToastViewport } from "./ToastViewport";
+import { ToastProvider } from "../context/ToastContext";
 import { AttentionQueueRow } from "./AttentionQueueRow";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => (
     <a href={to} {...props}>{children}</a>
   ),
+}));
+
+vi.mock("../api/approvals", () => ({
+  approvalsApi: {
+    approve: vi.fn(),
+    reject: vi.fn(),
+    requestRevision: vi.fn(),
+  },
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -33,6 +44,7 @@ afterEach(() => {
   root = null;
   container?.remove();
   container = null;
+  vi.clearAllMocks();
 });
 
 function render(element: ReactElement) {
@@ -41,7 +53,14 @@ function render(element: ReactElement) {
   root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   act(() =>
-    root?.render(<QueryClientProvider client={client}>{element}</QueryClientProvider>),
+    root?.render(
+      <ToastProvider>
+        <QueryClientProvider client={client}>
+          {element}
+          <ToastViewport />
+        </QueryClientProvider>
+      </ToastProvider>,
+    ),
   );
   return container;
 }
@@ -282,6 +301,32 @@ describe("AttentionQueueRow", () => {
     expect(buttons.find((button) => button.textContent === "Reject")?.getAttribute("data-variant")).toBe(
       "destructive",
     );
+  });
+
+  it("submits a compact approval without expanding the card and confirms it", async () => {
+    const onToggleExpand = vi.fn();
+    vi.mocked(approvalsApi.approve).mockResolvedValue({} as never);
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          decisionVerbs: [{ id: "approve", label: "Approve", description: null }],
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+
+    const approve = Array.from(container?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent === "Approve",
+    );
+    act(() => approve?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(approvalsApi.approve).toHaveBeenCalledWith("approval-1");
+    expect(onToggleExpand).not.toHaveBeenCalled();
+    expect(container?.textContent).toContain("Approval approved");
   });
 
   it("centers thumbnails beside the full card text stack", () => {
