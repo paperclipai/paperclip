@@ -21,6 +21,7 @@ describe("instance settings service", () => {
       enableStreamlinedLeftNavigation: true,
       enableConferenceRoomChat: false,
       enableExternalObjects: false,
+      enableSmokeLab: false,
       enablePipelines: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
@@ -47,6 +48,14 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({}).enableTaskWatchdogs).toBe(false);
     expect(
       normalizeExperimentalSettings({ enableExperimentalFileViewer: true }).enableTaskWatchdogs,
+    ).toBe(false);
+  });
+
+  it("defaults enableSmokeLab to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableSmokeLab).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableSmokeLab).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableExternalObjects: true }).enableSmokeLab,
     ).toBe(false);
   });
 

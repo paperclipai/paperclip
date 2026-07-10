@@ -1165,6 +1165,23 @@ export {
 } from "./types/instance.js";
 
 export type {
+  SmokeLabServiceStatus,
+  SmokeRun,
+  SmokeRunStatus,
+  SmokeRunStep,
+  SmokeRunStepPath,
+  SmokeRunStepStatus,
+  SmokeRunTrigger,
+} from "./types/smoke-lab.js";
+
+export {
+  SMOKE_RUN_STATUSES,
+  SMOKE_RUN_STEP_PATHS,
+  SMOKE_RUN_STEP_STATUSES,
+  SMOKE_RUN_TRIGGERS,
+} from "./types/smoke-lab.js";
+
+export type {
   CloudUpstreamConnectStartResponse,
   CloudUpstreamActivationDecision,
   CloudUpstreamActivationEntityType,
@@ -1196,6 +1213,13 @@ export {
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
+  createSmokeRunSchema,
+  updateSmokeRunSchema,
+  recordSmokeRunStepSchema,
+  smokeRunStatusSchema,
+  smokeRunStepPathSchema,
+  smokeRunStepStatusSchema,
+  smokeRunTriggerSchema,
   trustPresetSchema,
   lowTrustBoundarySchema,
   lowTrustReviewPresetPolicySchema,
@@ -1203,6 +1227,9 @@ export {
   type PatchInstanceExperimentalSettings,
   type PatchInstanceSettings,
   type IssueGraphLivenessAutoRecoveryRequest,
+  type CreateSmokeRun,
+  type UpdateSmokeRun,
+  type RecordSmokeRunStep,
   type TrustPresetInput,
   type LowTrustBoundaryInput,
   type TrustAuthorizationPolicyInput,

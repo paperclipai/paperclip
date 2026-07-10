@@ -22,6 +22,19 @@ export {
 } from "./budget.js";
 
 export {
+  createSmokeRunSchema,
+  updateSmokeRunSchema,
+  recordSmokeRunStepSchema,
+  smokeRunStatusSchema,
+  smokeRunStepPathSchema,
+  smokeRunStepStatusSchema,
+  smokeRunTriggerSchema,
+  type CreateSmokeRun,
+  type UpdateSmokeRun,
+  type RecordSmokeRunStep,
+} from "./smoke-lab.js";
+
+export {
   createCompanySchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,

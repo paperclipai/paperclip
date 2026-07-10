@@ -1016,6 +1016,13 @@
       "when": 1783632600000,
       "tag": "0144_connection_token_issuances",
       "breakpoints": true
+    },
+    {
+      "idx": 145,
+      "version": "7",
+      "when": 1783633200000,
+      "tag": "0145_smoke_lab_results",
+      "breakpoints": true
     }
   ]
 }

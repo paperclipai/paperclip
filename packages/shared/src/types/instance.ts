@@ -55,6 +55,7 @@ export interface InstanceExperimentalSettings {
   enableExperimentalFileViewer: boolean;
   enableCloudSync: boolean;
   enableExternalObjects: boolean;
+  enableSmokeLab: boolean;
   enableServerInfoDebugView: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;

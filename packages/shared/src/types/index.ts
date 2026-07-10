@@ -32,6 +32,21 @@ export type {
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "./instance.js";
+export type {
+  SmokeLabServiceStatus,
+  SmokeRun,
+  SmokeRunStatus,
+  SmokeRunStep,
+  SmokeRunStepPath,
+  SmokeRunStepStatus,
+  SmokeRunTrigger,
+} from "./smoke-lab.js";
+export {
+  SMOKE_RUN_STATUSES,
+  SMOKE_RUN_STEP_PATHS,
+  SMOKE_RUN_STEP_STATUSES,
+  SMOKE_RUN_TRIGGERS,
+} from "./smoke-lab.js";
 export {
   DAILY_RETENTION_PRESETS,
   WEEKLY_RETENTION_PRESETS,
