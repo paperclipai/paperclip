@@ -6,7 +6,10 @@ description: >
   checkbox confirmations, ask_user_questions, or suggest_tasks.
 ---
 
-# Create a new issue-thread interaction UI (developer skill)
+# Create a new issue-thread interaction UI (Developer/maintainer skill)
+
+Do NOT install this on production Paperclip agents. This is a developer/maintainer
+skill for contributors changing Paperclip source code.
 
 This skill walks a Paperclip contributor through introducing a new issue-thread
 interaction kind from shared contract to issue-detail wiring, helpers, and
