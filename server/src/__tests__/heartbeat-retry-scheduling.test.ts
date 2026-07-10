@@ -974,6 +974,134 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(activity).toHaveLength(0);
   });
 
+  it("does not quarantine an owned workspace that is no longer attached to the issue", async () => {
+    const { companyId, issueId, runId, now } = await seedMaxTurnFixture({ issueStatus: "in_review" });
+    const projectId = randomUUID();
+    const staleWorkspaceId = randomUUID();
+    const currentWorkspaceId = randomUUID();
+    const validation = {
+      reason: "git_worktree_branch_incoherence",
+      fingerprint: "workspace_incoherence:v1:sha256:stale-owned",
+      executionWorkspaceId: staleWorkspaceId,
+      expectedBranch: "old-plan-approval-workspace",
+      actualBranch: "current-plan-approval-workspace",
+      cleanliness: "clean",
+    };
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Paperclip App",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values([
+      {
+        id: staleWorkspaceId,
+        companyId,
+        projectId,
+        sourceIssueId: issueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "old-plan-approval-workspace",
+        status: "active",
+        cwd: "/workspace/old-plan-approval-workspace",
+        baseRef: "origin/master",
+        branchName: "old-plan-approval-workspace",
+        providerType: "git_worktree",
+        providerRef: "/workspace/old-plan-approval-workspace",
+        metadata: { stale: true },
+      },
+      {
+        id: currentWorkspaceId,
+        companyId,
+        projectId,
+        sourceIssueId: issueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "current-plan-approval-workspace",
+        status: "active",
+        cwd: "/workspace/current-plan-approval-workspace",
+        baseRef: "origin/master",
+        branchName: "current-plan-approval-workspace",
+        providerType: "git_worktree",
+        providerRef: "/workspace/current-plan-approval-workspace",
+        metadata: { current: true },
+      },
+    ]);
+    await db
+      .update(issues)
+      .set({
+        projectId,
+        executionWorkspaceId: currentWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      })
+      .where(eq(issues.id, issueId));
+
+    const interactionId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        error: "workspace validation failed before dispatch",
+        errorCode: "workspace_validation_failed",
+        resultJson: { workspaceValidation: validation },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_commented",
+          mutation: "interaction",
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: 3,
+    });
+
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    const issue = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({
+      executionRunId: scheduled.run.id,
+      executionWorkspaceId: currentWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+    });
+
+    const workspaces = await db
+      .select({ id: executionWorkspaces.id, status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [staleWorkspaceId, currentWorkspaceId]));
+    expect(workspaces).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: staleWorkspaceId, status: "active", metadata: { stale: true } }),
+      expect.objectContaining({ id: currentWorkspaceId, status: "active", metadata: { current: true } }),
+    ]));
+
+    const activity = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "execution_workspace.workspace_validation_quarantined"),
+      ));
+    expect(activity).toHaveLength(0);
+  });
+
   it("does not schedule accepted interaction continuation infra retries after terminal issue status", async () => {
     const { issueId, runId, now } = await seedMaxTurnFixture({ issueStatus: "done" });
 

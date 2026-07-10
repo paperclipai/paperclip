@@ -9230,7 +9230,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? failedWorkspace.sourceIssueId === issueId
               : false;
 
-          if (failedWorkspace && workspaceBelongsToIssue) {
+          if (
+            failedWorkspace &&
+            workspaceBelongsToIssue &&
+            issueWorkspace.executionWorkspaceId === failedExecutionWorkspaceId
+          ) {
             const existingMetadata = parseObject(failedWorkspace.metadata);
             const quarantine = {
               reason: WORKSPACE_VALIDATION_FAILURE_CODE,
