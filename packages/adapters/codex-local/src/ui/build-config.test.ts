@@ -63,9 +63,23 @@ describe("buildCodexLocalConfig", () => {
     });
   });
 
-  it("omits model when the operator leaves it blank", () => {
+  it("applies worker defaults when the operator leaves model and reasoning blank", () => {
     const config = buildCodexLocalConfig(makeValues({ model: "" }));
 
-    expect(config).not.toHaveProperty("model");
+    expect(config).toMatchObject({
+      model: "gpt-5.6-terra",
+      modelReasoningEffort: "xhigh",
+    });
+  });
+
+  it("preserves explicit model and reasoning overrides", () => {
+    const config = buildCodexLocalConfig(
+      makeValues({ model: "gpt-5.6-sol", thinkingEffort: "high" }),
+    );
+
+    expect(config).toMatchObject({
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "high",
+    });
   });
 });

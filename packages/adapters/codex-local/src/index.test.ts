@@ -14,6 +14,7 @@ describe("codex local adapter metadata", () => {
       model: "gpt-5.6-terra",
       modelReasoningEffort: "xhigh",
     });
+    expect(models.map((model) => model.id)).toContain("gpt-5.5");
     expect(models.map((model) => model.id)).not.toContain("gpt-5.3-codex");
   });
 
