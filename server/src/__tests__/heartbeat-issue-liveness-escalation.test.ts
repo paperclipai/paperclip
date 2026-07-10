@@ -13,6 +13,7 @@ import {
   issueComments,
   issueRecoveryActions,
   issueRelations,
+  issueThreadInteractions,
   issueTreeHolds,
   issues,
   projects,
@@ -327,6 +328,76 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       originFingerprint: [
         "harness_liveness_leaf",
         companyId,
+        "blocked_by_assigned_backlog_issue",
+        blockerIssueId,
+      ].join(":"),
+    });
+  });
+
+  it("treats a recent pending interaction as a current waiting path", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "backlog",
+      blockerAssigneeAgentId: "coder",
+    });
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: blockerIssueId,
+      kind: "request_confirmation",
+      status: "pending",
+      payload: { version: 1, prompt: "Should this parked work proceed?" },
+      createdAt: new Date(Date.now() - 60 * 60 * 1000),
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+  });
+
+  it("surfaces a stale pending interaction without resolving the responder's request", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "backlog",
+      blockerAssigneeAgentId: "coder",
+    });
+    const interactionId = randomUUID();
+    const staleAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: blockerIssueId,
+      kind: "request_confirmation",
+      status: "pending",
+      payload: { version: 1, prompt: "Should this parked work proceed?" },
+      createdAt: staleAt,
+      updatedAt: staleAt,
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(1);
+    expect(result.escalationsCreated).toBe(1);
+    const [interaction] = await db
+      .select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId));
+    expect(interaction?.status).toBe("pending");
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, "harness_liveness_escalation"),
+      ));
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toMatchObject({
+      parentId: blockerIssueId,
+      originId: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
         "blocked_by_assigned_backlog_issue",
         blockerIssueId,
       ].join(":"),

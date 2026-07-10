@@ -1,5 +1,6 @@
 export {
   classifyIssueGraphLiveness,
+  ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS,
 } from "./recovery/issue-graph-liveness.js";
 export type {
   IssueGraphLivenessInput,
@@ -10,7 +11,9 @@ export type {
   IssueLivenessIssueInput,
   IssueLivenessOwnerCandidate,
   IssueLivenessOwnerCandidateReason,
+  IssueLivenessPendingInteractionPathInput,
   IssueLivenessRelationInput,
   IssueLivenessSeverity,
   IssueLivenessState,
+  IssueLivenessWaitingPathInput,
 } from "./recovery/issue-graph-liveness.js";

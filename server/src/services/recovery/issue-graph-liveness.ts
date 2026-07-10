@@ -58,6 +58,10 @@ export interface IssueLivenessWaitingPathInput {
   status: string;
 }
 
+export interface IssueLivenessPendingInteractionPathInput extends IssueLivenessWaitingPathInput {
+  createdAt: Date | string | null;
+}
+
 export interface IssueLivenessDependencyPathEntry {
   issueId: string;
   identifier: string | null;
@@ -100,13 +104,19 @@ export interface IssueGraphLivenessInput {
   agents: IssueLivenessAgentInput[];
   activeRuns?: IssueLivenessExecutionPathInput[];
   queuedWakeRequests?: IssueLivenessExecutionPathInput[];
-  pendingInteractions?: IssueLivenessWaitingPathInput[];
+  pendingInteractions?: IssueLivenessPendingInteractionPathInput[];
   pendingApprovals?: IssueLivenessWaitingPathInput[];
   openRecoveryIssues?: IssueLivenessWaitingPathInput[];
   now?: Date | string;
 }
 
 const INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running"]);
+
+// A pending interaction is a bounded human-response lease, not permanent proof
+// that an issue is healthy. Once a response has been outstanding for a day the
+// interaction still remains pending for the responder, but liveness recovery is
+// allowed to surface the missing handoff through its normal escalation path.
+export const ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function issueLabel(issue: IssueLivenessIssueInput) {
   return issue.identifier ?? issue.id;
@@ -142,6 +152,24 @@ function hasWaitingPath(
   waitingPaths: IssueLivenessWaitingPathInput[],
 ) {
   return waitingPaths.some((entry) => entry.companyId === companyId && entry.issueId === issueId);
+}
+
+function hasCurrentPendingInteractionPath(
+  companyId: string,
+  issueId: string,
+  pendingInteractions: IssueLivenessPendingInteractionPathInput[],
+  nowMs: number,
+) {
+  return pendingInteractions.some((entry) => {
+    if (entry.companyId !== companyId || entry.issueId !== issueId || entry.status !== "pending") {
+      return false;
+    }
+
+    const createdAtMs = readDateMs(entry.createdAt);
+    if (createdAtMs === null) return false;
+    const ageMs = nowMs - createdAtMs;
+    return ageMs >= 0 && ageMs <= ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS;
+  });
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
@@ -397,7 +425,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     return Boolean(issue.assigneeUserId) ||
       hasScheduledMonitor(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
-      hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
+      hasCurrentPendingInteractionPath(issue.companyId, issue.id, pendingInteractions, nowMs) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
       hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);
   }

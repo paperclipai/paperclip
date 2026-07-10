@@ -2531,6 +2531,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           companyId: issueThreadInteractions.companyId,
           issueId: issueThreadInteractions.issueId,
           status: issueThreadInteractions.status,
+          createdAt: issueThreadInteractions.createdAt,
         })
         .from(issueThreadInteractions)
         .where(eq(issueThreadInteractions.status, "pending")),

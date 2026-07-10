@@ -167,7 +167,7 @@ The valid action-path primitives are:
 - an active run linked to the issue
 - a queued wake or continuation that can be delivered to the responsible agent
 - a typed execution-policy participant, such as `executionState.currentParticipant`
-- a pending issue-thread interaction or linked approval that is waiting for a specific responder
+- a pending issue-thread interaction or linked approval that is waiting for a specific responder; interactions count as a healthy liveness path for 24 hours, after which the still-pending request remains available to answer but liveness recovery may surface the overdue handoff
 - a one-shot issue monitor (`executionPolicy.monitor.nextCheckAt`) that will wake the assignee for a future check
 - a human owner via `assigneeUserId`
 - a first-class blocker chain whose unresolved leaf issues are themselves healthy
@@ -218,7 +218,7 @@ Assigning an issue normally implies executable intent. When create APIs receive 
 
 An explicit assigned `backlog` issue remains valid when the creator is deliberately parking the work. It must not wake the assignee just because it has an assignee. Paperclip should make that choice visible in activity and UI so operators can distinguish intentional parking from a missed handoff.
 
-An assigned `backlog` issue becomes a liveness problem when another issue is blocked on it and there is no explicit waiting path such as a human owner, active run, queued wake, pending interaction or approval, monitor, or open recovery action. In that case the blocked parent should surface "blocked by parked work" rather than treating the dependency chain as healthy.
+An assigned `backlog` issue becomes a liveness problem when another issue is blocked on it and there is no explicit waiting path such as a human owner, active run, queued wake, current pending interaction or approval, monitor, or open recovery action. Pending interactions are current for 24 hours from creation; older requests remain answerable but no longer suppress recovery. In that case the blocked parent should surface "blocked by parked work" rather than treating the dependency chain as healthy.
 
 ### Agent-assigned `in_progress`
 

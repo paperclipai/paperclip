@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { classifyIssueGraphLiveness } from "../services/issue-liveness.ts";
+import {
+  classifyIssueGraphLiveness,
+  ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS,
+} from "../services/issue-liveness.ts";
 
 const companyId = "company-1";
 const managerId = "manager-1";
@@ -403,6 +406,7 @@ describe("issue graph liveness classifier", () => {
 
   it("does not flag healthy in_review issues with an explicit action path", () => {
     const reviewIssueId = "review-1";
+    const now = new Date("2026-07-10T12:00:00.000Z");
     const baseReviewIssue = issue({
       id: reviewIssueId,
       identifier: "PAP-2279",
@@ -448,7 +452,12 @@ describe("issue graph liveness classifier", () => {
       {
         name: "pending interaction",
         issue: baseReviewIssue,
-        pendingInteractions: [{ companyId, issueId: reviewIssueId, status: "pending" }],
+        pendingInteractions: [{
+          companyId,
+          issueId: reviewIssueId,
+          status: "pending",
+          createdAt: new Date(now.getTime() - 60 * 60 * 1000),
+        }],
       },
       {
         name: "pending approval",
@@ -472,10 +481,88 @@ describe("issue graph liveness classifier", () => {
         pendingInteractions: testCase.pendingInteractions,
         pendingApprovals: testCase.pendingApprovals,
         openRecoveryIssues: testCase.openRecoveryIssues,
+        now,
       });
 
       expect(findings, testCase.name).toEqual([]);
     }
+  });
+
+  it("stops stale or unverifiable pending interactions from masking stalled review work", () => {
+    const reviewIssueId = "review-1";
+    const now = new Date("2026-07-10T12:00:00.000Z");
+    const reviewIssue = issue({
+      id: reviewIssueId,
+      identifier: "PAP-2279",
+      title: "Screenshot acceptance review",
+      status: "in_review",
+      assigneeAgentId: coderId,
+      executionState: null,
+    });
+    const staleOrInvalidCases = [
+      {
+        name: "older than the response lease",
+        createdAt: new Date(now.getTime() - ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS - 1),
+        status: "pending",
+      },
+      { name: "missing creation time", createdAt: null, status: "pending" },
+      {
+        name: "future creation time",
+        createdAt: new Date(now.getTime() + 1),
+        status: "pending",
+      },
+      {
+        name: "already resolved",
+        createdAt: new Date(now.getTime() - 60 * 60 * 1000),
+        status: "accepted",
+      },
+    ];
+
+    for (const testCase of staleOrInvalidCases) {
+      const findings = classifyIssueGraphLiveness({
+        issues: [reviewIssue],
+        relations: [],
+        agents: [agent(), manager],
+        pendingInteractions: [{
+          companyId,
+          issueId: reviewIssueId,
+          status: testCase.status,
+          createdAt: testCase.createdAt,
+        }],
+        now,
+      });
+
+      expect(findings, testCase.name).toHaveLength(1);
+      expect(findings[0]).toMatchObject({
+        state: "in_review_without_action_path",
+        recoveryIssueId: reviewIssueId,
+      });
+    }
+  });
+
+  it("keeps a pending interaction valid through the response-lease boundary", () => {
+    const reviewIssueId = "review-1";
+    const now = new Date("2026-07-10T12:00:00.000Z");
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [issue({
+        id: reviewIssueId,
+        status: "in_review",
+        assigneeAgentId: coderId,
+        executionState: null,
+      })],
+      relations: [],
+      agents: [agent(), manager],
+      pendingInteractions: [{
+        companyId,
+        issueId: reviewIssueId,
+        status: "pending",
+        createdAt: new Date(now.getTime() - ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS),
+      }],
+      now,
+    });
+
+    expect(findings).toEqual([]);
   });
 
   it("ignores cross-company waiting paths for stalled in_review issues", () => {
