@@ -96,6 +96,45 @@ function isEquivalentCreateRequest(
   );
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hydrateSuggestedTasksPayload(
+  payload: unknown,
+): SuggestTasksInteraction["payload"] {
+  if (!isPlainRecord(payload) || !Array.isArray(payload.tasks)) {
+    return suggestTasksPayloadSchema.parse(payload);
+  }
+  const rawTasks = payload.tasks;
+
+  // Historical rows may contain execution contracts written before the
+  // canonical field schema existed. Keep list/get readable by validating the
+  // interaction envelope and task fields without reparsing that one payload.
+  const tasksWithoutContracts = rawTasks.map((task) => {
+    if (!isPlainRecord(task)) return task;
+    const { executionContract: _legacyExecutionContract, ...taskFields } = task;
+    return taskFields;
+  });
+  const parsed = suggestTasksPayloadSchema.parse({
+    ...payload,
+    tasks: tasksWithoutContracts,
+  });
+  return {
+    ...parsed,
+    tasks: parsed.tasks.map((task, index) => {
+      const rawTask = rawTasks[index];
+      if (!isPlainRecord(rawTask) || !Object.prototype.hasOwnProperty.call(rawTask, "executionContract")) {
+        return task;
+      }
+      return {
+        ...task,
+        executionContract: rawTask.executionContract as SuggestTasksInteraction["payload"]["tasks"][number]["executionContract"],
+      };
+    }),
+  };
+}
+
 function hydrateInteraction(
   row: IssueThreadInteractionRow,
 ): IssueThreadInteraction {
@@ -111,7 +150,7 @@ function hydrateInteraction(
       return {
         ...base,
         kind: "suggest_tasks",
-        payload: suggestTasksPayloadSchema.parse(row.payload),
+        payload: hydrateSuggestedTasksPayload(row.payload),
         result: row.result ? suggestTasksResultSchema.parse(row.result) : null,
       } satisfies SuggestTasksInteraction;
     case "ask_user_questions":
@@ -788,7 +827,17 @@ export function issueThreadInteractionService(db: Db) {
         throw conflict("Interaction has already been resolved");
       }
 
-      const interaction = hydrateInteraction(current) as SuggestTasksInteraction;
+      const currentPayload = suggestTasksPayloadSchema.safeParse(current.payload);
+      if (!currentPayload.success) {
+        throw unprocessable("Stored suggested tasks do not satisfy the current acceptance schema", {
+          code: "invalid_suggested_tasks_schema",
+          issues: currentPayload.error.issues,
+        });
+      }
+      const interaction = {
+        ...(hydrateInteraction(current) as SuggestTasksInteraction),
+        payload: currentPayload.data,
+      };
       assertSuggestedTasksAreDirect(interaction.payload.tasks);
       // Accepting a proposal resolves the interaction, but it does not become
       // the origin of the proposed work. Preserve the proposer so a board

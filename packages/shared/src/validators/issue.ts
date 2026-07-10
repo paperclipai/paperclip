@@ -76,6 +76,48 @@ const executionContractStructuredContentSchema = z.union([
   z.record(z.unknown()),
 ]);
 
+function executionContractValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((item, index) => executionContractValuesEqual(item, right[index]));
+  }
+  if (
+    !left ||
+    !right ||
+    typeof left !== "object" ||
+    typeof right !== "object"
+  ) return false;
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord).sort();
+  const rightKeys = Object.keys(rightRecord).sort();
+  return leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) =>
+      key === rightKeys[index] && executionContractValuesEqual(leftRecord[key], rightRecord[key]));
+}
+
+function addExecutionContractAliasConflict(
+  value: Record<string, unknown>,
+  canonical: string,
+  legacy: string,
+  ctx: z.RefinementCtx,
+) {
+  if (
+    value[canonical] !== undefined &&
+    value[legacy] !== undefined &&
+    !executionContractValuesEqual(value[canonical], value[legacy])
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `executionContract ${canonical} and ${legacy} must match when both are provided`,
+      path: [canonical],
+    });
+  }
+}
+
 const executionContractHandoffNotesSchema = z.object({
   managerReasoning: executionContractTextSchema.optional(),
   manager_reasoning: executionContractTextSchema.optional(),
@@ -83,7 +125,11 @@ const executionContractHandoffNotesSchema = z.object({
   current_blocker: executionContractTextSchema.nullable().optional(),
   nextAction: executionContractTextSchema.nullable().optional(),
   next_action: executionContractTextSchema.nullable().optional(),
-}).passthrough();
+}).passthrough().superRefine((value, ctx) => {
+  addExecutionContractAliasConflict(value, "managerReasoning", "manager_reasoning", ctx);
+  addExecutionContractAliasConflict(value, "currentBlocker", "current_blocker", ctx);
+  addExecutionContractAliasConflict(value, "nextAction", "next_action", ctx);
+});
 
 const issueExecutionContractCoreSchema = z.object({
   objective: executionContractTextSchema.optional(),
@@ -98,7 +144,12 @@ const issueExecutionContractCoreSchema = z.object({
   evidence_required: executionContractStructuredContentSchema.optional(),
   handoffNotes: executionContractHandoffNotesSchema.optional(),
   handoff_notes: executionContractHandoffNotesSchema.optional(),
-}).passthrough();
+}).passthrough().superRefine((value, ctx) => {
+  addExecutionContractAliasConflict(value, "sourceOfTruth", "source_of_truth", ctx);
+  addExecutionContractAliasConflict(value, "acceptanceChecks", "acceptance_checks", ctx);
+  addExecutionContractAliasConflict(value, "evidenceRequired", "evidence_required", ctx);
+  addExecutionContractAliasConflict(value, "handoffNotes", "handoff_notes", ctx);
+});
 
 /**
  * The execution-contract envelope is explicit for fields Paperclip interprets,
@@ -126,17 +177,7 @@ export const issueExecutionContractSchema = z.object({
     ["taskType", "task_type"],
   ] as const;
   for (const [canonical, legacy] of aliasPairs) {
-    if (
-      value[canonical] !== undefined &&
-      value[legacy] !== undefined &&
-      value[canonical] !== value[legacy]
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `executionContract ${canonical} and ${legacy} must match when both are provided`,
-        path: [canonical],
-      });
-    }
+    addExecutionContractAliasConflict(value, canonical, legacy, ctx);
   }
 });
 

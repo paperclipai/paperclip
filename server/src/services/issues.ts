@@ -290,16 +290,15 @@ async function assertChildIssueCreationAllowed(
   dbOrTx: DbReader,
   companyId: string,
   parentIssueId: string,
+  options: { lockParent?: boolean } = {},
 ) {
-  const parent = await dbOrTx
-    .select({
-      id: issues.id,
-      companyId: issues.companyId,
-      parentId: issues.parentId,
-    })
+  const parentSelection = dbOrTx
+    .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId })
     .from(issues)
-    .where(and(eq(issues.id, parentIssueId), eq(issues.companyId, companyId)))
-    .then((rows) => rows[0] ?? null);
+    .where(and(eq(issues.id, parentIssueId), eq(issues.companyId, companyId)));
+  const parent = options.lockParent
+    ? await parentSelection.for("update").then((rows) => rows[0] ?? null)
+    : await parentSelection.then((rows) => rows[0] ?? null);
   if (!parent) throw notFound("Parent issue not found");
   if (parent.parentId) {
     throw unprocessable(
@@ -324,17 +323,23 @@ async function assertIssueParentUpdateAllowed(
   dbOrTx: DbReader,
   existing: IssueRow,
   nextParentId: string,
+  options: { lockRows?: boolean } = {},
 ) {
   if (nextParentId === existing.id) {
     throw unprocessable("An issue cannot be its own parent");
   }
-  await assertChildIssueCreationAllowed(dbOrTx, existing.companyId, nextParentId);
+  await assertChildIssueCreationAllowed(dbOrTx, existing.companyId, nextParentId, {
+    lockParent: options.lockRows,
+  });
 
-  const [{ childCount }] = await dbOrTx
-    .select({ childCount: sql<number>`count(*)::int` })
+  const childSelection = dbOrTx
+    .select({ id: issues.id })
     .from(issues)
     .where(and(eq(issues.companyId, existing.companyId), eq(issues.parentId, existing.id)));
-  if (childCount > 0) {
+  const children = options.lockRows
+    ? await childSelection.for("update")
+    : await childSelection;
+  if (children.length > 0) {
     throw unprocessable(
       "Main issues with execution lanes cannot become child issues. Paperclip supports only one child level.",
     );
@@ -484,6 +489,56 @@ function normalizeExecutionContractValue(value: unknown): Record<string, unknown
   return isRecord(value) ? value : null;
 }
 
+function canonicalizeExecutionContractAlias(
+  value: Record<string, unknown>,
+  canonical: string,
+  legacy: string,
+) {
+  if (value[canonical] === undefined && value[legacy] !== undefined) {
+    value[canonical] = value[legacy];
+  }
+  delete value[legacy];
+}
+
+function canonicalizeExecutionContractAliases(value: Record<string, unknown>) {
+  const canonical = { ...value };
+  canonicalizeExecutionContractAlias(canonical, "schemaVersion", "schema_version");
+  canonicalizeExecutionContractAlias(canonical, "supersedesRevision", "supersedes_revision");
+  canonicalizeExecutionContractAlias(canonical, "contractType", "contract_type");
+  canonicalizeExecutionContractAlias(canonical, "taskType", "task_type");
+
+  if (isRecord(canonical.core)) {
+    const core = { ...canonical.core };
+    canonicalizeExecutionContractAlias(core, "sourceOfTruth", "source_of_truth");
+    canonicalizeExecutionContractAlias(core, "acceptanceChecks", "acceptance_checks");
+    canonicalizeExecutionContractAlias(core, "evidenceRequired", "evidence_required");
+    canonicalizeExecutionContractAlias(core, "handoffNotes", "handoff_notes");
+    if (isRecord(core.handoffNotes)) {
+      const handoffNotes = { ...core.handoffNotes };
+      canonicalizeExecutionContractAlias(handoffNotes, "managerReasoning", "manager_reasoning");
+      canonicalizeExecutionContractAlias(handoffNotes, "currentBlocker", "current_blocker");
+      canonicalizeExecutionContractAlias(handoffNotes, "nextAction", "next_action");
+      core.handoffNotes = handoffNotes;
+    }
+    canonical.core = core;
+  }
+  return canonical;
+}
+
+function executionContractsAreSemanticallyEqual(
+  previous: Record<string, unknown> | null,
+  next: Record<string, unknown> | null,
+) {
+  if (!previous || !next) return previous === next;
+  const previousSemantic = canonicalizeExecutionContractAliases(previous);
+  const nextSemantic = canonicalizeExecutionContractAliases(next);
+  delete previousSemantic.revision;
+  delete previousSemantic.supersedesRevision;
+  delete nextSemantic.revision;
+  delete nextSemantic.supersedesRevision;
+  return isDeepStrictEqual(previousSemantic, nextSemantic);
+}
+
 function parseExecutionContractValue(value: unknown): Record<string, unknown> | null {
   if (value == null) return null;
   const parsed = issueExecutionContractSchema.safeParse(value);
@@ -493,7 +548,7 @@ function parseExecutionContractValue(value: unknown): Record<string, unknown> | 
       issues: parsed.error.issues,
     });
   }
-  return parsed.data;
+  return canonicalizeExecutionContractAliases(parsed.data);
 }
 
 function executionContractRevision(value: Record<string, unknown> | null | undefined) {
@@ -524,8 +579,9 @@ function prepareInitialExecutionContract(
       expectedSupersedesRevision: null,
     });
   }
+  const canonical = canonicalizeExecutionContractAliases(value);
   return {
-    ...value,
+    ...canonical,
     revision: 1,
   };
 }
@@ -542,10 +598,12 @@ function issueExecutionContractIsFrozen(issue: IssueRow) {
 function prepareUpdatedExecutionContract(input: {
   existing: IssueRow;
   next: Record<string, unknown> | null;
-}): Record<string, unknown> | null {
+}): { changed: boolean; value: Record<string, unknown> | null } {
   const previous = normalizeExecutionContractValue(input.existing.executionContract);
-  if (isDeepStrictEqual(previous, input.next)) return input.next;
-  if (previous && issueExecutionContractIsFrozen(input.existing)) {
+  if (executionContractsAreSemanticallyEqual(previous, input.next)) {
+    return { changed: false, value: previous };
+  }
+  if (issueExecutionContractIsFrozen(input.existing)) {
     throw conflict(
       "executionContract is frozen once issue execution begins; create a replacement issue for a superseding contract",
       {
@@ -554,8 +612,8 @@ function prepareUpdatedExecutionContract(input: {
       },
     );
   }
-  if (!input.next) return null;
-  if (!previous) return prepareInitialExecutionContract(input.next);
+  if (!input.next) return { changed: true, value: null };
+  if (!previous) return { changed: true, value: prepareInitialExecutionContract(input.next) };
 
   const currentRevision = executionContractRevision(previous) ?? 1;
   const expectedRevision = currentRevision + 1;
@@ -588,10 +646,15 @@ function prepareUpdatedExecutionContract(input: {
       receivedSupersedesRevision: requestedSupersedesRevision,
     });
   }
+  const next = canonicalizeExecutionContractAliases(input.next);
+  delete next.supersedes_revision;
   return {
-    ...input.next,
-    revision: expectedRevision,
-    supersedesRevision: currentRevision,
+    changed: true,
+    value: {
+      ...next,
+      revision: expectedRevision,
+      supersedesRevision: currentRevision,
+    },
   };
 }
 
@@ -3852,7 +3915,7 @@ export function issueService(db: Db) {
       }
       return db.transaction(async (tx) => {
         if (issueData.parentId) {
-          await assertChildIssueCreationAllowed(tx, companyId, issueData.parentId);
+          await assertChildIssueCreationAllowed(tx, companyId, issueData.parentId, { lockParent: true });
         }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
@@ -4096,20 +4159,20 @@ export function issueService(db: Db) {
       if (Object.prototype.hasOwnProperty.call(contractFields, "description")) {
         issueData.description = contractFields.description ?? null;
       }
+      let executionContractWillChange = false;
       if (Object.prototype.hasOwnProperty.call(contractFields, "executionContract")) {
-        issueData.executionContract = prepareUpdatedExecutionContract({
+        const preparedContract = prepareUpdatedExecutionContract({
           existing,
           next: contractFields.executionContract ?? null,
         });
+        executionContractWillChange = preparedContract.changed;
+        if (preparedContract.changed) {
+          issueData.executionContract = preparedContract.value;
+        } else {
+          delete issueData.executionContract;
+        }
       }
       const parentWillChange = issueData.parentId !== undefined && issueData.parentId !== existing.parentId;
-      if (parentWillChange && issueData.parentId) {
-        await assertIssueParentUpdateAllowed(dbOrTx, existing, issueData.parentId);
-      }
-      const executionContractWillChange = Object.prototype.hasOwnProperty.call(
-        contractFields,
-        "executionContract",
-      );
       const nextParentId = issueData.parentId !== undefined ? issueData.parentId : existing.parentId;
       if (
         nextParentId &&
@@ -4234,6 +4297,45 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        let lockedExisting = existing;
+        if (parentWillChange || executionContractWillChange) {
+          const lockedRow = await tx
+            .select()
+            .from(issues)
+            .where(and(eq(issues.id, id), eq(issues.companyId, existing.companyId)))
+            .for("update")
+            .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+          if (!lockedRow) return null;
+          lockedExisting = lockedRow;
+        }
+        if (executionContractWillChange) {
+          if (!isDeepStrictEqual(lockedExisting.executionContract, existing.executionContract)) {
+            throw conflict("executionContract changed while this revision was being updated", {
+              code: "execution_contract_revision_conflict",
+            });
+          }
+          if (issueExecutionContractIsFrozen(lockedExisting)) {
+            throw conflict(
+              "executionContract is frozen once issue execution begins; create a replacement issue for a superseding contract",
+              {
+                code: "execution_contract_frozen",
+                currentRevision:
+                  executionContractRevision(normalizeExecutionContractValue(lockedExisting.executionContract)) ?? 1,
+              },
+            );
+          }
+        }
+        if (parentWillChange) {
+          if (lockedExisting.parentId !== existing.parentId) {
+            throw conflict("Issue parent changed while this topology update was being applied", {
+              code: "issue_parent_conflict",
+            });
+          }
+          if (nextParentId) {
+            await assertIssueParentUpdateAllowed(tx, lockedExisting, nextParentId, { lockRows: true });
+          }
+        }
+
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),

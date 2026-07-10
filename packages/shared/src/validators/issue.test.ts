@@ -89,6 +89,38 @@ describe("issue validators", () => {
     }).success).toBe(false);
   });
 
+  it("rejects conflicting execution contract aliases at every interpreted level", () => {
+    expect(updateIssueSchema.safeParse({
+      executionContract: {
+        revision: 3,
+        supersedesRevision: 2,
+        supersedes_revision: 1,
+      },
+    }).success).toBe(false);
+
+    expect(createIssueSchema.safeParse({
+      title: "Conflicting contract",
+      executionContract: {
+        core: {
+          sourceOfTruth: { files: ["SPEC.md"] },
+          source_of_truth: { files: ["OTHER.md"] },
+        },
+      },
+    }).success).toBe(false);
+
+    expect(createIssueSchema.safeParse({
+      title: "Conflicting handoff notes",
+      executionContract: {
+        core: {
+          handoffNotes: {
+            managerReasoning: "Canonical reasoning",
+            manager_reasoning: "Different legacy reasoning",
+          },
+        },
+      },
+    }).success).toBe(false);
+  });
+
   it("normalizes JSON-escaped line breaks in issue descriptions", () => {
     const parsed = createIssueSchema.parse({
       title: "Follow up PR",

@@ -442,6 +442,71 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     ).rejects.toThrow("parentClientKey graphs are not supported");
   });
 
+  it("keeps legacy suggested tasks readable but enforces the current schema on acceptance", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Legacy suggested tasks",
+      status: "todo",
+      priority: "medium",
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "suggest_tasks",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByUserId: "local-board",
+      payload: {
+        version: 1,
+        tasks: [{
+          clientKey: "legacy",
+          title: "Legacy task",
+          executionContract: {
+            schemaVersion: "2",
+            core: ["legacy-contract-shape"],
+          },
+        }],
+      },
+    });
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      id: interactionId,
+      payload: {
+        tasks: [{
+          executionContract: {
+            schemaVersion: "2",
+            core: ["legacy-contract-shape"],
+          },
+        }],
+      },
+    });
+    expect(await interactionsSvc.getById(interactionId)).toMatchObject({ id: interactionId });
+
+    await expect(interactionsSvc.acceptSuggestedTasks({
+      id: issueId,
+      companyId,
+      goalId: null,
+      projectId: null,
+    }, interactionId, {}, { userId: "local-board" })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "invalid_suggested_tasks_schema" },
+    });
+    expect((await interactionsSvc.getById(interactionId))?.status).toBe("pending");
+  });
+
   it("persists validated answers for ask_user_questions interactions", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

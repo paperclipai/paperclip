@@ -129,6 +129,21 @@ function makeValidExecutionContract(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function descriptionWithInlineExecutionContract(
+  prefix: string,
+  contract: Record<string, unknown>,
+) {
+  return [
+    prefix,
+    "",
+    "## Execution Contract",
+    "",
+    "```json",
+    JSON.stringify(contract),
+    "```",
+  ].join("\n");
+}
+
 describe("deriveIssueCommentRunLogAttribution", () => {
   it("recovers agent attribution from run logs that printed the posted comment id", () => {
     const commentId = randomUUID();
@@ -2522,6 +2537,54 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(issue.executionContract).toEqual({ ...executionContract, revision: 1 });
   });
 
+  it("canonicalizes accepted legacy aliases before storing a new contract revision", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Canonical contract",
+      status: "todo",
+      executionContract: {
+        schema_version: 2,
+        contract_type: "delegated_task",
+        task_type: "implementation",
+        core: {
+          objective: "Store one canonical envelope.",
+          why: "Alias fields must not drift across revisions.",
+          source_of_truth: { files: ["SPEC.md"] },
+          acceptance_checks: ["Only canonical keys are persisted"],
+          handoff_notes: {
+            manager_reasoning: "The old client still writes snake_case.",
+            next_action: "Execute the lane.",
+          },
+        },
+      },
+    });
+
+    expect(issue.executionContract).toMatchObject({
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "implementation",
+      revision: 1,
+      core: {
+        sourceOfTruth: { files: ["SPEC.md"] },
+        acceptanceChecks: ["Only canonical keys are persisted"],
+        handoffNotes: {
+          managerReasoning: "The old client still writes snake_case.",
+          nextAction: "Execute the lane.",
+        },
+      },
+    });
+    expect(JSON.stringify(issue.executionContract)).not.toContain("_version");
+    expect(JSON.stringify(issue.executionContract)).not.toContain("source_of_truth");
+    expect(JSON.stringify(issue.executionContract)).not.toContain("manager_reasoning");
+  });
+
   it("rejects malformed execution contracts in direct service create and update calls", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
@@ -2596,6 +2659,81 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     })).rejects.toMatchObject({
       status: 409,
       details: { code: "execution_contract_frozen", currentRevision: 3 },
+    });
+  });
+
+  it("does not allow adding a first execution contract after execution has started", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Already executing without a contract",
+      status: "in_review",
+      priority: "medium",
+      startedAt: new Date(),
+    });
+
+    await expect(svc.update(issueId, {
+      executionContract: makeValidExecutionContract(),
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "execution_contract_frozen" },
+    });
+  });
+
+  it("rechecks frozen execution state after acquiring the update row lock", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const issue = await svc.create(companyId, {
+      title: "Concurrent contract update",
+      status: "todo",
+      executionContract: makeValidExecutionContract(),
+    });
+
+    let releaseLock!: () => void;
+    let reportLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { reportLocked = resolve; });
+    const release = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const executionTransition = db.transaction(async (tx) => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issue.id)).for("update");
+      reportLocked();
+      await release;
+      await tx.update(issues).set({
+        status: "in_review",
+        startedAt: new Date(),
+      }).where(eq(issues.id, issue.id));
+    });
+
+    await locked;
+    const contractUpdate = svc.update(issue.id, {
+      executionContract: makeValidExecutionContract({ taskType: "qa" }),
+    }).then(
+      (value) => ({ value, error: null }),
+      (error: unknown) => ({ value: null, error }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    releaseLock();
+    await executionTransition;
+
+    expect((await contractUpdate).error).toMatchObject({
+      status: 409,
+      details: { code: "execution_contract_frozen" },
+    });
+    expect((await svc.getById(issue.id))?.executionContract).toMatchObject({
+      revision: 1,
+      taskType: "implementation",
     });
   });
 
@@ -2774,6 +2912,52 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       contractType: "delegated_task",
       taskType: "implementation",
     });
+  });
+
+  it("treats description-only edits with the same inline legacy contract as semantic no-ops", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const legacyContract = makeValidExecutionContract();
+    const preStartIssueId = randomUUID();
+    const postStartIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: preStartIssueId,
+        companyId,
+        title: "Legacy contract before execution",
+        description: descriptionWithInlineExecutionContract("Original brief.", legacyContract),
+        executionContract: legacyContract,
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: postStartIssueId,
+        companyId,
+        title: "Legacy contract after execution",
+        description: descriptionWithInlineExecutionContract("Original active brief.", legacyContract),
+        executionContract: { ...legacyContract, revision: 1 },
+        status: "in_review",
+        priority: "medium",
+        startedAt: new Date(),
+      },
+    ]);
+
+    const preStart = await svc.update(preStartIssueId, {
+      description: descriptionWithInlineExecutionContract("Edited brief.", legacyContract),
+    });
+    const postStart = await svc.update(postStartIssueId, {
+      description: descriptionWithInlineExecutionContract("Edited active brief.", legacyContract),
+    });
+
+    expect(preStart?.description).toContain("Edited brief.");
+    expect(preStart?.executionContract).toEqual(legacyContract);
+    expect(postStart?.description).toContain("Edited active brief.");
+    expect(postStart?.executionContract).toEqual({ ...legacyContract, revision: 1 });
   });
 
   it("rejects agent-created child issues without a valid execution contract", async () => {
@@ -3055,6 +3239,55 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       status: "todo",
       priority: "medium",
     })).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("serializes concurrent child creation at the direct-lane cap", async () => {
+    const companyId = randomUUID();
+    const parentIssueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Concurrent lane parent",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(issues).values(
+      Array.from({ length: MAX_DIRECT_CHILD_ISSUES_PER_PARENT - 1 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        parentId: parentIssueId,
+        title: `Existing lane ${index + 1}`,
+        status: "todo",
+        priority: "medium",
+      })),
+    );
+
+    const attempts = await Promise.allSettled([
+      svc.create(companyId, {
+        parentId: parentIssueId,
+        title: "Concurrent lane A",
+        status: "todo",
+      }),
+      svc.create(companyId, {
+        parentId: parentIssueId,
+        title: "Concurrent lane B",
+        status: "todo",
+      }),
+    ]);
+    expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(1);
+    expect(attempts.filter((attempt) => attempt.status === "rejected")).toHaveLength(1);
+    expect(attempts.find((attempt) => attempt.status === "rejected")).toMatchObject({
+      reason: { status: 422 },
+    });
+
+    const children = await svc.list(companyId, { parentId: parentIssueId });
+    expect(children).toHaveLength(MAX_DIRECT_CHILD_ISSUES_PER_PARENT);
   });
 });
 
