@@ -2,6 +2,7 @@
 
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CompanyEnvironments } from "./CompanyEnvironments";
@@ -149,7 +150,7 @@ const mockSecretsApi = vi.hoisted(() => ({
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "company-1",
-    selectedCompany: { id: "company-1", name: "Paperclip" },
+    selectedCompany: null,
   }),
 }));
 
@@ -177,7 +178,7 @@ vi.mock("@/api/secrets", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-// Minimal Radix dialog dependency for jsdom.
+// Minimal browser APIs for jsdom.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).ResizeObserver = class {
   observe() {}
@@ -262,12 +263,16 @@ function findButton(root: ParentNode, label: string): HTMLButtonElement | undefi
   return Array.from(root.querySelectorAll("button")).find((button) => button.textContent?.trim() === label);
 }
 
-function editButtons(root: ParentNode): HTMLButtonElement[] {
-  return Array.from(root.querySelectorAll("button")).filter((button) => button.textContent?.trim() === "Edit");
+function findAction(root: ParentNode, label: string): HTMLElement | undefined {
+  return Array.from(root.querySelectorAll<HTMLElement>("button,a")).find((element) => element.textContent?.trim() === label);
+}
+
+function editButtons(root: ParentNode): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>("button,a")).filter((element) => element.textContent?.trim() === "Edit");
 }
 
 function click(element: Element | null | undefined) {
-  element?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  element?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 }
 
 function setInputValue(input: HTMLInputElement, value: string) {
@@ -276,8 +281,26 @@ function setInputValue(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-function getOpenDialog(): HTMLElement | null {
-  return document.body.querySelector("[role='dialog']");
+const ENVIRONMENTS_PATH = "/company/settings/instance/environments";
+
+function getEnvironmentFormPage(): HTMLElement | null {
+  return document.body.querySelector("[data-testid='environment-form-page']");
+}
+
+function renderCompanyEnvironments(queryClient: QueryClient, initialPath = ENVIRONMENTS_PATH) {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <TooltipProvider>
+          <Routes>
+            <Route path={ENVIRONMENTS_PATH} element={<CompanyEnvironments />} />
+            <Route path={`${ENVIRONMENTS_PATH}/new`} element={<CompanyEnvironments mode="create" />} />
+            <Route path={`${ENVIRONMENTS_PATH}/:environmentId/edit`} element={<CompanyEnvironments mode="edit" />} />
+          </Routes>
+        </TooltipProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
 }
 
 function createSession(overrides: Record<string, unknown> = {}) {
@@ -459,13 +482,7 @@ describe("CompanyEnvironments — test provider button", () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
@@ -511,13 +528,7 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
@@ -556,13 +567,7 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
@@ -582,13 +587,7 @@ describe("CompanyEnvironments — test provider button", () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
@@ -613,66 +612,58 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(buttons[1].disabled).toBe(true);
   });
 
-  it("opens the add-environment form in a dialog and closes it on cancel", async () => {
+  it("opens the add-environment form on a standalone page and closes it on cancel", async () => {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => {
-      findButton(container, "Add environment")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      click(findAction(container, "Add environment"));
     });
-    await flushReact();
 
-    expect(getOpenDialog()?.textContent).toContain("Add environment");
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Add environment");
+    });
 
     await act(async () => {
       findButton(document.body, "Cancel")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
-    expect(getOpenDialog()).toBeNull();
+    expect(getEnvironmentFormPage()).toBeNull();
   });
 
-  it("opens the edit form in a dialog with existing values and closes after save", async () => {
+  it("opens the edit form on a standalone page with existing values and closes after save", async () => {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => {
-      findButton(container, "Edit")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      click(findAction(container, "Edit"));
     });
-    await flushReact();
 
-    const dialog = getOpenDialog();
-    expect(dialog?.textContent).toContain("Edit environment");
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+
+    const page = getEnvironmentFormPage();
+    expect(document.body.querySelector("[role='dialog']")).toBeNull();
     expect(
-      Array.from(dialog?.querySelectorAll("input") ?? []).some((input) => (input as HTMLInputElement).value === "Alpha"),
+      Array.from(page?.querySelectorAll("input") ?? []).some((input) => (input as HTMLInputElement).value === "Alpha"),
     ).toBe(true);
 
-    await act(async () => click(findButton(dialog!, "Add variable")));
+    await act(async () => click(findButton(page!, "Add variable")));
     await flushReact();
-    const variableName = dialog!.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')!;
-    const variableValue = dialog!.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    const variableName = page!.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')!;
+    const variableValue = page!.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
     await act(async () => {
       setInputValue(variableName, "API_TOKEN");
       setInputValue(variableValue, "draft-token");
@@ -692,7 +683,7 @@ describe("CompanyEnvironments — test provider button", () => {
         envVars: { API_TOKEN: { type: "plain", value: "draft-token" } },
       }),
     );
-    expect(getOpenDialog()).toBeNull();
+    expect(getEnvironmentFormPage()).toBeNull();
   });
 
   it("shows image setup controls only for providers advertising setup and capture support", async () => {
@@ -747,40 +738,34 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
-    // Daytona supports setup + capture → "Configure image" in its config dialog.
+    // Daytona supports setup + capture -> "Configure image" on its edit page.
     await act(async () => click(editButtons(container)[0]));
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain("Configure image");
+      expect(getEnvironmentFormPage()?.textContent).toContain("Configure image");
     });
     expect(mockEnvironmentsApi.customImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
     await act(async () => click(findButton(document.body, "Cancel")));
-    await waitForAssertion(() => expect(getOpenDialog()).toBeNull());
+    await waitForAssertion(() => expect(getEnvironmentFormPage()).toBeNull());
 
     // E2B does not advertise interactive setup.
     await act(async () => click(editButtons(container)[1]));
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain("Unsupported provider");
+      expect(getEnvironmentFormPage()?.textContent).toContain("Unsupported provider");
     });
-    expect(getOpenDialog()?.textContent).not.toContain("Configure image");
+    expect(getEnvironmentFormPage()?.textContent).not.toContain("Configure image");
     await act(async () => click(findButton(document.body, "Cancel")));
-    await waitForAssertion(() => expect(getOpenDialog()).toBeNull());
+    await waitForAssertion(() => expect(getEnvironmentFormPage()).toBeNull());
 
     // Provider advertises setup but cannot capture an image.
     await act(async () => click(editButtons(container)[2]));
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain("Setup capture unavailable");
+      expect(getEnvironmentFormPage()?.textContent).toContain("Setup capture unavailable");
     });
-    expect(getOpenDialog()?.textContent).not.toContain("Configure image");
+    expect(getEnvironmentFormPage()?.textContent).not.toContain("Configure image");
   });
 
   it("shows a live connect command and removes it after cancellation", async () => {
@@ -826,31 +811,25 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => click(editButtons(container)[0]));
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain(command);
+      expect(getEnvironmentFormPage()?.textContent).toContain(command);
     });
 
-    await act(async () => click(findButton(getOpenDialog()!, "Cancel")));
+    await act(async () => click(findButton(getEnvironmentFormPage()!, "Cancel")));
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain("Setup cancelled");
+      expect(getEnvironmentFormPage()?.textContent).toContain("Setup cancelled");
     });
 
     expect(mockEnvironmentsApi.cancelCustomImageSetupSession).toHaveBeenCalledExactlyOnceWith(
       "session-1",
       { reason: "operator cancelled" },
     );
-    expect(getOpenDialog()?.textContent).not.toContain(command);
+    expect(getEnvironmentFormPage()?.textContent).not.toContain(command);
   });
 
   it("opens an embedded browser terminal automatically while preserving the SSH command fallback", async () => {
@@ -872,21 +851,15 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => click(editButtons(container)[0]));
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain(command);
-      expect(getOpenDialog()?.textContent).toContain("Browser terminal");
-      expect(getOpenDialog()?.textContent).toContain("SSH command fallback");
+      expect(getEnvironmentFormPage()?.textContent).toContain(command);
+      expect(getEnvironmentFormPage()?.textContent).toContain("Browser terminal");
+      expect(getEnvironmentFormPage()?.textContent).toContain("SSH command fallback");
       expect(mockEnvironmentsApi.createCustomImageTerminalSessionToken).toHaveBeenCalledExactlyOnceWith("session-1", {});
       expect(FakeWebSocket.instances).toHaveLength(1);
     });
@@ -915,7 +888,7 @@ describe("CompanyEnvironments — test provider button", () => {
       FakeWebSocket.instances[0].emitMessage(JSON.stringify({ type: "ready" }));
       FakeWebSocket.instances[0].emitMessage(JSON.stringify({ type: "output", data: "\u001b[?2004hsetup shell\r\n$ " }));
     });
-    const terminalScreen = getOpenDialog()?.querySelector<HTMLElement>(
+    const terminalScreen = getEnvironmentFormPage()?.querySelector<HTMLElement>(
       "[data-testid='custom-image-terminal-screen-session-1']",
     );
     await waitForAssertion(() => {
@@ -923,7 +896,7 @@ describe("CompanyEnvironments — test provider button", () => {
       expect(xtermMocks.terminalInstances[0].writes.join("")).toContain("setup shell");
       expect(xtermMocks.terminalInstances[0].focused).toBe(true);
       expect(document.activeElement).toBe(terminalScreen);
-      expect(getOpenDialog()?.textContent).toContain(command);
+      expect(getEnvironmentFormPage()?.textContent).toContain(command);
     });
     expect(FakeWebSocket.instances[0].sent).toContain(JSON.stringify({
       type: "auth",
@@ -938,6 +911,48 @@ describe("CompanyEnvironments — test provider button", () => {
 
     expect(FakeWebSocket.instances[0].sent).toContain(JSON.stringify({ type: "input", data: "l" }));
     expect(FakeWebSocket.instances[0].sent).toContain(JSON.stringify({ type: "input", data: "\r" }));
+  });
+
+  it("keeps the environment edit page open when Escape is pressed in setup terminal", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const command = "ssh sandbox@setup.example.invalid -p 2222";
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: null,
+      activeSession: createSession(),
+      latestSession: createSession(),
+    });
+    mockEnvironmentsApi.customImageSetupSession.mockResolvedValue({
+      session: createSession(),
+      connectionPayload: { type: "ssh", command },
+    });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    let terminalScreen: HTMLElement | null = null;
+    await waitForAssertion(() => {
+      terminalScreen = getEnvironmentFormPage()?.querySelector<HTMLElement>(
+        "[data-testid='custom-image-terminal-screen-session-1']",
+      ) ?? null;
+      expect(terminalScreen).toBeTruthy();
+      expect(document.body.querySelector("[role='dialog']")).toBeNull();
+    });
+
+    await act(async () => {
+      terminalScreen?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await flushReact();
+
+    expect(getEnvironmentFormPage()?.textContent).toContain(command);
+    expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
   });
 
   it("does not render connect details when an active session refreshes as expired", async () => {
@@ -976,21 +991,15 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => click(editButtons(container)[0]));
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain("Setup expired");
+      expect(getEnvironmentFormPage()?.textContent).toContain("Setup expired");
     });
-    expect(getOpenDialog()?.textContent).not.toContain(command);
+    expect(getEnvironmentFormPage()?.textContent).not.toContain(command);
   });
 
   it("shows a setup connection refresh fallback without breaking finish or cancel", async () => {
@@ -1008,22 +1017,16 @@ describe("CompanyEnvironments — test provider button", () => {
     mockEnvironmentsApi.customImageSetupSession.mockRejectedValue(new Error("proxy unavailable"));
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => click(editButtons(container)[0]));
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain("Setup connection details could not be refreshed.");
+      expect(getEnvironmentFormPage()?.textContent).toContain("Setup connection details could not be refreshed.");
     });
 
-    const dialog = getOpenDialog()!;
+    const dialog = getEnvironmentFormPage()!;
     expect(findButton(dialog, "Finished")?.disabled).toBe(false);
     expect(findButton(dialog, "Cancel")?.disabled).toBe(false);
 
@@ -1051,22 +1054,16 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => click(editButtons(container)[0]));
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain("Browser terminal is not available for this provider connection.");
+      expect(getEnvironmentFormPage()?.textContent).toContain("Browser terminal is not available for this provider connection.");
     });
 
-    const dialog = getOpenDialog()!;
+    const dialog = getEnvironmentFormPage()!;
     expect(findButton(dialog, "Finished")?.disabled).toBe(false);
     expect(findButton(dialog, "Cancel")?.disabled).toBe(false);
   });
@@ -1103,19 +1100,13 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => click(editButtons(container)[0]));
     await waitForAssertion(() => {
-      const dialog = getOpenDialog();
+      const dialog = getEnvironmentFormPage();
       expect(dialog?.textContent).toContain("Active template");
       expect(dialog?.textContent).toContain("redacted-template-ref");
       expect(dialog?.textContent).not.toContain("id 12345678-90a");
@@ -1129,7 +1120,7 @@ describe("CompanyEnvironments — test provider button", () => {
       expect(findButton(dialog!, "Disable")).toBeTruthy();
     });
 
-    await act(async () => click(findButton(getOpenDialog()!, "Refresh")));
+    await act(async () => click(findButton(getEnvironmentFormPage()!, "Refresh")));
     await flushReact();
 
     expect(mockEnvironmentsApi.startCustomImageSetupSession).toHaveBeenCalledWith(
@@ -1138,8 +1129,8 @@ describe("CompanyEnvironments — test provider button", () => {
       { templateId: activeTemplateId },
     );
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain("Browser terminal");
-      expect(getOpenDialog()?.textContent).toContain("SSH command fallback");
+      expect(getEnvironmentFormPage()?.textContent).toContain("Browser terminal");
+      expect(getEnvironmentFormPage()?.textContent).toContain("SSH command fallback");
       expect(mockEnvironmentsApi.createCustomImageTerminalSessionToken).toHaveBeenCalledExactlyOnceWith("session-1", {});
       expect(FakeWebSocket.instances).toHaveLength(1);
     });
@@ -1171,28 +1162,22 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => click(editButtons(container)[0]));
     await waitForAssertion(() => {
-      const dialog = getOpenDialog()!;
+      const dialog = getEnvironmentFormPage()!;
       expect(dialog.textContent).toContain("Capturing template");
       expect(dialog.textContent).toContain("Capture is in progress.");
       expect(findButton(dialog, "Finished")?.disabled).toBe(true);
       expect(findButton(dialog, "Cancel")?.disabled).toBe(false);
     });
 
-    await act(async () => click(findButton(getOpenDialog()!, "Cancel")));
+    await act(async () => click(findButton(getEnvironmentFormPage()!, "Cancel")));
     await waitForAssertion(() => {
-      const dialog = getOpenDialog()!;
+      const dialog = getEnvironmentFormPage()!;
       expect(dialog.textContent).toContain("Active template");
       expect(findButton(dialog, "Refresh")).toBeTruthy();
     });
@@ -1218,19 +1203,13 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => click(editButtons(container)[0]));
     await waitForAssertion(() => {
-      const dialog = getOpenDialog()!;
+      const dialog = getEnvironmentFormPage()!;
       expect(dialog.textContent).toContain("Active template");
       expect(dialog.textContent).toContain("Not in use — the environment configuration changed");
     });
@@ -1251,19 +1230,13 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => click(editButtons(container)[0]));
     await waitForAssertion(() => {
-      const dialog = getOpenDialog()!;
+      const dialog = getEnvironmentFormPage()!;
       expect(dialog.textContent).toContain("Active template");
       expect(dialog.textContent).not.toContain("Not in use");
     });
@@ -1300,30 +1273,24 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => click(editButtons(container)[0]));
     await waitForAssertion(() => {
-      const dialog = getOpenDialog();
+      const dialog = getEnvironmentFormPage();
       expect(dialog?.textContent).toContain("Active template");
       expect(findButton(dialog!, "Rollback")).toBeTruthy();
       expect(findButton(dialog!, "Disable")).toBeTruthy();
     });
 
-    await act(async () => click(findButton(getOpenDialog()!, "Rollback")));
+    await act(async () => click(findButton(getEnvironmentFormPage()!, "Rollback")));
     await waitForAssertion(() => {
       expect(mockEnvironmentsApi.rollbackCustomImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
     });
 
-    await act(async () => click(findButton(getOpenDialog()!, "Disable")));
+    await act(async () => click(findButton(getEnvironmentFormPage()!, "Disable")));
     await waitForAssertion(() => {
       expect(mockEnvironmentsApi.disableCustomImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
     });

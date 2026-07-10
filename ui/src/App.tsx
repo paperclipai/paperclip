@@ -102,6 +102,8 @@ function boardRoutes() {
       <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
       <Route path="company/settings/instance/general" element={<InstanceGeneralSettings />} />
       <Route path="company/settings/instance/environments" element={<CompanyEnvironments />} />
+      <Route path="company/settings/instance/environments/new" element={<CompanyEnvironments mode="create" />} />
+      <Route path="company/settings/instance/environments/:environmentId/edit" element={<CompanyEnvironments mode="edit" />} />
       <Route path="company/settings/instance/access" element={<InstanceAccess />} />
       <Route path="company/settings/instance/heartbeats" element={<InstanceSettings />} />
       <Route path="company/settings/instance/experimental" element={<InstanceExperimentalSettings />} />

@@ -5,7 +5,7 @@ import {
   useState,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Play, RefreshCw, RotateCcw, Terminal, Trash2, X } from "lucide-react";
+import { ArrowLeft, Check, Play, RefreshCw, RotateCcw, Terminal, Trash2, X } from "lucide-react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -27,14 +27,6 @@ import { instanceSettingsApi } from "@/api/instanceSettings";
 import { secretsApi } from "@/api/secrets";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
   EnvironmentVariablesEditor,
   type EnvironmentVariablesEditorHandle,
 } from "@/components/environment-variables-editor";
@@ -43,6 +35,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { Link, useNavigate, useParams } from "@/lib/router";
 import { buildSameOriginWebSocketUrl } from "@/lib/websocket-url";
 import {
   Field,
@@ -65,6 +58,18 @@ type EnvironmentFormState = {
   sandboxConfig: Record<string, unknown>;
   envVars: Record<string, EnvBinding>;
 };
+
+type CompanyEnvironmentsMode = "list" | "create" | "edit";
+
+type CompanyEnvironmentsProps = {
+  mode?: CompanyEnvironmentsMode;
+};
+
+const ENVIRONMENTS_PATH = "/company/settings/instance/environments";
+
+function environmentEditPath(environmentId: string) {
+  return `${ENVIRONMENTS_PATH}/${encodeURIComponent(environmentId)}/edit`;
+}
 
 function buildEnvironmentPayload(form: EnvironmentFormState) {
   return {
@@ -165,6 +170,48 @@ function readSandboxConfig(environment: Environment) {
       ? rawProvider
       : "fake",
     config: providerConfig,
+  };
+}
+
+function createEnvironmentFormFromEnvironment(environment: Environment): EnvironmentFormState {
+  if (environment.driver === "ssh") {
+    const ssh = readSshConfig(environment);
+    return {
+      ...createEmptyEnvironmentForm(),
+      name: environment.name,
+      description: environment.description ?? "",
+      driver: "ssh",
+      sshHost: ssh.host,
+      sshPort: ssh.port,
+      sshUsername: ssh.username,
+      sshRemoteWorkspacePath: ssh.remoteWorkspacePath,
+      sshPrivateKey: ssh.privateKey,
+      sshPrivateKeySecretId: ssh.privateKeySecretId,
+      sshKnownHosts: ssh.knownHosts,
+      sshStrictHostKeyChecking: ssh.strictHostKeyChecking,
+      envVars: environment.envVars ?? {},
+    };
+  }
+
+  if (environment.driver === "sandbox") {
+    const sandbox = readSandboxConfig(environment);
+    return {
+      ...createEmptyEnvironmentForm(),
+      name: environment.name,
+      description: environment.description ?? "",
+      driver: "sandbox",
+      sandboxProvider: sandbox.provider,
+      sandboxConfig: sandbox.config,
+      envVars: environment.envVars ?? {},
+    };
+  }
+
+  return {
+    ...createEmptyEnvironmentForm(),
+    name: environment.name,
+    description: environment.description ?? "",
+    driver: "local",
+    envVars: environment.envVars ?? {},
   };
 }
 
@@ -1067,25 +1114,33 @@ function EnvironmentImageTemplatePanel({
   );
 }
 
-export function CompanyEnvironments() {
+export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps) {
+  const { environmentId: routeEnvironmentId } = useParams<{ environmentId?: string }>();
+  const navigate = useNavigate();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
-  const [environmentDialogOpen, setEnvironmentDialogOpen] = useState(false);
-  const [editingEnvironmentId, setEditingEnvironmentId] = useState<string | null>(null);
+  const isEnvironmentFormPage = mode === "create" || mode === "edit";
+  const editingEnvironmentId = mode === "edit" ? routeEnvironmentId ?? null : null;
   const [environmentForm, setEnvironmentForm] = useState<EnvironmentFormState>(createEmptyEnvironmentForm);
   const environmentVariablesEditorRef = useRef<EnvironmentVariablesEditorHandle | null>(null);
+  const initializedFormKeyRef = useRef<string | null>(null);
   const [probeResults, setProbeResults] = useState<Record<string, EnvironmentProbeResult | null>>({});
   const [testingEnvironmentId, setTestingEnvironmentId] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([
+    const crumbs = [
       { label: "Settings", href: "/company/settings" },
       { label: "Instance settings", href: "/company/settings/instance/general" },
-      { label: "Environments" },
-    ]);
-  }, [setBreadcrumbs]);
+      isEnvironmentFormPage
+        ? { label: "Environments", href: ENVIRONMENTS_PATH }
+        : { label: "Environments" },
+    ];
+    if (mode === "create") crumbs.push({ label: "Add environment" });
+    if (mode === "edit") crumbs.push({ label: "Edit environment" });
+    setBreadcrumbs(crumbs);
+  }, [isEnvironmentFormPage, mode, setBreadcrumbs]);
 
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
@@ -1105,6 +1160,7 @@ export function CompanyEnvironments() {
     queryFn: () => environmentsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId) && environmentsEnabled,
   });
+  const savedEnvironments = environments ?? [];
   const { data: environmentCapabilities } = useQuery({
     queryKey: selectedCompanyId ? ["environment-capabilities", selectedCompanyId] : ["environment-capabilities", "none"],
     queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
@@ -1135,21 +1191,24 @@ export function CompanyEnvironments() {
         return await environmentsApi.update(editingEnvironmentId, body);
       }
 
+      if (!selectedCompanyId) throw new Error("Select a company to create environments");
       return await environmentsApi.create(selectedCompanyId!, body);
     },
     onSuccess: async (environment) => {
       const wasEditing = editingEnvironmentId !== null;
-      await queryClient.invalidateQueries({
-        queryKey: queryKeys.environments.list(selectedCompanyId!),
-      });
+      if (selectedCompanyId) {
+        await queryClient.invalidateQueries({
+          queryKey: queryKeys.environments.list(selectedCompanyId),
+        });
+      }
       await queryClient.invalidateQueries({
         queryKey: queryKeys.environments.customImageTemplate(environment.id),
       });
-      setEnvironmentDialogOpen(false);
-      setEditingEnvironmentId(null);
+      initializedFormKeyRef.current = null;
       setEnvironmentForm(createEmptyEnvironmentForm());
       environmentMutation.reset();
       draftEnvironmentProbeMutation.reset();
+      navigate(ENVIRONMENTS_PATH, { replace: true });
       pushToast({
         title: wasEditing ? "Environment updated" : "Environment created",
         body: `${environment.name} is ready.`,
@@ -1239,8 +1298,9 @@ export function CompanyEnvironments() {
 
   const draftEnvironmentProbeMutation = useMutation({
     mutationFn: async (form: EnvironmentFormState) => {
+      if (!selectedCompanyId) throw new Error("Select a company to test environments");
       const body = buildEnvironmentPayload(form);
-      return await environmentsApi.probeConfig(selectedCompanyId!, body);
+      return await environmentsApi.probeConfig(selectedCompanyId, body);
     },
     onSuccess: (probe) => {
       pushToast({
@@ -1259,76 +1319,60 @@ export function CompanyEnvironments() {
   });
 
   useEffect(() => {
-    setEnvironmentDialogOpen(false);
-    setEditingEnvironmentId(null);
+    initializedFormKeyRef.current = null;
     setEnvironmentForm(createEmptyEnvironmentForm());
     setProbeResults({});
     setTestingEnvironmentId(null);
   }, [selectedCompanyId]);
 
-  function handleStartCreateEnvironment() {
-    setEditingEnvironmentId(null);
-    setEnvironmentForm(createEmptyEnvironmentForm());
-    environmentMutation.reset();
-    draftEnvironmentProbeMutation.reset();
-    setEnvironmentDialogOpen(true);
-  }
+  const resetEnvironmentMutation = environmentMutation.reset;
+  const resetDraftEnvironmentProbeMutation = draftEnvironmentProbeMutation.reset;
 
-  function handleEditEnvironment(environment: Environment) {
-    environmentMutation.reset();
-    draftEnvironmentProbeMutation.reset();
-    setEditingEnvironmentId(environment.id);
-    setEnvironmentDialogOpen(true);
-    if (environment.driver === "ssh") {
-      const ssh = readSshConfig(environment);
-      setEnvironmentForm({
-        ...createEmptyEnvironmentForm(),
-        name: environment.name,
-        description: environment.description ?? "",
-        driver: "ssh",
-        sshHost: ssh.host,
-        sshPort: ssh.port,
-        sshUsername: ssh.username,
-        sshRemoteWorkspacePath: ssh.remoteWorkspacePath,
-        sshPrivateKey: ssh.privateKey,
-        sshPrivateKeySecretId: ssh.privateKeySecretId,
-        sshKnownHosts: ssh.knownHosts,
-        sshStrictHostKeyChecking: ssh.strictHostKeyChecking,
-        envVars: environment.envVars ?? {},
-      });
+  useEffect(() => {
+    if (!isEnvironmentFormPage) {
+      initializedFormKeyRef.current = null;
       return;
     }
 
-    if (environment.driver === "sandbox") {
-      const sandbox = readSandboxConfig(environment);
-      setEnvironmentForm({
-        ...createEmptyEnvironmentForm(),
-        name: environment.name,
-        description: environment.description ?? "",
-        driver: "sandbox",
-        sandboxProvider: sandbox.provider,
-        sandboxConfig: sandbox.config,
-        envVars: environment.envVars ?? {},
-      });
+    const formKey = mode === "create"
+      ? `create:${selectedCompanyId ?? "none"}`
+      : `edit:${selectedCompanyId ?? "none"}:${editingEnvironmentId ?? "missing"}`;
+
+    if (initializedFormKeyRef.current === formKey) return;
+
+    resetEnvironmentMutation();
+    resetDraftEnvironmentProbeMutation();
+
+    if (mode === "create") {
+      setEnvironmentForm(createEmptyEnvironmentForm());
+      initializedFormKeyRef.current = formKey;
       return;
     }
 
-    setEnvironmentForm({
-      ...createEmptyEnvironmentForm(),
-      name: environment.name,
-      description: environment.description ?? "",
-      driver: "local",
-      envVars: environment.envVars ?? {},
-    });
-  }
+    const environment = editingEnvironmentId
+      ? (environments ?? []).find((candidate) => candidate.id === editingEnvironmentId) ?? null
+      : null;
+    if (!environment) return;
 
-  function closeEnvironmentDialog() {
+    setEnvironmentForm(createEnvironmentFormFromEnvironment(environment));
+    initializedFormKeyRef.current = formKey;
+  }, [
+    editingEnvironmentId,
+    environments,
+    isEnvironmentFormPage,
+    mode,
+    resetDraftEnvironmentProbeMutation,
+    resetEnvironmentMutation,
+    selectedCompanyId,
+  ]);
+
+  function closeEnvironmentForm() {
     if (environmentMutation.isPending) return;
-    setEnvironmentDialogOpen(false);
-    setEditingEnvironmentId(null);
+    initializedFormKeyRef.current = null;
     setEnvironmentForm(createEmptyEnvironmentForm());
     environmentMutation.reset();
     draftEnvironmentProbeMutation.reset();
+    navigate(ENVIRONMENTS_PATH);
   }
 
   function flushEnvironmentForm(): EnvironmentFormState {
@@ -1395,7 +1439,6 @@ export function CompanyEnvironments() {
       environmentForm.sandboxProvider !== "fake" &&
       Object.keys(sandboxConfigErrors).length === 0);
 
-  const savedEnvironments = environments ?? [];
   const editingEnvironment = editingEnvironmentId
     ? savedEnvironments.find((environment) => environment.id === editingEnvironmentId) ?? null
     : null;
@@ -1426,6 +1469,7 @@ export function CompanyEnvironments() {
 
   return (
     <div className="max-w-5xl space-y-6" data-testid="instance-settings-environments-section">
+      {!isEnvironmentFormPage ? (
       <div className="space-y-4 rounded-md border border-border px-4 py-4">
         <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1453,13 +1497,12 @@ export function CompanyEnvironments() {
 
         <div className="space-y-3">
           <div className="flex justify-end">
-            <Button size="sm" onClick={handleStartCreateEnvironment}>
-              Add environment
+            <Button size="sm" asChild>
+              <Link to={`${ENVIRONMENTS_PATH}/new`}>Add environment</Link>
             </Button>
           </div>
           {savedEnvironments.map((environment) => {
             const probe = probeResults[environment.id] ?? null;
-            const isEditing = editingEnvironmentId === environment.id;
             const sandboxProvider = readEnvironmentSandboxProvider(environment);
             const sandboxProviderCapability = sandboxProvider
               ? environmentCapabilities?.sandboxProviders?.[sandboxProvider]
@@ -1510,12 +1553,8 @@ export function CompanyEnvironments() {
                             : "Test provider"}
                       </Button>
                     ) : null}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => handleEditEnvironment(environment)}
-                    >
-                      {isEditing ? "Editing" : "Edit"}
+                    <Button size="sm" variant="ghost" asChild>
+                      <Link to={environmentEditPath(environment.id)}>Edit</Link>
                     </Button>
                   </div>
                 </div>
@@ -1538,26 +1577,42 @@ export function CompanyEnvironments() {
           })}
         </div>
       </div>
+      ) : null}
 
-      <Dialog
-        open={environmentDialogOpen}
-        onOpenChange={(open) => {
-          if (open) {
-            setEnvironmentDialogOpen(true);
-            return;
-          }
-          closeEnvironmentDialog();
-        }}
-      >
-        <DialogContent className="flex max-h-(--sz-calc-18) flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
-          <DialogHeader className="border-b border-border/60 px-6 pb-4 pr-12 pt-6">
-            <DialogTitle>{editingEnvironmentId ? "Edit environment" : "Add environment"}</DialogTitle>
-            <DialogDescription>
+      {isEnvironmentFormPage && mode === "edit" && environments === undefined ? (
+        <div className="rounded-md border border-border px-4 py-4 text-sm text-muted-foreground">
+          Loading environment...
+        </div>
+      ) : null}
+
+      {isEnvironmentFormPage && mode === "edit" && environments !== undefined && !editingEnvironment ? (
+        <div className="space-y-3 rounded-md border border-border px-4 py-4 text-sm">
+          <div className="font-medium">Environment not found</div>
+          <div className="text-muted-foreground">The environment may have been removed or is not available in this company.</div>
+          <Button size="sm" variant="outline" asChild>
+            <Link to={ENVIRONMENTS_PATH}>Back to environments</Link>
+          </Button>
+        </div>
+      ) : null}
+
+      {isEnvironmentFormPage && (mode === "create" || editingEnvironment) ? (
+        <div className="rounded-md border border-border bg-background" data-testid="environment-form-page">
+          <div className="border-b border-border/60 px-6 pb-4 pt-6">
+            <div className="mb-4">
+              <Button size="sm" variant="ghost" asChild>
+                <Link to={ENVIRONMENTS_PATH}>
+                  <ArrowLeft className="mr-1.5 h-3.5 w-3.5" />
+                  Environments
+                </Link>
+              </Button>
+            </div>
+            <h1 className="text-lg font-semibold">{editingEnvironmentId ? "Edit environment" : "Add environment"}</h1>
+            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
               Configure a reusable execution target for your agents. Saved changes affect future runs; Paperclip may start fresh sessions or sandbox leases after environment config changes.
-            </DialogDescription>
-          </DialogHeader>
+            </p>
+          </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+          <div className="px-6 py-4">
             <div className="space-y-4">
               <Field label="Name" hint="Operator-facing name for this execution target.">
                 <input
@@ -1798,10 +1853,10 @@ export function CompanyEnvironments() {
             </div>
           </div>
 
-          <DialogFooter className="border-t border-border/60 bg-background px-6 py-4">
+          <div className="flex flex-wrap justify-end gap-2 border-t border-border/60 bg-background px-6 py-4">
             <Button
               variant="outline"
-              onClick={closeEnvironmentDialog}
+              onClick={closeEnvironmentForm}
               disabled={environmentMutation.isPending}
             >
               Cancel
@@ -1827,9 +1882,9 @@ export function CompanyEnvironments() {
                   ? "Save environment"
                   : "Create environment"}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
