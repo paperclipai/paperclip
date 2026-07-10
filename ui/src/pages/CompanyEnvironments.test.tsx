@@ -1203,6 +1203,72 @@ describe("CompanyEnvironments — test provider button", () => {
     );
   });
 
+  it("shows an out-of-sync warning when the active template no longer matches the saved config", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: createTemplate({ id: "template-active" }),
+      activeTemplateMatchesConfig: false,
+      activeSession: null,
+      latestSession: null,
+    });
+
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanyEnvironments />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      const dialog = getOpenDialog()!;
+      expect(dialog.textContent).toContain("Active template");
+      expect(dialog.textContent).toContain("Not in use — the environment configuration changed");
+    });
+  });
+
+  it("does not show the out-of-sync warning when the active template matches the saved config", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: createTemplate({ id: "template-active" }),
+      activeTemplateMatchesConfig: true,
+      activeSession: null,
+      latestSession: null,
+    });
+
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanyEnvironments />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      const dialog = getOpenDialog()!;
+      expect(dialog.textContent).toContain("Active template");
+      expect(dialog.textContent).not.toContain("Not in use");
+    });
+  });
+
   it("passes company context when rolling back and disabling an active template", async () => {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

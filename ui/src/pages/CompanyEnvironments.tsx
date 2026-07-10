@@ -21,6 +21,7 @@ import {
   environmentsApi,
   type EnvironmentCustomImageConnectionPayload,
   type EnvironmentCustomImageSetupSessionResult,
+  type EnvironmentUpdateResult,
 } from "@/api/environments";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { secretsApi } from "@/api/secrets";
@@ -973,6 +974,7 @@ function EnvironmentImageTemplatePanel({
 
   if (activeTemplate) {
     const templateRef = activeTemplate.templateRef?.trim() || null;
+    const templateOutOfSync = overview?.activeTemplateMatchesConfig === false;
     return (
       <div className="mt-3 border-t border-border/60 pt-3" data-testid={`custom-image-template-state-${environment.id}`}>
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -992,6 +994,16 @@ function EnvironmentImageTemplatePanel({
               {capturedAt ? ` · captured ${capturedAt}` : ""}
               {lastUsedAt ? ` · last used ${lastUsedAt}` : ""}
             </div>
+            {templateOutOfSync ? (
+              <div
+                className="text-xs text-destructive"
+                data-testid={`custom-image-template-out-of-sync-${environment.id}`}
+              >
+                Not in use — the environment configuration changed since this image was
+                captured. Runs fall back to the base configuration until you capture a new
+                image.
+              </div>
+            ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -1130,6 +1142,9 @@ export function CompanyEnvironments() {
       await queryClient.invalidateQueries({
         queryKey: queryKeys.environments.list(selectedCompanyId!),
       });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.environments.customImageTemplate(environment.id),
+      });
       setEnvironmentDialogOpen(false);
       setEditingEnvironmentId(null);
       setEnvironmentForm(createEmptyEnvironmentForm());
@@ -1140,6 +1155,20 @@ export function CompanyEnvironments() {
         body: `${environment.name} is ready.`,
         tone: "success",
       });
+      const reconciliation = (environment as EnvironmentUpdateResult).customImageReconciliation;
+      if (reconciliation?.action === "relinked") {
+        pushToast({
+          title: "Custom image kept active",
+          body: "The captured image was re-linked to the updated configuration automatically.",
+          tone: "info",
+        });
+      } else if (reconciliation?.action === "detached") {
+        pushToast({
+          title: "Custom image no longer applies",
+          body: "This change alters what the captured image was built from. Runs use the base configuration until you capture a new image.",
+          tone: "warn",
+        });
+      }
     },
     onError: (error) => {
       pushToast({

@@ -15,9 +15,22 @@ import { api } from "./client";
 
 export interface EnvironmentCustomImageOverview {
   activeTemplate: EnvironmentCustomImageTemplate | null;
+  /**
+   * `false` means the environment config changed since capture and runs fall
+   * back to the base image until a new image is captured. `null` when unknown.
+   */
+  activeTemplateMatchesConfig?: boolean | null;
   activeSession: EnvironmentCustomImageSetupSession | null;
   latestSession: EnvironmentCustomImageSetupSession | null;
 }
+
+export type EnvironmentCustomImageReconciliation =
+  | { action: "relinked"; template: EnvironmentCustomImageTemplate }
+  | { action: "detached"; template: EnvironmentCustomImageTemplate };
+
+export type EnvironmentUpdateResult = Environment & {
+  customImageReconciliation?: EnvironmentCustomImageReconciliation;
+};
 
 export interface EnvironmentCustomImageConnectionPayload {
   type: string;
@@ -64,7 +77,7 @@ export const environmentsApi = {
     status?: "active" | "archived";
     config?: Record<string, unknown>;
     metadata?: Record<string, unknown> | null;
-  }) => api.patch<Environment>(`/environments/${environmentId}`, body),
+  }) => api.patch<EnvironmentUpdateResult>(`/environments/${environmentId}`, body),
   probe: (environmentId: string, companyId?: string | null) =>
     api.post<EnvironmentProbeResult>(
       companyId

@@ -57,6 +57,7 @@ function pluginManifest() {
           field: "customTemplate",
           unsetFields: ["image"],
         },
+        templateIdentityPaths: ["apiUrl"],
         supportsTemplateDelete: true,
         configSchema: { type: "object" },
       },
@@ -698,5 +699,170 @@ describe("environmentCustomImageTemplateMatchesBaseConfig", () => {
       template,
       baseConfig,
     })).toBe(false);
+  });
+});
+
+describeEmbeddedPostgres("environmentCustomImageService reconciliation", () => {
+  let stopDb: (() => Promise<void>) | null = null;
+  let db!: ReturnType<typeof createDb>;
+
+  beforeAll(async () => {
+    const started = await startEmbeddedPostgresTestDatabase("environment-custom-images-reconcile");
+    stopDb = started.stop;
+    db = createDb(started.connectionString);
+  });
+
+  afterEach(async () => {
+    await db.delete(environmentCustomImageSetupSessions);
+    await db.delete(environmentCustomImageTemplates);
+    await db.delete(plugins);
+    await db.delete(environments);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await stopDb?.();
+  });
+
+  async function seed() {
+    const companyId = randomUUID();
+    const environmentId = randomUUID();
+    await db.insert(companies).values(
+      { id: companyId, name: "Acme", issuePrefix: `A${companyId.slice(0, 4)}` },
+    );
+    await db.insert(environments).values({
+      id: environmentId,
+      name: `Fake ${environmentId.slice(0, 8)}`,
+      driver: "sandbox",
+      status: "active",
+      config: {
+        provider: "fake-plugin",
+        image: "fake:base",
+        reuseLease: false,
+      },
+      envVars: {},
+    });
+    await db.insert(plugins).values({
+      pluginKey: "paperclip.fake-sandbox-provider",
+      packageName: "paperclip-plugin-fake-sandbox",
+      version: "0.1.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: pluginManifest(),
+      status: "ready",
+    });
+    return { companyId, environmentId };
+  }
+
+  it("re-links the active template on save when only non-identity fields change", async () => {
+    const { companyId, environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+    const baseConfig = { provider: "fake-plugin", image: "fake:base", reuseLease: false };
+    const nextConfig = { ...baseConfig, region: "eu-west" };
+
+    const relinked = await service.reconcileActiveTemplateForConfigChange({
+      environmentId,
+      previous: { driver: "sandbox", config: baseConfig },
+      next: { driver: "sandbox", config: nextConfig },
+    });
+    expect(relinked.action).toBe("relinked");
+    if (relinked.action !== "relinked") throw new Error("expected relink");
+    expect(relinked.template.sourceEnvironmentConfigFingerprint)
+      .not.toBe(promoted.template.sourceEnvironmentConfigFingerprint);
+
+    // Re-running with the same configs is a no-op: the template already
+    // matches the new config.
+    const repeat = await service.reconcileActiveTemplateForConfigChange({
+      environmentId,
+      previous: { driver: "sandbox", config: baseConfig },
+      next: { driver: "sandbox", config: nextConfig },
+    });
+    expect(repeat.action).toBe("none");
+
+    // The captured template keeps applying at runtime under the new config.
+    await db.update(environments)
+      .set({ config: nextConfig })
+      .where(eq(environments.id, environmentId));
+    const resolved = await resolveEnvironmentDriverConfigForRuntime(db, companyId, {
+      id: environmentId,
+      driver: "sandbox",
+      config: nextConfig,
+    }, { heartbeatRunId: randomUUID() });
+    expect(resolved.driver).toBe("sandbox");
+    expect(resolved.config).toMatchObject({ customTemplate: promoted.template.templateRef });
+    expect(resolved.config).not.toHaveProperty("image");
+  });
+
+  it("reports detached on save when a boot-source or provider identity field changes", async () => {
+    const { environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+    const baseConfig = { provider: "fake-plugin", image: "fake:base", reuseLease: false };
+
+    // Base image change: the user asked for a different base, so the capture
+    // cannot be re-linked.
+    const imageChange = await service.reconcileActiveTemplateForConfigChange({
+      environmentId,
+      previous: { driver: "sandbox", config: baseConfig },
+      next: { driver: "sandbox", config: { ...baseConfig, image: "fake:other" } },
+    });
+    expect(imageChange.action).toBe("detached");
+
+    // Provider-declared identity path change (apiUrl): captured templates do
+    // not exist on a different provider endpoint.
+    const endpointChange = await service.reconcileActiveTemplateForConfigChange({
+      environmentId,
+      previous: { driver: "sandbox", config: baseConfig },
+      next: { driver: "sandbox", config: { ...baseConfig, apiUrl: "https://other.example" } },
+    });
+    expect(endpointChange.action).toBe("detached");
+
+    // Binding-field change counts as a boot-source change too.
+    const bindingChange = await service.reconcileActiveTemplateForConfigChange({
+      environmentId,
+      previous: { driver: "sandbox", config: baseConfig },
+      next: { driver: "sandbox", config: { ...baseConfig, customTemplate: "someone-elses-snapshot" } },
+    });
+    expect(bindingChange.action).toBe("detached");
+
+    // Detach never mutates the stored fingerprint; rollback/disable stay
+    // available and the old config still matches.
+    const template = await service.getActiveTemplate({ environmentId, provider: "fake-plugin" });
+    expect(template?.sourceEnvironmentConfigFingerprint)
+      .toBe(promoted.template.sourceEnvironmentConfigFingerprint);
+
+    // A template that was already detached before the save is left alone.
+    const alreadyDetached = await service.reconcileActiveTemplateForConfigChange({
+      environmentId,
+      previous: { driver: "sandbox", config: { ...baseConfig, image: "fake:unrelated" } },
+      next: { driver: "sandbox", config: { ...baseConfig, image: "fake:unrelated", region: "eu" } },
+    });
+    expect(alreadyDetached.action).toBe("none");
+  });
+
+  it("reports whether the active template matches the saved config in the overview", async () => {
+    const { environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
+    await service.finishSetupSession({ sessionId: started.session.id });
+
+    const inSync = await service.getOverview({ environmentId });
+    expect(inSync.activeTemplateMatchesConfig).toBe(true);
+
+    await db.update(environments)
+      .set({ config: { provider: "fake-plugin", image: "fake:other", reuseLease: false } })
+      .where(eq(environments.id, environmentId));
+    const outOfSync = await service.getOverview({ environmentId });
+    expect(outOfSync.activeTemplate).not.toBeNull();
+    expect(outOfSync.activeTemplateMatchesConfig).toBe(false);
   });
 });

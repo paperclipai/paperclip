@@ -8,7 +8,7 @@ import {
   type EnvironmentCustomImageTemplateKind,
   type SandboxEnvironmentConfig,
 } from "@paperclipai/shared";
-import { writeConfigValueAtPath } from "./json-schema-secret-refs.js";
+import { readConfigValueAtPath, writeConfigValueAtPath } from "./json-schema-secret-refs.js";
 
 type TemplateRow = typeof environmentCustomImageTemplates.$inferSelect;
 
@@ -149,6 +149,74 @@ export function environmentCustomImageTemplateMatchesBaseConfig(input: {
   return fingerprintEnvironmentSandboxProviderConfig(input.baseConfig, {
     excludePaths: secretRefExcludePaths,
   }) === expectedFingerprint;
+}
+
+// Standard boot-source fields shared across sandbox providers. A change to any
+// of these means the user asked for a different base, so a captured template
+// no longer reflects the saved config and cannot simply be re-linked.
+export const ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_SOURCE_FIELDS = [
+  "snapshot",
+  "image",
+  "template",
+] as const;
+
+export type EnvironmentCustomImageConfigChangeKind = "none" | "relinkable" | "breaking";
+
+/**
+ * Classifies a saved-config change relative to an active captured template.
+ *
+ * - `none`: the template either already matched the new config, or was already
+ *   detached before this change; nothing to reconcile.
+ * - `relinkable`: only fields that cannot affect the captured template's
+ *   contents or reachability changed (for example a region hint), so the
+ *   template's source fingerprint can be re-stamped to the new config.
+ * - `breaking`: a boot-source field or a provider-declared template identity
+ *   path changed; the captured template no longer corresponds to the config
+ *   and a fresh capture is required.
+ */
+export function classifyEnvironmentCustomImageConfigChange(input: {
+  template: EnvironmentCustomImageTemplate;
+  previousConfig: SandboxEnvironmentConfig;
+  nextConfig: SandboxEnvironmentConfig;
+  secretRefExcludePaths?: Iterable<string>;
+  templateIdentityPaths?: Iterable<string>;
+}): EnvironmentCustomImageConfigChangeKind {
+  const secretRefExcludePaths = [...(input.secretRefExcludePaths ?? [])];
+  if (!environmentCustomImageTemplateMatchesBaseConfig({
+    template: input.template,
+    baseConfig: input.previousConfig,
+    secretRefExcludePaths,
+  })) {
+    return "none";
+  }
+  if (environmentCustomImageTemplateMatchesBaseConfig({
+    template: input.template,
+    baseConfig: input.nextConfig,
+    secretRefExcludePaths,
+  })) {
+    return "none";
+  }
+  const binding = resolveEnvironmentCustomImageRuntimeConfigBinding({
+    templateKind: input.template.templateKind,
+    metadata: input.template.metadata,
+  });
+  const breakingPaths = new Set<string>([
+    "provider",
+    binding.field,
+    ...binding.unsetFields,
+    ...ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_SOURCE_FIELDS,
+    ...(input.templateIdentityPaths ?? []),
+  ]);
+  const previous = input.previousConfig as Record<string, unknown>;
+  const next = input.nextConfig as Record<string, unknown>;
+  for (const path of breakingPaths) {
+    const before = readConfigValueAtPath(previous, path);
+    const after = readConfigValueAtPath(next, path);
+    if (stableStringify(before ?? null) !== stableStringify(after ?? null)) {
+      return "breaking";
+    }
+  }
+  return "relinkable";
 }
 
 export function environmentCustomImageTemplateFromRow(row: TemplateRow): EnvironmentCustomImageTemplate {

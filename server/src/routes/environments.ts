@@ -777,12 +777,24 @@ export function environmentRoutes(
       res.status(404).json({ error: "Environment not found" });
       return;
     }
+    let customImageReconciliation: Awaited<
+      ReturnType<typeof customImages.reconcileActiveTemplateForConfigChange>
+    > = { action: "none" };
     if (patch.config !== undefined || patch.driver !== undefined) {
       await secrets.syncSecretRefsForTarget(
         companyIdForSecrets!,
         { targetType: "environment", targetId: environment.id },
         await collectEnvironmentSecretRefs({ db, environment }),
       );
+      try {
+        customImageReconciliation = await customImages.reconcileActiveTemplateForConfigChange({
+          environmentId: environment.id,
+          previous: existing,
+          next: environment,
+        });
+      } catch {
+        // Reconciliation is best-effort; a failure must not fail the save.
+      }
     }
     if (patch.envVars !== undefined) {
       await secrets.syncEnvBindingsForTarget(
@@ -797,7 +809,9 @@ export function environmentRoutes(
       entityId: environment.id,
       details: summarizeEnvironmentUpdate(patch as Record<string, unknown>, environment),
     });
-    res.json(environment);
+    res.json(customImageReconciliation.action === "none"
+      ? environment
+      : { ...environment, customImageReconciliation });
   });
 
   router.delete("/environments/:id", async (req, res) => {
