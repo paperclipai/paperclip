@@ -511,4 +511,150 @@ describe("IssueBlockedNotice", () => {
     expect(indicator?.getAttribute("data-recovery-kind")).toBe("workspace_validation");
     expect(indicator?.textContent).toContain("Workspace recovery needed");
   });
+
+  it("renders the red state-6 notice for a blockerless blocked issue, naming the responsible owner", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[]}
+        allBlockers={[]}
+        responsibleAgentName="Senior Planning Engineer Pro"
+      />,
+    );
+
+    const notice = node.querySelector('[data-testid="issue-blocked-notice-stopped-no-reason"]');
+    expect(notice).not.toBeNull();
+    expect(notice?.getAttribute("role")).toBe("status");
+    expect(node.textContent).toContain("Stopped — no reason on record");
+    expect(node.textContent).toContain("Next step is owned by");
+    expect(node.textContent).toContain("Senior Planning Engineer Pro");
+    // Names the three dispositions.
+    expect(node.textContent).toContain("To do");
+    expect(node.textContent).toContain("recovery action");
+    expect(node.textContent).toContain("Cancelled");
+    // Never the old passive line, and not the amber notice.
+    expect(node.textContent).not.toContain("blocked until it is moved back to todo");
+    expect(node.querySelector('[data-blocker-attention-state]')).toBeNull();
+  });
+
+  it("falls back to 'the control plane' as the owner when no responsible agent is known", () => {
+    const node = render(<IssueBlockedNotice issueStatus="blocked" blockers={[]} allBlockers={[]} />);
+    expect(node.textContent).toContain("Stopped — no reason on record");
+    expect(node.textContent).toContain("the control plane");
+  });
+
+  it("routes an all-done blocker list to state 6 and lists the done leaves as Satisfied", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[]}
+        allBlockers={[
+          {
+            id: "done-1",
+            identifier: "TASK-145",
+            title: "live-tree hygiene",
+            status: "done",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        ]}
+        responsibleAgentName="QA"
+      />,
+    );
+    expect(node.querySelector('[data-testid="issue-blocked-notice-stopped-no-reason"]')).not.toBeNull();
+    const satisfied = node.querySelector('[data-testid="issue-blocked-notice-satisfied-row"]');
+    expect(satisfied).not.toBeNull();
+    expect(satisfied?.textContent).toContain("Satisfied");
+    expect(satisfied?.textContent).toContain("TASK-145");
+  });
+
+  it("renders a cancelled blocker as an unsatisfied decision, not a calm wait", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[]}
+        allBlockers={[
+          {
+            id: "cancelled-1",
+            identifier: "TASK-199",
+            title: "dropped dependency",
+            status: "cancelled",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+        ]}
+      />,
+    );
+    const cancelledRow = node.querySelector('[data-testid="issue-blocked-notice-cancelled-row"]');
+    expect(cancelledRow).not.toBeNull();
+    expect(cancelledRow?.textContent).toContain("Cancelled — unsatisfied");
+    expect(cancelledRow?.textContent).toContain("TASK-199");
+    expect(cancelledRow?.textContent).toContain("Replace, waive, or escalate this dependency.");
+  });
+
+  it("suppresses the state-6 notice when an active recovery action already owns the state", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[]}
+        allBlockers={[]}
+        hasActiveRecovery
+        responsibleAgentName="QA"
+      />,
+    );
+    expect(node.textContent).toBe("");
+  });
+
+  it("shows terminal outcomes alongside an active blocker in the amber notice", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[
+          {
+            id: "active-1",
+            identifier: "TASK-151",
+            title: "QA validation",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        ]}
+        allBlockers={[
+          {
+            id: "active-1",
+            identifier: "TASK-151",
+            title: "QA validation",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+          {
+            id: "done-1",
+            identifier: "TASK-145",
+            title: "live-tree hygiene",
+            status: "done",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+          {
+            id: "cancelled-1",
+            identifier: "TASK-199",
+            title: "dropped dependency",
+            status: "cancelled",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+        ]}
+      />,
+    );
+    expect(node.textContent).toContain("Work on this task is blocked by the linked task");
+    expect(node.querySelector('[data-testid="issue-blocked-notice-satisfied-row"]')?.textContent).toContain("TASK-145");
+    expect(node.querySelector('[data-testid="issue-blocked-notice-cancelled-row"]')?.textContent).toContain("TASK-199");
+  });
 });

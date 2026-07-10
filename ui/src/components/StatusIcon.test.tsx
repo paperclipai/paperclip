@@ -67,6 +67,29 @@ describe("StatusIcon", () => {
     expect(html).not.toContain("var(--status-task-icon-in_queue)");
   });
 
+  it("labels a blockerless (state 6) blocked issue as stopped with no reason and keeps the red glyph", () => {
+    const html = renderToStaticMarkup(
+      <StatusIcon
+        status="blocked"
+        blockerAttention={{
+          state: "needs_attention",
+          reason: "attention_required",
+          unresolvedBlockerCount: 0,
+          coveredBlockerCount: 0,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: null,
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+    expect(html).toContain("Stopped — no reason on record");
+    expect(html).not.toContain("blockers need attention");
+    // State 6 keeps the red blocked glyph, never the blue in_queue.
+    expect(html).toContain("var(--status-task-icon-blocked)");
+    expect(html).not.toContain("var(--status-task-icon-in_queue)");
+  });
+
   it("surfaces stalled-review blocked copy on the accessible label", () => {
     const html = renderToStaticMarkup(
       <StatusIcon

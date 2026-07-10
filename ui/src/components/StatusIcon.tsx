@@ -24,6 +24,19 @@ interface StatusIconProps {
 function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | undefined) {
   if (!blockerAttention || blockerAttention.state === "none") return "Blocked";
 
+  // Blockerless / all-resolved blocked posture (state 6): the server emits
+  // `needs_attention` with every blocker count at zero. Surface it as the stale
+  // "Stopped — no reason on record" state, not a generic "N blockers need
+  // attention" — and keep the red glyph (never the blue `in_queue`).
+  if (
+    blockerAttention.unresolvedBlockerCount === 0
+    && blockerAttention.coveredBlockerCount === 0
+    && blockerAttention.stalledBlockerCount === 0
+    && blockerAttention.attentionBlockerCount === 0
+  ) {
+    return "Stopped — no reason on record";
+  }
+
   if (blockerAttention.reason === "active_child") {
     const count = blockerAttention.coveredBlockerCount;
     if (count === 1 && blockerAttention.sampleBlockerIdentifier) {

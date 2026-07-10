@@ -6,7 +6,7 @@ import type {
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import type { ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, Circle, Flag, Loader2, RotateCcw } from "lucide-react";
+import { AlertOctagon, AlertTriangle, CheckCircle2, Circle, Flag, Loader2, RotateCcw, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
@@ -350,6 +350,181 @@ function WaitingOnLiveWorkNotice({
   );
 }
 
+/**
+ * Collect distinct leaf blockers of a given terminal status (`done` /
+ * `cancelled`) from the full blocker chain (top-level + nested terminal
+ * blockers). Terminal outcomes are surfaced instead of silently collapsing:
+ * `done` = satisfied evidence, `cancelled` = an unsatisfied dependency the
+ * operator must replace, waive, or escalate (contract
+ * `doc/execution-semantics.md` — *Stale blocked posture and terminal-blocker repair*).
+ */
+function collectTerminalBlockers(
+  chain: IssueRelationIssueSummary[],
+  status: "done" | "cancelled",
+): IssueRelationIssueSummary[] {
+  const seen = new Set<string>();
+  const collected: IssueRelationIssueSummary[] = [];
+  for (const blocker of chain) {
+    for (const candidate of [blocker, ...(blocker.terminalBlockers ?? [])]) {
+      if (candidate.status !== status) continue;
+      if (seen.has(candidate.id)) continue;
+      seen.add(candidate.id);
+      collected.push(candidate);
+    }
+  }
+  return collected;
+}
+
+function TerminalOutcomeChip({
+  blocker,
+  tone,
+}: {
+  blocker: IssueRelationIssueSummary;
+  tone: "satisfied" | "cancelled";
+}) {
+  const issuePathId = blocker.identifier ?? blocker.id;
+  const Icon = tone === "satisfied" ? CheckCircle2 : XCircle;
+  const className =
+    tone === "satisfied"
+      ? "inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-background/80 px-2 py-1 font-mono text-xs text-muted-foreground transition-colors hover:bg-accent hover:underline"
+      : "inline-flex max-w-full items-center gap-1 rounded-md border border-red-300/70 bg-background/80 px-2 py-1 font-mono text-xs text-red-800 transition-colors hover:border-red-500 hover:bg-red-100 hover:underline dark:border-red-500/40 dark:bg-background/40 dark:text-red-200 dark:hover:bg-red-500/15";
+  const iconClass =
+    tone === "satisfied"
+      ? "h-3 w-3 shrink-0 text-muted-foreground"
+      : "h-3 w-3 shrink-0 text-red-600 dark:text-red-400";
+  return (
+    <IssueLinkQuicklook
+      issuePathId={issuePathId}
+      to={createIssueDetailPath(issuePathId)}
+      className={className}
+    >
+      <Icon className={iconClass} aria-hidden />
+      <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
+      <span
+        className={cn(
+          "max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro)",
+          tone === "satisfied" ? "text-muted-foreground" : "text-red-700 dark:text-red-300",
+        )}
+      >
+        {blocker.title}
+      </span>
+    </IssueLinkQuicklook>
+  );
+}
+
+/**
+ * Terminal-blocker outcome rows shared by the amber blocker-wait notice and the
+ * red state-6 notice: `done` leaves render muted "Satisfied" (never counted as
+ * waiting), `cancelled` leaves render a distinct red "Cancelled — unsatisfied"
+ * row that reads as a decision, not a passive wait.
+ */
+function TerminalOutcomeRows({
+  doneBlockers,
+  cancelledBlockers,
+}: {
+  doneBlockers: IssueRelationIssueSummary[];
+  cancelledBlockers: IssueRelationIssueSummary[];
+}) {
+  if (doneBlockers.length === 0 && cancelledBlockers.length === 0) return null;
+  return (
+    <>
+      {doneBlockers.length > 0 ? (
+        <div
+          data-testid="issue-blocked-notice-satisfied-row"
+          className="flex flex-wrap items-center gap-1.5 pt-0.5"
+        >
+          <span className="text-xs font-medium text-muted-foreground">Satisfied</span>
+          {doneBlockers.map((blocker) => (
+            <TerminalOutcomeChip key={blocker.id} blocker={blocker} tone="satisfied" />
+          ))}
+        </div>
+      ) : null}
+      {cancelledBlockers.length > 0 ? (
+        <div
+          data-testid="issue-blocked-notice-cancelled-row"
+          className="space-y-1 pt-0.5"
+        >
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-red-700 dark:text-red-300">
+            <XCircle className="h-3 w-3" aria-hidden />
+            Cancelled — unsatisfied
+          </span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {cancelledBlockers.map((blocker) => (
+              <TerminalOutcomeChip key={blocker.id} blocker={blocker} tone="cancelled" />
+            ))}
+          </div>
+          <p className="text-xs leading-5 text-red-700 dark:text-red-300">
+            Replace, waive, or escalate this dependency.
+          </p>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * State 6 — "Stopped — no reason on record". A `blocked`
+ * issue with no unresolved blocker, no live wait, no decision, no recovery, and
+ * no successful-run handoff is stale: nothing will move it automatically. It is
+ * the odd-one-out — a red left-accent + {@link AlertOctagon} so it pops against
+ * the calm blue/amber/violet family instead of hiding among them. `role="status"`
+ * (not `alert`) — the operator did not cause it. Introduces no new mutation
+ * surface: the disposition affordances point at the existing status controls.
+ */
+function StoppedNoReasonNotice({
+  responsibleAgentName,
+  doneBlockers,
+  cancelledBlockers,
+}: {
+  responsibleAgentName?: string | null;
+  doneBlockers: IssueRelationIssueSummary[];
+  cancelledBlockers: IssueRelationIssueSummary[];
+}) {
+  const owner = responsibleAgentName?.trim() ? responsibleAgentName.trim() : "the control plane";
+  return (
+    <div
+      role="status"
+      data-testid="issue-blocked-notice-stopped-no-reason"
+      className="mb-3 rounded-md border border-red-300/70 border-l-2 border-l-red-500/70 bg-background px-3 py-2.5 text-sm text-foreground shadow-sm dark:border-red-500/40 dark:border-l-red-500/70"
+    >
+      <div className="flex items-start gap-2">
+        <AlertOctagon className="mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-400" aria-hidden />
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <p className="font-medium leading-5">Stopped — no reason on record</p>
+          <p className="leading-5">
+            This task is{" "}
+            <code className="rounded bg-muted px-1 py-0.5 text-xs">blocked</code> but has no
+            dependency, decision, or recovery action on record, so nothing will move it
+            automatically.
+          </p>
+          <p className="leading-5">
+            Next step is owned by{" "}
+            <span className="font-medium">{owner}</span>.
+          </p>
+          <ul className="list-disc space-y-1 pl-5 text-xs leading-5 text-foreground/90">
+            <li>
+              If work should continue → move it to <span className="font-medium">To do</span>{" "}
+              (queues a normal-model continuation).
+            </li>
+            <li>
+              If it is genuinely waiting → add a real <span className="font-medium">blocker</span> or
+              a <span className="font-medium">recovery action</span> with an owner.
+            </li>
+            <li>
+              Otherwise → mark it <span className="font-medium">Done</span> or{" "}
+              <span className="font-medium">Cancelled</span>.
+            </li>
+          </ul>
+          <TerminalOutcomeRows doneBlockers={doneBlockers} cancelledBlockers={cancelledBlockers} />
+          <p className="text-xs leading-5 text-muted-foreground">
+            Comments still wake the responsible for questions or triage.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function IssueBlockedNotice({
   issueId,
   issueStatus,
@@ -360,6 +535,8 @@ export function IssueBlockedNotice({
   successfulRunHandoff,
   scheduledRetry,
   agentName,
+  responsibleAgentName,
+  hasActiveRecovery = false,
 }: {
   issueId?: string | null;
   issueStatus?: string;
@@ -376,7 +553,12 @@ export function IssueBlockedNotice({
   blockerAttention?: IssueBlockerAttention | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
+  /** Handoff assignee name (successful-run handoff copy). */
   agentName?: string | null;
+  /** Issue's responsible/assignee agent name — named as owner of state 6. */
+  responsibleAgentName?: string | null;
+  /** An active recovery action is already surfaced (state 4) — suppress state 6. */
+  hasActiveRecovery?: boolean;
 }) {
   if (issueStatus === "done" || issueStatus === "cancelled") return null;
   const showSuccessfulRunHandoff = successfulRunHandoff?.required === true;
@@ -480,6 +662,37 @@ export function IssueBlockedNotice({
     );
   }
 
+  // Terminal-blocker outcomes: `done` = satisfied evidence (never counted as
+  // waiting), `cancelled` = an unsatisfied dependency the operator must resolve.
+  const doneBlockers = collectTerminalBlockers(chainBlockers, "done");
+  const cancelledBlockers = collectTerminalBlockers(chainBlockers, "cancelled");
+
+  // State 6 — "Stopped — no reason on record": a `blocked` issue with no
+  // unresolved blocker, no live wait, no decision, no recovery, and no
+  // successful-run handoff. The server does not emit a distinct signal, so we
+  // infer it from the empty unresolved-blocker set + `blocked` status (the
+  // sanctioned fallback in the UX spec). An active recovery action is already
+  // surfaced separately (state 4), so it suppresses this notice.
+  const isStoppedNoReason =
+    issueStatus === "blocked"
+    && blockers.length === 0
+    && !showSuccessfulRunHandoff
+    && !hasActiveRecovery;
+
+  if (isStoppedNoReason) {
+    return (
+      <StoppedNoReasonNotice
+        responsibleAgentName={responsibleAgentName}
+        doneBlockers={doneBlockers}
+        cancelledBlockers={cancelledBlockers}
+      />
+    );
+  }
+
+  // Nothing left to surface (e.g. an active recovery card owns the blockerless
+  // blocked state, or the issue is unblocked with no handoff).
+  if (!showSuccessfulRunHandoff && blockers.length === 0) return null;
+
   return (
     <div
       data-blocker-attention-state={blockerAttention?.state}
@@ -535,25 +748,21 @@ export function IssueBlockedNotice({
               ) : null}
             </>
           ) : null}
-          {showSuccessfulRunHandoff && (blockers.length > 0 || issueStatus === "blocked") ? (
+          {showSuccessfulRunHandoff && blockers.length > 0 ? (
             <div className="border-t border-amber-300/60 pt-1.5 dark:border-amber-500/30" />
           ) : null}
-          {blockers.length > 0 || issueStatus === "blocked" ? (
+          {blockers.length > 0 ? (
             <>
               <p className="leading-5">
-                {blockers.length > 0
-                  ? isStalled
-                    ? stalledLeafBlockers.length > 1
-                      ? <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled reviews below or remove them as blockers.</>
-                      : <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled review below or remove it as a blocker.</>
-                    : <>Work on this task is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still wake the responsible for questions or triage.</>
-                  : <>Work on this task is blocked until it is moved back to todo. Comments still wake the responsible for questions or triage.</>}
+                {isStalled
+                  ? stalledLeafBlockers.length > 1
+                    ? <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled reviews below or remove them as blockers.</>
+                    : <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled review below or remove it as a blocker.</>
+                  : <>Work on this task is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still wake the responsible for questions or triage.</>}
               </p>
-              {blockers.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5">
-                  {blockers.map(renderBlockerChip)}
-                </div>
-              ) : null}
+              <div className="flex flex-wrap gap-1.5">
+                {blockers.map(renderBlockerChip)}
+              </div>
               {showStalledRow ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                   <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
@@ -581,6 +790,7 @@ export function IssueBlockedNotice({
                   {parkedBlockers.map(renderBlockerChip)}
                 </div>
               ) : null}
+              <TerminalOutcomeRows doneBlockers={doneBlockers} cancelledBlockers={cancelledBlockers} />
             </>
           ) : null}
         </div>

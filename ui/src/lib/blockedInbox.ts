@@ -6,6 +6,8 @@ import type {
 } from "@paperclipai/shared";
 
 export type BlockedReasonVariant =
+  | "unresolved"
+  | "cancelled_dependency"
   | "needs_decision"
   | "stalled"
   | "needs_attention"
@@ -20,7 +22,9 @@ const VARIANT_BY_REASON: Record<IssueBlockedInboxReason, BlockedReasonVariant> =
   blocked_chain_stalled: "stalled",
   blocked_by_unassigned_issue: "needs_attention",
   blocked_by_assigned_backlog_issue: "needs_attention",
-  blocked_by_cancelled_issue: "needs_attention",
+  // A cancelled dependency is not satisfied — it reads as a decision (replace,
+  // waive, or escalate), not a calm wait (contract: cancelled ≠ satisfied).
+  blocked_by_cancelled_issue: "cancelled_dependency",
   in_review_without_action_path: "needs_attention",
   invalid_review_participant: "needs_attention",
   open_recovery_issue: "recovery_required",
@@ -29,6 +33,10 @@ const VARIANT_BY_REASON: Record<IssueBlockedInboxReason, BlockedReasonVariant> =
 };
 
 export const BLOCKED_REASON_VARIANT_ORDER: BlockedReasonVariant[] = [
+  // Highest-attention, red variants first so a stale/anomalous stop pops instead
+  // of hiding among the calmer waits; state 6 must be the odd one out.
+  "unresolved",
+  "cancelled_dependency",
   "needs_decision",
   "stalled",
   "needs_attention",
@@ -38,6 +46,8 @@ export const BLOCKED_REASON_VARIANT_ORDER: BlockedReasonVariant[] = [
 ];
 
 export const BLOCKED_VARIANT_LABELS: Record<BlockedReasonVariant, string> = {
+  unresolved: "No reason on record",
+  cancelled_dependency: "Cancelled dependency",
   needs_decision: "Needs decision",
   stalled: "Blocked chain stalled",
   needs_attention: "Needs attention",
@@ -71,11 +81,13 @@ const SEVERITY_RANK: Record<IssueBlockedInboxSeverity, number> = {
 export type BlockedInboxBadgeTone = "muted" | "amber" | "red";
 
 export function blockedReasonVariant(reason: IssueBlockedInboxReason): BlockedReasonVariant {
-  return VARIANT_BY_REASON[reason] ?? "needs_attention";
+  // Default to the red "No reason on record" variant: an unclassified stopped
+  // reason must never read like an ordinary dependency wait.
+  return VARIANT_BY_REASON[reason] ?? "unresolved";
 }
 
 export function blockedReasonLabel(reason: IssueBlockedInboxReason): string {
-  return REASON_LABELS[reason] ?? "Stopped";
+  return REASON_LABELS[reason] ?? "No reason on record";
 }
 
 export function blockedVariantLabel(variant: BlockedReasonVariant): string {

@@ -4982,6 +4982,8 @@ export function IssueChatThread({
                     blockerAttention={blockerAttention}
                     successfulRunHandoff={recoveryAction ? null : successfulRunHandoff}
                     scheduledRetry={scheduledRetry}
+                    hasActiveRecovery={Boolean(recoveryAction)}
+                    responsibleAgentName={assignedAgent?.name ?? null}
                     agentName={
                       successfulRunHandoff?.assigneeAgentId
                         ? agentMap?.get(successfulRunHandoff.assigneeAgentId)?.name ?? null
