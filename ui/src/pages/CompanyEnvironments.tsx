@@ -209,7 +209,7 @@ function formatDateTime(value: string | Date | null | undefined): string | null 
 function formatShortId(value: string): string {
   const normalized = value.trim();
   if (normalized.length <= 12) return normalized;
-  return normalized.slice(0, 12);
+  return `${normalized.slice(0, 12)}…`;
 }
 
 function readConnectionCommand(payload: EnvironmentCustomImageConnectionPayload | null | undefined): string | null {

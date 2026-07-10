@@ -127,9 +127,13 @@ export async function probeEnvironment(
               lease: leaseRecord.lease,
               status: releaseStatus,
             });
-          } catch {
-            // Probe cleanup failures are recorded on the lease path but should
-            // not mask the connection result shown to the operator.
+          } catch (releaseError) {
+            // Cleanup failures must not mask the connection result shown to
+            // the operator, but a leaked sandbox should still be traceable.
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[environment-probe] Failed to release lease ${leaseRecord.lease.id} for provider "${parsed.config.provider}": ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`,
+            );
           }
         }
       }
