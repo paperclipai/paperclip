@@ -69,17 +69,26 @@ function coerceExecuteResult(result: {
   stderr?: string;
   exitCode?: number | null;
 }) {
+  const hasExitCode = typeof result.exitCode === "number" || result.exitCode === null;
+  const exitCode = hasExitCode
+    ? result.exitCode
+    : result.success === true
+      ? 0
+      : 1;
+  const stderr = typeof result.stderr === "string" && result.stderr.length > 0
+    ? result.stderr
+    : (
+        hasExitCode || result.success === true
+          ? ""
+          : "Cloudflare sandbox exec returned no exit code or explicit success marker.\n"
+    );
+
   return {
-    exitCode:
-      typeof result.exitCode === "number" || result.exitCode === null
-        ? result.exitCode
-        : result.success === false
-          ? 1
-          : 0,
+    exitCode,
     signal: null,
     timedOut: false,
     stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
+    stderr,
   };
 }
 
