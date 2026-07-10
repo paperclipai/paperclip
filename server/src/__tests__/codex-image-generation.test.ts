@@ -15,18 +15,22 @@ afterEach(async () => {
 describe("generateCodexIssueImage", () => {
   it("passes reference images to Codex and reads the generated image from CODEX_HOME", async () => {
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
     const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-image-paperclip-home-"));
     const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-image-home-"));
     cleanupDirs.add(paperclipHome);
     cleanupDirs.add(codexHome);
     process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "codex-image-test";
     await fs.writeFile(path.join(codexHome, "auth.json"), JSON.stringify({ auth_mode: "chatgpt" }));
     const threadId = "019f286b-9bae-7961-bb48-e5c658f53427";
 
     const runProcess = vi.fn<typeof runChildProcess>(
       async (_runId, command, args, opts) => {
         expect(command).toBe("codex");
-        expect(opts.env.CODEX_HOME).toContain(path.join(paperclipHome, "instances", "default", "data", "codex-image-runtime"));
+        expect(opts.env.CODEX_HOME).toContain(
+          path.join(paperclipHome, "instances", "codex-image-test", "data", "codex-image-runtime"),
+        );
         expect(opts.env.OPENAI_API_KEY).toBe("");
         await expect(fs.readlink(path.join(opts.env.CODEX_HOME, "auth.json"))).resolves.toBe(path.join(codexHome, "auth.json"));
         expect(args).toContain("--image");
@@ -81,6 +85,11 @@ describe("generateCodexIssueImage", () => {
         delete process.env.PAPERCLIP_HOME;
       } else {
         process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      }
+      if (previousPaperclipInstanceId === undefined) {
+        delete process.env.PAPERCLIP_INSTANCE_ID;
+      } else {
+        process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
       }
     }
   });

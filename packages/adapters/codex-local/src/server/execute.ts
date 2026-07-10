@@ -380,9 +380,11 @@ export async function runCodexLogin(input: {
   const preparedManagedCodexHome =
     overrideCodexHome || configuredCodexHome || !agent
       ? null
-      : await prepareManagedCodexHome(process.env, onLog, agent.companyId);
+      : await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
+          agentId: agent.id,
+        });
   const defaultCodexHome = agent
-    ? resolveManagedCodexHomeDir(process.env, agent.companyId)
+    ? resolveManagedCodexHomeDir(process.env, agent.companyId, agent.id)
     : null;
   const effectiveCodexHome =
     overrideCodexHome ?? configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
@@ -432,17 +434,19 @@ export async function runCodexLogin(input: {
     }
   };
 
-  // Wrap the spawn with `script -qfc` so codex sees a TTY on stdout. Without a
+  // Wrap the spawn with `script` so codex sees a TTY on stdout. Without a
   // TTY, the Rust runtime in codex switches stdout to fully block-buffered
   // mode and the URL+code (~400 bytes) never flushes during the 16-min device
-  // auth poll. `script` is provided by `bsdutils` (essential) on the
-  // node:lts-trixie-slim base image. `-q` suppresses the "Script started"
-  // banner so the parser sees only the codex output. The command must be a
-  // single shell string for `-c`; we single-quote `command` to defend against
-  // absolute paths with spaces. The single inner arg "login --device-auth" has
-  // no shell metacharacters.
+  // auth poll. Linux's util-linux `script` accepts `-c`; Darwin's BSD `script`
+  // accepts the command as trailing argv instead, and `-e` propagates its exit
+  // status. `-q` suppresses the banner so the parser sees only Codex output.
+  // On Linux the command must be a single shell string for `-c`, so quote it to
+  // support absolute paths with spaces.
   const shellQuoted = `'${command.replace(/'/g, `'"'"'`)}' login --device-auth`;
-  const proc = await runChildProcess(input.runId, "script", ["-qfc", shellQuoted, "/dev/null"], {
+  const scriptArgs = process.platform === "darwin"
+    ? ["-qe", "/dev/null", command, "login", "--device-auth"]
+    : ["-qfc", shellQuoted, "/dev/null"];
+  const proc = await runChildProcess(input.runId, "script", scriptArgs, {
     cwd,
     env,
     timeoutSec,

@@ -213,7 +213,7 @@ describe("codex execute", () => {
     }
   });
 
-  it("uses a Paperclip-managed CODEX_HOME outside worktree mode while preserving shared auth and config", async () => {
+  it("uses a per-agent Paperclip-managed CODEX_HOME outside worktree mode while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-default-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
@@ -226,6 +226,8 @@ describe("codex execute", () => {
       "default",
       "companies",
       "company-1",
+      "agents",
+      "agent-1",
       "codex-home",
     );
     await fs.mkdir(workspace, { recursive: true });
@@ -324,6 +326,8 @@ describe("codex execute", () => {
       "default",
       "companies",
       "company-1",
+      "agents",
+      "agent-1",
       "codex-home",
     );
     const managedAuthPath = path.join(managedCodexHome, "auth.json");
@@ -416,6 +420,8 @@ describe("codex execute", () => {
       "default",
       "companies",
       "company-1",
+      "agents",
+      "agent-1",
       "codex-home",
     );
     const sharedAuthPath = path.join(sharedCodexHome, "auth.json");
@@ -1430,7 +1436,7 @@ describe("codex execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
-  it("uses a worktree-isolated CODEX_HOME while preserving shared auth and config", async () => {
+  it("uses a per-agent worktree-isolated CODEX_HOME while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
@@ -1443,6 +1449,8 @@ describe("codex execute", () => {
       "worktree-1",
       "companies",
       "company-1",
+      "agents",
+      "agent-1",
       "codex-home",
     );
     const homeSkill = path.join(isolatedCodexHome, "skills", "paperclip");
