@@ -496,6 +496,114 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
   });
 
+  it("rejects ask_user_questions responses with no answers", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Reject empty answers");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Choose the scope",
+          selectionMode: "single",
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await expect(interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      answers: [],
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("At least one question answer is required");
+  });
+
+  it("rejects boilerplate sweep summaries without real per-question answers", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Reject boilerplate empty answer");
+    const boilerplateSummary =
+      "Board approved all issue gates in current sweep; selected the positive/recommended approval path where available.";
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Choose the scope",
+          selectionMode: "single",
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await expect(interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      answers: [{ questionId: "scope", optionIds: [] }],
+      summaryMarkdown: boilerplateSummary,
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("At least one question answer is required");
+  });
+
+  it("accepts boilerplate sweep summaries when a real per-question answer is present", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Allow boilerplate with answer");
+    const boilerplateSummary =
+      "Board approved all issue gates in current sweep; selected the positive/recommended approval path where available.";
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Choose the scope",
+          selectionMode: "single",
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const answered = await interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      summaryMarkdown: boilerplateSummary,
+    }, {
+      userId: "local-board",
+    });
+
+    expect(answered.status).toBe("answered");
+    expect(answered.result).toMatchObject({
+      answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      summaryMarkdown: boilerplateSummary,
+    });
+  });
+
   it("persists cancelled ask_user_questions interactions without answer data", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

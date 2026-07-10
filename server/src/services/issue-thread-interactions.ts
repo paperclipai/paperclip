@@ -37,6 +37,7 @@ import {
   requestCheckboxConfirmationResultSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
+  respondIssueThreadInteractionSchema,
   suggestTasksPayloadSchema,
   suggestTasksResultSchema,
 } from "@paperclipai/shared";
@@ -536,6 +537,13 @@ function normalizeQuestionAnswers(args: {
     }
 
     const otherText = answer.otherText?.trim() ?? "";
+    if (uniqueOptionIds.length === 0 && !otherText) {
+      if (question.required) {
+        throw unprocessable(`Question ${answer.questionId} requires an answer`);
+      }
+      continue;
+    }
+
     answerByQuestionId.set(answer.questionId, {
       questionId: answer.questionId,
       optionIds: uniqueOptionIds,
@@ -1160,6 +1168,10 @@ export function issueThreadInteractionService(db: Db) {
           .update(issueThreadInteractions)
           .set({
             status: "accepted",
+            result: {
+              version: 1,
+              createdTasks: [],
+            },
             resolvedByAgentId: actor.agentId ?? null,
             resolvedByUserId: actor.userId ?? null,
             resolvedAt,
@@ -1597,11 +1609,15 @@ export function issueThreadInteractionService(db: Db) {
         throw conflict("Interaction has already been resolved");
       }
 
+      const data = respondIssueThreadInteractionSchema.parse(input);
       const interaction = hydrateInteraction(current) as AskUserQuestionsInteraction;
       const normalizedAnswers = normalizeQuestionAnswers({
         questions: interaction.payload.questions,
-        answers: input.answers,
+        answers: data.answers,
       });
+      if (normalizedAnswers.length === 0) {
+        throw unprocessable("At least one question answer is required");
+      }
 
       const [updated] = await db
         .update(issueThreadInteractions)
@@ -1610,7 +1626,7 @@ export function issueThreadInteractionService(db: Db) {
           result: {
             version: 1,
             answers: normalizedAnswers,
-            summaryMarkdown: input.summaryMarkdown ?? null,
+            summaryMarkdown: data.summaryMarkdown ?? null,
           },
           resolvedByAgentId: actor.agentId ?? null,
           resolvedByUserId: actor.userId ?? null,

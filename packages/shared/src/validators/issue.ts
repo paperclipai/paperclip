@@ -972,7 +972,9 @@ export const cancelIssueThreadInteractionSchema = z.object({
 export type CancelIssueThreadInteraction = z.infer<typeof cancelIssueThreadInteractionSchema>;
 
 export const respondIssueThreadInteractionSchema = z.object({
-  answers: z.array(askUserQuestionsAnswerSchema).max(20),
+  answers: z.array(askUserQuestionsAnswerSchema)
+    .min(1, "At least one question answer is required")
+    .max(20),
   summaryMarkdown: multilineTextSchema.pipe(z.string().max(20000)).nullable().optional(),
 });
 export type RespondIssueThreadInteraction = z.infer<typeof respondIssueThreadInteractionSchema>;

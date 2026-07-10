@@ -211,7 +211,7 @@ describe("issue validators", () => {
 
   it("normalizes escaped line breaks in thread summaries and documents", () => {
     const response = respondIssueThreadInteractionSchema.parse({
-      answers: [],
+      answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
       summaryMarkdown: "Summary\\n\\nNext action",
     });
     const document = upsertIssueDocumentSchema.parse({
@@ -221,6 +221,13 @@ describe("issue validators", () => {
 
     expect(response.summaryMarkdown).toBe("Summary\n\nNext action");
     expect(document.body).toBe("# Plan\n\nShip it");
+  });
+
+  it("rejects empty thread interaction answer responses", () => {
+    expect(() => respondIssueThreadInteractionSchema.parse({
+      answers: [],
+      summaryMarkdown: "Summary",
+    })).toThrow("At least one question answer is required");
   });
 
   it("clamps oversized requestDepth values on create", () => {
