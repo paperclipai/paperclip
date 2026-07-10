@@ -78,6 +78,7 @@ import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getTrustPreset } from "../lib/trust-policy-ui";
 import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
+import { codexLocalThinkingEffortsForModel } from "@paperclipai/adapter-codex-local";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -131,14 +132,7 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
   ],
-  codex_local: [
-    { value: "", label: "Default" },
-    { value: "minimal", label: "Minimal" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
-    { value: "xhigh", label: "X-High" },
-  ],
+  codex_local: [{ value: "", label: "Default" }],
   opencode_local: [
     { value: "", label: "Default" },
     { value: "minimal", label: "Minimal" },
@@ -149,6 +143,16 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "max", label: "Max" },
   ],
 } as const;
+
+function codexThinkingEffortOptions(model: string | null | undefined) {
+  return [
+    ...ISSUE_THINKING_EFFORT_OPTIONS.codex_local,
+    ...codexLocalThinkingEffortsForModel(model).map((value) => ({
+      value,
+      label: value === "xhigh" ? "X-High" : value.charAt(0).toUpperCase() + value.slice(1),
+    })),
+  ];
+}
 
 function loadDraft(): IssueDraft | null {
   try {
@@ -898,9 +902,16 @@ export function NewIssueDialog() {
       setAssigneeModelLane("primary");
     }
 
+    const effectAssignee = selectedAssigneeAgentId
+      ? (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId)
+      : null;
+    const effectiveCodexModel = assigneeModelOverride
+      || (isRecord(effectAssignee?.adapterConfig) && typeof effectAssignee.adapterConfig.model === "string"
+        ? effectAssignee.adapterConfig.model
+        : "");
     const validThinkingValues =
       assigneeAdapterType === "codex_local"
-        ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
+        ? codexThinkingEffortOptions(effectiveCodexModel)
         : assigneeAdapterType === "opencode_local"
           ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
           : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
@@ -911,6 +922,9 @@ export function NewIssueDialog() {
     supportsAssigneeOverrides,
     assigneeAdapterType,
     assigneeThinkingEffort,
+    assigneeModelOverride,
+    agents,
+    selectedAssigneeAgentId,
     assigneeSupportsCheapLane,
     assigneeModelLane,
   ]);
@@ -1164,7 +1178,12 @@ export function NewIssueDialog() {
         : "Agent options";
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
-      ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
+      ? codexThinkingEffortOptions(
+          assigneeModelOverride
+            || (isRecord(currentAssignee?.adapterConfig) && typeof currentAssignee.adapterConfig.model === "string"
+              ? currentAssignee.adapterConfig.model
+              : ""),
+        )
       : assigneeAdapterType === "opencode_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
       : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
