@@ -174,6 +174,7 @@ const FALLBACK_REFLECTION_COACH_SKILL = [
 ].join("\n");
 
 const warnedBuiltInTextFallbacks = new Set<string>();
+const warnedBuiltInTextReadErrors = new Set<string>();
 
 function resolvePackageRoot(packageName: string) {
   try {
@@ -192,7 +193,18 @@ export function readBuiltInTextWithFallback(
   for (const candidatePath of attemptedPaths) {
     try {
       return readFileSync(candidatePath, "utf8");
-    } catch {
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") {
+        const codeLabel = code || String(error);
+        const warningKey = [label, candidatePath, codeLabel].join(":");
+        if (!warnedBuiltInTextReadErrors.has(warningKey)) {
+          warnedBuiltInTextReadErrors.add(warningKey);
+          console.warn(
+            "[paperclip] Built-in agent asset " + label + " read error on " + candidatePath + ": " + codeLabel,
+          );
+        }
+      }
       // Try every known runtime/source path before falling back to compiled text.
     }
   }

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -80,6 +80,26 @@ describe("built-in agent asset loading", () => {
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Built-in agent asset ${label} was not readable`));
     } finally {
       warn.mockRestore();
+    }
+  });
+
+  it("warns about non-missing read errors before falling back", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = mkdtempSync(path.join(tmpdir(), "paperclip-built-in-agent-"));
+    const label = "unreadable:" + randomUUID();
+
+    try {
+      const directoryPath = path.join(dir, "asset.md");
+      mkdirSync(directoryPath);
+
+      expect(readBuiltInTextWithFallback(label, [directoryPath], "fallback text")).toBe("fallback text");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("read error on " + directoryPath + ":"));
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Built-in agent asset " + label + " was not readable"),
+      );
+    } finally {
+      warn.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
