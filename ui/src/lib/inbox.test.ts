@@ -305,6 +305,13 @@ const dashboard: DashboardSummary = {
     pausedProjects: 0,
   },
   runActivity: [],
+  authFailureAlert: {
+    consecutiveFailures: 0,
+    threshold: 3,
+    triggered: false,
+    latestFailureAt: null,
+    errorCode: null,
+  },
 };
 
 describe("inbox helpers", () => {
