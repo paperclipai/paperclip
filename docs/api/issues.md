@@ -276,6 +276,8 @@ Content-Type: application/json
 
 For board requests that explicitly require an attached photo/image as a real model reference, Paperclip also discovers image links from the issue and its parent chain, binds those files automatically, and rejects prompt-only completion. A successful reference-backed response includes `generationMode: "reference_backed"`, non-empty `actualImageInputsBound`, the generated image attachment, and a JSON audit attachment.
 
+Each generation accepts up to 16 unique reference images across `referenceImageAttachmentIds` and `referenceImageAssetIds`, matching the GPT Image input limit. Duplicate files are collapsed by SHA-256. When using multiple images, identify each input's role in the prompt. If automatic discovery finds more than 16 unique candidates, the request is rejected so the caller can select the exact references explicitly.
+
 ## Issue Lifecycle
 
 ```

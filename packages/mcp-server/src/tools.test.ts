@@ -166,6 +166,40 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("allows 16 image references and rejects a seventeenth before calling Paperclip", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({
+        model: "gpt-image-2",
+        generationMode: "reference_backed",
+      }, 201),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const referenceIds = Array.from(
+      { length: 17 },
+      (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    );
+    const tool = getTool("paperclipGenerateIssueImage");
+
+    await tool.execute({
+      issueId: "SIX-3832",
+      prompt: "Use every supplied image according to its named role.",
+      referenceImageAttachmentIds: referenceIds.slice(0, 16),
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body)).referenceImageAttachmentIds).toHaveLength(16);
+
+    const rejected = await tool.execute({
+      issueId: "SIX-3832",
+      prompt: "This request exceeds the provider-supported input count.",
+      referenceImageAttachmentIds: referenceIds,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(rejected.content[0]?.text).toContain("at most 16");
+  });
+
   it("controls issue workspace services through the current execution workspace", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(mockJsonResponse({

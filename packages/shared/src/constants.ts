@@ -3,6 +3,8 @@ export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
 export const DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES = 30 * 1024 * 1024;
 export const MAX_COMPANY_ATTACHMENT_MAX_BYTES = 1024 * 1024 * 1024;
+/** GPT image models accept at most 16 input images per edit request. */
+export const PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS = 16;
 
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
 export type DeploymentMode = (typeof DEPLOYMENT_MODES)[number];

@@ -35,6 +35,7 @@ import {
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS,
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
@@ -141,8 +142,8 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
 });
 const generateIssueImageSchema = z.object({
   prompt: z.string().trim().min(1).max(12000),
-  referenceImageAttachmentIds: z.array(z.string().uuid()).max(6).optional().default([]),
-  referenceImageAssetIds: z.array(z.string().uuid()).max(6).optional().default([]),
+  referenceImageAttachmentIds: z.array(z.string().uuid()).max(PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS).optional().default([]),
+  referenceImageAssetIds: z.array(z.string().uuid()).max(PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS).optional().default([]),
   size: z.string().trim().min(1).max(64).default("1024x1024"),
   quality: z.enum(["auto", "low", "medium", "high"]).default("high"),
   model: z.literal(PAPERCLIP_IMAGE_MODEL).optional().default(PAPERCLIP_IMAGE_MODEL),
@@ -6913,8 +6914,10 @@ export function issueRoutes(
     ) {
       throw unprocessable("No reference image attachment or asset could be bound");
     }
-    if (references.length > 6) {
-      throw unprocessable("At most 6 unique image reference inputs can be bound; select the exact required references explicitly");
+    if (references.length > PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS) {
+      throw unprocessable(
+        `At most ${PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS} unique image reference inputs can be bound; select the exact required references explicitly`,
+      );
     }
     if (referenceGuardrail.required && references.length === 0) {
       throw unprocessable(

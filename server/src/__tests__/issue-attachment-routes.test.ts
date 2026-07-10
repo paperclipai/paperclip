@@ -367,6 +367,35 @@ describe("issue attachment routes", () => {
     ]).toContain(res.headers["content-disposition"]);
   });
 
+  it("accepts 16 image reference ids at validation and rejects a seventeenth", async () => {
+    const storage = createStorageService();
+    const referenceIds = Array.from(
+      { length: 17 },
+      (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    );
+    mockIssueService.getById.mockResolvedValue(null);
+    const app = await createApp(storage);
+
+    const accepted = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/image-generations")
+      .send({
+        prompt: "Use all references according to their named roles.",
+        referenceImageAttachmentIds: referenceIds.slice(0, 16),
+      });
+    expect(accepted.status).toBe(404);
+    expect(accepted.body.error).toBe("Issue not found");
+
+    const rejected = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/image-generations")
+      .send({
+        prompt: "This request exceeds the provider-supported input count.",
+        referenceImageAttachmentIds: referenceIds,
+      });
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error).toBe("Validation error");
+    expect(mockIssueService.getById).toHaveBeenCalledTimes(1);
+  });
+
   it("binds reference image attachment bytes to the OpenAI image edit request", async () => {
     const previousImageKey = process.env.PAPERCLIP_IMAGE_OPENAI_API_KEY;
     const previousImageProvider = process.env.PAPERCLIP_IMAGE_PROVIDER;

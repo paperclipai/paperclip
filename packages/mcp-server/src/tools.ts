@@ -13,6 +13,7 @@ import {
   updateIssueSchema,
   upsertIssueDocumentSchema,
   linkIssueApprovalSchema,
+  PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS,
 } from "@paperclipai/shared";
 import { PaperclipApiClient } from "./client.js";
 import { formatErrorResponse, formatTextResponse } from "./format.js";
@@ -116,8 +117,8 @@ const addCommentToolSchema = z.object({
 const generateIssueImageToolSchema = z.object({
   issueId: issueIdSchema,
   prompt: z.string().trim().min(1).max(12000),
-  referenceImageAttachmentIds: z.array(z.string().uuid()).max(6).optional().default([]),
-  referenceImageAssetIds: z.array(z.string().uuid()).max(6).optional().default([]),
+  referenceImageAttachmentIds: z.array(z.string().uuid()).max(PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS).optional().default([]),
+  referenceImageAssetIds: z.array(z.string().uuid()).max(PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS).optional().default([]),
   size: z.string().trim().min(1).max(64).optional().default("1024x1024"),
   quality: z.enum(["auto", "low", "medium", "high"]).optional().default("high"),
   model: z.literal("gpt-image-2").optional().default("gpt-image-2"),
@@ -551,7 +552,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipGenerateIssueImage",
-      "Generate one audited PNG issue attachment with gpt-image-2. Use this tool instead of generic imagegen whenever the board says an attachment/photo must be a real visual reference. Pass issue attachment ids in referenceImageAttachmentIds or inline /api/assets ids in referenceImageAssetIds. For board reference-fidelity requests, Paperclip also auto-binds board-linked image attachments/assets and refuses prompt-only completion. The response must show generationMode=reference_backed and non-empty actualImageInputsBound before review. Paperclip downloads and validates the files, passes them to Codex with --image, and stores a JSON audit attachment. Common sizes include 1024x1024, 1024x1536, 1536x1024, or a requested production size like 1080x1350. quality must be auto, low, medium, or high.",
+      `Generate one audited PNG issue attachment with gpt-image-2. Use this tool instead of generic imagegen whenever the board says an attachment/photo must be a real visual reference. Pass issue attachment ids in referenceImageAttachmentIds or inline /api/assets ids in referenceImageAssetIds. Up to ${PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS} unique reference images can be bound in one generation; name each image's role in the prompt. For board reference-fidelity requests, Paperclip also auto-binds board-linked image attachments/assets and refuses prompt-only completion. The response must show generationMode=reference_backed and non-empty actualImageInputsBound before review. Paperclip downloads and validates the files, passes them to Codex with --image, and stores a JSON audit attachment. Common sizes include 1024x1024, 1024x1536, 1536x1024, or a requested production size like 1080x1350. quality must be auto, low, medium, or high.`,
       generateIssueImageToolSchema,
       async ({ issueId, ...body }) =>
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/image-generations`, { body }),
