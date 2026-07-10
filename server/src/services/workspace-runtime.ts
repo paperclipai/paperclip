@@ -17,7 +17,7 @@ import {
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import {
@@ -3687,8 +3687,37 @@ async function findStoppedRuntimeServiceReuseCandidate(input: {
   db?: Db;
   companyId: string;
   reuseKey: string | null;
+  serviceName: string;
+  command: string;
+  cwd: string;
+  scopeType: RuntimeServiceRef["scopeType"];
+  scopeId: string | null;
 }): Promise<StoppedRuntimeServiceReuseCandidate | null> {
-  if (!input.db || !input.reuseKey) return null;
+  if (!input.db) return null;
+  if (input.reuseKey) {
+    const row = await input.db
+      .select({
+        id: workspaceRuntimeServices.id,
+        port: workspaceRuntimeServices.port,
+      })
+      .from(workspaceRuntimeServices)
+      .where(
+        and(
+          eq(workspaceRuntimeServices.companyId, input.companyId),
+          eq(workspaceRuntimeServices.reuseKey, input.reuseKey),
+          eq(workspaceRuntimeServices.provider, "local_process"),
+          eq(workspaceRuntimeServices.status, "stopped"),
+        ),
+      )
+      .orderBy(desc(workspaceRuntimeServices.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (row) return row;
+  }
+
+  const scopeIdCondition = input.scopeId === null
+    ? isNull(workspaceRuntimeServices.scopeId)
+    : eq(workspaceRuntimeServices.scopeId, input.scopeId);
   const row = await input.db
     .select({
       id: workspaceRuntimeServices.id,
@@ -3698,9 +3727,13 @@ async function findStoppedRuntimeServiceReuseCandidate(input: {
     .where(
       and(
         eq(workspaceRuntimeServices.companyId, input.companyId),
-        eq(workspaceRuntimeServices.reuseKey, input.reuseKey),
         eq(workspaceRuntimeServices.provider, "local_process"),
         eq(workspaceRuntimeServices.status, "stopped"),
+        eq(workspaceRuntimeServices.scopeType, input.scopeType),
+        scopeIdCondition,
+        eq(workspaceRuntimeServices.serviceName, input.serviceName),
+        eq(workspaceRuntimeServices.command, input.command),
+        eq(workspaceRuntimeServices.cwd, input.cwd),
       ),
     )
     .orderBy(desc(workspaceRuntimeServices.updatedAt))
@@ -3826,6 +3859,11 @@ async function startLocalRuntimeService(input: {
     db: input.db,
     companyId: input.agent.companyId,
     reuseKey: input.reuseKey,
+    serviceName,
+    command,
+    cwd: identity.serviceCwd,
+    scopeType: input.scopeType,
+    scopeId: input.scopeId,
   });
   let reusableStoppedPort: number | null = null;
   if (asString(portConfig.type, "") === "auto" && stoppedReuseCandidate?.port) {
