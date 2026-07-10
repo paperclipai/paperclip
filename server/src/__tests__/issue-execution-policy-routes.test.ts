@@ -49,6 +49,17 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/image-reference-guardrails.js", () => ({
+    resolveIssueImageReferenceGuardrail: vi.fn(async () => ({
+      required: false,
+      issueScopeIds: [],
+      boardText: "",
+      candidateAttachmentIds: [],
+      candidateAssetIds: [],
+    })),
+    hasReferenceBackedImageGenerationEvidence: vi.fn(async () => false),
+  }));
+
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
@@ -162,6 +173,7 @@ async function createApp(actor?: TestActor) {
 describe("issue execution policy routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/image-reference-guardrails.js");
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../middleware/index.js");
