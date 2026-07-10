@@ -438,6 +438,8 @@ async function issueSummaryMap(db: Db, companyId: string, issueIds: Array<string
       updatedAt: issues.updatedAt,
       projectId: projects.id,
       projectName: projects.name,
+      projectColor: projects.color,
+      projectIcon: projects.icon,
       workspaceId: projectWorkspaces.id,
       workspaceName: projectWorkspaces.name,
     })
@@ -463,6 +465,8 @@ async function issueSummaryMap(db: Db, companyId: string, issueIds: Array<string
       id: row.projectId,
       name: row.projectName,
       urlKey: deriveProjectUrlKey(row.projectName, row.projectId),
+      color: row.projectColor,
+      icon: row.projectIcon,
     } : null,
     workspace: row.workspaceId && row.workspaceName ? {
       id: row.workspaceId,

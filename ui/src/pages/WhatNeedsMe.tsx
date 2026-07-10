@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpDown, Check, CheckCircle2, Inbox, Layers, ListFilter } from "lucide-react";
-import type { Agent, AttentionItem, AttentionProjectRef } from "@paperclipai/shared";
+import type { Agent, AttentionItem } from "@paperclipai/shared";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
@@ -217,11 +217,6 @@ export function WhatNeedsMe() {
     setPendingRestore((prev) => new Set(prev).add(item.id));
     restore(item.dismissalKey);
   };
-  const handleFilterProject = (project: AttentionProjectRef) => {
-    if (filters.projectIds.includes(project.id)) return;
-    updateFilters({ ...filters, projectIds: [...filters.projectIds, project.id] });
-  };
-
   const activeFilterCount = countActiveAttentionFilters(filters);
 
   if (!selectedCompanyId) {
@@ -371,7 +366,6 @@ export function WhatNeedsMe() {
                           onToggleExpand={() => setExpandedId((prev) => (prev === item.id ? null : item.id))}
                           onDismiss={handleDismiss}
                           onSnooze={handleSnooze}
-                          onFilterProject={handleFilterProject}
                           agentMap={agentMap}
                           currentUserId={currentUserId}
                         />

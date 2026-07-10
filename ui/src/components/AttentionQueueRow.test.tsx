@@ -184,6 +184,26 @@ describe("AttentionQueueRow", () => {
     expect(links.some((a) => a.textContent?.includes("Hire agent: Research Analyst"))).toBe(false);
   });
 
+  it("renders project identity once without a filter button", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          project: { id: "project-1", name: "Alpha", urlKey: "alpha", color: null, icon: "rocket" },
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const projectChip = container?.querySelector('[data-testid="attention-project-chip"]');
+    expect(projectChip?.textContent).toBe("Alpha");
+    expect(projectChip?.querySelector("button")).toBeNull();
+    expect(container?.querySelector('button[title="Filter by Alpha"]')).toBeNull();
+    expect(container?.textContent?.match(/Alpha/g)).toHaveLength(1);
+  });
+
   it("renders collapsed inline decision verbs in the right-side action area with semantic variants", () => {
     render(
       <AttentionQueueRow

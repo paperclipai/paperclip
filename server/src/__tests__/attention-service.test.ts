@@ -622,6 +622,8 @@ describeEmbeddedPostgres("attention service", () => {
       companyId,
       name: "Attention Project",
       status: "in_progress",
+      color: "#0f766e",
+      icon: "rocket",
     });
     await db.insert(projectWorkspaces).values({
       id: workspaceId,
@@ -752,7 +754,12 @@ describeEmbeddedPostgres("attention service", () => {
     const planItem = detailsByKind.get("plan_approval");
     expect(planItem?.subject.title).toBe("Plan approval - Approve launch plan");
     expect(planItem?.subject.metadata).toMatchObject({ isPlanTarget: true, targetDocumentKey: "plan" });
-    expect(planItem?.project).toMatchObject({ id: projectId, name: "Attention Project" });
+    expect(planItem?.project).toMatchObject({
+      id: projectId,
+      name: "Attention Project",
+      color: "#0f766e",
+      icon: "rocket",
+    });
     expect(planItem?.project?.urlKey).toEqual(expect.any(String));
     expect(planItem?.workspace).toEqual({ id: workspaceId, name: "Preview workspace" });
     expect(planItem?.detail).toMatchObject({

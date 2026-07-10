@@ -188,9 +188,9 @@ const ACTIVITY_OFFSETS: Record<string, number> = {
   "budget-1": NOW - 40 * DAY,
 };
 const PROJECTS: Record<string, AttentionItem["project"]> = {
-  "appr-1": { id: "proj-alpha", name: "Alpha", urlKey: "alpha" },
-  "intx-1": { id: "proj-alpha", name: "Alpha", urlKey: "alpha" },
-  "review-1": { id: "proj-beta", name: "Beta", urlKey: "beta" },
+  "appr-1": { id: "proj-alpha", name: "Alpha", urlKey: "alpha", color: "#0f766e", icon: "rocket" },
+  "intx-1": { id: "proj-alpha", name: "Alpha", urlKey: "alpha", color: "#0f766e", icon: "rocket" },
+  "review-1": { id: "proj-beta", name: "Beta", urlKey: "beta", color: "#7c3aed", icon: "layers" },
 };
 const DETAILS: Record<string, AttentionItem["detail"]> = {
   "recov-1": { kind: "generic", summaryExcerpt: "Agent has not produced output in 40 minutes.", images: [] },
@@ -224,7 +224,7 @@ const SHOWCASE: AttentionItem[] = [
         { id: "approve", label: "Approve plan", description: null },
         { id: "request_changes", label: "Request changes", description: null },
       ],
-      project: { id: "proj-alpha", name: "Alpha", urlKey: "alpha" },
+      project: { id: "proj-alpha", name: "Alpha", urlKey: "alpha", color: "#0f766e", icon: "rocket" },
     }),
     activityAt: new Date(NOW - 20 * 60 * 1000).toISOString(),
     detail: { kind: "plan_approval", issueTitle: "Attention home", planTitle: "Row/card redesign — 8 sections", summaryExcerpt: null, images: [IMAGES[1]] },
@@ -238,7 +238,7 @@ const SHOWCASE: AttentionItem[] = [
         { id: "approve", label: "Approve", description: null },
         { id: "reject", label: "Reject", description: null },
       ],
-      project: { id: "proj-beta", name: "Beta", urlKey: "beta" },
+      project: { id: "proj-beta", name: "Beta", urlKey: "beta", color: "#7c3aed", icon: "layers" },
     }),
     activityAt: new Date(NOW - 40 * 60 * 1000).toISOString(),
     detail: { kind: "confirmation", promptExcerpt: "Ship v2026.707.0 changelog to the public page?", isPlanTarget: false, images: [] },
@@ -248,7 +248,7 @@ const SHOWCASE: AttentionItem[] = [
       inlineResolvable: true,
       subject: { kind: "interaction", id: "intx-qs", companyId, title: "Answer 2 questions on rollout", identifier: null, status: "pending", href: "/PAP/issues/PAP-1000#qs", metadata: { kind: "ask_user_questions", issueId: "issue-1000" } },
       decisionVerbs: [{ id: "respond", label: "Answer", description: null }],
-      project: { id: "proj-alpha", name: "Alpha", urlKey: "alpha" },
+      project: PROJECTS["intx-1"],
     }),
     activityAt: new Date(NOW - 90 * 60 * 1000).toISOString(),
     detail: { kind: "questions", questionCount: 2, firstQuestionText: "Which auth provider should we standardize on?", images: [IMAGES[0], IMAGES[2]] },
@@ -383,7 +383,6 @@ function Queue({
                       onToggleExpand={() => setExpandedId((p) => (p === it.id ? null : it.id))}
                       onDismiss={(d) => setCleared((prev) => new Set(prev).add(d.id))}
                       onSnooze={(d) => setCleared((prev) => new Set(prev).add(d.id))}
-                      onFilterProject={() => {}}
                     />
                   ))}
                 </div>

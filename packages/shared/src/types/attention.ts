@@ -45,6 +45,8 @@ export interface AttentionProjectRef {
   id: string;
   name: string;
   urlKey: string;
+  color: string | null;
+  icon: string | null;
 }
 
 export interface AttentionWorkspaceRef {

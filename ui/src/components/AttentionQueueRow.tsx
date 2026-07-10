@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent, type MouseEvent } from "react";
+import { useState, type KeyboardEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlarmClock,
@@ -7,13 +7,13 @@ import {
   ChevronRight,
   Clock,
   ExternalLink,
-  Folder,
   Loader2,
   MoreHorizontal,
   RotateCcw,
   X,
+  type LucideIcon,
 } from "lucide-react";
-import type { Agent, AttentionDetailImage, AttentionItem, AttentionProjectRef } from "@paperclipai/shared";
+import type { Agent, AttentionDetailImage, AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { approvalsApi } from "../api/approvals";
@@ -41,6 +41,7 @@ import {
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import { AttentionInteractionResolver } from "./AttentionInteractionResolver";
+import { ProjectTile } from "./ProjectTile";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -70,8 +71,6 @@ interface AttentionQueueRowProps {
   onSnooze?: (item: AttentionItem, snoozedUntil: string) => void;
   /** Restore a snoozed/dismissed row (curtain variant only). */
   onRestore?: (item: AttentionItem) => void;
-  /** Click-to-filter on the project chip (wires into the toolbar filter state). */
-  onFilterProject?: (project: AttentionProjectRef) => void;
   /** "active" renders the live queue row; "hidden" renders a curtain row. */
   variant?: "active" | "hidden";
   agentMap?: Map<string, Agent>;
@@ -87,7 +86,6 @@ export function AttentionQueueRow({
   onDismiss,
   onSnooze,
   onRestore,
-  onFilterProject,
   variant = "active",
   agentMap,
   currentUserId,
@@ -214,20 +212,7 @@ export function AttentionQueueRow({
 
                 {(item.project || workspaceLabel) && (
                   <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                    {item.project && (
-                      <Chip
-                        icon={Folder}
-                        label={item.project.name}
-                        onClick={
-                          onFilterProject
-                            ? (e) => {
-                                e.stopPropagation();
-                                onFilterProject(item.project!);
-                              }
-                            : undefined
-                        }
-                      />
-                    )}
+                    {item.project && <ProjectChip project={item.project} />}
                     {workspaceLabel && <Chip icon={Boxes} label={workspaceLabel} />}
                   </div>
                 )}
@@ -332,34 +317,34 @@ function decisionVerbVariant(verb: AttentionItem["decisionVerbs"][number]): "def
   return "outline";
 }
 
-/** Small pill used for the project / workspace chips. Clickable when `onClick`. */
+/** Small passive pill used for the project identity. */
+function ProjectChip({ project }: { project: NonNullable<AttentionItem["project"]> }) {
+  return (
+    <span
+      className="inline-flex max-w-(--sz-12rem) items-center gap-1.5 rounded-sm border border-border/70 bg-muted/40 px-1.5 py-0.5 text-(length:--text-nano) text-muted-foreground"
+      title={project.name}
+      data-testid="attention-project-chip"
+    >
+      <ProjectTile color={project.color} icon={project.icon} size="xs" />
+      <span className="truncate">{project.name}</span>
+    </span>
+  );
+}
+
+/** Small passive pill used for workspace context. */
 function Chip({
   icon: Icon,
   label,
-  onClick,
 }: {
-  icon: typeof Folder;
+  icon: LucideIcon;
   label: string;
-  onClick?: (e: MouseEvent) => void;
 }) {
-  const className = cn(
-    "inline-flex max-w-(--sz-12rem) items-center gap-1 rounded-sm border border-border/70 bg-muted/40 px-1.5 py-0.5 text-(length:--text-nano) text-muted-foreground",
-    onClick && "transition-colors hover:border-border hover:bg-accent hover:text-foreground",
-  );
-  const content = (
-    <>
+  return (
+    <span className="inline-flex max-w-(--sz-12rem) items-center gap-1 rounded-sm border border-border/70 bg-muted/40 px-1.5 py-0.5 text-(length:--text-nano) text-muted-foreground">
       <Icon className="h-3 w-3 shrink-0" />
       <span className="truncate">{label}</span>
-    </>
+    </span>
   );
-  if (onClick) {
-    return (
-      <button type="button" className={className} onClick={onClick} title={`Filter by ${label}`}>
-        {content}
-      </button>
-    );
-  }
-  return <span className={className}>{content}</span>;
 }
 
 /** Square screenshot thumbnails at the right of the description (plan §10). */
