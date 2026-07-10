@@ -273,7 +273,7 @@ export function WhatNeedsMe() {
                 type="button"
                 variant="outline"
                 size="icon"
-                className={cn("h-8 w-8 shrink-0", groupBy !== "date" && "bg-accent")}
+                className={cn("h-8 w-8 shrink-0", groupBy !== "none" && "bg-accent")}
                 title="Group"
                 aria-label="Group"
               >
@@ -345,18 +345,21 @@ export function WhatNeedsMe() {
             <CaughtUpNote filtered={activeItems.length > 0} />
           ) : (
             groups.map((group) => {
-              const collapsed = collapsedGroupKeys.has(group.key);
+              const groupLabel = group.label;
+              const collapsed = groupLabel !== null && collapsedGroupKeys.has(group.key);
               return (
                 <section key={group.key} className="space-y-2">
-                  <IssueGroupHeader
-                    label={group.label}
-                    collapsible
-                    collapsed={collapsed}
-                    onToggle={() => toggleGroupCollapse(group.key)}
-                    trailing={
-                      <span className="text-xs tabular-nums text-muted-foreground">{group.items.length}</span>
-                    }
-                  />
+                  {groupLabel !== null && (
+                    <IssueGroupHeader
+                      label={groupLabel}
+                      collapsible
+                      collapsed={collapsed}
+                      onToggle={() => toggleGroupCollapse(group.key)}
+                      trailing={
+                        <span className="text-xs tabular-nums text-muted-foreground">{group.items.length}</span>
+                      }
+                    />
+                  )}
                   {!collapsed && (
                     <div className="space-y-2">
                       {group.items.map((item) => (

@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { AttentionFeed, AttentionItem, AttentionSourceKind } from "@paperclipai/shared";
 import {
+  ATTENTION_GROUP_BY_KEY,
+  ATTENTION_GROUP_BY_OPTIONS,
   attentionBadgeCount,
   attentionDateBucket,
   attentionDetailLine,
@@ -12,7 +14,9 @@ import {
   filterAttentionItems,
   groupAttentionItems,
   isInlineResolvable,
+  loadAttentionGroupBy,
   NO_GROUP_SENTINEL,
+  saveAttentionGroupBy,
   severityBadge,
   severityStyle,
   sortAttentionItems,
@@ -45,6 +49,25 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     ...overrides,
   };
 }
+
+describe("attention group preference persistence", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("defaults to None and lists it as the first group option", () => {
+    expect(loadAttentionGroupBy()).toBe("none");
+    expect(ATTENTION_GROUP_BY_OPTIONS[0]).toEqual(["none", "None"]);
+  });
+
+  it("round-trips explicit grouped choices and treats stale values as None", () => {
+    saveAttentionGroupBy("date");
+    expect(loadAttentionGroupBy()).toBe("date");
+
+    localStorage.setItem(ATTENTION_GROUP_BY_KEY, "unexpected");
+    expect(loadAttentionGroupBy()).toBe("none");
+  });
+});
 
 describe("isInlineResolvable", () => {
   it("is true for approvals/interactions/join when server flags inlineResolvable", () => {
@@ -251,6 +274,20 @@ describe("attentionDateBucket", () => {
 
 describe("groupAttentionItems", () => {
   const now = new Date("2026-07-10T12:00:00Z").getTime();
+
+  it("leaves None as one unlabeled group that preserves caller sort order", () => {
+    const items = sortAttentionItems(
+      [
+        buildItem({ id: "old", activityAt: "2026-07-10T08:00:00Z" }),
+        buildItem({ id: "new", activityAt: "2026-07-10T10:00:00Z" }),
+      ],
+      "newest",
+    );
+    const groups = groupAttentionItems(items, "none", { now });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].label).toBeNull();
+    expect(groups[0].items.map((i) => i.id)).toEqual(["new", "old"]);
+  });
 
   it("groups by date into fixed Today/Yesterday/This week/Earlier order", () => {
     const items = [

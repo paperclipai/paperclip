@@ -309,7 +309,7 @@ function ToolbarButton({ icon: Icon, active }: { icon: typeof Layers; active?: b
 
 function Queue({
   items,
-  groupBy = "date",
+  groupBy = "none",
   sortOrder = "newest",
   snoozed = [],
   dismissed = [],
@@ -344,7 +344,7 @@ function Queue({
             </span>
           )}
           <ToolbarButton icon={ListFilter} />
-          <ToolbarButton icon={Layers} active={groupBy !== "date"} />
+          <ToolbarButton icon={Layers} active={groupBy !== "none"} />
           <ToolbarButton icon={ArrowUpDown} />
         </div>
       </div>
@@ -361,30 +361,35 @@ function Queue({
         </div>
       ) : (
         <div className="space-y-4">
-          {groups.map((group) => (
-            <section key={group.key} className="space-y-2">
-              <IssueGroupHeader
-                label={group.label}
-                collapsible
-                collapsed={false}
-                trailing={<span className="text-xs tabular-nums text-muted-foreground">{group.items.length}</span>}
-              />
-              <div className="space-y-2">
-                {group.items.map((it) => (
-                  <AttentionQueueRow
-                    key={it.id}
-                    item={it}
-                    companyId={companyId}
-                    expanded={expandedId === it.id}
-                    onToggleExpand={() => setExpandedId((p) => (p === it.id ? null : it.id))}
-                    onDismiss={(d) => setCleared((prev) => new Set(prev).add(d.id))}
-                    onSnooze={(d) => setCleared((prev) => new Set(prev).add(d.id))}
-                    onFilterProject={() => {}}
+          {groups.map((group) => {
+            const groupLabel = group.label;
+            return (
+              <section key={group.key} className="space-y-2">
+                {groupLabel !== null && (
+                  <IssueGroupHeader
+                    label={groupLabel}
+                    collapsible
+                    collapsed={false}
+                    trailing={<span className="text-xs tabular-nums text-muted-foreground">{group.items.length}</span>}
                   />
-                ))}
-              </div>
-            </section>
-          ))}
+                )}
+                <div className="space-y-2">
+                  {group.items.map((it) => (
+                    <AttentionQueueRow
+                      key={it.id}
+                      item={it}
+                      companyId={companyId}
+                      expanded={expandedId === it.id}
+                      onToggleExpand={() => setExpandedId((p) => (p === it.id ? null : it.id))}
+                      onDismiss={(d) => setCleared((prev) => new Set(prev).add(d.id))}
+                      onSnooze={(d) => setCleared((prev) => new Set(prev).add(d.id))}
+                      onFilterProject={() => {}}
+                    />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
 
           {snoozed.length > 0 && (
             <section className="space-y-2">

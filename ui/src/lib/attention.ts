@@ -276,18 +276,18 @@ export function attentionBadgeCount(feed: AttentionFeed | null | undefined): num
 // ---------------------------------------------------------------------------
 // Grouping / sorting / filtering (PAP-13408 — Inbox-style toolbar)
 //
-// The queue defaults to a date-first grouping (Today / Yesterday / This week /
-// Earlier) sorted by `activityAt` desc, mirroring the `InboxWorkItemGroupBy`
-// pattern in `lib/inbox.ts`. All of these are pure functions so the page can
-// re-bucket on the client without refetching, and so the logic is unit-tested
-// independently of React.
+// The queue defaults to no grouping, sorted by `activityAt` desc, mirroring the
+// `InboxWorkItemGroupBy` pattern in `lib/inbox.ts`. All of these are pure
+// functions so the page can re-bucket on the client without refetching, and so
+// the logic is unit-tested independently of React.
 // ---------------------------------------------------------------------------
 
-export type AttentionGroupBy = "date" | "type" | "project" | "severity";
+export type AttentionGroupBy = "none" | "date" | "type" | "project" | "severity";
 export type AttentionSortOrder = "newest" | "oldest";
 
 /** Ordered list used to render the group-by picker (label + value). */
 export const ATTENTION_GROUP_BY_OPTIONS: ReadonlyArray<[AttentionGroupBy, string]> = [
+  ["none", "None"],
   ["date", "Date"],
   ["type", "Type"],
   ["project", "Project"],
@@ -321,7 +321,7 @@ export const defaultAttentionFilterState: AttentionFilterState = {
 
 export interface AttentionGroup {
   key: string;
-  label: string;
+  label: string | null;
   items: AttentionItem[];
 }
 
@@ -342,15 +342,15 @@ export const ATTENTION_FILTERS_KEY_PREFIX = "paperclip:attention:filters";
 export const ATTENTION_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:attention:collapsed-groups";
 
 function isAttentionGroupBy(value: unknown): value is AttentionGroupBy {
-  return value === "date" || value === "type" || value === "project" || value === "severity";
+  return value === "none" || value === "date" || value === "type" || value === "project" || value === "severity";
 }
 
 export function loadAttentionGroupBy(): AttentionGroupBy {
   try {
     const raw = localStorage.getItem(ATTENTION_GROUP_BY_KEY);
-    return isAttentionGroupBy(raw) ? raw : "date";
+    return isAttentionGroupBy(raw) ? raw : "none";
   } catch {
-    return "date";
+    return "none";
   }
 }
 
@@ -575,6 +575,10 @@ export function groupAttentionItems(
   options: { now?: number } = {},
 ): AttentionGroup[] {
   if (items.length === 0) return [];
+
+  if (groupBy === "none") {
+    return [{ key: "__all", label: null, items }];
+  }
 
   if (groupBy === "date") {
     const now = options.now ?? Date.now();
