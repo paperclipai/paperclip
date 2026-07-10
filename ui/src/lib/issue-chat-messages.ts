@@ -140,7 +140,7 @@ export function preserveReadableStreamingRetraction(previousText: string, nextTe
       return nextText;
     }
 
-    return revealCompleteStreamingWords(previousText, previousText + nextText.slice(overlapLength));
+    return nextText;
   }
 
   if (nextText.length >= previousText.length || !previousText.startsWith(nextText)) {

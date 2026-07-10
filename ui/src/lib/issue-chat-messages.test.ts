@@ -1140,7 +1140,7 @@ describe("stabilizeThreadMessages", () => {
     expect(preserveReadableStreamingRetraction(
       "First sentence. Second sentence is visible",
       "irst sentence. Second sentence is visible now ",
-    )).toBe("First sentence. Second sentence is visible now ");
+    )).toBe("irst sentence. Second sentence is visible now ");
     expect(preserveReadableStreamingRetraction(
       "First sentence. Second sentence is visible",
       "Second sentence is visible now ",
@@ -1153,6 +1153,10 @@ describe("stabilizeThreadMessages", () => {
       "The answer is 42",
       "42 is the answer",
     )).toBe("42 is the answer");
+    expect(preserveReadableStreamingRetraction(
+      "The quick brown fox jumps over the lazy dog",
+      "quick brown fox jumps over the lazy dog near the river",
+    )).toBe("quick brown fox jumps over the lazy dog near the river");
   });
 
   it("keeps live streamed retractions readable until a whole line disappears", () => {
