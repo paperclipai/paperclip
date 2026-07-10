@@ -131,10 +131,11 @@ describe("codex execute", () => {
     const paperclipHome = path.join(root, "paperclip-home");
     const mcpStdioPath = path.join(root, "paperclip-mcp-stdio.js");
     const mcpNodeImportPath = path.join(root, "tsx-loader.mjs");
+    const instanceId = "codex-image-reference-test";
     const managedCodexHome = path.join(
       paperclipHome,
       "instances",
-      "default",
+      instanceId,
       "companies",
       "company-1",
       "agents",
@@ -151,11 +152,13 @@ describe("codex execute", () => {
 
     const previousHome = process.env.HOME;
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
     const previousCodexHome = process.env.CODEX_HOME;
     const previousMcpStdioPath = process.env.PAPERCLIP_MCP_STDIO_PATH;
     const previousMcpNodeImportPath = process.env.PAPERCLIP_MCP_NODE_IMPORT_PATH;
     process.env.HOME = root;
     process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = instanceId;
     process.env.CODEX_HOME = sharedCodexHome;
     process.env.PAPERCLIP_MCP_STDIO_PATH = mcpStdioPath;
     process.env.PAPERCLIP_MCP_NODE_IMPORT_PATH = mcpNodeImportPath;
@@ -211,6 +214,8 @@ describe("codex execute", () => {
       else process.env.HOME = previousHome;
       if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
       else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
       if (previousMcpStdioPath === undefined) delete process.env.PAPERCLIP_MCP_STDIO_PATH;
