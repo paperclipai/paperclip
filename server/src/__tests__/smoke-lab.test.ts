@@ -258,15 +258,39 @@ describeEmbeddedPostgres("smoke lab service pack and results API", () => {
       .expect(400);
   });
 
-  it("requires a loopback HTTP(S) redirect URI before rendering or completing consent", async () => {
+  it("requires a loopback or same-origin HTTP(S) redirect URI before rendering or completing consent", async () => {
     const company = await createCompany(db);
     await enableSmokeLab(db);
     const app = createRouteApp(db);
 
+    // A redirect host that is neither loopback nor the instance's own origin
+    // could leak fixture authorization codes off the gated deployment.
     await request(app)
       .get(`/api/companies/${company.id}/smoke-lab/oauth/authorize`)
       .query({ client_id: "smoke-client", redirect_uri: "http://paperclip-dev:45439/callback", response_type: "code" })
       .expect(403);
+
+    // The instance's own (non-loopback) origin is fine — the smoke lab runs on
+    // any private instance, e.g. an authenticated Tailscale host.
+    await request(app)
+      .get(`/api/companies/${company.id}/smoke-lab/oauth/authorize`)
+      .set("X-Forwarded-Host", "paperclip-dev:45439")
+      .set("X-Forwarded-Proto", "http")
+      .query({ client_id: "smoke-client", redirect_uri: "http://paperclip-dev:45439/callback", response_type: "code" })
+      .expect(200);
+
+    await request(app)
+      .post(`/api/companies/${company.id}/smoke-lab/oauth/authorize`)
+      .type("form")
+      .set("X-Forwarded-Host", "paperclip-dev:45439")
+      .set("X-Forwarded-Proto", "http")
+      .send({
+        client_id: "smoke-client",
+        redirect_uri: "http://paperclip-dev:45439/api/tools/oauth/callback",
+        email: "smoke@paperclip.test",
+        password: "smoke-password",
+      })
+      .expect(302);
 
     await request(app)
       .post(`/api/companies/${company.id}/smoke-lab/oauth/authorize`)

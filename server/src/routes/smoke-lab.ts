@@ -51,6 +51,7 @@ export function smokeLabRoutes(db: Db, options: {
       state: typeof req.query.state === "string" ? req.query.state : undefined,
       scope: typeof req.query.scope === "string" ? req.query.scope : undefined,
       responseType: typeof req.query.response_type === "string" ? req.query.response_type : undefined,
+      requestOrigin: requestBaseUrl(req),
     }));
   });
 
@@ -64,6 +65,7 @@ export function smokeLabRoutes(db: Db, options: {
       scope: stringBodyValue(req.body, "scope"),
       email: stringBodyValue(req.body, "email"),
       password: stringBodyValue(req.body, "password"),
+      requestOrigin: requestBaseUrl(req),
     });
     res.redirect(302, location);
   });

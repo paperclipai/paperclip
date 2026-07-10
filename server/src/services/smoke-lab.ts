@@ -82,7 +82,7 @@ function normalizeSmokeOAuthScope(scope?: string) {
   return unique.join(" ");
 }
 
-function assertSmokeOAuthLoopbackRedirectUri(redirectUri: string) {
+function assertSmokeOAuthRedirectUri(redirectUri: string, requestOrigin?: string) {
   let redirect: URL;
   try {
     redirect = new URL(redirectUri);
@@ -94,10 +94,27 @@ function assertSmokeOAuthLoopbackRedirectUri(redirectUri: string) {
   }
   const hostname = redirect.hostname.toLowerCase();
   const isIpv4Loopback = /^127(?:\.\d{1,3}){3}$/.test(hostname);
-  if (hostname !== "localhost" && hostname !== "[::1]" && !isIpv4Loopback) {
-    throw forbidden("Smoke OAuth redirect_uri must be loopback-only");
+  if (hostname === "localhost" || hostname === "[::1]" || isIpv4Loopback) {
+    return redirect;
   }
-  return redirect;
+  // The smoke lab runs on any private (non-public) instance (see assertEnabled),
+  // so a callback on the instance's own origin — e.g. a Tailscale hostname like
+  // paperclip-dev — never leaves the gated deployment. Anything else could leak
+  // fixture authorization codes to an arbitrary external host.
+  if (requestOrigin) {
+    try {
+      const allowed = new URL(requestOrigin);
+      if (
+        allowed.protocol === redirect.protocol &&
+        allowed.host.toLowerCase() === redirect.host.toLowerCase()
+      ) {
+        return redirect;
+      }
+    } catch {
+      // Unparseable request origin: fall through to rejection.
+    }
+  }
+  throw forbidden("Smoke OAuth redirect_uri must stay on this instance or loopback");
 }
 
 type SmokeLabActorInfo = {
@@ -458,11 +475,12 @@ export function smokeLabService(db: Db, options: {
     state?: string;
     scope?: string;
     responseType?: string;
+    requestOrigin?: string;
   }) {
     if (input.responseType && input.responseType !== "code") {
       throw badRequest("Fake OAuth provider only supports response_type=code");
     }
-    assertSmokeOAuthLoopbackRedirectUri(input.redirectUri);
+    assertSmokeOAuthRedirectUri(input.redirectUri, input.requestOrigin);
     const hidden = Object.entries({
       client_id: input.clientId,
       redirect_uri: input.redirectUri,
@@ -497,12 +515,13 @@ export function smokeLabService(db: Db, options: {
     scope?: string;
     email?: string;
     password?: string;
+    requestOrigin?: string;
   }) {
     assertFakeOAuthRunning();
     if (input.email !== SMOKE_LAB_DEMO_EMAIL || input.password !== SMOKE_LAB_DEMO_PASSWORD) {
       throw forbidden("Invalid smoke OAuth demo credentials");
     }
-    assertSmokeOAuthLoopbackRedirectUri(input.redirectUri);
+    assertSmokeOAuthRedirectUri(input.redirectUri, input.requestOrigin);
     const scope = normalizeSmokeOAuthScope(input.scope);
     const code = smokeFixtureToken("code", {
       clientId: input.clientId,

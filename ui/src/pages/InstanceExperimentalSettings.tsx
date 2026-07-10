@@ -598,7 +598,7 @@ export function InstanceExperimentalSettings() {
             <p className="max-w-2xl text-sm text-muted-foreground">
               Add a "Smoke Lab" tab under Apps → Developer and an "Integration smoke" card on the
               dashboard for exercising every integration path against deterministic local fixtures
-              (fake OAuth provider + loopback MCP servers). Local, non-production only.
+              (fake OAuth provider + loopback MCP servers). Private (non-public) deployments only.
             </p>
           </div>
           <ToggleSwitch

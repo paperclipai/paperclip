@@ -7,6 +7,9 @@ lifecycle, and read the results in the matrix and the dashboard card. **Nothing
 here touches a real vendor or a real credential** — the OAuth provider and the
 MCP servers are local fakes.
 
+Every "You should see" below was checked against the real screens; where a
+button or label is quoted, that's the exact text in the product.
+
 > Companion docs: the automated counterparts live in
 > [`SMOKE-LAB-BROWSER-RUNNER.md`](./SMOKE-LAB-BROWSER-RUNNER.md) (the agent-driven
 > browser runner) and `tests/e2e/smoke-lab.spec.ts` (the headless CI mirror). The
@@ -46,27 +49,47 @@ the URL bar, e.g. `PAP`). Replace it in the example paths.
 ## 1. Turn on the flag
 
 1. Open **Instance settings → Experimental** (`/{PREFIX}/settings/experimental`).
-2. Find **Smoke Lab** and toggle it **on**.
+2. Find the **Smoke Lab** card and toggle it **on**.
 3. **You should see:** the toggle stays on after a refresh.
 
 ---
 
 ## 2. Open the Smoke Lab and start the services
 
-1. Go to **Apps → Advanced → Smoke Lab** (`/{PREFIX}/apps/advanced/smoke-lab`).
-2. **You should see:** the *Smoke Lab* header with an **Experimental** badge, a
-   *Fixture services* section, an empty *Integration matrix*, and an empty *Runs*
-   list. A dashed card shows the **fake OAuth demo credentials**:
+1. In the left sidebar open **Apps**, then under the **Developer** section
+   ("Advanced setup for developers. Most teams never open this.") click
+   **Smoke Lab** (`/{PREFIX}/apps/advanced/smoke-lab`). The breadcrumb reads
+   *Apps → Advanced setup → Smoke Lab*.
+2. **You should see:** a *Developer tools* page header, then the **Smoke Lab**
+   section with an **Experimental** badge and a **Hands-on tutorial** link, a
+   *Fixture services* row with four buttons — **Start services**, **Stop**,
+   **Install fixture apps**, **Reset** — an *Integration matrix* (all cells
+   "not run" at first), and a *Runs* panel ("no runs yet"). A card shows the
+   **Fake OAuth demo credentials**:
    - email: `smoke@paperclip.test`
    - password: `smoke-password`
 3. Click **Start services**.
-   **You should see:** two service cards flip to a green **running** dot — the
-   *Fake OAuth 2.0 provider* and the *HTTP MCP fixture* — each with a `127.0.0.1`
-   URL.
+   **You should see:** two service cards flip to a green **running** dot:
+   - **Fake OAuth 2.0 provider** — its URL is on the instance's own host
+     (`…/api/companies/{companyId}/smoke-lab/oauth/authorize`); the provider runs
+     in-process, so there is no separate port.
+   - **HTTP MCP fixture** — a loopback sidecar with a `http://127.0.0.1:<port>/mcp`
+     URL.
 4. Click **Install fixture apps**.
-   **You should see:** a toast *"Fixture apps installed"*. Two connections are now
-   installed: a **remote HTTP** fixture (used by P1, P2, P5, P6, P7) and a **local
-   stdio** fixture (used by P3, P4). Installing again is safe — it's idempotent.
+   **You should see:** a toast — *"Fixture apps installed"* the first time,
+   *"Fixture apps already present"* on a re-run (installing again is safe; it's
+   idempotent). Two connections now exist under **Apps → Connections**:
+   - **Smoke Lab HTTP MCP fixture** — remote HTTP transport, used by P1, P2, P5,
+     P6, P7. This is the one with the OAuth walkthrough.
+   - **Smoke Lab stdio MCP fixture** — local stdio transport, used by P3, P4.
+     **No OAuth here** — stdio servers are spawned locally and don't sign in to
+     anything.
+
+> **Which fixture am I in?** The Connections list shows both, and the stdio one
+> may be listed first. If you open a fixture's **Setup** tab and there is no
+> **Connect with Smoke OAuth** card — only the "Agents can use this app" toggle —
+> you're in the **stdio** fixture. Go back and open **Smoke Lab HTTP MCP
+> fixture** for the OAuth steps.
 
 > If **Start services** errors with a `403`, re-check §0 — you're on a `public`
 > (internet-facing) instance. Any private instance works, including the everyday
@@ -76,28 +99,43 @@ the URL bar, e.g. `PAP`). Replace it in the example paths.
 
 ## 3. The lifecycle you'll exercise on every path
 
-Each path P1–P7 walks the same seven-step governed lifecycle. You drive it from a
-fixture connection's tabs: **Setup**, **Test**, **Review**, **Activity**
+Each path P1–P7 walks the same governed lifecycle. You drive it from a fixture
+connection's pages — a small left-hand menu inside the app with **Setup**,
+**Review**, **Permissions**, **Activity**, **Test**, and **Advanced**
 (`/{PREFIX}/apps/{connectionId}/{tab}`).
+
+Two things to know before you start:
+
+- **Actions are listed by their display title**, with the raw tool name behind
+  them — e.g. `todo.list` renders as **List synthetic todos**. The table below
+  gives both.
+- **"Policies" are the per-action dropdowns on the Permissions tab.** Each action
+  is **Off**, **Allowed**, or **Ask a human first**. When a step below says "with
+  a require-approval policy in force", that means: set that action's dropdown to
+  **Ask a human first**. "Block policy" means set it to **Off**. Fresh installs
+  start conservative, so check the dropdown before running a step.
 
 | Step | What you do | What you should see |
 |---|---|---|
-| **connect** | Open the fixture connection (for P1, complete the fake OAuth consent). | Connection shows as active/connected. |
-| **discover-catalog** | Open **Permissions**. | The action list includes the path's tools (e.g. `todo.list`). |
-| **allowed-read** | **Test** tab → run the read tool. | Decision badge **Allowed**; the call returns without error. |
-| **ask-first-write** | **Test** tab → run the write tool (with a *require-approval* policy in force). | Decision **Ask first**; a pending request appears in **Review**. |
+| **connect** | Open the fixture connection (for P1, complete the fake OAuth consent). | Connection shows **Connected**, with the action count. |
+| **discover-catalog** | Open **Permissions**. | The action list includes the path's tools (e.g. **List synthetic todos**). |
+| **allowed-read** | Set the read action to **Allowed**, then run it from the **Test** tab. | Decision badge **Allowed**; the call returns without error. |
+| **ask-first-write** | Set the write action to **Ask a human first**, then run it from **Test**. | Decision **Ask first**; a pending request appears in **Review**. |
 | **approve** | **Review** tab → approve the pending write. | The request clears; the call completes. |
-| **denied-call** | **Test** tab → run the blocked tool (with a *block* policy in force). | Decision **Off**; the call is refused with a reason. |
-| **schema-change / quarantine** | Trigger the fixture schema flip (HTTP paths). | **Review** shows a **quarantine** pill with the changed entries held back. |
-| **revoke** | **Setup** → disable the connection (or revoke the gateway session for P6). | The connection goes inactive; a revoked token is cut off (401). |
+| **denied-call** | Set the blocked action to **Off**, then run it from **Test**. | Decision **Off**; the call is refused with a reason. |
+| **schema-change / quarantine** | Trigger the fixture schema flip (HTTP paths), then **Refresh actions** on Permissions. | A **quarantine** pill with the changed entries held back. |
+| **revoke** | **Setup** → turn off the **"Agents can use this app"** toggle (or revoke the gateway session for P6). | The connection is paused; a revoked token is cut off (401). |
 | **audit-evidence** | **Activity** tab. | Audit rows for the allowed, approved, denied, quarantine, and revoke decisions. |
+
+(The results matrix in §6 folds **approve** into its *Ask-first write* column, so
+the matrix shows 8 columns for these 9 steps.)
 
 The per-path tools are:
 
 | | read (allowed) | write (ask-first) | denied | schema-flip (quarantine) |
 |---|---|---|---|---|
-| **HTTP** (P1, P2, P5, P6, P7) | `todo.list` | `todo.add` | `email.send` | `fixture.schemaFlip` |
-| **stdio** (P3, P4) | `time.now` | `slow.ping` | `crash.now` | `malicious.metadata` |
+| **HTTP** (P1, P2, P5, P6, P7) | `todo.list` — *List synthetic todos* | `todo.add` — *Add synthetic todo* | `email.send` — *Send outbox email* | `fixture.schemaFlip` — *Fixture schema mutation* |
+| **stdio** (P3, P4) | `time.now` — *Deterministic time* | `slow.ping` — *Slow stdio fixture* | `crash.now` — *Crashing stdio fixture* | `malicious.metadata` — *Malicious metadata fixture* |
 
 ---
 
@@ -107,31 +145,43 @@ This is the richest path — do it by hand once and the rest are variations.
 
 1. **Connect via the fake OAuth provider.**
    - From **Apps → Connections** (`/{PREFIX}/apps`), open **Smoke Lab HTTP MCP
-     fixture**, then choose **Setup**. In the **Connect with Smoke OAuth** card,
-     click **Connect with Smoke OAuth**. The fake provider's **real consent page**
-   opens — a page clearly headed *"Smoke OAuth"* / *"SMOKE TEST — not a real
-   provider"*.
+     fixture** (not the stdio one — see the callout in §2), then choose **Setup**.
+   - **You should see:** a **Connect with Smoke OAuth** card ("Open the provider's
+     consent page to finish connecting this app.") with a **Connect with Smoke
+     OAuth** button. If someone already connected it, the card reads **Connected
+     with Smoke OAuth** with a **Reconnect** button instead — Reconnect walks the
+     same flow.
+   - Click it. The fake provider's **real consent page** opens: a brown banner
+     *"SMOKE TEST - not a real provider"*, headed *"Paperclip Smoke OAuth login +
+     consent"*.
    - The **email is pre-filled** (`smoke@paperclip.test`). Type the password
-     `smoke-password` and submit.
+     `smoke-password` and click **Authorize smoke test app**.
    - **You should see:** the provider accepts the credentials and returns you to
-     this connection's **Setup** tab with the card changed to **Connected with
+     this connection's **Setup** tab with the card now reading **Connected with
      Smoke OAuth**. Wrong credentials are rejected with a `403`.
-2. **Discover the catalog.** Open **Permissions** and confirm `todo.list` and
-   `todo.add` appear in the action list.
-3. **Allowed read.** **Test** tab → pick the smoke test agent → run **`todo.list`**.
-   **You should see:** an **Allowed** badge and a result with no error.
-4. **Ask-first write → approve.** With a *require-approval* policy on `todo.add`,
-   run **`todo.add`** from the **Test** tab. **You should see:** an **Ask first**
-   badge and a **pending** request. Switch to the **Review** tab and **approve**
-   it. **You should see:** the request clears and the write completes.
-5. **Denied call.** With a *block* policy on `email.send`, run **`email.send`**.
-   **You should see:** an **Off** badge and a refusal carrying a reason code.
-6. **Schema change → quarantine.** Trigger the fixture's `fixture.schemaFlip` (it
-   changes a tool's schema) and refresh the catalog. **You should see:** the
-   **Review** tab surfaces a **quarantine** pill — the changed entries are held
-   back until you explicitly turn them on.
-7. **Revoke.** On **Setup**, **disable** the connection. **You should see:** it
-   goes inactive. (Re-enable it to continue.)
+2. **Discover the catalog.** Open **Permissions** and confirm **List synthetic
+   todos** (`todo.list`) and **Add synthetic todo** (`todo.add`) appear under
+   *Action permissions*.
+3. **Allowed read.** Make sure **List synthetic todos** is set to **Allowed** in
+   Permissions. Then on the **Test** tab, pick an agent in the **Test as** picker
+   and run **List synthetic todos**. **You should see:** an **Allowed** badge and
+   a result with no error.
+4. **Ask-first write → approve.** In Permissions, set **Add synthetic todo** to
+   **Ask a human first**. Run it from the **Test** tab. **You should see:** an
+   **Ask first** badge and a **pending** request. Switch to the **Review** tab
+   (its idle state says "Nothing is waiting for your OK right now") and
+   **approve** it. **You should see:** the request clears and the write completes.
+5. **Denied call.** In Permissions, set **Send outbox email** (`email.send`) to
+   **Off**, then run it from **Test**. **You should see:** an **Off** badge and a
+   refusal carrying a reason code.
+6. **Schema change → quarantine.** Run **Fixture schema mutation**
+   (`fixture.schemaFlip`) — it changes a tool's schema — then click **Refresh
+   actions** on the **Permissions** tab. **You should see:** a **quarantine**
+   pill (on Review and Permissions) — the changed entries are held back until you
+   explicitly turn them on.
+7. **Revoke.** On **Setup**, turn off the **"Agents can use this app"** toggle.
+   **You should see:** the app is paused for every agent. (Turn it back on to
+   continue.)
 8. **Audit evidence.** **Activity** tab. **You should see:** rows for each decision
    above (allowed, approved, denied, quarantine, revoke).
 
@@ -150,17 +200,19 @@ tools change.
   connection is authenticated with a static fixture credential instead of OAuth.
   **You should see:** audit rows preserve the decisions **without** ever exposing
   the credential value.
-- **P3 — Local stdio MCP template.** Entry via **Apps → Advanced**. Uses the
-  **stdio** fixture and its tools (`time.now`, `slow.ping`, `crash.now`). The read
-  is `time.now`; the "denied" tool `crash.now` is blocked by policy. Quarantine
-  evidence is recorded via fixture metadata rather than an HTTP schema flip.
+- **P3 — Local stdio MCP template.** Uses the **Smoke Lab stdio MCP fixture**
+  connection and its tools (see the stdio row in §3's table). The read is
+  **Deterministic time** (`time.now`); the "denied" tool **Crashing stdio
+  fixture** (`crash.now`) is blocked by policy. Its **Setup** tab has no OAuth
+  card — just the "Agents can use this app" toggle. Quarantine evidence is
+  recorded via fixture metadata rather than an HTTP schema flip.
 - **P4 — Plugin-provided integration.** Exercises the catalog-backed **app install**
   path a plugin would use, over the stdio fixture. Same stdio tools as P3.
   **You should see:** Activity rows record the install + lifecycle decisions.
-- **P5 — Paste-a-config / run-your-own import.** Entry via **Apps → Advanced**;
-  import the HTTP fixture through the advanced configuration surface, then run the
-  same HTTP lifecycle. **You should see:** advanced Activity rows show the import
-  and the governed calls.
+- **P5 — Paste-a-config / run-your-own import.** Entry via the **Developer**
+  section of Apps; import the HTTP fixture through the advanced configuration
+  surface, then run the same HTTP lifecycle. **You should see:** advanced
+  Activity rows show the import and the governed calls.
 - **P6 — Token broker / gateway session.** Create a **run-scoped gateway session**
   for the smoke agent, list tools through the session token, then **revoke** the
   session. **You should see:** the token lists tools before revoke and is **cut
@@ -174,11 +226,14 @@ tools change.
 
 ## 6. Read the results matrix
 
-1. Back on **Apps → Advanced → Smoke Lab**, look at the **Integration matrix**.
-2. **You should see:** a row per path P1–P7 and a column per lifecycle stage, with
-   a glyph per cell: **✓ pass** (green), **✗ fail** (red), **– skipped** (amber),
-   and a dot for **not run**. A health dot (green/amber/red) summarizes the
-   selected run, and any failing paths are listed next to it.
+1. Back on **Apps → Developer → Smoke Lab**, look at the **Integration matrix**.
+2. **You should see:** a row per path (*P1 Remote HTTP · OAuth* … *P7 Governance
+   surfaces*) and a column per lifecycle stage — **Connect**, **Discover
+   catalog**, **Allowed read**, **Ask-first write**, **Denied call**,
+   **Schema-change quarantine**, **Revoke**, **Audit evidence** — with a glyph
+   per cell: **✓ pass** (green), **✗ fail** (red), **– skipped** (amber), and a
+   dot for **not run**. A health dot (green/amber/red) summarizes the selected
+   run, and any failing paths are listed next to it.
 3. Click a run in the **Runs** list to drill into its **steps**. Each recorded step
    shows its status, a one-line detail, its duration, and — when present — a
    **View screenshot** link (for P1 this includes the typed OAuth consent page).
@@ -190,9 +245,9 @@ tools change.
 Rather than click all seven paths by hand, let the agent-driven runner do it and
 read the evidence:
 
-1. On the Smoke Lab tab, click **Run browser smoke now** to open a run, **or** run
-   the reference driver from a shell (it types the demo credentials into the real
-   consent page for you):
+1. In the **Runs** panel of the Smoke Lab tab, click **Run browser smoke now** to
+   open a run, **or** run the reference driver from a shell (it types the demo
+   credentials into the real consent page for you):
    ```bash
    SMOKE_BASE=http://127.0.0.1:3251 \
      node --experimental-strip-types tests/e2e/smoke-lab-browser-runner.mts
@@ -223,8 +278,10 @@ routine's own description for the runbook.
 
 1. Open the **Dashboard** (`/{PREFIX}/dashboard`).
 2. **You should see:** an **Integration smoke** card summarizing the latest run —
-   *"All paths passing"* when green, or the failing paths when not. It's the
-   at-a-glance health signal; the Smoke Lab tab is the drill-down.
+   *"All paths passing"* when green, the failing paths when not, or *"No runs
+   yet — Run one from the Smoke Lab tab"* before the first run. It's the
+   at-a-glance health signal; the Smoke Lab tab is the drill-down. Clicking the
+   card takes you to the Smoke Lab.
 
 ---
 
