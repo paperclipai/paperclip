@@ -855,12 +855,24 @@ export const requestCheckboxConfirmationPayloadSchema = z.object({
   }
 });
 
+export const requestConfirmationResumeFailureSchema = z.object({
+  status: z.enum(["retrying", "needs_attention"]),
+  errorCode: z.string().trim().min(1).max(120).nullable(),
+  attempt: z.number().int().min(0).max(100),
+  maxAttempts: z.number().int().min(0).max(100),
+  runId: z.string().uuid().nullable().optional(),
+  retryRunId: z.string().uuid().nullable().optional(),
+  recoveryActionId: z.string().uuid().nullable().optional(),
+  updatedAt: z.string().trim().min(1).nullable().optional(),
+});
+
 export const requestConfirmationResultSchema = z.object({
   version: z.literal(1),
   outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target"]),
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
+  resumeFailure: requestConfirmationResumeFailureSchema.nullable().optional(),
 });
 
 export const requestCheckboxConfirmationResultSchema = requestConfirmationResultSchema.extend({

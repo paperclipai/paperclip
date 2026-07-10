@@ -715,6 +715,83 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
+  async function getLatestAcceptedContinuationInteraction(companyId: string, issueId: string) {
+    return db
+      .select({
+        id: issueThreadInteractions.id,
+        kind: issueThreadInteractions.kind,
+        status: issueThreadInteractions.status,
+        continuationPolicy: issueThreadInteractions.continuationPolicy,
+        sourceRunId: issueThreadInteractions.sourceRunId,
+        resolvedAt: issueThreadInteractions.resolvedAt,
+        updatedAt: issueThreadInteractions.updatedAt,
+      })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.issueId, issueId),
+          eq(issueThreadInteractions.status, "accepted"),
+          inArray(issueThreadInteractions.continuationPolicy, ["wake_assignee", "wake_assignee_on_accept"]),
+        ),
+      )
+      .orderBy(desc(sql`coalesce(${issueThreadInteractions.resolvedAt}, ${issueThreadInteractions.updatedAt})`), desc(issueThreadInteractions.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function hasSuccessfulIssueRunSince(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+    since: Date,
+    interactionId?: string | null,
+  ) {
+    return db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "succeeded"),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          interactionId
+            ? sql`${heartbeatRuns.contextSnapshot} ->> 'interactionId' = ${interactionId}`
+            : sql`true`,
+          or(gte(heartbeatRuns.createdAt, since), gte(heartbeatRuns.finishedAt, since)),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function getLatestIssueRunSince(companyId: string, issueId: string, agentId: string, since: Date): Promise<LatestIssueRun> {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        livenessState: heartbeatRuns.livenessState,
+        resultJson: heartbeatRuns.resultJson,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          or(gte(heartbeatRuns.createdAt, since), gte(heartbeatRuns.finishedAt, since)),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   // GGU-809: visible-progress signal for stranded-recovery escalation guard.
   // Returns true if the assignee posted a comment, OR any attachment was added
   // to the issue, within `windowMs`. Used to suppress false-positive recovery
@@ -2947,6 +3024,67 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           result.skipped += 1;
         }
         continue;
+      }
+
+      const acceptedContinuationInteraction = await getLatestAcceptedContinuationInteraction(issue.companyId, issue.id);
+      const acceptedInteractionResolvedAt = acceptedContinuationInteraction
+        ? acceptedContinuationInteraction.resolvedAt ?? acceptedContinuationInteraction.updatedAt
+        : null;
+      if (acceptedContinuationInteraction && acceptedInteractionResolvedAt && !pendingExecutionState) {
+        const successfulRunSinceResolution = await hasSuccessfulIssueRunSince(
+          issue.companyId,
+          issue.id,
+          agentId,
+          acceptedInteractionResolvedAt,
+          acceptedContinuationInteraction.id,
+        );
+
+        if (!successfulRunSinceResolution) {
+          if (!agentInvokable) {
+            result.skipped += 1;
+            continue;
+          }
+
+          if (await hasQueuedIssueWake(issue.companyId, issue.id, agentId)) {
+            result.skipped += 1;
+            continue;
+          }
+
+          if (await isInvocationBudgetBlocked(issue, agentId)) {
+            result.skipped += 1;
+            continue;
+          }
+
+          const latestPostResolutionRun = await getLatestIssueRunSince(
+            issue.companyId,
+            issue.id,
+            agentId,
+            acceptedInteractionResolvedAt,
+          );
+          const queued = await enqueueStrandedIssueRecovery({
+            issueId: issue.id,
+            agentId,
+            reason: "issue_continuation_needed",
+            retryReason: "issue_continuation_needed",
+            source: "issue.interaction_continuation_recovery",
+            retryOfRunId: latestPostResolutionRun?.id ?? acceptedContinuationInteraction.sourceRunId ?? latestRun?.id ?? null,
+            extraContext: {
+              mutation: "interaction",
+              interactionId: acceptedContinuationInteraction.id,
+              interactionKind: acceptedContinuationInteraction.kind,
+              interactionStatus: acceptedContinuationInteraction.status,
+              interactionContinuationPolicy: acceptedContinuationInteraction.continuationPolicy,
+              interactionResolvedAt: acceptedInteractionResolvedAt.toISOString(),
+            },
+          });
+          if (queued) {
+            result.continuationRequeued += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
       }
 
       if (issue.status === "in_review") {
