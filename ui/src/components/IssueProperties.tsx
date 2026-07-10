@@ -256,6 +256,8 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
     { value: "xhigh", label: "X-High" },
+    { value: "max", label: "Max" },
+    { value: "ultra", label: "Ultra" },
   ],
   opencode_local: [
     { value: "", label: "Default" },

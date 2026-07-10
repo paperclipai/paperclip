@@ -58,7 +58,7 @@ WORKDIR /app
 COPY --from=build /app /app
 RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client bsdextrautils && rm -rf /var/lib/apt/lists/*
 ARG CLAUDE_CODE_VERSION=2.1.141
-ARG CODEX_VERSION=0.130.0
+ARG CODEX_VERSION=0.144.1
 ARG AGENT_BROWSER_VERSION=0.27.0
 # claude-p: drop-in `claude -p` replacement that drives the interactive Claude
 # Code TUI in a PTY (used by the claude_tui adapter). Ships a prebuilt glibc

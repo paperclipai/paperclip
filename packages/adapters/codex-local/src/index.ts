@@ -3,9 +3,9 @@ import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
 export const type = "codex_local";
 export const label = "Codex (local)";
 
-export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
+export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex@0.144.1";
 
-export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.3-codex";
+export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.6-sol";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.4"] as const;
 
@@ -33,9 +33,12 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
 }
 
 export const models = [
+  { id: DEFAULT_CODEX_LOCAL_MODEL, label: "gpt-5.6-sol" },
+  { id: "gpt-5.6-terra", label: "gpt-5.6-terra" },
+  { id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
   { id: "gpt-5.5", label: "gpt-5.5" },
   { id: "gpt-5.4", label: "gpt-5.4" },
-  { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
+  { id: "gpt-5.3-codex", label: "gpt-5.3-codex" },
   { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
   { id: "gpt-5", label: "gpt-5" },
   { id: "o3", label: "o3" },
@@ -52,7 +55,7 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
     label: "Cheap",
     description: "Use the lowest-cost known Codex local model lane without changing the primary model.",
     adapterConfig: {
-      model: "gpt-5.3-codex-spark",
+      model: "gpt-5.6-luna",
       modelReasoningEffort: "low",
     },
     source: "adapter_default",
@@ -67,7 +70,7 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to stdin prompt at runtime
 - model (string, optional): Codex model id
-- modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high|xhigh) passed via -c model_reasoning_effort=...
+- modelReasoningEffort (string, optional): reasoning effort override (none|minimal|low|medium|high|xhigh|max|ultra) passed via -c model_reasoning_effort=...
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
 - fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.4 and passed through for manual model IDs
@@ -89,6 +92,7 @@ Notes:
 - Paperclip injects desired local skills into the effective CODEX_HOME/skills/ directory at execution time so Codex can discover "$paperclip" and related skills without polluting the project working directory. In managed-home mode (the default) this is ~/.paperclip/instances/<id>/companies/<companyId>/codex-home/skills/; when CODEX_HOME is explicitly overridden in adapter config, that override is used instead.
 - Unless explicitly overridden in adapter config, Paperclip runs Codex with a per-company managed CODEX_HOME under the active Paperclip instance and seeds auth/config from the shared Codex home (the CODEX_HOME env var, when set, or ~/.codex).
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
+- GPT-5.6 Codex models are available as gpt-5.6-sol, gpt-5.6-terra, and gpt-5.6-luna. Max and ultra are Codex reasoning-effort values passed through as model_reasoning_effort, not separate model IDs.
 - Fast mode is supported on GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 `;
