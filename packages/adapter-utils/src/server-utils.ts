@@ -19,11 +19,26 @@ export interface RunProcessResult {
   stderr: string;
   pid: number | null;
   startedAt: string | null;
+  terminalResultCleanup?: TerminalResultCleanupEvidence | null;
 }
 
 export interface TerminalResultCleanupOptions {
   hasTerminalResult: (output: { stdout: string; stderr: string }) => boolean;
   graceMs?: number;
+}
+
+export const UNMANAGED_BACKGROUND_TASK_STOP_REASON = "unmanaged_background_task_stopped";
+export const UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON =
+  "unmanaged background task stopped; no durable live path";
+
+export interface TerminalResultCleanupEvidence {
+  kind: "terminal_result_cleanup";
+  stopped: true;
+  stopReason: typeof UNMANAGED_BACKGROUND_TASK_STOP_REASON;
+  reason: typeof UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON;
+  terminalResultSeen: boolean;
+  signal: NodeJS.Signals | null;
+  forceKilled: boolean;
 }
 
 interface RunningProcess {
@@ -2917,6 +2932,8 @@ export async function runChildProcess(
         let logChain: Promise<void> = Promise.resolve();
         let terminalResultSeen = false;
         let terminalCleanupStarted = false;
+        let terminalCleanupSignal: NodeJS.Signals | null = null;
+        let terminalCleanupForceKilled = false;
         let terminalCleanupTimer: NodeJS.Timeout | null = null;
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
@@ -2956,9 +2973,12 @@ export async function runChildProcess(
             terminalCleanupTimer = null;
             if (terminalCleanupStarted || timedOut) return;
             terminalCleanupStarted = true;
+            terminalCleanupSignal = "SIGTERM";
             signalRunningProcess({ child, processGroupId }, "SIGTERM");
             terminalCleanupKillTimer = setTimeout(() => {
               terminalCleanupKillTimer = null;
+              terminalCleanupSignal = "SIGKILL";
+              terminalCleanupForceKilled = true;
               signalRunningProcess({ child, processGroupId }, "SIGKILL");
             }, Math.max(1, opts.graceSec) * 1000);
           }, graceMs);
@@ -3051,6 +3071,17 @@ export async function runChildProcess(
                 stderr,
                 pid: child.pid ?? null,
                 startedAt,
+                terminalResultCleanup: terminalCleanupStarted
+                  ? {
+                    kind: "terminal_result_cleanup",
+                    stopped: true,
+                    stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+                    reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+                    terminalResultSeen,
+                    signal: terminalCleanupSignal,
+                    forceKilled: terminalCleanupForceKilled,
+                  }
+                  : null,
               });
               });
           });

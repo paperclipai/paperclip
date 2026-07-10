@@ -215,6 +215,8 @@ import {
 } from "@paperclipai/adapter-utils";
 import {
   readPaperclipSkillSyncPreference,
+  UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+  UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
@@ -7392,9 +7394,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return `[${label}](/${prefix}/issues/${label})`;
   }
 
+  function hasUnmanagedBackgroundTaskEvidence(resultJson: Record<string, unknown> | null | undefined) {
+    const evidence = parseObject(resultJson?.unmanagedBackgroundTask);
+    return evidence.stopped === true &&
+      (evidence.stopReason === UNMANAGED_BACKGROUND_TASK_STOP_REASON ||
+        evidence.reason === UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON);
+  }
+
+  function withUnmanagedBackgroundTaskStopReason(resultJson: Record<string, unknown> | null | undefined) {
+    return {
+      ...(resultJson ?? {}),
+      stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+    };
+  }
+
   async function buildDetectedSuccessfulRunProgressSummary(run: typeof heartbeatRuns.$inferSelect) {
     const resultJson = parseObject(run.resultJson);
     const candidates = [
+      hasUnmanagedBackgroundTaskEvidence(resultJson) ? UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON : null,
       readNonEmptyString(run.nextAction) ? `Next action noted: ${readNonEmptyString(run.nextAction)}` : null,
       readNonEmptyString(run.livenessReason),
       readNonEmptyString(resultJson.summary),
@@ -7458,6 +7475,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
         projectId: issues.projectId,
       })
       .from(issues)
@@ -7634,6 +7652,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasActiveExecutionPath: Boolean(activeExecutionPath),
       hasQueuedWake: Boolean(queuedWake),
       hasPendingInteractionOrApproval: Boolean(pendingInteraction || pendingApproval),
+      hasPersistedMonitor: Boolean(issue?.monitorNextCheckAt),
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
@@ -7643,6 +7662,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     if (decision.kind !== "enqueue" || !issue) return;
+
+    if (hasUnmanagedBackgroundTaskEvidence(parseObject(run.resultJson))) {
+      await db
+        .update(heartbeatRuns)
+        .set({
+          livenessReason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+          resultJson: withUnmanagedBackgroundTaskStopReason(parseObject(run.resultJson)),
+          updatedAt: new Date(),
+        })
+        .where(eq(heartbeatRuns.id, run.id));
+    }
 
     const handoffRun = await enqueueWakeup(run.agentId, {
       source: "automation",
@@ -10622,20 +10652,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
+        ? {
+          kind: "orphaned_process_group_cleanup",
+          stopped: true,
+          stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+          reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+          processPid: run.processPid ?? null,
+          processGroupId: run.processGroupId ?? null,
+        }
+        : null;
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
         errorCode: "process_lost",
         finishedAt: now,
-        resultJson: mergeRunStopMetadataForAgent(
-          { adapterType, adapterConfig },
-          "failed",
-          {
-            resultJson: parseObject(run.resultJson),
-            errorCode: "process_lost",
-            errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-          },
-        ),
+        resultJson: (() => {
+          const result = mergeRunStopMetadataForAgent(
+            { adapterType, adapterConfig },
+            "failed",
+            {
+              resultJson: parseObject(run.resultJson),
+              errorCode: "process_lost",
+              errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+            },
+          );
+          return unmanagedBackgroundTaskEvidence
+            ? {
+              ...result,
+              stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+              unmanagedBackgroundTask: unmanagedBackgroundTaskEvidence,
+            }
+            : result;
+        })(),
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
@@ -13848,9 +13897,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .limit(1)
           .then((rows) => rows[0] ?? null);
 
-      const issueHasScheduledMonitor =
-        issue.monitorNextCheckAt instanceof Date &&
-        issue.monitorNextCheckAt.getTime() > Date.now();
+      const issueHasPersistedMonitor = Boolean(issue.monitorNextCheckAt);
+      const findExplicitBlockerPath = () =>
+        tx
+          .select({ id: issueRelations.issueId })
+          .from(issueRelations)
+          .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+          .where(
+            and(
+              eq(issueRelations.companyId, issue.companyId),
+              eq(issueRelations.relatedIssueId, issue.id),
+              eq(issueRelations.type, "blocks"),
+              eq(issues.companyId, issue.companyId),
+              notInArray(issues.status, ["done", "cancelled"]),
+              isNull(issues.hiddenAt),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
       const executionState = parseIssueExecutionState(issue.executionState);
       const currentParticipant = executionState?.status === "pending"
         ? executionState.currentParticipant
@@ -13870,7 +13934,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (
           options.suppressImmediateRecovery ||
           existingReviewParticipantExecutionPath ||
-          issueHasScheduledMonitor ||
+          issueHasPersistedMonitor ||
           await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)
         ) {
           return { kind: "released" as const };
@@ -13989,7 +14053,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const existingExecutionPath = await findExistingExecutionPath();
-      if (existingExecutionPath) {
+      if (existingExecutionPath || issueHasPersistedMonitor || await findExplicitBlockerPath()) {
         return { kind: "released" as const };
       }
 

@@ -19,6 +19,8 @@ import {
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
   stringifyPaperclipWakePayload,
+  UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+  UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
 
@@ -500,6 +502,13 @@ describe("runChildProcess", () => {
     const descendantPid = Number.parseInt(result.stdout.match(/descendant:(\d+)/)?.[1] ?? "", 10);
     expect(result.timedOut).toBe(false);
     expect(result.exitCode).toBe(0);
+    expect(result.terminalResultCleanup).toMatchObject({
+      kind: "terminal_result_cleanup",
+      stopped: true,
+      stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+      reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+      terminalResultSeen: true,
+    });
     expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
     expect(await waitForPidExit(descendantPid, 2_000)).toBe(true);
   });
@@ -530,6 +539,14 @@ describe("runChildProcess", () => {
 
     expect(result.timedOut).toBe(false);
     expect(result.signal).toBe("SIGTERM");
+    expect(result.terminalResultCleanup).toMatchObject({
+      kind: "terminal_result_cleanup",
+      stopped: true,
+      stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+      reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+      terminalResultSeen: true,
+      signal: "SIGTERM",
+    });
     expect(result.stdout).toContain('"type":"result"');
   });
 
