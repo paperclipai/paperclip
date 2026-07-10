@@ -30,6 +30,17 @@ const mockIssueService = vi.hoisted(() => ({
   findMentionedAgents: vi.fn(async () => []),
 }));
 
+vi.mock("../services/image-reference-guardrails.js", () => ({
+  resolveIssueImageReferenceGuardrail: vi.fn(async () => ({
+    required: false,
+    issueScopeIds: [],
+    boardText: "",
+    candidateAttachmentIds: [],
+    candidateAssetIds: [],
+  })),
+  hasReferenceBackedImageGenerationEvidence: vi.fn(async () => false),
+}));
+
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
