@@ -498,11 +498,8 @@ function extractExecutionContractFromDescription(description: string | null | un
   const executionContract = extractJsonObjectFromMarkdown(sectionBody);
   if (!executionContract) return null;
 
-  const before = description.slice(0, match.index).trimEnd();
-  const after = description.slice(sectionEnd).trimStart();
-  const nextDescription = [before, after].filter(Boolean).join("\n\n").trim();
   return {
-    description: nextDescription || null,
+    description,
     executionContract,
   };
 }
@@ -514,11 +511,12 @@ function resolveExecutionContractFields(input: {
   description?: string | null;
   executionContract?: Record<string, unknown> | null;
 } {
-  const extracted = extractExecutionContractFromDescription(input.description);
+  const hasDescription = Object.prototype.hasOwnProperty.call(input, "description");
+  const extracted = hasDescription ? extractExecutionContractFromDescription(input.description) : null;
   const description = extracted ? extracted.description : input.description;
   if (input.executionContract !== undefined) {
     return {
-      description,
+      ...(hasDescription ? { description } : {}),
       executionContract: normalizeExecutionContractValue(input.executionContract),
     };
   }
@@ -528,7 +526,7 @@ function resolveExecutionContractFields(input: {
       executionContract: extracted.executionContract,
     };
   }
-  return { description };
+  return hasDescription ? { description } : {};
 }
 
 export type DelegatedIssueExecutionContractValidation = {

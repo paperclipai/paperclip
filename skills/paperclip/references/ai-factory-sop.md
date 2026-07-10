@@ -57,7 +57,7 @@ Issue budget hard-stops also apply to issue trees: `issue_tree` cancels parent p
 Topology says how work fans out; these invariants say what must travel with it. The recurring factory failure is context-loss across handoffs: a manager compresses rich intent into a thin child issue, the executor fills gaps with assumptions, and QA passes plausible-but-wrong output. These rules exist to make that impossible:
 
 - **Every delegated execution lane carries a hidden `executionContract`.** Delegation without a contract is invalid. Schema and duties: `references/execution-contract.md`.
-- **A manager's hidden reasoning must be externalized into the child issue's contract.** The issue description is the human brief; the contract is the machine-readable handoff. No executor should have to infer the real task from the parent thread, scattered comments, or unstated manager context.
+- **A manager's hidden reasoning must be externalized into the child issue's contract.** The issue description is the human brief and must remain readable on its own; the contract is the machine-readable handoff. No executor should have to infer the real task from the parent thread, scattered comments, or unstated manager context.
 - **Missing required context is a blocker, not permission to invent.** Executors block and name what is missing instead of guessing.
 - **QA reviews against the contract, not against plausibility.** High-quality work that solves the wrong problem fails QA.
 
@@ -67,7 +67,7 @@ Topology says how work fans out; these invariants say what must travel with it. 
 
 **2. Planning.** Planning produces the work breakdown, assignees, blockers, and — critically — the contract each task will be judged against. A list of task titles is not a plan.
 
-**3. Delegation.** Each child lane is created with the full hidden `executionContract` (objective, source-of-truth, constraints, acceptance checks, evidence required, block-if-missing list, manager reasoning summary).
+**3. Delegation.** Each child lane is created with a concise human-readable `description` plus the full hidden `executionContract` (objective, source-of-truth, constraints, acceptance checks, evidence required, block-if-missing list, manager reasoning summary).
 
 **4. Executor preflight.** Before starting, the executor verifies the contract exists, source-of-truth is reachable, and block-if-missing items are present. Preflight failure → `blocked` with exact missing items named.
 

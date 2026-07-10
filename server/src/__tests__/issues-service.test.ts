@@ -64,7 +64,7 @@ describe("validateDelegatedIssueExecutionContract", () => {
         sourceOfTruth: {
           links: ["https://paper.zenova.id/SIX/issues/SIX-3697"],
         },
-        acceptanceChecks: ["The issue has no visible description contract block."],
+        acceptanceChecks: ["The issue preserves its human-readable description."],
         handoffNotes: {
           managerReasoning: "The child lane needs the hidden contract to avoid context loss.",
         },
@@ -2522,7 +2522,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(issue.executionContract).toEqual(executionContract);
   });
 
-  it("extracts legacy markdown execution contracts from descriptions on create", async () => {
+  it("copies legacy markdown execution contracts into hidden data while preserving descriptions on create", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
@@ -2531,40 +2531,118 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    const issue = await svc.create(companyId, {
-      title: "Implementation lane",
-      status: "todo",
-      description: [
-        "Build the handoff storage.",
-        "",
-        "## Execution Contract",
-        "",
-        "```json",
-        JSON.stringify({
-          schemaVersion: 2,
-          contractType: "delegated_task",
-          taskType: "implementation",
-          core: {
-            objective: "Store execution contracts outside descriptions.",
-            acceptanceChecks: ["Issue description stays human-readable"],
-          },
-        }),
-        "```",
-        "",
-        "## Acceptance Criteria",
-        "",
-        "- The contract is hidden from the description",
-      ].join("\n"),
-    });
-
-    expect(issue.description).toBe([
+    const description = [
       "Build the handoff storage.",
+      "",
+      "## Execution Contract",
+      "",
+      "```json",
+      JSON.stringify({
+        schemaVersion: 2,
+        contractType: "delegated_task",
+        taskType: "implementation",
+        core: {
+          objective: "Store execution contracts outside descriptions.",
+          acceptanceChecks: ["Issue description stays human-readable"],
+        },
+      }),
+      "```",
       "",
       "## Acceptance Criteria",
       "",
-      "- The contract is hidden from the description",
-    ].join("\n"));
+      "- The contract remains visible in the description",
+    ].join("\n");
+
+    const issue = await svc.create(companyId, {
+      title: "Implementation lane",
+      status: "todo",
+      description,
+    });
+
+    expect(issue.description).toBe(description);
     expect(issue.executionContract).toMatchObject({
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "implementation",
+    });
+  });
+
+  it("does not blank descriptions that only contain a legacy markdown execution contract", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const description = [
+      "## Execution Contract",
+      "",
+      "```json",
+      JSON.stringify(makeValidExecutionContract({
+        core: {
+          objective: "Preserve human-entered issue detail.",
+          why: "Humans should not lose the prompt they wrote in the issue body.",
+          sourceOfTruth: {
+            links: ["https://paper.zenova.id/PAP/issues/PAP-100"],
+          },
+          acceptanceChecks: ["The description remains visible after create."],
+          handoffNotes: {
+            managerReasoning: "The inline contract was entered in the description and must not disappear.",
+          },
+        },
+      })),
+      "```",
+    ].join("\n");
+
+    const issue = await svc.create(companyId, {
+      title: "Contract-only description",
+      status: "todo",
+      description,
+    });
+
+    expect(issue.description).toBe(description);
+    expect(issue.executionContract).toMatchObject({
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "implementation",
+    });
+  });
+
+  it("preserves descriptions when unrelated fields are updated", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const description = [
+      "Human-visible validation description.",
+      "",
+      "## Execution Contract",
+      "",
+      "```json",
+      JSON.stringify(makeValidExecutionContract()),
+      "```",
+    ].join("\n");
+
+    const issue = await svc.create(companyId, {
+      title: "Preserve description on patch",
+      status: "backlog",
+      priority: "low",
+      description,
+    });
+
+    const updated = await svc.update(issue.id, {
+      priority: "high",
+    });
+
+    expect(updated?.priority).toBe("high");
+    expect(updated?.description).toBe(description);
+    expect(updated?.executionContract).toMatchObject({
       schemaVersion: 2,
       contractType: "delegated_task",
       taskType: "implementation",
@@ -2670,22 +2748,24 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       priority: "medium",
     });
 
+    const description = [
+      "Human-readable brief.",
+      "",
+      "## Execution Contract",
+      "",
+      "```json",
+      JSON.stringify(makeValidExecutionContract()),
+      "```",
+    ].join("\n");
+
     const { issue } = await svc.createChild(parentIssueId, {
       title: "Legacy contract child",
       status: "todo",
       actorAgentId: randomUUID(),
-      description: [
-        "Human-readable brief.",
-        "",
-        "## Execution Contract",
-        "",
-        "```json",
-        JSON.stringify(makeValidExecutionContract()),
-        "```",
-      ].join("\n"),
+      description,
     });
 
-    expect(issue.description).toBe("Human-readable brief.");
+    expect(issue.description).toBe(description);
     expect(issue.executionContract).toMatchObject({
       schemaVersion: 2,
       contractType: "delegated_task",

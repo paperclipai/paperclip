@@ -15,6 +15,8 @@ const mockIssueService = vi.hoisted(() => ({
   listProductivityReviews: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
   listAttachments: vi.fn(),
+  actualAiSecondsMapForIssues: vi.fn(async () => new Map()),
+  actualHumanSecondsMapForIssues: vi.fn(async () => new Map()),
 }));
 
 const mockProjectService = vi.hoisted(() => ({
@@ -103,6 +105,9 @@ vi.mock("../services/index.js", () => ({
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  budgetService: () => ({
+    upsertPolicy: vi.fn(async () => null),
+  }),
   documentService: () => mockDocumentsService,
   environmentService: () => mockEnvironmentService,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
@@ -164,6 +169,14 @@ const legacyProjectLinkedIssue = {
   identifier: "PAP-581",
   title: "Legacy onboarding task",
   description: "Seed the first CEO task",
+  executionContract: {
+    schemaVersion: 2,
+    contractType: "delegated_task",
+    taskType: "implementation",
+    core: {
+      objective: "Preserve the main issue handoff context.",
+    },
+  },
   status: "todo",
   workMode: "planning",
   priority: "medium",
@@ -285,6 +298,7 @@ describe.sequential("issue goal context routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.issue.goalId).toBe(projectGoal.id);
     expect(res.body.issue.workMode).toBe("planning");
+    expect(res.body.issue.executionContract).toEqual(legacyProjectLinkedIssue.executionContract);
     expect(res.body.goal).toEqual(
       expect.objectContaining({
         id: projectGoal.id,

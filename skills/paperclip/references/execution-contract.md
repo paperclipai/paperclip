@@ -6,11 +6,11 @@ Core invariant: **missing required context is a blocker, not permission to inven
 
 ## Where the contract lives
 
-Put the contract in the child issue's hidden `executionContract` JSON field when creating or updating the issue. The issue `description` is only the human-readable brief.
+Put the contract in the child issue's hidden `executionContract` JSON field when creating or updating the issue. The issue `description` remains the durable human-readable brief: it should explain the objective, relevant human context, source links or filenames, and a short acceptance summary in prose. Do not leave delegated child descriptions empty, and do not use the description as only a JSON contract dump.
 
-Agents receive this hidden field through `PAPERCLIP_WAKE_PAYLOAD_JSON.executionContract` and `paperclipIssue.executionContract`. It is also returned by `GET /api/issues/{issueId}` for audit views. Do not require humans to read or maintain the contract inside the description.
+Agents receive this hidden field through `PAPERCLIP_WAKE_PAYLOAD_JSON.executionContract`, `GET /api/issues/{issueId}/heartbeat-context.issue.executionContract`, and `GET /api/issues/{issueId}.executionContract`. Do not require humans to read or maintain the contract inside the description, and do not ignore a human description when a hidden contract exists.
 
-Legacy compatibility: older issues may still have a `## Execution Contract` fenced `json` block in the description or an issue document with key `contract`. Use those only as fallback sources. New delegations must use the hidden `executionContract` field.
+Legacy compatibility: older issues may still have a `## Execution Contract` fenced `json` block in the description or an issue document with key `contract`. Use those as fallback sources and, when possible, copy the parsed contract into the hidden `executionContract` field. Do not erase or rewrite the issue description merely because the contract was extracted. New delegations must use the hidden `executionContract` field and keep the visible description readable.
 
 Server enforcement: agent-created child issues are rejected when the resolved hidden contract is missing or invalid. Human-created issues are exempt; agents reconstruct a contract from a human's natural-language request when they pick up the work.
 
@@ -73,6 +73,7 @@ The `extensions` object is intentionally open-ended. QA, deployment, reference-f
 ## Manager duties (before delegating)
 
 - Externalize your reasoning. Anything you know that the executor needs — user intent, prior decisions, rejected approaches, non-goals — goes into the contract. The executor must not have to reconstruct intent from the parent thread or your hidden context.
+- Write a readable child issue description too. The contract prevents drift, but the description is what humans and quick issue lists rely on.
 - Every acceptance check must be verifiable by QA without asking you.
 - List `must_not_change` items explicitly. "Obvious" preservation requirements are the most common silent failure.
 - If you cannot fill the required fields, the work is not ready to delegate. Ask the requester, or create a discovery task instead.
@@ -89,11 +90,12 @@ The `extensions` object is intentionally open-ended. QA, deployment, reference-f
 
 Run this checklist immediately after checkout, before doing any domain work:
 
-1. The issue has an execution contract (`PAPERCLIP_WAKE_PAYLOAD_JSON.executionContract`, `GET /api/issues/{issueId}.executionContract`, or a legacy description/document fallback).
-2. Every `core.sourceOfTruth` entry is reachable — open the links, stat the files, fetch the documents.
-3. Every `core.blockIfMissing` item is present.
-4. `core.dependencies.requiredAccess` is available to you.
-5. The `core.objective` and `core.acceptanceChecks` are concrete enough that you could hand your output to QA and they could verify it without talking to you.
+1. The issue has an execution contract (`PAPERCLIP_WAKE_PAYLOAD_JSON.executionContract`, `GET /api/issues/{issueId}/heartbeat-context.issue.executionContract`, `GET /api/issues/{issueId}.executionContract`, or a legacy description/document fallback).
+2. Any non-empty issue description has been read as the human/operator brief.
+3. Every `core.sourceOfTruth` entry is reachable — open the links, stat the files, fetch the documents.
+4. Every `core.blockIfMissing` item is present.
+5. `core.dependencies.requiredAccess` is available to you.
+6. The `core.objective` and `core.acceptanceChecks` are concrete enough that you could hand your output to QA and they could verify it without talking to you.
 
 If any check fails:
 
@@ -101,7 +103,7 @@ If any check fails:
 - State exactly which fields/links/items are missing.
 - Do NOT proceed on assumptions. A plausible result built on guessed context is a contract violation even if it looks good.
 
-If the issue has no contract at all and the delegator is an agent, comment asking the delegator to supply one and set the issue `blocked`. If the delegator is a human user, reconstruct the contract yourself from their request, post it as a comment for visibility, and proceed — humans are not required to write contracts, agents are.
+If the issue has no contract at all and the delegator is an agent, comment asking the delegator to supply one and set the issue `blocked`. If the delegator is a human user, reconstruct the contract yourself from their request without deleting or replacing the user's description, post it as a comment for visibility, and proceed — humans are not required to write contracts, agents are.
 
 ## QA duties (contract review)
 

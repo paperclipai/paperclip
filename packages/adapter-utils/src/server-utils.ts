@@ -154,6 +154,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "",
   "Execution contract:",
   "- AI Factory SOP: Paperclip uses a two-level issue topology: one main parent issue plus direct child execution lanes only.",
+  "- If an issue has both a description and an executionContract, use both: the description is the human-readable operator brief, and the executionContract is the machine guardrail/source-of-truth for constraints and acceptance. Do not ignore, clear, or overwrite a human description just because a contract exists.",
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
   "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
   "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
@@ -799,7 +800,7 @@ export function renderPaperclipWakePrompt(
   if (normalized.executionContract) {
     lines.push(
       "- hidden execution contract: present",
-      "Follow `executionContract` from `PAPERCLIP_WAKE_PAYLOAD_JSON` as the delegated source-of-truth before relying on issue description or thread memory.",
+      "Use `executionContract` from `PAPERCLIP_WAKE_PAYLOAD_JSON` for guardrails, source-of-truth, and acceptance checks. Still read any issue description as the human-readable brief; the contract does not replace or erase description context.",
     );
   }
   if (normalized.issue?.workMode === "planning") {
