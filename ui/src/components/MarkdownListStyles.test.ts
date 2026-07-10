@@ -16,12 +16,16 @@ function cssBlock(selector: string): string {
   return stylesheet.slice(bodyStart + 1, bodyEnd);
 }
 
-describe("rendered markdown list styles", () => {
-  it("keeps enough gutter for multi-digit ordered-list markers", () => {
-    const block = cssBlock(".paperclip-markdown :where(ul, ol)");
-    const padding = block.match(/padding-left:\s*([0-9.]+)rem/);
+function remPaddingLeft(selector: string): number {
+  const padding = cssBlock(selector).match(/padding-left:\s*([0-9.]+)rem/);
 
-    expect(padding?.[1], "Expected markdown lists to use rem padding").toBeDefined();
-    expect(Number(padding?.[1])).toBeGreaterThanOrEqual(2.5);
+  expect(padding?.[1], `Expected ${selector} to use rem padding`).toBeDefined();
+  return Number(padding?.[1]);
+}
+
+describe("rendered markdown list styles", () => {
+  it("keeps unordered-list gutters compact while giving ordered markers enough room", () => {
+    expect(remPaddingLeft(".paperclip-markdown :where(ul, ol)")).toBeLessThan(2.5);
+    expect(remPaddingLeft(".paperclip-markdown ol")).toBeGreaterThanOrEqual(2.5);
   });
 });
