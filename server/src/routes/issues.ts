@@ -8524,6 +8524,36 @@ export function issueRoutes(
           },
         });
       };
+      const repairSatisfiedDependencyBlockers = async (input: {
+        dependentIssueId: string;
+        blockerIssueIds: string[];
+        source: string;
+      }) => {
+        const nextBlockerIssueIds: string[] = [];
+        const removedBlockerIssueIds = [...new Set(input.blockerIssueIds.filter(Boolean))];
+        if (removedBlockerIssueIds.length === 0) return;
+        await svc.update(input.dependentIssueId, {
+          blockedByIssueIds: nextBlockerIssueIds,
+          actorAgentId: actor.actorType === "agent" ? actor.actorId : null,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        });
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: "system",
+          actorId: "issue_update",
+          agentId: null,
+          runId: actor.runId,
+          action: "issue.blockers.updated",
+          entityType: "issue",
+          entityId: input.dependentIssueId,
+          details: {
+            source: input.source,
+            resolvedBlockerIssueId: issue.id,
+            removedBlockerIssueIds,
+            remainingBlockerIssueIds: nextBlockerIssueIds,
+          },
+        });
+      };
 
       if (executionStageWakeup) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
@@ -8657,6 +8687,11 @@ export function issueRoutes(
             blockerIssueIds: dependent.blockerIssueIds,
             source: "issue.blockers_resolved",
             mutation: "blocker_done",
+          });
+          await repairSatisfiedDependencyBlockers({
+            dependentIssueId: dependent.id,
+            blockerIssueIds: dependent.blockerIssueIds,
+            source: "issue.blockers_resolved",
           });
         }
       }
