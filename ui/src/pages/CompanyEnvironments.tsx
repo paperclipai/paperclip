@@ -215,6 +215,28 @@ function createEnvironmentFormFromEnvironment(environment: Environment): Environ
   };
 }
 
+const DISCARD_ENVIRONMENT_CHANGES_MESSAGE = "Discard unsaved environment changes?";
+
+function stableJsonStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJsonStringify(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries
+      .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJsonStringify(entryValue)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+/** Payload-level fingerprint so cosmetic form state (whitespace, key order) is not "unsaved". */
+function environmentFormKey(form: EnvironmentFormState): string {
+  return stableJsonStringify(buildEnvironmentPayload(form));
+}
+
 function normalizeJsonSchema(schema: unknown): JsonSchema | null {
   return schema && typeof schema === "object" && !Array.isArray(schema)
     ? schema as JsonSchema
@@ -1126,8 +1148,15 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
   const [environmentForm, setEnvironmentForm] = useState<EnvironmentFormState>(createEmptyEnvironmentForm);
   const environmentVariablesEditorRef = useRef<EnvironmentVariablesEditorHandle | null>(null);
   const initializedFormKeyRef = useRef<string | null>(null);
+  // Fingerprint of the form as initialized; null until the form page has loaded its data.
+  const [environmentFormBaselineKey, setEnvironmentFormBaselineKey] = useState<string | null>(null);
+  const [environmentVariablesDirty, setEnvironmentVariablesDirty] = useState(false);
   const [probeResults, setProbeResults] = useState<Record<string, EnvironmentProbeResult | null>>({});
   const [testingEnvironmentId, setTestingEnvironmentId] = useState<string | null>(null);
+  const environmentHasUnsavedChanges =
+    isEnvironmentFormPage &&
+    (environmentVariablesDirty ||
+      (environmentFormBaselineKey !== null && environmentFormKey(environmentForm) !== environmentFormBaselineKey));
 
   useEffect(() => {
     const crumbs = [
@@ -1206,6 +1235,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       });
       initializedFormKeyRef.current = null;
       setEnvironmentForm(createEmptyEnvironmentForm());
+      setEnvironmentFormBaselineKey(null);
+      setEnvironmentVariablesDirty(false);
       environmentMutation.reset();
       draftEnvironmentProbeMutation.reset();
       navigate(ENVIRONMENTS_PATH, { replace: true });
@@ -1321,6 +1352,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
   useEffect(() => {
     initializedFormKeyRef.current = null;
     setEnvironmentForm(createEmptyEnvironmentForm());
+    setEnvironmentFormBaselineKey(null);
+    setEnvironmentVariablesDirty(false);
     setProbeResults({});
     setTestingEnvironmentId(null);
   }, [selectedCompanyId]);
@@ -1331,6 +1364,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
   useEffect(() => {
     if (!isEnvironmentFormPage) {
       initializedFormKeyRef.current = null;
+      setEnvironmentFormBaselineKey(null);
+      setEnvironmentVariablesDirty(false);
       return;
     }
 
@@ -1344,7 +1379,10 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     resetDraftEnvironmentProbeMutation();
 
     if (mode === "create") {
-      setEnvironmentForm(createEmptyEnvironmentForm());
+      const emptyForm = createEmptyEnvironmentForm();
+      setEnvironmentForm(emptyForm);
+      setEnvironmentFormBaselineKey(environmentFormKey(emptyForm));
+      setEnvironmentVariablesDirty(false);
       initializedFormKeyRef.current = formKey;
       return;
     }
@@ -1354,7 +1392,10 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       : null;
     if (!environment) return;
 
-    setEnvironmentForm(createEnvironmentFormFromEnvironment(environment));
+    const nextForm = createEnvironmentFormFromEnvironment(environment);
+    setEnvironmentForm(nextForm);
+    setEnvironmentFormBaselineKey(environmentFormKey(nextForm));
+    setEnvironmentVariablesDirty(false);
     initializedFormKeyRef.current = formKey;
   }, [
     editingEnvironmentId,
@@ -1366,10 +1407,72 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     selectedCompanyId,
   ]);
 
+  function confirmDiscardEnvironmentChanges() {
+    return (
+      !environmentHasUnsavedChanges ||
+      typeof window === "undefined" ||
+      window.confirm(DISCARD_ENVIRONMENT_CHANGES_MESSAGE)
+    );
+  }
+
+  // The form page is routed, so leaving it (tab close, reload, or an in-app
+  // link) silently drops the draft. Intercept both exits while dirty.
+  useEffect(() => {
+    if (!environmentHasUnsavedChanges) return;
+
+    function handleBeforeUnload(event: BeforeUnloadEvent) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+
+    function handleDocumentClick(event: MouseEvent) {
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey
+      ) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const anchor = target.closest("a[href]");
+      if (!(anchor instanceof HTMLAnchorElement)) return;
+      if (anchor.target && anchor.target !== "_self") return;
+
+      const nextUrl = new URL(anchor.href, window.location.href);
+      const currentUrl = new URL(window.location.href);
+      if (nextUrl.origin !== currentUrl.origin) return;
+      if (
+        nextUrl.pathname === currentUrl.pathname &&
+        nextUrl.search === currentUrl.search &&
+        nextUrl.hash === currentUrl.hash
+      ) {
+        return;
+      }
+
+      if (window.confirm(DISCARD_ENVIRONMENT_CHANGES_MESSAGE)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    }
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    document.addEventListener("click", handleDocumentClick, true);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("click", handleDocumentClick, true);
+    };
+  }, [environmentHasUnsavedChanges]);
+
   function closeEnvironmentForm() {
     if (environmentMutation.isPending) return;
+    if (!confirmDiscardEnvironmentChanges()) return;
     initializedFormKeyRef.current = null;
     setEnvironmentForm(createEmptyEnvironmentForm());
+    setEnvironmentFormBaselineKey(null);
+    setEnvironmentVariablesDirty(false);
     environmentMutation.reset();
     draftEnvironmentProbeMutation.reset();
     navigate(ENVIRONMENTS_PATH);
@@ -1835,6 +1938,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                   onCreateSecret={async (name, value) => await createSecret.mutateAsync({ name, value })}
                   onChange={(env) =>
                     setEnvironmentForm((current) => ({ ...current, envVars: env ?? {} }))}
+                  onDirtyChange={setEnvironmentVariablesDirty}
                 />
               </Field>
 

@@ -474,6 +474,7 @@ describe("CompanyEnvironments — test provider button", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       delete (globalThis as any).WebSocket;
     }
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -684,6 +685,95 @@ describe("CompanyEnvironments — test provider button", () => {
       }),
     );
     expect(getEnvironmentFormPage()).toBeNull();
+  });
+
+  it("confirms before cancelling the edit page with unsaved environment variable drafts", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => {
+      click(findAction(container, "Edit"));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+    const page = getEnvironmentFormPage()!;
+
+    await act(async () => click(findButton(page, "Add variable")));
+    await flushReact();
+    const variableName = page.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')!;
+    const variableValue = page.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    await act(async () => {
+      setInputValue(variableName, "API_TOKEN");
+      setInputValue(variableValue, "draft-token");
+    });
+    await flushReact();
+
+    await act(async () => click(findButton(document.body, "Cancel")));
+    await flushReact();
+
+    expect(confirmSpy).toHaveBeenCalledWith("Discard unsaved environment changes?");
+    expect(getEnvironmentFormPage()).not.toBeNull();
+
+    confirmSpy.mockReturnValue(true);
+    await act(async () => click(findButton(document.body, "Cancel")));
+    await flushReact();
+
+    expect(getEnvironmentFormPage()).toBeNull();
+  });
+
+  it("keeps unload and in-app link warnings after env var changes are staged into the form", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => {
+      click(findAction(container, "Edit"));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+    const page = getEnvironmentFormPage()!;
+
+    await act(async () => click(findButton(page, "Add variable")));
+    await flushReact();
+    const variableName = page.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')!;
+    const variableValue = page.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    await act(async () => {
+      setInputValue(variableName, "API_TOKEN");
+      setInputValue(variableValue, "draft-token");
+    });
+    await flushReact();
+
+    await act(async () => click(findButton(page, "Save")));
+    await flushReact();
+    expect(page.textContent).not.toContain("Unsaved changes");
+
+    const beforeUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(beforeUnload);
+    expect(beforeUnload.defaultPrevented).toBe(true);
+
+    const link = document.createElement("a");
+    link.href = "/agents/dashboard";
+    document.body.appendChild(link);
+    const clickEvent = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+    link.dispatchEvent(clickEvent);
+
+    expect(confirmSpy).toHaveBeenCalledWith("Discard unsaved environment changes?");
+    expect(clickEvent.defaultPrevented).toBe(true);
+    expect(getEnvironmentFormPage()).not.toBeNull();
+    link.remove();
   });
 
   it("shows image setup controls only for providers advertising setup and capture support", async () => {
