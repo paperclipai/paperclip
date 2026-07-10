@@ -3,11 +3,13 @@ import type { Db } from "@paperclipai/db";
 import {
   IMPROVEMENT_SUGGESTION_ORIGIN_KINDS,
   IMPROVEMENT_SUGGESTION_STATUSES,
+  IMPROVEMENT_SCOPES,
   IMPROVEMENT_TARGET_LAYERS,
   createImprovementSuggestionSchema,
   reviewImprovementSuggestionSchema,
   type ImprovementSuggestionOriginKind,
   type ImprovementSuggestionStatus,
+  type ImprovementScope,
   type ImprovementTargetLayer,
   isRootLevelImprovementTarget,
 } from "@paperclipai/shared";
@@ -39,9 +41,24 @@ function assertImprovementGovernanceBoard(
   }
 }
 
+function assertInstanceImprovementGovernanceBoard(req: Request) {
+  assertBoard(req);
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true) return;
+  throw forbidden("Instance admin authority required for instance improvements");
+}
+
 export function improvementSuggestionRoutes(db: Db) {
   const router = Router();
   const svc = improvementSuggestionService(db);
+
+  router.get("/improvement-suggestions", async (req, res) => {
+    assertInstanceImprovementGovernanceBoard(req);
+    res.json(await svc.listInstance({
+      status: enumQueryValue(req.query.status, IMPROVEMENT_SUGGESTION_STATUSES) as ImprovementSuggestionStatus | undefined,
+      originKind: enumQueryValue(req.query.originKind, IMPROVEMENT_SUGGESTION_ORIGIN_KINDS) as ImprovementSuggestionOriginKind | undefined,
+      targetLayer: enumQueryValue(req.query.targetLayer, IMPROVEMENT_TARGET_LAYERS) as ImprovementTargetLayer | undefined,
+    }));
+  });
 
   router.get("/companies/:companyId/improvement-suggestions", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -50,6 +67,7 @@ export function improvementSuggestionRoutes(db: Db) {
       status: enumQueryValue(req.query.status, IMPROVEMENT_SUGGESTION_STATUSES) as ImprovementSuggestionStatus | undefined,
       originKind: enumQueryValue(req.query.originKind, IMPROVEMENT_SUGGESTION_ORIGIN_KINDS) as ImprovementSuggestionOriginKind | undefined,
       targetLayer: enumQueryValue(req.query.targetLayer, IMPROVEMENT_TARGET_LAYERS) as ImprovementTargetLayer | undefined,
+      scope: enumQueryValue(req.query.scope, IMPROVEMENT_SCOPES) as ImprovementScope | undefined,
     }));
   });
 

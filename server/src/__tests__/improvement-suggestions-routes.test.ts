@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockService = vi.hoisted(() => ({
   list: vi.fn(),
+  listInstance: vi.fn(),
   get: vi.fn(),
   create: vi.fn(),
   review: vi.fn(),
@@ -27,12 +28,13 @@ const payload = {
   sourceIssueId,
 };
 
-function suggestion(originKind: "board_directed" | "agent_detected", status: "accepted" | "pending_review" | "rejected") {
+function suggestion(originKind: "board_directed" | "agent_detected" | "feedback_detected", status: "accepted" | "pending_review" | "rejected") {
   return {
     id: suggestionId,
     companyId: "company-1",
     originKind,
     status,
+    scope: "instance",
     targetLayer: payload.targetLayer,
     title: payload.title,
     summary: payload.summary,
@@ -40,6 +42,7 @@ function suggestion(originKind: "board_directed" | "agent_detected", status: "ac
     evidence: payload.evidence,
     sourceIssueId,
     sourceRunId: null,
+    sourceFeedbackVoteId: null,
     createdByAgentId: originKind === "agent_detected" ? "agent-1" : null,
     createdByUserId: originKind === "board_directed" ? "board-user" : null,
     reviewedByUserId: null,
@@ -102,6 +105,40 @@ describe("improvement suggestion routes", () => {
       agentId: "agent-1",
       runId: "run-1",
     }));
+  });
+
+  it("aggregates instance-level improvements only for an instance administrator", async () => {
+    mockService.listInstance.mockResolvedValue([
+      {
+        ...suggestion("feedback_detected", "pending_review"),
+        companyName: "Six Zenith",
+        companyIssuePrefix: "SIX",
+      },
+    ]);
+    const allowed = await request(await createApp({
+      type: "board",
+      userId: "instance-admin",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: true,
+    })).get("/api/improvement-suggestions?status=pending_review");
+    expect(allowed.status).toBe(200);
+    expect(allowed.body[0]).toMatchObject({ companyName: "Six Zenith", scope: "instance" });
+    expect(mockService.listInstance).toHaveBeenCalledWith({
+      status: "pending_review",
+      originKind: undefined,
+      targetLayer: undefined,
+    });
+
+    const forbidden = await request(await createApp({
+      type: "board",
+      userId: "company-owner",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "owner" }],
+      source: "session",
+      isInstanceAdmin: false,
+    })).get("/api/improvement-suggestions");
+    expect(forbidden.status).toBe(403);
   });
 
   it("records board-created entries as directives and rejects agent review attempts", async () => {

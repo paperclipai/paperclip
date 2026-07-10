@@ -65,6 +65,8 @@ Then determine the durable fix and record it:
 
 Post the classification as a comment on the failed issue. Then record an evidence-backed improvement suggestion with `POST /api/companies/{companyId}/improvement-suggestions`. Include the target layer, proposed change, at least one evidence reference, and `sourceIssueId` when applicable. Suggestions created by agents enter `pending_review`; only the board can accept or reject them through `POST /api/companies/{companyId}/improvement-suggestions/{suggestionId}/review`.
 
+Board **Needs work** votes enter the same review queue as `feedback_detected` candidates. They remain distinct from `agent_detected` suggestions and `board_directed` changes, and include a `feedback_vote` evidence reference. A later reason updates the pending candidate in place; changing the vote to **Helpful** closes a still-pending candidate. Accepted or manually rejected decisions are never silently rewritten by a vote change.
+
 ```json
 {
   "targetLayer": "agent_prompt | company_skill | root_skill | orchestration_code | qa_gate | workspace_guard | company_sop",

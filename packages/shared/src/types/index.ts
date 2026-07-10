@@ -27,16 +27,20 @@ export {
   IMPROVEMENT_SUGGESTION_ORIGIN_KINDS,
   IMPROVEMENT_SUGGESTION_STATUSES,
   IMPROVEMENT_TARGET_LAYERS,
+  IMPROVEMENT_SCOPES,
   ROOT_LEVEL_IMPROVEMENT_TARGET_LAYERS,
   IMPROVEMENT_EVIDENCE_KINDS,
   isRootLevelImprovementTarget,
+  improvementScopeForTarget,
 } from "./improvement-suggestion.js";
 export type {
   ImprovementSuggestion,
+  InstanceImprovementSuggestion,
   ImprovementSuggestionEvidence,
   ImprovementSuggestionOriginKind,
   ImprovementSuggestionStatus,
   ImprovementTargetLayer,
+  ImprovementScope,
   ImprovementEvidenceKind,
 } from "./improvement-suggestion.js";
 export type {

@@ -1,8 +1,9 @@
-import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import type { ImprovementSuggestionEvidence } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
+import { feedbackVotes } from "./feedback_votes.js";
 import { issues } from "./issues.js";
 
 export const improvementSuggestions = pgTable(
@@ -19,6 +20,7 @@ export const improvementSuggestions = pgTable(
     evidence: jsonb("evidence").$type<ImprovementSuggestionEvidence[]>().notNull().default([]),
     sourceIssueId: uuid("source_issue_id").references(() => issues.id, { onDelete: "set null" }),
     sourceRunId: uuid("source_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    sourceFeedbackVoteId: uuid("source_feedback_vote_id").references(() => feedbackVotes.id, { onDelete: "set null" }),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
     reviewedByUserId: text("reviewed_by_user_id"),
@@ -41,6 +43,9 @@ export const improvementSuggestions = pgTable(
     sourceIssueIdx: index("improvement_suggestions_source_issue_idx").on(
       table.companyId,
       table.sourceIssueId,
+    ),
+    sourceFeedbackVoteUniqueIdx: uniqueIndex("improvement_suggestions_source_feedback_vote_idx").on(
+      table.sourceFeedbackVoteId,
     ),
   }),
 );

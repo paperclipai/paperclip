@@ -17,11 +17,20 @@ Each vote creates two local records:
 | **Vote** | Your vote (up/down), optional reason text, sharing preference, consent version, timestamp |
 | **Trace bundle** | Full context snapshot: the voted-on comment/revision text, issue title, agent info, your vote, and reason — everything needed to understand the feedback in isolation |
 
+A **Needs work** vote also creates one pending improvement candidate linked to the vote, source issue, output, and run. The candidate is classified into a company-owned layer (`agent_prompt`, `company_skill`, or `company_sop`) or an instance-owned Paperclip layer (`root_skill`, `orchestration_code`, `qa_gate`, or `workspace_guard`). It never edits a skill or changes Paperclip automatically; a company owner/admin or instance admin must review it.
+
 All data lives in your local Paperclip database. Nothing leaves your machine unless you explicitly choose to share.
 
 When a vote is marked for sharing, Paperclip immediately tries to upload the trace bundle through the Telemetry Backend. The upload is compressed in transit so full trace bundles stay under gateway size limits. If that immediate push fails, the trace is left in a retriable failed state for later flush attempts. The app server never uploads raw feedback trace bundles directly to object storage.
 
 ## Viewing your votes
+
+### Board UI
+
+- Company feedback and company-level suggestions: **Company → Improvements**
+- Cross-company Paperclip guardrail suggestions: **Instance Settings → Improvements**
+
+The company improvement inbox shows every Helpful and Needs work vote, including votes without a note and votes kept local.
 
 ### Quick report (terminal)
 
@@ -64,6 +73,16 @@ curl 'http://127.0.0.1:3102/api/companies/<companyId>/feedback-traces?includePay
 **Get a single trace envelope record:**
 ```bash
 curl http://127.0.0.1:3102/api/feedback-traces/<traceId>
+```
+
+**List company improvement suggestions:**
+```bash
+curl http://127.0.0.1:3102/api/companies/<companyId>/improvement-suggestions
+```
+
+**List instance-level Paperclip suggestions (instance admin):**
+```bash
+curl http://127.0.0.1:3102/api/improvement-suggestions
 ```
 
 **Get the full export bundle for a trace:**

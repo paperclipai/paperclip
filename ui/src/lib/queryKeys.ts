@@ -17,6 +17,11 @@ export const queryKeys = {
     detail: (companyId: string, serverId: string) =>
       ["company-mcp-servers", companyId, serverId] as const,
   },
+  improvementSuggestions: {
+    company: (companyId: string) => ["improvement-suggestions", "company", companyId] as const,
+    instance: ["improvement-suggestions", "instance"] as const,
+    feedback: (companyId: string) => ["improvement-suggestions", "feedback", companyId] as const,
+  },
   agents: {
     list: (companyId: string) => ["agents", companyId] as const,
     detail: (id: string) => ["agents", "detail", id] as const,

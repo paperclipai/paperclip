@@ -6809,8 +6809,28 @@ export function issueRoutes(
         vote: result.vote.vote,
         hasReason: Boolean(result.vote.reason),
         sharingEnabled: result.sharingEnabled,
+        improvementSuggestionId: result.improvementSuggestionId,
       },
     });
+
+    if (result.improvementSuggestionId && result.improvementSuggestionAction) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: `improvement.feedback_candidate_${result.improvementSuggestionAction}`,
+        entityType: "improvement_suggestion",
+        entityId: result.improvementSuggestionId,
+        details: {
+          sourceIssueId: issue.id,
+          feedbackVoteId: result.vote.id,
+          targetLayer: result.improvementSuggestionTargetLayer,
+          vote: result.vote.vote,
+        },
+      });
+    }
 
     if (result.consentEnabledNow) {
       await logActivity(db, {

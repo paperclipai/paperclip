@@ -17,6 +17,7 @@ import {
   issueComments,
   issueDocuments,
   issues,
+  improvementSuggestions,
 } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { claudeConfigDir, parseClaudeStreamJson } from "@paperclipai/adapter-claude-local/server";
@@ -34,6 +35,8 @@ import {
   type FeedbackTraceStatus,
   type FeedbackTraceTargetSummary,
   type FeedbackVoteValue,
+  type ImprovementSuggestionEvidence,
+  type ImprovementTargetLayer,
 } from "@paperclipai/shared";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
@@ -64,10 +67,12 @@ const MAX_INSTRUCTION_FILES = 20;
 const MAX_TRACE_FILE_CHARS = 10_000_000;
 const DEFAULT_INSTANCE_SETTINGS_SINGLETON_KEY = "default";
 const FEEDBACK_EXPORT_BACKEND_NOT_CONFIGURED = "Feedback export backend is not configured";
+const FEEDBACK_SUGGESTION_AUTO_CLOSED_NOTE = "Automatically closed because the feedback was changed to Helpful.";
 
 type FeedbackTraceRow = typeof feedbackExports.$inferSelect & {
   issueIdentifier: string | null;
   issueTitle: string;
+  reason: string | null;
 };
 
 type PendingFeedbackExportRow = typeof feedbackExports.$inferSelect;
@@ -196,6 +201,72 @@ function normalizeReason(vote: FeedbackVoteValue, reason: string | null | undefi
   if (vote !== "down" || typeof reason !== "string") return null;
   const trimmed = reason.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function classifyFeedbackImprovement(reason: string | null): ImprovementTargetLayer {
+  const signal = (reason ?? "").toLowerCase();
+  if (/\b(paperclip|guardrail|runtime|workspace|retry|wake|queue|routing|server|platform|system behavior|ui|interface|button)\b|orchestrat/.test(signal)) {
+    return "orchestration_code";
+  }
+  if (/\b(qa|quality check|acceptance criteria|validation|verify|review gate|reference image|source material)\b/.test(signal)) {
+    return "qa_gate";
+  }
+  if (/\b(role|tone|voice|reporting line|agent prompt)\b|responsibilit/.test(signal)) {
+    return "agent_prompt";
+  }
+  if (/\b(instruction|order|sop|procedure|workflow|playbook|skill|brand|client rule|company rule)\b/.test(signal)) {
+    return "company_skill";
+  }
+  return "company_sop";
+}
+
+function feedbackSuggestionCopy(input: {
+  issue: IssueFeedbackContext;
+  target: ResolvedFeedbackTarget;
+  voteId: string;
+  reason: string | null;
+}) {
+  const targetLayer = classifyFeedbackImprovement(input.reason);
+  const issueLabel = (input.issue.identifier ?? input.issue.title).slice(0, 180);
+  const feedbackSummary = input.reason
+    ? `Board feedback: ${input.reason}`
+    : "The board marked this agent output as Needs work without an additional note.";
+  const proposedChangeByLayer: Record<ImprovementTargetLayer, string> = {
+    agent_prompt: "Review the responsible agent's role instructions and add the missing boundary or responsibility with a concrete acceptance check.",
+    company_skill: "Review the company's reusable skills and add or strengthen the procedure and acceptance checks that would prevent this feedback from recurring.",
+    company_sop: "Review the linked output and trace, then capture the repeatable company procedure or escalation path needed to prevent recurrence.",
+    root_skill: "Review the linked trace and determine whether a universal Paperclip skill invariant should be added for every company.",
+    orchestration_code: "Review the linked trace and determine whether Paperclip should enforce a mechanical guardrail in orchestration or server code.",
+    qa_gate: "Review the linked trace and strengthen the applicable QA or acceptance gate so plausible-but-wrong output cannot pass.",
+    workspace_guard: "Review the linked trace and add a workspace or runtime preflight that prevents this failure class.",
+  };
+  const evidence: ImprovementSuggestionEvidence[] = [
+    {
+      kind: "feedback_vote",
+      ref: input.voteId,
+      note: input.reason ?? "Needs work vote captured without a note.",
+    },
+    {
+      kind: "issue",
+      ref: input.issue.identifier ?? input.issue.id,
+      note: input.issue.title,
+    },
+    {
+      kind: input.target.targetType === "issue_comment" ? "comment" : "document",
+      ref: input.target.targetId,
+      note: input.target.label,
+    },
+  ];
+  if (input.target.createdByRunId) {
+    evidence.push({ kind: "run", ref: input.target.createdByRunId, note: "Run that created the disliked output." });
+  }
+  return {
+    targetLayer,
+    title: `Review disliked output on ${issueLabel}`,
+    summary: `${feedbackSummary} This feedback-derived candidate is pending governance review; it does not change skills or Paperclip automatically.`,
+    proposedChange: proposedChangeByLayer[targetLayer],
+    evidence,
+  };
 }
 
 function normalizeSkillReference(value: string) {
@@ -758,6 +829,7 @@ function mapTraceRow(row: FeedbackTraceRow, includePayload: boolean): FeedbackTr
     targetType: row.targetType as FeedbackTargetType,
     targetId: row.targetId,
     vote: row.vote as FeedbackVoteValue,
+    reason: row.reason,
     status: row.status as FeedbackTraceStatus,
     destination: row.destination ?? null,
     exportId: row.exportId ?? null,
@@ -1725,8 +1797,10 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
           ...feedbackExportColumns,
           issueIdentifier: issues.identifier,
           issueTitle: issues.title,
+          reason: feedbackVotes.reason,
         })
         .from(feedbackExports)
+        .innerJoin(feedbackVotes, eq(feedbackExports.feedbackVoteId, feedbackVotes.id))
         .innerJoin(issues, eq(feedbackExports.issueId, issues.id))
         .where(and(...filters))
         .orderBy(desc(feedbackExports.createdAt));
@@ -1740,8 +1814,10 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
           ...feedbackExportColumns,
           issueIdentifier: issues.identifier,
           issueTitle: issues.title,
+          reason: feedbackVotes.reason,
         })
         .from(feedbackExports)
+        .innerJoin(feedbackVotes, eq(feedbackExports.feedbackVoteId, feedbackVotes.id))
         .innerJoin(issues, eq(feedbackExports.issueId, issues.id))
         .where(eq(feedbackExports.id, traceId))
         .then((rows) => rows[0] ?? null);
@@ -1754,8 +1830,10 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
           ...feedbackExportColumns,
           issueIdentifier: issues.identifier,
           issueTitle: issues.title,
+          reason: feedbackVotes.reason,
         })
         .from(feedbackExports)
+        .innerJoin(feedbackVotes, eq(feedbackExports.feedbackVoteId, feedbackVotes.id))
         .innerJoin(issues, eq(feedbackExports.issueId, issues.id))
         .where(eq(feedbackExports.id, traceId))
         .then((rows) => rows[0] ?? null);
@@ -1825,8 +1903,10 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
           ...feedbackExportColumns,
           issueIdentifier: issues.identifier,
           issueTitle: issues.title,
+          reason: feedbackVotes.reason,
         })
         .from(feedbackExports)
+        .innerJoin(feedbackVotes, eq(feedbackExports.feedbackVoteId, feedbackVotes.id))
         .innerJoin(issues, eq(feedbackExports.issueId, issues.id))
         .where(and(...filters))
         .orderBy(asc(feedbackExports.createdAt), asc(feedbackExports.id))
@@ -2093,6 +2173,90 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
             id: feedbackExports.id,
           });
 
+        const existingSuggestion = await tx
+          .select({
+            id: improvementSuggestions.id,
+            status: improvementSuggestions.status,
+            targetLayer: improvementSuggestions.targetLayer,
+            reviewNote: improvementSuggestions.reviewNote,
+          })
+          .from(improvementSuggestions)
+          .where(eq(improvementSuggestions.sourceFeedbackVoteId, savedVote.id))
+          .then((rows) => rows[0] ?? null);
+        let improvementSuggestionId = existingSuggestion?.id ?? null;
+        let improvementSuggestionAction: "created" | "updated" | "closed" | null = null;
+        let improvementSuggestionTargetLayer: ImprovementTargetLayer | null = existingSuggestion
+          ? existingSuggestion.targetLayer as ImprovementTargetLayer
+          : null;
+
+        if (input.vote === "down") {
+          const candidate = feedbackSuggestionCopy({
+            issue,
+            target,
+            voteId: savedVote.id,
+            reason: normalizedReason,
+          });
+          improvementSuggestionTargetLayer = candidate.targetLayer;
+          if (!existingSuggestion) {
+            improvementSuggestionId = await tx
+              .insert(improvementSuggestions)
+              .values({
+                companyId: issue.companyId,
+                originKind: "feedback_detected",
+                status: "pending_review",
+                targetLayer: candidate.targetLayer,
+                title: candidate.title,
+                summary: candidate.summary,
+                proposedChange: candidate.proposedChange,
+                evidence: candidate.evidence,
+                sourceIssueId: issue.id,
+                sourceRunId: target.createdByRunId,
+                sourceFeedbackVoteId: savedVote.id,
+                createdByUserId: input.authorUserId,
+                updatedAt: now,
+              })
+              .returning({ id: improvementSuggestions.id })
+              .then((rows) => rows[0]?.id ?? null);
+            improvementSuggestionAction = "created";
+          } else if (
+            existingSuggestion.status === "pending_review"
+            || (
+              existingSuggestion.status === "rejected"
+              && existingSuggestion.reviewNote === FEEDBACK_SUGGESTION_AUTO_CLOSED_NOTE
+            )
+          ) {
+            await tx
+              .update(improvementSuggestions)
+              .set({
+                status: "pending_review",
+                targetLayer: candidate.targetLayer,
+                title: candidate.title,
+                summary: candidate.summary,
+                proposedChange: candidate.proposedChange,
+                evidence: candidate.evidence,
+                sourceIssueId: issue.id,
+                sourceRunId: target.createdByRunId,
+                reviewedByUserId: null,
+                reviewNote: null,
+                reviewedAt: null,
+                updatedAt: now,
+              })
+              .where(eq(improvementSuggestions.id, existingSuggestion.id));
+            improvementSuggestionAction = "updated";
+          }
+        } else if (existingSuggestion?.status === "pending_review") {
+          await tx
+            .update(improvementSuggestions)
+            .set({
+              status: "rejected",
+              reviewNote: FEEDBACK_SUGGESTION_AUTO_CLOSED_NOTE,
+              reviewedAt: now,
+              updatedAt: now,
+            })
+            .where(eq(improvementSuggestions.id, existingSuggestion.id));
+          improvementSuggestionAction = "closed";
+        }
+
         return {
           vote: {
             ...savedVote,
@@ -2102,6 +2266,9 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
           consentEnabledNow,
           persistedSharingPreference,
           sharingEnabled: sharedWithLabs,
+          improvementSuggestionId,
+          improvementSuggestionAction,
+          improvementSuggestionTargetLayer,
         };
       }),
   };

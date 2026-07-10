@@ -1,8 +1,9 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
   companyMemberships,
+  companies,
   heartbeatRuns,
   improvementSuggestions,
   instanceUserRoles,
@@ -13,10 +14,15 @@ import type {
   ImprovementSuggestion,
   ImprovementSuggestionOriginKind,
   ImprovementSuggestionStatus,
+  ImprovementScope,
   ImprovementTargetLayer,
   ReviewImprovementSuggestion,
 } from "@paperclipai/shared";
-import { isRootLevelImprovementTarget } from "@paperclipai/shared";
+import {
+  ROOT_LEVEL_IMPROVEMENT_TARGET_LAYERS,
+  improvementScopeForTarget,
+  isRootLevelImprovementTarget,
+} from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 
 type ImprovementSuggestionRow = typeof improvementSuggestions.$inferSelect;
@@ -27,6 +33,7 @@ function toImprovementSuggestion(row: ImprovementSuggestionRow): ImprovementSugg
     originKind: row.originKind as ImprovementSuggestionOriginKind,
     status: row.status as ImprovementSuggestionStatus,
     targetLayer: row.targetLayer as ImprovementTargetLayer,
+    scope: improvementScopeForTarget(row.targetLayer as ImprovementTargetLayer),
     evidence: row.evidence ?? [],
   };
 }
@@ -137,17 +144,54 @@ export function improvementSuggestionService(db: Db) {
       status?: ImprovementSuggestionStatus;
       originKind?: ImprovementSuggestionOriginKind;
       targetLayer?: ImprovementTargetLayer;
+      scope?: ImprovementScope;
     }) {
       const conditions = [eq(improvementSuggestions.companyId, companyId)];
       if (filters?.status) conditions.push(eq(improvementSuggestions.status, filters.status));
       if (filters?.originKind) conditions.push(eq(improvementSuggestions.originKind, filters.originKind));
       if (filters?.targetLayer) conditions.push(eq(improvementSuggestions.targetLayer, filters.targetLayer));
+      if (filters?.scope === "instance") {
+        conditions.push(inArray(improvementSuggestions.targetLayer, [...ROOT_LEVEL_IMPROVEMENT_TARGET_LAYERS]));
+      } else if (filters?.scope === "company") {
+        conditions.push(inArray(
+          improvementSuggestions.targetLayer,
+          ["agent_prompt", "company_skill", "company_sop"],
+        ));
+      }
       const rows = await db
         .select()
         .from(improvementSuggestions)
         .where(and(...conditions))
         .orderBy(desc(improvementSuggestions.createdAt), desc(improvementSuggestions.id));
       return rows.map(toImprovementSuggestion);
+    },
+
+    async listInstance(filters?: {
+      status?: ImprovementSuggestionStatus;
+      originKind?: ImprovementSuggestionOriginKind;
+      targetLayer?: ImprovementTargetLayer;
+    }) {
+      const conditions = [
+        inArray(improvementSuggestions.targetLayer, [...ROOT_LEVEL_IMPROVEMENT_TARGET_LAYERS]),
+      ];
+      if (filters?.status) conditions.push(eq(improvementSuggestions.status, filters.status));
+      if (filters?.originKind) conditions.push(eq(improvementSuggestions.originKind, filters.originKind));
+      if (filters?.targetLayer) conditions.push(eq(improvementSuggestions.targetLayer, filters.targetLayer));
+      const rows = await db
+        .select({
+          suggestion: improvementSuggestions,
+          companyName: companies.name,
+          companyIssuePrefix: companies.issuePrefix,
+        })
+        .from(improvementSuggestions)
+        .innerJoin(companies, eq(improvementSuggestions.companyId, companies.id))
+        .where(and(...conditions))
+        .orderBy(desc(improvementSuggestions.createdAt), desc(improvementSuggestions.id));
+      return rows.map((row) => ({
+        ...toImprovementSuggestion(row.suggestion),
+        companyName: row.companyName,
+        companyIssuePrefix: row.companyIssuePrefix,
+      }));
     },
 
     get,
@@ -217,7 +261,7 @@ export function improvementSuggestionService(db: Db) {
         .where(and(
           eq(improvementSuggestions.companyId, companyId),
           eq(improvementSuggestions.id, suggestionId),
-          eq(improvementSuggestions.originKind, "agent_detected"),
+          inArray(improvementSuggestions.originKind, ["agent_detected", "feedback_detected"]),
           eq(improvementSuggestions.status, "pending_review"),
         ))
         .returning()

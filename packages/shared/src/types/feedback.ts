@@ -54,6 +54,7 @@ export interface FeedbackTrace {
   targetType: FeedbackTargetType;
   targetId: string;
   vote: FeedbackVoteValue;
+  reason: string | null;
   status: FeedbackTraceStatus;
   destination: string | null;
   exportId: string | null;

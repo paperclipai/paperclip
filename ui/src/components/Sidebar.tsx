@@ -17,6 +17,7 @@ import {
   Plug,
   RefreshCw,
   MessagesSquare,
+  BrainCircuit,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -145,6 +146,7 @@ export function Sidebar() {
           <SidebarNavItem to="/mcp" label="MCP" icon={Plug} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
+          <SidebarNavItem to="/company/settings/improvements" label="Improvements" icon={BrainCircuit} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
 

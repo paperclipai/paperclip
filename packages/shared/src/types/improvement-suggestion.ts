@@ -1,6 +1,7 @@
 export const IMPROVEMENT_SUGGESTION_ORIGIN_KINDS = [
   "board_directed",
   "agent_detected",
+  "feedback_detected",
 ] as const;
 export type ImprovementSuggestionOriginKind = (typeof IMPROVEMENT_SUGGESTION_ORIGIN_KINDS)[number];
 
@@ -22,6 +23,9 @@ export const IMPROVEMENT_TARGET_LAYERS = [
 ] as const;
 export type ImprovementTargetLayer = (typeof IMPROVEMENT_TARGET_LAYERS)[number];
 
+export const IMPROVEMENT_SCOPES = ["company", "instance"] as const;
+export type ImprovementScope = (typeof IMPROVEMENT_SCOPES)[number];
+
 export const ROOT_LEVEL_IMPROVEMENT_TARGET_LAYERS = [
   "root_skill",
   "orchestration_code",
@@ -35,6 +39,10 @@ export function isRootLevelImprovementTarget(
   return (ROOT_LEVEL_IMPROVEMENT_TARGET_LAYERS as readonly string[]).includes(targetLayer);
 }
 
+export function improvementScopeForTarget(targetLayer: ImprovementTargetLayer): ImprovementScope {
+  return isRootLevelImprovementTarget(targetLayer) ? "instance" : "company";
+}
+
 export const IMPROVEMENT_EVIDENCE_KINDS = [
   "issue",
   "comment",
@@ -43,6 +51,7 @@ export const IMPROVEMENT_EVIDENCE_KINDS = [
   "document",
   "file",
   "url",
+  "feedback_vote",
   "other",
 ] as const;
 export type ImprovementEvidenceKind = (typeof IMPROVEMENT_EVIDENCE_KINDS)[number];
@@ -58,6 +67,7 @@ export interface ImprovementSuggestion {
   companyId: string;
   originKind: ImprovementSuggestionOriginKind;
   status: ImprovementSuggestionStatus;
+  scope: ImprovementScope;
   targetLayer: ImprovementTargetLayer;
   title: string;
   summary: string;
@@ -65,6 +75,7 @@ export interface ImprovementSuggestion {
   evidence: ImprovementSuggestionEvidence[];
   sourceIssueId: string | null;
   sourceRunId: string | null;
+  sourceFeedbackVoteId: string | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   reviewedByUserId: string | null;
@@ -72,4 +83,9 @@ export interface ImprovementSuggestion {
   reviewedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface InstanceImprovementSuggestion extends ImprovementSuggestion {
+  companyName: string;
+  companyIssuePrefix: string;
 }

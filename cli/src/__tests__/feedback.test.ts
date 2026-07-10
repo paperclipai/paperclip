@@ -26,6 +26,7 @@ function makeTrace(overrides: Partial<FeedbackTrace> = {}): FeedbackTrace {
     targetType: "issue_comment",
     targetId: "comment-123",
     vote: "down",
+    reason: "Missing evidence.",
     status: "pending",
     destination: "paperclip_labs_feedback_v1",
     exportId: null,

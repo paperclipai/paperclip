@@ -16,6 +16,7 @@ import {
   feedbackExports,
   feedbackVotes,
   heartbeatRuns,
+  improvementSuggestions,
   instanceSettings,
   issueComments,
   issueDocuments,
@@ -42,6 +43,7 @@ describe("feedbackService.saveIssueVote", () => {
   }, 120_000);
 
   afterEach(async () => {
+    await db.delete(improvementSuggestions);
     await db.delete(feedbackExports);
     await db.delete(feedbackVotes);
     await db.delete(instanceSettings);
@@ -565,6 +567,71 @@ describe("feedbackService.saveIssueVote", () => {
       value: "down",
       reason: "The update missed the edge case handling.",
       sharedWithLabs: false,
+    });
+    expect(traces[0]?.reason).toBe("The update missed the edge case handling.");
+  });
+
+  it("routes downvotes into a reviewable improvement candidate and closes it when the vote changes", async () => {
+    const { companyId, issueId, commentId } = await seedIssueWithAgentComment();
+
+    const first = await svc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: commentId,
+      vote: "down",
+      reason: "Paperclip should prevent this runtime behavior with a guardrail.",
+      authorUserId: "user-1",
+    });
+
+    const initial = await db
+      .select()
+      .from(improvementSuggestions)
+      .where(eq(improvementSuggestions.sourceFeedbackVoteId, first.vote.id));
+    expect(initial).toHaveLength(1);
+    expect(initial[0]).toMatchObject({
+      companyId,
+      originKind: "feedback_detected",
+      status: "pending_review",
+      targetLayer: "orchestration_code",
+      sourceIssueId: issueId,
+      sourceFeedbackVoteId: first.vote.id,
+      createdByUserId: "user-1",
+    });
+
+    await svc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: commentId,
+      vote: "down",
+      reason: "The agent did not follow the company procedure.",
+      authorUserId: "user-1",
+    });
+    const updated = await db
+      .select()
+      .from(improvementSuggestions)
+      .where(eq(improvementSuggestions.sourceFeedbackVoteId, first.vote.id))
+      .then((rows) => rows[0]);
+    expect(updated).toMatchObject({
+      status: "pending_review",
+      targetLayer: "company_skill",
+    });
+    expect(updated?.summary).toContain("The agent did not follow the company procedure.");
+
+    await svc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: commentId,
+      vote: "up",
+      authorUserId: "user-1",
+    });
+    const closed = await db
+      .select()
+      .from(improvementSuggestions)
+      .where(eq(improvementSuggestions.sourceFeedbackVoteId, first.vote.id))
+      .then((rows) => rows[0]);
+    expect(closed).toMatchObject({
+      status: "rejected",
+      reviewNote: "Automatically closed because the feedback was changed to Helpful.",
     });
   });
 
