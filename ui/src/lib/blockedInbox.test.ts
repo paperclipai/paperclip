@@ -101,6 +101,7 @@ describe("blockedInbox", () => {
       "blocked_by_assigned_backlog_issue",
       "blocked_by_cancelled_issue",
       "blocked_by_uninvokable_assignee",
+      "dead_in_water",
       "in_review_without_action_path",
       "invalid_review_participant",
       "open_recovery_issue",

@@ -2815,6 +2815,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/attention",
+  tags: ["inbox"],
+  summary: "List decision-only attention feed items",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/sidebar-preferences/me",
   tags: ["sidebar"],
   summary: "Get current user sidebar preferences",
@@ -2870,7 +2879,7 @@ registry.registerPath({
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(z.object({
-      itemKey: z.string().trim().min(1).regex(/^(approval|join|run):.+$/, "Unsupported inbox item key"),
+      itemKey: z.string().trim().min(1).regex(/^(approval|join|run|attention):.+$/, "Unsupported inbox item key"),
     })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },

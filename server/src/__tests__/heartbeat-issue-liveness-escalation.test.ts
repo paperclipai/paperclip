@@ -13,6 +13,7 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   issueComments,
+  issueRecoveryActions,
   issueRelations,
   issueTreeHolds,
   issues,
@@ -700,6 +701,64 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
     expect(result.findings).toBe(0);
     expect(result.escalationsCreated).toBe(0);
+  });
+
+  it("creates one board-owned recovery action for an assigned todo blocker that is dead in the water", async () => {
+    await enableAutoRecovery();
+    const { companyId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
+      blockerAssigneeAgentId: "coder",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(first.findings).toBe(1);
+    expect(first.recoveryActionsCreated).toBe(1);
+    expect(first.escalationsCreated).toBe(0);
+    expect(second.findings).toBe(0);
+    expect(second.recoveryActionsCreated).toBe(0);
+    expect(second.escalationsCreated).toBe(0);
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, blockerIssueId),
+        ),
+      );
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      kind: "dead_in_water",
+      status: "active",
+      ownerType: "board",
+      ownerAgentId: null,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "dead_in_water",
+      fingerprint: [
+        "source_scoped_recovery",
+        companyId,
+        blockerIssueId,
+        "dead_in_water",
+      ].join(":"),
+    });
+    expect(actions[0]?.evidence).toMatchObject({
+      recoveryCause: "dead_in_water",
+      livenessState: "dead_in_water",
+      sourceIssueId: blockerIssueId,
+      dependentIssueIds: [blockedIssueId],
+      dependentCount: 1,
+    });
+    expect(actions[0]?.nextAction).toContain("nudge its assignee");
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
   });
 
   it("creates one bounded escalation for an assigned backlog blocker leaf", async () => {

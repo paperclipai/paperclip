@@ -6,7 +6,7 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { inboxDismissalService, logActivity } from "../services/index.js";
 
 const inboxDismissalSchema = z.object({
-  itemKey: z.string().trim().min(1).regex(/^(approval|join|run):.+$/, "Unsupported inbox item key"),
+  itemKey: z.string().trim().min(1).regex(/^(approval|join|run|attention):.+$/, "Unsupported inbox item key"),
 });
 
 export function inboxDismissalRoutes(db: Db) {

@@ -121,6 +121,7 @@ const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
   configuration_validation: "Configuration Validation",
   active_run_watchdog: "Active Watchdog",
   issue_graph_liveness: "Graph Liveness",
+  dead_in_water: "Dead in the Water",
 };
 
 const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
@@ -135,6 +136,8 @@ const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
     "The active run has been silent. Recovery is observing without interrupting it.",
   issue_graph_liveness:
     "Paperclip detected this task lost a live action path. A recovery owner needs to act.",
+  dead_in_water:
+    "This task is blocking other work and has no live owner, wait, or recovery path.",
 };
 
 const STATE_TONE: Record<RecoveryCardCardState, {

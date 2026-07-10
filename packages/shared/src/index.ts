@@ -50,6 +50,16 @@ export {
   type ResponsibleUserDenialTone,
 } from "./responsible-user-denial.js";
 export type {
+  AttentionDecisionVerb,
+  AttentionFeed,
+  AttentionItem,
+  AttentionSeverity,
+  AttentionSourceKind,
+  AttentionSubject,
+  AttentionSubjectKind,
+} from "./types/attention.js";
+
+export type {
   PipelineAutomationRetryBlocker,
   PipelineAutomationRetryCleanupOptions,
   PipelineAutomationRetryEffectCounts,

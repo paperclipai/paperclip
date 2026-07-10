@@ -462,6 +462,36 @@ function livenessRecoveryLeafKey(companyId: string, state: string, leafIssueId: 
   return buildIssueGraphLivenessLeafKey({ companyId, state, leafIssueId });
 }
 
+function isDeadInWaterFinding(finding: IssueLivenessFinding) {
+  return finding.state === "dead_in_water";
+}
+
+function deadInWaterRecoveryActionFingerprint(finding: IssueLivenessFinding) {
+  return [
+    "source_scoped_recovery",
+    finding.companyId,
+    finding.recoveryIssueId,
+    "dead_in_water",
+  ].join(":");
+}
+
+function buildDeadInWaterRecoveryActionEvidence(finding: IssueLivenessFinding) {
+  const source = finding.dependencyPath[0] ?? null;
+  const dependents = finding.dependencyPath.slice(1);
+  return {
+    sourceIssueId: finding.recoveryIssueId,
+    sourceIdentifier: source?.identifier ?? finding.identifier,
+    sourceStatus: source?.status ?? null,
+    recoveryCause: "dead_in_water",
+    livenessState: finding.state,
+    incidentKey: finding.incidentKey,
+    reason: finding.reason,
+    dependentIssueIds: dependents.map((entry) => entry.issueId),
+    dependentIdentifiers: dependents.map((entry) => entry.identifier).filter(Boolean),
+    dependentCount: dependents.length,
+  };
+}
+
 function isUniqueLivenessRecoveryConflict(error: unknown) {
   if (!error || typeof error !== "object") return false;
   const maybe = error as { code?: string; constraint?: string; message?: string };
@@ -4086,6 +4116,68 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return { kind: "created" as const, escalationIssueId: escalation.id };
   }
 
+  async function ensureDeadInWaterRecoveryAction(input: {
+    finding: IssueLivenessFinding;
+    runId?: string | null;
+  }) {
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, input.finding.recoveryIssueId), eq(issues.companyId, input.finding.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return { kind: "skipped" as const };
+
+    const action = await recoveryActionsSvc.upsertSourceScoped({
+      companyId: issue.companyId,
+      sourceIssueId: issue.id,
+      recoveryIssueId: null,
+      kind: "dead_in_water",
+      ownerType: "board",
+      ownerAgentId: null,
+      previousOwnerAgentId: issue.assigneeAgentId,
+      returnOwnerAgentId: issue.assigneeAgentId,
+      cause: "dead_in_water",
+      fingerprint: deadInWaterRecoveryActionFingerprint(input.finding),
+      evidence: buildDeadInWaterRecoveryActionEvidence(input.finding),
+      nextAction: input.finding.recommendedAction,
+      wakePolicy: {
+        type: "board_escalation",
+        reason: "dead_in_water",
+        decisionVerbs: ["nudge_assignee", "reassign", "cancel", "deprioritize_dependents"],
+      },
+      monitorPolicy: null,
+      maxAttempts: null,
+      lastAttemptAt: new Date(),
+    });
+
+    if (action.attemptCount === 1) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: input.runId ?? null,
+        action: "issue.recovery_action_opened",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          recoveryActionId: action.id,
+          recoveryActionKind: action.kind,
+          recoveryActionStatus: action.status,
+          ownerType: action.ownerType,
+          source: "recovery.reconcile_issue_graph_liveness",
+          findingState: input.finding.state,
+          incidentKey: input.finding.incidentKey,
+          dependentIssueIds: input.finding.dependencyPath.slice(1).map((entry) => entry.issueId),
+        },
+      });
+      return { kind: "created" as const, recoveryActionId: action.id };
+    }
+
+    return { kind: "existing" as const, recoveryActionId: action.id };
+  }
+
   async function reconcileResolvedDependencyWakeBackstop(opts?: ResolvedDependencyWakeBackstopOptions) {
     const result = {
       checked: 0,
@@ -4347,6 +4439,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       cutoff: cutoff.toISOString(),
       escalationsCreated: 0,
       existingEscalations: 0,
+      recoveryActionsCreated: 0,
+      existingRecoveryActions: 0,
       skipped: 0,
       skippedAutoRecoveryDisabled: 0,
       skippedOutsideLookback: 0,
@@ -4367,6 +4461,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       dependencyWakeIssueIds: [] as string[],
       issueIds: [] as string[],
       escalationIssueIds: [] as string[],
+      recoveryActionIds: [] as string[],
       retiredRecoveryIssueIds: obsoleteRecoveryCleanup.retiredIssueIds,
     };
 
@@ -4396,6 +4491,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.skipped += 1;
         continue;
       }
+
+      if (isDeadInWaterFinding(finding)) {
+        const recoveryAction = await ensureDeadInWaterRecoveryAction({
+          finding,
+          runId: opts?.runId ?? null,
+        });
+        if (recoveryAction.kind === "created") {
+          result.recoveryActionsCreated += 1;
+          result.issueIds.push(finding.issueId);
+          result.recoveryActionIds.push(recoveryAction.recoveryActionId);
+        } else if (recoveryAction.kind === "existing") {
+          result.existingRecoveryActions += 1;
+          result.issueIds.push(finding.issueId);
+          result.recoveryActionIds.push(recoveryAction.recoveryActionId);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
       const escalation = await createIssueGraphLivenessEscalation({
         finding,
         runId: opts?.runId ?? null,

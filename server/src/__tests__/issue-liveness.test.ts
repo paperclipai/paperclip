@@ -152,6 +152,116 @@ describe("issue graph liveness classifier", () => {
     expect(findings).toEqual([]);
   });
 
+  it("detects a dead-in-the-water todo blocker with blocked dependents", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Bounced unblock work",
+          status: "todo",
+          assigneeAgentId: "blocker-agent",
+        }),
+      ],
+      relations: blocks,
+      agents: [
+        agent(),
+        manager,
+        agent({ id: "blocker-agent", name: "Blocker Agent", reportsTo: managerId }),
+      ],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockerId,
+      identifier: "PAP-1704",
+      state: "dead_in_water",
+      severity: "critical",
+      recoveryIssueId: blockerId,
+      recommendedOwnerAgentId: "blocker-agent",
+      recommendedOwnerCandidates: expect.arrayContaining([
+        { agentId: "blocker-agent", reason: "stalled_blocker_assignee", sourceIssueId: blockerId },
+        { agentId: managerId, reason: "assignee_reporting_chain", sourceIssueId: blockerId },
+      ]),
+      dependencyPath: [
+        expect.objectContaining({ issueId: blockerId, status: "todo" }),
+        expect.objectContaining({ issueId: blockedId, status: "blocked" }),
+      ],
+      incidentKey: `harness_liveness:${companyId}:${blockerId}:dead_in_water:${blockerId}`,
+    });
+  });
+
+  it("does not flag dead-in-water candidates with a liveness path, own blockers, or no dependents", () => {
+    const deadCandidate = issue({
+      id: blockerId,
+      identifier: "PAP-1704",
+      title: "Bounced unblock work",
+      status: "todo",
+      assigneeAgentId: "blocker-agent",
+    });
+    const blockerAgent = agent({ id: "blocker-agent", name: "Blocker Agent", reportsTo: managerId });
+    const upstreamBlocker = issue({
+      id: "upstream-1",
+      identifier: "PAP-1705",
+      title: "Upstream dependency",
+      status: "todo",
+      assigneeAgentId: "upstream-agent",
+    });
+    const baseInput = {
+      issues: [issue(), deadCandidate],
+      relations: blocks,
+      agents: [
+        agent(),
+        manager,
+        blockerAgent,
+        agent({ id: "upstream-agent", name: "Upstream Agent", reportsTo: managerId }),
+      ],
+    };
+
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      pendingInteractions: [{ companyId, issueId: blockerId, status: "pending" }],
+    })).toEqual([]);
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      activeRuns: [{ companyId, issueId: blockerId, agentId: "blocker-agent", status: "running" }],
+    })).toEqual([]);
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      queuedWakeRequests: [{ companyId, issueId: blockerId, agentId: "blocker-agent", status: "queued" }],
+    })).toEqual([]);
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      issues: [issue(), { ...deadCandidate, assigneeUserId: "board-user-1" }],
+    })).toEqual([]);
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      issues: [issue(), deadCandidate, upstreamBlocker],
+      relations: [
+        ...blocks,
+        { companyId, blockerIssueId: "upstream-1", blockedIssueId: blockerId },
+      ],
+    })).toEqual([]);
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      issues: [
+        issue(),
+        {
+          ...deadCandidate,
+          status: "in_review",
+          executionState: {
+            currentParticipant: { type: "user", userId: "board-user-1" },
+          },
+        },
+      ],
+    })).toEqual([]);
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      relations: [],
+    })).toEqual([]);
+  });
+
   it("detects an assigned backlog blocker leaf with no action path", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [

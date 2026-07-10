@@ -197,6 +197,20 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   return true;
 }
 
+function shouldMoveAcceptedPlanConfirmationToAgentTodo(args: {
+  issue: IssueResolutionContext;
+  interaction: RequestConfirmationLikeInteraction;
+}) {
+  if (args.interaction.kind !== "request_confirmation") return false;
+  if (args.issue.status !== "in_review") return false;
+  if (!args.issue.assigneeAgentId) return false;
+
+  const target = args.interaction.payload.target;
+  if (!target || target.type !== "issue_document") return false;
+  const targetIssueId = target.issueId ?? args.issue.id;
+  return targetIssueId === args.issue.id && target.key === "plan";
+}
+
 function shouldSupersedeInteractionOnUserComment(interaction: UserCommentSupersedableInteraction) {
   return interaction.payload.supersedeOnUserComment === true;
 }
@@ -845,6 +859,7 @@ export function issueThreadInteractionService(db: Db) {
         throw notFound("Issue not found");
       }
 
+      const acceptedInteraction = hydrateInteraction(updated) as RequestConfirmationLikeInteraction;
       let continuationIssue: IssueWakeTarget | null = null;
       if (shouldReturnAcceptedConfirmationToCreatorAgent({
         issue: issueContext,
@@ -868,12 +883,30 @@ export function issueThreadInteractionService(db: Db) {
             status: returnedIssue.status,
           };
         }
+      } else if (shouldMoveAcceptedPlanConfirmationToAgentTodo({
+        issue: issueContext,
+        interaction: acceptedInteraction,
+      })) {
+        const returnedIssue = await issueService(db).update(args.issue.id, {
+          status: "todo",
+          actorAgentId: args.actor.agentId ?? null,
+          actorUserId: args.actor.userId ?? null,
+        }, tx);
+
+        if (returnedIssue) {
+          continuationIssue = {
+            id: returnedIssue.id,
+            assigneeAgentId: returnedIssue.assigneeAgentId ?? null,
+            assigneeUserId: returnedIssue.assigneeUserId ?? null,
+            status: returnedIssue.status,
+          };
+        }
       } else {
         await touchIssue(tx, args.issue.id);
       }
 
       return {
-        interaction: hydrateInteraction(updated),
+        interaction: acceptedInteraction,
         continuationIssue,
       };
     });

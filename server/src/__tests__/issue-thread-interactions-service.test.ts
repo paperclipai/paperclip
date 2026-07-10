@@ -98,6 +98,105 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     return { companyId, goalId, issueId };
   }
 
+  async function seedAgentAssignedPlanConfirmationIssue(options?: {
+    status?: string;
+    includePlanTarget?: boolean;
+  }) {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Approve an agent plan",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Review an agent-authored plan",
+      status: options?.status ?? "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "Plan v1",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId,
+      documentId,
+      key: "plan",
+    });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId,
+      documentId,
+      revisionNumber: 1,
+      title: "Plan",
+      format: "markdown",
+      body: "Plan v1",
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+        ...(options?.includePlanTarget === false
+          ? {}
+          : {
+              target: {
+                type: "issue_document",
+                issueId,
+                documentId,
+                key: "plan",
+                revisionId,
+                revisionNumber: 1,
+              },
+            }),
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    return { companyId, goalId, issueId, agentId, created };
+  }
+
   it("accepts suggested tasks by creating a rooted issue tree under the current issue", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
@@ -1217,6 +1316,92 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(updatedIssue).toMatchObject({
       id: issueId,
       status: "todo",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+  });
+
+  it("moves agent-assigned in_review plan confirmations back to todo when accepted", async () => {
+    const { companyId, goalId, issueId, agentId, created } = await seedAgentAssignedPlanConfirmationIssue();
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(accepted.continuationIssue).toEqual({
+      id: issueId,
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      status: "todo",
+    });
+    expect(accepted.interaction).toMatchObject({
+      kind: "request_confirmation",
+      status: "accepted",
+      result: {
+        version: 1,
+        outcome: "accepted",
+      },
+    });
+
+    const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+    expect(updatedIssue).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+  });
+
+  it("does not move accepted plan confirmations when the issue is not in_review", async () => {
+    const { companyId, goalId, issueId, agentId, created } = await seedAgentAssignedPlanConfirmationIssue({
+      status: "in_progress",
+    });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(accepted.continuationIssue).toBeNull();
+
+    const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+    expect(updatedIssue).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+  });
+
+  it("does not move non-plan request confirmations out of review", async () => {
+    const { companyId, goalId, issueId, agentId, created } = await seedAgentAssignedPlanConfirmationIssue({
+      includePlanTarget: false,
+    });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(accepted.continuationIssue).toBeNull();
+
+    const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+    expect(updatedIssue).toMatchObject({
+      id: issueId,
+      status: "in_review",
       assigneeAgentId: agentId,
       assigneeUserId: null,
     });

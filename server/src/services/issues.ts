@@ -3294,6 +3294,7 @@ async function listIssueBlockedInboxAttentionMap(
         state: "needs_attention",
         reason: finding.state as IssueBlockedInboxAttention["reason"],
         severity: finding.state === "blocked_by_assigned_backlog_issue"
+          || finding.state === "dead_in_water"
           || finding.state === "in_review_without_action_path"
           ? "high"
           : finding.severity === "critical" ? "critical" : "high",
@@ -3315,6 +3316,8 @@ async function listIssueBlockedInboxAttentionMap(
                 return "Assign active owner";
               case "blocked_by_cancelled_issue":
                 return "Replace blocker";
+              case "dead_in_water":
+                return "Choose disposition";
               case "invalid_review_participant":
                 return "Repair review participant";
               case "in_review_without_action_path":

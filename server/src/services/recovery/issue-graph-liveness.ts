@@ -8,6 +8,7 @@ export type IssueLivenessState =
   | "blocked_by_assigned_backlog_issue"
   | "blocked_by_uninvokable_assignee"
   | "blocked_by_cancelled_issue"
+  | "dead_in_water"
   | "invalid_review_participant"
   | "in_review_without_action_path";
 
@@ -361,6 +362,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   const issuesById = new Map(input.issues.map((issue) => [issue.id, issue]));
   const agentsById = new Map(input.agents.map((agent) => [agent.id, agent]));
   const blockersByBlockedIssueId = new Map<string, IssueLivenessRelationInput[]>();
+  const blockedDependentsByBlockerIssueId = new Map<string, IssueLivenessIssueInput[]>();
   const unresolvedBlockers = new Set<string>();
   const findings: IssueLivenessFinding[] = [];
   const activeRuns = input.activeRuns ?? [];
@@ -387,6 +389,20 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     ) {
       unresolvedBlockers.add(blocker.id);
     }
+
+    if (
+      blocker &&
+      blocked &&
+      blocker.companyId === relation.companyId &&
+      blocked.companyId === relation.companyId &&
+      blocker.status !== "done" &&
+      blocker.status !== "cancelled" &&
+      blocked.status === "blocked"
+    ) {
+      const list = blockedDependentsByBlockerIssueId.get(blocker.id) ?? [];
+      list.push(blocked);
+      blockedDependentsByBlockerIssueId.set(blocker.id, list);
+    }
   }
 
   for (const relations of blockersByBlockedIssueId.values()) {
@@ -399,6 +415,10 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     });
   }
 
+  for (const dependents of blockedDependentsByBlockerIssueId.values()) {
+    dependents.sort((left, right) => issueLabel(left).localeCompare(issueLabel(right)));
+  }
+
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
     return Boolean(issue.assigneeUserId) ||
       hasScheduledMonitor(issue, nowMs) ||
@@ -406,6 +426,70 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
       hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);
+  }
+
+  function hasOpenBlockers(issue: IssueLivenessIssueInput) {
+    const relations = blockersByBlockedIssueId.get(issue.id) ?? [];
+    return relations.some((relation) => {
+      if (relation.companyId !== issue.companyId) return false;
+      const blocker = issuesById.get(relation.blockerIssueId);
+      return Boolean(
+        blocker &&
+          blocker.companyId === issue.companyId &&
+          blocker.status !== "done" &&
+          blocker.status !== "cancelled",
+      );
+    });
+  }
+
+  function hasReviewerPath(issue: IssueLivenessIssueInput) {
+    const participant = issue.executionState?.currentParticipant;
+    const participantAgentId = readPrincipalAgentId(participant);
+    if (participantAgentId) {
+      const participantAgent = agentsById.get(participantAgentId);
+      return Boolean(
+        participantAgent &&
+          participantAgent.companyId === issue.companyId &&
+          isInvokableAgent(participantAgent, agentsById),
+      );
+    }
+    return principalIsResolvableUser(participant);
+  }
+
+  function deadInWaterFinding(issue: IssueLivenessIssueInput): IssueLivenessFinding | null {
+    if (issue.status !== "todo" || !issue.assigneeAgentId) return null;
+    const assignee = agentsById.get(issue.assigneeAgentId);
+    if (
+      !assignee ||
+      assignee.companyId !== issue.companyId ||
+      !isInvokableAgent(assignee, agentsById)
+    ) {
+      return null;
+    }
+    const dependents = blockedDependentsByBlockerIssueId.get(issue.id) ?? [];
+    if (dependents.length === 0) return null;
+    if (hasExplicitWaitingPath(issue) || hasOpenBlockers(issue) || hasReviewerPath(issue)) return null;
+
+    const ownerCandidates = ownerCandidatesForRecoveryIssue(issue, input.agents, agentsById, {
+      includeStalledAssignee: true,
+    });
+    const dependentLabels = dependents.map(issueLabel);
+    const dependentCopy = dependentLabels.length === 1
+      ? dependentLabels[0]!
+      : `${dependentLabels.slice(0, 3).join(", ")}${dependentLabels.length > 3 ? `, and ${dependentLabels.length - 3} more` : ""}`;
+
+    return finding({
+      issue,
+      state: "dead_in_water",
+      reason: `${issueLabel(issue)} is ${issue.status}, blocks ${dependents.length} issue${dependents.length === 1 ? "" : "s"} (${dependentCopy}), and has no interaction, own blocker, active run, queued wake, reviewer, human owner, monitor, or recovery action owning the next step.`,
+      dependencyPath: [issue, ...dependents],
+      recoveryIssue: issue,
+      recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+      recommendedOwnerCandidates: ownerCandidates,
+      recommendedAction:
+        `Choose a disposition for ${issueLabel(issue)}: nudge its assignee, reassign it, cancel it, or de-prioritize/remove the blocked dependent${dependents.length === 1 ? "" : "s"} (${dependentCopy}).`,
+      blockerIssueId: issue.id,
+    });
   }
 
   function reviewFinding(
@@ -590,6 +674,9 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   }
 
   for (const issue of input.issues) {
+    const dead = deadInWaterFinding(issue);
+    if (dead) findings.push(dead);
+
     if (issue.status === "blocked") {
       if (unresolvedBlockers.has(issue.id)) continue;
       const chainFinding = firstBlockedChainFinding(issue, issue, [issue], new Set());

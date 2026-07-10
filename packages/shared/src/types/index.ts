@@ -1,5 +1,14 @@
 export type { Company } from "./company.js";
 export type {
+  AttentionDecisionVerb,
+  AttentionFeed,
+  AttentionItem,
+  AttentionSeverity,
+  AttentionSourceKind,
+  AttentionSubject,
+  AttentionSubjectKind,
+} from "./attention.js";
+export type {
   Environment,
   EnvironmentDeleteBlastRadius,
   EnvironmentDeleteBlockedReason,

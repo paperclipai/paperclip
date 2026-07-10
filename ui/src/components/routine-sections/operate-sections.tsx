@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Activity as ActivityIcon, Play, SlidersHorizontal } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -24,6 +24,8 @@ const DATE_WINDOW_OPTIONS: { value: string; label: string; ms: number | null }[]
   { value: "7d", label: "Last 7d", ms: 7 * 24 * 60 * 60 * 1000 },
   { value: "30d", label: "Last 30d", ms: 30 * 24 * 60 * 60 * 1000 },
 ];
+
+const RECENT_RUN_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export function RunsSection() {
   const ctx = useRoutineDetail();
@@ -151,44 +153,66 @@ export function RunsSection() {
             />
           ) : (
             <div className="rounded-lg border border-border">
-              {filtered.map((run) => {
-                const label = dedupedTriggerLabel(run.trigger);
-                const title = run.linkedIssue?.title ?? label ?? "Run";
-                return (
-                  <EntityRow
-                    key={run.id}
-                    leading={
-                      <>
-                        <Badge variant="outline" className="shrink-0">
-                          {run.source}
-                        </Badge>
-                        <Badge
-                          variant={run.status === "failed" ? "destructive" : "secondary"}
-                          className="shrink-0"
-                        >
-                          {run.status.replaceAll("_", " ")}
-                        </Badge>
-                      </>
-                    }
-                    identifier={
-                      run.linkedIssue
-                        ? run.linkedIssue.identifier ?? run.linkedIssue.id.slice(0, 8)
-                        : undefined
-                    }
-                    title={title}
-                    subtitle={runRowSubtitle(run, routine.variables)}
-                    reserveSubtitleSpace
-                    trailing={
-                      <span className="text-xs text-muted-foreground">{timeAgo(run.triggeredAt)}</span>
-                    }
-                    to={
-                      run.linkedIssue
-                        ? `/issues/${run.linkedIssue.identifier ?? run.linkedIssue.id}`
-                        : undefined
-                    }
-                  />
-                );
-              })}
+              {(() => {
+                let previousTimestamp = Number.POSITIVE_INFINITY;
+                const cutoff = Date.now() - RECENT_RUN_WINDOW_MS;
+                return filtered.flatMap((run, index) => {
+                  const elements: ReactNode[] = [];
+                  const timestamp = new Date(run.triggeredAt).getTime();
+                  const showTodayDivider =
+                    Number.isFinite(timestamp)
+                    && timestamp < cutoff
+                    && previousTimestamp >= cutoff;
+                  if (Number.isFinite(timestamp)) previousTimestamp = timestamp;
+                  if (showTodayDivider) {
+                    elements.push(
+                      <div key={`today-divider-${run.id}-${index}`} className="my-2 flex items-center gap-3 px-4">
+                        <div className="flex-1 border-t border-border/80" />
+                        <span className="shrink-0 text-(length:--text-micro) font-medium uppercase tracking-wider text-muted-foreground">
+                          Earlier
+                        </span>
+                      </div>,
+                    );
+                  }
+                  const label = dedupedTriggerLabel(run.trigger);
+                  const title = run.linkedIssue?.title ?? label ?? "Run";
+                  elements.push(
+                    <EntityRow
+                      key={run.id}
+                      leading={
+                        <>
+                          <Badge variant="outline" className="shrink-0">
+                            {run.source}
+                          </Badge>
+                          <Badge
+                            variant={run.status === "failed" ? "destructive" : "secondary"}
+                            className="shrink-0"
+                          >
+                            {run.status.replaceAll("_", " ")}
+                          </Badge>
+                        </>
+                      }
+                      identifier={
+                        run.linkedIssue
+                          ? run.linkedIssue.identifier ?? run.linkedIssue.id.slice(0, 8)
+                          : undefined
+                      }
+                      title={title}
+                      subtitle={runRowSubtitle(run, routine.variables)}
+                      reserveSubtitleSpace
+                      trailing={
+                        <span className="text-xs text-muted-foreground">{timeAgo(run.triggeredAt)}</span>
+                      }
+                      to={
+                        run.linkedIssue
+                          ? `/issues/${run.linkedIssue.identifier ?? run.linkedIssue.id}`
+                          : undefined
+                      }
+                    />,
+                  );
+                  return elements;
+                });
+              })()}
             </div>
           )}
         </>
