@@ -559,6 +559,12 @@ describeEmbeddedPostgres("cases routes", () => {
     await limitedBoardHttp.get(`/api/issues/${otherIssue!.id}/cases`).expect(404);
     await limitedBoardHttp.get(`/api/issues/${otherIssue!.identifier}/cases`).expect(404);
 
+    const scopedAdminHttp = request(app({ ...limitedBoardActor, isInstanceAdmin: true }));
+    await scopedAdminHttp.get(`/api/cases/${caseRow!.id}`).expect(404);
+    await scopedAdminHttp.get(`/api/cases/${caseRow!.identifier}`).expect(404);
+    await scopedAdminHttp.get(`/api/issues/${otherIssue!.id}/cases`).expect(404);
+    await scopedAdminHttp.get(`/api/issues/${otherIssue!.identifier}/cases`).expect(404);
+
     expect(await db.select().from(cases)).toHaveLength(2);
     expect(await db.select().from(caseDocuments)).toHaveLength(0);
     expect(await db.select().from(documents)).toHaveLength(0);

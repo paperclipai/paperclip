@@ -196,10 +196,12 @@ async function loadIssueByIdOrIdentifier(db: CaseRouteDb, idOrIdentifier: string
 
 function caseLookupCompanyIds(req: Request) {
   if (req.actor.type === "agent") return req.actor.companyId ? [req.actor.companyId] : [];
-  if (req.actor.type === "board" && req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
-    return req.actor.companyIds ?? [];
+  if (req.actor.type === "board" && req.actor.source === "local_implicit") return undefined;
+  if (req.actor.type === "board" && Array.isArray(req.actor.companyIds) && req.actor.companyIds.length > 0) {
+    return req.actor.companyIds;
   }
-  return undefined;
+  if (req.actor.type === "board" && req.actor.isInstanceAdmin) return undefined;
+  return [];
 }
 
 async function assertCaseAccess(db: Db, req: Request, idOrIdentifier: string) {
@@ -214,11 +216,10 @@ async function assertCaseAccess(db: Db, req: Request, idOrIdentifier: string) {
 // next()) when the id is not a new-Cases row so pipeline case requests still
 // reach their handler regardless of the enableCases flag.
 async function resolveSharedPathCase(db: Db, req: Request, idOrIdentifier: string) {
-  const row = await loadCaseByIdOrIdentifier(db, idOrIdentifier);
+  const companyIds = caseLookupCompanyIds(req);
+  const row = await loadCaseByIdOrIdentifier(db, idOrIdentifier, companyIds);
   if (!row) return null;
   await assertCasesEnabled(db);
-  const companyIds = caseLookupCompanyIds(req);
-  if (companyIds && !companyIds.includes(row.companyId)) throw notFound("Case not found");
   assertCompanyAccess(req, row.companyId);
   return row;
 }
