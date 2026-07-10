@@ -69,6 +69,176 @@ describe("resolveSessionKey", () => {
       }),
     ).toBeNull();
   });
+
+  it("passes through within-limit keys unchanged (no unnecessary hashing)", () => {
+    expect(
+      resolveSessionKey({
+        strategy: "issue",
+        companyId: "company-1",
+        agentId: "agent-1",
+        runId: "run-1",
+        issueId: "issue-1",
+      }),
+    ).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+  });
+});
+
+// UUID-length (36-char) ids, matching what Paperclip actually issues for company/agent/issue/run,
+// used to reproduce and verify the fix for https://github.com/paperclipai/paperclip/issues/8713
+// (hermes_gateway session keys exceeding OpenAI's 64-char prompt_cache_key limit).
+describe("resolveSessionKey - prompt_cache_key length limit (issue #8713)", () => {
+  const uuidCompany = "11111111-1111-4111-8111-111111111111";
+  const uuidAgent = "22222222-2222-4222-8222-222222222222";
+  const uuidIssue = "33333333-3333-4333-8333-333333333333";
+  const uuidRun = "44444444-4444-4444-8444-444444444444";
+
+  const otherCompany = "55555555-5555-4555-8555-555555555555";
+  const otherAgent = "66666666-6666-4666-8666-666666666666";
+  const otherIssue = "77777777-7777-4777-8777-777777777777";
+
+  it("keeps issue-strategy keys within the 64-char limit for worst-case UUID ids", () => {
+    const key = resolveSessionKey({
+      strategy: "issue",
+      companyId: uuidCompany,
+      agentId: uuidAgent,
+      runId: uuidRun,
+      issueId: uuidIssue,
+    });
+    expect(key).not.toBeNull();
+    expect((key as string).length).toBeLessThanOrEqual(64);
+    expect(key).toMatch(/^paperclip:i:[0-9a-f]{48}$/);
+  });
+
+  it("keeps agent-strategy keys within the 64-char limit for worst-case UUID ids", () => {
+    const key = resolveSessionKey({
+      strategy: "agent",
+      companyId: uuidCompany,
+      agentId: uuidAgent,
+      runId: uuidRun,
+      issueId: uuidIssue,
+    });
+    expect(key).not.toBeNull();
+    expect((key as string).length).toBeLessThanOrEqual(64);
+    expect(key).toMatch(/^paperclip:a:[0-9a-f]{48}$/);
+  });
+
+  it("keeps run-strategy keys within the 64-char limit for worst-case UUID ids (already fits, passes through)", () => {
+    const key = resolveSessionKey({
+      strategy: "run",
+      companyId: uuidCompany,
+      agentId: uuidAgent,
+      runId: uuidRun,
+      issueId: uuidIssue,
+    });
+    expect(key).toBe(`paperclip:run:${uuidRun}`);
+    expect((key as string).length).toBeLessThanOrEqual(64);
+  });
+
+  it("compacts the issue strategy's run-id fallback (no issueId) the same way once it exceeds the limit", () => {
+    const longRunId = `${uuidRun}-extra-long-suffix-that-forces-overflow`;
+    const key = resolveSessionKey({
+      strategy: "issue",
+      companyId: uuidCompany,
+      agentId: uuidAgent,
+      runId: longRunId,
+      issueId: null,
+    });
+    expect(key).not.toBeNull();
+    expect((key as string).length).toBeLessThanOrEqual(64);
+    expect(key).toMatch(/^paperclip:i:[0-9a-f]{48}$/);
+  });
+
+  it("is deterministic: identical scope inputs always produce the identical compacted key", () => {
+    const input = {
+      strategy: "issue" as const,
+      companyId: uuidCompany,
+      agentId: uuidAgent,
+      runId: uuidRun,
+      issueId: uuidIssue,
+    };
+    const first = resolveSessionKey(input);
+    const second = resolveSessionKey({ ...input });
+    const third = resolveSessionKey({ ...input });
+    expect(first).not.toBeNull();
+    expect(first).toBe(second);
+    expect(second).toBe(third);
+  });
+
+  it("does not collide across distinct issues under the same company/agent", () => {
+    const keyA = resolveSessionKey({
+      strategy: "issue",
+      companyId: uuidCompany,
+      agentId: uuidAgent,
+      runId: uuidRun,
+      issueId: uuidIssue,
+    });
+    const keyB = resolveSessionKey({
+      strategy: "issue",
+      companyId: uuidCompany,
+      agentId: uuidAgent,
+      runId: uuidRun,
+      issueId: otherIssue,
+    });
+    expect(keyA).not.toBeNull();
+    expect(keyB).not.toBeNull();
+    expect(keyA).not.toBe(keyB);
+  });
+
+  it("does not collide across distinct agents under the same company", () => {
+    const keyA = resolveSessionKey({
+      strategy: "agent",
+      companyId: uuidCompany,
+      agentId: uuidAgent,
+      runId: uuidRun,
+      issueId: null,
+    });
+    const keyB = resolveSessionKey({
+      strategy: "agent",
+      companyId: uuidCompany,
+      agentId: otherAgent,
+      runId: uuidRun,
+      issueId: null,
+    });
+    expect(keyA).not.toBe(keyB);
+  });
+
+  it("does not collide across distinct companies", () => {
+    const keyA = resolveSessionKey({
+      strategy: "issue",
+      companyId: uuidCompany,
+      agentId: uuidAgent,
+      runId: uuidRun,
+      issueId: uuidIssue,
+    });
+    const keyB = resolveSessionKey({
+      strategy: "issue",
+      companyId: otherCompany,
+      agentId: uuidAgent,
+      runId: uuidRun,
+      issueId: uuidIssue,
+    });
+    expect(keyA).not.toBe(keyB);
+  });
+
+  it("does not collide across strategies for identical scope ids, and keeps distinguishable scope-letter prefixes", () => {
+    const issueKey = resolveSessionKey({
+      strategy: "issue",
+      companyId: uuidCompany,
+      agentId: uuidAgent,
+      runId: uuidRun,
+      issueId: uuidIssue,
+    });
+    const agentKey = resolveSessionKey({
+      strategy: "agent",
+      companyId: uuidCompany,
+      agentId: uuidAgent,
+      runId: uuidRun,
+      issueId: uuidIssue,
+    });
+    expect(issueKey).not.toBe(agentKey);
+    expect(issueKey).toMatch(/^paperclip:i:/);
+    expect(agentKey).toMatch(/^paperclip:a:/);
+  });
 });
 
 describe("parseSseFramesForTest", () => {
