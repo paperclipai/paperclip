@@ -395,6 +395,55 @@ describe("AgentConfigForm environment selector", () => {
     });
   });
 
+  it("tests a Codex agent after clearing the primary model to the adapter default", async () => {
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ], {
+      adapterConfig: { model: "gpt-5.4" },
+    }, {
+      showAdapterTestEnvironmentButton: true,
+    });
+    roots.push(result.root);
+
+    const modelButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "gpt-5.4",
+    );
+    expect(modelButton).toBeTruthy();
+
+    await act(async () => {
+      modelButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const defaultButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Default",
+    );
+    expect(defaultButton).toBeTruthy();
+
+    await act(async () => {
+      defaultButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const testButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Test",
+    );
+    expect(testButton).toBeTruthy();
+
+    await act(async () => {
+      testButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(mockAgentsApi.testEnvironment.mock.calls[0]?.[2]).toMatchObject({
+      adapterConfig: {},
+    });
+    expect((mockAgentsApi.testEnvironment.mock.calls[0]?.[2] as { adapterConfig: Record<string, unknown> }).adapterConfig)
+      .not.toHaveProperty("model");
+    expect(result.container.textContent).not.toContain("Cannot read properties of undefined");
+  });
+
   it("flushes pending environment variable edits before testing adapter config", async () => {
     const result = await renderForm([
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),

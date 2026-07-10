@@ -195,6 +195,12 @@ function clampDelayMsFromSeconds(value: number) {
   return clampInteger(value, 0, MAX_TURN_CONTINUATION_MAX_DELAY_SEC) * 1000;
 }
 
+function omitUndefinedEntries(value: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entryValue]) => entryValue !== undefined),
+  );
+}
+
 
 /* ---- Form ---- */
 
@@ -545,7 +551,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     if (adapterConfigPatch) {
       Object.assign(next, adapterConfigPatch);
     }
-    return next;
+    return omitUndefinedEntries(next);
   }
 
   function buildCheapAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
@@ -747,9 +753,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }, [props.onTestFeedbackChange, testActionError, testEnvironment.data, testEnvironment.error]);
 
   // Current model for display
-  const currentModelId = isCreate
-    ? val!.model
+  const currentModelValue = isCreate
+    ? val!.model ?? ""
     : eff("adapterConfig", "model", String(config.model ?? ""));
+  const currentModelId = typeof currentModelValue === "string" ? currentModelValue : "";
 
   async function handleRefreshModels() {
     if (!selectedCompanyId) return;
