@@ -3,6 +3,7 @@ import type {
   AdapterExecutionResult,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import { createHash } from "node:crypto";
 import {
   asNumber,
   asString,
@@ -71,6 +72,7 @@ const BEARER_TOKEN_PATTERN = /Bearer\s+\S+/gi;
 const HERMES_SESSION_KEY_HEADER_PATTERN = /(X-Hermes-Session-Key\s*[:=]\s*)([^\s,;]+)/gi;
 const PAPERCLIP_SESSION_KEY_PATTERN =
   /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+)\b/gi;
+const MAX_HERMES_PROMPT_CACHE_KEY_LENGTH = 64;
 
 const TERMINAL_STATUSES = new Set([
   "completed",
@@ -146,6 +148,14 @@ function issueIdFromContext(ctx: AdapterExecutionContext): string | null {
   return nonEmpty(ctx.context.taskId) ?? nonEmpty(ctx.context.issueId);
 }
 
+function shortSessionKey(strategy: Exclude<SessionKeyStrategy, "none">, canonicalKey: string): string {
+  const digest = createHash("sha256").update(canonicalKey).digest("base64url");
+  const key = `pc:${strategy}:${digest}`;
+  return key.length <= MAX_HERMES_PROMPT_CACHE_KEY_LENGTH
+    ? key
+    : key.slice(0, MAX_HERMES_PROMPT_CACHE_KEY_LENGTH);
+}
+
 export function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   companyId: string;
@@ -155,13 +165,13 @@ export function resolveSessionKey(input: {
 }): string | null {
   if (input.strategy === "none") return null;
   if (input.strategy === "agent") {
-    return `paperclip:company:${input.companyId}:agent:${input.agentId}`;
+    return shortSessionKey(input.strategy, `paperclip:company:${input.companyId}:agent:${input.agentId}`);
   }
   if (input.strategy === "run") {
-    return `paperclip:run:${input.runId}`;
+    return shortSessionKey(input.strategy, `paperclip:run:${input.runId}`);
   }
   const issuePart = input.issueId ? `issue:${input.issueId}` : `run:${input.runId}`;
-  return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}`;
+  return shortSessionKey(input.strategy, `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}`);
 }
 
 function stringifyForLog(value: unknown, maxChars = 4_000): string {
