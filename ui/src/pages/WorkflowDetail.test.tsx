@@ -381,6 +381,8 @@ describe("WorkflowDetail page", () => {
     await flushReact();
     await flushReact();
 
+    expect(container.textContent).toContain("Operator input");
+    expect(container.textContent).toContain("latest input");
     expect(container.textContent).toContain("Latest run summary");
     expect(container.textContent).toContain("latest stderr");
     expect(container.textContent).toContain("Latest brief");
@@ -397,10 +399,12 @@ describe("WorkflowDetail page", () => {
     await flushReact();
     await flushReact();
 
+    expect(container.textContent).toContain("older input");
     expect(container.textContent).toContain("Older run summary");
     expect(container.textContent).toContain("boom");
     expect(container.textContent).toContain("older stderr");
     expect(container.textContent).toContain("Older brief");
+    expect(container.textContent).not.toContain("latest input");
     expect(container.textContent).not.toContain("latest stderr");
     expect(container.textContent).not.toContain("Latest brief");
   });
@@ -447,6 +451,7 @@ describe("WorkflowDetail page", () => {
     await flushReact();
     await flushReact();
 
+    expect(container.textContent).toContain("latest input");
     expect(container.textContent).toContain("Latest run summary");
     expect(container.textContent).toContain("latest stderr");
     expect(container.textContent).toContain("Latest brief");
@@ -479,11 +484,34 @@ describe("WorkflowDetail page", () => {
     await flushReact();
     await flushReact();
 
+    expect(container.textContent).toContain("older input");
     expect(container.textContent).toContain("Older run summary");
     expect(container.textContent).toContain("boom");
     expect(container.textContent).toContain("older stderr");
     expect(container.textContent).toContain("Newest run summary");
+    expect(container.textContent).not.toContain("new input");
     expect(container.textContent).not.toContain("new latest stderr");
+  });
+
+  it("shows an empty operator input state when there is no run yet", async () => {
+    getWorkflowMock.mockResolvedValueOnce({
+      ...workflowDetail,
+      latestRun: null,
+      runs: [],
+    });
+
+    await renderAt(container, "/workflows/workflow-1");
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Operator input");
+    expect(container.textContent).toContain(
+      "Run a workflow to inspect the stored operator input here.",
+    );
+    expect(container.textContent).toContain("Operator console");
+    expect(container.textContent).toContain(
+      "Run a workflow to inspect stdout and stderr here.",
+    );
   });
 
   it("shows stderr details by default and still lets the user collapse them", async () => {
