@@ -4396,78 +4396,89 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         sql`(${issues.checkoutRunId} is not null or ${issues.executionRunId} is not null)`,
       );
 
-    const referencedRunIds = [
-      ...new Set(
-        candidates
-          .flatMap((issue) => [issue.checkoutRunId, issue.executionRunId])
-          .filter((id): id is string => !!id),
-      ),
-    ];
-    const runRows =
-      referencedRunIds.length > 0
-        ? await db
-            .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
-            .from(heartbeatRuns)
-            .where(inArray(heartbeatRuns.id, referencedRunIds))
-        : [];
-    const runById = new Map<string, { status: string; updatedAt: Date }>();
-    for (const row of runRows) runById.set(row.id, row);
-
-    const isCleanable = (runId: string | null) => {
-      if (!runId) return true;
-      const run = runById.get(runId);
-      if (!run) return true; // missing run row → no real claim
-      if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
-      return run.updatedAt.getTime() <= Date.now() - ISSUE_EXECUTION_LOCK_TTL_MS;
-    };
-
     for (const issue of candidates) {
-      if (!isCleanable(issue.checkoutRunId) || !isCleanable(issue.executionRunId)) {
-        continue;
-      }
+      const cleared = await db.transaction(async (tx) => {
+        await tx.execute(sql`select id from issues where id = ${issue.id} for update`);
+        const current = await tx
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, issue.id))
+          .then((rows) => rows[0] ?? null);
+        if (!current) return null;
 
-      const updated = await db
-        .update(issues)
-        .set({
-          checkoutRunId: null,
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(issues.id, issue.id),
-            issue.checkoutRunId
-              ? eq(issues.checkoutRunId, issue.checkoutRunId)
-              : isNull(issues.checkoutRunId),
-            issue.executionRunId
-              ? eq(issues.executionRunId, issue.executionRunId)
-              : isNull(issues.executionRunId),
-          ),
-        )
-        .returning({ id: issues.id })
-        .then((rows) => rows[0] ?? null);
+        const runIds = [...new Set([current.checkoutRunId, current.executionRunId].filter((id): id is string => !!id))].sort();
+        if (runIds.length > 0) {
+          await tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(inArray(heartbeatRuns.id, runIds))
+            .orderBy(asc(heartbeatRuns.id))
+            .for("update");
+        }
+        const runRows = runIds.length > 0
+          ? await tx
+              .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
+              .from(heartbeatRuns)
+              .where(inArray(heartbeatRuns.id, runIds))
+          : [];
+        const runById = new Map(runRows.map((run) => [run.id, run]));
+        const isCleanable = (runId: string | null) => {
+          if (!runId) return true;
+          const run = runById.get(runId);
+          if (!run) return true; // missing run row → no real claim
+          if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+          return run.updatedAt.getTime() <= Date.now() - ISSUE_EXECUTION_LOCK_TTL_MS;
+        };
+        if (!isCleanable(current.checkoutRunId) || !isCleanable(current.executionRunId)) return null;
 
-      if (!updated) continue;
+        const updated = await tx
+          .update(issues)
+          .set({
+            checkoutRunId: null,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(issues.id, current.id),
+              current.checkoutRunId
+                ? eq(issues.checkoutRunId, current.checkoutRunId)
+                : isNull(issues.checkoutRunId),
+              current.executionRunId
+                ? eq(issues.executionRunId, current.executionRunId)
+                : isNull(issues.executionRunId),
+            ),
+          )
+          .returning({ id: issues.id });
+        return updated[0] ? { id: updated[0].id, companyId: current.companyId, checkoutRunId: current.checkoutRunId, executionRunId: current.executionRunId, runById } : null;
+      });
+
+      if (!cleared) continue;
 
       result.cleared += 1;
-      result.issueIds.push(updated.id);
+      result.issueIds.push(cleared.id);
 
       await logActivity(db, {
-        companyId: issue.companyId,
+        companyId: cleared.companyId,
         actorType: "system",
         actorId: "system",
         agentId: null,
         runId: null,
         action: "issue.stale_lock_cleared",
         entityType: "issue",
-        entityId: updated.id,
+        entityId: cleared.id,
         details: {
           source: "recovery.sweep_stale_issue_locks",
-          clearedCheckoutRunId: issue.checkoutRunId,
-          clearedExecutionRunId: issue.executionRunId,
-          referencedRunStatuses: Object.fromEntries([...runById].map(([id, run]) => [id, run.status])),
+          clearedCheckoutRunId: cleared.checkoutRunId,
+          clearedExecutionRunId: cleared.executionRunId,
+          referencedRunStatuses: Object.fromEntries([...cleared.runById].map(([id, run]) => [id, run.status])),
         },
       });
     }

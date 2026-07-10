@@ -4140,6 +4140,20 @@ export function issueService(db: Db) {
     return heartbeatRunIsDead(run);
   }
 
+  async function lockHeartbeatRuns(runIds: Array<string | null>, dbOrTx: any = db) {
+    const ids = [...new Set(runIds.filter((id): id is string => Boolean(id)))].sort();
+    if (ids.length === 0) return;
+
+    // Liveness is checked immediately after this lock. Without it, a live run
+    // can refresh updatedAt between the check and the issue lock mutation.
+    await dbOrTx
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, ids))
+      .orderBy(asc(heartbeatRuns.id))
+      .for("update");
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
@@ -6216,6 +6230,7 @@ export function issueService(db: Db) {
           }
         }
         if (options.force && (existing.checkoutRunId || existing.executionRunId)) {
+          await lockHeartbeatRuns([existing.checkoutRunId, existing.executionRunId], tx);
           const [checkoutDead, executionDead] = await Promise.all([
             existing.checkoutRunId ? isTerminalOrMissingHeartbeatRun(existing.checkoutRunId, tx) : Promise.resolve(true),
             existing.executionRunId ? isTerminalOrMissingHeartbeatRun(existing.executionRunId, tx) : Promise.resolve(true),

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -123,6 +123,17 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       updatedAt: new Date(Date.now() - 10 * 60 * 1000),
     });
     return staleRunId;
+  }
+
+  async function waitForHeartbeatLockWait() {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const waiting = await db.execute(sql`
+        select 1 from pg_locks where not granted limit 1
+      `);
+      if (waiting.length > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("release did not wait for the heartbeat row lock");
   }
 
   function agentActor(companyId: string, agentId: string, runId: string): Express.Request["actor"] {
@@ -314,6 +325,47 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       checkoutRunId: liveOwnerRunId,
       executionRunId: liveOwnerRunId,
     });
+  });
+
+  it("does not force-release when the owner refreshes while release waits for its row lock", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const liveOwnerRunId = await seedStaleRunningRun(companyId, agentId);
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Heartbeat refresh during force release",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: liveOwnerRunId,
+      executionRunId: liveOwnerRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(Date.now() - 10 * 60 * 1000),
+    });
+
+    let response!: Promise<any>;
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select id from heartbeat_runs where id = ${liveOwnerRunId} for update`);
+      response = request(createApp(agentActor(companyId, agentId, currentRunId)))
+        .post(`/api/issues/${issueId}/release`)
+        .send({ force: true })
+        .then((res) => res);
+      await waitForHeartbeatLockWait();
+      await tx
+        .update(heartbeatRuns)
+        .set({ updatedAt: new Date() })
+        .where(eq(heartbeatRuns.id, liveOwnerRunId));
+    });
+    const res = await response;
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+
+    const row = await db
+      .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({ checkoutRunId: liveOwnerRunId, executionRunId: liveOwnerRunId });
   });
 
   it("lets the current assignee recover a timed_out stale checkout owner during PATCH", async () => {
