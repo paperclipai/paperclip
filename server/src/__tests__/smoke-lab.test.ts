@@ -258,6 +258,39 @@ describeEmbeddedPostgres("smoke lab service pack and results API", () => {
       .expect(400);
   });
 
+  it("requires a loopback HTTP(S) redirect URI before rendering or completing consent", async () => {
+    const company = await createCompany(db);
+    await enableSmokeLab(db);
+    const app = createRouteApp(db);
+
+    await request(app)
+      .get(`/api/companies/${company.id}/smoke-lab/oauth/authorize`)
+      .query({ client_id: "smoke-client", redirect_uri: "http://paperclip-dev:45439/callback", response_type: "code" })
+      .expect(403);
+
+    await request(app)
+      .post(`/api/companies/${company.id}/smoke-lab/oauth/authorize`)
+      .type("form")
+      .send({
+        client_id: "smoke-client",
+        redirect_uri: "http://127.0.0.2/callback",
+        email: "smoke@paperclip.test",
+        password: "smoke-password",
+      })
+      .expect(302);
+
+    await request(app)
+      .post(`/api/companies/${company.id}/smoke-lab/oauth/authorize`)
+      .type("form")
+      .send({
+        client_id: "smoke-client",
+        redirect_uri: "ftp://localhost/callback",
+        email: "smoke@paperclip.test",
+        password: "smoke-password",
+      })
+      .expect(400);
+  });
+
   it("installs smoke fixtures idempotently into tool access tables", async () => {
     const company = await createCompany(db);
     await enableSmokeLab(db);

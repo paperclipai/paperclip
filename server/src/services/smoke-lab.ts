@@ -82,6 +82,24 @@ function normalizeSmokeOAuthScope(scope?: string) {
   return unique.join(" ");
 }
 
+function assertSmokeOAuthLoopbackRedirectUri(redirectUri: string) {
+  let redirect: URL;
+  try {
+    redirect = new URL(redirectUri);
+  } catch {
+    throw badRequest("redirect_uri must be an absolute URL");
+  }
+  if (!['http:', 'https:'].includes(redirect.protocol)) {
+    throw badRequest("redirect_uri must use http or https");
+  }
+  const hostname = redirect.hostname.toLowerCase();
+  const isIpv4Loopback = /^127(?:\.\d{1,3}){3}$/.test(hostname);
+  if (hostname !== "localhost" && hostname !== "[::1]" && !isIpv4Loopback) {
+    throw forbidden("Smoke OAuth redirect_uri must be loopback-only");
+  }
+  return redirect;
+}
+
 type SmokeLabActorInfo = {
   actorType: "agent" | "user" | "system";
   actorId: string;
@@ -444,6 +462,7 @@ export function smokeLabService(db: Db, options: {
     if (input.responseType && input.responseType !== "code") {
       throw badRequest("Fake OAuth provider only supports response_type=code");
     }
+    assertSmokeOAuthLoopbackRedirectUri(input.redirectUri);
     const hidden = Object.entries({
       client_id: input.clientId,
       redirect_uri: input.redirectUri,
@@ -483,15 +502,7 @@ export function smokeLabService(db: Db, options: {
     if (input.email !== SMOKE_LAB_DEMO_EMAIL || input.password !== SMOKE_LAB_DEMO_PASSWORD) {
       throw forbidden("Invalid smoke OAuth demo credentials");
     }
-    let redirect: URL;
-    try {
-      redirect = new URL(input.redirectUri);
-    } catch {
-      throw badRequest("redirect_uri must be an absolute URL");
-    }
-    if (!["127.0.0.1", "localhost", "[::1]", "::1"].includes(redirect.hostname)) {
-      throw forbidden("Smoke OAuth redirect_uri must be loopback-only");
-    }
+    assertSmokeOAuthLoopbackRedirectUri(input.redirectUri);
     const scope = normalizeSmokeOAuthScope(input.scope);
     const code = smokeFixtureToken("code", {
       clientId: input.clientId,
