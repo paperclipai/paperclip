@@ -1316,10 +1316,7 @@ export function WorkflowDetail() {
 
   return (
     <div className="relative isolate space-y-6">
-      <div className="pointer-events-none absolute inset-x-0 top-[-4rem] -z-10 h-72 bg-[radial-gradient(circle_at_top_left,_rgba(245,158,11,0.08),transparent_35%),radial-gradient(circle_at_top_right,_rgba(6,182,212,0.06),transparent_28%)]" />
-
       <div className="relative overflow-hidden rounded-2xl border border-border/70 bg-card/90 p-5 shadow-sm">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(245,158,11,0.06),transparent_32%),radial-gradient(circle_at_bottom_right,_rgba(6,182,212,0.05),transparent_28%)]" />
         <div className="relative flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
@@ -1419,6 +1416,7 @@ export function WorkflowDetail() {
             {runDetail?.invocation ? (
               <WorkflowInvocationCard runDetail={runDetail} />
             ) : null}
+            <WorkflowRunInputCard runDetail={runDetail} />
             <WorkflowRunConsoleCard runDetail={runDetail} />
 
             <RunHistoryCard
@@ -1934,6 +1932,40 @@ function InvocationField({ label, value }: { label: string; value: string }) {
       </div>
       <div className="mt-1 break-words text-sm text-foreground">{value}</div>
     </div>
+  );
+}
+
+function WorkflowRunInputCard({
+  runDetail,
+}: {
+  runDetail: WorkflowRunDetail | null;
+}) {
+  if (!runDetail || !runDetail.inputMarkdown.trim()) {
+    return (
+      <Card className={workflowPanelClassName}>
+        <CardHeader>
+          <CardTitle className="text-sm font-semibold">Operator input</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="text-sm text-muted-foreground">
+            Run a workflow to inspect the stored operator input here.
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className={workflowPanelClassName}>
+      <CardHeader>
+        <CardTitle className="text-sm font-semibold">Operator input</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <pre className="max-h-80 overflow-y-auto rounded-lg border border-border/70 bg-background/60 p-3 text-sm whitespace-pre-wrap break-words">
+          {runDetail.inputMarkdown}
+        </pre>
+      </CardContent>
+    </Card>
   );
 }
 
