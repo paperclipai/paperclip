@@ -130,6 +130,7 @@ describe("codex execute", () => {
     const sharedCodexHome = path.join(root, "shared-codex-home");
     const paperclipHome = path.join(root, "paperclip-home");
     const mcpStdioPath = path.join(root, "paperclip-mcp-stdio.js");
+    const mcpNodeImportPath = path.join(root, "tsx-loader.mjs");
     const managedCodexHome = path.join(
       paperclipHome,
       "instances",
@@ -145,16 +146,19 @@ describe("codex execute", () => {
     await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"shared"}\n', "utf8");
     await fs.writeFile(path.join(sharedCodexHome, "config.toml"), 'model = "codex-mini-latest"\n', "utf8");
     await fs.writeFile(mcpStdioPath, "// Paperclip MCP test entry\n", "utf8");
+    await fs.writeFile(mcpNodeImportPath, "// Paperclip MCP test loader\n", "utf8");
     await writeFakeCodexCommand(commandPath);
 
     const previousHome = process.env.HOME;
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
     const previousCodexHome = process.env.CODEX_HOME;
     const previousMcpStdioPath = process.env.PAPERCLIP_MCP_STDIO_PATH;
+    const previousMcpNodeImportPath = process.env.PAPERCLIP_MCP_NODE_IMPORT_PATH;
     process.env.HOME = root;
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.CODEX_HOME = sharedCodexHome;
     process.env.PAPERCLIP_MCP_STDIO_PATH = mcpStdioPath;
+    process.env.PAPERCLIP_MCP_NODE_IMPORT_PATH = mcpNodeImportPath;
 
     try {
       const logs: LogEntry[] = [];
@@ -195,6 +199,8 @@ describe("codex execute", () => {
       const configToml = await fs.readFile(path.join(managedCodexHome, "config.toml"), "utf8");
       expect(configToml).toContain("[mcp_servers.paperclip]");
       expect(configToml).toContain(`command = ${JSON.stringify(process.execPath)}`);
+      expect(configToml).toContain(JSON.stringify("--import"));
+      expect(configToml).toContain(JSON.stringify(mcpNodeImportPath));
       expect(configToml).toContain(JSON.stringify(mcpStdioPath));
       expect(logs).toContainEqual(expect.objectContaining({
         stream: "stdout",
@@ -209,6 +215,8 @@ describe("codex execute", () => {
       else process.env.CODEX_HOME = previousCodexHome;
       if (previousMcpStdioPath === undefined) delete process.env.PAPERCLIP_MCP_STDIO_PATH;
       else process.env.PAPERCLIP_MCP_STDIO_PATH = previousMcpStdioPath;
+      if (previousMcpNodeImportPath === undefined) delete process.env.PAPERCLIP_MCP_NODE_IMPORT_PATH;
+      else process.env.PAPERCLIP_MCP_NODE_IMPORT_PATH = previousMcpNodeImportPath;
       await fs.rm(root, { recursive: true, force: true });
     }
   });

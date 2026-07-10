@@ -54,6 +54,7 @@ RUN pnpm --filter "@paperclipai/mcp-server" build
 RUN pnpm --filter "@paperclipai/plugin-llm-wiki" build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 RUN test -f packages/mcp-server/dist/stdio.js || (echo "ERROR: Paperclip MCP build output missing" && exit 1)
+RUN node --import ./server/node_modules/tsx/dist/loader.mjs -e "import('./packages/mcp-server/dist/tools.js')"
 
 FROM base AS production
 WORKDIR /app

@@ -145,6 +145,22 @@ export async function resolveBundledPaperclipMcpStdioPath(
   return null;
 }
 
+export async function resolveBundledPaperclipMcpNodeImportPath(
+  env: NodeJS.ProcessEnv = process.env,
+  moduleDir: string = __moduleDir,
+) {
+  const configured = env.PAPERCLIP_MCP_NODE_IMPORT_PATH?.trim();
+  const candidates = [
+    configured ? path.resolve(configured) : null,
+    path.resolve(moduleDir, "../../../../../server/node_modules/tsx/dist/loader.mjs"),
+    path.resolve(process.cwd(), "server/node_modules/tsx/dist/loader.mjs"),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  for (const candidate of Array.from(new Set(candidates))) {
+    if (await pathExists(candidate)) return candidate;
+  }
+  return null;
+}
+
 async function isLikelyPaperclipRuntimeSkillPath(
   candidate: string,
   skillName: string,
@@ -536,16 +552,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const imageReferenceGuardrail = parseObject(context.paperclipImageReferenceGuardrail);
   const shouldInjectBundledPaperclipMcp =
     imageReferenceGuardrail.required === true && !executionTargetIsRemote && Boolean(authToken);
-  const bundledPaperclipMcpPath = shouldInjectBundledPaperclipMcp
-    ? await resolveBundledPaperclipMcpStdioPath()
-    : null;
-  const resolvedMcpServers = bundledPaperclipMcpPath
+  const [bundledPaperclipMcpPath, bundledPaperclipMcpNodeImportPath] = shouldInjectBundledPaperclipMcp
+    ? await Promise.all([
+        resolveBundledPaperclipMcpStdioPath(),
+        resolveBundledPaperclipMcpNodeImportPath(),
+      ])
+    : [null, null];
+  const bundledPaperclipMcpLaunchReady = Boolean(
+    bundledPaperclipMcpPath && bundledPaperclipMcpNodeImportPath,
+  );
+  const resolvedMcpServers = bundledPaperclipMcpLaunchReady
     ? {
         ...configuredMcpServers,
         paperclip: {
           transport: "stdio" as const,
           command: process.execPath,
-          args: [bundledPaperclipMcpPath],
+          args: ["--import", bundledPaperclipMcpNodeImportPath!, bundledPaperclipMcpPath!],
           timeoutMs: 30_000,
           allowedTools: ["paperclipGenerateIssueImage"],
         },
@@ -615,10 +637,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       "[paperclip] Removed stale paperclip-managed MCP servers from Codex config.toml.\n",
     );
   }
-  if (shouldInjectBundledPaperclipMcp && !bundledPaperclipMcpPath) {
+  if (shouldInjectBundledPaperclipMcp && !bundledPaperclipMcpLaunchReady) {
     await onLog(
       "stderr",
-      "[paperclip] Hard image-reference gate is active, but the bundled Paperclip MCP server is unavailable. Use the authenticated /api/issues/{issueId}/image-generations endpoint directly; prompt-only generation will not pass completion.\n",
+      "[paperclip] Hard image-reference gate is active, but the bundled Paperclip MCP server or its runtime loader is unavailable. Use the authenticated /api/issues/{issueId}/image-generations endpoint directly; prompt-only generation will not pass completion.\n",
     );
   }
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
