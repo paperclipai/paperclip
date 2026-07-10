@@ -601,7 +601,7 @@ function usePluginModuleLoader(contributions: PluginUiContribution[] | undefined
 
     // Include modules already loading in another slot host. loadPluginModule
     // will reuse the in-flight promise, and this hook must subscribe to its
-    // completion so every page/sidebar surface rerenders together.
+    // completion so every mounted page/sidebar surface rerenders together.
     const pending = contributions.filter((c) => {
       const state = pluginLoadStates.get(buildPluginModuleKey(c));
       return shouldSubscribeToPluginModuleLoad(state);
