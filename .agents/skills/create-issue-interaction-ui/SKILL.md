@@ -10,7 +10,7 @@ description: >
 
 This skill walks a Paperclip contributor through introducing a new issue-thread
 interaction kind from shared contract to issue-detail wiring, helpers, and
-docs. It is intentionally a developer/maintainer skill: the audience is a
+docs. It is intentionally a Developer/maintainer skill: the audience is a
 human or coding agent making code changes inside `paperclipai/paperclip`, not
 the operational agents that run inside a deployed Paperclip company.
 

@@ -70,7 +70,7 @@ describe("paperclip skill utils", () => {
     const normalizedSkillBody = skillBody.replace(/\s+/g, " ");
 
     expect(skillBody).toContain("name: create-issue-interaction-ui");
-    expect(skillBody).toMatch(/developer\/maintainer skill/i);
+    expect(skillBody).toContain("Developer/maintainer skill");
     expect(normalizedSkillBody).toContain("Do NOT install this on production Paperclip agents");
     expect(skillBody).toContain("packages/shared/src/constants.ts");
     expect(skillBody).toContain("server/src/services/issue-thread-interactions.ts");
