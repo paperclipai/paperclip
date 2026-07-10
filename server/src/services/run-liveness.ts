@@ -75,6 +75,8 @@ const RUNNABLE_RE =
 const PLAN_TASK_TITLE_RE = /\b(?:plan|planning|analysis|investigation|research|report|proposal|design doc|write-?up)\b/i;
 const PLAN_TASK_DESCRIPTION_RE =
   /\b(?:create|write|produce|draft|update|revise|prepare)\s+(?:a\s+|the\s+)?(?:plan|analysis|investigation|research report|report|proposal|design doc|write-?up)\b/i;
+const CODEX_RMCP_INVALID_GRANT_NOISE_RE =
+  /^ERROR\s+rmcp::transport::worker:\s+worker quit with fatal:\s+Transport channel closed,\s+when Auth\(TokenRefreshFailed\("Server returned error response:\s+invalid_grant:\s+Invalid refresh token"\)\)$/i;
 
 function compactReason(reason: string) {
   return reason.length <= 500 ? reason : `${reason.slice(0, 497)}...`;
@@ -216,6 +218,7 @@ function isNoisyTranscriptLine(line: string) {
   const trimmed = line.trim();
   if (!trimmed) return true;
   return (
+    CODEX_RMCP_INVALID_GRANT_NOISE_RE.test(trimmed) ||
     /^(?:command|status|exit_code|tool|tool_call|tool_result|stdout|stderr|event|payload|session|cwd|ref_id)\s*:/i.test(trimmed) ||
     /^(?:\{|\[).{0,80}(?:tool|event|stdout|stderr|cmd|command|payload)/i.test(trimmed) ||
     /^\$?\s*(?:rg|sed|cat|ls|git|pnpm|npm|yarn|curl|node|python)\b/i.test(trimmed)
