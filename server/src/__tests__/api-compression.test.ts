@@ -206,7 +206,7 @@ describe("API compression middleware", () => {
     expect(JSON.parse(res.body.toString("utf8"))).toHaveLength(500);
   });
 
-  it("delivers small writeHead+Uint8Array auth responses byte-for-byte (PAP-13466)", async () => {
+  it("delivers small writeHead+Uint8Array auth responses byte-for-byte", async () => {
     const res = await requestRaw(buildApp(), "/api/auth-bridge", {
       "accept-encoding": "gzip, deflate",
     });
@@ -217,7 +217,7 @@ describe("API compression middleware", () => {
     expect(JSON.parse(res.body.toString("utf8")).user.email).toBe("dotta@example.test");
   });
 
-  it("does not drop the connection for large writeHead+Uint8Array auth responses (PAP-13466)", async () => {
+  it("does not drop the connection for large writeHead+Uint8Array auth responses", async () => {
     const res = await requestRaw(buildApp(), "/api/auth-bridge?pad=2000", {
       "accept-encoding": "gzip, deflate",
     });
