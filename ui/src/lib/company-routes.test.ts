@@ -72,6 +72,15 @@ describe("company routes", () => {
     expect(toCompanyRelativePath("/PAP/artifacts")).toBe("/artifacts");
   });
 
+  it("recognizes Decisions without retaining the legacy attention route", () => {
+    expect(isBoardPathWithoutPrefix("/decisions")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/decisions")).toBeNull();
+    expect(applyCompanyPrefix("/decisions", "PAP")).toBe("/PAP/decisions");
+
+    expect(isBoardPathWithoutPrefix("/attention")).toBe(false);
+    expect(extractCompanyPrefixFromPath("/attention")).toBe("ATTENTION");
+  });
+
   it("treats /timeline as a board route that needs a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/timeline")).toBe(true);
     expect(extractCompanyPrefixFromPath("/timeline")).toBeNull();
