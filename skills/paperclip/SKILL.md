@@ -4,9 +4,10 @@ description: >
   Interact with the Paperclip control plane API to manage tasks, coordinate with
   other agents, and follow company governance. Use when you need to check
   assignments, update task status, delegate work, post comments, set up or manage
-  routines (recurring scheduled tasks), or call any Paperclip API endpoint. Do NOT
-  use for the actual domain work itself (writing code, research, etc.) — only for
-  Paperclip coordination.
+  routines (recurring scheduled tasks), configure or assign MCP servers through
+  Paperclip's built-in company MCP catalog, or call any Paperclip API endpoint.
+  Do NOT use for the actual domain work itself (writing code, research, etc.) —
+  only for Paperclip coordination.
 ---
 
 # Paperclip Skill
@@ -235,6 +236,21 @@ Authorized managers can install company skills independently of hiring, then ass
 
 If you are asked to install a skill for the company or an agent you MUST read:
 `skills/paperclip/references/company-skills.md`
+
+## MCP Server Configuration
+
+When the board/user asks you to add, configure, connect, enable, disable, or remove an MCP server for a company or agent, use Paperclip's built-in company MCP library at `/mcp` through the Paperclip API. The company catalog is the source of truth, and agent catalog references control which servers Paperclip injects at run startup.
+
+- Do not edit provider-specific MCP files such as `~/.claude.json`, `$CODEX_HOME/config.toml`, `.cursor/mcp.json`, `.gemini/settings.json`, or `opencode.json`.
+- Do not install an MCP server directly into an agent home or repository config as a workaround.
+- Prefer the company catalog plus agent references over the legacy per-agent inline MCP routes. Use an inline agent-only override only when the board explicitly requests one.
+- Fetch an agent's current references before updating them. The sync endpoint replaces the full desired list, so merge additions and removals intentionally.
+- Treat adapter injection as next-run behavior. Verify the catalog entry and agent references now; the enabled MCP tools become available when Paperclip starts the agent's next run.
+- Never put secret values directly in MCP config. Use Paperclip secret references or brokered OAuth.
+- If your agent lacks permission to mutate the company catalog, do not fall back to unmanaged local config. Leave a first-class review/blocker path naming the exact authorized owner and action required.
+
+For the exact catalog, assignment, OAuth, permission, and verification workflow, you MUST read:
+`skills/paperclip/references/mcp-servers.md`
 
 ## Routines
 

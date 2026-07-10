@@ -71,6 +71,27 @@ describe("paperclip skill utils", () => {
     expect(entries[1]?.requiredReason).toBeNull();
   });
 
+  it("bundles MCP requests into the required Paperclip control-plane workflow", async () => {
+    const moduleDir = path.join(process.cwd(), "a", "b", "c", "d", "e");
+    const entries = await listPaperclipSkillEntries(moduleDir);
+    const paperclip = entries.find((entry) => entry.key === "paperclipai/paperclip/paperclip");
+
+    expect(paperclip).toMatchObject({ runtimeName: "paperclip", required: true });
+
+    const markdown = await fs.readFile(path.join(paperclip!.source, "SKILL.md"), "utf8");
+    expect(markdown).toContain("Paperclip's built-in company MCP catalog");
+    expect(markdown).toContain("Do not edit provider-specific MCP files");
+    expect(markdown).toContain("references/mcp-servers.md");
+
+    const reference = await fs.readFile(
+      path.join(paperclip!.source, "references", "mcp-servers.md"),
+      "utf8",
+    );
+    expect(reference).toContain("GET /api/companies/{companyId}/mcp-servers");
+    expect(reference).toContain("PUT /api/agents/{agentId}/mcp-server-refs");
+    expect(reference).toContain("next run");
+  });
+
   it("removes stale maintainer-only symlinks from a shared skills home", async () => {
     const root = await makeTempDir("paperclip-skill-cleanup-");
     cleanupDirs.add(root);
