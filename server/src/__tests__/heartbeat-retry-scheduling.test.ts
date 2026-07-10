@@ -587,6 +587,69 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(issue?.executionRunId).toBe(scheduled.run.id);
   });
 
+  it("coalesces duplicate accepted interaction continuation infra retry schedules", async () => {
+    const { issueId, runId, now } = await seedMaxTurnFixture({ issueStatus: "in_review" });
+    const interactionId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        error: "workspace validation failed before dispatch",
+        errorCode: "workspace_validation_failed",
+        resultJson: {},
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_commented",
+          mutation: "interaction",
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const retryOptions = {
+      now,
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: 3,
+    };
+    const [first, second] = await Promise.all([
+      heartbeat.scheduleBoundedRetry(runId, retryOptions),
+      heartbeat.scheduleBoundedRetry(runId, retryOptions),
+    ]);
+
+    expect(first.outcome).toBe("scheduled");
+    expect(second.outcome).toBe("scheduled");
+    if (first.outcome !== "scheduled" || second.outcome !== "scheduled") return;
+    expect(new Set([first.run.id, second.run.id]).size).toBe(1);
+
+    const retryRuns = await db
+      .select({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.retryOfRunId, runId),
+        eq(heartbeatRuns.scheduledRetryReason, INTERACTION_CONTINUATION_INFRA_RETRY_REASON),
+        eq(heartbeatRuns.scheduledRetryAttempt, 1),
+      ));
+    expect(retryRuns).toHaveLength(1);
+
+    const wakeups = await db
+      .select({
+        id: agentWakeupRequests.id,
+        coalescedCount: agentWakeupRequests.coalescedCount,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, INTERACTION_CONTINUATION_INFRA_WAKE_REASON));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({
+      id: retryRuns[0]?.wakeupRequestId,
+      coalescedCount: 1,
+    });
+    expect(wakeups[0]?.idempotencyKey).toContain(`:${issueId}:${runId}:1`);
+  });
+
   it.each([
     {
       name: "renamed branch",
@@ -841,7 +904,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .update(issues)
       .set({
         projectId,
-        executionWorkspaceId: currentWorkspaceId,
+        executionWorkspaceId: foreignWorkspaceId,
         executionWorkspacePreference: "reuse_existing",
         executionWorkspaceSettings: { mode: "isolated_workspace" },
       })
@@ -888,7 +951,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue).toMatchObject({
       executionRunId: scheduled.run.id,
-      executionWorkspaceId: currentWorkspaceId,
+      executionWorkspaceId: foreignWorkspaceId,
       executionWorkspacePreference: "reuse_existing",
     });
 

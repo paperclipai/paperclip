@@ -8922,9 +8922,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
-    const maxTurnContinuationIdempotencyKey = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
+    const continuationRetryIdempotencyKey = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
       ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
-      : null;
+      : retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
+        ? `interaction-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
+        : null;
 
     type ScheduledRetryTransactionResult =
       | {
@@ -8947,6 +8949,61 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
 
     const scheduleResult = await db.transaction(async (tx): Promise<ScheduledRetryTransactionResult> => {
+      if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
+        if (issueId) {
+          await tx.execute(
+            sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
+          );
+        } else {
+          await tx.execute(
+            sql`select id from heartbeat_runs where company_id = ${run.companyId} and id = ${run.id} for update`,
+          );
+        }
+
+        const existingContinuation = await tx
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, run.companyId),
+              eq(heartbeatRuns.retryOfRunId, run.id),
+              eq(heartbeatRuns.scheduledRetryReason, retryReason),
+              eq(heartbeatRuns.scheduledRetryAttempt, schedule.attempt),
+              inArray(heartbeatRuns.status, [...MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES]),
+              issueId
+                ? sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`
+                : sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' is null`,
+            ),
+          )
+          .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+        if (existingContinuation) {
+          if (existingContinuation.wakeupRequestId) {
+            const existingWakeup = await tx
+              .select({ coalescedCount: agentWakeupRequests.coalescedCount })
+              .from(agentWakeupRequests)
+              .where(eq(agentWakeupRequests.id, existingContinuation.wakeupRequestId))
+              .then((rows) => rows[0] ?? null);
+
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                coalescedCount: (existingWakeup?.coalescedCount ?? 0) + 1,
+                updatedAt: now,
+              })
+              .where(eq(agentWakeupRequests.id, existingContinuation.wakeupRequestId));
+          }
+
+          return {
+            outcome: "scheduled",
+            run: existingContinuation,
+            reusedExisting: true,
+          };
+        }
+      }
+
       if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
         if (issueId) {
           await tx.execute(
@@ -9099,7 +9156,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
-          idempotencyKey: maxTurnContinuationIdempotencyKey,
+          idempotencyKey: continuationRetryIdempotencyKey,
           updatedAt: now,
         })
         .returning()
@@ -9171,7 +9228,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           const workspaceBelongsToIssue =
             failedWorkspace
               ? failedWorkspace.sourceIssueId === issueId
-                || issueWorkspace.executionWorkspaceId === failedWorkspace.id
               : false;
 
           if (failedWorkspace && workspaceBelongsToIssue) {
@@ -9274,11 +9330,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "info",
-        message: `Reused existing max-turn continuation ${retryRun.scheduledRetryAttempt}/${schedule.maxAttempts}`,
+        message: `Reused existing continuation retry ${retryRun.scheduledRetryAttempt}/${schedule.maxAttempts}`,
         payload: {
           retryRunId: retryRun.id,
           retryReason,
-          idempotencyKey: maxTurnContinuationIdempotencyKey,
+          idempotencyKey: continuationRetryIdempotencyKey,
           scheduledRetryAttempt: retryRun.scheduledRetryAttempt,
           scheduledRetryAt: dueAt.toISOString(),
         },
