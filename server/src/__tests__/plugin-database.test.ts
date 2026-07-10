@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -263,6 +263,9 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     };
     const pluginId = await installPluginRecord(pluginManifest);
     const packageRoot = path.resolve(process.cwd(), "packages/plugins/plugin-llm-wiki");
+    const expectedMigrationKeys = (await readdir(path.join(packageRoot, pluginManifest.database.migrationsDir)))
+      .filter((entry) => entry.endsWith(".sql"))
+      .sort((a, b) => a.localeCompare(b));
 
     await pluginDatabaseService(db).applyMigrations(pluginId, pluginManifest, packageRoot);
 
@@ -282,7 +285,8 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
       .from(pluginMigrations)
       .where(and(eq(pluginMigrations.pluginId, pluginId), eq(pluginMigrations.status, "applied")));
 
-    expect(migrations).toHaveLength(3);
+    expect(migrations.map((migration) => migration.migrationKey).sort((a, b) => a.localeCompare(b)))
+      .toEqual(expectedMigrationKeys);
     expect(tables).toContain("wiki_spaces");
     expect(tables).toContain("paperclip_distillation_runs");
   });
@@ -484,10 +488,10 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
       pluginId,
       expect.objectContaining({
         databaseNamespace: namespace,
-        env: {
+        env: expect.objectContaining({
           PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
           PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
-        },
+        }),
         manifest: expect.objectContaining({
           database: expect.objectContaining({ coreReadTables: ["companies"] }),
         }),
