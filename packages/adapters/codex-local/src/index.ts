@@ -5,9 +5,28 @@ export const label = "Codex";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 
-export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.5";
+export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.6-terra";
+export const DEFAULT_CODEX_LOCAL_REASONING_EFFORT = "xhigh";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.5", "gpt-5.4"] as const;
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+export function applyCodexLocalWorkerDefaults(
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...config };
+  if (!nonEmptyString(next.model)) next.model = DEFAULT_CODEX_LOCAL_MODEL;
+  if (
+    !nonEmptyString(next.modelReasoningEffort) &&
+    !nonEmptyString(next.reasoningEffort)
+  ) {
+    next.modelReasoningEffort = DEFAULT_CODEX_LOCAL_REASONING_EFFORT;
+  }
+  return next;
+}
 
 function normalizeModelId(model: string | null | undefined): string {
   return typeof model === "string" ? model.trim() : "";
@@ -39,6 +58,7 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
 
 export const models = [
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
+  { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
   { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
@@ -73,8 +93,8 @@ Core fields:
 - engine (string, optional): leave unset/auto to use ACP when prerequisites pass and fall back to the Codex CLI with diagnostics. Use "cli" to pin the CLI lane or "acp" to require ACP.
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to stdin prompt at runtime
-- model (string, optional): Codex model id
-- modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high|xhigh) passed via -c model_reasoning_effort=...
+- model (string, optional): Codex model id; defaults to gpt-5.6-terra
+- modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high|xhigh) passed via -c model_reasoning_effort=...; defaults to xhigh
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
 - fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.5, GPT-5.4 and passed through for manual model IDs
