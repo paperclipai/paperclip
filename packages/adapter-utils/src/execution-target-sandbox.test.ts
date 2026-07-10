@@ -95,8 +95,8 @@ describe("sandbox adapter execution targets", () => {
     ].join("\n");
   }
 
-  async function waitForCondition(predicate: () => boolean, message: string): Promise<void> {
-    const deadline = Date.now() + 1000;
+  async function waitForCondition(predicate: () => boolean, message: string, timeoutMs = 1000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (predicate()) return;
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -283,6 +283,96 @@ describe("sandbox adapter execution targets", () => {
       expect(result.stdout).toBe("early-out\n");
       expect(result.stderr).toBe("early-err\n");
     } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("streams sandbox process session output before the remote child exits", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "streaming-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.on('data', (chunk) => {",
+        "  if (chunk.includes('ping')) {",
+        "    process.stdout.write('delta:ping\\n');",
+        "    process.stderr.write('trace:ping\\n');",
+        "  }",
+        "  if (chunk.includes('finish')) process.exit(0);",
+        "});",
+        "process.stdin.resume();",
+      ].join("\n"),
+      "utf8",
+    );
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-stream",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    const child = spawn(bridge!.agentCommand, [], { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let exited = false;
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const exitPromise = new Promise<number | null>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error("Timed out waiting for streaming process session proxy."));
+      }, 5000);
+      child.on("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.on("exit", (exitCode) => {
+        exited = true;
+        clearTimeout(timeout);
+        resolve(exitCode);
+      });
+    });
+
+    try {
+      child.stdin.write("ping\n");
+      await waitForCondition(
+        () => stdout.includes("delta:ping\n") && stderr.includes("trace:ping\n"),
+        "Timed out waiting for live process session output.",
+        3000,
+      );
+      expect(exited).toBe(false);
+
+      child.stdin.end("finish\n");
+      await expect(exitPromise).resolves.toBe(0);
+    } finally {
+      if (!exited) {
+        child.kill("SIGKILL");
+        await exitPromise.catch(() => undefined);
+      }
       await bridge?.stop();
     }
   });
