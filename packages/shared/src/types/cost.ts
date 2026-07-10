@@ -140,7 +140,7 @@ export interface CostTimeAllocationProjectRow extends CostTimeAllocationRow {
 }
 
 export interface CostTimeAllocationAgentRow extends CostTimeAllocationRow {
-  agentId: string;
+  agentId: string | null;
   agentName: string | null;
   agentStatus: string | null;
 }

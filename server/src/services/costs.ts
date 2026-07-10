@@ -426,7 +426,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             costCents: costCentsExpr,
           })
           .from(costEvents)
-          .innerJoin(
+          .leftJoin(
             agents,
             and(eq(costEvents.agentId, agents.id), eq(costEvents.companyId, agents.companyId)),
           )

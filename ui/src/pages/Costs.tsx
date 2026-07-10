@@ -5,6 +5,7 @@ import type {
   CostByAgentModel,
   CostByBiller,
   CostByProviderModel,
+  CostTimeAllocationAgentRow,
   CostTimeAllocationRow,
   CostWindowSpendRow,
   FinanceEvent,
@@ -170,6 +171,10 @@ export function formatDuration(minutes: number) {
 
 export function formatHours(hours: number) {
   return `${Number(hours.toFixed(2))}h`;
+}
+
+export function timeAllocationAgentName(row: CostTimeAllocationAgentRow) {
+  return row.agentName ?? row.agentId ?? "Unattributed agent";
 }
 
 export function TimeAllocationTable<T extends CostTimeAllocationRow>({
@@ -948,7 +953,7 @@ export function Costs() {
                   <MetricTile
                     label="Display cost"
                     value={formatCents(timeAllocationData?.costCents ?? 0)}
-                    subtitle="Time markers are excluded unless their cost is zero"
+                    subtitle="Only zero-cent time markers appear here; nonzero time-coded events remain in normal cost accounting."
                     icon={Coins}
                   />
                 </CardContent>
@@ -966,7 +971,7 @@ export function Costs() {
                   title="By agent"
                   description="Minutes and hours grouped by reporting agent."
                   rows={timeAllocationData?.byAgent ?? []}
-                  nameForRow={(row) => row.agentName ?? row.agentId}
+                  nameForRow={timeAllocationAgentName}
                   emptyMessage="No agent time allocation events yet."
                 />
               </div>

@@ -4,7 +4,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { costsApi } from "../api/costs";
-import { TimeAllocationTable, formatDuration, formatHours, timeAllocationQueryOptions } from "./Costs";
+import costsSource from "./Costs.tsx?raw";
+import {
+  TimeAllocationTable,
+  formatDuration,
+  formatHours,
+  timeAllocationAgentName,
+  timeAllocationQueryOptions,
+} from "./Costs";
 
 async function act(callback: () => void | Promise<void>) {
   flushSync(() => {
@@ -106,6 +113,32 @@ describe("time allocation cost UI", () => {
     expect(container.textContent).toContain("1.25h");
   });
 
+  it("renders unmatched agent rows as unattributed", async () => {
+    await act(() => {
+      root.render(
+        <TimeAllocationTable
+          title="By agent"
+          description="Minutes and hours grouped by reporting agent."
+          rows={[
+            {
+              agentId: null,
+              agentName: null,
+              agentStatus: null,
+              minutes: 20,
+              hours: 1 / 3,
+              eventCount: 1,
+              costCents: 0,
+            },
+          ]}
+          nameForRow={timeAllocationAgentName}
+          emptyMessage="No agent time allocation events yet."
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Unattributed agent");
+  });
+
   it("renders a clear empty state", async () => {
     await act(() => {
       root.render(
@@ -120,5 +153,13 @@ describe("time allocation cost UI", () => {
     });
 
     expect(container.textContent).toContain("No agent time allocation events yet.");
+  });
+
+  it("explains zero-cent markers and labels unmatched agents without exposing foreign details", () => {
+    expect(costsSource).toContain(
+      'subtitle="Only zero-cent time markers appear here; nonzero time-coded events remain in normal cost accounting."',
+    );
+    expect(costsSource).toContain("nameForRow={timeAllocationAgentName}");
+    expect(costsSource).not.toContain('subtitle="Time markers are excluded unless their cost is zero"');
   });
 });

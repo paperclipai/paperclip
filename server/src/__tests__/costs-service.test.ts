@@ -1016,7 +1016,15 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
         minutes: 15,
       }),
     ]);
-    expect(allocation.byAgent).toEqual([]);
+    expect(allocation.byAgent).toEqual([
+      expect.objectContaining({
+        agentId: null,
+        agentName: null,
+        agentStatus: null,
+        minutes: 15,
+        eventCount: 1,
+      }),
+    ]);
     expect(JSON.stringify(allocation)).not.toContain(otherCompanyId);
     expect(JSON.stringify(allocation)).not.toContain("Other Company");
   });
