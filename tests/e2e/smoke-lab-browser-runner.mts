@@ -16,6 +16,13 @@
  *   SMOKE_BASE=http://127.0.0.1:3211   target local_trusted, non-prod instance
  *   SMOKE_COMPANY_ID=<uuid>            reuse a company (else creates one)
  *   SMOKE_SHOT_DIR=/tmp/pap13350-shots screenshot output dir
+ *   SMOKE_ONLY=P1,P3                   restrict to a subset of catalog paths
+ *                                      (budget-bounding for the daily D5 routine;
+ *                                      selects scenarios, does NOT fork the steps)
+ *   SMOKE_TRIGGER=manual|ci|routine    smoke_run trigger (default "manual")
+ *   SMOKE_FORCE_FAIL=<detail>          inject one synthetic failing step on the
+ *                                      first scenario — the canonical self-test for
+ *                                      the §D5 routine's file-on-failure wiring.
  */
 import { promises as fs } from "node:fs";
 import { ciSmokeLabScenarios } from "./smoke-lab.catalog.ts";
@@ -26,6 +33,11 @@ const PW = "/srv/paperclip/home/paperclipai/paperclip/node_modules/.pnpm/playwri
 const WRAP = "/srv/paperclip/home/paperclipai/paperclip/.paperclip/browser-runtime/chromium-arm64/bin/chromium-agent-browser";
 const DEMO_EMAIL = "smoke@paperclip.test";
 const DEMO_PASSWORD = "smoke-password";
+const ONLY = (process.env.SMOKE_ONLY ?? "")
+  .split(",")
+  .map((s) => s.trim().toUpperCase())
+  .filter(Boolean);
+const TRIGGER = process.env.SMOKE_TRIGGER ?? "manual";
 
 type Json = Record<string, any>;
 
@@ -85,9 +97,14 @@ async function main() {
   });
   console.log(`company=${companyId} prefix=${prefix} scout=${scout.id}`);
 
+  const scenarios = ONLY.length
+    ? ciSmokeLabScenarios.filter((s) => ONLY.includes(s.path))
+    : ciSmokeLabScenarios;
+  assert(scenarios.length, `SMOKE_ONLY=${ONLY.join(",")} matched no catalog paths`);
+
   const run = (await api("POST", `/api/companies/${companyId}/smoke-lab/runs`, {
-    trigger: "manual",
-    summary: { catalog: "tests/e2e/smoke-lab.catalog.ts", driver: "agent-browser (real chromium)", track: "D4 agent-driven browser", scenarioCount: ciSmokeLabScenarios.length },
+    trigger: TRIGGER,
+    summary: { catalog: "tests/e2e/smoke-lab.catalog.ts", driver: "agent-browser (real chromium)", track: "D4 agent-driven browser", scenarioCount: scenarios.length, only: ONLY.length ? ONLY : undefined },
   })).run;
   console.log(`smoke_run=${run.id}`);
 
@@ -138,7 +155,7 @@ async function main() {
     assert((a.events?.length ?? 0) > 0, `audit row for ${search}`);
   };
 
-  for (const scenario of ciSmokeLabScenarios) {
+  for (const scenario of scenarios) {
     console.log(`--- ${scenario.path}: ${scenario.title} ---`);
     // Fixtures (board UI action; idempotent). Start services then install.
     const services = (await api("POST", `/api/companies/${companyId}/smoke-lab/services/start`)).services;
@@ -286,10 +303,20 @@ async function main() {
     });
   }
 
+  // Optional injected failure — the canonical self-test for the §D5 routine's
+  // file-on-failure wiring. Records a real fail step + screenshot so the wrapper
+  // sees exit 2 + a `<path>-<step>-failed.png` to attach.
+  if (process.env.SMOKE_FORCE_FAIL) {
+    const target = scenarios[0];
+    await doStep(target, "forced-failure", async () => {
+      throw new Error(`SMOKE_FORCE_FAIL: ${process.env.SMOKE_FORCE_FAIL}`);
+    });
+  }
+
   // Finalize run + capture the run in the live Smoke Lab UI.
   await api("PATCH", `/api/companies/${companyId}/smoke-lab/runs/${run.id}`, {
     status: failed.length ? "failed" : "passed",
-    summary: { catalog: "tests/e2e/smoke-lab.catalog.ts", driver: "agent-browser (real chromium)", scenarioCount: ciSmokeLabScenarios.length, failed },
+    summary: { catalog: "tests/e2e/smoke-lab.catalog.ts", driver: "agent-browser (real chromium)", scenarioCount: scenarios.length, only: ONLY.length ? ONLY : undefined, failed },
   });
   await page.goto(`${BASE}/${prefix}/apps/advanced/smoke-lab`, { waitUntil: "networkidle" });
   await page.waitForTimeout(1500);
