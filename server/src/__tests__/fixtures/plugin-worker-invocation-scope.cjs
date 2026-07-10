@@ -110,13 +110,13 @@ rl.on("line", (line) => {
       id: message.id,
       result: {
         ok: true,
-        supportedMethods: ["getData", "performAction", "resourceLifecycle", "workspaceOperation", "workspacePrepare", "executeTool"],
+        supportedMethods: ["getData", "performAction", "resourceLifecycle", "workspaceOperation", "workspacePrepare", "executeTool", "runJob"],
       },
     });
     return;
   }
 
-  if (["getData", "performAction", "resourceLifecycle", "workspaceOperation", "workspacePrepare", "executeTool"].includes(method)) {
+  if (["getData", "performAction", "resourceLifecycle", "workspaceOperation", "workspacePrepare", "executeTool", "runJob"].includes(method)) {
     sendNestedHostRequest(message, message.paperclipInvocation?.id);
     return;
   }
