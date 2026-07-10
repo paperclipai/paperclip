@@ -1646,7 +1646,7 @@ function CostsSection({
  * replace the URL with the new canonical reference. Returns true when a
  * redirect happened.
  */
-function syncAgentRouteAfterRename(
+export function syncAgentRouteAfterRename(
   queryClient: QueryClient,
   navigate: NavigateFunction,
   previous: { id: string; urlKey?: string | null; name?: string | null },
