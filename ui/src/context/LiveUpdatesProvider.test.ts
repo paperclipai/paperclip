@@ -100,7 +100,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
-  it("keeps heartbeat progress invalidation scoped to live run data", () => {
+  it("keeps heartbeat progress invalidation scoped away from hot list queries", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
       invalidateQueries: (input: unknown) => {
@@ -118,19 +118,19 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     );
 
     expect(invalidations).toContainEqual({
-      queryKey: queryKeys.liveRuns("company-1"),
-    });
-    expect(invalidations).toContainEqual({
-      queryKey: queryKeys.heartbeats("company-1"),
-    });
-    expect(invalidations).toContainEqual({
-      queryKey: queryKeys.agents.list("company-1"),
-    });
-    expect(invalidations).toContainEqual({
       queryKey: queryKeys.agents.detail("agent-1"),
     });
-    expect(invalidations).toContainEqual({
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.liveRuns("company-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.heartbeats("company-1"),
+    });
+    expect(invalidations).not.toContainEqual({
       queryKey: queryKeys.heartbeats("company-1", "agent-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.agents.list("company-1"),
     });
     expect(invalidations).not.toContainEqual({
       queryKey: queryKeys.dashboard("company-1"),

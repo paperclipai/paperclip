@@ -214,20 +214,20 @@ function readEvidenceString(value: unknown): string | null {
   return trimmed.length > 240 ? `${trimmed.slice(0, 237)}…` : trimmed;
 }
 
-function pickEvidenceSummary(action: IssueRecoveryAction): string | null {
+// Human-sentence evidence sources render as prose; code-shaped sources
+// (error codes, statuses) stay in the mono treatment used for run ids.
+const PROSE_EVIDENCE_KEYS = ["summary", "detectedProgressSummary", "missingDisposition", "retryReason"] as const;
+const CODE_EVIDENCE_KEYS = ["latestRunErrorCode", "latestRunStatus", "latestIssueStatus"] as const;
+
+function pickEvidenceSummary(action: IssueRecoveryAction): { text: string; isCode: boolean } | null {
   const evidence = action.evidence ?? {};
-  const candidates = [
-    "summary",
-    "detectedProgressSummary",
-    "missingDisposition",
-    "retryReason",
-    "latestRunErrorCode",
-    "latestRunStatus",
-    "latestIssueStatus",
-  ] as const;
-  for (const key of candidates) {
+  for (const key of PROSE_EVIDENCE_KEYS) {
     const next = readEvidenceString(evidence[key]);
-    if (next) return next;
+    if (next) return { text: next, isCode: false };
+  }
+  for (const key of CODE_EVIDENCE_KEYS) {
+    const next = readEvidenceString(evidence[key]);
+    if (next) return { text: next, isCode: true };
   }
   return null;
 }
@@ -1075,7 +1075,13 @@ export function IssueRecoveryActionCard({
         ) : null}
         <MetadataRow label="Evidence">
           {evidenceSummary ? (
-            <span className="break-words font-mono text-(length:--text-micro) text-foreground/80">{evidenceSummary}</span>
+            evidenceSummary.isCode ? (
+              <span className="break-words font-mono text-(length:--text-micro) text-foreground/80">
+                {evidenceSummary.text}
+              </span>
+            ) : (
+              <span className="text-xs leading-5 text-foreground/80">{evidenceSummary.text}</span>
+            )
           ) : (
             <MissingValue />
           )}

@@ -12,6 +12,7 @@ import {
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,
 } from "./successful-run-handoff.js";
+import { UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON } from "@paperclipai/adapter-utils/server-utils";
 
 const run = {
   id: "run-1",
@@ -49,6 +50,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasActiveExecutionPath: false,
     hasQueuedWake: false,
     hasPendingInteractionOrApproval: false,
+    hasPersistedMonitor: false,
     hasExplicitBlockerPath: false,
     hasOpenRecoveryIssue: false,
     hasPauseHold: false,
@@ -114,9 +116,24 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "pending interaction or approval owns the next action",
     });
+    expect(decide({ hasPersistedMonitor: true })).toEqual({
+      kind: "skip",
+      reason: "persisted issue monitor owns the next action",
+    });
     expect(decide({ hasActiveExecutionPath: true })).toEqual({
       kind: "skip",
       reason: "issue already has an active execution path",
+    });
+  });
+
+  it("does not treat killed background-task evidence as a missing live path when a durable monitor owns the wait", () => {
+    expect(decide({
+      detectedProgressSummary: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+      livenessState: "needs_followup",
+      hasPersistedMonitor: true,
+    })).toEqual({
+      kind: "skip",
+      reason: "persisted issue monitor owns the next action",
     });
   });
 
@@ -124,6 +141,10 @@ describe("successful run handoff decision", () => {
     expect(decide({ hasQueuedWake: true })).toEqual({
       kind: "skip",
       reason: "issue already has a queued or deferred wake",
+    });
+    expect(decide({ hasPersistedMonitor: true })).toEqual({
+      kind: "skip",
+      reason: "persisted issue monitor owns the next action",
     });
     expect(decide({ hasExplicitBlockerPath: true })).toEqual({
       kind: "skip",

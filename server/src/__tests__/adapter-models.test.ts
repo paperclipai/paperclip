@@ -48,7 +48,10 @@ describe("adapter model listing", () => {
     const models = await listAdapterModels("codex_local");
 
     expect(models).toEqual(codexFallbackModels);
-    expect(models.some((model) => model.id === "gpt-5.5")).toBe(true);
+    expect(models.some((model) => model.id === "gpt-5.6")).toBe(true);
+    expect(models.some((model) => model.id === "gpt-5.6-sol")).toBe(true);
+    expect(models.some((model) => model.id === "gpt-5.6-terra")).toBe(true);
+    expect(models.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -155,7 +158,7 @@ describe("adapter model listing", () => {
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          data: [{ id: "gpt-5.5" }],
+          data: [{ id: "gpt-5.6-terra" }],
         }),
       } as Response);
 
@@ -164,7 +167,8 @@ describe("adapter model listing", () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(initial.some((model) => model.id === "gpt-5")).toBe(true);
-    expect(refreshed.some((model) => model.id === "gpt-5.5")).toBe(true);
+    expect(refreshed.some((model) => model.id === "gpt-5.6-terra")).toBe(true);
+    expect(refreshed.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
   });
 
   it("falls back to static codex models when OpenAI model discovery fails", async () => {
