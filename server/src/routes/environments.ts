@@ -871,6 +871,8 @@ export function environmentRoutes(
     assertCanAccessInstanceEnvironments(req);
     const actor = getActorInfo(req);
     const companyIdForSecrets = await resolveEnvironmentSecretContextCompanyId(req, environment.id, { required: false });
+    const companyIdForProbe = companyIdForSecrets
+      ?? (environment.driver === "sandbox" ? await resolveCustomImageCompanyId(req) : null);
     if (!companyIdForSecrets) {
       const secretRefs = await collectEnvironmentSecretRefs({ db, environment });
       if (secretRefs.length > 0) {
@@ -880,9 +882,10 @@ export function environmentRoutes(
       }
     }
     const probe = await probeEnvironment(db, environment, {
-      companyId: companyIdForSecrets,
+      companyId: companyIdForProbe,
       pluginWorkerManager: options.pluginWorkerManager,
       applyCustomImageTemplate: environment.driver === "sandbox",
+      acquireSandboxRuntimeLease: environment.driver === "sandbox",
     });
     await logInstanceEnvironmentActivity({
       actor,

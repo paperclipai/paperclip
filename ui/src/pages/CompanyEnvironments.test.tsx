@@ -485,7 +485,96 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(buttonsAfter[0].disabled).toBe(true);
     expect(buttonsAfter[1].textContent?.trim()).toBe("Test provider");
     expect(buttonsAfter[1].disabled).toBe(false);
-    expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-1");
+    expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
+  });
+
+  it("explains that successful sandbox provider tests use a temporary sandbox", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.probe.mockResolvedValue({
+      ok: true,
+      driver: "sandbox",
+      summary: "Connected to Daytona sandbox paperclip-probe.",
+      details: {
+        provider: "daytona",
+        diagnostics: [],
+        metadata: {
+          provider: "daytona",
+          sandboxId: "473167E9",
+          sandboxName: "paperclip-probe",
+        },
+      },
+    });
+
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanyEnvironments />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    await act(async () => {
+      testProviderButtons(container)[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
+    expect(container.textContent).toContain("Connected to Daytona sandbox paperclip-probe.");
+    expect(container.textContent).not.toContain("Verified temporary daytona sandbox");
+    expect(container.textContent).not.toContain("Test probes clean up the validation sandbox after the check");
+    expect(container.textContent).not.toContain("provider dashboard");
+  });
+
+  it("does not show sandbox lifecycle success copy for failed sandbox provider tests", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.probe.mockResolvedValue({
+      ok: false,
+      driver: "sandbox",
+      summary: "Daytona sandbox probe failed.",
+      details: {
+        provider: "daytona",
+        error: "Sandbox image was not found.",
+        metadata: {
+          provider: "daytona",
+          sandboxId: "473167E9",
+          sandboxName: "paperclip-probe",
+        },
+      },
+    });
+
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanyEnvironments />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    await act(async () => {
+      testProviderButtons(container)[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Daytona sandbox probe failed.");
+    expect(container.textContent).toContain("Sandbox image was not found.");
+    expect(container.textContent).not.toContain("Verified temporary daytona sandbox");
+    expect(container.textContent).not.toContain("Test probes clean up the validation sandbox after the check");
   });
 
   it("keeps the second environment's testing state when an earlier probe settles", async () => {
@@ -985,6 +1074,7 @@ describe("CompanyEnvironments — test provider button", () => {
   it("shows active template controls for refresh, rollback, and disable", async () => {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const activeTemplateId = "12345678-90ab-cdef-1234-567890abcdef";
     mockEnvironmentsApi.list.mockResolvedValue([
       { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
     ]);
@@ -1007,7 +1097,7 @@ describe("CompanyEnvironments — test provider button", () => {
       },
     });
     mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
-      activeTemplate: createTemplate({ id: "template-active" }),
+      activeTemplate: createTemplate({ id: activeTemplateId }),
       activeSession: null,
       latestSession: null,
     });
@@ -1027,6 +1117,8 @@ describe("CompanyEnvironments — test provider button", () => {
     await waitForAssertion(() => {
       const dialog = getOpenDialog();
       expect(dialog?.textContent).toContain("Active template");
+      expect(dialog?.textContent).toContain("id 12345678-90a");
+      expect(dialog?.querySelector("[title='12345678-90ab-cdef-1234-567890abcdef']")).toBeTruthy();
       expect(findButton(dialog!, "Refresh")).toBeTruthy();
       expect(findButton(dialog!, "Rollback")).toBeTruthy();
       expect(findButton(dialog!, "Disable")).toBeTruthy();
@@ -1038,7 +1130,7 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(mockEnvironmentsApi.startCustomImageSetupSession).toHaveBeenCalledWith(
       "env-1",
       "company-1",
-      { templateId: "template-active" },
+      { templateId: activeTemplateId },
     );
     await waitForAssertion(() => {
       expect(getOpenDialog()?.textContent).toContain("Browser terminal");
@@ -1046,6 +1138,64 @@ describe("CompanyEnvironments — test provider button", () => {
       expect(mockEnvironmentsApi.createCustomImageTerminalSessionToken).toHaveBeenCalledExactlyOnceWith("session-1", {});
       expect(FakeWebSocket.instances).toHaveLength(1);
     });
+  });
+
+  it("allows stale capturing setup sessions to be cancelled back to active template controls", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const activeTemplate = createTemplate({ id: "template-active" });
+    let activeSession: ReturnType<typeof createSession> | null = createSession({ status: "capturing" });
+    let latestSession: ReturnType<typeof createSession> | null = activeSession;
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.customImageTemplate.mockImplementation(async () => ({
+      activeTemplate,
+      activeSession,
+      latestSession,
+    }));
+    mockEnvironmentsApi.customImageSetupSession.mockResolvedValue({
+      session: activeSession,
+      connectionPayload: null,
+    });
+    mockEnvironmentsApi.cancelCustomImageSetupSession.mockImplementation(async () => {
+      activeSession = null;
+      latestSession = createSession({ status: "cancelled", finishedAt: "2026-06-25T20:10:00.000Z" });
+      return latestSession;
+    });
+
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanyEnvironments />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      const dialog = getOpenDialog()!;
+      expect(dialog.textContent).toContain("Capturing template");
+      expect(dialog.textContent).toContain("Capture is in progress.");
+      expect(findButton(dialog, "Finished")?.disabled).toBe(true);
+      expect(findButton(dialog, "Cancel")?.disabled).toBe(false);
+    });
+
+    await act(async () => click(findButton(getOpenDialog()!, "Cancel")));
+    await waitForAssertion(() => {
+      const dialog = getOpenDialog()!;
+      expect(dialog.textContent).toContain("Active template");
+      expect(findButton(dialog, "Refresh")).toBeTruthy();
+    });
+
+    expect(mockEnvironmentsApi.cancelCustomImageSetupSession).toHaveBeenCalledExactlyOnceWith(
+      "session-1",
+      { reason: "operator cancelled" },
+    );
   });
 
   it("passes company context when rolling back and disabling an active template", async () => {

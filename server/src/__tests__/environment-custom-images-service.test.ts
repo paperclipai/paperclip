@@ -14,6 +14,8 @@ import {
   environmentCustomImageService,
 } from "../services/environment-custom-images.js";
 import {
+  ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
+  environmentCustomImageTemplateMatchesBaseConfig,
   fingerprintEnvironmentSandboxProviderConfig,
 } from "../services/environment-custom-image-runtime.js";
 import {
@@ -436,7 +438,9 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
       provider: "fake-plugin",
       templateKind: "snapshot",
       templateRef: "snapshot-active",
-      sourceEnvironmentConfigFingerprint: fingerprintEnvironmentSandboxProviderConfig(environment.config as any),
+      sourceEnvironmentConfigFingerprint: fingerprintEnvironmentSandboxProviderConfig(environment.config as any, {
+        excludePaths: ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
+      }),
       status: "active",
     });
     const resolved = await resolveEnvironmentDriverConfigForRuntime(db, companyId, {
@@ -448,20 +452,54 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     expect(resolved.config).toMatchObject({ snapshot: "snapshot-active" });
     expect(resolved.config).not.toHaveProperty("image");
 
-    // A stored fingerprint that no longer matches the current base config (e.g. the
-    // config dialog re-saved the environment, or the user tweaked resource/lease
-    // knobs) must NOT silently discard the captured template.
-    await db.update(environmentCustomImageTemplates)
-      .set({ sourceEnvironmentConfigFingerprint: "stale" })
-      .where(eq(environmentCustomImageTemplates.templateRef, "snapshot-active"));
-    const afterConfigChange = await resolveEnvironmentDriverConfigForRuntime(db, companyId, {
-      id: environment.id,
+    // Runtime-only resource/lease edits must NOT silently discard the captured
+    // template.
+    await db.update(environments)
+      .set({
+        config: {
+          ...(environment.config as Record<string, unknown>),
+          cpu: 4,
+          timeoutMs: 600000,
+          reuseLease: true,
+        },
+      })
+      .where(eq(environments.id, environment.id));
+    const afterResourceChangeEnvironment = await db.select().from(environments).where(eq(environments.id, environmentId)).then((rows) => rows[0]!);
+    const afterResourceChange = await resolveEnvironmentDriverConfigForRuntime(db, companyId, {
+      id: afterResourceChangeEnvironment.id,
       driver: "sandbox",
-      config: environment.config,
+      config: afterResourceChangeEnvironment.config,
     }, { heartbeatRunId: randomUUID() });
-    expect(afterConfigChange.driver).toBe("sandbox");
-    expect(afterConfigChange.config).toMatchObject({ snapshot: "snapshot-active" });
-    expect(afterConfigChange.config).not.toHaveProperty("image");
+    expect(afterResourceChange.driver).toBe("sandbox");
+    expect(afterResourceChange.config).toMatchObject({ snapshot: "snapshot-active" });
+    expect(afterResourceChange.config).not.toHaveProperty("image");
+
+    // Changing the base image is a meaningful source-template change. In that
+    // case, the old capture must not mask the newly saved image.
+    await db.update(environmentCustomImageTemplates)
+      .set({
+        sourceEnvironmentConfigFingerprint: fingerprintEnvironmentSandboxProviderConfig(environment.config as any, {
+          excludePaths: ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
+        }),
+      })
+      .where(eq(environmentCustomImageTemplates.templateRef, "snapshot-active"));
+    await db.update(environments)
+      .set({
+        config: {
+          ...(environment.config as Record<string, unknown>),
+          image: "fake:new-base",
+        },
+      })
+      .where(eq(environments.id, environment.id));
+    const afterImageChangeEnvironment = await db.select().from(environments).where(eq(environments.id, environmentId)).then((rows) => rows[0]!);
+    const afterImageChange = await resolveEnvironmentDriverConfigForRuntime(db, companyId, {
+      id: afterImageChangeEnvironment.id,
+      driver: "sandbox",
+      config: afterImageChangeEnvironment.config,
+    }, { heartbeatRunId: randomUUID() });
+    expect(afterImageChange.driver).toBe("sandbox");
+    expect(afterImageChange.config).toMatchObject({ image: "fake:new-base" });
+    expect(afterImageChange.config).not.toHaveProperty("snapshot");
   });
 
   it("applies the active template for ad-hoc Test probes only when applyCustomImageTemplate is set", async () => {
@@ -560,5 +598,53 @@ describe("fingerprintEnvironmentSandboxProviderConfig", () => {
         exclude,
       ),
     );
+  });
+});
+
+describe("environmentCustomImageTemplateMatchesBaseConfig", () => {
+  it("keeps captures across runtime-only edits but not base image changes", () => {
+    const baseConfig = {
+      provider: "daytona",
+      image: "daytonaio/sandbox:0.8.0",
+      timeoutMs: 300000,
+      reuseLease: false,
+    } as any;
+    const template = {
+      id: "template-1",
+      environmentId: "env-1",
+      provider: "daytona",
+      templateKind: "snapshot",
+      templateRef: "snapshot-active",
+      sourceTemplateRef: "daytonaio/sandbox:0.8.0",
+      sourceEnvironmentConfigFingerprint: fingerprintEnvironmentSandboxProviderConfig(baseConfig, {
+        excludePaths: ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
+      }),
+      status: "active",
+      createdByUserId: null,
+      createdByAgentId: null,
+      capturedAt: null,
+      lastUsedAt: null,
+      supersededByTemplateId: null,
+      metadata: null,
+      createdAt: new Date("2026-07-09T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-09T00:00:00.000Z"),
+    } as const;
+
+    expect(environmentCustomImageTemplateMatchesBaseConfig({
+      template,
+      baseConfig: {
+        ...baseConfig,
+        timeoutMs: 600000,
+        reuseLease: true,
+        cpu: 4,
+      },
+    })).toBe(true);
+    expect(environmentCustomImageTemplateMatchesBaseConfig({
+      template,
+      baseConfig: {
+        ...baseConfig,
+        image: "daytonaio/sandbox:0.9.0",
+      },
+    })).toBe(false);
   });
 });

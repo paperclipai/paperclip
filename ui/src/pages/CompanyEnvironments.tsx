@@ -205,6 +205,12 @@ function formatDateTime(value: string | Date | null | undefined): string | null 
   return Number.isNaN(date.getTime()) ? null : date.toLocaleString();
 }
 
+function formatShortId(value: string): string {
+  const normalized = value.trim();
+  if (normalized.length <= 12) return normalized;
+  return normalized.slice(0, 12);
+}
+
 function readConnectionCommand(payload: EnvironmentCustomImageConnectionPayload | null | undefined): string | null {
   return typeof payload?.command === "string" && payload.command.trim().length > 0
     ? payload.command
@@ -928,13 +934,18 @@ function EnvironmentImageTemplatePanel({
               size="sm"
               variant="ghost"
               onClick={() => cancelSetupMutation.mutate(session.id)}
-              disabled={isMutating || isCapturing}
+              disabled={isMutating}
             >
               <X className="mr-1.5 h-3.5 w-3.5" />
               Cancel
             </Button>
           </div>
         </div>
+        {isCapturing ? (
+          <div className="mt-2 text-xs text-muted-foreground">
+            Capture is in progress. If this state remains after a refresh or interrupted request, cancel it to return to the active template controls.
+          </div>
+        ) : null}
         {session.status === "waiting_for_user" && connectionPayload?.type === "ssh" ? (
           <EnvironmentCustomImageBrowserTerminal autoConnect sessionId={session.id} />
         ) : null}
@@ -961,6 +972,7 @@ function EnvironmentImageTemplatePanel({
   }
 
   if (activeTemplate) {
+    const shortTemplateId = formatShortId(activeTemplate.id);
     return (
       <div className="mt-3 border-t border-border/60 pt-3" data-testid={`custom-image-template-state-${environment.id}`}>
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -968,6 +980,10 @@ function EnvironmentImageTemplatePanel({
             <div className="text-xs font-medium">Active template</div>
             <div className="text-xs text-muted-foreground">
               {providerDisplayName} · {activeTemplate.templateKind}
+              {" · id "}
+              <span className="font-mono text-foreground" title={activeTemplate.id}>
+                {shortTemplateId}
+              </span>
               {capturedAt ? ` · captured ${capturedAt}` : ""}
               {lastUsedAt ? ` · last used ${lastUsedAt}` : ""}
             </div>

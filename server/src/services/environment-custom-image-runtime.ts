@@ -13,6 +13,18 @@ import { writeConfigValueAtPath } from "./json-schema-secret-refs.js";
 type TemplateRow = typeof environmentCustomImageTemplates.$inferSelect;
 
 export const ENVIRONMENT_CUSTOM_IMAGE_RUNTIME_CONFIG_BINDING_METADATA_KEY = "runtimeConfigBinding";
+export const ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS = [
+  "timeoutMs",
+  "reuseLease",
+  "streamRunLogs",
+  "cpu",
+  "memory",
+  "disk",
+  "gpu",
+  "autoStopInterval",
+  "autoArchiveInterval",
+  "autoDeleteInterval",
+];
 
 export interface EnvironmentCustomImageRuntimeConfigBinding {
   field: string;
@@ -111,6 +123,21 @@ export function applyCustomImageTemplateToSandboxConfig(
   return next as SandboxEnvironmentConfig;
 }
 
+export function environmentCustomImageTemplateMatchesBaseConfig(input: {
+  template: EnvironmentCustomImageTemplate;
+  baseConfig: SandboxEnvironmentConfig;
+}): boolean {
+  const expectedFingerprint = input.template.sourceEnvironmentConfigFingerprint;
+  if (!expectedFingerprint) return true;
+  const normalizedFingerprint = fingerprintEnvironmentSandboxProviderConfig(input.baseConfig, {
+    excludePaths: ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
+  });
+  if (normalizedFingerprint === expectedFingerprint) return true;
+  // Backward compatibility for templates captured before runtime-only fields
+  // were excluded from the source fingerprint.
+  return fingerprintEnvironmentSandboxProviderConfig(input.baseConfig) === expectedFingerprint;
+}
+
 export function environmentCustomImageTemplateFromRow(row: TemplateRow): EnvironmentCustomImageTemplate {
   return {
     id: row.id,
@@ -155,15 +182,15 @@ export async function resolveActiveEnvironmentCustomImageTemplateForRuntime(
 
   const active = environmentCustomImageTemplateFromRow(row);
   if (!active.templateRef) return input.runtimeConfig;
+  if (!environmentCustomImageTemplateMatchesBaseConfig({ template: active, baseConfig: input.baseConfig })) {
+    return input.runtimeConfig;
+  }
 
   // An active template is an explicit, environment+provider-scoped artifact: the
   // captured snapshot/image fully replaces the base image at create time, so it is
-  // applied whenever present. We deliberately do not gate on a base-config
-  // fingerprint — the config dialog re-saves the environment right after capture,
-  // and ordinary resource/lifecycle tweaks (cpu/memory/lease knobs that don't
-  // affect image identity and are dropped for snapshot creation) would otherwise
-  // silently discard the captured setup state and provider metadata. Re-running
-  // setup supersedes the template when the user wants a fresh capture.
+  // applied whenever the image/template-defining parts of the base config still
+  // match. Runtime-only knobs such as lease reuse, timeouts, and resource hints
+  // are excluded from the fingerprint so those edits do not discard the capture.
   const now = input.now ?? new Date();
   await db
     .update(environmentCustomImageTemplates)

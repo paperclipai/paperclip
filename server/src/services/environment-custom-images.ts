@@ -38,6 +38,7 @@ import {
 } from "./plugin-environment-driver.js";
 import { environmentService } from "./environments.js";
 import {
+  ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
   fingerprintEnvironmentSandboxProviderConfig,
   ENVIRONMENT_CUSTOM_IMAGE_RUNTIME_CONFIG_BINDING_METADATA_KEY,
   defaultEnvironmentCustomImageRuntimeConfigBinding,
@@ -763,7 +764,10 @@ export function environmentCustomImageService(
         const parsed = parseEnvironmentDriverConfig(environment);
         const baseFingerprint = parsed.driver === "sandbox"
           ? fingerprintEnvironmentSandboxProviderConfig(parsed.config, {
-              excludePaths: await resolveSandboxProviderSecretRefPaths(db, parsed.config.provider),
+              excludePaths: [
+                ...ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
+                ...await resolveSandboxProviderSecretRefPaths(db, parsed.config.provider),
+              ],
             })
           : null;
         const provider = await resolveSetupProvider({
