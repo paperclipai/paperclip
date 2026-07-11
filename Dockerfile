@@ -78,7 +78,7 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@${CLAUDE_CODE_VERS
 RUN python3 -m venv /opt/camoufox \
   && /opt/camoufox/bin/pip install --no-cache-dir "camoufox==${CAMOUFOX_VERSION}" \
   && /opt/camoufox/bin/python -m camoufox fetch \
-  && ln -s /opt/camoufox/bin/python /usr/local/bin/camoufox-python
+  && ln -s /opt/camoufox/bin/camoufox /usr/local/bin/camoufox
 
 # Install Chromium + all system dependencies for headless browser automation
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
