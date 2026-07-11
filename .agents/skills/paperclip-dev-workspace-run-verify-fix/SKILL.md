@@ -333,9 +333,10 @@ Likely cause: the pinned service port is owned by another workspace's process
 and start-time adoption attached that process to this workspace's runtime row.
 Health checks pass because the sibling app is genuinely healthy.
 
-Fix: run the identity check from "Port conflicts and workspace identity",
-managed-restart the target service, and re-verify that `/proc/<pid>/cwd` of
-the port owner resolves inside the target worktree.
+Fix: follow the owner-first procedure in "Port conflicts and workspace
+identity": identify and stop the sibling service or supervising run, verify
+the port stays free, then start or restart the target service. Re-verify that
+`/proc/<pid>/cwd` of the new port owner resolves inside the target worktree.
 
 Verify: identity check passes, and one workspace-specific record served
 through the URL (branch, issue key, or workspace id) matches the target
