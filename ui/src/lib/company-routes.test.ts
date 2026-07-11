@@ -36,6 +36,13 @@ describe("company routes", () => {
     expect(toCompanyRelativePath("/PAP/search?q=foo")).toBe("/search?q=foo");
   });
 
+  it("treats /browsers as a company-scoped board route", () => {
+    expect(isBoardPathWithoutPrefix("/browsers")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/browsers")).toBeNull();
+    expect(applyCompanyPrefix("/browsers", "ELIA")).toBe("/ELIA/browsers");
+    expect(toCompanyRelativePath("/ELIA/browsers")).toBe("/browsers");
+  });
+
   it("treats /work as a board route that needs a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/work")).toBe(true);
     expect(extractCompanyPrefixFromPath("/work")).toBeNull();
