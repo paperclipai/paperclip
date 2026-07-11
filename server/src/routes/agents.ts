@@ -4233,6 +4233,7 @@ export function agentRoutes(
     const minCount = readLiveRunsQueryInt(req.query.minCount, 50, 0);
     const limit = readLiveRunsQueryInt(req.query.limit, 50, 50);
 
+    const runIssueId = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
     const columns = {
       id: heartbeatRuns.id,
       companyId: heartbeatRuns.companyId,
@@ -4258,13 +4259,16 @@ export function agentRoutes(
       lastOutputStream: heartbeatRuns.lastOutputStream,
       lastOutputBytes: heartbeatRuns.lastOutputBytes,
       processStartedAt: heartbeatRuns.processStartedAt,
-      issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+      issueId: runIssueId.as("issueId"),
+      issueIdentifier: issuesTable.identifier,
+      issueTitle: issuesTable.title,
     };
 
     const liveRunsQuery = db
       .select(columns)
       .from(heartbeatRuns)
       .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
+      .leftJoin(issuesTable, eq(issuesTable.id, runIssueId))
       .where(
         and(
           eq(heartbeatRuns.companyId, companyId),
@@ -4282,6 +4286,7 @@ export function agentRoutes(
         .select(columns)
         .from(heartbeatRuns)
         .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
+        .leftJoin(issuesTable, eq(issuesTable.id, runIssueId))
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),

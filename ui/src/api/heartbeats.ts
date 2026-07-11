@@ -54,6 +54,8 @@ export interface LiveRunForIssue {
   logBytes?: number | null;
   lastOutputBytes?: number | null;
   issueId?: string | null;
+  issueIdentifier?: string | null;
+  issueTitle?: string | null;
   livenessState?: RunLivenessFields["livenessState"];
   livenessReason?: string | null;
   continuationAttempt?: number;

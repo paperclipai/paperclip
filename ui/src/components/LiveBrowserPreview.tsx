@@ -2,17 +2,11 @@ import { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp, Eye, LoaderCircle, WifiOff } from "lucide-react";
 import { cn } from "../lib/utils";
 
-type StreamStatus = "waiting" | "live" | "disconnected";
+export type BrowserStreamStatus = "waiting" | "live" | "disconnected";
 
-interface LiveBrowserPreviewProps {
-  runId: string;
-  agentName?: string | null;
-}
-
-export function LiveBrowserPreview({ runId, agentName }: LiveBrowserPreviewProps) {
-  const [status, setStatus] = useState<StreamStatus>("waiting");
+export function useBrowserStream(runId: string) {
+  const [status, setStatus] = useState<BrowserStreamStatus>("waiting");
   const [frame, setFrame] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
     setStatus("waiting");
@@ -27,7 +21,7 @@ export function LiveBrowserPreview({ runId, agentName }: LiveBrowserPreviewProps
     const source = new EventSource(`/api/heartbeat-runs/${encodeURIComponent(runId)}/browser-stream`);
     source.addEventListener("status", (event) => {
       try {
-        const payload = JSON.parse((event as MessageEvent).data) as { status?: StreamStatus };
+        const payload = JSON.parse((event as MessageEvent).data) as { status?: BrowserStreamStatus };
         if (payload.status) setStatus(payload.status);
       } catch {
         setStatus("disconnected");
@@ -37,8 +31,7 @@ export function LiveBrowserPreview({ runId, agentName }: LiveBrowserPreviewProps
       try {
         const payload = JSON.parse((event as MessageEvent).data) as { data?: unknown };
         if (typeof payload.data !== "string") return;
-        const nextFrame = `data:image/jpeg;base64,${payload.data}`;
-        setFrame(nextFrame);
+        setFrame(`data:image/jpeg;base64,${payload.data}`);
         setStatus("live");
       } catch {
         // Keep the last good frame visible.
@@ -47,6 +40,18 @@ export function LiveBrowserPreview({ runId, agentName }: LiveBrowserPreviewProps
     source.onerror = () => setStatus("disconnected");
     return () => source.close();
   }, [runId]);
+
+  return { status, frame };
+}
+
+interface LiveBrowserPreviewProps {
+  runId: string;
+  agentName?: string | null;
+}
+
+export function LiveBrowserPreview({ runId, agentName }: LiveBrowserPreviewProps) {
+  const { status, frame } = useBrowserStream(runId);
+  const [collapsed, setCollapsed] = useState(false);
 
   const statusLabel = status === "live" ? "Live" : status === "waiting" ? "Waiting for browser" : "Reconnecting";
 

@@ -18,6 +18,7 @@ import {
   RefreshCw,
   MessagesSquare,
   BrainCircuit,
+  MonitorUp,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -106,6 +107,7 @@ export function Sidebar() {
             <span className="truncate">Capture</span>
           </button>
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem to="/browsers" label="Browsers" icon={MonitorUp} />
           <SidebarNavItem
             to="/inbox"
             label="Inbox"
