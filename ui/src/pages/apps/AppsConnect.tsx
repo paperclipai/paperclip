@@ -62,6 +62,12 @@ const STEP_INDEX: Record<Exclude<Step, "success">, number> = {
   actions: 2,
   who: 2,
 };
+const ZAPIER_STEP_INDEX: Record<Exclude<Step, "gallery" | "success">, number> = {
+  key: 0,
+  actions: 1,
+  who: 2,
+};
+const ZAPIER_STEP_LABELS = ["Add MCP URL", "Choose actions", "Choose access"];
 
 function askFirstLevelsFrom(result: ConnectToolAppResult): string[] {
   const raw = (result.suggestedDefaults as { askFirstRiskLevels?: unknown })?.askFirstRiskLevels;
@@ -79,6 +85,7 @@ export function AppsConnect() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const [searchParams] = useSearchParams();
+  const zapierSource = searchParams.get("source") === "zapier";
 
   // Prefill arrives from the app page for reconnects; read once so later
   // wizard navigation doesn't fight the URL.
@@ -91,11 +98,11 @@ export function AppsConnect() {
     };
   });
 
-  const [step, setStep] = useState<Step>(appKey || prefill.link ? "key" : "gallery");
+  const [step, setStep] = useState<Step>(appKey || prefill.link || zapierSource ? "key" : "gallery");
   const [entry, setEntry] = useState<AppGalleryEntry | null>(null);
   const [galleryName, setGalleryName] = useState("");
   const [linkUrl, setLinkUrl] = useState(prefill.link);
-  const [linkName, setLinkName] = useState(prefill.name);
+  const [linkName, setLinkName] = useState(prefill.name || (zapierSource ? "Zapier" : ""));
   const [linkNeedsKey, setLinkNeedsKey] = useState(false);
   const [linkKey, setLinkKey] = useState("");
   const [credentials, setCredentials] = useState<Record<string, string>>({});
@@ -250,6 +257,11 @@ export function AppsConnect() {
     connectResult?.application.name ??
     entry?.name ??
     (linkName.trim() || defaultLinkName(linkUrl) || "this app");
+  const stepIndex = zapierSource && step !== "gallery" && step !== "success"
+    ? ZAPIER_STEP_INDEX[step]
+    : step === "success"
+      ? 3
+      : STEP_INDEX[step];
 
   return (
     <div className="max-w-5xl">
@@ -258,11 +270,18 @@ export function AppsConnect() {
           subtitle={
             step === "gallery"
               ? "Pick the app you want your agents to use."
-              : `Step ${STEP_INDEX[step] + 1} of 3`
+              : `Step ${stepIndex + 1} of 3`
           }
           step={step}
-          labels={isGoogleSheetsEntry(entry) ? ["Pick app", "Share sheet", "Choose actions"] : STEP_LABELS}
-          onCancel={() => navigate("/apps")}
+          activeIndex={stepIndex}
+          labels={
+            zapierSource
+              ? ZAPIER_STEP_LABELS
+              : isGoogleSheetsEntry(entry)
+                ? ["Pick app", "Share sheet", "Choose actions"]
+                : STEP_LABELS
+          }
+          onCancel={() => navigate(zapierSource ? "/apps/browse" : "/apps")}
         />
       )}
 
@@ -336,7 +355,7 @@ export function AppsConnect() {
         />
       )}
 
-      {step === "key" && !entry && linkUrl && (
+      {step === "key" && !entry && linkUrl && !zapierSource && (
         <LinkConnectStep
           link={linkUrl}
           name={linkName}
@@ -350,6 +369,16 @@ export function AppsConnect() {
           onKeyChange={setLinkKey}
           submitting={connectMutation.isPending}
           onBack={() => setStep("gallery")}
+          onConnect={() => connectMutation.mutate()}
+        />
+      )}
+
+      {step === "key" && !entry && zapierSource && (
+        <ZapierConnectStep
+          link={linkUrl}
+          onLinkChange={setLinkUrl}
+          submitting={connectMutation.isPending}
+          onBack={() => navigate("/apps/browse")}
           onConnect={() => connectMutation.mutate()}
         />
       )}
@@ -402,15 +431,16 @@ export function AppsConnect() {
 function StepHeader({
   subtitle,
   step,
+  activeIndex,
   labels,
   onCancel,
 }: {
   subtitle: string;
   step: Step;
+  activeIndex: number;
   labels: string[];
   onCancel: () => void;
 }) {
-  const activeIndex = step === "success" ? 3 : STEP_INDEX[step];
   return (
     <div className="mb-6">
       <div className="flex items-start justify-between gap-4">
@@ -435,6 +465,70 @@ function StepHeader({
           <div className="mt-2 text-xs text-muted-foreground">{labels.join("   ·   ")}</div>
         </div>
       )}
+    </div>
+  );
+}
+
+function ZapierConnectStep({
+  link,
+  onLinkChange,
+  submitting,
+  onBack,
+  onConnect,
+}: {
+  link: string;
+  onLinkChange: (next: string) => void;
+  submitting: boolean;
+  onBack: () => void;
+  onConnect: () => void;
+}) {
+  const normalizedLink = normalizeAppLink(link);
+  const zapierHostname = normalizedLink ? new URL(normalizedLink).hostname : "";
+  const isZapierLink = zapierHostname === "zapier.com" || zapierHostname.endsWith(".zapier.com");
+
+  return (
+    <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">
+      <div className="flex items-start gap-3">
+        <span className="mt-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
+          <Link2 className="h-5 w-5 text-muted-foreground" />
+        </span>
+        <div className="min-w-0">
+          <h2 className="text-xl font-bold tracking-tight">Connect Zapier</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Paste the complete MCP URL Zapier gives you, including its token.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-8">
+        <label className="text-sm font-medium text-foreground">Zapier MCP URL</label>
+        <Input
+          value={link}
+          onChange={(event) => onLinkChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && isZapierLink && !submitting) onConnect();
+          }}
+          placeholder="https://mcp.zapier.com/api/v1/connect?token=…"
+          className="mt-2 h-11"
+          autoFocus
+        />
+        <p className="mt-2 text-xs text-muted-foreground">
+          The token is part of the URL. Paperclip stores it securely and checks the connection before enabling actions.
+        </p>
+        {link.trim() && !isZapierLink && (
+          <p className="mt-2 text-xs text-destructive">Paste a valid Zapier URL to continue.</p>
+        )}
+      </div>
+
+      <div className="mt-8 flex items-center justify-between">
+        <Button variant="ghost" onClick={onBack} disabled={submitting}>
+          Back
+        </Button>
+        <Button onClick={onConnect} disabled={submitting || !isZapierLink}>
+          {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          {submitting ? "Checking…" : "Check link"}
+        </Button>
+      </div>
     </div>
   );
 }

@@ -263,6 +263,33 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock.mock.calls[0]?.[1].credentialValues).toBeUndefined();
   });
 
+  it("opens Zapier in a focused three-step wizard", async () => {
+    mockSearch.value = "byo=1&source=zapier";
+    await render();
+
+    expect(container.textContent).toContain("Step 1 of 3");
+    expect(container.textContent).toContain("Connect Zapier");
+    expect(container.textContent).toContain("Add MCP URL");
+    expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
+    expect(container.textContent).not.toContain("More ways to connect");
+
+    const linkInput = container.querySelector<HTMLInputElement>(
+      'input[placeholder^="https://mcp.zapier.com"]',
+    );
+    const zapierUrl = "https://mcp.zapier.com/api/v1/connect?token=secret-token";
+    await act(async () => setInputValue(linkInput!, zapierUrl));
+    await flushReact();
+
+    await act(async () => {
+      buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(connectAppMock.mock.calls[0]?.[1]).toMatchObject({ link: zapierUrl, name: "Zapier" });
+    expect(container.textContent).toContain("Step 2 of 3");
+  });
+
   // PAP-10922: "Run your own" / "Paste a config" moved from the sidebar to rows
   // under "Connect with a link" on the gallery step.
   it("offers 'Run your own' and 'Paste a config' rows that route into the Advanced door", async () => {
