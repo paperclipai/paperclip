@@ -48,6 +48,46 @@ function asUint8Array(input: Buffer | Uint8Array | number[]): Uint8Array {
   return input;
 }
 
+export function mapVersionedTransaction(
+  raw: VersionedBlockResponse["transactions"][number],
+  slot: bigint,
+  blockTime: number | null,
+): SolanaStreamTransaction | null {
+  const tx = "transaction" in raw ? raw.transaction : null;
+  const meta = "meta" in raw ? raw.meta : null;
+  if (!tx) return null;
+  const message = tx.message;
+  // v0 transactions can load extra accounts via address lookup tables; those
+  // addresses live in meta.loadedAddresses, not in message.staticAccountKeys.
+  // Include both so compiled instruction indexes resolve to the right keys.
+  const loadedAddresses = meta?.loadedAddresses ?? { writable: [], readonly: [] };
+  const accountKeys = [
+    ...message.staticAccountKeys.map((k) => publicKeyToString(k)),
+    ...loadedAddresses.writable.map((k) => publicKeyToString(k)),
+    ...loadedAddresses.readonly.map((k) => publicKeyToString(k)),
+  ];
+  const instructions: SolanaStreamInstruction[] = message.compiledInstructions.map((ix) => {
+    const programId = accountKeys[ix.programIdIndex] ?? "";
+    const accounts = ix.accountKeyIndexes
+      .map((idx) => accountKeys[idx])
+      .filter((k): k is string => !!k);
+    return { programId, accounts, data: asUint8Array(ix.data) };
+  });
+
+  return {
+    signature: tx.signatures[0] ?? "",
+    slot,
+    blockTime: blockTime ? new Date(blockTime * 1000) : null,
+    err: meta?.err ?? null,
+    feePayer: accountKeys[0] ?? null,
+    instructions,
+    accountKeys,
+    logMessages: meta?.logMessages ?? [],
+    preBalances: (meta?.preBalances ?? []).map(BigInt),
+    postBalances: (meta?.postBalances ?? []).map(BigInt),
+  };
+}
+
 export interface SolanaRpcSourceConfig {
   rpcUrl: string;
   wsUrl?: string;
@@ -186,39 +226,7 @@ export class SolanaRpcSource implements SolanaStreamSource {
     slot: bigint,
     blockTime: number | null,
   ): SolanaStreamTransaction | null {
-    const tx = "transaction" in raw ? raw.transaction : null;
-    const meta = "meta" in raw ? raw.meta : null;
-    if (!tx) return null;
-    const message = tx.message;
-    // v0 transactions can load extra accounts via address lookup tables; those
-    // addresses live in meta.loadedAddresses, not in message.staticAccountKeys.
-    // Include both so compiled instruction indexes resolve to the right keys.
-    const loadedAddresses = meta?.loadedAddresses ?? { writable: [], readonly: [] };
-    const accountKeys = [
-      ...message.staticAccountKeys.map((k) => publicKeyToString(k)),
-      ...loadedAddresses.writable.map((k) => publicKeyToString(k)),
-      ...loadedAddresses.readonly.map((k) => publicKeyToString(k)),
-    ];
-    const instructions: SolanaStreamInstruction[] = message.compiledInstructions.map((ix) => {
-      const programId = accountKeys[ix.programIdIndex] ?? "";
-      const accounts = ix.accountKeyIndexes
-        .map((idx) => accountKeys[idx])
-        .filter((k): k is string => !!k);
-      return { programId, accounts, data: asUint8Array(ix.data) };
-    });
-
-    return {
-      signature: tx.signatures[0] ?? "",
-      slot,
-      blockTime: blockTime ? new Date(blockTime * 1000) : null,
-      err: meta?.err ?? null,
-      feePayer: accountKeys[0] ?? null,
-      instructions,
-      accountKeys,
-      logMessages: meta?.logMessages ?? [],
-      preBalances: (meta?.preBalances ?? []).map(BigInt),
-      postBalances: (meta?.postBalances ?? []).map(BigInt),
-    };
+    return mapVersionedTransaction(raw, slot, blockTime);
   }
 
   async start(): Promise<void> {
