@@ -114,18 +114,19 @@ export function Browsers() {
 
   const { data: runs = [], isLoading } = useQuery({
     queryKey: [...queryKeys.liveRuns(selectedCompanyId!), "browser-workspace"],
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!, { minCount: 50, limit: 50, browserOnly: true }),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!, { minCount: 20, limit: 20 }),
     enabled: !!selectedCompanyId,
     refetchInterval: 3_000,
   });
   const orderedRuns = useMemo(() => [...runs].sort((a, b) => new Date(b.startedAt ?? b.createdAt).getTime() - new Date(a.startedAt ?? a.createdAt).getTime()), [runs]);
+  const activeRunCount = orderedRuns.filter((run) => run.status === "queued" || run.status === "running").length;
 
   return (
     <div className="mx-auto w-full max-w-[1800px] px-5 py-6 lg:px-8">
       <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div><div className="flex items-center gap-2"><MonitorUp className="size-5 text-sky-500" /><h1 className="text-2xl font-semibold tracking-tight">Browsers</h1></div><p className="mt-1 text-sm text-muted-foreground">Live, isolated browser sessions for every running agent.</p></div>
         <div className="flex items-center gap-3">
-          <span className="text-sm text-muted-foreground"><strong className="font-semibold text-foreground">{orderedRuns.length}</strong> active {orderedRuns.length === 1 ? "run" : "runs"}</span>
+          <span className="text-sm text-muted-foreground"><strong className="font-semibold text-foreground">{activeRunCount}</strong> active · {orderedRuns.length} recent</span>
           <div className="flex rounded-lg border bg-muted/30 p-1">
             <Button variant={layout === "grid" ? "secondary" : "ghost"} size="icon-sm" onClick={() => setLayout("grid")} aria-label="Grid view"><Grid2X2 className="size-4" /></Button>
             <Button variant={layout === "list" ? "secondary" : "ghost"} size="icon-sm" onClick={() => setLayout("list")} aria-label="List view"><List className="size-4" /></Button>

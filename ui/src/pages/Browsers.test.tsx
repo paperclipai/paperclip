@@ -65,7 +65,7 @@ describe("Browsers", () => {
     });
     await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
 
-    expect(container.textContent).toContain("2 active runs");
+    expect(container.textContent).toContain("2 active · 2 recent");
     expect(container.textContent).toContain("Atlas");
     expect(container.textContent).toContain("ELIA-11");
     expect(openedStreams).toEqual(expect.arrayContaining([

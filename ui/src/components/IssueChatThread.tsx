@@ -187,6 +187,7 @@ interface IssueChatMessageContext {
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   getTranscriptForRun?: (runId: string) => readonly IssueChatTranscriptEntry[];
   messageBuildCache?: IssueChatMessageBuildCache;
+  liveBrowserRun?: { id: string; agentName?: string | null } | null;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -1861,6 +1862,7 @@ function IssueChatAssistantMessage({
     stopRunVariant = "stop",
     getTranscriptForRun,
     messageBuildCache,
+    liveBrowserRun,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -2044,6 +2046,9 @@ function IssueChatAssistantMessage({
             <>
               <div className="space-y-3">
                 <IssueChatAssistantParts message={displayMessage} hasCoT={hasCoT} />
+                {runId && liveBrowserRun?.id === runId ? (
+                  <LiveBrowserPreview runId={liveBrowserRun.id} agentName={liveBrowserRun.agentName} />
+                ) : null}
                 <IssueChatCommentAttachments message={displayMessage} />
                 {isLazyTranscriptLoading ? (
                   <div
@@ -4898,6 +4903,7 @@ export function IssueChatThread({
       successfulRunHandoff,
       getTranscriptForRun,
       messageBuildCache,
+      liveBrowserRun: browserPreviewRun,
     }),
     [
       feedbackDataSharingPreference,
@@ -4923,6 +4929,7 @@ export function IssueChatThread({
       successfulRunHandoff,
       getTranscriptForRun,
       messageBuildCache,
+      browserPreviewRun,
     ],
   );
 
@@ -4943,9 +4950,6 @@ export function IssueChatThread({
     <AssistantRuntimeProvider runtime={runtime}>
       <IssueChatCtx.Provider value={chatCtx}>
       <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
-        {browserPreviewRun ? (
-          <LiveBrowserPreview runId={browserPreviewRun.id} agentName={browserPreviewRun.agentName} />
-        ) : null}
         {resolvedShowJumpToLatest ? (
           <div className="flex justify-end">
             <button
