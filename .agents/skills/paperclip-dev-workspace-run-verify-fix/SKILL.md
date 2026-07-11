@@ -93,16 +93,20 @@ workspace that should be freshly ready.
 3. Check the target port for conflicts: identify the current port owner and
    its real cwd, and check whether any sibling workspace's runtime row also
    claims the same port (see "Port conflicts and workspace identity").
-4. Stop any managed instance of the target runtime service.
-5. Reseed the worktree with a full clone from the primary instance when there
+4. If another live workspace or agent run owns the port, stop that owner
+   through its managed control path and verify the port stays free. Do this
+   before restarting the target; otherwise the owner can respawn and reclaim
+   the port.
+5. Stop any managed instance of the target runtime service.
+6. Reseed the worktree with a full clone from the primary instance when there
    is any doubt about database completeness.
-6. Start the runtime service through the managed runtime API.
-7. Verify health, bootstrap state, login readiness, populated data, runtime
+7. Start the runtime service through the managed runtime API.
+8. Verify health, bootstrap state, login readiness, populated data, runtime
    visibility, and port-owner identity from both the main control plane and
    served workspace app.
-8. If a verification item fails, diagnose that exact failure and loop back to
+9. If a verification item fails, diagnose that exact failure and loop back to
    the narrowest repair step.
-9. Comment on the issue and set the final disposition.
+10. Comment on the issue and set the final disposition.
 
 ## Managed start / stop
 
@@ -158,12 +162,21 @@ as proof of identity — a squatting sibling passes all three.
 
 If the port owner is a sibling workspace's process (port squat):
 
-1. Do not kill the sibling's process directly; it may be that workspace's
-   legitimate service.
-2. Decide which workspace should own the pinned port right now — normally the
+1. Decide which workspace should own the pinned port right now — normally the
    workspace named in the issue.
-3. Use the managed `restart` action for the target service, then re-run the
-   identity check:
+2. Identify the current owner's workspace and whether a live agent run or
+   managed runtime service is responsible for keeping it alive. Use the real
+   `/proc/<pid>/cwd`, the sibling execution-workspace records, and the owning
+   issue/run state; do not infer ownership from the target runtime row.
+3. Stop the owner first through its own managed control path: stop the sibling
+   workspace's runtime service, or stop/cancel the live run that supervises and
+   respawns it. Do not kill the sibling process directly while its supervisor
+   is still active, because it will simply come back and reclaim the port.
+4. Verify the port remains unbound for a stability wait. If it is immediately
+   rebound, find and stop the still-live supervisor instead of restarting the
+   target in a loop.
+5. Only after the conflicting owner is stopped, start or restart the target
+   service and re-run the identity check:
 
 ```sh
 curl -sS -X POST \
@@ -174,11 +187,10 @@ curl -sS -X POST \
   --data-binary '{"workspaceCommandId":"service:paperclip-dev"}'
 ```
 
-4. A restart only holds if the squatting process is actually gone. If the
-   squatter belongs to a live agent run or managed service on the sibling
-   workspace, it will respawn and re-take the pinned port; do not loop
+6. A restart only holds if the conflicting owner stays stopped. If the port is
+   reclaimed, stop and diagnose the owner/supervisor again; do not loop target
    restarts against it.
-5. If two workspaces genuinely need to run at the same time, they cannot share
+7. If two workspaces genuinely need to run at the same time, they cannot share
    a pinned port. Stop the one that is not needed (through its own workspace's
    managed stop, or by ending the run that keeps respawning it), say in your
    issue comment which workspace now owns the port, and escalate the
