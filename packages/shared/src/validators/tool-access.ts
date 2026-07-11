@@ -465,7 +465,7 @@ export const createToolMcpGatewayTokenSchema = z.object({
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["subjectType"],
-      message: "V1 can only mint gateway_client service tokens; board_user and agent subjects are reserved for later OAuth/user-bound flows.",
+      message: "Public V1 token minting only supports gateway_client subjects; heartbeat_run is runtime-managed, while board_user and agent are reserved for later OAuth/user-bound flows.",
     });
   }
   if (value.expiresAt === null && !value.expiryOverrideReason) {

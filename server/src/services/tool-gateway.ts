@@ -1105,6 +1105,7 @@ export function createToolGatewayService(
           source: input.action,
           agentId: input.agentId,
           issueId: input.issueId,
+          projectId: input.session?.projectId ?? null,
           runId: input.runId,
           gatewaySessionId: input.session?.id ?? null,
           gatewayId: input.session?.gatewayId ?? null,
@@ -1135,6 +1136,7 @@ export function createToolGatewayService(
         gatewayId: input.session?.gatewayId ?? null,
         gatewayPublicId: input.session?.gatewayPublicId ?? null,
         issueId: input.issueId,
+        projectId: input.session?.projectId ?? null,
         runId: input.runId,
         ...input.details,
       },
@@ -1319,8 +1321,14 @@ export function createToolGatewayService(
       resultHash: input.resultSummary?.sha256 ?? null,
       resultSummary: input.resultSummary ?? null,
       resultSizeBytes: input.resultSummary?.sizeBytes ?? null,
-      metadata: Object.keys(metadata).length > 0 || input.metadata
-        ? { ...metadata, gatewayId: input.session.gatewayId ?? null, gatewayName: input.session.gatewayName ?? null, ...(input.metadata ?? {}) }
+      metadata: Object.keys(metadata).length > 0 || input.metadata || input.session.projectId
+        ? {
+            ...metadata,
+            gatewayId: input.session.gatewayId ?? null,
+            gatewayName: input.session.gatewayName ?? null,
+            projectId: input.session.projectId ?? null,
+            ...(input.metadata ?? {}),
+          }
         : null,
     });
   }
@@ -3162,7 +3170,7 @@ export function createToolGatewayService(
       session: input.session,
       companyId: input.session.companyId,
       agentId: input.session.agentId,
-      runId: null,
+      runId: input.session.runId,
       issueId: input.session.issueId,
       action: "tool_gateway.call_denied",
       details: {
@@ -3358,6 +3366,79 @@ export function createToolGatewayService(
         clientMetadata,
       });
     }
+    let agentId = row.gateway.agentId;
+    let runId: string | null = null;
+    let issueId = row.gateway.issueId;
+    let projectId = row.gateway.projectId;
+    if (row.token.subjectType === "heartbeat_run") {
+      const tokenRunId = row.token.subjectId;
+      if (!tokenRunId || !uuidPattern.test(tokenRunId)) {
+        return recordNamedGatewayAuthFailure({
+          gatewayId: input.gatewayId,
+          gatewayPublicId: input.gatewayPublicId,
+          bearerToken,
+          reasonCode: "gateway_token_run_invalid",
+          clientMetadata,
+        });
+      }
+      const [run] = await db
+        .select({
+          companyId: heartbeatRuns.companyId,
+          agentId: heartbeatRuns.agentId,
+          status: heartbeatRuns.status,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, tokenRunId))
+        .limit(1);
+      if (!run || run.companyId !== row.gateway.companyId) {
+        return recordNamedGatewayAuthFailure({
+          gatewayId: input.gatewayId,
+          gatewayPublicId: input.gatewayPublicId,
+          bearerToken,
+          reasonCode: "gateway_token_run_invalid",
+          clientMetadata,
+        });
+      }
+      if (!ACTIVE_GATEWAY_RUN_STATUSES.has(run.status)) {
+        return recordNamedGatewayAuthFailure({
+          gatewayId: input.gatewayId,
+          gatewayPublicId: input.gatewayPublicId,
+          bearerToken,
+          reasonCode: "gateway_token_run_inactive",
+          clientMetadata,
+        });
+      }
+      if (row.gateway.agentId && row.gateway.agentId !== run.agentId) {
+        return recordNamedGatewayAuthFailure({
+          gatewayId: input.gatewayId,
+          gatewayPublicId: input.gatewayPublicId,
+          bearerToken,
+          reasonCode: "gateway_token_run_context_invalid",
+          clientMetadata,
+        });
+      }
+      try {
+        const runContext = await resolveRunContext({
+          companyId: row.gateway.companyId,
+          agentId: run.agentId,
+          runId: tokenRunId,
+          issueId: row.gateway.issueId,
+          projectId: row.gateway.projectId,
+        });
+        agentId = run.agentId;
+        runId = tokenRunId;
+        issueId = runContext.issueId;
+        projectId = runContext.projectId;
+      } catch {
+        return recordNamedGatewayAuthFailure({
+          gatewayId: input.gatewayId,
+          gatewayPublicId: input.gatewayPublicId,
+          bearerToken,
+          reasonCode: "gateway_token_run_context_invalid",
+          clientMetadata,
+        });
+      }
+    }
     const now = new Date();
     await db
       .update(toolMcpGatewayTokens)
@@ -3367,17 +3448,17 @@ export function createToolGatewayService(
       id: `gateway:${row.gateway.id}`,
       token: "",
       companyId: row.gateway.companyId,
-      agentId: row.gateway.agentId,
-      runId: null,
-      issueId: row.gateway.issueId,
-      projectId: row.gateway.projectId,
+      agentId,
+      runId,
+      issueId,
+      projectId,
       gatewayId: row.gateway.id,
       gatewayPublicId: row.gateway.gatewayPublicId,
       gatewayName: row.gateway.name,
       gatewayTokenId: row.token.id || tokenId,
       gatewayTokenAllowedActions: normalizeGatewayTokenActions(row.token.allowedActions),
-      actorType: "system",
-      actorId: row.token.id,
+      actorType: runId ? "agent" : "system",
+      actorId: runId ? agentId : row.token.id,
       createdAt: row.token.createdAt,
       expiresAt: row.token.expiresAt ?? new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
     };
@@ -4016,7 +4097,7 @@ export function createToolGatewayService(
         session,
         companyId: session.companyId,
         agentId: session.agentId,
-        runId: null,
+        runId: session.runId,
         issueId: session.issueId,
         action: "tool_gateway.discovery",
         details: {

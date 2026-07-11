@@ -14,6 +14,9 @@ const payload = {
   argv: process.argv.slice(2),
   prompt: fs.readFileSync(0, "utf8"),
   codexHome: process.env.CODEX_HOME || null,
+  codexConfigContents: process.env.CODEX_HOME && fs.existsSync(process.env.CODEX_HOME + "/config.toml")
+    ? fs.readFileSync(process.env.CODEX_HOME + "/config.toml", "utf8")
+    : null,
   paperclipWakePayloadJson: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON || null,
   paperclipApiUrl: process.env.PAPERCLIP_API_URL || null,
   paperclipApiKey: process.env.PAPERCLIP_API_KEY || null,
@@ -46,6 +49,7 @@ type CapturePayload = {
   argv: string[];
   prompt: string;
   codexHome: string | null;
+  codexConfigContents?: string | null;
   paperclipWakePayloadJson: string | null;
   paperclipApiUrl?: string | null;
   paperclipApiKey?: string | null;
@@ -270,6 +274,7 @@ describe("codex execute", () => {
           taskKey: null,
         },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           env: {
@@ -277,19 +282,17 @@ describe("codex execute", () => {
           },
           promptTemplate: "Follow the paperclip heartbeat.",
         },
-        context: {
-          paperclipManagedMcp: {
-            version: 1,
-            managedMcpOnly: true,
-            gateways: [
-              {
-                name: "github",
-                endpointPath: "/api/tool-gateway/gateways/gateway-1/mcp",
-                bearerToken: "pcgw_secret-managed-token",
-              },
-            ],
-          },
+        runtimeMcp: {
+          getServers: () => [
+            {
+              name: "github",
+              url: "http://paperclip.local:3100/api/tool-gateway/gateways/gateway-1/mcp",
+              token: "pcgw_secret-managed-token",
+              connectionId: "connection-github",
+            },
+          ],
         },
+        context: {},
         authToken: "run-jwt-token",
         onLog: async (stream, chunk) => {
           logs.push({ stream, chunk });
@@ -298,7 +301,8 @@ describe("codex execute", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
-      const configText = await fs.readFile(path.join(managedCodexHome, "config.toml"), "utf8");
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      const configText = capture.codexConfigContents ?? "";
       expect(configText).toContain("[mcp_servers.github]");
       expect(configText).toContain("[mcp_servers.\"paperclip-github\"]");
       expect(configText).toContain('url = "http://paperclip.local:3100/api/tool-gateway/gateways/gateway-1/mcp"');

@@ -272,7 +272,9 @@ export async function writeManagedCodexMcpConfig(input: {
     apiBaseUrl: input.apiBaseUrl,
     existingNames: readCodexMcpServerNames(unmanagedConfig),
   });
-  const next = `${unmanagedConfig}${unmanagedConfig ? "\n\n" : ""}${block}\n`;
+  const next = input.gateways.length > 0
+    ? `${unmanagedConfig}${unmanagedConfig ? "\n\n" : ""}${block}\n`
+    : `${unmanagedConfig}${unmanagedConfig ? "\n" : ""}`;
   await fs.writeFile(configPath, next, { mode: 0o600 });
   return { configPath, warnings };
 }

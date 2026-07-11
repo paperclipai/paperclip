@@ -480,20 +480,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await onLog("stdout", `[paperclip] ${note}\n`);
     }
     const paperclipBaseEnv = buildPaperclipEnv(agent);
-    const managedMcpGateways = managedMcpGatewaysFromContext(context);
+    const runtimeMcpGateways = (ctx.runtimeMcp?.getServers() ?? []).map((server) => ({
+      name: server.name,
+      endpointPath: server.url,
+      bearerToken: server.token,
+    }));
+    const managedMcpGateways = runtimeMcpGateways.length > 0
+      ? runtimeMcpGateways
+      : managedMcpGatewaysFromContext(context);
+    const managedMcp = await writeManagedCodexMcpConfig({
+      codexHome: effectiveCodexHome,
+      apiBaseUrl: paperclipBaseEnv.PAPERCLIP_API_URL,
+      gateways: managedMcpGateways,
+    });
     if (managedMcpGateways.length > 0) {
-      const managedMcp = await writeManagedCodexMcpConfig({
-        codexHome: effectiveCodexHome,
-        apiBaseUrl: paperclipBaseEnv.PAPERCLIP_API_URL,
-        gateways: managedMcpGateways,
-      });
       await onLog(
         "stdout",
         `[paperclip] Wrote ${managedMcpGateways.length} managed MCP gateway(s) into Codex config "${managedMcp.configPath}".\n`,
       );
-      for (const warning of managedMcp.warnings) {
-        await onLog("stderr", `[paperclip] ${warning}\n`);
-      }
+    }
+    for (const warning of managedMcp.warnings) {
+      await onLog("stderr", `[paperclip] ${warning}\n`);
     }
     // Inject skills into the same CODEX_HOME that Codex will actually run with
     // (managed home in the default case, or an explicit override from adapter config).

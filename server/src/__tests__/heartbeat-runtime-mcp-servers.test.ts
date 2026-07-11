@@ -142,6 +142,8 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     const tokens = await db.select().from(toolMcpGatewayTokens);
     expect(tokens).toHaveLength(2);
     for (const token of tokens) {
+      expect(token.subjectType).toBe("heartbeat_run");
+      expect(token.subjectId).toMatch(/^[0-9a-f-]{36}$/);
       expect(token.expiresAt!.getTime()).toBeGreaterThanOrEqual(before + 59 * 60 * 1000);
       expect(token.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now() + 61 * 60 * 1000);
     }

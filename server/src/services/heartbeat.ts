@@ -73,6 +73,8 @@ import type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
   AdapterModelProfileDefinition,
+  AdapterRuntimeMcpAccess,
+  AdapterRuntimeMcpServer,
   AdapterSessionCodec,
   UsageSummary,
 } from "../adapters/index.js";
@@ -2075,13 +2077,6 @@ type ManagedMcpGatewayRunConfig = {
   }>;
 };
 
-export type PaperclipRuntimeMcpServer = {
-  name: string;
-  url: string;
-  token: string;
-  connectionId: string;
-};
-
 function paperclipApiBaseUrl(): string {
   const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL) ?? "http://127.0.0.1:3100";
   return configured.replace(/\/+$/, "").replace(/\/api$/, "");
@@ -2091,7 +2086,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   db: Db;
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
   runId: string;
-}): Promise<PaperclipRuntimeMcpServer[]> {
+}): Promise<AdapterRuntimeMcpServer[]> {
   const effective = await toolAccessService(input.db).getEffectiveProfilesForAgent(
     input.agent.companyId,
     input.agent.id,
@@ -2111,7 +2106,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   if (uniqueConnections.length === 0) return [];
 
   const service = createToolGatewayService(input.db);
-  const servers: PaperclipRuntimeMcpServer[] = [];
+  const servers: AdapterRuntimeMcpServer[] = [];
   for (const connection of uniqueConnections) {
     const profileKey = `app:${connection.id}`;
     const [profile] = await input.db
@@ -2166,7 +2161,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       gatewayId: gateway.id,
       body: {
         name: `Run ${input.runId.slice(0, 8)} ${connection.name}`,
-        subjectType: "gateway_client",
+        subjectType: "heartbeat_run",
         subjectId: input.runId,
         clientLabel: `${input.agent.name} heartbeat run`,
         ownerNote: `Short-lived runtime MCP token for heartbeat run ${input.runId}.`,
@@ -2183,6 +2178,16 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     });
   }
   return servers;
+}
+
+function createAdapterRuntimeMcpAccess(
+  servers: AdapterRuntimeMcpServer[],
+): AdapterRuntimeMcpAccess | undefined {
+  if (servers.length === 0) return undefined;
+  const snapshot = servers.map((server) => Object.freeze({ ...server }));
+  return Object.freeze({
+    getServers: () => snapshot.map((server) => ({ ...server })),
+  });
 }
 
 const MANAGED_MCP_LOCAL_ADAPTERS = new Set(["codex_local"]);
@@ -2245,7 +2250,7 @@ async function createManagedMcpRunConfig(input: {
       gatewayId: gateway.id,
       body: {
         name: `Managed ${input.agent.name} ${input.runId.slice(0, 8)}`,
-        subjectType: "gateway_client",
+        subjectType: "heartbeat_run",
         subjectId: input.runId,
         clientLabel: `${input.agent.name} managed local adapter`,
         ownerNote: `Short-lived Paperclip-managed MCP token for heartbeat run ${input.runId}.`,
@@ -12892,12 +12897,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agent,
           runId: run.id,
         });
-        if (runtimeMcpServers.length > 0) {
-          runtimeConfig = {
-            ...runtimeConfig,
-            paperclipRuntimeMcpServers: runtimeMcpServers,
-          };
-        }
+        const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
         const managedMcpConfig = await createManagedMcpRunConfig({
           db,
           agent,
@@ -12920,6 +12920,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           executionTransport: remoteExecution
             ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
             : undefined,
+          runtimeMcp,
           onLog,
           onMeta: onAdapterMeta,
           onRuntimeProgress: async (progress) => {

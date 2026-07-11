@@ -16,13 +16,14 @@ import {
   toolProfileEntries,
   toolProfiles,
 } from "@paperclipai/db";
+import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.ts";
-import { heartbeatService, type PaperclipRuntimeMcpServer } from "../services/heartbeat.ts";
+import { heartbeatService } from "../services/heartbeat.ts";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -57,7 +58,9 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
   const capturedRuns: Array<{
     agentId: string;
     skills: PaperclipSkillEntry[];
-    mcpServers: PaperclipRuntimeMcpServer[];
+    mcpServers: AdapterRuntimeMcpServer[];
+    config: Record<string, unknown>;
+    serializedRuntimeInput: string;
   }> = [];
   const cleanupDirs = new Set<string>();
 
@@ -70,10 +73,18 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     registerServerAdapter({
       type: TEST_ADAPTER_TYPE,
       execute: async (ctx) => {
+        const serializedRuntimeInput = JSON.stringify({
+          config: ctx.config,
+          context: ctx.context,
+          runtimeMcp: ctx.runtimeMcp,
+        });
+        await ctx.onLog("stdout", `${serializedRuntimeInput}\n`);
         capturedRuns.push({
           agentId: ctx.agent.id,
           skills: (ctx.config.paperclipRuntimeSkills ?? []) as PaperclipSkillEntry[],
-          mcpServers: (ctx.config.paperclipRuntimeMcpServers ?? []) as PaperclipRuntimeMcpServer[],
+          mcpServers: ctx.runtimeMcp?.getServers() ?? [],
+          config: ctx.config,
+          serializedRuntimeInput,
         });
         return {
           exitCode: 0,
@@ -259,7 +270,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     expect((await fs.stat(firstSkillFile)).mtime.toISOString()).toBe(oldMtime.toISOString());
   });
 
-  it("delivers installed connections and omits uninstalled connections from adapter runtime config", async () => {
+  it("delivers installed connections without exposing gateway bearers in adapter config or logs", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     await db.insert(companies).values({
@@ -348,5 +359,14 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
       url: expect.stringContaining("/api/tool-gateway/gateways/"),
     });
     expect(captured?.mcpServers.some((server) => server.connectionId === uninstalled!.id)).toBe(false);
+    const bearer = captured?.mcpServers[0]?.token;
+    expect(bearer).toMatch(/^pcgw_/);
+    if (!bearer) throw new Error("Expected runtime MCP bearer");
+    expect(captured?.config).not.toHaveProperty("paperclipRuntimeMcpServers");
+    expect(JSON.stringify(captured?.config)).not.toContain(bearer);
+    expect(captured?.serializedRuntimeInput).not.toContain(bearer);
+    const log = await heartbeat.readLog(run!.id);
+    expect(log.content).not.toContain(bearer);
+    expect(log.content).not.toContain("pcgw_");
   });
 });

@@ -3058,6 +3058,113 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     expect(JSON.stringify(audit)).not.toContain(session.token);
   });
 
+  it("binds runtime gateway tokens to active runs and preserves run attribution", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { project, issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const profile = await allowToolsForAgent(db, company.id, agent.id, ["mcp-stdio-fixture:runtime_status"]);
+    const gateway = createTestToolGatewayService(db);
+    const namedGateway = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: {
+        name: `Runtime gateway ${randomUUID()}`,
+        profileId: profile.id,
+        defaultProfileMode: "gateway_only",
+      },
+    });
+    const token = await gateway.createNamedGatewayToken({
+      companyId: company.id,
+      gatewayId: namedGateway.id,
+      body: {
+        name: "Runtime token",
+        subjectType: "heartbeat_run",
+        subjectId: run.id,
+        clientLabel: "Heartbeat runtime",
+        ownerNote: "Run-bound regression token",
+        allowedActions: ["tools/list", "tools/call"],
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+      actor: { agentId: agent.id },
+    });
+    const app = createGatewayRouteApp(db, gateway);
+    await expect(gateway.initializeNamedGatewayProtocol({
+      gatewayId: namedGateway.id,
+      bearerToken: token.token,
+    })).resolves.toMatchObject({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+      issueId: issue.id,
+      projectId: project.id,
+    });
+
+    await request(app)
+      .post(`/api/tool-gateway/gateways/${namedGateway.id}/mcp`)
+      .set("authorization", `Bearer ${token.token}`)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+      .expect(200);
+    await request(app)
+      .post(`/api/tool-gateway/gateways/${namedGateway.id}/mcp`)
+      .set("authorization", `Bearer ${token.token}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "mcp-stdio-fixture:runtime_status", arguments: {} },
+      })
+      .expect(200);
+
+    const [invocation] = await db
+      .select()
+      .from(toolInvocations)
+      .where(eq(toolInvocations.runId, run.id))
+      .limit(1);
+    expect(invocation).toMatchObject({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+      issueId: issue.id,
+    });
+    const attributedActivity = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.runId, run.id), eq(activityLog.action, "tool_gateway.discovery")));
+    expect(attributedActivity).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        companyId: company.id,
+        agentId: agent.id,
+        runId: run.id,
+        entityId: issue.id,
+        details: expect.objectContaining({ issueId: issue.id, runId: run.id }),
+      }),
+    ]));
+    const attributedToolEvents = await db
+      .select()
+      .from(toolCallEvents)
+      .where(eq(toolCallEvents.runId, run.id));
+    expect(attributedToolEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        companyId: company.id,
+        agentId: agent.id,
+        runId: run.id,
+        issueId: issue.id,
+        metadata: expect.objectContaining({ projectId: project.id }),
+      }),
+    ]));
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", completedAt: new Date() })
+      .where(eq(heartbeatRuns.id, run.id));
+
+    const replay = await request(app)
+      .post(`/api/tool-gateway/gateways/${namedGateway.id}/mcp`)
+      .set("authorization", `Bearer ${token.token}`)
+      .send({ jsonrpc: "2.0", id: 3, method: "tools/list" })
+      .expect(401);
+    expect(replay.body.error.data.reasonCode).toBe("gateway_token_run_inactive");
+  });
+
   it("rejects expired, revoked, and tampered durable sessions without auditing token values", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

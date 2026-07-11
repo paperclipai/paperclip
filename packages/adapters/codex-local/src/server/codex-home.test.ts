@@ -10,6 +10,7 @@ import {
   prepareManagedCodexHome,
   reconcileManagedCodexHome,
   seedManagedCodexHome,
+  writeManagedCodexMcpConfig,
 } from "./codex-home.js";
 
 describe("codex managed home", () => {
@@ -625,6 +626,47 @@ describe("evaluateCodexCredentialReadiness", () => {
       expect(result).toMatchObject({ managed: false, ready: true });
     } finally {
       await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces the managed MCP block and clears stale servers for an empty runtime set", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-mcp-config-"));
+    try {
+      const alphaHome = path.join(root, "agent-alpha");
+      const zeroHome = path.join(root, "agent-zero");
+      await writeManagedCodexMcpConfig({
+        codexHome: alphaHome,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [{
+          name: "alpha",
+          endpointPath: "https://paperclip.example/api/tool-gateway/gateways/alpha/mcp",
+          bearerToken: "alpha-token",
+        }],
+      });
+      await writeManagedCodexMcpConfig({
+        codexHome: zeroHome,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [{
+          name: "stale",
+          endpointPath: "/api/tool-gateway/gateways/stale/mcp",
+          bearerToken: "stale-token",
+        }],
+      });
+      await writeManagedCodexMcpConfig({
+        codexHome: zeroHome,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [],
+      });
+
+      const alpha = await fs.readFile(path.join(alphaHome, "config.toml"), "utf8");
+      const zero = await fs.readFile(path.join(zeroHome, "config.toml"), "utf8");
+      expect(alpha).toContain('[mcp_servers."alpha"]');
+      expect(alpha).toContain('Authorization = "Bearer alpha-token"');
+      expect(zero).not.toContain("mcp_servers.");
+      expect(zero).not.toContain("stale-token");
+      expect(alphaHome).not.toBe(zeroHome);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
     }
   });
 });
