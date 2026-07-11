@@ -17,6 +17,7 @@
 - **Ablage-Konvention:** Source + Tests in `tools/seo-geo/` (Git). Laufzeit-Deploy nach `~/.paperclip/scripts/seo-geo/` (launchd kann SynologyDrive nicht lesen).
 - **Meta-Längen-Budgets:** `seo_title` ≤ 60 Zeichen, `meta_description` 120–160 Zeichen. Verstöße werden als Warnung im Changeset markiert, nicht hart abgelehnt.
 - Alle Tests laufen offline gegen Mocks/Fixtures — nie gegen Live-Domains.
+- **Interpreter: Python 3.11+** (System-`python3` ist 3.9 und kann `str | None` (PEP 604) nicht). Entwicklung + Tests laufen über die vorbereitete venv `tools/seo-geo/venv/bin/python`; Deploy-venv wird mit `/opt/homebrew/bin/python3.11` erzeugt. Test-Kommandos in den Tasks (`python -m pytest …`) sind als `./venv/bin/python -m pytest …` auszuführen.
 
 ---
 
@@ -1105,7 +1106,7 @@ mkdir -p ~/.paperclip/scripts/seo-geo
 rsync -a --exclude venv --exclude __pycache__ --exclude '.pytest_cache' \
   "tools/seo-geo/" ~/.paperclip/scripts/seo-geo/
 cd ~/.paperclip/scripts/seo-geo
-python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
+/opt/homebrew/bin/python3.11 -m venv venv && ./venv/bin/pip install -r requirements.txt
 cp sites.example.json sites.json   # echte Domains + credential_ref eintragen
 cp ing.whitestag.seo-geo-audit.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/ing.whitestag.seo-geo-audit.plist
