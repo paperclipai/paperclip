@@ -163,17 +163,24 @@ async function createControlledGatewayServer() {
 describeEmbeddedPostgres("heartbeat comment wake batching", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let heartbeat!: ReturnType<typeof heartbeatService>;
 
   beforeAll(async () => {
     const started = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-comment-wake-");
     db = createDb(started.connectionString);
     tempDb = started;
+    heartbeat = heartbeatService(db);
   }, 120_000);
 
   afterAll(async () => {
+    // Draining pendingBackgroundRunChains covers cascaded fire-and-forget
+    // heartbeat.executeRun -> startNextQueuedRunForAgent chains kicked off by
+    // earlier tests (including retry/backoff tails), which can take longer
+    // than vitest's default 10s hook timeout to fully settle.
+    await heartbeat.waitForIdleBackgroundRuns();
     await closeDbClient(db);
     await tempDb?.cleanup();
-  });
+  }, 60_000);
 
   afterEach(() => {
     runningProcesses.clear();
@@ -185,7 +192,6 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const issueId = randomUUID();
     const runId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
 
     await db.insert(companies).values({
       id: companyId,
@@ -299,7 +305,6 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
 
     try {
       await db.insert(companies).values({
@@ -498,7 +503,6 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
 
     try {
       await db.insert(companies).values({
@@ -632,6 +636,14 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
         return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
       }, 90_000);
+      // Drain any fire-and-forget executeRun -> startNextQueuedRunForAgent
+      // chains kicked off by the cancel above (e.g. the cancelled run's own
+      // tail finishing late, or a "missing_issue_comment" retry cascade)
+      // before the finally block below closes the mock gateway. Without this,
+      // a still-running background chain can hit the closed gateway, fail to
+      // connect, and cascade for many seconds after this test has already
+      // returned, bleeding into (and destabilizing) the next test file.
+      await heartbeat.waitForIdleBackgroundRuns();
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -644,7 +656,6 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
 
     try {
       await db.insert(companies).values({
@@ -837,7 +848,6 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const mentionedAgentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
 
     try {
       await db.insert(companies).values({
@@ -1036,7 +1046,6 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
 
     try {
       await db.insert(companies).values({
@@ -1202,7 +1211,6 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
 
     try {
       await db.insert(companies).values({
@@ -1413,7 +1421,6 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
 
     try {
       await db.insert(companies).values({
@@ -1563,7 +1570,6 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const mentionedAgentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
 
     try {
       await db.insert(companies).values({
@@ -1764,7 +1770,6 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const mentionedAgentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
 
     try {
       await db.insert(companies).values({
@@ -1911,7 +1916,6 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
 
     try {
       await db.insert(companies).values({

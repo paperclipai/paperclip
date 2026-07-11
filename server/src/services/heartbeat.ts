@@ -3542,6 +3542,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return runningProcesses.has(id) || activeRunExecutions.has(id);
     },
   };
+  let pendingBackgroundRunChains = 0;
+  let idleWaiters: Array<() => void> = [];
+
+  function beginBackgroundRunChain() {
+    pendingBackgroundRunChains += 1;
+  }
+
+  function endBackgroundRunChain() {
+    pendingBackgroundRunChains = Math.max(0, pendingBackgroundRunChains - 1);
+    if (pendingBackgroundRunChains === 0) {
+      const waiters = idleWaiters;
+      idleWaiters = [];
+      waiters.forEach((resolve) => resolve());
+    }
+  }
+
+  async function waitForIdleBackgroundRuns(): Promise<void> {
+    if (pendingBackgroundRunChains === 0) return;
+    await new Promise<void>((resolve) => idleWaiters.push(resolve));
+  }
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -8420,9 +8440,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (claimedRuns.length === 0) return [];
 
       for (const claimedRun of claimedRuns) {
-        void executeRun(claimedRun.id).catch((err) => {
-          logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
-        });
+        beginBackgroundRunChain();
+        void executeRun(claimedRun.id)
+          .catch((err) => {
+            logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
+          })
+          .finally(() => endBackgroundRunChain());
       }
       return claimedRuns;
     });
@@ -10305,7 +10328,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           });
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
-          await startNextQueuedRunForAgent(run.agentId);
+          // startNextQueuedRunForAgent is the only path that promotes this agent's
+          // next queued run; nothing else retries it. A transient DB error here
+          // (e.g. a connection drop) must not be allowed to silently strand the
+          // agent's queue, so retry once before giving up.
+          await startNextQueuedRunForAgent(run.agentId).catch(async (err) => {
+            logger.error(
+              { err, agentId: run.agentId, runId: run.id },
+              "failed to promote next queued run after run completion; retrying once",
+            );
+            await startNextQueuedRunForAgent(run.agentId).catch((retryErr) => {
+              logger.error(
+                { err: retryErr, agentId: run.agentId, runId: run.id },
+                "failed to promote next queued run after run completion on retry; agent queue may stall until next external wake",
+              );
+            });
+          });
         }
   }
 
@@ -12471,6 +12509,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
+
+    waitForIdleBackgroundRuns,
 
     /**
      * Pause-only. Emits errorCode "agent_paused" unconditionally; its sole caller is the
