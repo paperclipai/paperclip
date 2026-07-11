@@ -11,6 +11,9 @@ const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|session\s+limit|hit\s+(?:your\s+)?session\s+limit)/i;
+// Matches ONLY weekly quota exhaustion — excludes 5h limits and rate limits.
+const CLAUDE_WEEKLY_QUOTA_RE =
+  /(?:weekly\s+limit\s+reached|hit\s+(?:your\s+)?weekly|weekly\s+usage\s+(?:limit|cap)|reached\s+(?:your\s+)?weekly)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached|session\s+limit|hit\s+(?:your\s+)?session\s+limit)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
@@ -409,4 +412,21 @@ export function isClaudeTransientUpstreamError(input: {
   const haystack = buildClaudeTransientHaystack(input);
   if (!haystack) return false;
   return CLAUDE_TRANSIENT_UPSTREAM_RE.test(haystack);
+}
+
+/**
+ * Returns true only when the failure is specifically a weekly quota exhaustion —
+ * distinct from transient rate limits (429) and 5-hour usage limits.
+ * Used to gate standup fallback issue creation so it fires only on true
+ * weekly exhaustion, not on every transient upstream hiccup.
+ */
+export function isClaudeWeeklyQuotaExhausted(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const haystack = buildClaudeTransientHaystack(input);
+  if (!haystack) return false;
+  return CLAUDE_WEEKLY_QUOTA_RE.test(haystack);
 }
