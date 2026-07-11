@@ -5,11 +5,6 @@
     "publishFromCi": true
   },
   {
-    "dir": "packages/adapters/acpx-local",
-    "name": "@paperclipai/adapter-acpx-local",
-    "publishFromCi": true
-  },
-  {
     "dir": "packages/adapters/claude-local",
     "name": "@paperclipai/adapter-claude-local",
     "publishFromCi": true
@@ -38,6 +33,16 @@
     "dir": "packages/adapters/grok-local",
     "name": "@paperclipai/adapter-grok-local",
     "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/hermes",
+    "name": "@paperclipai/hermes-paperclip-adapter",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/hermes-gateway",
+    "name": "@paperclipai/adapter-hermes-gateway",
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapters/opencode-local",

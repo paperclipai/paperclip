@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
+  isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeRefusalResult,
@@ -8,21 +10,59 @@ import {
   isClaudeImageProcessingError,
 } from "./parse.js";
 
-describe("isClaudeTransientUpstreamError", () => {
-  it("classifies the 'out of extra usage' subscription window failure as transient", () => {
+describe("detectClaudeLoginRequired", () => {
+  it("classifies Claude's invalid API key login prompt as auth required", () => {
     expect(
-      isClaudeTransientUpstreamError({
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "",
+        stderr: "Invalid API key · Please run /login",
+      }),
+    ).toEqual({ requiresLogin: true, loginUrl: null });
+  });
+
+  it("does not classify a bare invalid API key as the Claude login flow", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "",
+        stderr: "Invalid API key",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+});
+
+describe("isClaudeTransientUpstreamError", () => {
+  it("classifies the 'out of extra usage' subscription window failure as provider quota", () => {
+    expect(
+      isClaudeProviderQuotaError({
         errorMessage: "You're out of extra usage · resets 4pm (America/Chicago)",
       }),
     ).toBe(true);
     expect(
-      isClaudeTransientUpstreamError({
+      isClaudeProviderQuotaError({
         parsed: {
           is_error: true,
           result: "You're out of extra usage. Resets at 4pm (America/Chicago).",
         },
       }),
     ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({
+        errorMessage: "You're out of extra usage · resets 4pm (America/Chicago)",
+      }),
+    ).toBe(false);
+  });
+
+  it("classifies Claude session-limit windows as provider quota and extracts the retry time", () => {
+    const now = new Date("2026-04-22T15:15:00.000Z");
+    const errorMessage = "You've hit your session limit - resets at 4pm (America/Chicago).";
+
+    expect(isClaudeProviderQuotaError({ errorMessage })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(false);
+    expect(extractClaudeRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-04-22T21:00:00.000Z",
+    );
   });
 
   it("classifies Anthropic API rate_limit_error and overloaded_error as transient", () => {
@@ -54,14 +94,14 @@ describe("isClaudeTransientUpstreamError", () => {
     ).toBe(true);
   });
 
-  it("classifies the subscription 5-hour / weekly limit wording", () => {
+  it("classifies the subscription 5-hour / weekly limit wording as provider quota", () => {
     expect(
-      isClaudeTransientUpstreamError({
+      isClaudeProviderQuotaError({
         errorMessage: "Claude usage limit reached — weekly limit reached. Try again in 2 days.",
       }),
     ).toBe(true);
     expect(
-      isClaudeTransientUpstreamError({
+      isClaudeProviderQuotaError({
         errorMessage: "5-hour limit reached.",
       }),
     ).toBe(true);

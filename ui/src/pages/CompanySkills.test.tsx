@@ -5,7 +5,8 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import type { CompanySkillDetail, CompanySkillVersion } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SkillDetailPage, getSkillVersionDiffSelection } from "./CompanySkills";
+import { DiscoveryGrid, SkillDetailPage, getSkillVersionDiffSelection } from "./CompanySkills";
+import { skillStudioNewRoute } from "../lib/company-skill-routes";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -40,7 +41,7 @@ vi.mock("@/components/ui/dialog", () => ({
 
 vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenu: ({ children }: { children: ReactNode }) => <>{children}</>,
-  DropdownMenuContent: () => null,
+  DropdownMenuContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   DropdownMenuItem: ({ children, onSelect }: { children: ReactNode; onSelect?: () => void }) => (
     <button type="button" onClick={onSelect}>{children}</button>
   ),
@@ -124,7 +125,7 @@ function makeVersion(revisionNumber: number, content: string): CompanySkillVersi
   };
 }
 
-function makeDetail(currentVersion: CompanySkillVersion): CompanySkillDetail {
+function makeDetail(currentVersion: CompanySkillVersion, overrides: Partial<CompanySkillDetail> = {}): CompanySkillDetail {
   return {
     id: "skill-1",
     companyId: "company-1",
@@ -158,6 +159,7 @@ function makeDetail(currentVersion: CompanySkillVersion): CompanySkillDetail {
     updatedAt: new Date("2026-01-02T00:00:00Z"),
     attachedAgentCount: 0,
     usedByAgents: [],
+    existingForks: [],
     editable: true,
     editableReason: null,
     sourceLabel: "Local",
@@ -165,20 +167,25 @@ function makeDetail(currentVersion: CompanySkillVersion): CompanySkillDetail {
     sourcePath: null,
     currentVersion,
     starredByCurrentActor: false,
+    ...overrides,
   };
 }
 
-async function renderSkillDetail(versions: CompanySkillVersion[]) {
+async function renderSkillDetail(
+  versions: CompanySkillVersion[],
+  props: Partial<ComponentProps<typeof SkillDetailPage>> = {},
+) {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  const detail = props.detail ?? makeDetail(versions[0]!);
 
   await act(async () => {
     root?.render(
       <SkillDetailPage
-        detail={makeDetail(versions[0]!)}
+        detail={detail}
         loading={false}
-        activeTab="versions"
+        activeTab={props.activeTab ?? "versions"}
         onTabChange={vi.fn()}
         selectedPath="SKILL.md"
         file={null}
@@ -208,10 +215,49 @@ async function renderSkillDetail(versions: CompanySkillVersion[]) {
         onToggleStar={vi.fn()}
         starPending={false}
         onFork={vi.fn()}
-        onUpdateSharingScope={vi.fn()}
-        updateSharingPending={false}
+        onUpdateSettings={vi.fn()}
+        updateSettingsPending={false}
         onDelete={vi.fn()}
         deletePending={false}
+        {...props}
+      />,
+    );
+  });
+
+  return container;
+}
+
+async function renderDiscoveryGrid(props: Partial<ComponentProps<typeof DiscoveryGrid>> = {}) {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+
+  await act(async () => {
+    root?.render(
+      <DiscoveryGrid
+        tab="all"
+        tabCounts={{ all: 0, installed: 0, catalog: 0, bundled: 0 }}
+        onTabChange={vi.fn()}
+        categories={[]}
+        categoryTotal={0}
+        activeCategory={null}
+        onCategoryChange={vi.fn()}
+        search=""
+        onSearchChange={vi.fn()}
+        sort="agents"
+        onSortChange={vi.fn()}
+        cards={[]}
+        onOpenCard={vi.fn()}
+        loading={false}
+        error={null}
+        totalCount={0}
+        onCreate={vi.fn()}
+        onImport={vi.fn()}
+        onBrowseCatalog={vi.fn()}
+        onScan={vi.fn()}
+        scanPending={false}
+        scanStatus={null}
+        {...props}
       />,
     );
   });
@@ -229,6 +275,22 @@ async function click(button: HTMLButtonElement) {
   });
 }
 
+async function inputValue(input: HTMLInputElement, value: string) {
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+async function selectValue(select: HTMLSelectElement, value: string) {
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+    setter?.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
 describe("getSkillVersionDiffSelection", () => {
   it("selects the previous saved revision or the initial baseline for row diffs", () => {
     const v1 = makeVersion(1, "first");
@@ -242,6 +304,33 @@ describe("getSkillVersionDiffSelection", () => {
       leftVersionId: null,
       rightVersionId: v1.id,
     });
+  });
+});
+
+describe("DiscoveryGrid Studio entry points", () => {
+  it("links the header Studio button to Skill Studio", async () => {
+    const node = await renderDiscoveryGrid();
+    const studioLink = Array.from(node.querySelectorAll("a")).find((link) =>
+      link.textContent?.includes("Studio"),
+    );
+
+    expect(studioLink?.getAttribute("href")).toBe("/skills/studio");
+  });
+
+  it("uses the create callback from the New menu and empty state", async () => {
+    const onCreate = vi.fn();
+    const node = await renderDiscoveryGrid({ onCreate });
+
+    await click(buttonsNamed(node, "Create new skill")[0] as HTMLButtonElement);
+    await click(buttonsNamed(node, "Create a skill")[0] as HTMLButtonElement);
+
+    expect(onCreate).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("skillStudioNewRoute", () => {
+  it("builds a direct fork draft URL for a specific skill", () => {
+    expect(skillStudioNewRoute("skill 1")).toBe("/skills/studio/new?forkFrom=skill%201");
   });
 });
 
@@ -272,5 +361,188 @@ describe("SkillDetailPage versions tab", () => {
     expect(dialog.textContent).toContain("Initial");
     expect(dialog.textContent).toContain("First line");
     expect(dialog.textContent).not.toContain("Both sides are the same version");
+  });
+});
+
+describe("SkillDetailPage settings", () => {
+  it("shows a direct fork action for read-only skills", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const onFork = vi.fn();
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail: makeDetail(v1, {
+        editable: false,
+        editableReason: "Remote GitHub skills are read-only. Fork or import locally to edit them.",
+        sourceBadge: "github",
+        sourceLabel: "GitHub",
+        sourceType: "github",
+      }),
+      onFork,
+    });
+
+    expect(node.textContent).not.toContain("Fork or import locally");
+
+    const forkButton = buttonsNamed(node, "Fork")[0] as HTMLButtonElement;
+    expect(forkButton).toBeTruthy();
+
+    await click(forkButton);
+
+    expect(onFork).toHaveBeenCalledOnce();
+  });
+
+  it("renders long source paths in full so they can wrap inside the sidebar", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const longSourcePath = "/srv/paperclip/home/paperclipai/paperclip/.agents/skills/prepare-pr/SKILL.md";
+    const node = await renderSkillDetail([v1], {
+      activeTab: "agents",
+      detail: makeDetail(v1, {
+        sourcePath: longSourcePath,
+        sourceLocator: null,
+      }),
+    });
+
+    const sourceValue = Array.from(node.querySelectorAll("div")).find((element) =>
+      element.textContent === longSourcePath,
+    );
+
+    expect(sourceValue).toBeTruthy();
+    expect(sourceValue?.className).toContain("[overflow-wrap:anywhere]");
+    expect(node.textContent).not.toContain("...");
+  });
+
+  it("saves normalized category edits from the settings dialog", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const onUpdateSettings = vi.fn();
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail: makeDetail(v1, {
+        categories: ["engineering"],
+        sharingScope: "company",
+      }),
+      onUpdateSettings,
+    });
+
+    await click(buttonsNamed(node, "Settings")[0] as HTMLButtonElement);
+    const dialog = node.querySelector('[role="dialog"]') as HTMLElement;
+    const categoryInput = dialog.querySelector("input") as HTMLInputElement;
+    const saveButton = buttonsNamed(dialog, "Save settings")[0] as HTMLButtonElement;
+
+    expect(categoryInput.value).toBe("engineering");
+
+    await inputValue(categoryInput, " Memory Tools, review, memory tools ,,");
+    await click(saveButton);
+
+    expect(onUpdateSettings).toHaveBeenCalledWith({
+      sharingScope: "company",
+      categories: ["Memory Tools", "review"],
+    });
+  });
+
+  it("allows clearing categories and saving sharing together", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const onUpdateSettings = vi.fn();
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail: makeDetail(v1, {
+        categories: ["engineering"],
+        sharingScope: "company",
+      }),
+      onUpdateSettings,
+    });
+
+    await click(buttonsNamed(node, "Settings")[0] as HTMLButtonElement);
+    const dialog = node.querySelector('[role="dialog"]') as HTMLElement;
+
+    await inputValue(dialog.querySelector("input") as HTMLInputElement, "");
+    await selectValue(dialog.querySelector("select") as HTMLSelectElement, "private");
+    await click(buttonsNamed(dialog, "Save settings")[0] as HTMLButtonElement);
+
+    expect(onUpdateSettings).toHaveBeenCalledWith({
+      sharingScope: "private",
+      categories: [],
+    });
+  });
+
+  it("does not treat reordered categories as dirty", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail: makeDetail(v1, {
+        categories: ["memory", "review"],
+        sharingScope: "company",
+      }),
+    });
+
+    await click(buttonsNamed(node, "Settings")[0] as HTMLButtonElement);
+    const dialog = node.querySelector('[role="dialog"]') as HTMLElement;
+
+    await inputValue(dialog.querySelector("input") as HTMLInputElement, "review, memory");
+
+    expect((buttonsNamed(dialog, "Save settings")[0] as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("keeps the category draft visible while a failed save leaves detail unchanged", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const detail = makeDetail(v1, {
+      categories: ["engineering"],
+      sharingScope: "company",
+    });
+    const onUpdateSettings = vi.fn();
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail,
+      onUpdateSettings,
+    });
+
+    await click(buttonsNamed(node, "Settings")[0] as HTMLButtonElement);
+    const categoryInput = node.querySelector('[role="dialog"] input') as HTMLInputElement;
+
+    await inputValue(categoryInput, "memory");
+    await click(buttonsNamed(node.querySelector('[role="dialog"]') as HTMLElement, "Save settings")[0] as HTMLButtonElement);
+
+    await act(async () => {
+      root?.render(
+        <SkillDetailPage
+          detail={detail}
+          loading={false}
+          activeTab="overview"
+          onTabChange={vi.fn()}
+          selectedPath="SKILL.md"
+          file={null}
+          fileLoading={false}
+          viewMode="preview"
+          editMode={false}
+          draft=""
+          setViewMode={vi.fn()}
+          setEditMode={vi.fn()}
+          setDraft={vi.fn()}
+          onSave={vi.fn()}
+          savePending={false}
+          versions={[v1]}
+          versionsLoading={false}
+          attachAgents={[]}
+          onSubmitAttach={vi.fn()}
+          attachPending={false}
+          expandedDirs={new Set()}
+          onToggleDir={vi.fn()}
+          onSelectPath={vi.fn()}
+          updateStatus={null}
+          updateStatusLoading={false}
+          onCheckUpdates={vi.fn()}
+          checkUpdatesPending={false}
+          onInstallUpdate={vi.fn()}
+          installUpdatePending={false}
+          onToggleStar={vi.fn()}
+          starPending={false}
+          onFork={vi.fn()}
+          onUpdateSettings={onUpdateSettings}
+          updateSettingsPending={false}
+          onDelete={vi.fn()}
+          deletePending={false}
+        />,
+      );
+    });
+
+    expect((node.querySelector('[role="dialog"] input') as HTMLInputElement).value).toBe("memory");
   });
 });

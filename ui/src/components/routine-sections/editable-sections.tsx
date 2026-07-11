@@ -27,12 +27,13 @@ import { nextCronFires, previewFirePolicies } from "../../lib/cron-fires";
 import { timeAgo } from "../../lib/timeAgo";
 import { EmptyState } from "../EmptyState";
 import { InlineEntitySelector } from "../InlineEntitySelector";
+import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "../IssueDocumentAnnotations";
 import { AgentIcon } from "../AgentIconPicker";
 import { MarkdownEditor } from "../MarkdownEditor";
 import { ScheduleEditor, getScheduleCronValidation } from "../ScheduleEditor";
 import { RoutineVariablesEditor, RoutineVariablesHint } from "../RoutineVariablesEditor";
 import { RoutineTriggerCard } from "../RoutineTriggerCard";
-import { EnvVarEditor } from "../EnvVarEditor";
+import { EnvironmentVariablesEditor } from "../environment-variables-editor";
 import { createDefaultNewTrigger, useRoutineDetail } from "./context";
 import type { EnvBinding, RoutineDetail as RoutineDetailType } from "@paperclipai/shared";
 
@@ -77,7 +78,11 @@ const signingModeDescriptions: Record<string, string> = {
 };
 const SIGNING_MODES_WITHOUT_REPLAY_WINDOW = new Set(["github_hmac", "none"]);
 
-export function OverviewSection() {
+export function OverviewSection({
+  defaultDescriptionAnnotationsOpen = false,
+}: {
+  defaultDescriptionAnnotationsOpen?: boolean;
+} = {}) {
   const ctx = useRoutineDetail();
   const {
     routine,
@@ -98,8 +103,11 @@ export function OverviewSection() {
     routineRuns,
     activity,
     saveRoutine,
+    saveConflict,
+    isSectionDirty,
     navigateToSection,
   } = ctx;
+  const [descriptionAnnotationsOpen, setDescriptionAnnotationsOpen] = useState(defaultDescriptionAnnotationsOpen);
 
   const activeTriggers = routine.triggers.length;
   const nextFire = useMemo(() => {
@@ -124,10 +132,10 @@ export function OverviewSection() {
             value={editDraft.assigneeAgentId}
             options={assigneeOptions}
             recentOptionIds={recentAssigneeIds}
-            placeholder="Assignee"
-            noneLabel="No assignee"
-            searchPlaceholder="Search assignees..."
-            emptyMessage="No assignees found."
+            placeholder="Responsible"
+            noneLabel="No responsible"
+            searchPlaceholder="Search responsible..."
+            emptyMessage="No responsible found."
             onChange={(assigneeAgentId) =>
               setEditDraft((current) => ({ ...current, assigneeAgentId }))
             }
@@ -149,7 +157,7 @@ export function OverviewSection() {
                   <span className="truncate">{option.label}</span>
                 )
               ) : (
-                <span className="text-muted-foreground">Assignee</span>
+                <span className="text-muted-foreground">Responsible</span>
               )
             }
             renderOption={(option) => {
@@ -182,7 +190,7 @@ export function OverviewSection() {
                 <>
                   <span
                     className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                    style={{ backgroundColor: currentProject.color ?? "#64748b" }}
+                    style={{ backgroundColor: currentProject.color ?? "var(--project-none)" }}
                   />
                   <span className="truncate">{option.label}</span>
                 </>
@@ -197,7 +205,7 @@ export function OverviewSection() {
                 <>
                   <span
                     className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                    style={{ backgroundColor: project?.color ?? "#64748b" }}
+                    style={{ backgroundColor: project?.color ?? "var(--project-none)" }}
                   />
                   <span className="truncate">{option.label}</span>
                 </>
@@ -215,20 +223,63 @@ export function OverviewSection() {
       ) : null}
 
       {/* Instructions */}
-      <MarkdownEditor
-        ref={descriptionEditorRef}
-        value={editDraft.description}
-        onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
-        placeholder="Add instructions..."
-        bordered={false}
-        contentClassName="min-h-[120px] text-[15px] leading-7"
-        mentions={mentionOptions}
-        onSubmit={() => {
-          if (!saveRoutine.isPending && editDraft.title.trim()) {
-            saveRoutine.mutate();
-          }
-        }}
-      />
+      <div className="space-y-2">
+        <div className="flex items-center justify-end">
+          {routine.descriptionDocument ? (
+            <DocumentAnnotationsCountChip
+              issueId={routine.id}
+              docKey="description"
+              target={{ kind: "routine", routineId: routine.id, documentKey: "description" }}
+              panelOpen={descriptionAnnotationsOpen}
+              onToggle={() => setDescriptionAnnotationsOpen((open) => !open)}
+            />
+          ) : null}
+        </div>
+        {routine.descriptionDocument ? (
+          <IssueDocumentAnnotations
+            issueId={routine.id}
+            doc={routine.descriptionDocument}
+            target={{ kind: "routine", routineId: routine.id, documentKey: "description" }}
+            bodyMarkdown={editDraft.description}
+            draftDirty={isSectionDirty("overview") || saveRoutine.isPending}
+            draftConflicted={saveConflict}
+            historicalPreview={false}
+            locationHash={typeof window === "undefined" ? "" : window.location.hash}
+            panelOpen={descriptionAnnotationsOpen}
+            onPanelOpenChange={setDescriptionAnnotationsOpen}
+          >
+            <MarkdownEditor
+              ref={descriptionEditorRef}
+              value={editDraft.description}
+              onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
+              placeholder="Add instructions..."
+              bordered={false}
+              contentClassName="min-h-(--sz-120px) text-sm leading-7"
+              mentions={mentionOptions}
+              onSubmit={() => {
+                if (!saveRoutine.isPending && editDraft.title.trim()) {
+                  saveRoutine.mutate();
+                }
+              }}
+            />
+          </IssueDocumentAnnotations>
+        ) : (
+          <MarkdownEditor
+            ref={descriptionEditorRef}
+            value={editDraft.description}
+            onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
+            placeholder="Add instructions..."
+            bordered={false}
+            contentClassName="min-h-(--sz-120px) text-sm leading-7"
+            mentions={mentionOptions}
+            onSubmit={() => {
+              if (!saveRoutine.isPending && editDraft.title.trim()) {
+                saveRoutine.mutate();
+              }
+            }}
+          />
+        )}
+      </div>
 
       {/* Variables peek */}
       <div className="space-y-3">
@@ -598,7 +649,7 @@ export function SecretsSection() {
         </div>
       ) : null}
 
-      <EnvVarEditor
+      <EnvironmentVariablesEditor
         value={(editDraft.env ?? {}) as Record<string, EnvBinding>}
         secrets={availableSecrets}
         recentlyUsedSecrets={recentlyUsedSecrets}
@@ -616,7 +667,7 @@ export function DeliverySection() {
   return (
     <div className="space-y-6">
       <div className="space-y-3">
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
           Concurrency
         </p>
         <RadioCardGroup
@@ -629,7 +680,7 @@ export function DeliverySection() {
         />
       </div>
       <div className="space-y-3">
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
           Catch-up
         </p>
         <RadioCardGroup
@@ -688,7 +739,7 @@ function NextFiresPreview({
 
   return (
     <div className="space-y-3">
-      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+      <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
         Next 5 fires
       </p>
       {preview ? (
@@ -708,7 +759,7 @@ function NextFiresPreview({
               </div>
             ))}
           </div>
-          <p className="text-[11px] text-muted-foreground/60">
+          <p className="text-(length:--text-micro) text-muted-foreground/60">
             Preview assumes the previous run is still in flight when the next fires. Times shown in{" "}
             {preview.timeZone}.
           </p>
