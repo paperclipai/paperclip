@@ -4844,6 +4844,214 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
   }, 20_000);
 });
 
+describeEmbeddedPostgres("workspace runtime service control persistence", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-runtime-control-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  afterEach(async () => {
+    await resetRuntimeServicesForTests();
+    await db.delete(workspaceRuntimeServices);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(issues);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  it("commits a starting service row before waiting for slow readiness", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-slow-control-"));
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-control-home-"));
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = `runtime-control-${randomUUID()}`;
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const issueId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const markerPath = path.join(workspaceRoot, "runtime-spawned.marker");
+    const serverScript = [
+      `require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "spawned");`,
+      "setTimeout(() => {",
+      "  require(\"node:http\")",
+      "    .createServer((_req, res) => { res.end(\"ok\"); })",
+      "    .listen(Number(process.env.PORT), \"127.0.0.1\");",
+      "}, 700);",
+      "setInterval(() => {}, 1000);",
+    ].join(" ");
+    const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(serverScript)}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Runtime control",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      cwd: workspaceRoot,
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      status: "in_progress",
+      priority: "high",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Runtime control workspace",
+      status: "active",
+      providerType: "git_worktree",
+      cwd: workspaceRoot,
+      providerRef: workspaceRoot,
+      branchName: "feature/runtime-control",
+      baseRef: "main",
+    });
+
+    const waitForMarker = async () => {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        if (existsSync(markerPath)) return;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error("Timed out waiting for runtime service process marker");
+    };
+    const waitForPersistedStatus = async (status: string) => {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        const row = await db
+          .select()
+          .from(workspaceRuntimeServices)
+          .where(eq(workspaceRuntimeServices.executionWorkspaceId, executionWorkspaceId))
+          .then((rows) => rows[0] ?? null);
+        if (row?.status === status) return row;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error(`Timed out waiting for persisted runtime service status ${status}`);
+    };
+
+    const startPromise = startRuntimeServicesForWorkspaceControl({
+      db,
+      invocationId: randomUUID(),
+      actor: {
+        id: null,
+        name: "Board",
+        companyId,
+      },
+      issue: {
+        id: issueId,
+        identifier: null,
+        title: "Source task",
+      },
+      workspace: {
+        baseCwd: workspaceRoot,
+        source: "task_session",
+        projectId,
+        workspaceId: projectWorkspaceId,
+        repoUrl: null,
+        repoRef: "main",
+        strategy: "git_worktree",
+        cwd: workspaceRoot,
+        branchName: "feature/runtime-control",
+        worktreePath: workspaceRoot,
+        warnings: [],
+        created: false,
+      },
+      executionWorkspaceId,
+      config: {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command,
+              lifecycle: "shared",
+              reuseScope: "execution_workspace",
+              port: { type: "auto", envKey: "PORT" },
+              expose: { urlTemplate: "http://127.0.0.1:{{port}}" },
+              readiness: { type: "http", intervalMs: 50, timeoutSec: 10 },
+              stopPolicy: { type: "manual" },
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+    });
+    startPromise.catch(() => undefined);
+
+    try {
+      await waitForMarker();
+      const startingRow = await waitForPersistedStatus("starting");
+      expect(startingRow).toMatchObject({
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId,
+        issueId,
+        serviceName: "web",
+        status: "starting",
+        healthStatus: "unknown",
+      });
+      expect(startingRow.providerRef).toMatch(/^\d+$/);
+      expect(startingRow.port).toEqual(expect.any(Number));
+
+      const services = await startPromise;
+      expect(services).toHaveLength(1);
+      expect(services[0]).toMatchObject({
+        id: startingRow.id,
+        status: "running",
+        healthStatus: "healthy",
+      });
+
+      const runningRow = await waitForPersistedStatus("running");
+      expect(runningRow.id).toBe(startingRow.id);
+      await expect(fetch(services[0]!.url!)).resolves.toMatchObject({ ok: true });
+    } finally {
+      await startPromise.catch(() => undefined);
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId,
+        workspaceCwd: workspaceRoot,
+      });
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+    }
+  }, 15_000);
+});
+
 describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;

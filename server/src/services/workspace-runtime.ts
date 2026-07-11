@@ -129,6 +129,11 @@ interface RuntimeServiceRecord extends RuntimeServiceRef {
   processGroupId: number | null;
 }
 
+type LocalRuntimeServiceStart = {
+  record: RuntimeServiceRecord;
+  readiness: Promise<void>;
+};
+
 type StoppedRuntimeServiceReuseCandidate = {
   id: string;
   port: number | null;
@@ -3787,7 +3792,7 @@ export function normalizeAdapterManagedRuntimeServices(input: {
   });
 }
 
-async function startLocalRuntimeService(input: {
+type StartLocalRuntimeServiceInput = {
   db?: Db;
   runId: string;
   leaseRunId?: string | null;
@@ -3802,7 +3807,9 @@ async function startLocalRuntimeService(input: {
   reuseKey: string | null;
   scopeType: "project_workspace" | "execution_workspace" | "run" | "agent";
   scopeId: string | null;
-}): Promise<RuntimeServiceRecord> {
+};
+
+async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): Promise<LocalRuntimeServiceStart> {
   const leaseRunId = input.leaseRunId === undefined ? input.runId : input.leaseRunId;
   const startedByRunId = input.startedByRunId === undefined ? input.runId : input.startedByRunId;
   const identity = resolveRuntimeServiceReuseIdentity({
@@ -3901,40 +3908,43 @@ async function startLocalRuntimeService(input: {
       await removeLocalServiceRegistryRecord(adoptedRecord.serviceKey);
     } else {
       return {
-        id: adoptedRecord.runtimeServiceId ?? randomUUID(),
-        companyId: input.agent.companyId,
-        projectId: input.workspace.projectId,
-        projectWorkspaceId: input.workspace.workspaceId,
-        executionWorkspaceId: input.executionWorkspaceId ?? null,
-        issueId: input.issue?.id ?? null,
-        serviceName,
-        status: "running",
-        lifecycle,
-        scopeType: input.scopeType,
-        scopeId: input.scopeId,
-        reuseKey: input.reuseKey,
-        command,
-        cwd: serviceCwd,
-        port: adoptedRecord.port ?? port,
-        url: adoptedRecord.url ?? url,
-        provider: "local_process",
-        providerRef: String(adoptedRecord.pid),
-        ownerAgentId: input.agent.id ?? null,
-        startedByRunId,
-        lastUsedAt: new Date().toISOString(),
-        startedAt: adoptedRecord.startedAt,
-        stoppedAt: null,
-        stopPolicy,
-        healthStatus: "healthy",
-        reused: true,
-        db: input.db,
-        child: null,
-        leaseRunIds: leaseRunId ? new Set([leaseRunId]) : new Set(),
-        idleTimer: null,
-        envFingerprint,
-        serviceKey,
-        profileKind: "workspace-runtime",
-        processGroupId: adoptedRecord.processGroupId ?? null,
+        record: {
+          id: adoptedRecord.runtimeServiceId ?? randomUUID(),
+          companyId: input.agent.companyId,
+          projectId: input.workspace.projectId,
+          projectWorkspaceId: input.workspace.workspaceId,
+          executionWorkspaceId: input.executionWorkspaceId ?? null,
+          issueId: input.issue?.id ?? null,
+          serviceName,
+          status: "running",
+          lifecycle,
+          scopeType: input.scopeType,
+          scopeId: input.scopeId,
+          reuseKey: input.reuseKey,
+          command,
+          cwd: serviceCwd,
+          port: adoptedRecord.port ?? port,
+          url: adoptedRecord.url ?? url,
+          provider: "local_process",
+          providerRef: String(adoptedRecord.pid),
+          ownerAgentId: input.agent.id ?? null,
+          startedByRunId,
+          lastUsedAt: new Date().toISOString(),
+          startedAt: adoptedRecord.startedAt,
+          stoppedAt: null,
+          stopPolicy,
+          healthStatus: "healthy",
+          reused: true,
+          db: input.db,
+          child: null,
+          leaseRunIds: leaseRunId ? new Set([leaseRunId]) : new Set(),
+          idleTimer: null,
+          envFingerprint,
+          serviceKey,
+          profileKind: "workspace-runtime",
+          processGroupId: adoptedRecord.processGroupId ?? null,
+        },
+        readiness: Promise.resolve(),
       };
     }
   }
@@ -3986,18 +3996,7 @@ async function startLocalRuntimeService(input: {
     if (input.onLog) await input.onLog("stderr", `[service:${serviceName}] ${text}`);
   });
 
-  try {
-    await Promise.race([
-      waitForReadiness({ service: input.service, serviceName, command, url }),
-      spawnErrorPromise,
-    ]);
-  } catch (err) {
-    terminateChildProcess(child);
-    throw new Error(
-      `Failed to start runtime service "${serviceName}": ${err instanceof Error ? err.message : String(err)}${stderrExcerpt ? ` | stderr: ${stderrExcerpt.trim()}` : ""}`,
-    );
-  }
-
+  const nowIso = new Date().toISOString();
   const record: RuntimeServiceRecord = {
     id: stoppedReuseCandidate?.id ?? randomUUID(),
     companyId: input.agent.companyId,
@@ -4006,7 +4005,7 @@ async function startLocalRuntimeService(input: {
     executionWorkspaceId: input.executionWorkspaceId ?? null,
     issueId: input.issue?.id ?? null,
     serviceName,
-    status: "running",
+    status: "starting",
     lifecycle,
     scopeType: input.scopeType,
     scopeId: input.scopeId,
@@ -4019,11 +4018,11 @@ async function startLocalRuntimeService(input: {
     providerRef: child.pid ? String(child.pid) : null,
     ownerAgentId: input.agent.id ?? null,
     startedByRunId,
-    lastUsedAt: new Date().toISOString(),
-    startedAt: new Date().toISOString(),
+    lastUsedAt: nowIso,
+    startedAt: nowIso,
     stoppedAt: null,
     stopPolicy,
-    healthStatus: "healthy",
+    healthStatus: "unknown",
     reused: false,
     db: input.db,
     child,
@@ -4064,7 +4063,37 @@ async function startLocalRuntimeService(input: {
     });
   }
 
-  return record;
+  const readinessPromise = Promise.race([
+    waitForReadiness({ service: input.service, serviceName, command, url }),
+    spawnErrorPromise,
+  ]).then(async () => {
+    record.status = "running";
+    record.healthStatus = "healthy";
+    record.lastUsedAt = new Date().toISOString();
+    record.stoppedAt = null;
+    await touchLocalServiceRegistryRecord(record.serviceKey, {
+      runtimeServiceId: record.id,
+      lastSeenAt: record.lastUsedAt,
+    });
+  }).catch(async (err) => {
+    terminateChildProcess(child);
+    record.status = "stopped";
+    record.healthStatus = "unhealthy";
+    record.lastUsedAt = new Date().toISOString();
+    record.stoppedAt = new Date().toISOString();
+    await removeLocalServiceRegistryRecord(record.serviceKey).catch(() => undefined);
+    throw new Error(
+      `Failed to start runtime service "${serviceName}": ${err instanceof Error ? err.message : String(err)}${stderrExcerpt ? ` | stderr: ${stderrExcerpt.trim()}` : ""}`,
+    );
+  });
+
+  return { record, readiness: readinessPromise };
+}
+
+async function startLocalRuntimeService(input: StartLocalRuntimeServiceInput): Promise<RuntimeServiceRecord> {
+  const started = await spawnLocalRuntimeService(input);
+  await started.readiness;
+  return started.record;
 }
 
 function scheduleIdleStop(record: RuntimeServiceRecord) {
@@ -4344,14 +4373,23 @@ type StartRuntimeServicesForWorkspaceControlInput = {
   respectDesiredStates?: boolean;
 };
 
+type WorkspaceControlStartBatch = {
+  refs: RuntimeServiceRef[];
+  pendingReadiness: LocalRuntimeServiceStart[];
+  startedServiceIds: string[];
+};
+
 async function startRuntimeServicesForWorkspaceControlUnlocked(
   input: StartRuntimeServicesForWorkspaceControlInput,
   rawServices: Record<string, unknown>[],
   invocationId: string,
   persistenceDb = input.db,
   registryDb = input.db,
-): Promise<RuntimeServiceRef[]> {
+  options?: { deferReadiness?: boolean },
+): Promise<WorkspaceControlStartBatch> {
   const refs: RuntimeServiceRef[] = [];
+  const pendingReadiness: LocalRuntimeServiceStart[] = [];
+  const startedServiceIds: string[] = [];
 
   for (const service of rawServices) {
     const { scopeType, scopeId } = resolveServiceScopeId({
@@ -4389,9 +4427,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
       }
     }
 
-    // Manually controlled services are not tied to a heartbeat run lifecycle, so they do not
-    // retain a run lease and never persist a startedByRunId foreign key.
-    const record = await startLocalRuntimeService({
+    const startInput: StartLocalRuntimeServiceInput = {
       db: persistenceDb,
       runId: invocationId,
       leaseRunId: null,
@@ -4406,13 +4442,30 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
       reuseKey,
       scopeType,
       scopeId,
-    });
-    registerRuntimeService(registryDb, record);
-    await persistRuntimeServiceRecord(persistenceDb, record);
-    refs.push(toRuntimeServiceRef(record));
+    };
+
+    // Manually controlled services are not tied to a heartbeat run lifecycle, so they do not
+    // retain a run lease and never persist a startedByRunId foreign key.
+    const started = options?.deferReadiness
+      ? await spawnLocalRuntimeService(startInput)
+      : {
+          record: await startLocalRuntimeService(startInput),
+          readiness: Promise.resolve(),
+        };
+    registerRuntimeService(registryDb, started.record);
+    await persistRuntimeServiceRecord(persistenceDb, started.record);
+    refs.push(toRuntimeServiceRef(started.record));
+
+    if (options?.deferReadiness && !started.record.reused) {
+      // Attach a rejection handler immediately; the caller awaits the same promise after
+      // the DB transaction commits, but transaction failures may skip that wait path.
+      started.readiness.catch(() => undefined);
+      pendingReadiness.push(started);
+      startedServiceIds.push(started.record.id);
+    }
   }
 
-  return refs;
+  return { refs, pendingReadiness, startedServiceIds };
 }
 
 export async function startRuntimeServicesForWorkspaceControl(
@@ -4428,12 +4481,17 @@ export async function startRuntimeServicesForWorkspaceControl(
   const invocationId = input.invocationId ?? randomUUID();
 
   if (rawServices.length === 0 || !input.db || (!input.executionWorkspaceId && !input.workspace.workspaceId)) {
-    return startRuntimeServicesForWorkspaceControlUnlocked(input, rawServices, invocationId);
+    const batch = await startRuntimeServicesForWorkspaceControlUnlocked(input, rawServices, invocationId);
+    return batch.refs;
   }
 
-  let startedRefs: RuntimeServiceRef[] = [];
+  let startBatch: WorkspaceControlStartBatch = {
+    refs: [],
+    pendingReadiness: [],
+    startedServiceIds: [],
+  };
   try {
-    return await input.db.transaction(async (tx) => {
+    await input.db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
 
       if (input.executionWorkspaceId) {
@@ -4465,20 +4523,35 @@ export async function startRuntimeServicesForWorkspaceControl(
       }
 
       // Branch reconciliation takes these same parent row locks before mutating
-      // a recorded branch. Holding them until the running service row is
-      // persisted closes the process-start window before the FK insert.
-      startedRefs = await startRuntimeServicesForWorkspaceControlUnlocked(
+      // a recorded branch. Persisting a `starting` service row before commit closes
+      // the process-start window without holding the DB transaction for readiness.
+      startBatch = await startRuntimeServicesForWorkspaceControlUnlocked(
         { ...input, db: txDb },
         rawServices,
         invocationId,
         txDb,
         input.db,
+        { deferReadiness: true },
       );
-      return startedRefs;
+    });
+
+    for (const pending of startBatch.pendingReadiness) {
+      try {
+        await pending.readiness;
+        await persistRuntimeServiceRecord(input.db, pending.record);
+      } catch (error) {
+        await persistRuntimeServiceRecord(input.db, pending.record).catch(() => undefined);
+        throw error;
+      }
+    }
+
+    return startBatch.refs.map((ref) => {
+      const record = runtimeServicesById.get(ref.id);
+      return record ? toRuntimeServiceRef(record, { reused: ref.reused }) : ref;
     });
   } catch (error) {
-    for (const ref of startedRefs) {
-      await stopRuntimeService(ref.id).catch(() => undefined);
+    for (const serviceId of startBatch.startedServiceIds) {
+      await stopRuntimeService(serviceId).catch(() => undefined);
     }
     throw error;
   }
