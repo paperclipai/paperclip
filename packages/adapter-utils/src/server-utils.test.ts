@@ -35,6 +35,7 @@ describe("managed browser run environment", () => {
     expect(env.AGENT_BROWSER_SESSION).toBe(browserSessionKeyForRun(runId));
     expect(env.AGENT_BROWSER_NAMESPACE).toBe(browserSessionKeyForRun(runId));
     expect(env.AGENT_BROWSER_RESTORE).toBe("paperclip-company-1-agent-1");
+    expect(env.AGENT_BROWSER_SESSION_NAME).toBe("paperclip-company-1-agent-1");
   });
 });
 

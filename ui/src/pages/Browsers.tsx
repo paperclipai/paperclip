@@ -36,7 +36,10 @@ interface BrowserTileProps {
 
 const BrowserTile = memo(function BrowserTile({ run, now, compact, onExpand }: BrowserTileProps) {
   const { status, frame } = useBrowserStream(run.id);
-  const presentation = statusPresentation(status);
+  const isActive = run.status === "queued" || run.status === "running";
+  const presentation = !isActive && !frame
+    ? { label: "Session ended", icon: null, className: "bg-white/10 text-slate-300" }
+    : statusPresentation(status);
   const StatusIcon = presentation.icon;
 
   return (
@@ -111,7 +114,7 @@ export function Browsers() {
 
   const { data: runs = [], isLoading } = useQuery({
     queryKey: [...queryKeys.liveRuns(selectedCompanyId!), "browser-workspace"],
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!, { limit: 50 }),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!, { minCount: 50, limit: 50, browserOnly: true }),
     enabled: !!selectedCompanyId,
     refetchInterval: 3_000,
   });

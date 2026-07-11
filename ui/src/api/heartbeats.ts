@@ -110,7 +110,7 @@ export const heartbeatsApi = {
     api.get<ActiveRunForIssue | null>(`/issues/${issueId}/active-run`),
   liveRunsForCompany: (
     companyId: string,
-    options?: number | { minCount?: number; limit?: number },
+    options?: number | { minCount?: number; limit?: number; browserOnly?: boolean },
   ) => {
     const searchParams = new URLSearchParams();
     if (typeof options === "number") {
@@ -118,6 +118,7 @@ export const heartbeatsApi = {
     } else if (options) {
       if (options.minCount) searchParams.set("minCount", String(options.minCount));
       if (options.limit) searchParams.set("limit", String(options.limit));
+      if (options.browserOnly) searchParams.set("browserOnly", "true");
     }
     const qs = searchParams.toString();
     return api.get<LiveRunForIssue[]>(`/companies/${companyId}/live-runs${qs ? `?${qs}` : ""}`);

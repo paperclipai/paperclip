@@ -16,6 +16,17 @@ const { WebSocket } = require("ws") as {
   WebSocket: new (url: string) => BrowserSocket;
 };
 
+const recentBrowserActivity = new Map<string, number>();
+const BROWSER_ACTIVITY_TTL_MS = 24 * 60 * 60 * 1000;
+
+export function hasRecentBrowserActivity(runId: string) {
+  const seenAt = recentBrowserActivity.get(runId);
+  if (!seenAt) return false;
+  if (Date.now() - seenAt <= BROWSER_ACTIVITY_TTL_MS) return true;
+  recentBrowserActivity.delete(runId);
+  return false;
+}
+
 function writeEvent(res: Response, event: string, payload: unknown) {
   if (res.writableEnded) return;
   res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
@@ -52,6 +63,7 @@ export function pipeBrowserStreamToSse(runId: string, res: Response) {
       try {
         const message = JSON.parse(text) as { type?: unknown; data?: unknown; metadata?: unknown };
         if (message.type !== "frame" || typeof message.data !== "string") return;
+        recentBrowserActivity.set(runId, Date.now());
         writeEvent(res, "frame", { data: message.data, metadata: message.metadata ?? null });
       } catch {
         // Ignore non-frame or malformed provider messages.

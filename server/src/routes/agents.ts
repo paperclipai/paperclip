@@ -73,7 +73,7 @@ import type {
 import { secretService } from "../services/secrets.js";
 import { mcpOauthService } from "../services/mcp-oauth.js";
 import { sanitizeMcpServersForResponse } from "../services/mcp-sanitize.js";
-import { pipeBrowserStreamToSse } from "../services/browser-stream.js";
+import { hasRecentBrowserActivity, pipeBrowserStreamToSse } from "../services/browser-stream.js";
 import {
   companyMcpServerService,
   writeAgentMcpServerRefs,
@@ -4232,6 +4232,7 @@ export function agentRoutes(
     // padded in and renders bogus "live" counts.
     const minCount = readLiveRunsQueryInt(req.query.minCount, 50, 0);
     const limit = readLiveRunsQueryInt(req.query.limit, 50, 50);
+    const browserOnly = req.query.browserOnly === "true";
 
     const runIssueId = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
     const columns = {
@@ -4298,14 +4299,20 @@ export function agentRoutes(
         .limit(targetRunCount - liveRuns.length);
 
       const rows = [...liveRuns, ...recentRuns];
-      res.json(await Promise.all(rows.map(async (run) => ({
+      const visibleRows = browserOnly
+        ? rows.filter((run) => ["queued", "running"].includes(run.status) || hasRecentBrowserActivity(run.id))
+        : rows;
+      res.json(await Promise.all(visibleRows.map(async (run) => ({
         ...run,
         outputSilence: await heartbeat.buildRunOutputSilence(run),
       }))));
       return;
     }
 
-    res.json(await Promise.all(liveRuns.map(async (run) => ({
+    const visibleLiveRuns = browserOnly
+      ? liveRuns.filter((run) => ["queued", "running"].includes(run.status) || hasRecentBrowserActivity(run.id))
+      : liveRuns;
+    res.json(await Promise.all(visibleLiveRuns.map(async (run) => ({
       ...run,
       outputSilence: await heartbeat.buildRunOutputSilence(run),
     }))));

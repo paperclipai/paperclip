@@ -23,8 +23,8 @@ describe("heartbeatsApi.liveRunsForCompany", () => {
   });
 
   it("passes minCount and limit options to the company live-runs endpoint", async () => {
-    await heartbeatsApi.liveRunsForCompany("company-1", { minCount: 50, limit: 50 });
+    await heartbeatsApi.liveRunsForCompany("company-1", { minCount: 50, limit: 50, browserOnly: true });
 
-    expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/live-runs?minCount=50&limit=50");
+    expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/live-runs?minCount=50&limit=50&browserOnly=true");
   });
 });
