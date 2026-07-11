@@ -2,11 +2,17 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
+  agentRuntimeState,
+  agentWakeupRequests,
   agents,
   companies,
+  companySkills,
   createDb,
   documentRevisions,
   documents,
+  heartbeatRunEvents,
+  heartbeatRuns,
   issueComments,
   issueDocuments,
   issues,
@@ -14,10 +20,44 @@ import {
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { documentService } from "../documents.js";
+import { heartbeatService } from "../heartbeat.js";
 import { createSeoDocGovernanceScheduler } from "../seo-doc-governance-scheduler.js";
+import { runningProcesses } from "../../adapters/index.js";
+
+const mockAdapterExecute = vi.hoisted(() =>
+  vi.fn(async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    errorMessage: null,
+    summary: "CMO wakeup integration test run.",
+    provider: "test",
+    model: "test-model",
+  })),
+);
+
+vi.mock("../../adapters/index.js", async () => {
+  const actual = await vi.importActual<typeof import("../../adapters/index.js")>("../../adapters/index.js");
+  return {
+    ...actual,
+    getServerAdapter: vi.fn(() => ({
+      supportsLocalAgentJwt: false,
+      execute: mockAdapterExecute,
+    })),
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await fn()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return fn();
+}
 
 function governedBody(lastUpdated: string, criticality: "normal" | "critical" = "normal") {
   return [
@@ -48,13 +88,37 @@ describeEmbeddedPostgres("createSeoDocGovernanceScheduler", () => {
   }, 30_000);
 
   afterEach(async () => {
-    await db.delete(agents);
+    mockAdapterExecute.mockClear();
+    // Real dispatch keeps writing (events, activity log) briefly after the run
+    // leaves queued/running; wait for 3 consecutive clean polls before tearing
+    // down, mirroring heartbeat-dependency-scheduling.test.ts's proven pattern.
+    let idlePolls = 0;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
+      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
+      if (!hasActiveRun) {
+        idlePolls += 1;
+        if (idlePolls >= 3) break;
+      } else {
+        idlePolls = 0;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    runningProcesses.clear();
+    await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
     await db.delete(issueComments);
+    await db.delete(agents);
     await db.delete(seoDocRegistryEntries);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(issues);
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 
@@ -180,6 +244,68 @@ describeEmbeddedPostgres("createSeoDocGovernanceScheduler", () => {
       .then((rows) => rows[0] ?? null);
     expect(registryEntry?.lastEscalatedAt?.toISOString()).toBe("2026-04-21T00:00:00.000Z");
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("wakes the real CMO agent via heartbeatService.wakeup, not just a mocked call (INS-2954)", async () => {
+    const { issueId, cmoAgentId } = await createIssue("INS-330");
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+
+    await docsSvc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      format: "markdown",
+      body: governedBody("2026-03-01", "critical"),
+    });
+
+    const scheduler = createSeoDocGovernanceScheduler({
+      db,
+      enqueueWakeup: heartbeat.wakeup,
+      intervalMs: 60_000,
+      now: () => new Date("2026-04-21T00:00:00.000Z"),
+    });
+
+    const result = await scheduler.runOnce(new Date("2026-04-21T00:00:00.000Z"));
+    expect(result.escalatedDocKeys).toContain("INS-330#document-plan");
+
+    const comment = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .then((rows) => rows[0]);
+    expect(comment?.body).toContain(`[@CMO](agent://${cmoAgentId})`);
+
+    // Real heartbeatService.wakeup persistence, not a vi.fn() mock: assert the
+    // actual agent_wakeup_requests row it wrote, per INS-2954's addendum to
+    // INS-317 (INS-2936 closed the gap where only the comment text was checked).
+    const wakeRequest = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, cmoAgentId))
+      .then((rows) => rows[0]);
+
+    expect(wakeRequest).toBeTruthy();
+    expect(wakeRequest?.reason).toBe("issue_comment_mentioned");
+    expect(wakeRequest?.status).not.toBe("skipped");
+    expect(wakeRequest?.payload).toMatchObject({
+      issueId,
+      commentId: comment.id,
+    });
+
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.wakeupRequestId, wakeRequest.id))
+      .then((rows) => rows[0]);
+    expect(run).toBeTruthy();
+    expect(run?.agentId).toBe(cmoAgentId);
+
+    await waitForCondition(async () => {
+      const settled = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run.id));
+      return settled[0]?.status !== "queued" && settled[0]?.status !== "running";
+    });
   });
 
   it("continues auditing other docs when one governed document is malformed", async () => {
