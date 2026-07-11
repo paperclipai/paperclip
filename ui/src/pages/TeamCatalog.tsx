@@ -30,6 +30,7 @@ import { EmptyState } from "../components/EmptyState";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -243,15 +244,15 @@ function TrustChip({ level, iconOnly = false }: { level: CatalogTeamTrustLevel; 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span
+        <Badge variant="outline"
           className={cn(
-            "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
+            "px-1.5 text-(length:--text-micro)",
             meta.tone,
           )}
         >
           <Icon className="h-3 w-3" />
           {!iconOnly && meta.label}
-        </span>
+        </Badge>
       </TooltipTrigger>
       <TooltipContent>{meta.tip}</TooltipContent>
     </Tooltip>
@@ -270,14 +271,14 @@ const COMPAT_META: Record<
 function CompatChip({ compatibility }: { compatibility: CatalogTeamCompatibility }) {
   const meta = COMPAT_META[compatibility];
   return (
-    <span
+    <Badge variant="outline"
       className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
+        "px-1.5 text-(length:--text-micro)",
         meta.tone,
       )}
     >
       {meta.label}
-    </span>
+    </Badge>
   );
 }
 
@@ -286,11 +287,11 @@ function ProvenanceBadge({ team }: { team: CatalogTeam }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
+        <Badge variant="outline" className="border-border px-1.5 text-(length:--text-micro) text-muted-foreground">
           <Package className="h-3 w-3" />
           {team.packageName}
           {team.packageVersion ? `@${team.packageVersion}` : ""}
-        </span>
+        </Badge>
       </TooltipTrigger>
       <TooltipContent>Catalog package provenance</TooltipContent>
     </Tooltip>
@@ -516,13 +517,13 @@ function MetricTile({
   Icon: typeof Users2;
 }) {
   return (
-    <div className="rounded-md border border-border bg-card px-3 py-2.5">
+    <Card className="block px-3 py-2.5">
       <div className="flex items-center justify-between">
         <span className="text-xl font-semibold tabular-nums">{value}</span>
         <Icon className="h-4 w-4 text-muted-foreground" />
       </div>
       <span className="text-xs text-muted-foreground">{label}</span>
-    </div>
+    </Card>
   );
 }
 
@@ -1417,9 +1418,9 @@ export function StepTargetManager({
             <li key={slug} className="flex items-center gap-2 border-b border-border/60 px-3 py-2 text-sm last:border-b-0">
               <Crown className="h-3.5 w-3.5 text-amber-500" />
               <span className="font-medium">{titleCase(slug)}</span>
-              <span className="ml-auto rounded-full bg-amber-500/15 px-2 py-0.5 text-(length:--text-micro) text-amber-600 dark:text-amber-300">
+              <Badge variant="ghost" className="ml-auto bg-amber-500/15 text-(length:--text-micro) text-amber-600 dark:text-amber-300">
                 → ?
-              </span>
+              </Badge>
             </li>
           ))}
         </ul>
@@ -2111,6 +2112,7 @@ export function TeamCard({
       onClick={onSelect}
       aria-pressed={selected}
       className={cn(
+        // design-allow(card-pattern): interactive <button> tile; Card renders a div and would break button semantics (C5a Run 3)
         "flex aspect-square w-full flex-col gap-2 rounded-lg border border-border bg-card p-4 text-left transition-colors hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         selected && "ring-2 ring-ring",
       )}

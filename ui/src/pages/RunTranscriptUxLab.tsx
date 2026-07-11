@@ -115,17 +115,17 @@ function LiveWidgetPreview({
           <div className="min-w-0">
             <Identity name={runTranscriptFixtureMeta.agentName} size="sm" />
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <span className="rounded-full border border-border/70 bg-background/70 px-2 py-1 font-mono">
+              <Badge variant="outline" className="border-border/70 bg-background/70 py-1 font-mono">
                 {runTranscriptFixtureMeta.sourceRunId.slice(0, 8)}
-              </span>
+              </Badge>
               <StatusBadge status={streaming ? "running" : "succeeded"} />
               <span>{formatDateTime(runTranscriptFixtureMeta.startedAt)}</span>
             </div>
           </div>
-          <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2.5 py-1 text-(length:--text-micro) text-muted-foreground">
+          <Badge variant="outline" className="border-border/70 bg-background/70 px-2.5 py-1 text-(length:--text-micro) text-muted-foreground">
             Open run
             <ExternalLink className="h-3 w-3" />
-          </span>
+          </Badge>
         </div>
         <div className="max-h-(--sz-460px) overflow-y-auto pr-1">
           <RunTranscriptView
@@ -172,9 +172,9 @@ function DashboardPreview({
                 {streaming ? "Live now" : "Finished 2m ago"}
               </div>
             </div>
-            <span className="rounded-full border border-border/70 bg-background/70 px-2 py-1 text-(length:--text-nano) text-muted-foreground">
+            <Badge variant="outline" className="[&>svg]:size-2.5 border-border/70 bg-background/70 py-1 text-(length:--text-nano) text-muted-foreground">
               <ExternalLink className="h-2.5 w-2.5" />
-            </span>
+            </Badge>
           </div>
           <div className="mt-3 rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-xs text-cyan-700 dark:text-cyan-300">
             {runTranscriptFixtureMeta.issueIdentifier} - {runTranscriptFixtureMeta.issueTitle}

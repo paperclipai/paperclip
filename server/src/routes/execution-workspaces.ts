@@ -12,7 +12,7 @@ import {
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { accessService, executionWorkspaceService, logActivity, workspaceOperationService } from "../services/index.js";
+import { accessService, executionWorkspaceService, heartbeatService, logActivity, workspaceOperationService } from "../services/index.js";
 import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
@@ -26,6 +26,7 @@ import {
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { logger } from "../middleware/logger.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectExecutionWorkspaceCommandPaths,
@@ -42,6 +43,9 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
   const svc = executionWorkspaceService(db);
   const access = accessService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
+  const heartbeat = heartbeatService(db, {
+    pluginWorkerManager: opts.pluginWorkerManager,
+  });
   const environmentRuntime = environmentRuntimeService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
@@ -536,6 +540,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         sourceIssueId: existing.sourceIssueId,
         auditCommentId: result.auditCommentId,
         recoveryActionId: result.recoveryAction?.id ?? null,
+        rescueRef: result.rescueRef,
+        sourceIssueStatus: result.restoredSourceIssue?.status ?? null,
         actor: {
           type: actor.actorType,
           id: actor.actorId,
@@ -543,6 +549,41 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         },
       },
     });
+
+    if (
+      result.restoredSourceIssue &&
+      (result.restoredSourceIssue.status === "todo" || result.restoredSourceIssue.status === "in_review") &&
+      result.sourceIssueStatusChanged &&
+      result.restoredSourceIssue.assigneeAgentId
+    ) {
+      void heartbeat.wakeup(result.restoredSourceIssue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_recovery_action_restored",
+        payload: {
+          issueId: result.restoredSourceIssue.id,
+          recoveryActionId: result.recoveryAction?.id ?? null,
+          executionWorkspaceId: existing.id,
+          rescueRef: result.rescueRef?.branchName ?? null,
+          mutation: "execution_workspace_quarantine_restore",
+        },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: result.restoredSourceIssue.id,
+          taskId: result.restoredSourceIssue.id,
+          wakeReason: "issue_recovery_action_restored",
+          source: "execution_workspace.quarantine_restore",
+          recoveryActionId: result.recoveryAction?.id ?? null,
+          executionWorkspaceId: existing.id,
+          rescueRef: result.rescueRef?.branchName ?? null,
+        },
+      }).catch((err) =>
+        logger.warn(
+          { err, issueId: result.restoredSourceIssue?.id, agentId: result.restoredSourceIssue?.assigneeAgentId },
+          "failed to wake agent after execution workspace quarantine restore",
+        ));
+    }
 
     res.json(result);
   });

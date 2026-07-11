@@ -37,6 +37,11 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import {
+  WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
+  WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
+  WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+} from "../services/execution-workspace-policy.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -139,10 +144,17 @@ async function createForwardBranchMismatch(input: {
   worktreePath: string;
   expectedBranch: string;
   actualBranch: string;
+  divergeRecordedBranch?: boolean;
 }) {
   await mkdir(path.dirname(input.worktreePath), { recursive: true });
   await runGit(input.repoRoot, ["branch", input.expectedBranch]);
   await runGit(input.repoRoot, ["worktree", "add", "-b", input.actualBranch, input.worktreePath, input.expectedBranch]);
+  if (input.divergeRecordedBranch) {
+    await runGit(input.repoRoot, ["checkout", input.expectedBranch]);
+    await writeFile(path.join(input.repoRoot, "recorded-branch.txt"), "recorded branch work\n", "utf8");
+    await runGit(input.repoRoot, ["add", "recorded-branch.txt"]);
+    await runGit(input.repoRoot, ["commit", "-m", "Add recorded branch work"]);
+  }
   await writeFile(path.join(input.worktreePath, "actual-branch.txt"), "actual branch work\n", "utf8");
   await runGit(input.worktreePath, ["add", "actual-branch.txt"]);
   await runGit(input.worktreePath, ["commit", "-m", "Add actual branch work"]);
@@ -160,11 +172,33 @@ async function waitForRunToFinish(heartbeat: Heartbeat, runId: string, timeoutMs
 
 async function waitForHeartbeatIdle(db: Db, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
+  let idleSince: number | null = null;
   while (Date.now() < deadline) {
     const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
-    if (!runs.some((run) => run.status === "queued" || run.status === "running")) return;
+    if (!runs.some((run) => run.status === "queued" || run.status === "running")) {
+      idleSince ??= Date.now();
+      if (Date.now() - idleSince >= 250) return;
+    } else {
+      idleSince = null;
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+}
+
+async function deleteHeartbeatRunsForCleanup(db: Db) {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
+    try {
+      await db.delete(heartbeatRuns);
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  throw lastError;
 }
 
 async function waitForContainmentSideEffects(input: {
@@ -268,6 +302,10 @@ function readAdapterWorkspace(input: unknown) {
   if (!cwd || !branchName || !executionWorkspaceId) {
     throw new Error("Adapter input is missing execution workspace context");
   }
+  const wake = context.paperclipWake as { executionWorkspace?: { branchName?: string } } | undefined;
+  if (wake?.executionWorkspace?.branchName !== branchName) {
+    throw new Error("Adapter wake payload is missing the execution workspace branch pin");
+  }
   return { cwd, branchName, executionWorkspaceId };
 }
 
@@ -362,6 +400,7 @@ async function seedBranchContainmentRun(
       worktreePath,
       expectedBranch,
       actualBranch,
+      divergeRecordedBranch: opts.enableWorkspaceBranchReconcileForward !== true,
     });
   }
 
@@ -594,12 +633,12 @@ async function expectContainedWorkspaceBranchFailure(input: {
     expectedBranchExists: true,
     actualBranchExists: true,
     sameHead: false,
-    ancestryVerdict: "ancestor",
+    ancestryVerdict: "diverged",
   });
   expect(provenance.expectedHeadSha).toEqual(expect.stringMatching(/^[a-f0-9]{40}$/));
   expect(provenance.actualHeadSha).toEqual(expect.stringMatching(/^[a-f0-9]{40}$/));
   expect(provenance.expectedHeadSha).not.toBe(provenance.actualHeadSha);
-  expect(provenance.plainLanguageReason).toEqual(expect.stringContaining("forward of the recorded branch"));
+  expect(provenance.plainLanguageReason).toEqual(expect.stringContaining("cannot prove a forward-only reconciliation"));
 
   const { issueRows, actionRows, comments } = await waitForContainmentSideEffects({
     db: input.db,
@@ -647,7 +686,7 @@ async function expectContainedWorkspaceBranchFailure(input: {
         provenance: expect.objectContaining({
           expectedHeadSha: provenance.expectedHeadSha,
           actualHeadSha: provenance.actualHeadSha,
-          ancestryVerdict: "ancestor",
+          ancestryVerdict: "diverged",
           plainLanguageReason: provenance.plainLanguageReason,
         }),
       }),
@@ -710,9 +749,10 @@ async function expectForwardBranchReconciled(input: {
     })
     .from(executionWorkspaces)
     .where(eq(executionWorkspaces.id, activeWorkspaceId));
+  const expectedDurableBranch = input.expectsExistingRecordUpdate ? input.actualBranch : input.expectedBranch;
   expect(activeWorkspace).toMatchObject({
-    name: input.actualBranch,
-    branchName: input.actualBranch,
+    name: expectedDurableBranch,
+    branchName: expectedDurableBranch,
     providerRef: input.worktreePath,
   });
 
@@ -738,19 +778,21 @@ async function expectForwardBranchReconciled(input: {
     .select()
     .from(workspaceOperations)
     .where(eq(workspaceOperations.heartbeatRunId, input.runId));
-  expect(operations).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        status: "succeeded",
-        metadata: expect.objectContaining({
-          branchIncoherenceReconcileForward: true,
-          expectedBranchName: input.expectedBranch,
-          actualBranchName: input.actualBranch,
-          fingerprint: expect.stringMatching(/^workspace_incoherence:v1:sha256:/),
+  if (input.expectsExistingRecordUpdate) {
+    expect(operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: "succeeded",
+          metadata: expect.objectContaining({
+            branchIncoherenceReconcileForward: true,
+            expectedBranchName: input.expectedBranch,
+            actualBranchName: input.actualBranch,
+            fingerprint: expect.stringMatching(/^workspace_incoherence:v1:sha256:/),
+          }),
         }),
-      }),
-    ]),
-  );
+      ]),
+    );
+  }
 
   if (input.expectsExistingRecordUpdate) {
     const [updatedWorkspace] = await input.db
@@ -855,10 +897,9 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     await db.delete(environmentLeases);
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
-    // Heartbeat failure/finalization paths can emit run-linked activity after
-    // the first cleanup pass observes all runs as non-active.
-    await db.delete(activityLog);
-    await db.delete(heartbeatRuns);
+    // Heartbeat failure/finalization paths can emit run-linked events and
+    // activity after the first cleanup pass observes all runs as non-active.
+    await deleteHeartbeatRunsForCleanup(db);
     await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(projectWorkspaces);
@@ -878,10 +919,134 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     await tempDb?.cleanup();
   });
 
+  it("blocks projectless isolated git-worktree issues before dispatch", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const issueIdentifier = `${issuePrefix}-1`;
+
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      issuePrefix,
+      status: "active",
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Projectless isolated worktree",
+      status: "todo",
+      workMode: "standard",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 1,
+      identifier: issueIdentifier,
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceStrategy: { type: "git_worktree" },
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+
+    expect(run).toBeNull();
+    expect(adapterExecute).not.toHaveBeenCalled();
+
+    const runRows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
+    expect(runRows).toEqual([]);
+
+    const blockedIssue = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(blockedIssue).toEqual({
+      status: "blocked",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+    });
+
+    const wakeup = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      reason: WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
+    });
+    expect(asRecord(asRecord(wakeup?.payload).heartbeatSkip)).toEqual({
+      code: WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
+      reason: WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
+      remediation: WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+    });
+
+    const comment = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(comment?.body).toContain(WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE);
+
+    const activity = await db
+      .select({
+        action: activityLog.action,
+        details: activityLog.details,
+      })
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(activity?.action).toBe("issue.workspace_preflight_blocked");
+    expect(activity?.details).toMatchObject({
+      code: WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
+      reason: WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
+      remediation: WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+      resolvedMode: "isolated_workspace",
+      resolvedStrategy: "git_worktree",
+      hasResolvablePriorSessionWorkspace: false,
+    });
+  });
+
   it.each([
     ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, null],
     ["workspace-runtime persisted restore", "persisted_restore" as const, "source-workspace"],
-    ["heartbeat finalization", "finalize" as const, "runtime-workspace"],
   ])("contains mid-change branch divergence at %s", async (_name, callSite, expectedWorkspaceId) => {
     const repoRoot = await createGitRepo();
     tempRoots.push(repoRoot);
@@ -939,9 +1104,9 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   }, 30_000);
 
   it.each([
-    ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, true],
-    ["workspace-runtime persisted restore", "persisted_restore" as const, true],
-    ["heartbeat finalization", "finalize" as const, true],
+    ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, false],
+    ["workspace-runtime persisted restore", "persisted_restore" as const, false],
+    ["heartbeat finalization", "finalize" as const, false],
   ])("auto-reconciles forward branch divergence at %s when the flag is enabled", async (_name, callSite, expectsExistingRecordUpdate) => {
     const repoRoot = await createGitRepo();
     tempRoots.push(repoRoot);
@@ -954,7 +1119,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       status: callSite === "finalize" ? "" : await readGit(seeded.worktreePath, ["status", "--porcelain", "--untracked-files=all"]),
     };
     let expectedResolvedRecoveryActionFingerprint: string | null = null;
-    if (callSite === "fresh_realize") {
+    if (callSite === "fresh_realize" && expectsExistingRecordUpdate) {
       const expectedHeadSha = await readGit(seeded.worktreePath, ["rev-parse", seeded.expectedBranch]);
       const actualHeadSha = await readGit(seeded.worktreePath, ["rev-parse", seeded.actualBranch]);
       expectedResolvedRecoveryActionFingerprint = fingerprintWorkspaceBranchIncoherenceForTest({

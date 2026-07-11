@@ -53,6 +53,7 @@ function SiblingLink({
 
   return (
     <Link
+      // design-allow(card-pattern): navigation <Link> card; Card renders a div and would break anchor semantics (C5a Run 3)
       to={createIssueDetailPath(issuePathId)}
       state={withIssueDetailHeaderSeed(linkState, issue)}
       issuePrefetch={issue}

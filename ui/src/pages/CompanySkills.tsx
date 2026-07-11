@@ -67,13 +67,28 @@ import { resolveSkillSummaryText } from "../lib/company-skill-summary";
 import {
   parseSkillRoute,
   skillRoute,
+  skillStudioNewRoute,
+  skillStudioRoute,
   withRouteSkill,
   resolveSkillRouteToken,
   type CompanySkillRouteSubject,
 } from "../lib/company-skill-routes";
+import {
+  SKILL_CREATE_ACCENTS,
+  buildBlankSkillDraft,
+  buildForkSkillDraft,
+  defaultSkillMarkdown,
+  normalizeSkillDraftSlug,
+  skillAccentColor,
+  skillCreateDraftToPayload,
+  splitCategoryDraft,
+  type SkillCreateDraft,
+} from "../lib/skill-create";
+import { SkillCardIcon } from "../components/SkillCardIcon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 import {
   AlertTriangle,
   ArrowUpCircle,
@@ -98,6 +113,7 @@ import {
   Link2,
   Lock,
   ExternalLink,
+  FlaskConical,
   Paperclip,
   Pause,
   Pencil,
@@ -436,10 +452,10 @@ function TrustChip({ level }: { level: CompanySkillTrustLevel }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-micro)", config.className)}>
+        <Badge variant="outline" className={cn("text-(length:--text-micro)", config.className)}>
           <Icon className="h-3 w-3" aria-hidden="true" />
           {config.label}
-        </span>
+        </Badge>
       </TooltipTrigger>
       <TooltipContent>{config.tooltip}</TooltipContent>
     </Tooltip>
@@ -467,10 +483,10 @@ function CompatChip({ compatibility }: { compatibility: CompanySkillCompatibilit
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-micro)", config.className)}>
+        <Badge variant="outline" className={cn("text-(length:--text-micro)", config.className)}>
           <Icon className="h-3 w-3" aria-hidden="true" />
           {config.label}
-        </span>
+        </Badge>
       </TooltipTrigger>
       <TooltipContent>{config.tooltip}</TooltipContent>
     </Tooltip>
@@ -542,47 +558,7 @@ export type DiscoveryCard = {
   sourceLabel?: string | null;
 };
 
-// Stable palette used to auto-assign an accent colour to a skill when the
-// backend has not stored an explicit one. Colour is derived from the skill key
-// so the same skill always lands on the same hue.
-// token-extraction: allowlisted — skill.color is persisted/compared JS data (SkillCreateDraft), not just a rendered value; a var() string would corrupt it.
-const DISCOVERY_ACCENTS = [
-  "#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444",
-  "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#22c55e",
-  "#3b82f6", "#a855f7",
-];
-
-function skillAccentColor(key: string, explicit: string | null | undefined): string {
-  const trimmed = explicit?.trim();
-  if (trimmed) return trimmed;
-  let hash = 0;
-  for (let i = 0; i < key.length; i += 1) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
-  return DISCOVERY_ACCENTS[hash % DISCOVERY_ACCENTS.length];
-}
-
-function SkillCardIcon({ card, size = 36 }: { card: DiscoveryCard; size?: number }) {
-  if (card.iconUrl) {
-    return (
-      <img
-        src={card.iconUrl}
-        alt=""
-        className="shrink-0 rounded-md object-cover"
-        style={{ width: size, height: size }}
-      />
-    );
-  }
-  const accent = skillAccentColor(card.key, card.color);
-  const letter = (card.slug || card.name || "?").trim().charAt(0).toUpperCase();
-  return (
-    <span
-      aria-hidden="true"
-      className="flex shrink-0 items-center justify-center rounded-md font-semibold text-white"
-      style={{ width: size, height: size, backgroundColor: accent, fontSize: Math.round(size * 0.42) }}
-    >
-      {letter}
-    </span>
-  );
-}
+export { SkillCardIcon } from "../components/SkillCardIcon";
 
 function discoveryVersionLabel(skill: {
   packageVersion: string | null;
@@ -606,24 +582,6 @@ function uniqueCategories(values: (string | null | undefined)[]): string[] {
   return out;
 }
 
-function normalizeSkillDraftSlug(value: string) {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
-}
-
-function splitCategoryDraft(value: string) {
-  return Array.from(
-    new Set(value
-      .split(",")
-      .map((entry) => normalizeSkillDraftSlug(entry))
-      .filter(Boolean)),
-  );
-}
-
 function categorySetKey(categories: string[]) {
   return [...categories].sort().join(",");
 }
@@ -632,32 +590,6 @@ function skillSettingsToastBody(skill: Pick<CompanySkillDetail, "categories" | "
   const sharing = skill.sharingScope === "private" ? "Sharing: private" : "Sharing: company";
   const categories = skill.categories.length ? `Categories: ${skill.categories.join(", ")}` : "Categories: none";
   return `${sharing} | ${categories}`;
-}
-
-function defaultSkillMarkdown(name: string, tagline: string) {
-  const title = name.trim() || "New Skill";
-  const summary = tagline.trim() || "Describe when agents should use this skill.";
-  return [
-    "---",
-    `name: ${title}`,
-    `description: ${summary}`,
-    "---",
-    "",
-    `# ${title}`,
-    "",
-    summary,
-    "",
-    "## When To Use",
-    "",
-    "- Use this skill when the task needs its specialized workflow.",
-    "",
-    "## Workflow",
-    "",
-    "1. Inspect the task context.",
-    "2. Apply the workflow carefully.",
-    "3. Report what changed and how it was verified.",
-    "",
-  ].join("\n");
 }
 
 // Merge installed company skills and the install catalog into one card model.
@@ -792,9 +724,9 @@ function SkillStat({ icon: Icon, value }: { icon: typeof Star; value: string }) 
 
 function SkillCategoryChip({ label }: { label: string }) {
   return (
-    <span className="inline-flex items-center rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--text-nano) capitalize text-muted-foreground">
+    <Badge variant="outline" className="border-border bg-muted/40 text-(length:--text-nano) capitalize text-muted-foreground">
       {label}
-    </span>
+    </Badge>
   );
 }
 
@@ -804,7 +736,9 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
       type="button"
       onClick={() => onOpen(card)}
       className={cn(
-        "group flex h-full min-h-(--sz-11_5rem) flex-col rounded-md border border-border p-4 text-left transition-colors hover:border-primary hover:bg-accent/30 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        // Quiet interactive-card affordance (DECISION-SHEET: one recipe for
+        // clickable cards): pointer cursor, border darkens, slight lift.
+        "group flex h-full min-h-(--sz-11_5rem) flex-col rounded-lg border border-border bg-card p-4 text-left cursor-pointer transition-colors hover:border-foreground/20 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         card.required && "bg-muted/30",
       )}
     >
@@ -864,18 +798,18 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-1">
           {card.installed ? (
-            <span className="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-(length:--text-nano) text-emerald-700 dark:text-emerald-300">
+            <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-(length:--text-nano) text-emerald-700 dark:text-emerald-300">
               Installed
-            </span>
+            </Badge>
           ) : null}
           {card.categories.slice(0, 2).map((category) => (
             <SkillCategoryChip key={category} label={category} />
           ))}
           {card.required ? (
-            <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-border bg-muted/60 px-2 py-0.5 text-(length:--text-nano) text-muted-foreground">
+            <Badge variant="outline" className="ml-auto border-border bg-muted/60 text-(length:--text-nano) text-muted-foreground">
               <Lock className="h-3 w-3" aria-hidden="true" />
               Bundled
-            </span>
+            </Badge>
           ) : null}
         </div>
       </div>
@@ -1080,6 +1014,12 @@ export function DiscoveryGrid({
           >
             <RefreshCw className={cn("h-4 w-4", scanPending && "animate-spin")} />
           </Button>
+          <Button asChild variant="outline" size="sm">
+            <Link to="/skills/studio">
+              <FlaskConical className="h-3.5 w-3.5" />
+              Studio
+            </Link>
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button size="sm" variant="default">
@@ -1219,51 +1159,6 @@ export function DiscoveryGrid({
   );
 }
 
-type SkillCreateDraft = {
-  name: string;
-  slug: string;
-  tagline: string;
-  description: string;
-  color: string;
-  categories: string[];
-  markdown: string;
-  sharingScope: Exclude<CompanySkillSharingScope, "public_link">;
-  forkedFromSkillId: string | null;
-  forkedFromName: string | null;
-};
-
-function buildBlankSkillDraft(): SkillCreateDraft {
-  return {
-    name: "",
-    slug: "",
-    tagline: "",
-    description: "",
-    color: DISCOVERY_ACCENTS[0]!,
-    categories: [],
-    markdown: defaultSkillMarkdown("", ""),
-    sharingScope: "company",
-    forkedFromSkillId: null,
-    forkedFromName: null,
-  };
-}
-
-function buildForkSkillDraft(skill: CompanySkillDetail): SkillCreateDraft {
-  const name = `${skill.name} Fork`;
-  const slug = normalizeSkillDraftSlug(`${skill.slug}-fork`);
-  return {
-    name,
-    slug,
-    tagline: skill.tagline ?? "",
-    description: skill.description ?? "",
-    color: skill.color ?? skillAccentColor(skill.key, null),
-    categories: skill.categories,
-    markdown: skill.markdown.replace(/^name:\s*.*$/m, `name: ${name}`),
-    sharingScope: "company",
-    forkedFromSkillId: skill.id,
-    forkedFromName: skill.name,
-  };
-}
-
 function NewSkillWizard({
   initialDraft,
   onCreate,
@@ -1295,22 +1190,8 @@ function NewSkillWizard({
 
   const nameValid = draft.name.trim().length > 0;
   const effectiveSlug = draft.slug.trim() || normalizeSkillDraftSlug(draft.name);
-  const effectiveMarkdown = draft.markdown.trim().length > 0
-    ? draft.markdown
-    : defaultSkillMarkdown(draft.name, draft.tagline);
-
   function submit() {
-    onCreate({
-      name: draft.name.trim(),
-      slug: effectiveSlug || null,
-      description: draft.description.trim() || draft.tagline.trim() || null,
-      markdown: effectiveMarkdown,
-      color: draft.color,
-      tagline: draft.tagline.trim() || null,
-      categories: draft.categories,
-      sharingScope: draft.sharingScope,
-      forkedFromSkillId: draft.forkedFromSkillId,
-    });
+    onCreate(skillCreateDraftToPayload(draft));
   }
 
   return (
@@ -1388,24 +1269,10 @@ function NewSkillWizard({
               size={48}
               card={{
                 key: effectiveSlug || draft.name || "new-skill",
-                skillId: null,
-                catalogRef: null,
                 name: draft.name || "New Skill",
                 slug: effectiveSlug || "skill",
-                author: "you",
-                version: null,
-                tagline: draft.tagline || null,
-                description: draft.tagline,
-                categories: draft.categories,
                 iconUrl: null,
                 color: draft.color,
-                starCount: 0,
-                agentCount: 0,
-                forkCount: 0,
-                installed: false,
-                required: false,
-                forkedFrom: Boolean(draft.forkedFromSkillId),
-                updatedAt: Date.now(),
               }}
             />
             <div className="min-w-0">
@@ -1416,7 +1283,7 @@ function NewSkillWizard({
           <div>
             <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted-foreground">Color</label>
             <div className="flex flex-wrap gap-2">
-              {DISCOVERY_ACCENTS.map((color) => (
+              {SKILL_CREATE_ACCENTS.map((color) => (
                 <button
                   key={color}
                   type="button"
@@ -1770,28 +1637,28 @@ function CatalogDetailPane({
           {hashOutOfSync ? (
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-(length:--text-micro) text-amber-800 dark:text-amber-200">
+                <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-(length:--text-micro) text-amber-800 dark:text-amber-200">
                   <ArrowUpCircle className="h-3 w-3" aria-hidden="true" />
                   Update available
-                </span>
+                </Badge>
               </TooltipTrigger>
               <TooltipContent>Catalog content hash has changed since this skill was installed.</TooltipContent>
             </Tooltip>
           ) : null}
           {skill.requires.length > 0 ? (
-            <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--text-micro) text-muted-foreground">
+            <Badge variant="outline" className="border-border bg-muted/40 text-(length:--text-micro) text-muted-foreground">
               Requires: {skill.requires.join(", ")}
-            </span>
+            </Badge>
           ) : null}
           {skill.recommendedForRoles.length > 0 ? (
-            <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--text-micro) text-muted-foreground">
+            <Badge variant="outline" className="border-border bg-muted/40 text-(length:--text-micro) text-muted-foreground">
               Roles: {skill.recommendedForRoles.join(" · ")}
-            </span>
+            </Badge>
           ) : null}
           {skill.tags.length > 0 ? (
-            <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--text-micro) text-muted-foreground">
+            <Badge variant="outline" className="border-border bg-muted/40 text-(length:--text-micro) text-muted-foreground">
               Tags: {skill.tags.join(" · ")}
-            </span>
+            </Badge>
           ) : null}
         </div>
 
@@ -2127,10 +1994,10 @@ function AttachAgentsPopover({
                     <span className="flex items-center gap-1.5">
                       <span className="truncate">{agent.name}</span>
                       {agent.paused ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide text-amber-500">
+                        <Badge variant="outline" className="[&>svg]:size-2.5 border-amber-500/30 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-wide text-amber-500">
                           <Pause className="h-2.5 w-2.5" aria-hidden="true" />
                           Paused
-                        </span>
+                        </Badge>
                       ) : null}
                     </span>
                     <span className="text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
@@ -2480,7 +2347,7 @@ function SkillVersionDiffDialog({
           </DialogHeader>
           <div className="flex flex-wrap items-center gap-3 text-xs">
             <label className="flex items-center gap-2">
-              <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 font-medium uppercase tracking-wider text-red-400">Old</span>
+              <Badge variant="outline" className="border-red-500/30 bg-red-500/10 uppercase tracking-wider text-red-400">Old</Badge>
               <select
                 value={leftVersionId ?? ""}
                 onChange={(event) => onLeftVersionChange(event.target.value || null)}
@@ -2493,7 +2360,7 @@ function SkillVersionDiffDialog({
               </select>
             </label>
             <label className="flex items-center gap-2">
-              <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 font-medium uppercase tracking-wider text-green-400">New</span>
+              <Badge variant="outline" className="border-green-500/30 bg-green-500/10 uppercase tracking-wider text-green-400">New</Badge>
               <select
                 value={right?.id ?? ""}
                 onChange={(event) => onRightVersionChange(event.target.value || null)}
@@ -2595,6 +2462,7 @@ export function SkillDetailPage({
   updateSettingsPending,
   onDelete,
   deletePending,
+  studioHref,
 }: {
   detail: CompanySkillDetail | null | undefined;
   catalogSource?: CatalogSkillSource | null;
@@ -2634,6 +2502,7 @@ export function SkillDetailPage({
   updateSettingsPending: boolean;
   onDelete: () => void;
   deletePending: boolean;
+  studioHref?: string;
 }) {
   const [diffOpen, setDiffOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2687,6 +2556,7 @@ export function SkillDetailPage({
   }
 
   const skill = detail;
+  const resolvedStudioHref = studioHref ?? skillStudioRoute(skill.id);
   const source = sourceMeta(skill.sourceBadge, skill.sourceLabel);
   const SourceIcon = source.icon;
   const body = file?.markdown ? stripFrontmatter(file.content) : file?.content ?? "";
@@ -2779,6 +2649,17 @@ export function SkillDetailPage({
                     <Pencil className="mr-1.5 h-3.5 w-3.5" /> Edit
                   </Button>
                 )
+              ) : !skill.editable ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={onFork}
+                  title={skill.editableReason ?? "Fork this skill to edit it."}
+                >
+                  <GitFork className="mr-1.5 h-3.5 w-3.5" />
+                  Fork
+                </Button>
               ) : null}
             </div>
           </div>
@@ -2836,7 +2717,19 @@ export function SkillDetailPage({
           </div>
           <div className="min-w-0 border-b border-border py-2">
             <div className="text-xs text-muted-foreground">Mode</div>
-            <div className="mt-1">{skill.editable ? "Editable" : skill.editableReason ?? "Read only"}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              {skill.editable ? (
+                "Editable"
+              ) : (
+                <>
+                  <span>Read only</span>
+                  <Button type="button" variant="outline" size="xs" onClick={onFork}>
+                    <GitFork className="mr-1 h-3 w-3" />
+                    Fork
+                  </Button>
+                </>
+              )}
+            </div>
           </div>
         </section>
       </div>
@@ -2934,10 +2827,10 @@ export function SkillDetailPage({
                     <div className="flex items-center gap-1.5">
                       <span className="truncate font-medium">{agent.name}</span>
                       {meta?.paused ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide text-amber-500">
+                        <Badge variant="outline" className="[&>svg]:size-2.5 border-amber-500/30 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-wide text-amber-500">
                           <Pause className="h-2.5 w-2.5" aria-hidden="true" />
                           Paused
-                        </span>
+                        </Badge>
                       ) : null}
                     </div>
                     <div className="mt-0.5 text-xs text-muted-foreground">{agent.adapterType}</div>
@@ -2974,24 +2867,10 @@ export function SkillDetailPage({
               <SkillCardIcon
                 card={{
                   key: detail.key,
-                  skillId: detail.id,
-                  catalogRef: null,
                   name: detail.name,
                   slug: detail.slug,
-                  author: detail.authorName ?? source.label,
-                  version: null,
-                  tagline: detail.tagline,
-                  description: detail.description,
-                  categories: detail.categories,
                   iconUrl: detail.iconUrl,
                   color: detail.color,
-                  starCount: detail.starCount,
-                  agentCount: detail.attachedAgentCount,
-                  forkCount: detail.forkCount,
-                  installed: true,
-                  required: false,
-                  forkedFrom: Boolean(detail.forkedFromSkillId),
-                  updatedAt: new Date(detail.updatedAt).getTime() || 0,
                 }}
                 size={44}
               />
@@ -3052,6 +2931,12 @@ export function SkillDetailPage({
               "Installs" counts agents that currently have this skill attached
               (PAP-10907); stars and fork are interactive. */}
           <div className="flex flex-wrap items-center justify-end gap-1">
+            <Button variant="outline" size="sm" asChild>
+              <Link to={resolvedStudioHref}>
+                <FlaskConical className="mr-1.5 h-3.5 w-3.5" />
+                Open in Studio
+              </Link>
+            </Button>
             <div className="flex items-center overflow-hidden rounded-md border border-border">
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -3452,6 +3337,12 @@ function SkillPane({
             )}
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button variant="outline" size="sm" asChild>
+              <Link to={skillStudioRoute(detail.id)}>
+                <FlaskConical className="mr-1.5 h-3.5 w-3.5" />
+                Open in Studio
+              </Link>
+            </Button>
             <Button
               variant="ghost"
               size="sm"
@@ -3555,10 +3446,10 @@ function SkillPane({
             {readonlyMetadataValue(detail.metadata, "userModifiedAt") ? (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/40 bg-violet-500/10 px-2 py-0.5 text-(length:--text-micro) text-violet-200">
+                  <Badge variant="outline" className="border-violet-500/40 bg-violet-500/10 text-(length:--text-micro) text-violet-200">
                     <Pencil className="h-3 w-3" aria-hidden="true" />
                     Locally modified
-                  </span>
+                  </Badge>
                 </TooltipTrigger>
                 <TooltipContent>You have edited this skill after installing. Updates from the catalog will overwrite your changes.</TooltipContent>
               </Tooltip>
@@ -3715,12 +3606,11 @@ export function CompanySkills() {
   }>({ open: false, catalogSkill: null, conflict: null, defaultSlug: null, defaultForce: false, defaultAction: "install", error: null });
   const [discoverySearch, setDiscoverySearch] = useState("");
   const [discoverySort, setDiscoverySort] = useState<DiscoverySort>("agents");
-  const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  const [createDraft, setCreateDraft] = useState<SkillCreateDraft>(() => buildBlankSkillDraft());
   const [createError, setCreateError] = useState<string | null>(null);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const parsedRoute = useMemo(() => parseSkillRoute(routePath), [routePath]);
-  const routeSkillToken = parsedRoute.skillToken;
+  const isStudioNew = routePath === "studio/new";
+  const routeSkillToken = isStudioNew ? null : parsedRoute.skillToken;
   const selectedPath = parsedRoute.filePath;
   const viewParam = searchParams.get("view");
   const activeView: "installed" | "catalog" = viewParam === "catalog" ? "catalog" : "installed";
@@ -3739,9 +3629,10 @@ export function CompanySkills() {
       ? "files"
       : "overview";
   const discoveryCategory = searchParams.get("category");
+  const studioForkFromId = isStudioNew ? searchParams.get("forkFrom")?.trim() || null : null;
   // Discovery grid owns `/skills` whenever no specific skill or catalog entry is
   // selected; selecting either drops into the existing master/detail surfaces.
-  const isDiscovery = !routeSkillToken && !selectedCatalogRef;
+  const isDiscovery = !isStudioNew && !routeSkillToken && !selectedCatalogRef;
 
   function setDiscoveryTab(tab: DiscoveryTab) {
     setSearchParams((current) => {
@@ -3790,18 +3681,17 @@ export function CompanySkills() {
     setCatalogSelectedPath(path);
   }
 
-  function openCreateWizard(initialDraft: SkillCreateDraft = buildBlankSkillDraft()) {
-    setCreateDraft(initialDraft);
+  useEffect(() => {
+    if (!isStudioNew) return;
     setCreateError(null);
-    setCreateDialogOpen(true);
-  }
+  }, [isStudioNew, studioForkFromId]);
 
   useEffect(() => {
     setBreadcrumbs([
       { label: "Skills", href: "/skills" },
-      ...(routeSkillToken ? [{ label: "Detail" }] : []),
+      ...(isStudioNew ? [{ label: studioForkFromId ? "Fork skill" : "New skill" }] : routeSkillToken ? [{ label: "Detail" }] : []),
     ]);
-  }, [routeSkillToken, setBreadcrumbs]);
+  }, [isStudioNew, routeSkillToken, setBreadcrumbs, studioForkFromId]);
 
   // The old split catalog view no longer exists — catalog/bundled skills now open
   // as a regular full page keyed by `?catalog=<ref>`. Strip the legacy `view`
@@ -3851,6 +3741,20 @@ export function CompanySkills() {
     queryFn: () => companySkillsApi.versions(selectedCompanyId!, selectedSkillId!),
     enabled: Boolean(selectedCompanyId && selectedSkillId),
   });
+
+  const studioForkDetailQuery = useQuery({
+    queryKey: queryKeys.companySkills.detail(selectedCompanyId ?? "", studioForkFromId ?? ""),
+    queryFn: () => companySkillsApi.detail(selectedCompanyId!, studioForkFromId!),
+    enabled: Boolean(selectedCompanyId && isStudioNew && studioForkFromId),
+  });
+
+  const studioDraft = useMemo(() => {
+    if (!isStudioNew) return buildBlankSkillDraft();
+    if (studioForkFromId) {
+      return studioForkDetailQuery.data ? buildForkSkillDraft(studioForkDetailQuery.data) : buildBlankSkillDraft();
+    }
+    return buildBlankSkillDraft();
+  }, [isStudioNew, studioForkDetailQuery.data, studioForkFromId]);
 
   const updateStatusQuery = useQuery({
     queryKey: queryKeys.companySkills.updateStatus(selectedCompanyId ?? "", selectedSkillId ?? ""),
@@ -3970,31 +3874,6 @@ export function CompanySkills() {
     },
   });
 
-  const createSkill = useMutation({
-    mutationFn: (payload: CompanySkillCreateRequest) => companySkillsApi.create(selectedCompanyId!, payload),
-    onSuccess: async (skill) => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
-      navigate(routeForSkill(skill));
-      setCreateDialogOpen(false);
-      setCreateError(null);
-      setCreateDraft(buildBlankSkillDraft());
-      pushToast({
-        tone: "success",
-        title: skill.forkedFromSkillId ? "Skill fork created" : "Skill created",
-        body: `${skill.name} is now editable in the Paperclip workspace.`,
-      });
-    },
-    onError: (error) => {
-      const message = error instanceof Error ? error.message : "Failed to create skill.";
-      setCreateError(message);
-      pushToast({
-        tone: "error",
-        title: "Skill creation failed",
-        body: message,
-      });
-    },
-  });
-
   const scanProjects = useMutation({
     mutationFn: () => companySkillsApi.scanProjects(selectedCompanyId!),
     onMutate: () => {
@@ -4030,6 +3909,30 @@ export function CompanySkills() {
         tone: "error",
         title: "Project skill scan failed",
         body: error instanceof Error ? error.message : "Failed to scan project workspaces.",
+      });
+    },
+  });
+
+
+  const createSkill = useMutation({
+    mutationFn: (payload: CompanySkillCreateRequest) => companySkillsApi.create(selectedCompanyId!, payload),
+    onSuccess: async (skill) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
+      navigate(routeForSkill(skill));
+      setCreateError(null);
+      pushToast({
+        tone: "success",
+        title: skill.forkedFromSkillId ? "Skill fork created" : "Skill created",
+        body: `${skill.name} is now editable in the Paperclip workspace.`,
+      });
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Failed to create skill.";
+      setCreateError(message);
+      pushToast({
+        tone: "error",
+        title: "Skill creation failed",
+        body: message,
       });
     },
   });
@@ -4439,6 +4342,11 @@ export function CompanySkills() {
   const catalogSourceForDetail = activeDetail
     ? (catalogListQuery.data ?? []).find((entry) => entry.key === activeDetail.key)?.source ?? null
     : null;
+  const studioBackHref = studioForkDetailQuery.data ? routeForSkill(studioForkDetailQuery.data) : "/skills";
+  const studioTitle = studioForkFromId ? "Fork skill" : "Create a new skill";
+  const studioDescription = studioForkFromId
+    ? "Review the fork metadata and create an editable company copy."
+    : "Create an editable company skill in the Paperclip workspace.";
 
   return (
     <>
@@ -4554,26 +4462,6 @@ export function CompanySkills() {
         }}
       />
 
-      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-        <DialogContent className="flex max-h-(--sz-85vh) flex-col overflow-y-auto sm:max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>{createDraft.forkedFromSkillId ? "Fork skill" : "Create a new skill"}</DialogTitle>
-            <DialogDescription>
-              {createDraft.forkedFromSkillId
-                ? "Review the fork metadata and create an editable company copy."
-                : "Create an editable company skill in the Paperclip workspace."}
-            </DialogDescription>
-          </DialogHeader>
-          <NewSkillWizard
-            initialDraft={createDraft}
-            onCreate={(payload) => createSkill.mutate(payload)}
-            isPending={createSkill.isPending}
-            error={createError}
-            onCancel={() => setCreateDialogOpen(false)}
-          />
-        </DialogContent>
-      </Dialog>
-
       <Dialog open={importDialogOpen} onOpenChange={setImportDialogOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -4622,7 +4510,38 @@ export function CompanySkills() {
         </DialogContent>
       </Dialog>
 
-      {isDiscovery ? (
+      {isStudioNew ? (
+        <div className="min-h-(--sz-calc-30)">
+          <div className="border-b border-border px-4 py-5">
+            <Link
+              to={studioBackHref}
+              className="mb-3 inline-flex items-center gap-1.5 text-sm text-muted-foreground no-underline transition-colors hover:text-foreground"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Back
+            </Link>
+            <h1 className="text-2xl font-semibold">{studioTitle}</h1>
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{studioDescription}</p>
+          </div>
+          <div className="px-4 py-4">
+            <div className="max-w-3xl">
+              {studioForkFromId && studioForkDetailQuery.isLoading ? (
+                <PageSkeleton variant="detail" />
+              ) : studioForkFromId && !studioForkDetailQuery.data ? (
+                <EmptyState icon={Boxes} message="Fork source skill not found." />
+              ) : (
+                <NewSkillWizard
+                  initialDraft={studioDraft}
+                  onCreate={(payload) => createSkill.mutate(payload)}
+                  isPending={createSkill.isPending}
+                  error={createError}
+                  onCancel={() => navigate(studioBackHref)}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      ) : isDiscovery ? (
         <DiscoveryGrid
           tab={discoveryTab}
           tabCounts={discoveryTabCounts}
@@ -4640,7 +4559,7 @@ export function CompanySkills() {
           loading={skillsQuery.isLoading || catalogListQuery.isLoading}
           error={skillsQuery.error?.message ?? catalogListQuery.error?.message ?? null}
           totalCount={discoveryCards.length}
-          onCreate={() => openCreateWizard()}
+          onCreate={() => navigate(skillStudioNewRoute())}
           onImport={() => setImportDialogOpen(true)}
           onBrowseCatalog={() => setDiscoveryTab("catalog")}
           onScan={() => scanProjects.mutate()}
@@ -4694,11 +4613,12 @@ export function CompanySkills() {
           installUpdatePending={installUpdate.isPending}
           onToggleStar={() => toggleStar.mutate()}
           starPending={toggleStar.isPending}
-          onFork={() => activeDetail && openCreateWizard(buildForkSkillDraft(activeDetail))}
+          onFork={() => activeDetail && navigate(skillStudioNewRoute(activeDetail.id))}
           onUpdateSettings={(updates) => activeDetail && updateSkillSettings.mutate({ skillId: activeDetail.id, updates })}
           updateSettingsPending={updateSkillSettings.isPending}
           onDelete={openDeleteDialog}
           deletePending={deleteSkill.isPending}
+          studioHref={skillStudioRoute(selectedSkillId)}
         />
       ) : selectedCatalogRef ? (
         // Catalog / optional / bundled skills open as a regular full page in the

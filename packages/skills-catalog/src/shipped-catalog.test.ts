@@ -1,10 +1,13 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { catalogManifest, catalogSkills, resolveCatalogSkillRef } from "./index.js";
 
 const EXPECTED_BUNDLED_KEYS = [
   "paperclipai/bundled/docs/doc-maintenance",
   "paperclipai/bundled/paperclip-operations/issue-triage",
+  "paperclipai/bundled/paperclip-operations/reflection-coach",
   "paperclipai/bundled/paperclip-operations/task-planning",
   "paperclipai/bundled/product/paperclip-capsules",
   "paperclipai/bundled/product/wireframe",
@@ -20,7 +23,68 @@ const EXPECTED_OPTIONAL_KEYS = [
   "paperclipai/optional/research/last30days",
 ];
 
+const MAX_FRONTMATTER_DESCRIPTION_LENGTH = 300;
+const REPO_ROOT = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
+const SKILL_FRONTMATTER_ROOTS = [
+  path.join(REPO_ROOT, ".agents"),
+  path.join(REPO_ROOT, "skills"),
+  path.join(REPO_ROOT, "packages/adapters"),
+  path.join(REPO_ROOT, "packages/plugins"),
+  path.join(REPO_ROOT, "packages/skills-catalog/catalog"),
+  path.join(REPO_ROOT, "packages/teams-catalog/catalog"),
+];
+
+function listSkillFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) return listSkillFiles(entryPath);
+    if (entry.isFile() && entry.name === "SKILL.md") return [entryPath];
+    return [];
+  });
+}
+
+function readFrontmatterDescription(markdown: string): string | null {
+  const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) return null;
+
+  const lines = match[1]!.split(/\r?\n/);
+  const descriptionIndex = lines.findIndex((line) => line.startsWith("description:"));
+  if (descriptionIndex === -1) return null;
+
+  const inlineValue = lines[descriptionIndex]!.slice("description:".length).trim();
+  if (/^[>|][+-]?$/.test(inlineValue)) {
+    const descriptionLines: string[] = [];
+    for (let index = descriptionIndex + 1; index < lines.length; index += 1) {
+      const line = lines[index]!;
+      if (/^[A-Za-z0-9_-]+:/.test(line)) break;
+      descriptionLines.push(line.trim());
+    }
+    return descriptionLines.join(" ").replace(/\s+/g, " ").trim();
+  }
+
+  return inlineValue.replace(/^['"]|['"]$/g, "");
+}
+
 describe("shipped skills catalog", () => {
+  it("keeps repo and catalog skill descriptions within the prompt budget cap", () => {
+    const violations: string[] = [];
+    for (const skillFile of SKILL_FRONTMATTER_ROOTS.flatMap(listSkillFiles)) {
+      const description = readFrontmatterDescription(readFileSync(skillFile, "utf8"));
+      if (!description) {
+        violations.push(`${path.relative(REPO_ROOT, skillFile)} is missing a frontmatter description`);
+      } else if (description.length > MAX_FRONTMATTER_DESCRIPTION_LENGTH) {
+        violations.push(`${path.relative(REPO_ROOT, skillFile)} description is ${description.length} chars`);
+      }
+    }
+    for (const skill of catalogSkills) {
+      if (skill.description.length > MAX_FRONTMATTER_DESCRIPTION_LENGTH) {
+        violations.push(`${skill.key} generated description is ${skill.description.length} chars`);
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
   it("ships the expected bundled and optional skill set", () => {
     const bundledKeys = catalogSkills
       .filter((skill) => skill.kind === "bundled")

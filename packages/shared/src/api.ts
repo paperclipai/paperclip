@@ -6,6 +6,7 @@ export const API = {
   agents: `${API_PREFIX}/agents`,
   projects: `${API_PREFIX}/projects`,
   environments: `${API_PREFIX}/environments`,
+  environmentDeleteBlastRadius: `${API_PREFIX}/environments/:id/delete-blast-radius`,
   environmentCustomImageTemplate: `${API_PREFIX}/environments/:environmentId/custom-image-template`,
   environmentCustomImageTemplateDisable: `${API_PREFIX}/environments/:environmentId/custom-image-template`,
   environmentCustomImageTemplateRollback: `${API_PREFIX}/environments/:environmentId/custom-image-template/rollback`,

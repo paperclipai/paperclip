@@ -46,6 +46,12 @@ function renderChart(
   });
 }
 
+async function flushTimelineEffects(count = 5) {
+  for (let index = 0; index < count; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
 function timelineSample(): WorkTimelineResult {
   return {
     actors: [
@@ -139,6 +145,8 @@ describe("WorkTimelineChart", () => {
     expect(gutter?.getAttribute("width")).toBe("176");
     expect(chartSvg?.getAttribute("width")).not.toBe(gutter?.getAttribute("width"));
     expect(gutter?.textContent).toContain("CodexCoder");
+    expect(gutter?.textContent).not.toContain("agent");
+    expect(gutter?.textContent).not.toContain("×");
 
     flushSync(() => {
       scroller!.scrollLeft = 10_000;
@@ -146,6 +154,28 @@ describe("WorkTimelineChart", () => {
     });
 
     expect(container.querySelector("[data-testid='work-timeline-actor-gutter']")?.textContent).toContain("CodexCoder");
+  });
+
+  it("reports the currently visible time window when the chart scrolls", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(640);
+    const onVisibleWindowChange = vi.fn();
+    const data = timelineSample();
+    renderChart(data, { onVisibleWindowChange });
+
+    await flushTimelineEffects();
+
+    const scroller = container.querySelector<HTMLElement>("[data-testid='work-timeline-scroll']")!;
+    expect(onVisibleWindowChange).toHaveBeenCalled();
+
+    flushSync(() => {
+      scroller.scrollLeft = 0;
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await flushTimelineEffects();
+
+    const lastCall = onVisibleWindowChange.mock.calls.at(-1)?.[0];
+    expect(lastCall?.fromMs).toBe(new Date(data.window.from).getTime());
+    expect(lastCall?.toMs).toBeCloseTo(new Date("2026-07-02T01:00:00.000Z").getTime(), -3);
   });
 
   it("renders configured agent icons in the actor gutter instead of generated initials", () => {
@@ -323,7 +353,7 @@ describe("WorkTimelineChart", () => {
     const onZoomScaleChange = vi.fn();
     renderChart(timelineSample(), { onZoomScaleChange });
 
-    const rightHandle = container.querySelector<SVGRectElement>("[data-testid='timeline-minimap-right-handle']")!;
+    const rightHandle = container.querySelector<SVGGElement>("[data-testid='timeline-minimap-right-handle']")!;
     const minimap = rightHandle.ownerSVGElement!;
     vi.spyOn(minimap, "getBoundingClientRect").mockReturnValue({
       x: 0,
@@ -344,6 +374,18 @@ describe("WorkTimelineChart", () => {
     });
 
     expect(onZoomScaleChange).toHaveBeenCalled();
+  });
+
+  it("shows grab-handle affordances on minimap selection edges", () => {
+    renderChart(timelineSample(), { onZoomScaleChange: vi.fn() });
+
+    const leftHandle = container.querySelector<SVGGElement>("[data-testid='timeline-minimap-left-handle']")!;
+    const rightHandle = container.querySelector<SVGGElement>("[data-testid='timeline-minimap-right-handle']")!;
+
+    expect(leftHandle.getAttribute("class")).toContain("cursor-grab");
+    expect(rightHandle.getAttribute("class")).toContain("cursor-grab");
+    expect(leftHandle.querySelectorAll("line")).toHaveLength(3);
+    expect(leftHandle.textContent).toContain("Drag left edge");
   });
 
   it("cleans up chart drag listeners when unmounted mid-drag", () => {
@@ -383,7 +425,7 @@ describe("WorkTimelineChart", () => {
     const remove = vi.spyOn(document, "removeEventListener");
     renderChart(timelineSample(), { onZoomScaleChange: vi.fn() });
 
-    const rightHandle = container.querySelector<SVGRectElement>("[data-testid='timeline-minimap-right-handle']")!;
+    const rightHandle = container.querySelector<SVGGElement>("[data-testid='timeline-minimap-right-handle']")!;
     const minimap = rightHandle.ownerSVGElement!;
     vi.spyOn(minimap, "getBoundingClientRect").mockReturnValue({
       x: 0,

@@ -60,10 +60,17 @@ import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 import { secretService } from "./secrets.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { parseCron, validateCron } from "./cron.js";
 import { heartbeatService } from "./heartbeat.js";
+import {
+  instanceSettingsService,
+  isTruthyRuntimeEnvValue,
+  resolveWorktreeRunExecutionActivationState,
+  type WorktreeRunExecutionActivationState,
+} from "./instance-settings.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -591,10 +598,13 @@ export function routineService(
   deps: {
     heartbeat?: IssueAssignmentWakeupDeps;
     pluginWorkerManager?: PluginWorkerManager;
+    runtimeEnv?: Record<string, string | undefined>;
   } = {},
 ) {
   const issueSvc = issueService(db);
   const secretsSvc = secretService(db);
+  const instanceSettings = instanceSettingsService(db);
+  const runtimeEnv = deps.runtimeEnv ?? process.env;
   const heartbeat = deps.heartbeat ?? heartbeatService(db, {
     pluginWorkerManager: deps.pluginWorkerManager,
   });
@@ -1060,7 +1070,7 @@ export function routineService(
           eq(issues.originKind, "routine_execution"),
           inArray(issues.originId, routineIds),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
         ),
       )
       .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
@@ -1098,7 +1108,7 @@ export function routineService(
             eq(issues.originKind, "routine_execution"),
             inArray(issues.originId, missingRoutineIds),
             inArray(issues.status, OPEN_ISSUE_STATUSES),
-            isNull(issues.hiddenAt),
+            visibleIssueCondition(),
           ),
         )
         .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
@@ -1154,14 +1164,32 @@ export function routineService(
     }
   }
 
-  // Records a skipped scheduled firing without creating an execution issue. Used when the
-  // routine's project is paused: the tick is still claimed/advanced upstream (no backfill),
-  // and run history + trigger audit reflect the pause-specific skip.
-  async function recordSuppressedScheduleRun(input: {
+  async function getAutomaticRoutineDispatchEligibility(
+    routine: typeof routines.$inferSelect,
+    activation?: WorktreeRunExecutionActivationState,
+  ) {
+    if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) return { eligible: true };
+
+    const resolvedActivation = activation ?? await resolveWorktreeRunExecutionActivationState({
+      getExperimental: instanceSettings.getExperimental,
+      runtimeEnv,
+    });
+    if (!resolvedActivation.armed) return { eligible: false };
+
+    const cutoff = new Date(resolvedActivation.cutoff);
+    if (Number.isNaN(cutoff.getTime()) || routine.createdAt < cutoff) return { eligible: false };
+    return { eligible: true };
+  }
+
+  // Records an automatic firing that was claimed but intentionally not dispatched. The
+  // scheduler advances its tick before calling this helper, so suppressed work is never
+  // replayed after a setting or project state changes.
+  async function recordSuppressedAutomaticRun(input: {
     routine: typeof routines.$inferSelect;
     trigger: typeof routineTriggers.$inferSelect;
+    source: "schedule" | "webhook";
     reason: string;
-    nextRunAt: Date | null;
+    nextRunAt?: Date | null;
   }) {
     const triggeredAt = new Date();
     const run = await db.transaction(async (tx) => {
@@ -1172,7 +1200,7 @@ export function routineService(
           companyId: input.routine.companyId,
           routineId: input.routine.id,
           triggerId: input.trigger.id,
-          source: "schedule",
+          source: input.source,
           status: "skipped",
           triggeredAt,
           failureReason: input.reason,
@@ -1186,7 +1214,7 @@ export function routineService(
         routineId: input.routine.id,
         triggerId: input.trigger.id,
         triggeredAt,
-        status: "skipped_paused",
+        status: input.reason === "paused" ? "skipped_paused" : "skipped_worktree_execution_cutoff",
         nextRunAt: input.nextRunAt,
       }, txDb);
       return createdRun;
@@ -1196,14 +1224,14 @@ export function routineService(
       await logActivity(db, {
         companyId: input.routine.companyId,
         actorType: "system",
-        actorId: "routine-scheduler",
+        actorId: input.source === "schedule" ? "routine-scheduler" : "routine-webhook",
         action: "routine.run_skipped",
         entityType: "routine_run",
         entityId: run.id,
         details: {
           routineId: input.routine.id,
           triggerId: input.trigger.id,
-          source: "schedule",
+          source: input.source,
           status: "skipped",
           reason: input.reason,
         },
@@ -1250,7 +1278,7 @@ export function routineService(
           eq(issues.originKind, originKind),
           eq(issues.originId, originId),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           ...(fingerprintCondition ? [fingerprintCondition] : []),
         ),
       )
@@ -1276,7 +1304,7 @@ export function routineService(
           eq(issues.originKind, originKind),
           eq(issues.originId, originId),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           ...(fingerprintCondition ? [fingerprintCondition] : []),
         ),
       )
@@ -2644,6 +2672,16 @@ export function routineService(
         if (!valid) throw unauthorized();
       }
 
+      const eligibility = await getAutomaticRoutineDispatchEligibility(routine);
+      if (!eligibility.eligible) {
+        return recordSuppressedAutomaticRun({
+          routine,
+          trigger,
+          source: "webhook",
+          reason: "worktree_execution_cutoff",
+        });
+      }
+
       return dispatchRoutineRun({
         routine,
         trigger,
@@ -2731,6 +2769,12 @@ export function routineService(
     },
 
     tickScheduledTriggers: async (now: Date = new Date()) => {
+      const worktreeActivation = isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)
+        ? await resolveWorktreeRunExecutionActivationState({
+          getExperimental: instanceSettings.getExperimental,
+          runtimeEnv,
+        })
+        : undefined;
       const due = await db
         .select({
           trigger: routineTriggers,
@@ -2760,11 +2804,13 @@ export function routineService(
         // at the next cron boundary instead of replaying missed firings. Routines with no
         // project are never suppressed here.
         const projectPaused = !!(row.routine.projectId && row.projectPausedAt);
+        const automaticEligibility = await getAutomaticRoutineDispatchEligibility(row.routine, worktreeActivation);
+        const worktreeSuppressed = !automaticEligibility.eligible;
 
         let runCount = 1;
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
 
-        if (!projectPaused && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
+        if (!projectPaused && !worktreeSuppressed && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
           let cursor: Date | null = row.trigger.nextRunAt;
           runCount = 0;
           while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
@@ -2791,11 +2837,12 @@ export function routineService(
           .then((rows) => rows[0] ?? null);
         if (!claimed) continue;
 
-        if (projectPaused) {
-          await recordSuppressedScheduleRun({
+        if (projectPaused || worktreeSuppressed) {
+          await recordSuppressedAutomaticRun({
             routine: row.routine,
             trigger: row.trigger,
-            reason: "paused",
+            source: "schedule",
+            reason: worktreeSuppressed ? "worktree_execution_cutoff" : "paused",
             nextRunAt: claimedNextRunAt,
           });
           continue;

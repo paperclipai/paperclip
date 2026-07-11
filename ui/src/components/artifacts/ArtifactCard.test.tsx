@@ -52,7 +52,7 @@ describe("ArtifactCard", () => {
     expect(markup).toContain('href="/issues/PAP-10306#attachment-art-1"');
     expect(markup).toContain('data-disable-issue-quicklook="true"');
     expect(markup).toContain('data-media-kind="image"');
-    expect(markup).toContain("rounded-(--rad-8)");
+    expect(markup).toContain("rounded-lg");
     expect(markup).toContain('src="/files/art-1.png"');
     expect(markup).toContain("object-cover");
     expect(markup).toContain("Hero shot");

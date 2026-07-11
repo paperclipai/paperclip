@@ -27,6 +27,8 @@ export interface MatchSourceChipProps {
   className?: string;
 }
 
+// design-allow(pill-pattern): --chip-match-* domain token family (DESIGN.md domain tier); a
+// deliberately separate chip system, not a Badge.
 export function MatchSourceChip({ kind, count, label, className }: MatchSourceChipProps) {
   const text = label ?? chipLabels[kind];
   const showCount = typeof count === "number" && count > 1;

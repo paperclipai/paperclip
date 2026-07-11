@@ -80,18 +80,18 @@ function MetricTile({
   icon: ComponentType<{ className?: string }>;
 }) {
   return (
-    <div className="border border-border p-4">
+    <Card className="block p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{label}</div>
           <div className="mt-2 text-2xl font-semibold tabular-nums">{value}</div>
           <div className="mt-1 text-xs leading-5 text-muted-foreground">{subtitle}</div>
         </div>
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center border border-border">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border">
           <Icon className="h-4 w-4 text-muted-foreground" />
         </div>
       </div>
-    </div>
+    </Card>
   );
 }
 

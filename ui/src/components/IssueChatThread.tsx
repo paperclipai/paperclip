@@ -65,6 +65,8 @@ import type {
   IssueThreadInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
+  RequestItemVerdictsInteraction,
+  RequestItemVerdictValue,
   SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
 import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "../lib/issue-thread-interactions";
@@ -76,6 +78,7 @@ import {
   type IssueTimelineWorkspace,
 } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -220,10 +223,16 @@ interface IssueChatMessageContext {
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
+  onSubmitInteractionVerdicts?: (
+    interaction: RequestItemVerdictsInteraction,
+    verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
+  ) => Promise<void> | void;
   onUploadImage?: (file: File) => Promise<string>;
   issueStatus?: string;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   externalReferences?: MarkdownExternalReferenceMap;
+  /** Linkify `PAP-C7` case chips in comment bodies (experimental Cases flag). */
+  linkCaseReferences?: boolean;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -421,6 +430,8 @@ interface IssueChatThreadProps {
   activeRun?: ActiveRunForIssue | null;
   issueId?: string | null;
   blockedBy?: IssueRelationIssueSummary[];
+  /** Company-wide set of issue ids with a live (queued/running) run. */
+  liveIssueIds?: ReadonlySet<string>;
   blockerAttention?: IssueBlockerAttention | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
@@ -430,6 +441,8 @@ interface IssueChatThreadProps {
   reissueIsolatedRecoveryActionPending?: boolean;
   onReconcileForwardRecoveryAction?: () => void;
   onBreakGlassOverrideRecoveryAction?: (reason: string) => void;
+  onQuarantineRestoreRecoveryAction?: () => void;
+  quarantineRestoreRecoveryActionPending?: boolean;
   canBreakGlassRecoveryAction?: boolean;
   reconcileRecoveryActionPending?: boolean;
   canFalsePositiveRecoveryAction?: boolean;
@@ -474,6 +487,7 @@ interface IssueChatThreadProps {
   showComposer?: boolean;
   showJumpToLatest?: boolean;
   autoScrollToLatestOnInitialLoad?: boolean;
+  autoScrollToHashOnInitialLoad?: boolean;
   emptyMessage?: string;
   footer?: ReactNode;
   variant?: "full" | "embedded";
@@ -509,6 +523,10 @@ interface IssueChatThreadProps {
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
+  onSubmitInteractionVerdicts?: (
+    interaction: RequestItemVerdictsInteraction,
+    verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
+  ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
   issueWorkMode?: IssueWorkMode;
   /**
@@ -518,6 +536,8 @@ interface IssueChatThreadProps {
    */
   onRefreshLatestComments?: () => Promise<unknown> | void;
   externalReferences?: MarkdownExternalReferenceMap;
+  /** Linkify `PAP-C7` case chips in comment bodies (experimental Cases flag). */
+  linkCaseReferences?: boolean;
 }
 
 type IssueChatErrorBoundaryProps = {
@@ -647,20 +667,20 @@ function IssueChatFallbackThread({
       </div>
 
       {messages.length === 0 ? (
-        <div className={cn(
-          "text-center text-sm text-muted-foreground",
+        <Card className={cn(
+          "block shadow-none text-center text-sm text-muted-foreground",
           variant === "embedded"
-            ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
-            : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
+            ? "border-dashed border-border/70 bg-background/60 px-4 py-6"
+            : "border-dashed px-6 py-10",
         )}>
           {emptyMessage}
-        </div>
+        </Card>
       ) : (
         <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
           {messages.map((message) => {
             const lines = fallbackTextParts(message);
             return (
-              <div key={message.id} className="rounded-xl border border-border/60 bg-card/70 px-4 py-3">
+              <Card key={message.id} className="block border-border/60 bg-card/70 px-4 py-3">
                 <div className="mb-2 flex items-center gap-2 text-sm">
                   <span className="font-medium text-foreground">{fallbackAuthorLabel(message)}</span>
                   {message.createdAt ? (
@@ -678,7 +698,7 @@ function IssueChatFallbackThread({
                     <p className="text-sm text-muted-foreground">No message content.</p>
                   )}
                 </div>
-              </div>
+              </Card>
             );
           })}
         </div>
@@ -779,7 +799,7 @@ function commentDateLabel(date: Date | string | undefined): string {
 }
 
 const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed, onAccent }: { text: string; recessed?: boolean; onAccent?: boolean }) {
-  const { onImageClick, externalReferences } = useContext(IssueChatCtx);
+  const { onImageClick, externalReferences, linkCaseReferences } = useContext(IssueChatCtx);
   if (isSuccessfulRunHandoffComment(text)) {
     return <SuccessfulRunHandoffCommentCallout text={text} recessed={recessed} onImageClick={onImageClick} />;
   }
@@ -790,6 +810,7 @@ const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed, onAc
       softBreaks
       onImageClick={onImageClick}
       externalReferences={externalReferences}
+      linkCaseReferences={linkCaseReferences}
     >
       {text}
     </WorkspaceFileMarkdownBody>
@@ -1467,9 +1488,9 @@ function IssueChatUserMessage({
       >
         {queued ? (
           <div className="mb-1.5 flex items-center gap-2">
-            <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+            <Badge variant="outline" className="border-amber-400/60 bg-amber-100/70 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
               {queueBadgeLabel}
-            </span>
+            </Badge>
             {queueTargetRunId && onInterruptQueued ? (
               <Button
                 size="sm"
@@ -1909,15 +1930,15 @@ function IssueChatAssistantMessage({
               {isRunning ? (
                 // Gallery feedback r1: running chip uses the canonical brand blue
                 // (brandChipBadge.blue), not cyan; layout/size classes unchanged.
-                <span
+                <Badge variant="outline"
                   className={cn(
-                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow)",
+                    "text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)",
                     brandChipBadge.blue,
                   )}
                 >
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Running
-                </span>
+                </Badge>
               ) : null}
             </div>
           )}
@@ -2713,6 +2734,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onRejectInteraction,
     onSubmitInteractionAnswers,
     onCancelInteraction,
+    onSubmitInteractionVerdicts,
     onUploadImage,
     externalReferences,
   } = useContext(IssueChatCtx);
@@ -2771,6 +2793,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             onRejectInteraction={onRejectInteraction}
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
             onCancelInteraction={onCancelInteraction}
+            onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
             onUploadImage={onUploadImage}
             externalReferences={externalReferences}
           />
@@ -4163,6 +4186,7 @@ export function IssueChatThread({
   activeRun = null,
   issueId = null,
   blockedBy = [],
+  liveIssueIds,
   blockerAttention = null,
   successfulRunHandoff = null,
   scheduledRetry = null,
@@ -4172,6 +4196,8 @@ export function IssueChatThread({
   reissueIsolatedRecoveryActionPending = false,
   onReconcileForwardRecoveryAction,
   onBreakGlassOverrideRecoveryAction,
+  onQuarantineRestoreRecoveryAction,
+  quarantineRestoreRecoveryActionPending = false,
   canBreakGlassRecoveryAction = false,
   reconcileRecoveryActionPending = false,
   canFalsePositiveRecoveryAction = false,
@@ -4203,7 +4229,8 @@ export function IssueChatThread({
   composerHint = null,
   showComposer = true,
   showJumpToLatest,
-  autoScrollToLatestOnInitialLoad = true,
+  autoScrollToLatestOnInitialLoad = false,
+  autoScrollToHashOnInitialLoad = false,
   emptyMessage,
   footer,
   variant = "full",
@@ -4221,6 +4248,7 @@ export function IssueChatThread({
   onRejectInteraction,
   onSubmitInteractionAnswers,
   onCancelInteraction,
+  onSubmitInteractionVerdicts,
   composerRef,
   issueWorkMode,
   onWorkModeChange,
@@ -4229,9 +4257,11 @@ export function IssueChatThread({
   onResumeFromBacklog,
   resumeFromBacklogPending = false,
   externalReferences,
+  linkCaseReferences = false,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
+  const didInitialHashScrollDecisionRef = useRef(false);
   const virtualizedThreadRef = useRef<VirtualizedIssueChatThreadListHandle | null>(null);
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -4497,23 +4527,34 @@ export function IssueChatThread({
 
   useEffect(() => {
     const hash = location.hash || (typeof window !== "undefined" ? window.location.hash : "");
-    if (
-      !(
-        hash.startsWith("#comment-")
-        || hash.startsWith("#activity-")
-        || hash.startsWith("#run-")
-        || hash.startsWith("#interaction-")
-      )
-    ) return;
-    if (messages.length === 0 || lastScrolledHashRef.current === hash) return;
+    const isThreadHash = hash.startsWith("#comment-")
+      || hash.startsWith("#activity-")
+      || hash.startsWith("#run-")
+      || hash.startsWith("#interaction-");
+    if (messages.length === 0) return;
+    if (!isThreadHash) {
+      if (!didInitialHashScrollDecisionRef.current) {
+        didInitialHashScrollDecisionRef.current = true;
+      }
+      return;
+    }
+    if (lastScrolledHashRef.current === hash) return;
     const targetId = hash.slice(1);
     if (targetId.startsWith("comment-")) {
       const targetMessage = messages.find((message) => issueChatMessageAnchorId(message) === targetId);
       if (targetMessage && issueChatMessageIsDeleted(targetMessage)) {
+        didInitialHashScrollDecisionRef.current = true;
         lastScrolledHashRef.current = hash;
         if (typeof window !== "undefined") {
           window.history.replaceState(null, "", `${location.pathname}${location.search}`);
         }
+        return;
+      }
+    }
+    if (!didInitialHashScrollDecisionRef.current) {
+      didInitialHashScrollDecisionRef.current = true;
+      if (!autoScrollToHashOnInitialLoad) {
+        lastScrolledHashRef.current = hash;
         return;
       }
     }
@@ -4535,12 +4576,11 @@ export function IssueChatThread({
       cancelAnimationFrame(frame);
       window.clearTimeout(timeout);
     };
-  }, [location.hash, messageAnchorIndex, messages, useVirtualizedThread]);
+  }, [autoScrollToHashOnInitialLoad, location.hash, messageAnchorIndex, messages, useVirtualizedThread]);
 
-  // On first thread load, land on the latest comment instead of defaulting to
-  // the top (board rev-2 feedback for PAP-95). A deep-link hash takes
-  // precedence — the hash-scroll effect above owns that case. Runs once per
-  // mount, after messages first populate.
+  // Optional legacy behavior: callers may explicitly request landing on the
+  // latest comment. The shared default stays off so ordinary page loads keep
+  // the user's initial viewport stable.
   useEffect(() => {
     if (didInitialLatestScrollRef.current) return;
     if (!autoScrollToLatestOnInitialLoad) return;
@@ -4741,6 +4781,7 @@ export function IssueChatThread({
   const stableOnRejectInteraction = useStableEvent(onRejectInteraction);
   const stableOnSubmitInteractionAnswers = useStableEvent(onSubmitInteractionAnswers);
   const stableOnCancelInteraction = useStableEvent(onCancelInteraction);
+  const stableOnSubmitInteractionVerdicts = useStableEvent(onSubmitInteractionVerdicts);
   const stableOnUploadImage = useStableEvent(imageUploadHandler);
 
   const chatCtx = useMemo<IssueChatMessageContext>(
@@ -4765,10 +4806,12 @@ export function IssueChatThread({
       onRejectInteraction: stableOnRejectInteraction,
       onSubmitInteractionAnswers: stableOnSubmitInteractionAnswers,
       onCancelInteraction: stableOnCancelInteraction,
+      onSubmitInteractionVerdicts: stableOnSubmitInteractionVerdicts,
       onUploadImage: stableOnUploadImage,
       issueStatus,
       successfulRunHandoff,
       externalReferences,
+      linkCaseReferences,
     }),
     [
       feedbackDataSharingPreference,
@@ -4791,10 +4834,12 @@ export function IssueChatThread({
       stableOnRejectInteraction,
       stableOnSubmitInteractionAnswers,
       stableOnCancelInteraction,
+      stableOnSubmitInteractionVerdicts,
       stableOnUploadImage,
       issueStatus,
       successfulRunHandoff,
       externalReferences,
+      linkCaseReferences,
     ],
   );
 
@@ -4840,14 +4885,14 @@ export function IssueChatThread({
               className={variant === "embedded" ? "space-y-3" : "space-y-4"}
             >
               {messages.length === 0 ? (
-                <div className={cn(
-                  "text-center text-sm text-muted-foreground",
+                <Card className={cn(
+                  "block shadow-none text-center text-sm text-muted-foreground",
                   variant === "embedded"
-                    ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
-                    : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
+                    ? "border-dashed border-border/70 bg-background/60 px-4 py-6"
+                    : "border-dashed px-6 py-10",
                 )}>
                   {resolvedEmptyMessage}
-                </div>
+                </Card>
               ) : messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD ? (
                 <VirtualizedIssueChatThreadList
                   ref={virtualizedThreadRef}
@@ -4891,6 +4936,8 @@ export function IssueChatThread({
                       reissuePending={reissueIsolatedRecoveryActionPending}
                       onReconcileForward={onReconcileForwardRecoveryAction}
                       onBreakGlassOverride={onBreakGlassOverrideRecoveryAction}
+                      onQuarantineRestore={onQuarantineRestoreRecoveryAction}
+                      quarantineRestorePending={quarantineRestoreRecoveryActionPending}
                       canBreakGlass={canBreakGlassRecoveryAction}
                       reconcilePending={reconcileRecoveryActionPending}
                       canFalsePositive={canFalsePositiveRecoveryAction}
@@ -4930,6 +4977,8 @@ export function IssueChatThread({
                     issueId={issueId}
                     issueStatus={issueStatus}
                     blockers={unresolvedBlockers}
+                    allBlockers={blockedBy}
+                    liveIssueIds={liveIssueIds}
                     blockerAttention={blockerAttention}
                     successfulRunHandoff={recoveryAction ? null : successfulRunHandoff}
                     scheduledRetry={scheduledRetry}

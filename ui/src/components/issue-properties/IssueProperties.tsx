@@ -73,7 +73,9 @@ import {
 } from "./helpers";
 import { PropertyPicker } from "./property-picker";
 import { PropertyChip, PropertyRow, PropertySection } from "./primitives";
+import { IssueCasesPanel } from "../IssueCasesPanel";
 import { ExpandRelationListButton, RemovableIssueReferencePill } from "./relation-controls";
+import { Badge } from "@/components/ui/badge";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: ComponentType<{ className?: string }> }) {
   const [copied, setCopied] = useState(false);
@@ -1235,9 +1237,9 @@ export function IssueProperties({
         </PropertyChip>
       ))}
       {selectedIssueLabels.length > 3 && (
-        <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+        <Badge variant="outline" className="border-border text-muted-foreground">
           +{selectedIssueLabels.length - 3} more
-        </span>
+        </Badge>
       )}
     </div>
   ) : (
@@ -2297,6 +2299,12 @@ export function IssueProperties({
           </PropertyRow>
         )}
       </PropertySection>
+
+      {/* Experimental Cases rail (PAP-12969) — self-gates on the flag and
+          renders nothing when no cases are linked. */}
+      <div className="pt-3">
+        <IssueCasesPanel issueId={issue.id} />
+      </div>
     </div>
   );
 }

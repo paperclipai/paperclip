@@ -119,6 +119,28 @@ describe("computeLayout", () => {
     expect(ceoRun.kickoff?.id).toBe("user:dotta"); // human kickoff shown as chip
   });
 
+  it("does not reuse a board-created assignment edge on later automation runs", () => {
+    const data = sample();
+    data.spans.push({
+      actorId: "agent:ceo",
+      laneHint: null,
+      runId: "r1-later-automation",
+      issueId: "i-405",
+      issueIdentifier: "PAP-12405",
+      issueTitle: "PAP-12405 title",
+      start: t("10:30"),
+      end: t("10:36"),
+      status: "completed",
+      retryOfRunId: null,
+      invocationSource: "automation",
+    });
+
+    const layout = computeLayout(data, OPTS);
+    const ceoRuns = layout.rows.find((r) => r.actor.id === "agent:ceo")!.bars;
+    expect(ceoRuns.find((b) => b.span.runId === "r1")?.kickoff?.id).toBe("user:dotta");
+    expect(ceoRuns.find((b) => b.span.runId === "r1-later-automation")?.kickoff).toBeNull();
+  });
+
   it("prefers the nearest post-start kickoff edge when no prior edge exists", () => {
     const data = sample();
     data.spans.push({

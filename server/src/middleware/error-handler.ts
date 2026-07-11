@@ -92,6 +92,7 @@ export function errorHandler(
     res.status(err.status).json({
       error: err.message,
       ...(typeof details?.code === "string" ? { code: details.code } : {}),
+      ...(typeof details?.remediation === "string" ? { remediation: details.remediation } : {}),
       ...(err.details ? { details: err.details } : {}),
     });
     return;

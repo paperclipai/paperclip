@@ -13,6 +13,7 @@ import {
   documents,
   heartbeatRunEvents,
   heartbeatRuns,
+  instanceSettings,
   issueComments,
   issueDocuments,
   issues,
@@ -22,6 +23,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService, resolveHeartbeatSchedulingSuppression } from "../services/heartbeat.ts";
+import { instanceSettingsService } from "../services/instance-settings.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -36,25 +38,47 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
+  function isHeartbeatRunDependentFkError(error: unknown) {
+    const message = error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : String(error);
+    return (
+      message.includes("heartbeat_run_events_run_id_heartbeat_runs_id_fk") ||
+      message.includes("activity_log_run_id_heartbeat_runs_id_fk")
+    );
+  }
+
+  async function deleteHeartbeatRunsWithDependents() {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await db.delete(heartbeatRunEvents);
+      await db.delete(activityLog);
+      try {
+        await db.delete(heartbeatRuns);
+        return;
+      } catch (error) {
+        if (!isHeartbeatRunDependentFkError(error) || attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+  }
+
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-worktree-suppression-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
   afterEach(async () => {
-    await db.delete(heartbeatRunEvents);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(activityLog);
-    await db.delete(heartbeatRuns);
+    await deleteHeartbeatRunsWithDependents();
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
     await db.delete(agentRuntimeState);
     await db.delete(companySkills);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(instanceSettings);
   });
 
   afterAll(async () => {
@@ -109,29 +133,45 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     return { companyId, agentId, issueId };
   }
 
-  async function waitForTerminalRun(runId: string) {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+  async function armWorktreeRunExecution(cutoff: Date) {
+    await instanceSettingsService(db, {
+      runtimeEnv: {
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_INSTANCE_ID: "test-worktree",
+      },
+      now: () => cutoff,
+    }).updateExperimental({ enableWorktreeRunExecution: true });
+  }
+
+  async function waitForCompletedRun(runId: string, agentId: string) {
+    let latestStatus: string | null = null;
+    let latestLastRunId: string | null = null;
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
       const run = await db
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId))
         .then((rows) => rows[0] ?? null);
-      if (run && run.status !== "queued" && run.status !== "running") return run.status;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    return null;
-  }
-
-  async function waitForRuntimeStateLastRun(agentId: string, runId: string) {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
       const state = await db
         .select({ lastRunId: agentRuntimeState.lastRunId })
         .from(agentRuntimeState)
         .where(eq(agentRuntimeState.agentId, agentId))
         .then((rows) => rows[0] ?? null);
-      if (state?.lastRunId === runId) return;
+
+      latestStatus = run?.status ?? null;
+      latestLastRunId = state?.lastRunId ?? null;
+
+      if (run && run.status !== "queued" && run.status !== "running" && state?.lastRunId === runId) {
+        return run.status;
+      }
+
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+
+    throw new Error(
+      `Timed out waiting for heartbeat run ${runId} to finish; latest status=${latestStatus ?? "missing"}, runtime lastRunId=${latestLastRunId ?? "missing"}`,
+    );
   }
 
   it("suppresses new assignment wakes in worktree instances without creating heartbeat runs", async () => {
@@ -213,8 +253,55 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     expect(runningCount).toBe(0);
   });
 
+  it("skips pre-cutoff system wakes but allows user wakes in an armed worktree", async () => {
+    const { agentId, issueId } = await insertAgentAndIssue();
+    await armWorktreeRunExecution(new Date(Date.now() + 1_000));
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_INSTANCE_ID: "test-worktree",
+      },
+    });
+
+    const systemRun = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      payload: { issueId },
+      contextSnapshot: { issueId },
+      requestedByActorType: "system",
+    });
+    expect(systemRun).toBeNull();
+
+    const skippedWake = await db
+      .select({ reason: agentWakeupRequests.reason, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .orderBy(sql`${agentWakeupRequests.createdAt} desc`)
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    expect(skippedWake).toMatchObject({ reason: "heartbeat.worktree_execution_cutoff" });
+    expect(skippedWake?.payload).toMatchObject({
+      heartbeatSkip: { reason: "worktree_execution_cutoff", issueId },
+    });
+
+    const userRun = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "user",
+      payload: { issueId },
+      contextSnapshot: { issueId, skipIssueComment: true },
+      requestedByActorType: "user",
+      requestedByActorId: "operator",
+    });
+    expect(userRun).not.toBeNull();
+    await heartbeat.waitForRunExecutionDrain(userRun!.id);
+  }, 10_000);
+
   it("still creates live-plane assignment runs when suppression is not active", async () => {
     const { agentId, issueId } = await insertAgentAndIssue();
+    await db
+      .update(issues)
+      .set({ status: "in_review", updatedAt: new Date() })
+      .where(eq(issues.id, issueId));
+
     const heartbeat = heartbeatService(db, { runtimeEnv: {} });
 
     const run = await heartbeat.wakeup(agentId, {
@@ -222,27 +309,22 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
       triggerDetail: "system",
       reason: "issue_assigned",
       payload: { issueId },
-      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned", skipIssueComment: true },
       requestedByActorType: "system",
       requestedByActorId: "issue_assignment",
     });
 
     expect(run).not.toBeNull();
-    const terminalStatus = await waitForTerminalRun(run!.id);
-    expect(["succeeded", null]).toContain(terminalStatus);
+    const terminalStatus = await waitForCompletedRun(run!.id, agentId);
+    await heartbeat.waitForRunExecutionDrain(run!.id);
+    expect(terminalStatus).toBe("succeeded");
 
     const runCount = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(heartbeatRuns)
       .then((rows) => rows[0]?.count ?? 0);
     expect(runCount).toBe(1);
-
-    await db
-      .update(issues)
-      .set({ status: "done", updatedAt: new Date() })
-      .where(eq(issues.id, issueId));
-    await waitForRuntimeStateLastRun(agentId, run!.id);
-  });
+  }, 10_000);
 
   it("recognizes explicit restore-in-progress suppression", () => {
     expect(resolveHeartbeatSchedulingSuppression({

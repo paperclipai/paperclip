@@ -18,6 +18,7 @@ import {
 } from "@/lib/issue-attachments";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
+import { Card } from "@/components/ui/card";
 
 interface IssueAttachmentsSectionProps {
   attachments: IssueAttachment[];
@@ -25,7 +26,7 @@ interface IssueAttachmentsSectionProps {
   error?: string | null;
   dragActive?: boolean;
   deletePending?: boolean;
-  onDelete: (attachmentId: string) => void;
+  onDelete?: (attachmentId: string) => void;
   onImageClick: (attachment: IssueAttachment) => void;
   onDragEnter?: (evt: DragEvent<HTMLDivElement>) => void;
   onDragOver?: (evt: DragEvent<HTMLDivElement>) => void;
@@ -50,7 +51,7 @@ function AttachmentActions({
   onPreview,
 }: {
   attachment: IssueAttachment;
-  onDelete: (attachmentId: string) => void;
+  onDelete?: (attachmentId: string) => void;
   deletePending?: boolean;
   onPreview?: (attachment: IssueAttachment) => void;
 }) {
@@ -78,16 +79,18 @@ function AttachmentActions({
           <Download className="h-4 w-4" />
         </a>
       </Button>
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        title="Delete attachment"
-        className="text-muted-foreground hover:text-destructive"
-        onClick={() => onDelete(attachment.id)}
-        disabled={deletePending}
-      >
-        <Trash2 className="h-4 w-4" />
-      </Button>
+      {onDelete ? (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          title="Delete attachment"
+          className="text-muted-foreground hover:text-destructive"
+          onClick={() => onDelete(attachment.id)}
+          disabled={deletePending}
+        >
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -106,7 +109,7 @@ function MarkdownAttachmentCard({
   deletePending,
 }: {
   attachment: IssueAttachment;
-  onDelete: (attachmentId: string) => void;
+  onDelete?: (attachmentId: string) => void;
   deletePending?: boolean;
 }) {
   const filename = attachmentFilename(attachment);
@@ -151,13 +154,13 @@ function VideoAttachmentCard({
   onPreview,
 }: {
   attachment: IssueAttachment;
-  onDelete: (attachmentId: string) => void;
+  onDelete?: (attachmentId: string) => void;
   deletePending?: boolean;
   onPreview?: (attachment: IssueAttachment) => void;
 }) {
   const filename = attachmentFilename(attachment);
   return (
-    <div id={`attachment-${attachment.id}`} className="scroll-mt-20 overflow-hidden rounded-md border border-border bg-card">
+    <Card id={`attachment-${attachment.id}`} className="block scroll-mt-20 overflow-hidden py-0">
       <OutputVideoPlayer src={attachment.contentPath} title={filename} />
       <div className="flex flex-col gap-2 p-3 md:flex-row md:items-center md:justify-between">
         <div className="min-w-0">
@@ -171,7 +174,7 @@ function VideoAttachmentCard({
           onPreview={onPreview}
         />
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -181,12 +184,12 @@ function GenericAttachmentRow({
   deletePending,
 }: {
   attachment: IssueAttachment;
-  onDelete: (attachmentId: string) => void;
+  onDelete?: (attachmentId: string) => void;
   deletePending?: boolean;
 }) {
   const filename = attachmentFilename(attachment);
   return (
-    <div id={`attachment-${attachment.id}`} className="flex scroll-mt-20 items-center gap-2.5 rounded-md border border-border bg-card p-2">
+    <Card id={`attachment-${attachment.id}`} className="flex-row scroll-mt-20 items-center gap-2.5 p-2">
       <OutputFileTile contentType={attachment.contentType} />
       <div className="min-w-0 flex-1">
         <a
@@ -203,7 +206,7 @@ function GenericAttachmentRow({
         </p>
       </div>
       <AttachmentActions attachment={attachment} onDelete={onDelete} deletePending={deletePending} />
-    </div>
+    </Card>
   );
 }
 
@@ -244,6 +247,7 @@ export function IssueAttachmentsSection({
 
   const requestDelete = (attachmentId: string) => setConfirmDeleteId(attachmentId);
   const confirmDelete = (attachmentId: string) => {
+    if (!onDelete) return;
     onDelete(attachmentId);
     setConfirmDeleteId(null);
   };
@@ -288,7 +292,7 @@ export function IssueAttachmentsSection({
                 loading="lazy"
               />
               <div className="absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/30" />
-              {confirmDeleteId === attachment.id ? (
+              {onDelete && confirmDeleteId === attachment.id ? (
                 <div
                   className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/60"
                   onClick={(event) => event.stopPropagation()}
@@ -318,7 +322,7 @@ export function IssueAttachmentsSection({
                     </button>
                   </div>
                 </div>
-              ) : (
+              ) : onDelete ? (
                 <button
                   type="button"
                   className="absolute right-1.5 top-1.5 rounded-md bg-black/50 p-1 text-white opacity-0 transition-opacity hover:bg-destructive group-hover:opacity-100"
@@ -330,7 +334,7 @@ export function IssueAttachmentsSection({
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
-              )}
+              ) : null}
             </div>
           ))}
         </div>
@@ -342,7 +346,7 @@ export function IssueAttachmentsSection({
             <MarkdownAttachmentCard
               key={attachment.id}
               attachment={attachment}
-              onDelete={requestDelete}
+              onDelete={onDelete ? requestDelete : undefined}
               deletePending={deletePending}
             />
           ))}
@@ -355,7 +359,7 @@ export function IssueAttachmentsSection({
             <VideoAttachmentCard
               key={attachment.id}
               attachment={attachment}
-              onDelete={requestDelete}
+              onDelete={onDelete ? requestDelete : undefined}
               deletePending={deletePending}
               onPreview={onImageClick}
             />
@@ -369,14 +373,14 @@ export function IssueAttachmentsSection({
             <GenericAttachmentRow
               key={attachment.id}
               attachment={attachment}
-              onDelete={requestDelete}
+              onDelete={onDelete ? requestDelete : undefined}
               deletePending={deletePending}
             />
           ))}
         </div>
       )}
 
-      {confirmDeleteId && !imageAttachments.some((attachment) => attachment.id === confirmDeleteId) ? (
+      {onDelete && confirmDeleteId && !imageAttachments.some((attachment) => attachment.id === confirmDeleteId) ? (
         <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3">
           <p className="text-sm font-medium text-destructive">Delete this attachment? This cannot be undone.</p>
           <div className="flex shrink-0 items-center gap-2">

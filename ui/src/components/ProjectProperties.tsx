@@ -22,6 +22,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
 import { EnvironmentVariablesEditor } from "./environment-variables-editor";
+import { Badge } from "@/components/ui/badge";
 
 const PROJECT_STATUSES = [
   { value: "backlog", label: "Backlog" },
@@ -798,9 +799,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     <div className="min-w-0 space-y-0.5">
                       <div className="flex items-center gap-2">
                         <span className="text-(length:--text-micro) font-medium">{service.serviceName}</span>
-                        <span
+                        <Badge variant="ghost"
                           className={cn(
-                            "rounded-full px-1.5 py-0.5 text-(length:--text-nano) uppercase tracking-wide",
+                            "px-1.5 text-(length:--text-nano) uppercase tracking-wide",
                             service.status === "running"
                               ? "bg-green-500/15 text-green-700 dark:text-green-300"
                               : service.status === "failed"
@@ -809,7 +810,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                           )}
                         >
                           {service.status}
-                        </span>
+                        </Badge>
                       </div>
                       <div className="text-(length:--text-micro) text-muted-foreground">
                         {service.url ? (
