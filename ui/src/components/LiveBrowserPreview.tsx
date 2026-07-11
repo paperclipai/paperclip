@@ -17,6 +17,13 @@ export function LiveBrowserPreview({ runId, agentName }: LiveBrowserPreviewProps
   useEffect(() => {
     setStatus("waiting");
     setFrame(null);
+    // EventSource is browser-only and is intentionally absent from jsdom and
+    // some embedded webviews. The preview is optional, so leave it dormant
+    // until the runtime can open the stream.
+    if (typeof EventSource === "undefined") {
+      setStatus("disconnected");
+      return;
+    }
     const source = new EventSource(`/api/heartbeat-runs/${encodeURIComponent(runId)}/browser-stream`);
     source.addEventListener("status", (event) => {
       try {
