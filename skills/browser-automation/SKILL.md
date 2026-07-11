@@ -49,7 +49,7 @@ Paperclip automatically isolates the live daemon session per issue. Follow-ups a
 export AGENT_BROWSER_SESSION_NAME="paperclip-${PAPERCLIP_COMPANY_ID}-default"
 ```
 
-The injected session name automatically loads state on startup and saves it on shutdown. Do not close it between follow-ups or retries. Close it only when the issue's browser work is genuinely complete so state is flushed. Saved agent-browser state remains encrypted at rest when `AGENT_BROWSER_ENCRYPTION_KEY` is bound.
+Paperclip's managed agent-browser wrapper merges the selected profile's latest cookies and storage before each browser action and atomically saves them afterward. This lets separate issue daemons share authenticated state without sharing tabs or fighting over one Chromium process. Do not override `AGENT_BROWSER_SESSION_NAME`, `AGENT_BROWSER_STATE`, `AGENT_BROWSER_PROFILE`, or `HOME`, and do not add issue/run suffixes to the selected profile name. Do not close the browser between follow-ups or retries; close it only when the issue's browser work is genuinely complete. Saved agent-browser state is encrypted at rest with the company-derived `AGENT_BROWSER_ENCRYPTION_KEY`.
 
 Create and assign project-specific profiles from Browsers → Profiles. Paperclip writes the selected persistence scope into project runtime configuration automatically. Do not override `AGENT_BROWSER_STREAM_PORT`, `AGENT_BROWSER_NAMESPACE`, `AGENT_BROWSER_SESSION`, or `AGENT_BROWSER_SOCKET_DIR`; Paperclip owns those live-viewer values and deliberately keeps the Unix socket path short enough for agent-browser.
 

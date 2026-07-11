@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1186,6 +1186,14 @@ export function buildPaperclipEnv(
     vars.AGENT_BROWSER_RESTORE = `paperclip-${agent.companyId}-default`;
     vars.AGENT_BROWSER_SESSION_NAME = `paperclip-${agent.companyId}-default`;
     vars.AGENT_BROWSER_STREAM_PORT = String(browserStreamPortForRun(browserScopeId));
+    vars.PAPERCLIP_BROWSER_PROFILE_ROOT = "/paperclip/browser-profiles";
+    const browserKeySeed = process.env.PAPERCLIP_SECRETS_MASTER_KEY?.trim()
+      || process.env.PAPERCLIP_CREDENTIAL_KEY?.trim();
+    if (browserKeySeed) {
+      vars.AGENT_BROWSER_ENCRYPTION_KEY = createHmac("sha256", browserKeySeed)
+        .update(`paperclip-browser-profile:${agent.companyId}`)
+        .digest("hex");
+    }
   }
   const runtimeHost = resolveHostForUrl(
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",

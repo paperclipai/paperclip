@@ -45,6 +45,23 @@ describe("managed browser run environment", () => {
     expect(followUp.AGENT_BROWSER_STREAM_PORT).toBe(first.AGENT_BROWSER_STREAM_PORT);
     expect(followUp.PAPERCLIP_BROWSER_SCOPE_ID).toBe("issue-1");
   });
+
+  it("derives one encrypted shared profile key per company when a server key is configured", () => {
+    const previous = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY = "test-master-key";
+    try {
+      const first = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" }, "run-1", { issueId: "issue-1" });
+      const secondAgent = buildPaperclipEnv({ id: "agent-2", companyId: "company-1" }, "run-2", { issueId: "issue-2" });
+      const otherCompany = buildPaperclipEnv({ id: "agent-3", companyId: "company-2" }, "run-3", { issueId: "issue-3" });
+      expect(first.PAPERCLIP_BROWSER_PROFILE_ROOT).toBe("/paperclip/browser-profiles");
+      expect(first.AGENT_BROWSER_ENCRYPTION_KEY).toMatch(/^[a-f0-9]{64}$/);
+      expect(secondAgent.AGENT_BROWSER_ENCRYPTION_KEY).toBe(first.AGENT_BROWSER_ENCRYPTION_KEY);
+      expect(otherCompany.AGENT_BROWSER_ENCRYPTION_KEY).not.toBe(first.AGENT_BROWSER_ENCRYPTION_KEY);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+      else process.env.PAPERCLIP_SECRETS_MASTER_KEY = previous;
+    }
+  });
 });
 
 function isPidAlive(pid: number) {

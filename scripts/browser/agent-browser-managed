@@ -1,0 +1,99 @@
+#!/bin/sh
+set -u
+
+REAL_AGENT_BROWSER="${PAPERCLIP_AGENT_BROWSER_REAL:-/usr/local/bin/agent-browser-real}"
+PROFILE_NAME="${AGENT_BROWSER_SESSION_NAME:-}"
+PROFILE_ROOT="${PAPERCLIP_BROWSER_PROFILE_ROOT:-/paperclip/browser-profiles}"
+
+if [ -z "$PROFILE_NAME" ] || [ -z "${PAPERCLIP_COMPANY_ID:-}" ]; then
+  exec "$REAL_AGENT_BROWSER" "$@"
+fi
+
+# Paperclip owns persistence. Native `--session-name` persistence appends the
+# isolated daemon session to its filename and reloads that per-issue snapshot
+# on every CLI invocation, which defeats a company/project shared profile.
+unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_RESTORE
+
+safe_profile="$(printf '%s' "$PROFILE_NAME" | tr -c 'a-zA-Z0-9._-' '_')"
+profile_dir="$PROFILE_ROOT/$safe_profile"
+state_path="$profile_dir/agent-browser-state.json"
+if [ -n "${AGENT_BROWSER_ENCRYPTION_KEY:-}" ]; then
+  state_path="$state_path.enc"
+fi
+lock_dir="$profile_dir/.state-lock"
+mkdir -p "$profile_dir"
+chmod 700 "$profile_dir" 2>/dev/null || true
+
+# One profile can back many isolated issue daemons. Serialize the short
+# load/action/save transaction so concurrent issues merge the latest cookies
+# and storage instead of overwriting one another with stale snapshots.
+lock_waited=0
+while ! mkdir "$lock_dir" 2>/dev/null; do
+  lock_pid="$(cat "$lock_dir/pid" 2>/dev/null || true)"
+  if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+    rm -rf "$lock_dir" 2>/dev/null || true
+    continue
+  fi
+  if [ "$lock_waited" -ge 60 ]; then
+    echo "[paperclip-browser] timed out waiting for shared profile '$safe_profile'" >&2
+    exit 75
+  fi
+  sleep 1
+  lock_waited=$((lock_waited + 1))
+done
+printf '%s\n' "$$" > "$lock_dir/pid"
+release_lock() {
+  rm -rf "$lock_dir" 2>/dev/null || true
+}
+trap release_lock EXIT HUP INT TERM
+
+save_shared_state() {
+  temporary_base="$profile_dir/.agent-browser-state.$$.json"
+  rm -f "$temporary_base" "$temporary_base.enc"
+  if ! "$REAL_AGENT_BROWSER" state save "$temporary_base" >/dev/null 2>&1; then
+    rm -f "$temporary_base" "$temporary_base.enc"
+    return 1
+  fi
+  written_state="$temporary_base"
+  if [ -f "$temporary_base.enc" ]; then
+    written_state="$temporary_base.enc"
+  fi
+  if [ ! -f "$written_state" ]; then
+    return 1
+  fi
+  chmod 600 "$written_state" 2>/dev/null || true
+  mv -f "$written_state" "$state_path"
+}
+
+first="${1:-}"
+second="${2:-}"
+sync_state=true
+case "$first:$second" in
+  skills:*|profiles:*|session:list|state:list|state:show|state:rename|state:clear|state:clean)
+    sync_state=false
+    ;;
+esac
+
+if [ "$sync_state" = true ] && [ -s "$state_path" ]; then
+  # `state load` merges into an already-running issue daemon.
+  if [ "$first" = "open" ]; then
+    # Explicitly start the isolated daemon before loading. This also works on
+    # agent-browser releases where AGENT_BROWSER_STATE launch loading is late
+    # or incomplete, then the caller's real `open <url>` uses the same daemon.
+    "$REAL_AGENT_BROWSER" open >/dev/null 2>&1 || true
+  fi
+  "$REAL_AGENT_BROWSER" state load "$state_path" >/dev/null 2>&1 || true
+fi
+
+if [ "$sync_state" = true ] && [ "$first" = "close" ]; then
+  save_shared_state || true
+fi
+
+"$REAL_AGENT_BROWSER" "$@"
+status=$?
+
+if [ "$sync_state" = true ] && [ "$first" != "close" ] && [ "$status" -eq 0 ]; then
+  save_shared_state || true
+fi
+
+exit "$status"
