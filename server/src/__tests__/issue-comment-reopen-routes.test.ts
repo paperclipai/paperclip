@@ -903,6 +903,28 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.getDependencyReadiness).not.toHaveBeenCalled();
   });
 
+  it("keeps the finalize barrier for explicit POST reopen requests that also include a human comment", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      blockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerCount: 1,
+      allBlockersDone: true,
+      isDependencyReady: false,
+    });
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "please continue", reopen: true });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+  });
+
   it("moves in-progress issues with a scheduled retry back to todo via POST human comments", async () => {
     const issue = {
       ...makeIssue("in_progress"),
@@ -1322,6 +1344,26 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({ status: "todo" }),
     );
+  });
+
+  it("keeps the finalize barrier for explicit PATCH resume requests that also include a human comment", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      blockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerCount: 1,
+      allBlockersDone: true,
+      isDependencyReady: false,
+    });
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "please continue", resume: true });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Issue follow-up blocked by unresolved blockers");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("moves in-progress issues with a scheduled retry back to todo via the PATCH comment path", async () => {
