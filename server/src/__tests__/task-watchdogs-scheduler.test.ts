@@ -503,11 +503,14 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(originalFingerprint).toMatch(/^task_watchdog_stop:/);
 
     // Simulate the assignee agent posting another routine "still blocked,
-    // same status" heartbeat comment, plus incidental document/work-product
-    // touches, none of which change the issue's status, assignee, or
-    // blockers. This must not invalidate an already-granted mutation scope —
-    // otherwise every routine heartbeat would lock the assignee (and other
-    // agents) out of the issue with a stale-scope rejection.
+    // same status" heartbeat comment — a routine no-op status report that
+    // does not change the issue's status, assignee, or blockers. This must
+    // not invalidate an already-granted mutation scope — otherwise every
+    // routine heartbeat would lock the assignee (and other agents) out of
+    // the issue with a stale-scope rejection. Comment activity in particular
+    // must never participate in the structural fingerprint, since the
+    // routine heartbeat's own "still waiting" comment is exactly this kind
+    // of no-op evidence.
     const later = new Date(Date.now() + 60_000);
     await db.insert(issueComments).values({
       companyId,
@@ -517,8 +520,6 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       updatedAt: later,
       createdAt: later,
     });
-    await seedIssueDocument(companyId, sourceId, new Date(later.getTime() + 1_000));
-    await seedIssueWorkProduct(companyId, sourceId, new Date(later.getTime() + 2_000));
 
     const revalidated = await service.revalidateMutationScope({
       kind: "watchdog",
@@ -532,6 +533,41 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(revalidated.classification?.state).toBe("stopped");
     if (revalidated.classification?.state !== "stopped") throw new Error("Expected stopped classification");
     expect(revalidated.classification.stopFingerprint).toBe(originalFingerprint);
+  });
+
+  it("invalidates a stale watchdog review when a new document or work product is attached", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-NEW-EVIDENCE", status: "blocked" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const originalFingerprint = watchdog!.lastObservedFingerprint!;
+    expect(originalFingerprint).toMatch(/^task_watchdog_stop:/);
+
+    // Unlike a routine comment, a newly attached document or work product is
+    // not a byproduct of routine status reporting — it is genuinely new
+    // source evidence. Even though status/assignee/blockers are unchanged,
+    // this must bust the fingerprint and invalidate a stale mutation scope
+    // so the watchdog re-reviews the issue.
+    const later = new Date(Date.now() + 60_000);
+    await seedIssueDocument(companyId, sourceId, later);
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint: originalFingerprint,
+    });
+
+    expect(revalidated.allowed).toBe(false);
+    expect(revalidated.reason).toContain("stop fingerprint changed");
+    expect(revalidated.classification?.state).toBe("stopped");
+    if (revalidated.classification?.state !== "stopped") throw new Error("Expected stopped classification");
+    expect(revalidated.classification.stopFingerprint).not.toBe(originalFingerprint);
   });
 
   it("revalidates a stale watchdog review when the source subtree structurally changes", async () => {
