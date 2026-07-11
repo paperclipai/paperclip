@@ -183,11 +183,13 @@ if (tailscaleAuth || bindMode) {
 }
 
 const serverPort = Number.parseInt(env.PORT ?? process.env.PORT ?? "3100", 10) || 3100;
+const shadowSourceApi = env.PAPERCLIP_SHADOW_DEV_SOURCE_API?.trim() || undefined;
 const devService = createDevServiceIdentity({
   mode,
   forwardedArgs,
   networkProfile: tailscaleAuth ? `legacy:${bindMode ?? "lan"}` : (bindMode ?? "default"),
   port: serverPort,
+  shadowSourceApi,
 });
 
 const existingRunner = await findAdoptableLocalService({
@@ -327,6 +329,7 @@ async function updateDevServiceRecord(extra?: Record<string, unknown>) {
     metadata: {
       repoRoot,
       mode,
+      shadowSourceApi: shadowSourceApi ?? null,
       childPid: child?.pid ?? null,
       url: `http://127.0.0.1:${serverPort}`,
       ...extra,
@@ -549,7 +552,11 @@ async function stopChildForRestart() {
 async function startServerChild() {
   await buildPluginSdk();
 
-  const serverScript = mode === "watch" ? "dev:watch" : "dev";
+  const serverScript = mode === "watch"
+    ? shadowSourceApi
+      ? "dev:watch:shadow"
+      : "dev:watch"
+    : "dev";
   child = spawn(
     pnpmBin,
     ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
@@ -567,6 +574,7 @@ async function startServerChild() {
         metadata: {
           repoRoot,
           mode,
+          shadowSourceApi: shadowSourceApi ?? null,
           childPid: null,
           url: `http://127.0.0.1:${serverPort}`,
         },

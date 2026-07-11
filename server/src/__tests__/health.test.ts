@@ -44,6 +44,7 @@ function createApp(
   db?: Db,
   serverInfo = testServerInfo,
   databaseBackupHealth?: Parameters<typeof healthRoutes>[1]["databaseBackupHealth"],
+  devDatabaseSourceUrl?: string,
 ) {
   const app = express();
   app.use(
@@ -55,6 +56,7 @@ function createApp(
       companyDeletionEnabled: true,
       serverInfo,
       databaseBackupHealth,
+      devDatabaseSourceUrl,
     }),
   );
   return app;
@@ -108,6 +110,22 @@ describe("GET /health", () => {
       serverVersion,
       error: "database_unreachable",
       serverInfo: testServerInfo,
+    });
+  });
+
+  it("exposes the active dev database only to loopback local-trusted callers", async () => {
+    const app = createApp(
+      createHealthyDb(),
+      testServerInfo,
+      undefined,
+      "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
+    );
+
+    const res = await request(app).get("/health/dev-database-source");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      databaseUrl: "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
     });
   });
 

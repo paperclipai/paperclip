@@ -153,6 +153,7 @@ export async function createApp(
     };
     databaseBackupService?: InstanceDatabaseBackupService;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
+    devDatabaseSourceUrl?: string;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
@@ -230,6 +231,7 @@ export async function createApp(
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
       databaseBackupHealth: opts.databaseBackupHealth,
+      devDatabaseSourceUrl: opts.devDatabaseSourceUrl,
     }),
   );
   api.use(openApiRoutes());

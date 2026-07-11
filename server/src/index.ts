@@ -688,6 +688,7 @@ export async function startServer(): Promise<StartedServer> {
           alertFiles: databaseBackupAlertFiles,
         }
       : undefined,
+    devDatabaseSourceUrl: config.uiDevMiddleware ? activeDatabaseConnectionString : undefined,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,

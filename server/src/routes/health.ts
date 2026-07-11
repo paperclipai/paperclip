@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { isIP } from "node:net";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
@@ -35,6 +36,13 @@ function hasDevServerStatusToken(providedToken: string | undefined) {
   return timingSafeEqual(expected, provided);
 }
 
+function isLoopbackAddress(address: string | undefined): boolean {
+  if (!address) return false;
+  const normalized = address.startsWith("::ffff:") ? address.slice("::ffff:".length) : address;
+  if (normalized === "::1") return true;
+  return isIP(normalized) === 4 && normalized.startsWith("127.");
+}
+
 function redactedDatabaseBackupWarning(warning: DatabaseBackupHealthWarning): DatabaseBackupHealthWarning {
   const messages: Record<DatabaseBackupHealthWarning["code"], string> = {
     database_backup_check_failed: "Database backup health check failed.",
@@ -65,6 +73,7 @@ export function healthRoutes(
     companyDeletionEnabled: boolean;
     serverInfo?: ServerInfoSnapshot;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
+    devDatabaseSourceUrl?: string;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -73,6 +82,19 @@ export function healthRoutes(
   },
 ) {
   const router = Router();
+
+  router.get("/dev-database-source", (req, res) => {
+    if (
+      opts.deploymentMode !== "local_trusted" ||
+      !opts.devDatabaseSourceUrl ||
+      !isLoopbackAddress(req.socket.remoteAddress)
+    ) {
+      res.status(404).json({ error: "dev_database_source_unavailable" });
+      return;
+    }
+
+    res.json({ databaseUrl: opts.devDatabaseSourceUrl });
+  });
 
   router.post("/dev-server/restart", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;
