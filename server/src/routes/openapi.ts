@@ -111,6 +111,7 @@ import {
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
   respondIssueThreadInteractionSchema,
+  submitIssueThreadInteractionVerdictsSchema,
   // Auth / profile
   updateCurrentUserProfileSchema,
   // Company portability (legacy routes)
@@ -2815,6 +2816,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/attention",
+  tags: ["inbox"],
+  summary: "List decision-only attention feed items",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/sidebar-preferences/me",
   tags: ["sidebar"],
   summary: "Get current user sidebar preferences",
@@ -2866,14 +2876,25 @@ registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/inbox-dismissals",
   tags: ["inbox"],
-  summary: "Create an inbox dismissal",
+  summary: "Create an inbox dismissal or snooze",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(z.object({
-      itemKey: z.string().trim().min(1).regex(/^(approval|join|run):.+$/, "Unsupported inbox item key"),
+      itemKey: z.string().trim().min(1).regex(/^(approval|join|run|attention):.+$/, "Unsupported inbox item key"),
+      kind: z.enum(["dismiss", "snooze"]).optional(),
+      snoozedUntil: z.string().datetime().optional(),
     })),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/inbox-dismissals/{itemKey}",
+  tags: ["inbox"],
+  summary: "Restore an inbox dismissal or snooze",
+  request: { params: z.object({ companyId: z.string(), itemKey: z.string() }) },
+  responses: { 204: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 // ─── Instance settings ────────────────────────────────────────────────────────
@@ -3429,6 +3450,18 @@ registry.registerPath({
   request: {
     params: z.object({ id: z.string(), interactionId: z.string() }),
     body: jsonBody(respondIssueThreadInteractionSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/interactions/{interactionId}/verdicts",
+  tags: ["issues"],
+  summary: "Submit item verdicts on an issue thread interaction",
+  request: {
+    params: z.object({ id: z.string(), interactionId: z.string() }),
+    body: jsonBody(submitIssueThreadInteractionVerdictsSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
 });

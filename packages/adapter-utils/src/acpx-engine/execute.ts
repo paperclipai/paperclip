@@ -12,6 +12,10 @@ import {
   formatAdapterExecutionTimeoutStartLogLine,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeout,
+  startAdapterExecutionTargetPaperclipBridge,
+  startAdapterExecutionTargetProcessSessionBridge,
+  type AdapterExecutionTargetPaperclipBridgeHandle,
+  type AdapterExecutionTargetProcessSessionBridgeHandle,
   type AdapterExecutionTargetTimeoutResolution,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
@@ -112,6 +116,8 @@ interface AcpxPreparedRuntime {
   fingerprint: string;
   agentCommand: string | null;
   agentRegistry: AcpAgentRegistry;
+  processSessionBridge: AdapterExecutionTargetProcessSessionBridgeHandle | null;
+  paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null;
   remoteExecutionIdentity: Record<string, unknown> | null;
   skillPromptInstructions: string;
   skillsIdentity: Record<string, unknown>;
@@ -180,12 +186,20 @@ interface BuiltInAgentCommand {
   shellCommand: string;
 }
 
-async function resolveBuiltInAgentCommand(agent: string, packageRootDir: string): Promise<BuiltInAgentCommand | null> {
+async function resolveBuiltInAgentCommand(input: {
+  agent: string;
+  packageRootDir: string;
+  executionTargetIsRemote: boolean;
+}): Promise<BuiltInAgentCommand | null> {
+  const { agent, packageRootDir, executionTargetIsRemote } = input;
   if (agent === "gemini") {
     return { command: "gemini --acp", shellCommand: "gemini --acp" };
   }
   const binName = agent === "claude" ? "claude-agent-acp" : agent === "codex" ? "codex-acp" : null;
   if (!binName) return null;
+  if (executionTargetIsRemote) {
+    return { command: binName, shellCommand: binName };
+  }
   const resolved = (await findAncestorBin(packageRootDir, binName)) ?? binName;
   return { command: resolved, shellCommand: shellQuote(resolved) };
 }
@@ -1062,7 +1076,11 @@ async function buildRuntime(input: {
   }
 
   const configuredCommand = asString(config.agentCommand, "").trim();
-  const builtInCommand = await resolveBuiltInAgentCommand(acpxAgent, input.engine.packageRootDir);
+  const builtInCommand = await resolveBuiltInAgentCommand({
+    agent: acpxAgent,
+    packageRootDir: input.engine.packageRootDir,
+    executionTargetIsRemote,
+  });
   let agentCommand = configuredCommand || builtInCommand?.command || null;
   let agentCommandShell = configuredCommand || builtInCommand?.shellCommand || "";
   if (acpxAgent === "gemini" && agentCommandShell) {
@@ -1087,7 +1105,58 @@ async function buildRuntime(input: {
       })
     : null;
   const wrapperPath = wrapper?.wrapperPath ?? null;
-  const overrides = wrapperPath ? { [acpxAgent]: wrapperPath } : undefined;
+  let paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null = null;
+  if (
+    executionTarget?.kind === "remote" &&
+    executionTarget.transport === "sandbox" &&
+    Boolean(executionTarget.runner) &&
+    agentCommandShell
+  ) {
+    paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId,
+      target: { ...executionTarget, streamRunLogs: false },
+      runtimeRootDir: null,
+      adapterKey: input.engine.adapterType,
+      timeoutSec,
+      hostApiToken: env.PAPERCLIP_API_KEY,
+      onLog: input.ctx.onLog,
+    });
+    if (paperclipBridge) {
+      Object.assign(env, paperclipBridge.env);
+      await input.ctx.onLog("stdout", "[paperclip] Sandbox ACP API callback bridge enabled for this run.\n");
+    }
+  }
+  const runtimeEnv = Object.fromEntries(
+    Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  let processSessionBridge: AdapterExecutionTargetProcessSessionBridgeHandle | null = null;
+  try {
+    processSessionBridge =
+      executionTarget?.kind === "remote" &&
+      executionTarget.transport === "sandbox" &&
+      Boolean(executionTarget.runner) &&
+      agentCommandShell
+        ? await startAdapterExecutionTargetProcessSessionBridge({
+            runId,
+            target: executionTarget,
+            runtimeRootDir: null,
+            adapterKey: input.engine.adapterType,
+            command: "sh",
+            args: ["-lc", `exec ${agentCommandShell}`],
+            cwd: effectiveExecutionCwd,
+            env: runtimeEnv,
+            timeoutSec,
+            onLog: input.ctx.onLog,
+          })
+        : null;
+  } catch (err) {
+    await paperclipBridge?.stop().catch(() => {});
+    throw err;
+  }
+  const overrideCommand = processSessionBridge?.agentCommand ?? wrapperPath;
+  const overrides = overrideCommand ? { [acpxAgent]: overrideCommand } : undefined;
   const agentRegistry = createAgentRegistry({ overrides });
   const fingerprint = shortHash({
     acpxAgent,
@@ -1113,7 +1182,6 @@ async function buildRuntime(input: {
   });
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
   const sessionKey = `paperclip:${agent.companyId}:${agent.id}:${taskKey}:${fingerprint}`;
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
     includeRuntimeKeys: ["HOME"],
@@ -1141,6 +1209,8 @@ async function buildRuntime(input: {
     fingerprint,
     agentCommand,
     agentRegistry,
+    processSessionBridge,
+    paperclipBridge,
     remoteExecutionIdentity,
     skillPromptInstructions,
     skillsIdentity: {
@@ -1200,6 +1270,13 @@ async function applySessionConfigOptions(input: {
       `[paperclip] Applied ACPX ${input.prepared.acpxAgent} config ${option.key}=${option.value}\n`,
     );
   }
+}
+
+async function cleanupRemoteBridges(prepared: AcpxPreparedRuntime): Promise<void> {
+  await Promise.allSettled([
+    prepared.processSessionBridge?.stop(),
+    prepared.paperclipBridge?.stop(),
+  ]);
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -1692,6 +1769,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         err,
         phase: "ensure_session",
       });
+      await cleanupRemoteBridges(prepared);
       return {
         exitCode: 1,
         signal: null,
@@ -1707,6 +1785,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     }
 
     if (!handle) {
+      await cleanupRemoteBridges(prepared);
       return {
         exitCode: 1,
         signal: null,
@@ -1744,6 +1823,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         clearWarmHandleTimer(existing);
         warmHandles.delete(prepared.sessionKey);
       }
+      await cleanupRemoteBridges(prepared);
       return {
         exitCode: 1,
         signal: null,
@@ -1856,7 +1936,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             discardPersistentState: terminal.status === "cancelled" || timedOut,
           }).catch(() => {});
         }
-      } else if (prepared.mode === "persistent" && warmIdleMs > 0) {
+      } else if (prepared.mode === "persistent" && warmIdleMs > 0 && !prepared.processSessionBridge) {
         const existing = warmHandles.get(prepared.sessionKey);
         if (existing && !warmHandleMatches(existing, runtime, sessionHandle)) {
           await runtime.close({
@@ -1908,6 +1988,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         stopReason: terminalStopReason,
         message: errorMessage,
       });
+      await cleanupRemoteBridges(prepared);
       return {
         exitCode: terminal.status === "completed" ? 0 : 1,
         signal: timedOut ? "SIGTERM" : null,
@@ -1959,6 +2040,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         phase: "turn",
         messageOverride,
       });
+      await cleanupRemoteBridges(prepared);
       return {
         exitCode: 1,
         signal: timedOut ? "SIGTERM" : null,

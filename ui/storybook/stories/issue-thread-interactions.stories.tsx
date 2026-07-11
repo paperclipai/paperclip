@@ -18,9 +18,14 @@ import {
   issueThreadInteractionFixtureMeta,
   issueThreadInteractionLiveRuns,
   issueThreadInteractionTranscriptsByRunId,
+  completeRequestItemVerdictsInteraction,
+  manyItemsRequestItemVerdictsInteraction,
   manyOptionsRequestCheckboxConfirmationInteraction,
   mixedIssueThreadInteractions,
   optionalDeclineRequestConfirmationInteraction,
+  partialRequestItemVerdictsInteraction,
+  pendingRequestItemVerdictsInteraction,
+  supersededRequestItemVerdictsInteraction,
   pendingAskUserQuestionsInteraction,
   pendingRequestCheckboxConfirmationInteraction,
   pendingRequestConfirmationInteraction,
@@ -39,6 +44,9 @@ import type {
   AskUserQuestionsInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
+  RequestItemVerdictsInteraction,
+  RequestItemVerdictsResultItem,
+  RequestItemVerdictValue,
   SuggestTasksInteraction,
 } from "@/lib/issue-thread-interactions";
 import { storybookAgentMap } from "../fixtures/paperclipData";
@@ -236,6 +244,53 @@ function InteractiveRequestCheckboxConfirmationCard({
             outcome: "rejected",
             reason: reason || rejected.result?.reason || null,
           },
+        })}
+    />
+  );
+}
+
+function InteractiveRequestItemVerdictsCard({
+  initial = pendingRequestItemVerdictsInteraction,
+}: {
+  initial?: RequestItemVerdictsInteraction;
+}) {
+  const [interaction, setInteraction] = useState<RequestItemVerdictsInteraction>(initial);
+
+  return (
+    <IssueThreadInteractionCard
+      interaction={interaction}
+      agentMap={storybookAgentMap}
+      currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+      userLabelMap={boardUserLabels}
+      onSubmitInteractionVerdicts={(_interaction, verdicts) =>
+        setInteraction((current) => {
+          const existing = current.result?.items ?? [];
+          const existingIds = new Set(existing.map((item) => item.id));
+          const merged: RequestItemVerdictsResultItem[] = [
+            ...existing,
+            ...verdicts
+              .filter((verdict) => !existingIds.has(verdict.id))
+              .map((verdict) => ({
+                id: verdict.id,
+                verdict: verdict.verdict as RequestItemVerdictValue,
+                reason: verdict.reason ?? null,
+                resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+                resolvedAt: new Date("2026-04-20T15:20:00.000Z"),
+              })),
+          ];
+          const complete = merged.length === current.payload.items.length;
+          return {
+            ...current,
+            status: complete ? "answered" : "pending",
+            resolvedAt: complete ? new Date("2026-04-20T15:20:00.000Z") : null,
+            resolvedByUserId: complete ? issueThreadInteractionFixtureMeta.currentUserId : null,
+            result: {
+              version: 1,
+              outcome: "resolved",
+              complete,
+              items: merged,
+            },
+          };
         })}
     />
   );
@@ -710,6 +765,81 @@ export const CheckboxConfirmationManyOptions: Story = {
           accepted={acceptedManyRequestCheckboxConfirmationInteraction}
           rejected={rejectedRequestCheckboxConfirmationInteraction}
         />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ItemVerdictsPending: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="S1 / S2 — draft then apply"
+        description="Mark each item Approve or Reject (reject reveals a required reason), then Apply N decisions in one pass. Approve all is the common-case accelerator."
+      >
+        <InteractiveRequestItemVerdictsCard />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ItemVerdictsPartial: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="S3 / S4 — partial progress"
+        description="Two items already applied (one approved, one rejected with its reason echoed); three remain actionable. The card stays alive and shows 2 of 5 decided."
+      >
+        <InteractiveRequestItemVerdictsCard initial={partialRequestItemVerdictsInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ItemVerdictsComplete: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="S5 — complete"
+        description="Every item has a terminal verdict. The summary chip reads 5 decided · 3 approved · 2 rejected and the row leaves the queue."
+      >
+        <IssueThreadInteractionCard
+          interaction={completeRequestItemVerdictsInteraction}
+          agentMap={storybookAgentMap}
+          currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+          userLabelMap={boardUserLabels}
+        />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ItemVerdictsSuperseded: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="S6 — stale / superseded"
+        description="A later comment expired the review. Items already applied cannot be reverted; the remaining items were cancelled."
+      >
+        <IssueThreadInteractionCard
+          interaction={supersededRequestItemVerdictsInteraction}
+          agentMap={storybookAgentMap}
+          currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+          userLabelMap={boardUserLabels}
+        />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ItemVerdictsManyItems: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="S7 — long list"
+        description="24 items decided in passes; the expanded list scrolls in a bounded region and reuses the 200-item cap."
+      >
+        <InteractiveRequestItemVerdictsCard initial={manyItemsRequestItemVerdictsInteraction} />
       </ScenarioCard>
     </StoryFrame>
   ),

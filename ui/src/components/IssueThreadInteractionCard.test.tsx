@@ -15,7 +15,10 @@ import {
   failedRequestConfirmationInteraction,
   pendingRequestConfirmationInteraction,
   planApprovalResumeFailedRequestConfirmationInteraction,
+  pendingRequestItemVerdictsInteraction,
   pendingSuggestedTasksInteraction,
+  completeRequestItemVerdictsInteraction,
+  supersededRequestItemVerdictsInteraction,
   staleTargetRequestConfirmationInteraction,
   rejectedSuggestedTasksInteraction,
 } from "../fixtures/issueThreadInteractionFixtures";
@@ -497,5 +500,89 @@ describe("IssueThreadInteractionCard", () => {
       expect.objectContaining({ kind: "request_confirmation" }),
       "![bug.png](https://cdn.example/shot.png)",
     );
+  });
+
+  it("submits an approve verdict once a draft is marked and applied", async () => {
+    const onSubmitInteractionVerdicts = vi.fn(async () => undefined);
+    const host = renderCard({
+      interaction: pendingRequestItemVerdictsInteraction,
+      onSubmitInteractionVerdicts,
+    });
+
+    const firstItemId = pendingRequestItemVerdictsInteraction.payload.items[0]!.id;
+    const approveButton = Array.from(
+      host.querySelectorAll<HTMLButtonElement>(`[data-item-id="${firstItemId}"] button[data-verdict="approve"]`),
+    )[0];
+    expect(approveButton).toBeTruthy();
+    // 44px minimum target (a11y).
+    expect(approveButton?.className).toContain("min-h-11");
+
+    await act(async () => {
+      approveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const applyButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Apply 1 decision"),
+    );
+    expect(applyButton).toBeTruthy();
+
+    await act(async () => {
+      applyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmitInteractionVerdicts).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "request_item_verdicts" }),
+      [{ id: firstItemId, verdict: "approve", reason: undefined }],
+    );
+  });
+
+  it("blocks apply for a rejected item until a reason is entered", async () => {
+    const onSubmitInteractionVerdicts = vi.fn(async () => undefined);
+    const host = renderCard({
+      interaction: pendingRequestItemVerdictsInteraction,
+      onSubmitInteractionVerdicts,
+    });
+
+    const firstItemId = pendingRequestItemVerdictsInteraction.payload.items[0]!.id;
+    const rejectButton = Array.from(
+      host.querySelectorAll<HTMLButtonElement>(`[data-item-id="${firstItemId}"] button[data-verdict="reject"]`),
+    )[0];
+    await act(async () => {
+      rejectButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Reject reveals a required reason field.
+    const reasonField = host.querySelector<HTMLTextAreaElement>(
+      `textarea[id="${pendingRequestItemVerdictsInteraction.id}-${firstItemId}-reason"]`,
+    );
+    expect(reasonField).toBeTruthy();
+
+    const applyButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Apply 1 decision"),
+    );
+    // Attempting to apply without a reason does not submit.
+    await act(async () => {
+      applyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onSubmitInteractionVerdicts).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("A reason is required to reject this item.");
+  });
+
+  it("renders resolved verdicts as terminal chips with reason echo", () => {
+    const host = renderCard({ interaction: completeRequestItemVerdictsInteraction });
+    expect(host.textContent).toContain("Approved");
+    expect(host.textContent).toContain("Rejected");
+    expect(host.textContent).toContain("Tone is off-brand");
+    // S5 summary chip.
+    expect(host.textContent).toContain("3 approved");
+    // No actionable verdict buttons once terminal.
+    expect(host.querySelector("button[data-verdict]")).toBeNull();
+  });
+
+  it("shows an already-applied, cannot-revert notice when superseded", () => {
+    const host = renderCard({ interaction: supersededRequestItemVerdictsInteraction });
+    expect(host.textContent).toContain("expired after a later comment");
+    expect(host.textContent).toContain("cannot be");
+    expect(host.textContent?.toLowerCase()).toContain("revert");
   });
 });

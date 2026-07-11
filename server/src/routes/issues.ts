@@ -53,6 +53,7 @@ import {
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
+  submitIssueThreadInteractionVerdictsSchema,
   updateIssueWorkProductSchema,
   updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
@@ -1766,6 +1767,18 @@ function isAssigneeSelfCommentOnTerminalIssue(input: {
   return input.actorId === input.assigneeAgentId;
 }
 
+const REQUEST_ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS = 2_000;
+
+function buildRequestItemVerdictsWakeIdempotencyKey(args: {
+  issueId: string;
+  interactionId: string;
+  at?: Date;
+}) {
+  const now = args.at ?? new Date();
+  const bucket = Math.floor(now.getTime() / REQUEST_ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS);
+  return `request_item_verdicts:${args.issueId}:${args.interactionId}:${bucket}`;
+}
+
 function queueResolvedInteractionContinuationWakeup(input: {
   heartbeat: ReturnType<typeof heartbeatService>;
   issue: { id: string; assigneeAgentId: string | null; status: string };
@@ -1783,6 +1796,8 @@ function queueResolvedInteractionContinuationWakeup(input: {
   source: string;
   forceFreshSession?: boolean;
   workspaceRefreshReason?: string | null;
+  newlyResolvedItemIds?: string[];
+  idempotencyKey?: string | null;
 }) {
   if (
     input.interaction.continuationPolicy !== "wake_assignee"
@@ -1800,6 +1815,13 @@ function queueResolvedInteractionContinuationWakeup(input: {
   const planTarget = readPlanConfirmationTargetForIssue(input.interaction.payload, input.issue.id);
   const interactionResult = readConfirmationResultForWake(input.interaction.result);
   const checkboxSelection = readCheckboxSelectionForWake(input.interaction);
+  const newlyResolvedItemIds = input.newlyResolvedItemIds?.filter((value) => value.length > 0) ?? [];
+  const itemVerdicts = newlyResolvedItemIds.length > 0
+    ? {
+        newlyResolvedItemIds,
+        coalesceWindowMs: REQUEST_ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS,
+      }
+    : null;
   const planReviewInteraction =
     planTarget && input.interaction.kind === "request_confirmation"
       ? {
@@ -1824,8 +1846,10 @@ function queueResolvedInteractionContinuationWakeup(input: {
       sourceRunId: input.interaction.sourceRunId ?? null,
       ...(planReviewInteraction ? { planReviewInteraction } : {}),
       ...(checkboxSelection ? { checkboxSelection } : {}),
+      ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
       mutation: "interaction",
     },
+    idempotencyKey: input.idempotencyKey ?? null,
     requestedByActorType: input.actor.actorType,
     requestedByActorId: input.actor.actorId,
     contextSnapshot: {
@@ -1838,6 +1862,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       sourceRunId: input.interaction.sourceRunId ?? null,
       ...(planReviewInteraction ? { planReviewInteraction } : {}),
       ...(checkboxSelection ? { checkboxSelection } : {}),
+      ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
       wakeReason: "issue_commented",
       source: input.source,
       ...(forceFreshSession ? { forceFreshSession: true } : {}),
@@ -9176,6 +9201,76 @@ export function issueRoutes(
         actor,
         source: "issue.interaction.respond",
       });
+
+      res.json(interaction);
+    },
+  );
+
+  router.post(
+    "/issues/:id/interactions/:interactionId/verdicts",
+    validate(submitIssueThreadInteractionVerdictsSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (await rejectAgentIssueThreadInteractionResolution(req, res, issue)) return;
+      assertBoard(req);
+
+      const actor = getActorInfo(req);
+      const { interaction, newlyResolvedItemIds } = await issueThreadInteractionService(db).submitItemVerdicts(
+        issue,
+        interactionId,
+        req.body,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: interaction.status === "expired"
+          ? "issue.thread_interaction_expired"
+          : "issue.thread_interaction_item_verdicts_submitted",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          submittedVerdictCount: Array.isArray(req.body?.verdicts) ? req.body.verdicts.length : 0,
+          newlyResolvedItemCount: newlyResolvedItemIds.length,
+          newlyResolvedItemIds,
+          complete:
+            interaction.kind === "request_item_verdicts"
+              ? (interaction.result?.complete ?? false)
+              : false,
+        },
+      });
+
+      if (newlyResolvedItemIds.length > 0) {
+        queueResolvedInteractionContinuationWakeup({
+          heartbeat,
+          issue,
+          interaction,
+          actor,
+          source: "issue.interaction.verdicts",
+          newlyResolvedItemIds,
+          idempotencyKey: buildRequestItemVerdictsWakeIdempotencyKey({
+            issueId: issue.id,
+            interactionId: interaction.id,
+          }),
+        });
+      }
 
       res.json(interaction);
     },

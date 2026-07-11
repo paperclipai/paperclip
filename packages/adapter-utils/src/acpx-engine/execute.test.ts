@@ -13,6 +13,7 @@ import {
   parseGeminiVersionParts,
   rewriteGeminiAcpFlagForVersion,
 } from "./execute.js";
+import { runChildProcess } from "../server-utils.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -47,6 +48,44 @@ async function createSkill(root: string, name: string, body = `---\nrequired: fa
     runtimeName: name,
     source: skillDir,
     required: false,
+  };
+}
+
+function createLocalSandboxRunner(
+  onExecute?: (input: {
+    command: string;
+    args?: string[];
+    cwd?: string;
+    env?: Record<string, string>;
+  }) => void,
+) {
+  let counter = 0;
+  return {
+    execute: async (input: {
+      command: string;
+      args?: string[];
+      cwd?: string;
+      env?: Record<string, string>;
+      stdin?: string;
+      timeoutMs?: number;
+      onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+    }) => {
+      counter += 1;
+      onExecute?.(input);
+      const command = input.command === "bash" ? "/bin/bash" : input.command;
+      return await runChildProcess(`acpx-sandbox-run-${counter}`, command, input.args ?? [], {
+        cwd: input.cwd ?? process.cwd(),
+        env: input.env ?? {},
+        stdin: input.stdin,
+        timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+        graceSec: 5,
+        onLog: input.onLog ?? (async () => {}),
+        onSpawn: input.onSpawn
+          ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
+          : undefined,
+      });
+    },
   };
 }
 
@@ -156,6 +195,61 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).toContain("Paperclip API access note:");
     expect(prompt).toContain("Use a real issue id from the current context before making issue write requests.");
     expect(prompt).not.toContain("$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID");
+  });
+
+  it("emits ACP text deltas as stdout transcript records", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const logs: Array<{ stream: string; text: string }> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "text_delta",
+              text: "streamed hello",
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-streaming-text-delta",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+      },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(logs).toContainEqual({
+      stream: "stdout",
+      text: `${JSON.stringify({
+        type: "acpx.text_delta",
+        text: "streamed hello",
+        channel: "output",
+        tag: "agent_message_chunk",
+      })}\n`,
+    });
   });
 
   it.skipIf(process.platform === "win32")("materializes ACPX Claude skills without symlinked descendants", async () => {
@@ -556,6 +650,57 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(wrapper).toContain("PAPERCLIP_RUN_ID");
     expect(wrapper).toContain("tee -a");
     expect(wrapper).toContain("exec node ./fake-acp.js");
+  });
+
+  it("starts sandbox ACP process sessions in the remote execution cwd", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+
+    let sessionPayload: Record<string, unknown> | null = null;
+    const runner = createLocalSandboxRunner(
+      (input: { args?: string[]; env?: Record<string, string> }) => {
+        if (input.env?.PAPERCLIP_SANDBOX_EXEC_CHANNEL === "bridge") {
+          const script = input.args?.[1] ?? "";
+          const match = script.match(/PAPERCLIP_PROCESS_SESSION_COMMAND_B64='([^']+)'/);
+          if (match) {
+            sessionPayload = JSON.parse(Buffer.from(match[1]!, "base64").toString("utf8")) as Record<string, unknown>;
+          }
+        }
+      },
+    );
+
+    await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      {
+        authToken: "real-run-jwt",
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner,
+        },
+      },
+    );
+
+    expect(sessionPayload).toMatchObject({
+      command: "sh",
+      args: ["-lc", "exec node ./fake-acp.js"],
+      cwd: remoteCwd,
+    });
+    const payloadEnv = ((sessionPayload as Record<string, unknown> | null)?.env ?? {}) as Record<string, unknown>;
+    expect(payloadEnv).toMatchObject({
+      PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
+    });
+    expect(String(payloadEnv.PAPERCLIP_API_URL ?? "")).toMatch(
+      /^http:\/\/127\.0\.0\.1:\d+$/,
+    );
+    expect(payloadEnv.PAPERCLIP_API_KEY).toBeTruthy();
+    expect(payloadEnv.PAPERCLIP_API_KEY).not.toBe("real-run-jwt");
   });
 
   it.skipIf(process.platform === "win32")("drops benign ACP nes/close cleanup stderr but keeps it in the run log", async () => {

@@ -1140,6 +1140,243 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
+  it("submits request_item_verdicts partially and completes when all items are resolved", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Item verdict partial submit");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_item_verdicts",
+      payload: {
+        version: 1,
+        prompt: "Review generated artifacts.",
+        items: [
+          { id: "api", label: "API route" },
+          { id: "docs", label: "Docs" },
+          { id: "tests", label: "Tests" },
+        ],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    expect(created).toMatchObject({
+      kind: "request_item_verdicts",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        verdicts: ["approve", "reject"],
+        requireReasonOn: ["reject"],
+        allowBulkApprove: true,
+        supersedeOnUserComment: true,
+      },
+    });
+
+    const first = await interactionsSvc.submitItemVerdicts({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      verdicts: [{ id: "docs", verdict: "reject", reason: "Missing examples" }],
+    }, {
+      userId: "local-board",
+    });
+
+    expect(first.newlyResolvedItemIds).toEqual(["docs"]);
+    expect(first.interaction).toMatchObject({
+      kind: "request_item_verdicts",
+      status: "pending",
+      result: {
+        version: 1,
+        outcome: "resolved",
+        complete: false,
+        items: [
+          {
+            id: "docs",
+            verdict: "reject",
+            reason: "Missing examples",
+            resolvedByUserId: "local-board",
+          },
+        ],
+      },
+      resolvedAt: null,
+    });
+
+    const duplicate = await interactionsSvc.submitItemVerdicts({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      verdicts: [{ id: "docs", verdict: "reject" }],
+    }, {
+      userId: "local-board",
+    });
+
+    expect(duplicate.newlyResolvedItemIds).toEqual([]);
+    expect(duplicate.interaction).toMatchObject({
+      status: "pending",
+      result: {
+        complete: false,
+        items: [
+          {
+            id: "docs",
+            verdict: "reject",
+            reason: "Missing examples",
+          },
+        ],
+      },
+    });
+
+    const completed = await interactionsSvc.submitItemVerdicts({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      verdicts: [
+        { id: "api", verdict: "approve" },
+        { id: "tests", verdict: "reject", reason: "No route coverage" },
+      ],
+    }, {
+      userId: "local-board",
+    });
+
+    expect(completed.newlyResolvedItemIds).toEqual(["api", "tests"]);
+    expect(completed.interaction).toMatchObject({
+      kind: "request_item_verdicts",
+      status: "answered",
+      result: {
+        version: 1,
+        outcome: "resolved",
+        complete: true,
+        items: [
+          { id: "api", verdict: "approve" },
+          { id: "docs", verdict: "reject", reason: "Missing examples" },
+          { id: "tests", verdict: "reject", reason: "No route coverage" },
+        ],
+      },
+      resolvedByUserId: "local-board",
+    });
+
+    const duplicateAfterComplete = await interactionsSvc.submitItemVerdicts({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      verdicts: [{ id: "api", verdict: "approve" }],
+    }, {
+      userId: "local-board",
+    });
+    expect(duplicateAfterComplete.newlyResolvedItemIds).toEqual([]);
+    expect(duplicateAfterComplete.interaction.status).toBe("answered");
+  });
+
+  it("enforces request_item_verdicts ids, enabled verdicts, and required reasons", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Item verdict validation");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_item_verdicts",
+      payload: {
+        version: 1,
+        prompt: "Review generated artifacts.",
+        items: [
+          { id: "api", label: "API route" },
+          { id: "docs", label: "Docs" },
+        ],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await expect(interactionsSvc.submitItemVerdicts({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      verdicts: [{ id: "missing", verdict: "approve" }],
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("Unknown item verdict id: missing");
+
+    await expect(interactionsSvc.submitItemVerdicts({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      verdicts: [{ id: "api", verdict: "defer" }],
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("Verdict defer is not enabled");
+
+    await expect(interactionsSvc.submitItemVerdicts({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      verdicts: [{ id: "docs", verdict: "reject" }],
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("A reason is required when verdict is reject");
+  });
+
+  it("preserves resolved request_item_verdicts items when a later user comment supersedes the pending remainder", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Item verdict supersede");
+    const commentId = randomUUID();
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_item_verdicts",
+      payload: {
+        version: 1,
+        prompt: "Review generated artifacts.",
+        items: [
+          { id: "api", label: "API route" },
+          { id: "docs", label: "Docs" },
+        ],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await interactionsSvc.submitItemVerdicts({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      verdicts: [{ id: "api", verdict: "approve" }],
+    }, {
+      userId: "local-board",
+    });
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: commentId,
+      createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
+      authorUserId: "local-board",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(expired).toHaveLength(1);
+    expect(expired[0]).toMatchObject({
+      id: created.id,
+      kind: "request_item_verdicts",
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "superseded_by_comment",
+        complete: false,
+        commentId,
+        items: [
+          {
+            id: "api",
+            verdict: "approve",
+            resolvedByUserId: "local-board",
+          },
+        ],
+      },
+    });
+  });
+
   it("returns agent-authored request confirmations to the creating agent when a board user accepts", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
@@ -1576,6 +1813,152 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           key: "plan",
           revisionId,
         },
+      },
+    });
+  });
+
+  it("preserves resolved request_item_verdicts items when the watched issue document revision changes", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    const nextRevisionId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Document target verdicts",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "v1",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId,
+      documentId,
+      key: "plan",
+    });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId,
+      documentId,
+      revisionNumber: 1,
+      title: "Plan",
+      format: "markdown",
+      body: "v1",
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_item_verdicts",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Review generated artifacts.",
+        items: [
+          { id: "api", label: "API route" },
+          { id: "docs", label: "Docs" },
+        ],
+        target: {
+          type: "issue_document",
+          issueId,
+          documentId,
+          key: "plan",
+          revisionId,
+          revisionNumber: 1,
+        },
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await interactionsSvc.submitItemVerdicts({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      verdicts: [{ id: "api", verdict: "approve" }],
+    }, {
+      userId: "local-board",
+    });
+
+    await db.insert(documentRevisions).values({
+      id: nextRevisionId,
+      companyId,
+      documentId,
+      revisionNumber: 2,
+      title: "Plan",
+      format: "markdown",
+      body: "v2",
+    });
+    await db.update(documents).set({
+      latestBody: "v2",
+      latestRevisionId: nextRevisionId,
+      latestRevisionNumber: 2,
+    });
+
+    const stale = await interactionsSvc.submitItemVerdicts({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      verdicts: [{ id: "docs", verdict: "approve" }],
+    }, {
+      userId: "local-board",
+    });
+
+    expect(stale.newlyResolvedItemIds).toEqual([]);
+    expect(stale.interaction).toMatchObject({
+      id: created.id,
+      status: "expired",
+      payload: {
+        target: {
+          type: "issue_document",
+          key: "plan",
+          revisionId: nextRevisionId,
+          revisionNumber: 2,
+        },
+      },
+      result: {
+        version: 1,
+        outcome: "stale_target",
+        complete: false,
+        staleTarget: {
+          type: "issue_document",
+          key: "plan",
+          revisionId,
+        },
+        items: [
+          {
+            id: "api",
+            verdict: "approve",
+            resolvedByUserId: "local-board",
+          },
+        ],
       },
     });
   });

@@ -1345,4 +1345,14 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       );
     expect(allEscalations).toHaveLength(2);
   });
+
+  it("handles an armed cutoff when no liveness findings exist", async () => {
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileIssueGraphLiveness({
+      issueCreatedAtGte: new Date(),
+    });
+
+    expect(result.findings).toBe(0);
+  });
 });
