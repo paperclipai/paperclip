@@ -123,7 +123,7 @@ describe("Browse store door (PAP-13254 door 1)", () => {
       button.textContent?.includes("Acme CRM"),
     );
     tile?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect/acme/setup");
   });
 
   it("filters the gallery by the search query", async () => {

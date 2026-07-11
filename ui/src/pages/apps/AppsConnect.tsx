@@ -20,7 +20,7 @@ import type {
   ToolAppConnectionActionSummary,
 } from "@paperclipai/shared";
 import { getToolAppGalleryEntryForUrl } from "@paperclipai/shared";
-import { useNavigate, useSearchParams } from "@/lib/router";
+import { useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
@@ -40,6 +40,18 @@ import { AppLogo } from "./AppLogo";
 import { parseGoogleSheetIds } from "./google-sheets";
 
 type Step = "gallery" | "key" | "actions" | "who" | "success";
+
+const ROUTE_STAGE_BY_STEP: Partial<Record<Step, string>> = {
+  key: "setup",
+  actions: "actions",
+  who: "access",
+  success: "complete",
+};
+
+function appConnectHref(appKey: string, step: Step): string {
+  const stage = ROUTE_STAGE_BY_STEP[step] ?? "setup";
+  return `/apps/connect/${encodeURIComponent(appKey)}/${stage}`;
+}
 type AppAccessSelection = "all_agents" | { agentIds: string[] };
 const LINK_CREDENTIAL_CONFIG_PATH = "credentials.authorization";
 
@@ -62,6 +74,7 @@ function isGoogleSheetsEntry(entry: AppGalleryEntry | null): boolean {
 
 export function AppsConnect() {
   const navigate = useNavigate();
+  const { appKey } = useParams<{ appKey?: string }>();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
@@ -78,7 +91,7 @@ export function AppsConnect() {
     };
   });
 
-  const [step, setStep] = useState<Step>(prefill.link ? "key" : "gallery");
+  const [step, setStep] = useState<Step>(appKey || prefill.link ? "key" : "gallery");
   const [entry, setEntry] = useState<AppGalleryEntry | null>(null);
   const [galleryName, setGalleryName] = useState("");
   const [linkUrl, setLinkUrl] = useState(prefill.link);
@@ -92,6 +105,21 @@ export function AppsConnect() {
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
   const [access, setAccess] = useState<"all" | "specific">("all");
   const [agentIds, setAgentIds] = useState<Set<string>>(new Set());
+
+  const openGallery = () => {
+    setEntry(null);
+    setGalleryName("");
+    setLinkUrl("");
+    setLinkName("");
+    setLinkNeedsKey(false);
+    setLinkKey("");
+    setCredentials({});
+    setGoogleSheetsLinks("");
+    setGoogleSheetsError(null);
+    setConnectResult(null);
+    setStep("gallery");
+    navigate("/apps/connect");
+  };
 
   useEffect(() => {
     setBreadcrumbs([
@@ -107,6 +135,37 @@ export function AppsConnect() {
     queryFn: () => toolsApi.listGallery(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  useEffect(() => {
+    if (!appKey || galleryQuery.isLoading || !galleryQuery.data) return;
+
+    const requestedEntry = galleryQuery.data.apps.find((candidate) => candidate.key === appKey);
+    if (!requestedEntry || requestedEntry.authKind === "oauth" || requestedEntry.availability?.available === false) {
+      setEntry(null);
+      setStep("gallery");
+      navigate("/apps/connect", { replace: true });
+      return;
+    }
+
+    if (entry?.key !== requestedEntry.key) {
+      setEntry(requestedEntry);
+      setGalleryName(requestedEntry.name);
+      setLinkUrl("");
+      setLinkName("");
+      setLinkNeedsKey(false);
+      setLinkKey("");
+      setCredentials({});
+      setGoogleSheetsLinks("");
+      setGoogleSheetsError(null);
+      setConnectResult(null);
+    }
+    setStep("key");
+  }, [appKey, entry?.key, galleryQuery.data, galleryQuery.isLoading, navigate]);
+
+  const setAppStep = (nextStep: Step) => {
+    setStep(nextStep);
+    if (entry) navigate(appConnectHref(entry.key, nextStep));
+  };
 
   const connectMutation = useMutation({
     mutationFn: () => {
@@ -136,7 +195,7 @@ export function AppsConnect() {
       for (const a of result.actions.readOnly) defaults[a.catalogEntryId] = true;
       for (const a of result.actions.canMakeChanges) defaults[a.catalogEntryId] = false;
       setEnabled(defaults);
-      setStep("actions");
+      setAppStep("actions");
     },
     onError: (error) => {
       const details = error instanceof ApiError && error.body && typeof error.body === "object"
@@ -173,7 +232,7 @@ export function AppsConnect() {
         access: selection,
       });
     },
-    onSuccess: () => setStep("success"),
+    onSuccess: () => setAppStep("success"),
     onError: (error) => {
       pushToast({
         title: "Couldn’t finish setup",
@@ -222,7 +281,9 @@ export function AppsConnect() {
             setCredentials({});
             setGoogleSheetsLinks("");
             setGoogleSheetsError(null);
+            setConnectResult(null);
             setStep("key");
+            navigate(appConnectHref(picked.key, "key"));
           }}
           onUseLink={(url) => {
             setEntry(null);
@@ -255,7 +316,7 @@ export function AppsConnect() {
             setGoogleSheetsError(null);
           }}
           submitting={connectMutation.isPending}
-          onBack={() => setStep("gallery")}
+          onBack={openGallery}
           onConnect={() => {
             if (isGoogleSheetsEntry(entry)) {
               const parsed = parseGoogleSheetIds(googleSheetsLinks);
@@ -304,8 +365,8 @@ export function AppsConnect() {
               return next;
             })
           }
-          onBack={() => setStep("key")}
-          onContinue={() => setStep("who")}
+          onBack={() => setAppStep("key")}
+          onContinue={() => setAppStep("who")}
         />
       )}
 
@@ -318,7 +379,7 @@ export function AppsConnect() {
           agentIds={agentIds}
           setAgentIds={setAgentIds}
           submitting={finishMutation.isPending}
-          onBack={() => setStep("actions")}
+          onBack={() => setAppStep("actions")}
           onFinish={() => finishMutation.mutate()}
         />
       )}

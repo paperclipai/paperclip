@@ -115,6 +115,8 @@ function boardRoutes() {
       <Route path="apps" element={<Connections />} />
       <Route path="apps/browse" element={<Browse />} />
       <Route path="apps/connect" element={<AppsConnect />} />
+      <Route path="apps/connect/:appKey" element={<AppsConnect />} />
+      <Route path="apps/connect/:appKey/:stage" element={<AppsConnect />} />
       <Route path="apps/review" element={<AppsReview />} />
       {/* Needs attention folded into Connections (PAP-13254); keep legacy links working. */}
       <Route path="apps/attention" element={<Navigate to="/apps" replace />} />

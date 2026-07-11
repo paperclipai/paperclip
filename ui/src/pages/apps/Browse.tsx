@@ -65,7 +65,8 @@ export function Browse() {
     return <div className="p-6 text-sm text-muted-foreground">Select a company to browse apps.</div>;
   }
 
-  const connect = () => navigate("/apps/connect");
+  const connect = (entry: AppGalleryEntry) =>
+    navigate(`/apps/connect/${encodeURIComponent(entry.key)}/setup`);
   const loading = galleryQuery.isLoading;
 
   return (
@@ -104,7 +105,7 @@ export function Browse() {
               </div>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                 {popular.map((entry) => (
-                  <AppTile key={entry.key} entry={entry} onConnect={connect} compact />
+                  <AppTile key={entry.key} entry={entry} onConnect={() => connect(entry)} compact />
                 ))}
               </div>
             </section>
@@ -122,7 +123,7 @@ export function Browse() {
             ) : (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {filtered.map((entry) => (
-                  <AppTile key={entry.key} entry={entry} onConnect={connect} />
+                  <AppTile key={entry.key} entry={entry} onConnect={() => connect(entry)} />
                 ))}
               </div>
             )}

@@ -10,6 +10,7 @@ const listGalleryMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSearch = vi.hoisted(() => ({ value: "" }));
+const mockParams = vi.hoisted(() => ({ appKey: undefined as string | undefined }));
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -24,6 +25,7 @@ vi.mock("@/api/agents", () => ({
 
 vi.mock("@/lib/router", () => ({
   useNavigate: () => mockNavigate,
+  useParams: () => mockParams,
   useSearchParams: () => [new URLSearchParams(mockSearch.value), vi.fn()],
 }));
 
@@ -108,6 +110,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   beforeEach(() => {
     mockSearch.value = "";
+    mockParams.appKey = undefined;
     container = document.createElement("div");
     document.body.appendChild(container);
     listGalleryMock.mockResolvedValue({
@@ -168,6 +171,14 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       (i) => i.getAttribute("placeholder") === "My app",
     );
     expect(nameInput?.value).toBe("example.com");
+  });
+
+  it("opens the selected app directly on its setup route", async () => {
+    mockParams.appKey = "zapier";
+    await render();
+
+    expect(container.textContent).toContain("Connect Zapier");
+    expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
   });
 
   it("choosing No and clicking Check link connects with no credentials", async () => {
@@ -411,6 +422,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect/zapier/actions");
     const [, input] = connectAppMock.mock.calls[0];
     expect(input).toMatchObject({ galleryKey: "zapier", name: "Zapier" });
   });
