@@ -40,12 +40,11 @@ Steps 1 & 2 scan `todo`/`in_progress`/`blocked`; nothing else scans `in_review`.
 
 The parent Worker task that spawned a stalled Review/Verify child is usually itself `in_review` waiting on that child — re-dispatching the child is enough; it advances on its own once the child completes. Toggle the child, not the parent.
 
-### 3. Run productivity
+### 3. Run productivity — descoped (no run-data API surface exists)
 
-Last 5 `heartbeat-runs` per agent. Flag runs that:
-- `status=succeeded` with zero tool calls (text-only short-circuit)
-- `sessionReused: true` and the prior task is now `done` (rotation bug)
-- `error` set
+**Do not probe `heartbeat-runs` — there is no such route in this API build.** Every plausible spelling 404s (`/api/agents/{id}/heartbeat-runs`, `/api/agent-runs`, `/api/companies/{companyId}/runs`, …), and `skills/paperclip/references/api-reference.md` documents no run/execution endpoint at all. The only run surface reachable from the API is the `activeRun` object embedded on issue rows (`GET /issues?status=…`) — it carries `status`/`startedAt`/`invocationSource`/`triggerDetail` (which is what powers §2a's live-run check) but **not** `toolCallCount`, `sessionReused`, or `error`. So the three checks this step was written for — zero-tool-call short-circuits, `sessionReused` rotation bugs, and `error` runs — **cannot** be evaluated against any surface that exists today.
+
+A prescribed check that silently 404s is worse than an absent one: it manufactures the appearance of coverage while finding nothing, in exactly the direction that reads as `Pipeline healthy`. This step is therefore **descoped until a runs endpoint exists**. If one is added (returning `toolCallCount`/`sessionReused`/`error` per agent), restore the three flags above and document the route in `api-reference.md` so it is discoverable rather than folklore — and treat a 404 from it as a **sweep error**, not an empty result set. Until then, do not spend a step slot pretending to check.
 
 ### 4. Comment-without-PATCH
 
@@ -72,6 +71,28 @@ Diff live `adapterConfig.promptTemplate` + `instructionsFilePath` content agains
 | 5 | No linked task (operator branch) idle >14d | Mention in report. Do NOT delete. |
 
 Auto-delete only cases 1 & 2. Never force-push.
+
+### 7b. Stranded local-commit sweep
+
+§7 sweeps `gh api /branches` — **remote only** — so a commit that was made locally and never pushed is invisible to it. That is the commit-without-push class (third occurrence: `task/AA-1821`, `task/AA-1856`, `task/AA-2019`). Add a **local** pass:
+
+```sh
+git -C "$BEVY_RPG" fetch origin --prune
+for b in $(git -C "$BEVY_RPG" for-each-ref --format='%(refname:short)' refs/heads/); do
+  git -C "$BEVY_RPG" merge-base --is-ancestor "$b" origin/main && continue     # merged
+  git -C "$BEVY_RPG" rev-parse --verify -q "origin/$b" >/dev/null && continue  # pushed; §7 covers it
+  echo "STRANDED-CANDIDATE $b ahead=$(git -C "$BEVY_RPG" rev-list --count origin/main..$b)"
+done
+```
+
+**The discriminator is run ownership, not push state.** This pipeline commits locally at the Worker stage and pushes only at Architect verify, so "committed, not pushed, no PR" is the *normal* mid-flight state — flagging on push-state alone fires ~6 false positives on its first run and gets muted within a week. A branch is genuinely **stranded** only when **all** hold:
+
+1. commits not on `origin/main`, **and**
+2. no open PR for the branch, **and**
+3. its linked `AA-nnnn` task is terminal or non-advancing — `done`/`cancelled`, or **no `activeRun` and no live `executionRunId`** (cross-reference via `GET /issues?q=`), **and**
+4. `updatedAt` older than one fire interval.
+
+Condition (3) is the load-bearing filter. Report candidates that pass all four (with SHA + subject + ahead-count) as a Coordinator followup. **Never auto-delete** — these commits exist in exactly one place. (Contrast §7 cases 1–2, which delete only *merged/duplicate remote* branches whose commits are safely on `origin/main`.)
 
 ### 8. Report
 
