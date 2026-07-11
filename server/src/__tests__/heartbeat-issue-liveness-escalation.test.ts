@@ -487,7 +487,12 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, blockedIssueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("harness-level liveness incident");
+    expect(comments[0]?.body).toContain("Action needed:");
+    expect(comments[0]?.presentation).toMatchObject({
+      kind: "system_notice",
+      title: "Needs unblock",
+      detailsDefaultOpen: false,
+    });
     expect(comments[0]?.body).toContain(escalations[0]?.identifier ?? escalations[0]!.id);
 
     const events = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
@@ -572,7 +577,11 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(issueComments)
       .where(eq(issueComments.issueId, blockedIssueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("blocked_without_action_path");
+    expect(comments[0]?.body).toContain("Action needed:");
+    expect(comments[0]?.metadata).toMatchObject({
+      version: 1,
+      sections: [expect.objectContaining({ title: "Recovery details" })],
+    });
 
     const wakeups = await db
       .select({ agentId: agentWakeupRequests.agentId, payload: agentWakeupRequests.payload })

@@ -481,18 +481,38 @@ function buildLivenessEscalationDescription(finding: IssueLivenessFinding) {
 }
 
 function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escalation: typeof issues.$inferSelect) {
-  return [
-    "Paperclip detected a harness-level liveness incident in this issue's dependency graph.",
-    "",
-    `- Escalation issue: ${escalation.identifier ?? escalation.id}`,
-    `- Incident key: \`${finding.incidentKey}\``,
-    `- Finding: \`${finding.state}\``,
-    `- Dependency path: ${formatDependencyPath(finding)}`,
-    `- Reason: ${finding.reason}`,
-    `- Manager action requested: ${finding.recommendedAction}`,
-    "",
-    "This issue now keeps its existing blockers and is also blocked by the escalation issue so dependency wakeups remain explicit.",
-  ].join("\n");
+  const target = escalation.identifier ?? escalation.id;
+  return `Action needed: ${target} is handling a blocked work path.`;
+}
+
+function livenessOriginalIssueCommentMetadata(
+  finding: IssueLivenessFinding,
+  escalation: typeof issues.$inferSelect,
+) {
+  const recovery = finding.dependencyPath.find((entry) => entry.issueId === finding.recoveryIssueId);
+  return {
+    version: 1 as const,
+    sections: [{
+      title: "Recovery details",
+      rows: [
+        {
+          type: "issue_link" as const,
+          label: "Unblock task",
+          issueId: escalation.id,
+          identifier: escalation.identifier,
+          title: escalation.title,
+        },
+        {
+          type: "key_value" as const,
+          label: "Blocked work",
+          value: recovery?.identifier ?? finding.recoveryIssueId,
+        },
+        { type: "key_value" as const, label: "Reason", value: finding.reason },
+        { type: "key_value" as const, label: "Next action", value: finding.recommendedAction },
+        { type: "code" as const, label: "Incident key", code: finding.incidentKey },
+      ],
+    }],
+  };
 }
 
 type LivenessBoardEscalationCause =
@@ -3817,6 +3837,15 @@ export function recoveryService(
       issue.id,
       buildLivenessOriginalIssueComment(input.finding, escalation),
       { runId: input.runId ?? null },
+      {
+        presentation: {
+          kind: "system_notice",
+          tone: "warning",
+          title: "Needs unblock",
+          detailsDefaultOpen: false,
+        },
+        metadata: livenessOriginalIssueCommentMetadata(input.finding, escalation),
+      },
     );
 
     await logActivity(db, {
