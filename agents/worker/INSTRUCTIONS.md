@@ -33,6 +33,27 @@ commit, do NOT push.
    `"Worktree has uncommitted changes from prior stage. Aborting to
    avoid mixing tasks."` and exit.
 
+   **Exception — recover your own aborted run.** Aborting here deadlocks
+   the task when the debris is *your own*: a previous Worker run on this
+   same task that died mid-work (turn/time budget) before committing. No
+   other stage can rescue it — Reviewer's Step 0 rebase fails on unstaged
+   changes, Architect is gated behind Reviewer, Coordinator may not commit,
+   and `git stash` is forbidden. So when **all three** hold:
+
+   - `git status --porcelain` is non-empty, **and**
+   - `git log origin/main..HEAD` is **empty** (no stage has committed here), **and**
+   - `git branch --show-current` == `task/{task-id}`
+
+   the debris can only be a dead Worker run's, because Reviewer's own Step 0
+   check 5 refuses to proceed without at least one Worker commit — so on a
+   zero-commit branch no later stage has ever run. Commit the debris with a
+   `Stage: worker (recovered)` trailer, say so in your task comment, then
+   proceed with the task.
+
+   **Any other dirty state keeps the hard abort.** Once even one commit
+   exists on the branch, a later stage may have produced the debris and it
+   is no longer unambiguously yours.
+
 Only after all four checks pass, proceed to "Before Starting" below.
 
 The hard-gate design is deliberate: a soft fallback ("if no worktree,
@@ -138,8 +159,8 @@ Reviewer subtask until the operator manually committed).
 
 Two valid end-states only:
 
-- **You produced work** → all of it is committed. `git status --porcelain` empty, `git log main..HEAD` non-empty.
-- **You produced nothing** → no edits at all. `git status --porcelain` empty, `git log main..HEAD` empty.
+- **You produced work** → all of it is committed. `git status --porcelain` empty, `git log origin/main..HEAD` non-empty.
+- **You produced nothing** → no edits at all. `git status --porcelain` empty, `git log origin/main..HEAD` empty.
 
 If you hit a crash, ambiguity, or "I'm not sure these changes are
 right" mid-task, do NOT exit with a dirty tree. Either:
@@ -148,6 +169,12 @@ right" mid-task, do NOT exit with a dirty tree. Either:
 
 The dirty-tree-at-exit state is operationally invalid — it is not a way
 to signal "needs human review."
+
+This gate only binds a run that reaches its own exit. A run killed by the
+turn or time budget never gets here, so it *will* leave a dirty tree — that
+is the case Step 0 check 4's recovery exception exists to absorb, and why
+the exception is the load-bearing half of the invariant rather than this
+section. Do not weaken check 4 on the theory that this gate prevents debris.
 
 ## Art Tasks
 

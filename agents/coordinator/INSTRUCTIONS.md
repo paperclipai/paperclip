@@ -43,6 +43,15 @@ Human merges. You GC the worktree + branch.
      subtask for Reviewer (include Worker's changed-file list). Idempotent: skip if a Reviewer
      subtask already exists for that task. Pass `dedupeKey: "review"` on the create so the DB
      rejects a concurrent duplicate even if your skip-check races (see §Stage-subtask dedupe).
+   - Worker `in_review` but **tree dirty with 0 commits** on `task/{task-id}` (`git -C
+     .paperclip/worktrees/{task-id} status --porcelain` non-empty **and** `git log origin/main..HEAD`
+     empty) → a Worker run died mid-work. This is **not** an exit-gate violation and **not** a
+     done-without-PR case: do NOT create a Reviewer subtask (its Step 0 rebase fails on unstaged
+     changes) and do NOT mark done. Re-dispatch the Worker once — its Step 0 recovery exception
+     (worker INSTRUCTIONS, AA-2054) commits the debris with a `Stage: worker (recovered)` trailer and
+     continues. Track a `Worker recovery: N` trailer; if the same dirty/0-commit state survives 2
+     re-dispatches, `escalate to operator` (the recovery exception is not firing — likely a manual
+     hand-commit is needed, as was done for AA-2015).
    - Reviewer done, `needs-build` → assign Architect on the same task branch (Architect runs cargo)
    - Reviewer done, `data-only` → Architect opens PR (no cargo), then mark parent done after merge
    - Architect `done` (branch confirmed on origin → PR exists) → mark parent done after PR merges
