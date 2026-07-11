@@ -291,6 +291,10 @@ const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_r
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+const WORKSPACE_FINALIZE_RECOVERABLE_TERMINAL_STATUSES = [
+  "interrupted",
+  ...UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES,
+] as const;
 const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
@@ -5102,8 +5106,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const reconciliation = (async () => {
       if (
-        !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
-          run.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+        !WORKSPACE_FINALIZE_RECOVERABLE_TERMINAL_STATUSES.includes(
+          run.status as (typeof WORKSPACE_FINALIZE_RECOVERABLE_TERMINAL_STATUSES)[number],
         )
       ) {
         return { created: false, wakeHealed: 0 };
@@ -5306,7 +5310,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           and(
             eq(heartbeatRuns.id, latestOperation.heartbeatRunId),
             eq(heartbeatRuns.companyId, blocker.companyId),
-            inArray(heartbeatRuns.status, [...UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES]),
+            inArray(heartbeatRuns.status, [...WORKSPACE_FINALIZE_RECOVERABLE_TERMINAL_STATUSES]),
           ),
         )
         .then((rows) => rows[0] ?? null);

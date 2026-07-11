@@ -584,13 +584,26 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { environmentId, leaseId };
   }
 
-  async function seedDeadRunFinalizeBarrierFixture(input?: { runStatus?: "running" | "failed" }) {
+  async function seedDeadRunFinalizeBarrierFixture(input?: {
+    runStatus?: "running" | "interrupted" | "failed";
+  }) {
+    const runStatus = input?.runStatus ?? "running";
+    const runErrorCode = runStatus === "failed"
+      ? "process_lost"
+      : runStatus === "interrupted"
+        ? "server_shutdown_interrupted"
+        : null;
+    const runError = runStatus === "failed"
+      ? "Process lost during a prior server lifetime"
+      : runStatus === "interrupted"
+        ? "Run interrupted during graceful server shutdown"
+        : null;
     const seeded = await seedRunFixture({
       agentStatus: "running",
       adapterType: "test",
-      runStatus: input?.runStatus ?? "running",
-      runErrorCode: input?.runStatus === "failed" ? "process_lost" : null,
-      runError: input?.runStatus === "failed" ? "Process lost during a prior server lifetime" : null,
+      runStatus,
+      runErrorCode,
+      runError,
     });
     const projectId = randomUUID();
     const executionWorkspaceId = randomUUID();
@@ -631,7 +644,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           issueId: seeded.issueId,
           executionWorkspaceId,
         },
-        ...(input?.runStatus === "failed" ? { finishedAt: now, updatedAt: now } : {}),
+        ...(runStatus !== "running" ? { finishedAt: now, updatedAt: now } : {}),
       })
       .where(eq(heartbeatRuns.id, seeded.runId));
 
@@ -1483,6 +1496,41 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(["startup_sweep", "interval_sweep"]).toContain(
       (syntheticFinalizes[0]?.metadata as Record<string, unknown> | null)?.source,
     );
+    await expect(issueService(db).getDependencyReadiness(fixture.dependentIssueId)).resolves.toMatchObject({
+      isDependencyReady: true,
+      pendingFinalizeBlockerIssueIds: [],
+    });
+  });
+
+  it("releases a finalize barrier owned by an interrupted run", async () => {
+    const fixture = await seedDeadRunFinalizeBarrierFixture({ runStatus: "interrupted" });
+
+    const result = await heartbeatService(db).reconcileTerminalRunWorkspaceFinalizes("startup_sweep");
+
+    expect(result).toMatchObject({
+      checked: 1,
+      created: 1,
+      wakesHealed: 1,
+      runIds: [fixture.runId],
+    });
+    const syntheticFinalize = await db
+      .select()
+      .from(workspaceOperations)
+      .where(
+        and(
+          eq(workspaceOperations.heartbeatRunId, fixture.runId),
+          eq(workspaceOperations.phase, "workspace_finalize"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(syntheticFinalize).toMatchObject({
+      status: "succeeded",
+      metadata: expect.objectContaining({
+        synthetic: true,
+        reason: "server_shutdown_interrupted",
+        terminalRunStatus: "interrupted",
+      }),
+    });
     await expect(issueService(db).getDependencyReadiness(fixture.dependentIssueId)).resolves.toMatchObject({
       isDependencyReady: true,
       pendingFinalizeBlockerIssueIds: [],
