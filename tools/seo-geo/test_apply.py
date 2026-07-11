@@ -46,3 +46,41 @@ def test_dry_run_writes_nothing():
     # Verify all changes are in skipped with reason "dry-run"
     for skipped in log.skipped:
         assert skipped["reason"] == "dry-run"
+
+class RaisingClient:
+    def __init__(self):
+        self.calls = []
+
+    def set_yoast_meta(self, pid, field, value, post_type="posts"):
+        self.calls.append(("yoast", pid, field, value, post_type))
+        raise RuntimeError("boom")
+
+def test_apply_records_failure_and_stops():
+    c = RaisingClient()
+    cs = {
+        "site": "x",
+        "changes": [
+            {"target": "post", "id": 1, "field": "seo_title", "old": "Alt", "new": "Neu"},
+            {"target": "post", "id": 2, "field": "seo_title", "old": "Alt2", "new": "Neu2"},
+        ],
+    }
+    log = apply_changeset(cs, c)
+    assert len(log.failed) == 1
+    assert "boom" in log.failed[0]["error"]
+    assert len(log.applied) == 0
+    assert len(c.calls) == 1
+
+def test_apply_reskips_non_whitelisted_at_apply_time():
+    c = FakeClient()
+    cs = {
+        "site": "x",
+        "changes": [
+            {"target": "post", "id": 1, "field": "body", "old": "Alt", "new": "Neu"},
+        ],
+    }
+    log = apply_changeset(cs, c)
+    assert len(log.skipped) == 1
+    assert "body" in log.skipped[0]["reason"]
+    assert c.calls == []
+    assert log.applied == []
+    assert log.failed == []

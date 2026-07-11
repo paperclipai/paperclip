@@ -26,6 +26,16 @@ def test_run_audit_respects_crawl_limit():
     report = run_audit(small, _fetch_factory(pages), urls)
     assert len(report.pages) == 5
 
+def test_run_audit_skips_failing_page():
+    def fetch(url):
+        if url.endswith("/llms.txt"):
+            return ""
+        if url == "https://x.de/bad":
+            raise IOError("fetch failed")
+        return "<html><head></head><body></body></html>"
+    report = run_audit(SITE, fetch, ["https://x.de/bad", "https://x.de/a"])
+    assert len(report.pages) == 1
+
 def test_write_report_emits_json_and_md(tmp_path):
     pages = {"https://x.de/a": "<html><head></head><body></body></html>"}
     report = run_audit(SITE, _fetch_factory(pages), ["https://x.de/a"])

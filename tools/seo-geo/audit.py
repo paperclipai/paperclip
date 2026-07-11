@@ -13,7 +13,11 @@ class AuditReport:
 def run_audit(site, fetch, sitemap_urls) -> AuditReport:
     pages, findings = [], []
     for url in sitemap_urls[: site.crawl_limit]:
-        sig = parse_page(url, fetch(url))
+        try:
+            html = fetch(url)
+        except Exception:
+            continue
+        sig = parse_page(url, html)
         pages.append(sig)
         findings.extend(evaluate_page(sig))
     llms = ""

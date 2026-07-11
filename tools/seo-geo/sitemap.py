@@ -9,7 +9,10 @@ def fetch_sitemap_urls(site, fetch) -> list[str]:
     if "<sitemapindex" in xml:
         urls = []
         for sub in locs:
-            urls.extend(_locs(fetch(sub)))
+            try:
+                urls.extend(_locs(fetch(sub)))
+            except Exception:
+                continue
     else:
         urls = locs
     seen, out = set(), []

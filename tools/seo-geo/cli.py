@@ -24,15 +24,20 @@ def _cmd_apply(args, environ, client_factory):
     sdir = _site_dir(args.root, site.name)
     approved = os.path.join(sdir, "approved")
     applied = os.path.join(sdir, "applied")
-    os.makedirs(applied, exist_ok=True)
+    failed = os.path.join(sdir, "failed")
     for fn in sorted(os.listdir(approved)) if os.path.isdir(approved) else []:
         path = os.path.join(approved, fn)
         cs = json.loads(open(path).read())
         log = apply_changeset(cs, client, dry_run=args.dry_run)
-        with open(os.path.join(sdir, "apply-log.json"), "w") as fh:
+        if args.dry_run:
+            with open(os.path.join(sdir, f"apply-log.{fn}.json"), "w") as fh:
+                json.dump(asdict(log), fh, ensure_ascii=False, indent=2)
+            continue
+        dest_dir = failed if log.failed else applied
+        os.makedirs(dest_dir, exist_ok=True)
+        with open(os.path.join(dest_dir, f"apply-log.{fn}.json"), "w") as fh:
             json.dump(asdict(log), fh, ensure_ascii=False, indent=2)
-        if not args.dry_run:
-            shutil.move(path, os.path.join(applied, fn))
+        shutil.move(path, os.path.join(dest_dir, fn))
     return 0
 
 def _cmd_audit(args, environ, fetch):
