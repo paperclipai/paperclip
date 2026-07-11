@@ -91,4 +91,49 @@ describe("AgentMultiSelect", () => {
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange.mock.calls[0]?.[0]).toEqual(new Set(["agent-17"]));
   });
+
+  it("previews selected agents and stages changes until save", async () => {
+    const onSave = vi.fn();
+    const agents = Array.from({ length: 6 }, (_, index) => ({
+      id: `agent-${index}`,
+      name: `Agent ${index}`,
+    }));
+
+    root = createRoot(container);
+    act(() => {
+      root?.render(
+        <AgentMultiSelect
+          agents={agents}
+          selectedAgentIds={new Set(["agent-0", "agent-1", "agent-2", "agent-3", "agent-4"])}
+          onSave={onSave}
+          triggerLabel="Add to agent"
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Agent 0");
+    expect(container.textContent).toContain("Agent 2");
+    expect(container.textContent).toContain("and 2 more");
+    expect(container.textContent).not.toContain("Agent 4");
+
+    act(() => {
+      container.querySelector("button")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    act(() => {
+      document.body
+        .querySelector('[aria-label="Allow Agent 5"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(onSave).not.toHaveBeenCalled();
+    const save = Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent === "Save");
+    act(() => {
+      save?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(onSave).toHaveBeenCalledWith(new Set(agents.map((agent) => agent.id)));
+  });
 });

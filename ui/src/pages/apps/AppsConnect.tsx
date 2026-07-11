@@ -1383,6 +1383,7 @@ function WhoStep({
               selectedAgentIds={agentIds}
               onChange={setAgentIds}
               loading={agentsQuery.isLoading}
+              showSelectionPreview={false}
             />
           )}
         </div>
