@@ -18,7 +18,13 @@ import type {
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import {
+  LOW_TRUST_REVIEW_PRESET,
+  agentIsInSubtree,
+  extractAgentMentionIds,
+  type AgentSubtreeNode,
+  type LowTrustBoundary,
+} from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -209,7 +215,7 @@ type AssignmentPolicyEffect =
   | { kind: "requires_approval"; explanation: string }
   | { kind: "unknown"; explanation: string };
 
-type AgentHierarchyRow = { id: string; reportsTo: string | null };
+type AgentHierarchyRow = AgentSubtreeNode;
 type LowTrustBoundaryWithCompany = LowTrustBoundary & { companyId: string };
 type AgentAuthorizationRow = {
   id: string;
@@ -305,23 +311,6 @@ function evaluateAuthorizationPolicyForAssignment(
   }
 
   return { kind: "none" };
-}
-
-function agentIsInSubtree(
-  agentsById: Map<string, AgentHierarchyRow>,
-  rootAgentId: string,
-  targetAgentId: string,
-) {
-  if (rootAgentId === targetAgentId) return true;
-
-  let cursor: string | null = targetAgentId;
-  for (let depth = 0; cursor && depth < 50; depth += 1) {
-    const current = agentsById.get(cursor);
-    if (!current) return false;
-    if (current.reportsTo === rootAgentId) return true;
-    cursor = current.reportsTo;
-  }
-  return false;
 }
 
 async function loadCompanyAgentHierarchy(db: Db, companyId: string) {
