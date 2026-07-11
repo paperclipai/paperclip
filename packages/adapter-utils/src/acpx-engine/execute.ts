@@ -84,6 +84,7 @@ interface AcpxEngineSettings {
   adapterType: string;
   moduleDir: string;
   packageRootDir: string;
+  platform: NodeJS.Platform;
 }
 
 export interface AcpxEngineExecutorOptions {
@@ -93,6 +94,7 @@ export interface AcpxEngineExecutorOptions {
   adapterType?: string;
   moduleDir?: string;
   packageRootDir?: string;
+  platform?: NodeJS.Platform;
 }
 
 interface AcpxPreparedRuntime {
@@ -133,6 +135,7 @@ function resolveEngineSettings(options: AcpxEngineExecutorOptions): AcpxEngineSe
     adapterType: options.adapterType?.trim() || "acp_engine",
     moduleDir,
     packageRootDir: path.resolve(options.packageRootDir ?? path.resolve(moduleDir, "../..")),
+    platform: options.platform ?? process.platform,
   };
 }
 
@@ -839,25 +842,64 @@ async function writeAgentWrapper(input: {
   agentCommandShell: string;
   env: Record<string, string>;
   childStderrDir: string;
+  platform: NodeJS.Platform;
 }): Promise<{ wrapperPath: string; envFilePath: string }> {
   const wrappersDir = path.join(input.stateDir, "wrappers");
   await fs.mkdir(wrappersDir, { recursive: true });
-  const envLines = Object.entries(input.env)
+  const validEnvEntries = Object.entries(input.env)
     .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `${key}=${shellQuote(value)}`);
+    .sort(([left], [right]) => left.localeCompare(right));
+  const isWindows = input.platform === "win32";
+  const envLines = isWindows
+    ? validEnvEntries.map(([key, value]) => `set "${key}=${escapeCmdEnvValue(value)}"`)
+    : validEnvEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
   const wrapperHash = shortHash({
     agent: input.acpxAgent,
     command: input.agentCommandShell,
     env: envLines,
     childStderrDir: input.childStderrDir,
+    platform: input.platform,
   });
-  const wrapperPath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}.sh`);
-  const envFilePath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}.env`);
-  const script = [
+  const wrapperPath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}${isWindows ? ".cmd" : ".sh"}`);
+  const envFilePath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}${isWindows ? ".env.cmd" : ".env"}`);
+  const script = isWindows
+    ? renderWindowsAgentWrapper({
+        envFilePath,
+        childStderrDir: input.childStderrDir,
+        agentCommandShell: input.agentCommandShell,
+      })
+    : renderPosixAgentWrapper({
+        envFilePath,
+        childStderrDir: input.childStderrDir,
+        agentCommandShell: input.agentCommandShell,
+      });
+  await writeFileAtomically({
+    target: envFilePath,
+    contents: `${envLines.join("\n")}\n`,
+    mode: 0o600,
+  });
+  await writeFileAtomically({
+    target: wrapperPath,
+    contents: script,
+    mode: 0o700,
+  });
+  await fs.access(wrapperPath);
+  await cleanupStaleAgentWrappers({
+    wrappersDir,
+    currentFileNames: new Set([path.basename(wrapperPath), path.basename(envFilePath)]),
+  });
+  return { wrapperPath, envFilePath };
+}
+
+function renderPosixAgentWrapper(input: {
+  envFilePath: string;
+  childStderrDir: string;
+  agentCommandShell: string;
+}): string {
+  return [
     "#!/usr/bin/env bash",
     "set -euo pipefail",
-    `env_file=${shellQuote(envFilePath)}`,
+    `env_file=${shellQuote(input.envFilePath)}`,
     "if [[ -f \"$env_file\" ]]; then",
     "  set -a",
     "  source \"$env_file\"",
@@ -873,21 +915,42 @@ async function writeAgentWrapper(input: {
     `exec ${input.agentCommandShell} "$@"`,
     "",
   ].join("\n");
-  await writeFileAtomically({
-    target: envFilePath,
-    contents: `${envLines.join("\n")}\n`,
-    mode: 0o600,
-  });
-  await writeFileAtomically({
-    target: wrapperPath,
-    contents: script,
-    mode: 0o700,
-  });
-  await cleanupStaleAgentWrappers({
-    wrappersDir,
-    currentFileNames: new Set([path.basename(wrapperPath), path.basename(envFilePath)]),
-  });
-  return { wrapperPath, envFilePath };
+}
+
+function renderWindowsAgentWrapper(input: {
+  envFilePath: string;
+  childStderrDir: string;
+  agentCommandShell: string;
+}): string {
+  return [
+    "@echo off",
+    "setlocal",
+    `if exist ${quoteCmdPath(input.envFilePath)} call ${quoteCmdPath(input.envFilePath)}`,
+    `set "stderr_dir=${escapeCmdEnvValue(input.childStderrDir)}"`,
+    "if not \"%PAPERCLIP_RUN_ID%\"==\"\" (",
+    "  if not exist \"%stderr_dir%\" mkdir \"%stderr_dir%\"",
+    `  call ${input.agentCommandShell} %* 2>>"%stderr_dir%\\%PAPERCLIP_RUN_ID%.log"`,
+    ") else (",
+    `  call ${input.agentCommandShell} %*`,
+    ")",
+    "exit /b %ERRORLEVEL%",
+    "",
+  ].join("\r\n");
+}
+
+function escapeCmdEnvValue(value: string): string {
+  return value
+    .replace(/\^/g, "^^")
+    .replace(/%/g, "%%")
+    .replace(/"/g, '^"')
+    .replace(/&/g, "^&")
+    .replace(/\|/g, "^|")
+    .replace(/</g, "^<")
+    .replace(/>/g, "^>");
+}
+
+function quoteCmdPath(value: string): string {
+  return `"${value.replace(/"/g, '\\"')}"`;
 }
 
 async function cleanupStaleAgentWrappers(input: { wrappersDir: string; currentFileNames: Set<string> }) {
@@ -895,7 +958,8 @@ async function cleanupStaleAgentWrappers(input: { wrappersDir: string; currentFi
   const now = Date.now();
   await Promise.all(
     wrappers.map(async (name) => {
-      const isManagedWrapperFile = name.endsWith(".sh") || name.endsWith(".env");
+      const isManagedWrapperFile =
+        name.endsWith(".sh") || name.endsWith(".cmd") || name.endsWith(".env") || name.endsWith(".env.cmd");
       if (!isManagedWrapperFile || input.currentFileNames.has(name)) return;
       const wrapperPath = path.join(input.wrappersDir, name);
       const stats = await fs.stat(wrapperPath).catch(() => null);
@@ -1102,6 +1166,7 @@ async function buildRuntime(input: {
         agentCommandShell,
         env,
         childStderrDir,
+        platform: input.engine.platform,
       })
     : null;
   const wrapperPath = wrapper?.wrapperPath ?? null;
