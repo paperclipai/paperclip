@@ -29,6 +29,6 @@ The first rollout intentionally reuses existing secret and project configuration
 - `agent-browser` and Camoufox are installed in the production container.
 - Browser commands have a browser-specific label in live issue activity.
 - `AGENT_BROWSER_ENCRYPTION_KEY` is supplied only through a secret binding.
-- Two projects can use different `PAPERCLIP_BROWSER_SESSION` values without sharing state.
+- Two projects can use different `AGENT_BROWSER_RESTORE` values without sharing state.
 - Challenge detection and fallback behavior are explained in the bundled runtime skill.
 - Browser state and credentials do not appear in issue comments, command text, or persisted run logs.

@@ -73,6 +73,7 @@ import type {
 import { secretService } from "../services/secrets.js";
 import { mcpOauthService } from "../services/mcp-oauth.js";
 import { sanitizeMcpServersForResponse } from "../services/mcp-sanitize.js";
+import { pipeBrowserStreamToSse } from "../services/browser-stream.js";
 import {
   companyMcpServerService,
   writeAgentMcpServerRefs,
@@ -4405,6 +4406,17 @@ export function agentRoutes(
       }, currentUserRedactionOptions),
     );
     res.json(redactedEvents);
+  });
+
+  router.get("/heartbeat-runs/:runId/browser-stream", async (req, res) => {
+    const runId = req.params.runId as string;
+    const run = await heartbeat.getRun(runId);
+    if (!run) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, run.companyId);
+    pipeBrowserStreamToSse(runId, res);
   });
 
   router.get("/heartbeat-runs/:runId/log", async (req, res) => {

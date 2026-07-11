@@ -44,6 +44,7 @@ import type {
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
+import { LiveBrowserPreview } from "./LiveBrowserPreview";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
 import {
   buildIssueChatMessages,
@@ -4389,6 +4390,10 @@ export function IssueChatThread({
     }
     return ids;
   }, [displayLiveRuns]);
+  const browserPreviewRun = useMemo(
+    () => [...displayLiveRuns].reverse().find((run) => run.status === "running") ?? null,
+    [displayLiveRuns],
+  );
   const clearLatestSettleTimeouts = useCallback(() => {
     for (const timeout of latestSettleTimeoutsRef.current) {
       window.clearTimeout(timeout);
@@ -4938,6 +4943,9 @@ export function IssueChatThread({
     <AssistantRuntimeProvider runtime={runtime}>
       <IssueChatCtx.Provider value={chatCtx}>
       <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
+        {browserPreviewRun ? (
+          <LiveBrowserPreview runId={browserPreviewRun.id} agentName={browserPreviewRun.agentName} />
+        ) : null}
         {resolvedShowJumpToLatest ? (
           <div className="flex justify-end">
             <button

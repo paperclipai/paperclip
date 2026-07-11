@@ -1123,7 +1123,19 @@ export function buildInvocationEnvForLogs(
   return redactEnvForLogs(merged);
 }
 
-export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+export function browserStreamPortForRun(runId: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < runId.length; index += 1) {
+    hash ^= runId.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return 20_000 + ((hash >>> 0) % 20_000);
+}
+
+export function buildPaperclipEnv(
+  agent: { id: string; companyId: string },
+  runId?: string,
+): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -1134,6 +1146,13 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     PAPERCLIP_AGENT_ID: agent.id,
     PAPERCLIP_COMPANY_ID: agent.companyId,
   };
+  if (runId) {
+    vars.PAPERCLIP_RUN_ID = runId;
+    vars.AGENT_BROWSER_SESSION = `paperclip-${runId}`;
+    vars.AGENT_BROWSER_NAMESPACE = `paperclip-${runId}`;
+    vars.AGENT_BROWSER_RESTORE = `paperclip-${agent.companyId}-${agent.id}`;
+    vars.AGENT_BROWSER_STREAM_PORT = String(browserStreamPortForRun(runId));
+  }
   const runtimeHost = resolveHostForUrl(
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );

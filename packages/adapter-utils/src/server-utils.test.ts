@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
+  browserStreamPortForRun,
+  buildPaperclipEnv,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   materializePaperclipSkillCopy,
@@ -18,6 +20,20 @@ import {
   rewriteWorkspaceCwdEnvVarsForExecution,
   stringifyPaperclipWakePayload,
 } from "./server-utils.js";
+
+describe("managed browser run environment", () => {
+  it("assigns a stable valid stream port and isolated live session", () => {
+    const runId = "019f5355-a62e-7000-8000-123456789abc";
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" }, runId);
+
+    expect(browserStreamPortForRun(runId)).toBe(browserStreamPortForRun(runId));
+    expect(Number(env.AGENT_BROWSER_STREAM_PORT)).toBeGreaterThanOrEqual(20_000);
+    expect(Number(env.AGENT_BROWSER_STREAM_PORT)).toBeLessThan(40_000);
+    expect(env.AGENT_BROWSER_SESSION).toBe(`paperclip-${runId}`);
+    expect(env.AGENT_BROWSER_NAMESPACE).toBe(`paperclip-${runId}`);
+    expect(env.AGENT_BROWSER_RESTORE).toBe("paperclip-company-1-agent-1");
+  });
+});
 
 function isPidAlive(pid: number) {
   try {

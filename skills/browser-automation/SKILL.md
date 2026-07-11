@@ -7,7 +7,7 @@ metadata:
 
 # Managed browser automation
 
-Use this skill for browser navigation, form interaction, authenticated web workflows, screenshots, and browser-based verification.
+Use this skill for browser navigation, form interaction, authenticated web workflows, screenshots, and browser-based verification. Paperclip automatically assigns each run an isolated agent-browser session and live-stream port; use the inherited defaults so the board can watch the viewport inside the active issue.
 
 ## Provider policy
 
@@ -21,10 +21,10 @@ Use this skill for browser navigation, form interaction, authenticated web workf
 Prefer small observable calls:
 
 ```sh
-agent-browser --session "$PAPERCLIP_BROWSER_SESSION" --restore open https://example.com
-agent-browser --session "$PAPERCLIP_BROWSER_SESSION" snapshot -i
-agent-browser --session "$PAPERCLIP_BROWSER_SESSION" click @e2
-agent-browser --session "$PAPERCLIP_BROWSER_SESSION" screenshot --annotate
+agent-browser --restore open https://example.com
+agent-browser --restore snapshot -i
+agent-browser --restore click @e2
+agent-browser --restore screenshot --annotate
 ```
 
 Paperclip renders commands containing `agent-browser` or `camoufox` as browser activity inside the live run segment attached to the issue. Do not hide a long browser journey inside one opaque shell script.
@@ -36,18 +36,18 @@ Paperclip company secrets are the source of truth for credentials. Bind them to 
 Recommended bindings:
 
 - `AGENT_BROWSER_ENCRYPTION_KEY`: required 64-character hex key stored as a company secret. This encrypts saved session state with AES-256-GCM.
-- `PAPERCLIP_BROWSER_SESSION`: stable non-secret session name. Use a company-wide value for shared company state, or set a project-specific value in Project settings to isolate that project's login state.
+- `AGENT_BROWSER_RESTORE`: stable non-secret persistence key. Paperclip defaults this per company and agent; set a project-specific value in Project settings when a project needs an isolated login state.
 - Site credentials: store each username, password, token, or proxy credential as a company secret and bind only to the agent/project that needs it. Never place values in commands, comments, screenshots, or logs.
 
-If `PAPERCLIP_BROWSER_SESSION` is absent, derive a stable non-secret scope without printing credentials:
+Paperclip automatically isolates the live daemon session per run. If a runtime does not provide a restore key, derive a stable non-secret persistence scope without printing credentials:
 
 ```sh
-export PAPERCLIP_BROWSER_SESSION="pc-${PAPERCLIP_COMPANY_ID}-${PAPERCLIP_AGENT_ID}"
+export AGENT_BROWSER_RESTORE="pc-${PAPERCLIP_COMPANY_ID}-${PAPERCLIP_AGENT_ID}"
 ```
 
 Use `--restore` on every `agent-browser` call. Close the session when the workflow is complete so state is flushed. Saved state remains encrypted at rest when `AGENT_BROWSER_ENCRYPTION_KEY` is bound.
 
-For project isolation, add `PAPERCLIP_BROWSER_SESSION=pc-<company>-<project>-<purpose>` in the project's environment configuration. For a company-shared login, bind the same session name and encryption key to the selected agents. Do not share a profile across companies.
+For project isolation, add `AGENT_BROWSER_RESTORE=pc-<company>-<project>-<purpose>` in the project's environment configuration. For a company-shared login, bind the same restore key and encryption key to the selected agents. Do not override `AGENT_BROWSER_STREAM_PORT` or `AGENT_BROWSER_NAMESPACE`; Paperclip owns those live-viewer values.
 
 ## Login
 
