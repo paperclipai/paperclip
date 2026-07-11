@@ -10,6 +10,24 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 
+type BarcodeDetectorLike = new (input: { formats: string[] }) => {
+  detect(source: ImageBitmap): Promise<Array<{ rawValue: string }>>;
+};
+
+async function readAuthenticatorQr(file: File) {
+  const Detector = (globalThis as typeof globalThis & { BarcodeDetector?: BarcodeDetectorLike }).BarcodeDetector;
+  if (!Detector) throw new Error("QR screenshot scanning is not supported by this browser. Paste the setup key instead.");
+  const bitmap = await createImageBitmap(file);
+  try {
+    const results = await new Detector({ formats: ["qr_code"] }).detect(bitmap);
+    const value = results[0]?.rawValue?.trim();
+    if (!value?.startsWith("otpauth://")) throw new Error("No TOTP authenticator QR code was found in that image.");
+    return value;
+  } finally {
+    bitmap.close();
+  }
+}
+
 export function CompanyAuthenticators() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -48,6 +66,22 @@ export function CompanyAuthenticators() {
     <section className="space-y-4 rounded-lg border border-border p-4">
       <div><h2 className="font-medium">Add authenticator</h2><p className="text-xs text-muted-foreground">Paste a Base32 setup key or an otpauth:// URI. The seed is encrypted after saving.</p></div>
       <div className="grid gap-3 md:grid-cols-2"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Google Workspace — Chrysler" /><Input value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="Setup key or otpauth:// URI" type="password" /></div>
+      <label className="block rounded-md border border-dashed border-border p-3 text-sm text-muted-foreground">
+        <span className="font-medium text-foreground">Import QR screenshot</span>
+        <span className="ml-2">PNG, JPEG, or WebP</span>
+        <input className="mt-2 block w-full text-xs" type="file" accept="image/png,image/jpeg,image/webp" onChange={async (event) => {
+          const file = event.target.files?.[0];
+          if (!file) return;
+          try {
+            setSecret(await readAuthenticatorQr(file));
+            pushToast({ title: "Authenticator QR recognized", tone: "success" });
+          } catch (error) {
+            pushToast({ title: "Could not read QR screenshot", body: error instanceof Error ? error.message : "Unknown error", tone: "error" });
+          } finally {
+            event.target.value = "";
+          }
+        }} />
+      </label>
       <div className="grid gap-2 md:grid-cols-2">{(agents.data ?? []).map((agent) => <label key={agent.id} className="flex items-center gap-2 rounded-md border p-2 text-sm"><Checkbox checked={agentIds.has(agent.id)} onCheckedChange={(checked) => setAgentIds((current) => { const next = new Set(current); if (checked) next.add(agent.id); else next.delete(agent.id); return next; })} /><span>{agent.name}</span><span className="ml-auto text-xs text-muted-foreground">{agent.role}</span></label>)}</div>
       <Button onClick={() => create.mutate()} disabled={!name.trim() || !secret.trim() || create.isPending}>{create.isPending ? "Saving…" : "Save authenticator"}</Button>
     </section>
