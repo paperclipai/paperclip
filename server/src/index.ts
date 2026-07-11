@@ -880,11 +880,18 @@ export async function startServer(): Promise<StartedServer> {
           }
         }
 
-        const finalized = await heartbeat.reconcileTerminalRunWorkspaceFinalizes("startup_sweep");
-        if (finalized.created > 0) {
-          logger.warn(
-            { ...finalized },
-            "startup terminal-run workspace-finalize reconciliation released stuck barriers",
+        try {
+          const finalized = await heartbeat.reconcileTerminalRunWorkspaceFinalizes("startup_sweep");
+          if (finalized.created > 0) {
+            logger.warn(
+              { ...finalized },
+              "startup terminal-run workspace-finalize reconciliation released stuck barriers",
+            );
+          }
+        } catch (err) {
+          logger.error(
+            { err },
+            "startup terminal-run workspace-finalize reconciliation failed",
           );
         }
 
@@ -1004,11 +1011,18 @@ export async function startServer(): Promise<StartedServer> {
         trackHeartbeatSchedulerWork(heartbeat
           .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
           .then(async () => {
-            const finalized = await heartbeat.reconcileTerminalRunWorkspaceFinalizes("interval_sweep");
-            if (finalized.created > 0) {
-              logger.warn(
-                { ...finalized },
-                "periodic terminal-run workspace-finalize reconciliation released stuck barriers",
+            try {
+              const finalized = await heartbeat.reconcileTerminalRunWorkspaceFinalizes("interval_sweep");
+              if (finalized.created > 0) {
+                logger.warn(
+                  { ...finalized },
+                  "periodic terminal-run workspace-finalize reconciliation released stuck barriers",
+                );
+              }
+            } catch (err) {
+              logger.error(
+                { err },
+                "periodic terminal-run workspace-finalize reconciliation failed",
               );
             }
           })
