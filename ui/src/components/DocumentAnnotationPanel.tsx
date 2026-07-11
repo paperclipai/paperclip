@@ -26,7 +26,7 @@ import { cn, relativeTime } from "@/lib/utils";
 import { documentAnnotationsApi, type DocumentAnnotationTarget } from "@/api/document-annotations";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
-import { hasActiveNativeSelection, isCoarsePointerDevice } from "@/lib/document-annotation-selection";
+import { isCoarsePointerDevice } from "@/lib/document-annotation-selection";
 import { AgentIcon } from "./AgentIconPicker";
 import { deriveInitials } from "./Identity";
 import { MarkdownBody } from "./MarkdownBody";
@@ -312,7 +312,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
 
   useEffect(() => {
     if (!props.pendingAnchor || !props.open || props.isMobile) return;
-    if (isCoarsePointerDevice() || hasActiveNativeSelection()) return;
+    if (isCoarsePointerDevice()) return;
     composerRef.current?.focus();
   }, [props.isMobile, props.open, props.pendingAnchor]);
 

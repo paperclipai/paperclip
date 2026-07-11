@@ -23,10 +23,11 @@ export function isCoarsePointerDevice(targetWindow: Window = window): boolean {
   const navigatorWithLegacyTouchPoints = targetWindow.navigator as Navigator & {
     msMaxTouchPoints?: number;
   };
-  if ((navigatorWithLegacyTouchPoints.maxTouchPoints ?? 0) > 0) return true;
-  if ((navigatorWithLegacyTouchPoints.msMaxTouchPoints ?? 0) > 0) return true;
-  return typeof targetWindow.matchMedia === "function"
-    && targetWindow.matchMedia("(pointer: coarse)").matches;
+  if (typeof targetWindow.matchMedia === "function") {
+    return targetWindow.matchMedia("(pointer: coarse)").matches;
+  }
+  return (navigatorWithLegacyTouchPoints.maxTouchPoints ?? 0) > 0
+    || (navigatorWithLegacyTouchPoints.msMaxTouchPoints ?? 0) > 0;
 }
 
 export function hasActiveNativeSelection(targetWindow: Window = window): boolean {
