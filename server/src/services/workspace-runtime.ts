@@ -3548,11 +3548,13 @@ async function waitForReadiness(input: {
   serviceName?: string | null;
   command?: string | null;
   url: string | null;
+  readinessUrl: string | null;
 }) {
   const readiness = parseObject(input.service.readiness);
   const readinessType = asString(readiness.type, "");
-  if (readinessType !== "http" || !input.url) return;
-  const readinessUrl = resolveRuntimeServiceHealthUrl(input.url, {
+  const readinessTargetUrl = input.readinessUrl ?? input.url;
+  if (readinessType !== "http" || !readinessTargetUrl) return;
+  const readinessUrl = resolveRuntimeServiceHealthUrl(readinessTargetUrl, {
     serviceName: input.serviceName,
     command: input.command,
   });
@@ -3912,6 +3914,8 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     asString(expose.urlTemplate, "") ||
     asString(readiness.urlTemplate, "");
   const url = urlTemplate ? renderTemplate(urlTemplate, templateData) : null;
+  const readinessUrlTemplate = asString(readiness.urlTemplate, "");
+  const readinessUrl = readinessUrlTemplate ? renderTemplate(readinessUrlTemplate, templateData) : null;
   const stopPolicy = parseObject(input.service.stopPolicy);
   const serviceKey = createLocalServiceKey({
     profileKind: "workspace-runtime",
@@ -4090,7 +4094,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   }
 
   const readinessPromise = Promise.race([
-    waitForReadiness({ service: input.service, serviceName, command, url }),
+    waitForReadiness({ service: input.service, serviceName, command, url, readinessUrl }),
     spawnErrorPromise,
   ]).then(async () => {
     record.status = "running";

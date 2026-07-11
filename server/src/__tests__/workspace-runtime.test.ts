@@ -3352,6 +3352,59 @@ describe("ensureRuntimeServicesForRun", () => {
     }
   });
 
+  it("uses explicit readiness URL when exposed URL is not the local probe address", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-explicit-readiness-"));
+    const workspace = buildWorkspace(workspaceRoot);
+    const runId = "run-paperclip-explicit-readiness";
+    const serviceCommand =
+      "node -e \"const http=require('node:http'); http.createServer((req,res)=>{ if (req.url==='/api/health') { res.end('ok'); return; } res.statusCode=404; res.end('not found'); }).listen(Number(process.env.PORT), '127.0.0.1')\"";
+
+    try {
+      const services = await ensureRuntimeServicesForRun({
+        runId,
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+        issue: null,
+        workspace,
+        config: {
+          workspaceRuntime: {
+            services: [
+              {
+                name: "paperclip-dev",
+                command: serviceCommand,
+                cwd: ".",
+                port: { type: "auto" },
+                readiness: {
+                  type: "http",
+                  urlTemplate: "http://127.0.0.1:{{port}}/api/health",
+                  timeoutSec: 3,
+                  intervalMs: 100,
+                },
+                expose: {
+                  type: "url",
+                  urlTemplate: "http://not-a-real-paperclip-host.invalid:{{port}}",
+                },
+                lifecycle: "shared",
+                stopPolicy: {
+                  type: "manual",
+                },
+              },
+            ],
+          },
+        },
+        adapterEnv: {},
+      });
+
+      expect(services).toHaveLength(1);
+      expect(services[0]?.url).toMatch(/^http:\/\/not-a-real-paperclip-host\.invalid:\d+$/);
+    } finally {
+      await releaseRuntimeServicesForRun(runId);
+    }
+  });
+
   it("reuses shared runtime services across runs and starts a new service after release", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-workspace-"));
     const workspace = buildWorkspace(workspaceRoot);
