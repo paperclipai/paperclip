@@ -5,6 +5,7 @@ import {
   isClaudeCorruptionError,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
+  isClaudeWeeklyQuotaExhausted,
 } from "./parse.js";
 
 const incidentFixture = fs.readFileSync(
@@ -258,5 +259,39 @@ describe("extractClaudeRetryNotBefore", () => {
     );
     // 10:20am CDT = 15:20 UTC; current time 16:00 UTC already passed → rolls to next day
     expect(extracted?.toISOString()).toBe("2026-06-24T15:20:00.000Z");
+  });
+});
+
+describe("isClaudeWeeklyQuotaExhausted", () => {
+  it("returns true for 'weekly limit reached' in errorMessage", () => {
+    expect(isClaudeWeeklyQuotaExhausted({ errorMessage: "weekly limit reached. Try again next week." })).toBe(true);
+  });
+
+  it("returns true for 'hit your weekly' pattern", () => {
+    expect(isClaudeWeeklyQuotaExhausted({ errorMessage: "You have hit your weekly usage limit." })).toBe(true);
+  });
+
+  it("returns true for 'hit your weekly' without 'your'", () => {
+    expect(isClaudeWeeklyQuotaExhausted({ errorMessage: "You have hit weekly limit." })).toBe(true);
+  });
+
+  it("returns true when matched in stdout", () => {
+    expect(isClaudeWeeklyQuotaExhausted({ stdout: "Error: weekly limit reached" })).toBe(true);
+  });
+
+  it("returns false for rate-limit (429) which is not weekly exhaustion", () => {
+    expect(isClaudeWeeklyQuotaExhausted({ errorMessage: "rate limit exceeded (429)" })).toBe(false);
+  });
+
+  it("returns false for 5-hour usage limit", () => {
+    expect(isClaudeWeeklyQuotaExhausted({ errorMessage: "5-hour limit reached. Try again later." })).toBe(false);
+  });
+
+  it("returns false for overloaded server errors", () => {
+    expect(isClaudeWeeklyQuotaExhausted({ errorMessage: "claude is overloaded, try again" })).toBe(false);
+  });
+
+  it("returns false when input is empty", () => {
+    expect(isClaudeWeeklyQuotaExhausted({})).toBe(false);
   });
 });
