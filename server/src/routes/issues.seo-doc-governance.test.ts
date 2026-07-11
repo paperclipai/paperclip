@@ -25,10 +25,18 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockIssueReferenceService = vi.hoisted(() => ({
+  listIssueReferenceSummary: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  companySearchService: () => ({}),
+  companySkillService: () => ({}),
+  companyService: () => ({}),
   documentService: () => mockDocumentsService,
+  documentAnnotationService: () => ({}),
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({}),
   goalService: () => ({}),
@@ -38,7 +46,10 @@ vi.mock("../services/index.js", () => ({
     getGeneral: vi.fn(async () => ({ feedbackDataSharingPreference: "prompt" })),
   }),
   issueApprovalService: () => ({}),
+  issueRecoveryActionService: () => ({}),
+  issueReferenceService: () => mockIssueReferenceService,
   issueService: () => mockIssueService,
+  issueThreadInteractionService: () => ({}),
   logActivity: vi.fn(async () => undefined),
   projectService: () => ({}),
   routineService: () => ({ syncRunStatusForIssue: vi.fn(async () => undefined) }),
@@ -74,6 +85,13 @@ function createApp() {
 describe("issues route seo governance validation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIssueReferenceService.listIssueReferenceSummary.mockResolvedValue({
+      directReferencedIssues: [],
+      transitiveReferencedIssues: [],
+      documentSourceCount: 0,
+      commentSourceCount: 0,
+      lastComputedAt: null,
+    });
     mockIssueService.getById.mockResolvedValue({
       id: issueId,
       companyId,
@@ -102,6 +120,7 @@ describe("issues route seo governance validation", () => {
     expect(res.status).toBe(422);
     expect(res.body).toEqual({
       error: "Invalid seo_governance metadata",
+      code: "missing_update_cadence",
       details: {
         code: "missing_update_cadence",
         fields: [{ field: "seo_governance.update_cadence", message: "update_cadence is required" }],
