@@ -114,7 +114,7 @@ export function Browsers() {
 
   const { data: runs = [], isLoading } = useQuery({
     queryKey: [...queryKeys.liveRuns(selectedCompanyId!), "browser-workspace"],
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!, { minCount: 20, limit: 20 }),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!, { minCount: 50, limit: 50, browserOnly: true }),
     enabled: !!selectedCompanyId,
     refetchInterval: 3_000,
   });

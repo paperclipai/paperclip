@@ -37,6 +37,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
+import { logger } from "../middleware/logger.js";
 import {
   agentService,
   agentInstructionsService,
@@ -73,7 +74,7 @@ import type {
 import { secretService } from "../services/secrets.js";
 import { mcpOauthService } from "../services/mcp-oauth.js";
 import { sanitizeMcpServersForResponse } from "../services/mcp-sanitize.js";
-import { hasRecentBrowserActivity, pipeBrowserStreamToSse } from "../services/browser-stream.js";
+import { pipeBrowserStreamToSse } from "../services/browser-stream.js";
 import {
   companyMcpServerService,
   writeAgentMcpServerRefs,
@@ -4292,6 +4293,7 @@ export function agentRoutes(
           and(
             eq(heartbeatRuns.companyId, companyId),
             not(inArray(heartbeatRuns.status, ["queued", "running"])),
+            ...(browserOnly ? [sql<boolean>`${heartbeatRuns.contextSnapshot} ? 'browserActivityAt'`] : []),
             ...(activeIds.length > 0 ? [not(inArray(heartbeatRuns.id, activeIds))] : []),
           ),
         )
@@ -4299,20 +4301,14 @@ export function agentRoutes(
         .limit(targetRunCount - liveRuns.length);
 
       const rows = [...liveRuns, ...recentRuns];
-      const visibleRows = browserOnly
-        ? rows.filter((run) => ["queued", "running"].includes(run.status) || hasRecentBrowserActivity(run.id))
-        : rows;
-      res.json(await Promise.all(visibleRows.map(async (run) => ({
+      res.json(await Promise.all(rows.map(async (run) => ({
         ...run,
         outputSilence: await heartbeat.buildRunOutputSilence(run),
       }))));
       return;
     }
 
-    const visibleLiveRuns = browserOnly
-      ? liveRuns.filter((run) => ["queued", "running"].includes(run.status) || hasRecentBrowserActivity(run.id))
-      : liveRuns;
-    res.json(await Promise.all(visibleLiveRuns.map(async (run) => ({
+    res.json(await Promise.all(liveRuns.map(async (run) => ({
       ...run,
       outputSilence: await heartbeat.buildRunOutputSilence(run),
     }))));
@@ -4428,7 +4424,19 @@ export function agentRoutes(
       return;
     }
     assertCompanyAccess(req, run.companyId);
-    pipeBrowserStreamToSse(runId, res);
+    pipeBrowserStreamToSse(runId, res, {
+      onFirstFrame: () => {
+        void db
+          .update(heartbeatRuns)
+          .set({
+            contextSnapshot: sql`jsonb_set(coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb), '{browserActivityAt}', to_jsonb(now()::text), true)`,
+          })
+          .where(eq(heartbeatRuns.id, runId))
+          .catch((error) => {
+            logger.warn({ err: error, runId }, "failed to persist browser activity marker");
+          });
+      },
+    });
   });
 
   router.get("/heartbeat-runs/:runId/log", async (req, res) => {
