@@ -188,6 +188,7 @@ function buildContext(root: string, overrides: Partial<AdapterExecutionContext> 
       id: "agent-1",
       companyId: "company-1",
       name: "Gemini ACP",
+      role: null,
       adapterType: "gemini_local",
       adapterConfig: {},
     },
