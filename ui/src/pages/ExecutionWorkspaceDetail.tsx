@@ -58,6 +58,13 @@ type WorkspaceFormState = {
   workspaceRuntime: string;
 };
 
+type ConfiguredRuntimeServicePort = {
+  collection: "commands" | "services";
+  index: number;
+  name: string;
+  port: number | null;
+};
+
 type ExecutionWorkspaceBaseTab = "services" | "configuration" | "runtime_logs" | "issues" | "routines";
 type ExecutionWorkspacePluginTab = `plugin:${string}`;
 type ExecutionWorkspaceTab = ExecutionWorkspaceBaseTab | ExecutionWorkspacePluginTab;
@@ -164,6 +171,75 @@ function parseWorkspaceRuntimeJson(value: string) {
   }
 }
 
+export function readConfiguredRuntimeServicePorts(runtimeConfig: Record<string, unknown> | null) {
+  if (!runtimeConfig) return [] as ConfiguredRuntimeServicePort[];
+
+  const entries: ConfiguredRuntimeServicePort[] = [];
+  const addServices = (collection: ConfiguredRuntimeServicePort["collection"], services: unknown, commandsRequireServiceKind: boolean) => {
+    if (!Array.isArray(services)) return;
+    services.forEach((service, index) => {
+      if (!service || typeof service !== "object" || Array.isArray(service)) return;
+      const config = service as Record<string, unknown>;
+      if (commandsRequireServiceKind && config.kind !== "service") return;
+      const portConfig = config.port;
+      const portValue =
+        typeof portConfig === "number"
+          ? portConfig
+          : portConfig && typeof portConfig === "object" && !Array.isArray(portConfig)
+            ? (portConfig as Record<string, unknown>).value
+            : null;
+      entries.push({
+        collection,
+        index,
+        name: typeof config.name === "string" && config.name.trim() ? config.name : `Service ${index + 1}`,
+        port: typeof portValue === "number" && Number.isInteger(portValue) && portValue > 0 ? portValue : null,
+      });
+    });
+  };
+
+  addServices("commands", runtimeConfig.commands, true);
+  addServices("services", runtimeConfig.services, false);
+  return entries;
+}
+
+export function updateConfiguredRuntimeServicePort(input: {
+  runtimeConfig: Record<string, unknown>;
+  service: ConfiguredRuntimeServicePort;
+  port: string;
+}) {
+  const runtimeConfig = structuredClone(input.runtimeConfig);
+  const entries = runtimeConfig[input.service.collection];
+  if (!Array.isArray(entries)) return runtimeConfig;
+  const entry = entries[input.service.index];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return runtimeConfig;
+
+  const trimmedPort = input.port.trim();
+  if (!trimmedPort) {
+    delete (entry as Record<string, unknown>).port;
+    return runtimeConfig;
+  }
+  const port = Number(trimmedPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return runtimeConfig;
+  (entry as Record<string, unknown>).port = { type: "fixed", value: port };
+  return runtimeConfig;
+}
+
+export function getConfiguredRuntimeServicePortWarnings(services: ConfiguredRuntimeServicePort[]) {
+  const servicesByPort = new Map<number, ConfiguredRuntimeServicePort[]>();
+  for (const service of services) {
+    if (!service.port) continue;
+    const servicesForPort = servicesByPort.get(service.port) ?? [];
+    servicesForPort.push(service);
+    servicesByPort.set(service.port, servicesForPort);
+  }
+
+  return Array.from(servicesByPort.entries())
+    .filter(([, servicesForPort]) => servicesForPort.length > 1)
+    .map(([port, servicesForPort]) =>
+      `Port ${port} is assigned to multiple services: ${servicesForPort.map((service) => service.name).join(", ")}.`,
+    );
+}
+
 function formStateFromWorkspace(workspace: ExecutionWorkspace): WorkspaceFormState {
   return {
     name: workspace.name,
@@ -235,6 +311,10 @@ function validateForm(form: WorkspaceFormState) {
     if (!runtimeJson.ok) {
       return runtimeJson.error;
     }
+    const invalidPort = readConfiguredRuntimeServicePorts(runtimeJson.value).find(
+      (service) => service.port !== null && (service.port < 1 || service.port > 65535),
+    );
+    if (invalidPort) return `${invalidPort.name} has an invalid fixed port.`;
   }
 
   return null;
@@ -676,7 +756,21 @@ export function ExecutionWorkspaceDetail() {
       ? "execution_workspace"
       : inheritedRuntimeConfig
         ? "project_workspace"
-        : "none";
+      : "none";
+
+  const configuredRuntimeConfig = useMemo(() => {
+    if (!form || form.inheritRuntime) return inheritedRuntimeConfig;
+    const parsed = parseWorkspaceRuntimeJson(form.workspaceRuntime);
+    return parsed.ok ? parsed.value : null;
+  }, [form, inheritedRuntimeConfig]);
+  const configuredRuntimeServicePorts = useMemo(
+    () => readConfiguredRuntimeServicePorts(configuredRuntimeConfig),
+    [configuredRuntimeConfig],
+  );
+  const configuredRuntimeServicePortWarnings = useMemo(
+    () => getConfiguredRuntimeServicePortWarnings(configuredRuntimeServicePorts),
+    [configuredRuntimeServicePorts],
+  );
 
   const initialState = useMemo(() => (workspace ? formStateFromWorkspace(workspace) : null), [workspace]);
   const isDirty = Boolean(form && initialState && JSON.stringify(form) !== JSON.stringify(initialState));
@@ -1064,6 +1158,56 @@ export function ExecutionWorkspaceDetail() {
                       </Field>
                     </div>
                   </details>
+
+                  {configuredRuntimeServicePorts.length > 0 ? (
+                    <div className="space-y-3 rounded-md border border-border bg-muted/20 p-4">
+                      <div>
+                        <div className="text-sm font-medium">Service ports</div>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          Set a fixed port for a service or leave it blank to use its configured automatic behavior. Editing an inherited service creates an execution-workspace runtime override.
+                        </p>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {configuredRuntimeServicePorts.map((service) => (
+                          <Field key={`${service.collection}-${service.index}`} label={service.name} hint="Fixed port">
+                            <Input
+                              type="number"
+                              min="1"
+                              max="65535"
+                              inputMode="numeric"
+                              value={service.port ?? ""}
+                              onChange={(event) => {
+                                setForm((current) => {
+                                  if (!current) return current;
+                                  const parsed = current.inheritRuntime
+                                    ? { ok: true as const, value: inheritedRuntimeConfig }
+                                    : parseWorkspaceRuntimeJson(current.workspaceRuntime);
+                                  if (!parsed.ok || !parsed.value) return current;
+                                  return {
+                                    ...current,
+                                    inheritRuntime: false,
+                                    workspaceRuntime: formatJson(updateConfiguredRuntimeServicePort({
+                                      runtimeConfig: parsed.value,
+                                      service,
+                                      port: event.target.value,
+                                    })),
+                                  };
+                                });
+                              }}
+                            />
+                          </Field>
+                        ))}
+                      </div>
+                      {configuredRuntimeServicePortWarnings.length > 0 ? (
+                        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                          {configuredRuntimeServicePortWarnings.map((warning) => <p key={warning}>{warning}</p>)}
+                        </div>
+                      ) : null}
+                      <p className="text-sm text-muted-foreground">
+                        Paperclip checks fixed ports again when a service starts and rejects cross-workspace conflicts.
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
