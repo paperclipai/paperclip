@@ -105,6 +105,17 @@ export const SOURCE_SCOPED_RECOVERY_MAX_ATTEMPTS = Math.max(
   Number(process.env.SOURCE_SCOPED_RECOVERY_MAX_ATTEMPTS) || 10,
 );
 
+// SPC-21314: tighter cap specifically for `successful_run_missing_state`
+// recoveries. The flap on SPC-21292 (2026-07-11) burned ~1 wake/min for 17+
+// minutes when an owner PATCHed `in_progress` on every recovery wake without
+// recording a valid disposition. Cap re-escalation at 3 attempts so
+// `reconcileStrandedAssignedIssues` surfaces the loop for intervention
+// instead of enqueuing another wake.
+export const SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS = Math.max(
+  1,
+  Number(process.env.SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS) || 3,
+);
+
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -2328,12 +2339,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const now = new Date();
 
     // For routine execution instances, set a 24-hour timeout and maxAttempts=1.
+    // For SUCCESSFUL_RUN_MISSING_STATE_REASON, apply the tighter SPC-21314 cap
+    // (default 3) — the flap pattern for that cause loops fast on owners who
+    // PATCH in_progress without recording a disposition.
     // For all other origins, apply the SOURCE_SCOPED_RECOVERY_MAX_ATTEMPTS
     // env-cap (SPC-21224) so a runaway loop is bounded even if a future
     // reconciler-skip regression slips past the child-awareness check.
     const isRoutineExecution = input.issue.originKind === "routine_execution";
     const timeoutAt = isRoutineExecution ? new Date(now.getTime() + 24 * 60 * 60 * 1000) : null;
-    const maxAttempts = isRoutineExecution ? 1 : SOURCE_SCOPED_RECOVERY_MAX_ATTEMPTS;
+    const maxAttempts = isRoutineExecution
+      ? 1
+      : recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+        ? SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS
+        : SOURCE_SCOPED_RECOVERY_MAX_ATTEMPTS;
 
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
@@ -2965,6 +2983,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
       if (handoffEvidence) {
         if (!handoffEvidence.exhausted) {
+          result.skipped += 1;
+          continue;
+        }
+
+        // SPC-21314: if a same-cause active recovery action already exists and
+        // has been retried at least SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS
+        // times, stop re-escalating. Escalating again just enqueues another
+        // `source_scoped_recovery_action` wake to an owner who has already
+        // failed to record a disposition — this is the SPC-21292 flap.
+        const existingActiveAction = await recoveryActionsSvc.getActiveForIssue(
+          issue.companyId,
+          issue.id,
+        );
+        if (
+          existingActiveAction &&
+          existingActiveAction.cause === SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+          existingActiveAction.attemptCount >= SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS
+        ) {
+          logger.warn(
+            {
+              issueId: issue.id,
+              recoveryActionId: existingActiveAction.id,
+              attemptCount: existingActiveAction.attemptCount,
+              maxAttempts: SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
+            },
+            "recovery.stranded.repeated_missing_disposition — skipping re-escalation",
+          );
           result.skipped += 1;
           continue;
         }

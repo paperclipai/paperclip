@@ -2044,6 +2044,158 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  // SPC-21314: reconciler must stop re-escalating when a same-cause active
+  // recovery action for successful_run_missing_state has already been retried
+  // beyond SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS (default 3). Prior to the
+  // fix this loop burned ~1 wake/min for 17+ min on SPC-21292.
+  it("stops re-escalating an exhausted successful handoff once the same-cause recovery action hits the attempt cap", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    const sourceRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId,
+          resumeFromRunId: sourceRunId,
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const existingActionId = randomUUID();
+    await db.insert(issueRecoveryActions).values({
+      id: existingActionId,
+      companyId,
+      sourceIssueId: issueId,
+      recoveryIssueId: null,
+      kind: "missing_disposition",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      fingerprint: `source_scoped_recovery:${companyId}:${issueId}:${SUCCESSFUL_RUN_MISSING_STATE_REASON}`,
+      evidence: { sourceRunId, missingDisposition: "clear_next_step" },
+      nextAction: "Choose and record a valid issue disposition without copying transcript content.",
+      wakePolicy: { type: "wake_owner", reason: "source_scoped_recovery_action", ownerAgentId: agentId },
+      attemptCount: 3,
+      maxAttempts: 3,
+    });
+
+    const wakeCountBefore = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows.filter((row) => row.reason === "source_scoped_recovery_action").length);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.successfulRunHandoffEscalated).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(result.issueIds).not.toContain(issueId);
+
+    const [reloadedIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(reloadedIssue?.status).toBe("in_progress");
+    expect(reloadedIssue?.assigneeAgentId).toBe(agentId);
+
+    const [reloadedAction] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, existingActionId));
+    expect(reloadedAction?.attemptCount).toBe(3);
+    expect(reloadedAction?.status).toBe("active");
+
+    const wakeCountAfter = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows.filter((row) => row.reason === "source_scoped_recovery_action").length);
+    expect(wakeCountAfter).toBe(wakeCountBefore);
+  });
+
+  // SPC-21314: newly-escalated successful_run_missing_state recovery actions
+  // must be created with the tighter attempt cap so the reconciler gate has
+  // teeth even after a fresh escalation.
+  it("caps maxAttempts on new successful_run_missing_state recovery actions", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    // Seed a first-class blocker so the escalate path can PATCH status=blocked
+    // (SPC-20451 requires ≥1 blockedByIssueIds when transitioning to blocked).
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const blockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "Existing blocker",
+      status: "todo",
+      priority: "medium",
+      issueNumber: 100,
+      identifier: `${issuePrefix}-100`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    const sourceRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId,
+          resumeFromRunId: sourceRunId,
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.successfulRunHandoffEscalated).toBe(1);
+
+    const [recoveryAction] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+        ),
+      );
+    expect(recoveryAction).toMatchObject({
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      kind: "missing_disposition",
+      status: "active",
+      attemptCount: 1,
+      maxAttempts: 3,
+    });
+  });
+
   it("converts a continuation parked for review into a dependency wait on its open sub-tasks", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
