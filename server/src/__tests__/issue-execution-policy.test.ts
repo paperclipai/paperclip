@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import {
+  applyIssueExecutionPolicyTransition,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+  reconcileOrphanedPendingStage,
+} from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -1444,6 +1449,165 @@ describe("issue execution policy transitions", () => {
           monitorExplicitlyUpdated: true,
         }),
       ).toThrow("Monitor bounds are already exhausted");
+    });
+  });
+});
+
+describe("reconcileOrphanedPendingStage (NEO-415 died-run self-heal)", () => {
+  const policy = twoStagePolicy();
+  const approvalStage = policy.stages[1];
+
+  function orphanedApprovalState(): IssueExecutionState {
+    return {
+      status: "pending",
+      currentStageId: approvalStage.id,
+      currentStageIndex: 1,
+      currentStageType: "approval",
+      currentParticipant: { type: "user", agentId: null, userId: ctoUserId },
+      returnAssignee: { type: "agent", agentId: coderAgentId, userId: null },
+      reviewRequest: null,
+      completedStageIds: [policy.stages[0].id],
+      lastDecisionId: null,
+      lastDecisionOutcome: "approved",
+      monitor: null,
+    };
+  }
+
+  it("re-mints the affordance when a died run left the stage pending but the issue drifted", () => {
+    // Terminal recovery reset the issue back to the executor without clearing the pending
+    // approval stage — the classic NEO-269 wedged end-state.
+    const result = reconcileOrphanedPendingStage({
+      issue: {
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+        executionPolicy: policy,
+        executionState: orphanedApprovalState(),
+      },
+      policy,
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.stageId).toBe(approvalStage.id);
+    expect(result!.stageType).toBe("approval");
+    expect(result!.patch.status).toBe("in_review");
+    expect(result!.patch.assigneeUserId).toBe(ctoUserId);
+    expect(result!.patch.assigneeAgentId).toBeNull();
+    expect(result!.patch.executionState).toMatchObject({
+      status: "pending",
+      currentStageType: "approval",
+      currentParticipant: { type: "user", userId: ctoUserId },
+    });
+  });
+
+  it("is a no-op when the affordance is already present (issue in_review + assigned to participant)", () => {
+    const result = reconcileOrphanedPendingStage({
+      issue: {
+        status: "in_review",
+        assigneeAgentId: null,
+        assigneeUserId: ctoUserId,
+        executionPolicy: policy,
+        executionState: orphanedApprovalState(),
+      },
+      policy,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when there is no execution state", () => {
+    expect(
+      reconcileOrphanedPendingStage({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when the execution state is not pending", () => {
+    const result = reconcileOrphanedPendingStage({
+      issue: {
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+        executionPolicy: policy,
+        executionState: { ...orphanedApprovalState(), status: "completed" },
+      },
+      policy,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null for a dead stage (current stage id no longer in the policy)", () => {
+    const result = reconcileOrphanedPendingStage({
+      issue: {
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+        executionPolicy: policy,
+        executionState: { ...orphanedApprovalState(), currentStageId: "dropped-stage-id" },
+      },
+      policy,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when no policy is provided", () => {
+    expect(
+      reconcileOrphanedPendingStage({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: null,
+          executionState: orphanedApprovalState(),
+        },
+        policy: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("heals an orphaned first-stage review handoff back to the reviewer", () => {
+    const reviewStage = policy.stages[0];
+    const result = reconcileOrphanedPendingStage({
+      issue: {
+        status: "todo",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+        executionPolicy: policy,
+        executionState: {
+          status: "pending",
+          currentStageId: reviewStage.id,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: qaAgentId, userId: null },
+          returnAssignee: { type: "agent", agentId: coderAgentId, userId: null },
+          reviewRequest: { instructions: "Please review the migration" },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+          monitor: null,
+        },
+      },
+      policy,
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.patch.status).toBe("in_review");
+    expect(result!.patch.assigneeAgentId).toBe(qaAgentId);
+    expect(result!.patch.executionState).toMatchObject({
+      status: "pending",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: qaAgentId },
+      reviewRequest: { instructions: "Please review the migration" },
     });
   });
 });

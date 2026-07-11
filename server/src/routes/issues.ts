@@ -119,6 +119,7 @@ import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
+  reconcileOrphanedPendingStage,
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
@@ -2552,6 +2553,58 @@ export function issueRoutes(
       details: { name: removed.name, color: removed.color },
     });
     res.json(removed);
+  });
+
+  // Operator self-heal for a died-run orphaned execution stage (NEO-415).
+  // Detects a `pending` review/approval stage whose affordance was never minted (or was
+  // clobbered by terminal recovery) and re-mints it, instead of hand-reconciling the
+  // executionState / editing the policy for each occurrence.
+  router.post("/issues/:id/execution-state/repair", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    assertBoard(req);
+
+    const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+    const reconciliation = reconcileOrphanedPendingStage({ issue, policy });
+    if (!reconciliation) {
+      res.json({ repaired: false, issue });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const updated = await svc.update(id, {
+      ...reconciliation.patch,
+      actorAgentId: actor.agentId ?? null,
+      actorUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+    if (!updated) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId: updated.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.execution_stage_reminted",
+      entityType: "issue",
+      entityId: updated.id,
+      details: {
+        stageId: reconciliation.stageId,
+        stageType: reconciliation.stageType,
+        participant: reconciliation.participant,
+        source: "operator_execution_state_repair",
+      },
+    });
+
+    res.json({ repaired: true, issue: updated });
   });
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
