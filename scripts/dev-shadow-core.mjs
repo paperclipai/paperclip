@@ -126,6 +126,7 @@ export function createDevShadowEnv(options, databaseUrl, baseEnv = process.env) 
     PAPERCLIP_API_URL: `http://127.0.0.1:${options.port}`,
     PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
     PAPERCLIP_SHADOW_DEV_SOURCE_API: sourceApi,
+    PAPERCLIP_DEV_RUNNER_DISABLE_MIGRATIONS: "true",
     HEARTBEAT_SCHEDULER_ENABLED: "false",
     PAPERCLIP_DB_BACKUP_ENABLED: "false",
     PAPERCLIP_MIGRATION_PROMPT: "never",

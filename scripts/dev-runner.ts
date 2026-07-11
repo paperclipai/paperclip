@@ -8,6 +8,7 @@ import { stdin, stdout } from "node:process";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.ts";
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
+import { shouldBlockMigrationPreflight } from "./dev-runner-migration-policy.mjs";
 import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
 import {
   findAdoptableLocalService,
@@ -422,6 +423,15 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
   const payload = await refreshPendingMigrations();
   if (payload.status !== "needsMigrations" || pendingMigrations.length === 0) {
     return;
+  }
+  if (shouldBlockMigrationPreflight({
+    disableMigrations: env.PAPERCLIP_DEV_RUNNER_DISABLE_MIGRATIONS === "true",
+    pendingMigrations,
+  })) {
+    process.stderr.write(
+      `[paperclip] Pending migrations detected (${formatPendingMigrationSummary(pendingMigrations)}). This dev runner is configured not to apply migrations. Update the source database owner first, then retry.\n`,
+    );
+    process.exit(1);
   }
 
   let shouldApply = autoApply;

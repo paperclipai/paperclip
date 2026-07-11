@@ -43,6 +43,61 @@ This starts:
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
 
+### Stable plus shadow dev on 3100 and 3101
+
+Use this workflow when you want a stable source server on `3100` and a hot-reloading shadow server on `3101` against the same live database. The source server owns the embedded PostgreSQL process, migrations, heartbeat scheduler, plugin job scheduler, and database backups. The shadow server is an API/UI process only: it connects through `DATABASE_URL` to the source database and disables background ownership.
+
+Start the stable source first:
+
+```sh
+pnpm dev
+curl http://127.0.0.1:3100/api/health
+```
+
+Then start the shadow server from the branch or worktree you want to test:
+
+```sh
+pnpm dev:shadow
+# equivalent defaults:
+# pnpm dev:shadow -- --source-api http://127.0.0.1:3100 --port 3101
+```
+
+Open the two UIs side by side:
+
+- stable source: `http://127.0.0.1:3100`
+- shadow: `http://127.0.0.1:3101`
+
+`pnpm dev:shadow` resolves the live database from `GET /api/health/dev-database-source` on the source API, then starts the shadow with:
+
+- `PORT=3101`
+- `DATABASE_URL=<resolved source PostgreSQL URL>`
+- `PAPERCLIP_API_URL=http://127.0.0.1:3101`
+- `PAPERCLIP_SHADOW_DEV_SOURCE_API=http://127.0.0.1:3100`
+- `PAPERCLIP_DEV_RUNNER_DISABLE_MIGRATIONS=true`
+- `PAPERCLIP_MIGRATION_PROMPT=never`
+- `HEARTBEAT_SCHEDULER_ENABLED=false`
+- `PAPERCLIP_DB_BACKUP_ENABLED=false`
+- `PAPERCLIP_MIGRATION_AUTO_APPLY=false`
+
+The shadow console prints `shadow dev: http://127.0.0.1:3101 sharing http://127.0.0.1:3100 database`. The shadow health payload includes `serverInfo.runtime.role: "shadow"`, `targetPort: 3101`, scheduler/backups `enabled: false`, and scheduler/backups `owner: "source_api"`. The UI also shows a shadow-runtime banner that names the source port and states that background schedulers are disabled.
+
+Safety rule: do not run two embedded Postgres owners against one data directory. Never try to share an embedded Postgres data directory between two Paperclip servers. `pnpm dev:shadow` rejects `--embedded-postgres-data-dir` and rejects `--database-url` values that are paths instead of `postgres://` or `postgresql://` connection URLs. If you need to override the resolver, pass an explicit PostgreSQL connection URL only:
+
+```sh
+pnpm dev:shadow -- --database-url postgres://paperclip:paperclip@127.0.0.1:54329/paperclip
+```
+
+Troubleshooting:
+
+| Symptom | What to check |
+|---|---|
+| `Could not reach source Paperclip API at http://127.0.0.1:3100` | Start the source with `pnpm dev`, wait for `/api/health` to return `status: "ok"`, or pass the actual source with `pnpm dev:shadow -- --source-api http://127.0.0.1:<port>`. |
+| `Source Paperclip API ... did not expose a local dev database (404)` | The resolver is only exposed by a local-trusted dev server to loopback callers. Use the supported `pnpm dev` source, or pass a PostgreSQL URL with `--database-url`. |
+| `Could not connect to PostgreSQL` or `Timed out connecting to PostgreSQL` | The source API resolved a DB URL, but the PostgreSQL port is not reachable. Restart the source server and confirm its health before starting the shadow. |
+| Pending migrations or schema mismatch | The source database owner must apply schema changes. Stop the shadow, update/restart the source server or run migrations against the source-owned instance, then retry `pnpm dev:shadow`. If your branch introduces schema changes that the stable source cannot safely own, use an isolated worktree instance instead of the shared shadow workflow. |
+| Port `3101` is occupied | Run `pnpm dev:list` to inspect managed dev services and `pnpm dev:stop` to stop the matching service, or choose another shadow port with `pnpm dev:shadow -- --port 3201`. |
+| Writes do not appear in both UIs | Confirm the shadow banner/health runtime says `role: "shadow"` and `shadowSourceApi: "http://127.0.0.1:3100"`. If you passed `--database-url`, confirm it matches the source DB. Do not start a second plain `pnpm dev` against the same embedded data directory. |
+
 Issue execution may also use project execution workspace policies and workspace runtime services for per-project worktrees, preview servers, and managed dev commands. Configure those through the project workspace/runtime surfaces rather than starting long-running unmanaged processes when a task needs a reusable service.
 
 ## Storybook

@@ -7,6 +7,7 @@ import {
   resolveDevShadowDatabaseUrl,
 } from "../../../scripts/dev-shadow-core.mjs";
 import { createDevServiceProfile } from "../../../scripts/dev-service-profile-core.mjs";
+import { shouldBlockMigrationPreflight } from "../../../scripts/dev-runner-migration-policy.mjs";
 
 describe("dev shadow resolver", () => {
   it("uses the documented defaults", () => {
@@ -90,10 +91,26 @@ describe("dev shadow resolver", () => {
       PAPERCLIP_API_URL: "http://127.0.0.1:3101",
       PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
       PAPERCLIP_SHADOW_DEV_SOURCE_API: "http://127.0.0.1:3100",
+      PAPERCLIP_DEV_RUNNER_DISABLE_MIGRATIONS: "true",
       HEARTBEAT_SCHEDULER_ENABLED: "false",
       PAPERCLIP_DB_BACKUP_ENABLED: "false",
       PAPERCLIP_MIGRATION_AUTO_APPLY: "false",
     });
+  });
+
+  it("blocks migration preflight when shadow disables migration ownership", () => {
+    expect(shouldBlockMigrationPreflight({
+      disableMigrations: true,
+      pendingMigrations: ["0001_add_shadow_metadata.sql"],
+    })).toBe(true);
+    expect(shouldBlockMigrationPreflight({
+      disableMigrations: true,
+      pendingMigrations: [],
+    })).toBe(false);
+    expect(shouldBlockMigrationPreflight({
+      disableMigrations: false,
+      pendingMigrations: ["0001_add_shadow_metadata.sql"],
+    })).toBe(false);
   });
 });
 
