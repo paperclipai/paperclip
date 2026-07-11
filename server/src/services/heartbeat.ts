@@ -173,6 +173,7 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { checkAndFireStandupFallback } from "./standup-fallback.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -8475,6 +8476,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+      if (adapterResult.resultJson?.weeklyQuotaExhausted === true) {
+        checkAndFireStandupFallback(
+          db,
+          agent.companyId,
+          agent.id,
+          adapterResult.retryNotBefore ?? null,
+        ).catch((err) => {
+          logger.warn({ err, agentId: agent.id, companyId: agent.companyId }, "standup-fallback: check failed");
+        });
+      }
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",

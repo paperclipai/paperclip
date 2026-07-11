@@ -137,6 +137,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         "0095_old_swarm.sql",
         "0096_mighty_puma.sql",
         "0097_giant_green_goblin.sql",
+        "0099_heartbeat_runs_context_snapshot_idx.sql",
       ]);
 
       await applyPendingMigrations(connectionString);

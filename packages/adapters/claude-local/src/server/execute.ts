@@ -53,6 +53,7 @@ import {
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
   isClaudeTransientUpstreamError,
+  isClaudeWeeklyQuotaExhausted,
   isClaudeUnknownSessionError,
   isClaudeCorruptionError,
 } from "./parse.js";
@@ -885,6 +886,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             errorMessage: fallbackErrorMessage,
           })
         : null;
+      const weeklyExhausted = transientUpstream && isClaudeWeeklyQuotaExhausted({
+        parsed: null,
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        errorMessage: fallbackErrorMessage,
+      });
       const errorCode = loginMeta.requiresLogin
         ? "claude_auth_required"
         : transientUpstream
@@ -903,6 +910,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stdout: proc.stdout,
           stderr: proc.stderr,
           ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
+          ...(weeklyExhausted ? { weeklyQuotaExhausted: true } : {}),
           ...(transientRetryNotBefore
             ? { retryNotBefore: transientRetryNotBefore.toISOString() }
             : {}),
@@ -959,6 +967,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderr: proc.stderr,
         errorMessage,
       });
+    const weeklyExhausted = transientUpstream && isClaudeWeeklyQuotaExhausted({
+      parsed,
+      stdout: proc.stdout,
+      stderr: proc.stderr,
+      errorMessage,
+    });
     const transientRetryNotBefore = transientUpstream
       ? extractClaudeRetryNotBefore({
           parsed,
@@ -978,6 +992,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...parsed,
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
       ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
+      ...(weeklyExhausted ? { weeklyQuotaExhausted: true } : {}),
       ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
     };
