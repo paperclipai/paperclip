@@ -77,7 +77,9 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@${CLAUDE_CODE_VERS
 # Firefox build during image creation so agent runs never install code at runtime.
 RUN python3 -m venv /opt/camoufox \
   && /opt/camoufox/bin/pip install --no-cache-dir "camoufox==${CAMOUFOX_VERSION}" \
-  && /opt/camoufox/bin/python -m camoufox fetch \
+  && mkdir -p /opt/runtime-cache \
+  && XDG_CACHE_HOME=/opt/runtime-cache /opt/camoufox/bin/python -m camoufox fetch \
+  && chmod 1777 /opt/runtime-cache \
   && ln -s /opt/camoufox/bin/camoufox /usr/local/bin/camoufox
 
 # Install Chromium + all system dependencies for headless browser automation
@@ -100,6 +102,7 @@ ENV NODE_ENV=production \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
+  XDG_CACHE_HOME=/opt/runtime-cache \
   PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
 
 VOLUME ["/paperclip"]
