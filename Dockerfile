@@ -66,6 +66,7 @@ ARG CLAUDE_CODE_VERSION=2.1.141
 ARG CODEX_VERSION=0.144.1
 ARG AGENT_BROWSER_VERSION=0.27.0
 ARG CAMOUFOX_VERSION=0.4.11
+ARG CAMOUFOX_PLAYWRIGHT_VERSION=1.49.1
 # claude-p: drop-in `claude -p` replacement that drives the interactive Claude
 # Code TUI in a PTY (used by the claude_tui adapter). Ships a prebuilt glibc
 # binary via npm postinstall; base image is Debian (glibc) so it runs as-is.
@@ -76,7 +77,7 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@${CLAUDE_CODE_VERS
 # bot challenge. Keep it isolated from the system Python and fetch its pinned
 # Firefox build during image creation so agent runs never install code at runtime.
 RUN python3 -m venv /opt/camoufox \
-  && /opt/camoufox/bin/pip install --no-cache-dir "camoufox==${CAMOUFOX_VERSION}" \
+  && /opt/camoufox/bin/pip install --no-cache-dir "camoufox==${CAMOUFOX_VERSION}" "playwright==${CAMOUFOX_PLAYWRIGHT_VERSION}" \
   && mkdir -p /opt/runtime-cache \
   && XDG_CACHE_HOME=/opt/runtime-cache /opt/camoufox/bin/python -m camoufox fetch \
   && chmod 1777 /opt/runtime-cache \
