@@ -1737,13 +1737,19 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
 }
 
 function hasUnresolvedBlockersForCommentMove(input: {
-  allBlockersDone: boolean;
+  unresolvedBlockerIssueIds: string[];
   unresolvedBlockerCount: number;
+  pendingFinalizeBlockerIssueIds: string[];
   relaxFinalizeBarrierForHumanComment: boolean;
 }) {
-  return input.relaxFinalizeBarrierForHumanComment
-    ? !input.allBlockersDone
-    : input.unresolvedBlockerCount > 0;
+  if (!input.relaxFinalizeBarrierForHumanComment) {
+    return input.unresolvedBlockerCount > 0;
+  }
+
+  const pendingFinalizeBlockerIssueIds = new Set(input.pendingFinalizeBlockerIssueIds);
+  return input.unresolvedBlockerIssueIds.some(
+    (blockerIssueId) => !pendingFinalizeBlockerIssueIds.has(blockerIssueId),
+  );
 }
 
 function shouldHumanCommentResumeInProgressScheduledRetry(input: {
@@ -7647,8 +7653,9 @@ export function issueRoutes(
         : null;
     const hasUnresolvedFirstClassBlockers = dependencyReadiness
       ? hasUnresolvedBlockersForCommentMove({
-          allBlockersDone: dependencyReadiness.allBlockersDone,
+          unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
           unresolvedBlockerCount: dependencyReadiness.unresolvedBlockerCount,
+          pendingFinalizeBlockerIssueIds: dependencyReadiness.pendingFinalizeBlockerIssueIds,
           relaxFinalizeBarrierForHumanComment,
         })
       : false;
@@ -9637,8 +9644,9 @@ export function issueRoutes(
         : null;
     const hasUnresolvedFirstClassBlockers = dependencyReadiness
       ? hasUnresolvedBlockersForCommentMove({
-          allBlockersDone: dependencyReadiness.allBlockersDone,
+          unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
           unresolvedBlockerCount: dependencyReadiness.unresolvedBlockerCount,
+          pendingFinalizeBlockerIssueIds: dependencyReadiness.pendingFinalizeBlockerIssueIds,
           relaxFinalizeBarrierForHumanComment,
         })
       : false;

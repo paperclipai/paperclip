@@ -860,6 +860,7 @@ describe.sequential("issue comment reopen routes", () => {
       blockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
       unresolvedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
       unresolvedBlockerCount: 1,
+      pendingFinalizeBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
       allBlockersDone: true,
       isDependencyReady: false,
     });
@@ -887,6 +888,7 @@ describe.sequential("issue comment reopen routes", () => {
       blockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
       unresolvedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
       unresolvedBlockerCount: 1,
+      pendingFinalizeBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
       allBlockersDone: true,
       isDependencyReady: false,
     });
@@ -910,6 +912,7 @@ describe.sequential("issue comment reopen routes", () => {
       blockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
       unresolvedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
       unresolvedBlockerCount: 1,
+      pendingFinalizeBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
       allBlockersDone: true,
       isDependencyReady: false,
     });
@@ -1327,6 +1330,7 @@ describe.sequential("issue comment reopen routes", () => {
       blockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
       unresolvedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
       unresolvedBlockerCount: 1,
+      pendingFinalizeBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
       allBlockersDone: true,
       isDependencyReady: false,
     });
