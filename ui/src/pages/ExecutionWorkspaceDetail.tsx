@@ -229,7 +229,7 @@ export function updateConfiguredRuntimeServicePort(input: {
   const trimmedPort = input.port.trim();
   if (!trimmedPort) {
     if (existingPort) {
-      const autoPort = { ...existingPort, type: "auto" };
+      const autoPort: Record<string, unknown> = { ...existingPort, type: "auto" };
       delete autoPort.value;
       config.port = autoPort;
     } else {
