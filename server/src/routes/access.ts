@@ -18,6 +18,7 @@ import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, sql } from "dri
 import type { Db } from "@paperclipai/db";
 import {
   assets,
+  agents as agentsTable,
   agentApiKeys,
   authUsers,
   companies,
@@ -4036,6 +4037,42 @@ export function accessRoutes(
       access: currentAccess,
     });
   });
+
+  router.get("/companies/:companyId/agent-permissions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    const companyAgents = await db
+      .select({ id: agentsTable.id, name: agentsTable.name, role: agentsTable.role, status: agentsTable.status })
+      .from(agentsTable)
+      .where(eq(agentsTable.companyId, companyId))
+      .orderBy(agentsTable.name);
+    const rows = await Promise.all(companyAgents.map(async (agent) => ({
+      ...agent,
+      grants: await access.listPrincipalGrants(companyId, "agent", agent.id),
+    })));
+    res.json({ agents: rows });
+  });
+
+  router.patch(
+    "/companies/:companyId/agents/:agentId/permissions",
+    validate(updateMemberPermissionsSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const agentId = req.params.agentId as string;
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const agent = await db.select({ id: agentsTable.id, name: agentsTable.name, role: agentsTable.role, status: agentsTable.status })
+        .from(agentsTable).where(and(eq(agentsTable.id, agentId), eq(agentsTable.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!agent) throw notFound("Agent not found");
+      const grants = (req.body.grants ?? []) as Array<{ permissionKey: PermissionKey; scope?: Record<string, unknown> | null }>;
+      const requested = new Set(grants.map((grant) => grant.permissionKey));
+      await Promise.all(PERMISSION_KEYS.map((permissionKey) => access.setPrincipalPermission(
+        companyId, "agent", agentId, permissionKey, requested.has(permissionKey), req.actor.userId ?? null,
+        grants.find((grant) => grant.permissionKey === permissionKey)?.scope ?? null,
+      )));
+      res.json({ ...agent, grants: await access.listPrincipalGrants(companyId, "agent", agentId) });
+    },
+  );
 
   router.get("/companies/:companyId/user-directory", async (req, res) => {
     const companyId = req.params.companyId as string;

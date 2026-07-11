@@ -147,6 +147,16 @@ export type CompanyMembersResponse = {
   };
 };
 
+export type AgentPermissionRecord = {
+  id: string;
+  name: string;
+  role: string;
+  status: string;
+  grants: CompanyMemberGrant[];
+};
+
+export type AgentPermissionsResponse = { agents: AgentPermissionRecord[] };
+
 export type CompanyUserDirectoryEntry = {
   principalId: string;
   status: "active";
@@ -318,6 +328,12 @@ export const accessApi = {
 
   listMembers: (companyId: string) =>
     api.get<CompanyMembersResponse>(`/companies/${companyId}/members`),
+
+  listAgentPermissions: (companyId: string) =>
+    api.get<AgentPermissionsResponse>(`/companies/${companyId}/agent-permissions`),
+
+  updateAgentPermissions: (companyId: string, agentId: string, grants: Array<{ permissionKey: PermissionKey }>) =>
+    api.patch<AgentPermissionRecord>(`/companies/${companyId}/agents/${agentId}/permissions`, { grants }),
 
   listUserDirectory: (companyId: string) =>
     api.get<CompanyUserDirectoryResponse>(`/companies/${companyId}/user-directory`),

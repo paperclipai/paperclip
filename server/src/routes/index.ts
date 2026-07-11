@@ -11,6 +11,7 @@ export { routineRoutes } from "./routines.js";
 export { goalRoutes } from "./goals.js";
 export { approvalRoutes } from "./approvals.js";
 export { secretRoutes } from "./secrets.js";
+export { authenticatorRoutes } from "./authenticators.js";
 export { githubConnectionRoutes } from "./github-connections.js";
 export { credentialRoutes } from "./credentials.js";
 export { costRoutes } from "./costs.js";

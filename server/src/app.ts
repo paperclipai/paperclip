@@ -27,6 +27,7 @@ import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
+import { authenticatorRoutes } from "./routes/authenticators.js";
 import { githubConnectionRoutes } from "./routes/github-connections.js";
 import { credentialRoutes } from "./routes/credentials.js";
 import { credentialValidateRoutes } from "./routes/credential-validate.js";
@@ -217,6 +218,7 @@ export async function createApp(
   api.use(goalRoutes(db));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
+  api.use(authenticatorRoutes(db));
   api.use(githubConnectionRoutes(db));
   api.use(credentialRoutes(db));
   api.use(credentialValidateRoutes());

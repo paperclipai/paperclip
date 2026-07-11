@@ -34,6 +34,7 @@ import { TalkToTeam } from "./pages/TalkToTeam";
 import { CompanySettings } from "./pages/CompanySettings";
 import { CompanyEnvironments } from "./pages/CompanyEnvironments";
 import { CompanyAccess } from "./pages/CompanyAccess";
+import { CompanyAuthenticators } from "./pages/CompanyAuthenticators";
 import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
 import { CompanyMcp } from "./pages/CompanyMcp";
@@ -83,6 +84,7 @@ function boardRoutes() {
       <Route path="company/settings" element={<CompanySettings />} />
       <Route path="company/settings/environments" element={<CompanyEnvironments />} />
       <Route path="company/settings/access" element={<CompanyAccess />} />
+      <Route path="company/settings/authenticators" element={<CompanyAuthenticators />} />
       <Route path="company/settings/invites" element={<CompanyInvites />} />
       <Route path="company/settings/improvements" element={<CompanyImprovementSuggestions />} />
       <Route path="company/export/*" element={<CompanyExport />} />

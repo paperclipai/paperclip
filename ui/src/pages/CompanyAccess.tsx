@@ -78,6 +78,8 @@ export function CompanyAccess() {
   const [draftRole, setDraftRole] = useState<CompanyMember["membershipRole"]>(null);
   const [draftStatus, setDraftStatus] = useState<EditableMemberStatus>("active");
   const [draftGrants, setDraftGrants] = useState<Set<PermissionKey>>(new Set());
+  const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
+  const [draftAgentGrants, setDraftAgentGrants] = useState<Set<PermissionKey>>(new Set());
 
   useEffect(() => {
     setBreadcrumbs([
@@ -96,6 +98,11 @@ export function CompanyAccess() {
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId ?? ""),
     queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const agentPermissionsQuery = useQuery({
+    queryKey: ["access", "agent-permissions", selectedCompanyId ?? ""],
+    queryFn: () => accessApi.listAgentPermissions(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -135,6 +142,19 @@ export function CompanyAccess() {
         tone: "error",
       });
     },
+  });
+  const updateAgentPermissionsMutation = useMutation({
+    mutationFn: () => accessApi.updateAgentPermissions(
+      selectedCompanyId!,
+      editingAgentId!,
+      [...draftAgentGrants].map((permissionKey) => ({ permissionKey })),
+    ),
+    onSuccess: async () => {
+      setEditingAgentId(null);
+      await queryClient.invalidateQueries({ queryKey: ["access", "agent-permissions", selectedCompanyId ?? ""] });
+      pushToast({ title: "Agent permissions updated", tone: "success" });
+    },
+    onError: (error) => pushToast({ title: "Failed to update agent permissions", body: error instanceof Error ? error.message : "Unknown error", tone: "error" }),
   });
 
   const approveJoinRequestMutation = useMutation({
@@ -181,6 +201,15 @@ export function CompanyAccess() {
     () => membersQuery.data?.members.find((member) => member.id === removingMemberId) ?? null,
     [removingMemberId, membersQuery.data?.members],
   );
+  const editingAgent = useMemo(
+    () => agentPermissionsQuery.data?.agents.find((agent) => agent.id === editingAgentId) ?? null,
+    [agentPermissionsQuery.data?.agents, editingAgentId],
+  );
+
+  useEffect(() => {
+    if (!editingAgent) return;
+    setDraftAgentGrants(new Set(editingAgent.grants.map((grant) => grant.permissionKey)));
+  }, [editingAgent]);
 
   const assignedIssuesQuery = useQuery({
     queryKey: ["access", "member-assigned-issues", selectedCompanyId ?? "", removingMember?.principalId ?? ""],
@@ -409,6 +438,29 @@ export function CompanyAccess() {
           )}
         </div>
       </section>
+
+      <section className="space-y-3">
+        <div><h2 className="text-base font-semibold">AI agent access</h2><p className="text-sm text-muted-foreground">Manage company permissions for AI agents, including scoped secret administration.</p></div>
+        <div className="divide-y rounded-lg border border-border">
+          {(agentPermissionsQuery.data?.agents ?? []).map((agent) => (
+            <div key={agent.id} className="flex items-center gap-3 px-4 py-3">
+              <div className="min-w-0 flex-1"><div className="truncate font-medium">{agent.name}</div><div className="text-xs text-muted-foreground">{agent.role} · {agent.status}</div></div>
+              <div className="hidden max-w-xl truncate text-sm text-muted-foreground md:block">{agent.grants.length ? agent.grants.map((grant) => permissionLabels[grant.permissionKey]).join(", ") : "No explicit grants"}</div>
+              <Button size="sm" variant="outline" onClick={() => setEditingAgentId(agent.id)}>Edit</Button>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <Dialog open={!!editingAgent} onOpenChange={(open) => !open && setEditingAgentId(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader><DialogTitle>Edit AI agent permissions</DialogTitle><DialogDescription>Explicit company grants for {editingAgent?.name}. Sensitive grants are audited.</DialogDescription></DialogHeader>
+          <div className="grid max-h-[55vh] gap-3 overflow-y-auto md:grid-cols-2">
+            {PERMISSION_KEYS.map((permissionKey) => <label key={permissionKey} className="flex items-start gap-3 rounded-lg border border-border p-3"><Checkbox checked={draftAgentGrants.has(permissionKey)} onCheckedChange={(checked) => setDraftAgentGrants((current) => { const next = new Set(current); if (checked) next.add(permissionKey); else next.delete(permissionKey); return next; })} /><span><span className="block text-sm font-medium">{permissionLabels[permissionKey]}</span><span className="block text-xs text-muted-foreground">{permissionKey}</span></span></label>)}
+          </div>
+          <DialogFooter><Button variant="outline" onClick={() => setEditingAgentId(null)}>Cancel</Button><Button onClick={() => updateAgentPermissionsMutation.mutate()} disabled={updateAgentPermissionsMutation.isPending}>{updateAgentPermissionsMutation.isPending ? "Saving…" : "Save permissions"}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!editingMember} onOpenChange={(open) => !open && setEditingMemberId(null)}>
         <DialogContent className="max-w-2xl">
