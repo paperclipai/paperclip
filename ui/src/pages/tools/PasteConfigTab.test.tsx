@@ -150,15 +150,15 @@ describe("PasteConfigTab — discoverability copy (PAP-11091)", () => {
     return root;
   }
 
-  it("shows a hint linking back to the Connect-an-app link flow", async () => {
+  it("shows a hint linking to the Browse app surface", async () => {
     await render();
 
     expect(container.textContent).toContain("Just a URL?");
     const link = Array.from(container.querySelectorAll("a")).find((a) =>
-      a.textContent?.includes("Connect with a link"),
+      a.textContent?.includes("Browse planned app connections"),
     );
     expect(link).toBeTruthy();
-    expect(link?.getAttribute("href")).toBe("/apps/connect");
+    expect(link?.getAttribute("href")).toBe("/apps/browse");
   });
 });
 

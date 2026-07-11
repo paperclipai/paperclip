@@ -82,14 +82,14 @@ export function WizardToolsStep(props: WizardToolsStepProps) {
       <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border py-12 text-center">
         <Plug className="h-6 w-6 text-muted-foreground" />
         <div>
-          <p className="text-sm font-medium text-foreground">Connect an app first</p>
+          <p className="text-sm font-medium text-foreground">App connections are coming soon</p>
           <p className="mx-auto max-w-sm text-sm text-muted-foreground">
-            A profile allows tools from the apps you've connected. Connect one, then come back to choose its
-            tools.
+            Profiles will be available once app connections are ready. Browse the planned integrations in the
+            meantime.
           </p>
         </div>
         <Button asChild variant="outline">
-          <Link to="/apps/connect">Connect an app</Link>
+          <Link to="/apps/browse">Browse app connections</Link>
         </Button>
       </div>
     );

@@ -127,10 +127,7 @@ export function AppNotConnected() {
     gallery.find((entry) => entry.name.toLowerCase() === application.name.toLowerCase())?.logoUrl;
 
   const previousAddress = previousConnection ? connectionAddress(previousConnection) : null;
-  const usableLink = previousAddress && /^https?:\/\//i.test(previousAddress) ? previousAddress : null;
-  const connectParams = new URLSearchParams({ applicationId: application.id, name: application.name });
-  if (usableLink) connectParams.set("link", usableLink);
-  const connectHref = `/apps/connect?${connectParams.toString()}`;
+  const connectHref = "/apps/browse";
 
   return (
     <div className="max-w-3xl space-y-6 pb-12">

@@ -2,26 +2,23 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link2, Search } from "lucide-react";
 import type { AppGalleryEntry } from "@paperclipai/shared";
-import { useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AppLogo } from "./AppLogo";
-import { AdvancedToolsLink, BYO_CONNECT_HREF, ByoConnectCard, POPULAR_KEYS } from "./store-cards";
+import { AdvancedToolsLink, ByoConnectCard, POPULAR_KEYS } from "./store-cards";
 
 /**
  * Door 1 — Browse (the store) (PAP-13254 / U3 §4).
  *
  * A persistent, browsable storefront: search + a Popular grid + the full
  * gallery + a first-class bring-your-own card + a labelled Developer link.
- * Splitting the store out of the connected-instances table (now the
- * Connections door) fixes F1 — users can see what's addable without committing
- * to the Connect wizard. Selecting any tile opens the existing guided wizard.
+ * Connection setup is intentionally unavailable until its integrations are
+ * ready, so Browse remains the single discoverability surface.
  */
 export function Browse() {
-  const navigate = useNavigate();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [query, setQuery] = useState("");
@@ -65,8 +62,6 @@ export function Browse() {
     return <div className="p-6 text-sm text-muted-foreground">Select a company to browse apps.</div>;
   }
 
-  const connect = (entry: AppGalleryEntry) =>
-    navigate(`/apps/connect/${encodeURIComponent(entry.key)}/setup`);
   const loading = galleryQuery.isLoading;
 
   return (
@@ -74,7 +69,7 @@ export function Browse() {
       <header>
         <h1 className="text-2xl font-bold tracking-tight">Browse</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Browse tools your agents can use. Connecting one takes about a minute.
+          Browse tools planned for your agents. Connections are coming soon.
         </p>
       </header>
 
@@ -105,7 +100,7 @@ export function Browse() {
               </div>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                 {popular.map((entry) => (
-                  <AppTile key={entry.key} entry={entry} onConnect={() => connect(entry)} compact />
+                  <AppTile key={entry.key} entry={entry} compact />
                 ))}
               </div>
             </section>
@@ -118,22 +113,22 @@ export function Browse() {
             {filtered.length === 0 ? (
               <p className="flex items-center gap-1.5 rounded-xl border border-dashed border-border bg-card px-4 py-6 text-sm text-muted-foreground">
                 <Link2 className="h-4 w-4" />
-                No apps match “{query.trim()}”. You can still connect any tool by pasting its link.
+                No planned apps match “{query.trim()}”.
               </p>
             ) : (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {filtered.map((entry) => (
-                  <AppTile key={entry.key} entry={entry} onConnect={() => connect(entry)} />
+                  <AppTile key={entry.key} entry={entry} />
                 ))}
               </div>
             )}
           </section>
 
-          <ByoConnectCard onConnect={() => navigate(BYO_CONNECT_HREF)} />
+          <ByoConnectCard disabled />
 
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs text-muted-foreground">
-              Apps you connect become available to every agent unless you change “Who can use it”.
+              App connections are not available yet. Browse the planned integrations above.
             </p>
             <AdvancedToolsLink />
           </div>
@@ -145,37 +140,36 @@ export function Browse() {
 
 function AppTile({
   entry,
-  onConnect,
   compact = false,
 }: {
   entry: AppGalleryEntry;
-  onConnect: () => void;
   compact?: boolean;
 }) {
   if (compact) {
     return (
       <button
         type="button"
-        onClick={onConnect}
-        className="flex flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center transition-colors hover:border-foreground/30 hover:bg-accent/40"
+        disabled
+        className="flex cursor-not-allowed flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center opacity-60"
       >
         <AppLogo name={entry.name} logoUrl={entry.logoUrl} size={36} />
         <span className="text-xs font-medium text-foreground">{entry.name}</span>
+        <span className="text-xs text-muted-foreground">Coming soon</span>
       </button>
     );
   }
   return (
     <button
       type="button"
-      onClick={onConnect}
-      className="flex h-full items-start gap-3 rounded-xl border border-border bg-card px-4 py-4 text-left transition-colors hover:border-foreground/30 hover:bg-accent/40"
+      disabled
+      className="flex h-full cursor-not-allowed items-start gap-3 rounded-xl border border-border bg-card px-4 py-4 text-left opacity-60"
     >
       <AppLogo name={entry.name} logoUrl={entry.logoUrl} size={36} />
       <div className="min-w-0 flex-1">
         <div className="text-sm font-semibold text-foreground">{entry.name}</div>
         <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{entry.tagline}</div>
       </div>
-      <span className="shrink-0 text-xs font-semibold text-primary">Connect →</span>
+      <span className="shrink-0 text-xs font-semibold text-muted-foreground">Coming soon</span>
     </button>
   );
 }

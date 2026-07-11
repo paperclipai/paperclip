@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Browse } from "./Browse";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
-const mockNavigate = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -16,7 +15,6 @@ vi.mock("@/api/tools", () => ({
 }));
 
 vi.mock("@/lib/router", () => ({
-  useNavigate: () => mockNavigate,
   Link: ({ children, to }: { children: React.ReactNode; to: string }) => <a href={to}>{children}</a>,
 }));
 
@@ -106,7 +104,7 @@ describe("Browse store door (PAP-13254 door 1)", () => {
 
     const text = container.textContent ?? "";
     expect(text).toContain("Browse");
-    expect(text).toContain("Connecting one takes about a minute.");
+    expect(text).toContain("Connections are coming soon.");
     expect(text).toContain("Popular");
     expect(text).toContain("All apps");
     expect(text).toContain("GitHub");
@@ -116,14 +114,24 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     expect(text).toContain("Connect your own tool");
   });
 
-  it("opens the guided wizard when a store tile is selected", async () => {
+  it("fades all connection options and prevents unfinished setup flows", async () => {
     await renderBrowse();
 
+    const githubTile = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("GitHub"),
+    );
     const tile = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Acme CRM"),
     );
-    tile?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect/acme/setup");
+    const byoCard = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Connect your own tool"),
+    );
+
+    expect(githubTile?.disabled).toBe(true);
+    expect(tile?.disabled).toBe(true);
+    expect(byoCard?.disabled).toBe(true);
+    expect(tile?.textContent).toContain("Coming soon");
+    expect(byoCard?.textContent).toContain("Coming soon");
   });
 
   it("filters the gallery by the search query", async () => {
@@ -147,5 +155,23 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     expect(text).not.toContain("Acme CRM");
     // Popular grid is hidden while searching.
     expect(text).not.toContain("Popular");
+  });
+
+  it("does not advertise a URL setup path while connections are unavailable", async () => {
+    await renderBrowse();
+
+    const input = container.querySelector<HTMLInputElement>('input[type="search"]');
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      setter?.call(input, "missing app");
+      input?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("No planned apps match");
+    expect(container.textContent).not.toContain("You can still connect any tool");
   });
 });
