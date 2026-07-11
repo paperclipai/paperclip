@@ -25,9 +25,9 @@ class WPClient:
         r.raise_for_status()
         return r.json().get("meta", {})
 
-    def set_yoast_meta(self, post_id, field, value):
+    def set_yoast_meta(self, post_id, field, value, post_type="posts"):
         key = _YOAST_MAP[field]
-        return self._post(f"/wp/v2/posts/{post_id}", {"meta": {key: value}})
+        return self._post(f"/wp/v2/{post_type}/{post_id}", {"meta": {key: value}})
 
     def set_alt_text(self, media_id, value):
         return self._post(f"/wp/v2/media/{media_id}", {"alt_text": value})
