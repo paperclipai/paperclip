@@ -4664,6 +4664,19 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
       runtimeServiceId: row.id,
       profileKind: "workspace-runtime",
     });
+    if (
+      adoptedRecord
+      && (
+        adoptedRecord.command !== row.command
+        || adoptedRecord.serviceName !== row.serviceName
+        || adoptedRecord.envFingerprint !== (row.reuseKey ?? "")
+        || adoptedRecord.port !== (row.port ?? null)
+        || (row.cwd !== null && path.resolve(adoptedRecord.cwd) !== path.resolve(row.cwd))
+      )
+    ) {
+      await removeLocalServiceRegistryRecord(adoptedRecord.serviceKey);
+      adoptedRecord = null;
+    }
     if (!adoptedRecord && row.command && row.cwd) {
       adoptedRecord = await findAdoptableLocalService({
         serviceKey: createLocalServiceKey({

@@ -5088,7 +5088,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     }
   }, 20_000);
 
-  it("marks persisted local services stopped when the registry pid is stale", async () => {
+  it("does not adopt a live registry process from another workspace with the same runtime service ID", async () => {
     const companyId = randomUUID();
     const runtimeServiceId = randomUUID();
     const startedAt = new Date("2026-04-04T17:00:00.000Z");
@@ -5152,12 +5152,12 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       profileKind: "workspace-runtime",
       serviceName: "paperclip-dev",
       command: "pnpm dev",
-      cwd: "/tmp/paperclip-primary",
+      cwd: process.cwd(),
       envFingerprint: "fingerprint",
       port: 49195,
       url: "http://127.0.0.1:49195",
-      pid: 999999,
-      processGroupId: 999999,
+      pid: process.pid,
+      processGroupId: process.pid,
       provider: "local_process",
       runtimeServiceId,
       reuseKey: `project_workspace:${projectWorkspaceId}:paperclip-dev`,
