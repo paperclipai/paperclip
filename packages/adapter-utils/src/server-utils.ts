@@ -1132,6 +1132,15 @@ export function browserStreamPortForRun(runId: string): number {
   return 20_000 + ((hash >>> 0) % 20_000);
 }
 
+export function browserSessionKeyForRun(runId: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < runId.length; index += 1) {
+    hash ^= runId.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `pc-${(hash >>> 0).toString(36)}`;
+}
+
 export function buildPaperclipEnv(
   agent: { id: string; companyId: string },
   runId?: string,
@@ -1147,9 +1156,11 @@ export function buildPaperclipEnv(
     PAPERCLIP_COMPANY_ID: agent.companyId,
   };
   if (runId) {
+    const browserSessionKey = browserSessionKeyForRun(runId);
     vars.PAPERCLIP_RUN_ID = runId;
-    vars.AGENT_BROWSER_SESSION = `paperclip-${runId}`;
-    vars.AGENT_BROWSER_NAMESPACE = `paperclip-${runId}`;
+    vars.AGENT_BROWSER_SOCKET_DIR = "/tmp/pab";
+    vars.AGENT_BROWSER_SESSION = browserSessionKey;
+    vars.AGENT_BROWSER_NAMESPACE = browserSessionKey;
     vars.AGENT_BROWSER_RESTORE = `paperclip-${agent.companyId}-${agent.id}`;
     vars.AGENT_BROWSER_STREAM_PORT = String(browserStreamPortForRun(runId));
   }

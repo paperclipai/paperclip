@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
+  browserSessionKeyForRun,
   browserStreamPortForRun,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
@@ -29,8 +30,10 @@ describe("managed browser run environment", () => {
     expect(browserStreamPortForRun(runId)).toBe(browserStreamPortForRun(runId));
     expect(Number(env.AGENT_BROWSER_STREAM_PORT)).toBeGreaterThanOrEqual(20_000);
     expect(Number(env.AGENT_BROWSER_STREAM_PORT)).toBeLessThan(40_000);
-    expect(env.AGENT_BROWSER_SESSION).toBe(`paperclip-${runId}`);
-    expect(env.AGENT_BROWSER_NAMESPACE).toBe(`paperclip-${runId}`);
+    expect(browserSessionKeyForRun(runId)).toMatch(/^pc-[a-z0-9]{1,8}$/);
+    expect(env.AGENT_BROWSER_SOCKET_DIR).toBe("/tmp/pab");
+    expect(env.AGENT_BROWSER_SESSION).toBe(browserSessionKeyForRun(runId));
+    expect(env.AGENT_BROWSER_NAMESPACE).toBe(browserSessionKeyForRun(runId));
     expect(env.AGENT_BROWSER_RESTORE).toBe("paperclip-company-1-agent-1");
   });
 });

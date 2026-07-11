@@ -47,7 +47,7 @@ export AGENT_BROWSER_RESTORE="pc-${PAPERCLIP_COMPANY_ID}-${PAPERCLIP_AGENT_ID}"
 
 Use `--restore` on every `agent-browser` call. Close the session when the workflow is complete so state is flushed. Saved state remains encrypted at rest when `AGENT_BROWSER_ENCRYPTION_KEY` is bound.
 
-For project isolation, add `AGENT_BROWSER_RESTORE=pc-<company>-<project>-<purpose>` in the project's environment configuration. For a company-shared login, bind the same restore key and encryption key to the selected agents. Do not override `AGENT_BROWSER_STREAM_PORT` or `AGENT_BROWSER_NAMESPACE`; Paperclip owns those live-viewer values.
+For project isolation, add `AGENT_BROWSER_RESTORE=pc-<company>-<project>-<purpose>` in the project's environment configuration. For a company-shared login, bind the same restore key and encryption key to the selected agents. Do not override `AGENT_BROWSER_STREAM_PORT`, `AGENT_BROWSER_NAMESPACE`, `AGENT_BROWSER_SESSION`, or `AGENT_BROWSER_SOCKET_DIR`; Paperclip owns those live-viewer values and deliberately keeps the Unix socket path short enough for agent-browser.
 
 ## Login
 
