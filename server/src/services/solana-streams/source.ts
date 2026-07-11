@@ -190,7 +190,11 @@ export class SolanaRpcSource implements SolanaStreamSource {
     const meta = "meta" in raw ? raw.meta : null;
     if (!tx) return null;
     const message = tx.message;
-    const accountKeys = message.staticAccountKeys.map((k) => publicKeyToString(k));
+    const accountKeys = [
+      ...message.staticAccountKeys.map((k) => publicKeyToString(k)),
+      ...(meta?.loadedAddresses?.writable ?? []).map((k) => publicKeyToString(k)),
+      ...(meta?.loadedAddresses?.readonly ?? []).map((k) => publicKeyToString(k)),
+    ];
     const instructions: SolanaStreamInstruction[] = message.compiledInstructions.map((ix) => {
       const programId = accountKeys[ix.programIdIndex] ?? "";
       const accounts = ix.accountKeyIndexes
