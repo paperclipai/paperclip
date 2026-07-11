@@ -244,8 +244,11 @@ async function defaultClaudeAcpFallbackReason(
     executionTarget: input.executionTarget,
     legacyRemoteExecution: input.executionTransport?.remoteExecution,
   });
-  if (target?.kind === "remote" && target.transport === "sandbox" && !sandboxTargetHasProcessSessionBridge(target)) {
-    return "Claude ACP requires a bidirectional remote process target; this sandbox exposes only one-shot command execution.";
+  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target)) {
+    if (target.transport === "sandbox") {
+      return "Claude ACP requires a bidirectional remote process target; this sandbox exposes only one-shot command execution.";
+    }
+    return "Claude ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
   }
   if (!nodeVersionMeetsClaudeAcpMinimum()) {
     return `Node ${process.version} does not satisfy Claude ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;

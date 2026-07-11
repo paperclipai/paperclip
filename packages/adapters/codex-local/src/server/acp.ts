@@ -244,8 +244,11 @@ async function defaultCodexAcpFallbackReason(
     executionTarget: input.executionTarget,
     legacyRemoteExecution: input.executionTransport?.remoteExecution,
   });
-  if (target?.kind === "remote" && target.transport === "sandbox" && !sandboxTargetHasProcessSessionBridge(target)) {
-    return "Codex ACP requires a bidirectional remote process target; this sandbox exposes only one-shot command execution.";
+  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target)) {
+    if (target.transport === "sandbox") {
+      return "Codex ACP requires a bidirectional remote process target; this sandbox exposes only one-shot command execution.";
+    }
+    return "Codex ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
   }
   if (!nodeVersionMeetsCodexAcpMinimum()) {
     return `Node ${process.version} does not satisfy Codex ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;

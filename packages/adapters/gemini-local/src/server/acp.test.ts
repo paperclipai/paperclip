@@ -264,7 +264,7 @@ describe("gemini_local ACP lane", () => {
     ).resolves.toEqual({ engine: "acp", explicit: true });
   });
 
-  it("uses ACP for remote SSH auto runs when the ACP command is configured as a shell command", async () => {
+  it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
     setNodeVersion("v20.0.0");
     await expect(
       resolveGeminiExecutionEngineForRun({
@@ -285,9 +285,10 @@ describe("gemini_local ACP lane", () => {
           },
         },
       }),
-    ).resolves.toEqual({
-      engine: "acp",
+    ).resolves.toMatchObject({
+      engine: "cli",
       explicit: false,
+      fallbackReason: expect.stringContaining("sandbox remote targets only"),
     });
   });
 
