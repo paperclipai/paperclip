@@ -353,6 +353,11 @@ export function decideSuccessfulRunHandoff(input: {
   hasActiveRoutineContinuation: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
+  // SPC-21224: any active-status child issue (via parentId) counts as a valid
+  // continuation path for umbrella-style issues (Trading Day EU umbrella,
+  // long-lived gate monitors, etc.). Without this, umbrellas with active
+  // children are treated as `successful_run_missing_state` and loop.
+  hasActiveChild: boolean;
 }): SuccessfulRunHandoffDecision {
   const { run, issue, agent } = input;
 
@@ -384,6 +389,7 @@ export function decideSuccessfulRunHandoff(input: {
     return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };
   }
   if (input.hasActiveExecutionPath) return { kind: "skip", reason: "issue already has an active execution path" };
+  if (input.hasActiveChild) return { kind: "skip", reason: "active child issue owns the next action" };
   if (input.hasQueuedWake) return { kind: "skip", reason: "issue already has a queued or deferred wake" };
   if (input.hasPendingInteractionOrApproval) {
     return { kind: "skip", reason: "pending interaction or approval owns the next action" };

@@ -55,6 +55,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasActiveRoutineContinuation: false,
     budgetBlocked: false,
     idempotentWakeExists: false,
+    hasActiveChild: false,
     ...overrides,
   });
 }
@@ -129,6 +130,18 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "explicit blocker path owns the next action",
     });
+  });
+
+  it("SPC-21224: does not queue when an active-status child issue owns the next action", () => {
+    expect(decide({ hasActiveChild: true })).toEqual({
+      kind: "skip",
+      reason: "active child issue owns the next action",
+    });
+  });
+
+  it("SPC-21224: still fires when all children are done or cancelled (no active child)", () => {
+    const decision = decide({ hasActiveChild: false });
+    expect(decision.kind).toBe("enqueue");
   });
 
   it("does not queue when the issue is the recurring parent of an active routine", () => {

@@ -94,6 +94,17 @@ export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
 );
 
+// SPC-21224: hard cap on how many times a single source-scoped stranded recovery
+// action can re-escalate before it stops upserting. Prevents an unbounded loop
+// (see SPC-13644, SPC-21220) if a future regression slips past the child-
+// awareness skip in decideSuccessfulRunHandoff / reconcileStrandedAssignedIssues.
+// Only applies to non-routine actions; routine executions keep their own
+// maxAttempts=1 + 24h timeout policy set in ensureSourceScopedStrandedRecoveryAction.
+export const SOURCE_SCOPED_RECOVERY_MAX_ATTEMPTS = Math.max(
+  1,
+  Number(process.env.SOURCE_SCOPED_RECOVERY_MAX_ATTEMPTS) || 10,
+);
+
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -587,6 +598,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ]);
 
     return Boolean(run || deferredWake);
+  }
+
+  // SPC-21224: daily-umbrella pattern — umbrella issues (e.g. Trading Day EU) hold
+  // status=in_progress across a whole trading day and spawn work as child issues via
+  // parentId, not `blocks` relations. Between children the umbrella has no own-issue
+  // run/wake, so decideSuccessfulRunHandoff + the reconciler both treat it as
+  // stranded. Treating any active-status child as a valid continuation path
+  // restores SPC-9926's coverage for this pattern (previously provided as a side
+  // effect of the "skip if active recovery action exists" rule, weakened by
+  // SPC-20840 for legitimate stale-action escalation).
+  async function hasActiveInProgressChild(companyId: string, issueId: string) {
+    return db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.parentId, issueId),
+          inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
   }
 
   async function hasPendingWakeInteraction(companyId: string, issueId: string) {
@@ -2292,10 +2327,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     const now = new Date();
 
-    // For routine execution instances, set a 24-hour timeout and maxAttempts=1
+    // For routine execution instances, set a 24-hour timeout and maxAttempts=1.
+    // For all other origins, apply the SOURCE_SCOPED_RECOVERY_MAX_ATTEMPTS
+    // env-cap (SPC-21224) so a runaway loop is bounded even if a future
+    // reconciler-skip regression slips past the child-awareness check.
     const isRoutineExecution = input.issue.originKind === "routine_execution";
     const timeoutAt = isRoutineExecution ? new Date(now.getTime() + 24 * 60 * 60 * 1000) : null;
-    const maxAttempts = isRoutineExecution ? 1 : null;
+    const maxAttempts = isRoutineExecution ? 1 : SOURCE_SCOPED_RECOVERY_MAX_ATTEMPTS;
 
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
@@ -2774,8 +2812,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      // SPC-21224: umbrella issues (e.g. Trading Day EU) with an active-status
+      // child are not stranded — the child owns the next action via parentId.
+      // Checked before the recovery-action skip so umbrellas without a live
+      // own-issue path still terminate their loop cleanly even if a stale
+      // recovery action is around.
+      if (await hasActiveInProgressChild(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
       const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
       if (activeRecoveryAction) {
+        // SPC-21224: hard cap. Once the action reaches its maxAttempts (env-cap
+        // default 10 for non-routine), stop upserting more attempts — the
+        // wake loop terminates and the action sits as first-class evidence
+        // that recovery is exhausted. Human/board can then resolve or cancel.
+        const capReached = typeof activeRecoveryAction.maxAttempts === "number" &&
+          activeRecoveryAction.attemptCount >= activeRecoveryAction.maxAttempts;
+        if (capReached) {
+          result.skipped += 1;
+          continue;
+        }
+
         const now = new Date();
         const lastAttemptDate = activeRecoveryAction.lastAttemptAt instanceof Date
           ? activeRecoveryAction.lastAttemptAt
@@ -2785,8 +2844,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           ? (now.getTime() - lastAttemptDate.getTime()) / (1000 * 60 * 60)
           : Infinity;
 
-        // Only skip reconciliation if recovery action is fresh (recent attempts or low attempt count)
-        // If attempts are stale (1+ hour) or excessive (3+ attempts), allow reconciliation to proceed
+        // SPC-20840: only skip reconciliation if recovery action is fresh
+        // (recent attempts or low attempt count). If attempts are stale
+        // (1+ hour) or excessive (3+ attempts), allow reconciliation to
+        // proceed — but bounded by the maxAttempts cap above (SPC-21224).
         const isRecent = hoursSinceLastAttempt < 1;
         const isFreshAttempt = activeRecoveryAction.attemptCount < 3;
 
