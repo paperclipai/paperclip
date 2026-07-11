@@ -626,7 +626,6 @@ export class SharedPollingCoordinator {
       listeners?.delete(listener);
       if (listeners?.size === 0) {
         this.resourceListeners.delete(key);
-        this.latestResults.delete(key);
       }
     };
   }

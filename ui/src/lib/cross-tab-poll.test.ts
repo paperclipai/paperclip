@@ -305,7 +305,9 @@ describe("SharedPollingCoordinator", () => {
     coordinator.stop();
   });
 
-  it("retains broadcast payloads only while local resource listeners exist", () => {
+  it("retains broadcast payloads through quick resource resubscriptions", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
     const channel = new MemorySharedChannel();
     const coordinator = startLeaderCoordinator(channel);
     const message = {
@@ -325,6 +327,14 @@ describe("SharedPollingCoordinator", () => {
     expect(getCoordinatorCaches(coordinator).latestResults.size).toBe(1);
 
     unsubscribe();
+    expect(getCoordinatorCaches(coordinator).latestResults.size).toBe(1);
+
+    const remountedListener = vi.fn();
+    const unsubscribeRemounted = coordinator.subscribeResource(message.key, remountedListener);
+    expect(remountedListener).toHaveBeenCalledWith(message);
+
+    unsubscribeRemounted();
+    vi.advanceTimersByTime(5 * 60_000 + 10_000);
     expect(getCoordinatorCaches(coordinator).latestResults.size).toBe(0);
 
     coordinator.stop();
