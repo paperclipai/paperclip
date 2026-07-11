@@ -22,6 +22,7 @@ import {
   issueDocuments,
   issueRecoveryActions,
   issueRelations,
+  issueThreadInteractions,
   issueTreeHoldMembers,
   issueTreeHolds,
   issueWorkProducts,
@@ -330,6 +331,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issueWorkProducts);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
+    await db.delete(issueThreadInteractions);
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(issueRelations);
@@ -339,6 +341,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(issueComments);
       await db.delete(issueDocuments);
+      await db.delete(issueThreadInteractions);
       try {
         await db.delete(issues);
         break;
