@@ -70,9 +70,52 @@ function cfgStringArray(v: unknown): string[] | undefined {
     ? (v as string[])
     : undefined;
 }
+function cfgEnvString(v: unknown): string | undefined {
+  if (typeof v === "string" && v.length > 0) return v;
+  if (v && typeof v === "object" && "value" in v) {
+    const value = (v as { value?: unknown }).value;
+    return typeof value === "string" && value.length > 0 ? value : undefined;
+  }
+  return undefined;
+}
 
 export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
+}
+
+export function extractHermesProfileFromArgs(args: string[] | undefined): string | undefined {
+  if (!args?.length) return undefined;
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--profile" || arg === "-p") {
+      return cfgString(args[i + 1]);
+    }
+
+    const equalsMatch = arg.match(/^(?:--profile|-p)=(.+)$/);
+    if (equalsMatch?.[1]) return equalsMatch[1];
+
+    const splitMatch = arg.match(/^(?:--profile|-p)\s+(.+)$/);
+    if (splitMatch?.[1]) return splitMatch[1].trim() || undefined;
+  }
+
+  return undefined;
+}
+
+export function resolveHermesConfigPath(
+  config: Record<string, unknown>,
+  extraArgs: string[] | undefined,
+): string | undefined {
+  const envConfig = config.env as Record<string, unknown> | undefined;
+  const hermesHome = envConfig && typeof envConfig === "object"
+    ? cfgEnvString(envConfig.HERMES_HOME)
+    : undefined;
+  if (!hermesHome) return undefined;
+
+  const profile = extractHermesProfileFromArgs(extraArgs);
+  return profile
+    ? path.join(hermesHome, "profiles", profile, "config.yaml")
+    : path.join(hermesHome, "config.yaml");
 }
 
 // ---------------------------------------------------------------------------
@@ -331,12 +374,12 @@ export async function execute(
 
   // ── Resolve configuration ──────────────────────────────────────────────
   const hermesCmd = resolveHermesCommand(config);
-  const model = cfgString(config.model) || DEFAULT_MODEL;
   const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
   const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
   const maxTurns = cfgNumber(config.maxTurnsPerRun);
   const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
   const extraArgs = cfgStringArray(config.extraArgs);
+  const configuredModel = cfgString(config.model);
   const persistSession = cfgBoolean(config.persistSession) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
@@ -357,13 +400,15 @@ export async function execute(
   let detectedConfig: Awaited<ReturnType<typeof detectModel>> | null = null;
   const explicitProvider = cfgString(config.provider);
 
-  if (!explicitProvider) {
+  if (!explicitProvider || !configuredModel) {
     try {
-      detectedConfig = await detectModel();
+      detectedConfig = await detectModel(resolveHermesConfigPath(config, extraArgs));
     } catch {
       // Non-fatal — detection failure shouldn't block execution
     }
   }
+
+  const model = configuredModel || detectedConfig?.model || DEFAULT_MODEL;
 
   const { provider: resolvedProvider, resolvedFrom } = resolveProvider({
     explicitProvider,
