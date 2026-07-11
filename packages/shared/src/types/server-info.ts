@@ -28,7 +28,22 @@ export type ServerGitInfo =
       unavailableReason: "git_unavailable" | "invalid_git_metadata";
     };
 
+export interface ServerRuntimeOwnership {
+  enabled: boolean;
+  owner: "local" | "source_api";
+}
+
+export interface ServerRuntimeInfo {
+  role: "primary" | "shadow";
+  shadowSourceApi: string | null;
+  shadowSourcePort: number | null;
+  targetPort: number | null;
+  scheduler: ServerRuntimeOwnership;
+  backups: ServerRuntimeOwnership;
+}
+
 export interface ServerInfoSnapshot {
   processStartedAt: string;
   git: ServerGitInfo;
+  runtime?: ServerRuntimeInfo;
 }

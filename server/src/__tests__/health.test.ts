@@ -150,6 +150,44 @@ describe("GET /health", () => {
     });
   });
 
+  it("surfaces shadow runtime ownership metadata in full health details", async () => {
+    const app = createApp(undefined, {
+      ...testServerInfo,
+      runtime: {
+        role: "shadow",
+        shadowSourceApi: "http://127.0.0.1:3100",
+        shadowSourcePort: 3100,
+        targetPort: 3101,
+        scheduler: {
+          enabled: false,
+          owner: "source_api",
+        },
+        backups: {
+          enabled: false,
+          owner: "source_api",
+        },
+      },
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.serverInfo.runtime).toEqual({
+      role: "shadow",
+      shadowSourceApi: "http://127.0.0.1:3100",
+      shadowSourcePort: 3100,
+      targetPort: 3101,
+      scheduler: {
+        enabled: false,
+        owner: "source_api",
+      },
+      backups: {
+        enabled: false,
+        owner: "source_api",
+      },
+    });
+  });
+
   it("surfaces a stale database backup warning in full health details", async () => {
     const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-backups-"));
     const backupFile = path.join(backupDir, "paperclip-20260705-031702.sql.gz");

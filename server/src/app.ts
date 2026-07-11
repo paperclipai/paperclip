@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode, ServerRuntimeInfo } from "@paperclipai/shared";
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
@@ -61,7 +61,7 @@ import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
-import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
+import { createPluginJobScheduler, type PluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
 import { createToolGatewayService } from "./services/tool-gateway.js";
@@ -137,6 +137,28 @@ export function shouldEnablePrivateHostnameGuard(opts: {
   );
 }
 
+function createManualOnlyPluginJobScheduler(base: PluginJobScheduler): PluginJobScheduler {
+  return {
+    start() {},
+    stop() {},
+    async registerPlugin() {},
+    async unregisterPlugin() {},
+    triggerJob(jobId, trigger = "manual") {
+      return base.triggerJob(jobId, trigger);
+    },
+    async tick() {},
+    diagnostics() {
+      const current = base.diagnostics();
+      return {
+        ...current,
+        running: false,
+        tickCount: 0,
+        lastTickAt: null,
+      };
+    },
+  };
+}
+
 export async function createApp(
   db: Db,
   opts: {
@@ -154,6 +176,7 @@ export async function createApp(
     databaseBackupService?: InstanceDatabaseBackupService;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     devDatabaseSourceUrl?: string;
+    serverRuntimeInfo?: ServerRuntimeInfo;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
@@ -165,6 +188,7 @@ export async function createApp(
     localPluginDir?: string;
     pluginMigrationDb?: Db;
     pluginWorkerManager?: PluginWorkerManager;
+    pluginJobSchedulingEnabled?: boolean;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
@@ -230,6 +254,7 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+      serverRuntimeInfo: opts.serverRuntimeInfo,
       databaseBackupHealth: opts.databaseBackupHealth,
       devDatabaseSourceUrl: opts.devDatabaseSourceUrl,
     }),
@@ -282,6 +307,10 @@ export async function createApp(
     jobStore,
     workerManager,
   });
+  const pluginJobSchedulingEnabled = opts.pluginJobSchedulingEnabled ?? true;
+  const pluginJobScheduler = pluginJobSchedulingEnabled
+    ? scheduler
+    : createManualOnlyPluginJobScheduler(scheduler);
   const toolDispatcher = createPluginToolDispatcher({
     workerManager,
     lifecycleManager: lifecycle,
@@ -315,7 +344,7 @@ export async function createApp(
   const jobCoordinator = createPluginJobCoordinator({
     db,
     lifecycle,
-    scheduler,
+    scheduler: pluginJobScheduler,
     jobStore,
   });
   const hostServiceCleanup = createPluginHostServiceCleanup(lifecycle, hostServicesDisposers);
@@ -329,10 +358,11 @@ export async function createApp(
     {
       workerManager,
       eventBus,
-      jobScheduler: scheduler,
+      jobScheduler: pluginJobScheduler,
       jobStore,
       toolDispatcher,
       lifecycleManager: lifecycle,
+      jobSchedulingEnabled: pluginJobSchedulingEnabled,
       instanceInfo: {
         instanceId: opts.instanceId ?? "default",
         hostVersion: opts.hostVersion ?? "0.0.0",
@@ -364,7 +394,7 @@ export async function createApp(
     pluginRoutes(
       db,
       loader,
-      { scheduler, jobStore },
+      { scheduler: pluginJobScheduler, jobStore },
       { workerManager },
       { toolDispatcher },
       { workerManager },
@@ -489,8 +519,12 @@ export async function createApp(
 
   app.use(errorHandler);
 
-  jobCoordinator.start();
-  scheduler.start();
+  if (pluginJobSchedulingEnabled) {
+    jobCoordinator.start();
+    scheduler.start();
+  } else {
+    logger.info("Plugin job scheduling disabled for this runtime instance");
+  }
   let feedbackExportShuttingDown = false;
   let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
   const disableFeedbackExportFlushes = () => {

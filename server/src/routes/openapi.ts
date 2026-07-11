@@ -1063,6 +1063,20 @@ registry.registerPath({
             unavailableReason: z.enum(["git_unavailable", "invalid_git_metadata"]),
           }).strict(),
         ]),
+        runtime: z.object({
+          role: z.enum(["primary", "shadow"]),
+          shadowSourceApi: z.string().nullable(),
+          shadowSourcePort: z.number().int().nullable(),
+          targetPort: z.number().int().nullable(),
+          scheduler: z.object({
+            enabled: z.boolean(),
+            owner: z.enum(["local", "source_api"]),
+          }).strict(),
+          backups: z.object({
+            enabled: z.boolean(),
+            owner: z.enum(["local", "source_api"]),
+          }).strict(),
+        }).strict().optional(),
       }).strict().optional(),
     })),
     503: { description: "Service unavailable", content: { "application/json": { schema: ErrorSchema } } },

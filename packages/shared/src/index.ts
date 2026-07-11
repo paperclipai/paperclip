@@ -1338,7 +1338,13 @@ export type {
   CloudUpstreamWarning,
 } from "./types/cloud-upstream.js";
 
-export type { ServerGitInfo, ServerGitLocalChanges, ServerInfoSnapshot } from "./types/server-info.js";
+export type {
+  ServerGitInfo,
+  ServerGitLocalChanges,
+  ServerInfoSnapshot,
+  ServerRuntimeInfo,
+  ServerRuntimeOwnership,
+} from "./types/server-info.js";
 
 export {
   getClosedIsolatedExecutionWorkspaceMessage,

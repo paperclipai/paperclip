@@ -307,6 +307,8 @@ export interface PluginRuntimeServices {
   toolDispatcher: PluginToolDispatcher;
   /** Lifecycle manager for state transitions and worker lifecycle events. */
   lifecycleManager: PluginLifecycleManager;
+  /** Whether this runtime owns automatic plugin job registration and scheduling. */
+  jobSchedulingEnabled?: boolean;
   /**
    * Factory that creates worker-to-host RPC handlers for a given plugin.
    *
@@ -2173,7 +2175,7 @@ export function pluginLoader(
       // 6. Sync job declarations and register with scheduler
       // ------------------------------------------------------------------
       const jobDeclarations = manifest.jobs ?? [];
-      if (jobDeclarations.length > 0) {
+      if (jobDeclarations.length > 0 && runtimeServices.jobSchedulingEnabled !== false) {
         await jobStore.syncJobDeclarations(pluginId, jobDeclarations);
         await jobScheduler.registerPlugin(pluginId);
         registered.jobs = jobDeclarations.length;
@@ -2181,6 +2183,11 @@ export function pluginLoader(
         log.info(
           { pluginId, pluginKey, jobs: jobDeclarations.length },
           "plugin-loader: job declarations synced and plugin registered with scheduler",
+        );
+      } else if (jobDeclarations.length > 0) {
+        log.info(
+          { pluginId, pluginKey, jobs: jobDeclarations.length },
+          "plugin-loader: skipping job sync and scheduler registration because this runtime does not own scheduled jobs",
         );
       }
 
