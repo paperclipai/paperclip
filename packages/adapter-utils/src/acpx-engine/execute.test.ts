@@ -114,12 +114,14 @@ async function runExecutor(
     executionTransport?: Record<string, unknown>;
     authToken?: string;
     executionTarget?: Record<string, unknown>;
+    platform?: NodeJS.Platform;
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
   const execute = createAcpxEngineExecutor({
+    platform: options.platform ?? "linux",
     createRuntime: (options) => {
       runtimeOptions.push(options as unknown as Record<string, unknown>);
       return buildRuntime() as never;
@@ -410,14 +412,82 @@ describe("shared ACPX engine runtime behavior", () => {
     const envPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.startsWith("custom-b-") && name.endsWith(".env"))!);
     const wrapper = await fs.readFile(wrapperPath, "utf8");
     const env = await fs.readFile(envPath, "utf8");
-    expect((await fs.stat(envPath)).mode & 0o777).toBe(0o600);
-    expect((await fs.stat(wrapperPath)).mode & 0o777).toBe(0o700);
+    if (process.platform !== "win32") {
+      expect((await fs.stat(envPath)).mode & 0o777).toBe(0o600);
+      expect((await fs.stat(wrapperPath)).mode & 0o777).toBe(0o700);
+    }
     expect(wrapper).toContain("node ./fake-acp.js");
     expect(wrapper).not.toContain("PAPERCLIP_API_KEY");
     expect(wrapper).not.toContain("new-key");
     expect(wrapper).not.toContain("old-key");
     expect(env).toContain("PAPERCLIP_API_KEY='new-key'");
     expect(env).not.toContain("old-key");
+  });
+
+  it("uses a Windows command wrapper instead of registering a shell script directly", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+
+    const { runtimeOptions } = await runExecutor(
+      {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        env: { PAPERCLIP_API_KEY: "windows-key" },
+      },
+      { platform: "win32" },
+    );
+
+    const wrappersDir = path.join(stateDir, "wrappers");
+    const wrappers = await fs.readdir(wrappersDir);
+    expect(wrappers.filter((name) => name.endsWith(".sh"))).toHaveLength(0);
+    expect(wrappers.filter((name) => name.endsWith(".cmd") && !name.endsWith(".env.cmd"))).toHaveLength(1);
+    expect(wrappers.filter((name) => name.endsWith(".env.cmd"))).toHaveLength(1);
+
+    const wrapperFile = wrappers.find((name) => name.endsWith(".cmd") && !name.endsWith(".env.cmd"))!;
+    const wrapperPath = path.join(wrappersDir, wrapperFile);
+    expect(await pathExists(wrapperPath)).toBe(true);
+
+    const agentRegistry = runtimeOptions[0]?.agentRegistry as { resolve(agentName: string): string };
+    expect(agentRegistry.resolve("custom")).toBe(wrapperPath);
+
+    const wrapper = await fs.readFile(wrapperPath, "utf8");
+    expect(wrapper).toContain("@echo off");
+    expect(wrapper).toContain("call node ./fake-acp.js %*");
+    expect(wrapper).toContain("run-stderr");
+    expect(wrapper).not.toContain("#!/usr/bin/env bash");
+
+    const envPath = path.join(wrappersDir, wrappers.find((name) => name.endsWith(".env.cmd"))!);
+    expect(await pathExists(envPath)).toBe(true);
+    const env = await fs.readFile(envPath, "utf8");
+    expect(env).toContain('set "PAPERCLIP_API_KEY=windows-key"');
+  });
+
+  it("keeps POSIX shell wrappers for non-Windows platforms", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+
+    const { runtimeOptions } = await runExecutor(
+      {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+      },
+      { platform: "linux" },
+    );
+
+    const wrappersDir = path.join(stateDir, "wrappers");
+    const wrappers = await fs.readdir(wrappersDir);
+    expect(wrappers.filter((name) => name.endsWith(".sh"))).toHaveLength(1);
+    expect(wrappers.filter((name) => name.endsWith(".cmd"))).toHaveLength(0);
+
+    const wrapperPath = path.join(wrappersDir, wrappers.find((name) => name.endsWith(".sh"))!);
+    const agentRegistry = runtimeOptions[0]?.agentRegistry as { resolve(agentName: string): string };
+    expect(agentRegistry.resolve("custom")).toBe(wrapperPath);
+
+    const wrapper = await fs.readFile(wrapperPath, "utf8");
+    expect(wrapper).toContain("#!/usr/bin/env bash");
+    expect(wrapper).toContain('exec node ./fake-acp.js "$@"');
   });
 
   it("shapes ACPX wrapper workspace env for remote execution identities", async () => {
@@ -609,12 +679,57 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(stderrLog!.text).toContain(stderrTail);
   });
 
+  it("reports Windows wrapper setup failures as acpx_session_init_failed", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+
+    const execute = createAcpxEngineExecutor({
+      platform: "win32",
+      createRuntime: () => ({
+        ensureSession: async () => {
+          throw Object.assign(new Error("spawn wrapper ENOENT"), {
+            name: "AcpRuntimeError",
+            code: "ACP_SESSION_INIT_FAILED",
+            cause: Object.assign(new Error("spawn wrappers\\claude-test.cmd ENOENT"), { code: "ENOENT" }),
+            retryable: false,
+          });
+        },
+        startTurn: () => ({
+          events: (async function* () {})(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_session_init_failed");
+    expect(result.errorMeta?.phase).toBe("ensure_session");
+    expect(result.errorMeta?.causeMessage).toContain("ENOENT");
+  });
+
   it("writes wrapper that redirects child stderr to a per-run log file", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
 
     const runtimeOptions: AcpRuntimeOptions[] = [];
     const execute = createAcpxEngineExecutor({
+      platform: "linux",
       createRuntime: (options) => {
         runtimeOptions.push(options as unknown as AcpRuntimeOptions);
         return buildRuntime() as never;
@@ -652,7 +767,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(wrapper).toContain("exec node ./fake-acp.js");
   });
 
-  it("starts sandbox ACP process sessions in the remote execution cwd", async () => {
+  it.skipIf(process.platform === "win32")("starts sandbox ACP process sessions in the remote execution cwd", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const localCwd = path.join(root, "worktree");
@@ -1082,6 +1197,7 @@ describe("gemini ACP flag selection", () => {
     await fs.mkdir(binDir, { recursive: true });
     const binPath = path.join(binDir, "gemini");
     await fs.writeFile(binPath, `#!/bin/sh\necho "${version}"\n`, { mode: 0o755 });
+    await fs.writeFile(path.join(binDir, "gemini.cmd"), `@echo off\r\necho ${version}\r\n`, { mode: 0o755 });
   }
 
   function pathWithFakeBin(binDir: string): string {
@@ -1113,7 +1229,7 @@ describe("gemini ACP flag selection", () => {
     expect(script).not.toContain("'gemini --acp'");
   });
 
-  it("downgrades the built-in gemini command flag when the local CLI predates --acp", async () => {
+  it.skipIf(process.platform === "win32")("downgrades the built-in gemini command flag when the local CLI predates --acp", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const binDir = path.join(root, "bin");
