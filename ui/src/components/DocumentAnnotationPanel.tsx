@@ -311,10 +311,10 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
   }, [props.open]);
 
   useEffect(() => {
-    if (!props.pendingAnchor || !props.open || props.isMobile) return;
+    if (!props.pendingAnchor || !props.open) return;
     if (isCoarsePointerDevice()) return;
     composerRef.current?.focus();
-  }, [props.isMobile, props.open, props.pendingAnchor]);
+  }, [props.open, props.pendingAnchor]);
 
   // Keep the comment list congruent with the document: when a thread becomes
   // focused — whether by clicking its highlight in the doc or by adding a new
