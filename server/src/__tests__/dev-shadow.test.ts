@@ -18,6 +18,15 @@ describe("dev shadow resolver", () => {
     });
   });
 
+  it("accepts parameterized commands with or without pnpm's argument separator", () => {
+    const args = ["--source-api", "http://localhost:3200/", "--port", "3201"];
+
+    expect(parseDevShadowArgs(args)).toEqual(parseDevShadowArgs(["--", ...args]));
+    expect(() => parseDevShadowArgs(["--", "--", ...args])).toThrow(
+      "Unknown dev:shadow option: --",
+    );
+  });
+
   it("accepts an explicit PostgreSQL URL and rejects data-directory sharing", async () => {
     const options = parseDevShadowArgs([
       "--source-api",

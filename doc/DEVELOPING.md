@@ -62,6 +62,9 @@ pnpm dev:shadow
 # pnpm dev:shadow -- --source-api http://127.0.0.1:3100 --port 3101
 ```
 
+The conventional pnpm `--` argument separator is optional for `dev:shadow`, so
+`pnpm dev:shadow --source-api http://127.0.0.1:3100 --port 3101` is equivalent.
+
 Open the two UIs side by side:
 
 - stable source: `http://127.0.0.1:3100`

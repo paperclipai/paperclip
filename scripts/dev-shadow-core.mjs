@@ -43,7 +43,8 @@ function normalizeDatabaseUrl(value) {
 
 export function parseDevShadowArgs(args) {
   const options = { sourceApi: DEFAULT_SOURCE_API, port: DEFAULT_SHADOW_PORT };
-  for (let index = 0; index < args.length; index += 1) {
+  const startIndex = args[0] === "--" ? 1 : 0;
+  for (let index = startIndex; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--source-api") {
       options.sourceApi = requiredValue(args, index, arg);
