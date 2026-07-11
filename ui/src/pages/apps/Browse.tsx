@@ -2,23 +2,31 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link2, Search } from "lucide-react";
 import type { AppGalleryEntry } from "@paperclipai/shared";
+import { useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AppLogo } from "./AppLogo";
-import { AdvancedToolsLink, ByoConnectCard, POPULAR_KEYS } from "./store-cards";
+import {
+  AdvancedToolsLink,
+  BYO_CONNECT_HREF,
+  ByoConnectCard,
+  POPULAR_KEYS,
+  ZAPIER_CONNECT_HREF,
+} from "./store-cards";
 
 /**
  * Door 1 — Browse (the store) (PAP-13254 / U3 §4).
  *
  * A persistent, browsable storefront: search + a Popular grid + the full
  * gallery + a first-class bring-your-own card + a labelled Developer link.
- * Connection setup is intentionally unavailable until its integrations are
- * ready, so Browse remains the single discoverability surface.
+ * Browse remains the single discoverability surface. Zapier and bring-your-own
+ * MCP servers use the URL flow; the remaining integrations stay unavailable.
  */
 export function Browse() {
+  const navigate = useNavigate();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [query, setQuery] = useState("");
@@ -69,7 +77,7 @@ export function Browse() {
       <header>
         <h1 className="text-2xl font-bold tracking-tight">Browse</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Browse tools planned for your agents. Connections are coming soon.
+          Connect Zapier or your own MCP server. More integrations are coming soon.
         </p>
       </header>
 
@@ -100,7 +108,12 @@ export function Browse() {
               </div>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                 {popular.map((entry) => (
-                  <AppTile key={entry.key} entry={entry} compact />
+                  <AppTile
+                    key={entry.key}
+                    entry={entry}
+                    onConnect={entry.key === "zapier" ? () => navigate(ZAPIER_CONNECT_HREF) : undefined}
+                    compact
+                  />
                 ))}
               </div>
             </section>
@@ -118,17 +131,21 @@ export function Browse() {
             ) : (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {filtered.map((entry) => (
-                  <AppTile key={entry.key} entry={entry} />
+                  <AppTile
+                    key={entry.key}
+                    entry={entry}
+                    onConnect={entry.key === "zapier" ? () => navigate(ZAPIER_CONNECT_HREF) : undefined}
+                  />
                 ))}
               </div>
             )}
           </section>
 
-          <ByoConnectCard disabled />
+          <ByoConnectCard onConnect={() => navigate(BYO_CONNECT_HREF)} />
 
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs text-muted-foreground">
-              App connections are not available yet. Browse the planned integrations above.
+              Zapier connects with the MCP URL it gives you. Other listed integrations are previews.
             </p>
             <AdvancedToolsLink />
           </div>
@@ -140,36 +157,49 @@ export function Browse() {
 
 function AppTile({
   entry,
+  onConnect,
   compact = false,
 }: {
   entry: AppGalleryEntry;
+  onConnect?: () => void;
   compact?: boolean;
 }) {
+  const disabled = !onConnect;
   if (compact) {
     return (
       <button
         type="button"
-        disabled
-        className="flex cursor-not-allowed flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center opacity-60"
+        disabled={disabled}
+        onClick={onConnect}
+        className={disabled
+          ? "flex cursor-not-allowed flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center opacity-60"
+          : "flex flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center transition-colors hover:border-foreground/30 hover:bg-accent/40"}
       >
         <AppLogo name={entry.name} logoUrl={entry.logoUrl} size={36} />
         <span className="text-xs font-medium text-foreground">{entry.name}</span>
-        <span className="text-xs text-muted-foreground">Coming soon</span>
+        <span className={disabled ? "text-xs text-muted-foreground" : "text-xs font-semibold text-primary"}>
+          {disabled ? "Coming soon" : "Connect →"}
+        </span>
       </button>
     );
   }
   return (
     <button
       type="button"
-      disabled
-      className="flex h-full cursor-not-allowed items-start gap-3 rounded-xl border border-border bg-card px-4 py-4 text-left opacity-60"
+      disabled={disabled}
+      onClick={onConnect}
+      className={disabled
+        ? "flex h-full cursor-not-allowed items-start gap-3 rounded-xl border border-border bg-card px-4 py-4 text-left opacity-60"
+        : "flex h-full items-start gap-3 rounded-xl border border-border bg-card px-4 py-4 text-left transition-colors hover:border-foreground/30 hover:bg-accent/40"}
     >
       <AppLogo name={entry.name} logoUrl={entry.logoUrl} size={36} />
       <div className="min-w-0 flex-1">
         <div className="text-sm font-semibold text-foreground">{entry.name}</div>
         <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{entry.tagline}</div>
       </div>
-      <span className="shrink-0 text-xs font-semibold text-muted-foreground">Coming soon</span>
+      <span className={disabled ? "shrink-0 text-xs font-semibold text-muted-foreground" : "shrink-0 text-xs font-semibold text-primary"}>
+        {disabled ? "Coming soon" : "Connect →"}
+      </span>
     </button>
   );
 }

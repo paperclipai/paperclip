@@ -271,6 +271,7 @@ export function AppsConnect() {
           loading={galleryQuery.isLoading}
           apps={galleryQuery.data?.apps ?? []}
           byo={searchParams.get("byo") === "1"}
+          source={searchParams.get("source")}
           onPick={(picked) => {
             setEntry(picked);
             setGalleryName(picked.name);
@@ -286,10 +287,11 @@ export function AppsConnect() {
             navigate(appConnectHref(picked.key, "key"));
           }}
           onUseLink={(url) => {
+            const matchedEntry = getToolAppGalleryEntryForUrl(url, galleryQuery.data?.apps ?? []);
             setEntry(null);
             setGalleryName("");
             setLinkUrl(url);
-            setLinkName(defaultLinkName(url) ?? "");
+            setLinkName(matchedEntry?.name ?? defaultLinkName(url) ?? "");
             setLinkNeedsKey(false);
             setLinkKey("");
             setCredentials({});
@@ -441,6 +443,7 @@ function GalleryStep({
   loading,
   apps,
   byo = false,
+  source = null,
   onPick,
   onUseLink,
   onRunYourOwn,
@@ -450,6 +453,7 @@ function GalleryStep({
   apps: AppGalleryEntry[];
   /** Entered via the "Connect your own MCP server" card (PAP-12371, Finding C): focus the link path. */
   byo?: boolean;
+  source?: string | null;
   onPick: (entry: AppGalleryEntry) => void;
   onUseLink: (link: string) => void;
   onRunYourOwn: () => void;
@@ -475,6 +479,7 @@ function GalleryStep({
   }, [apps, search]);
   const normalizedLink = normalizeAppLink(linkInput);
   const matchedEntry = normalizedLink ? getToolAppGalleryEntryForUrl(normalizedLink, apps) : null;
+  const zapierSource = source === "zapier";
 
   const continueWithLink = () => {
     const next = normalizeAppLink(linkInput);
@@ -560,17 +565,21 @@ function GalleryStep({
         <div>
           <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
             <Link2 className="h-4 w-4 text-muted-foreground" />
-            {byo ? "Connect your own MCP server" : "Connect with a link"}
+            {zapierSource ? "Connect Zapier" : byo ? "Connect your own MCP server" : "Connect with a link"}
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            {byo
+            {zapierSource
+              ? "Paste the complete MCP URL Zapier gives you, including its token."
+              : byo
               ? "Paste your MCP server’s URL and we’ll walk you through permissions and review."
               : "Paste a setup link from an app that is not listed here."}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Any remote tool URL works here — including a local MCP server like{" "}
-            <code className="rounded bg-muted px-1 py-0.5 text-[0.7rem]">http://127.0.0.1:8848/mcp</code>.
-          </p>
+          {!zapierSource && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Any remote tool URL works here — including a local MCP server like{" "}
+              <code className="rounded bg-muted px-1 py-0.5 text-xs">http://127.0.0.1:8848/mcp</code>.
+            </p>
+          )}
           {matchedEntry && (
             <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2">
               <div className="flex min-w-0 items-center gap-2 text-sm">
@@ -584,10 +593,18 @@ function GalleryStep({
                 disabled={matchedEntry.availability?.available === false}
                 onClick={() => {
                   setLinkError(null);
+                  if (matchedEntry.key === "zapier") {
+                    continueWithLink();
+                    return;
+                  }
                   onPick(matchedEntry);
                 }}
               >
-                {matchedEntry.availability?.available === false ? "Not available" : `Use ${matchedEntry.name}`}
+                {matchedEntry.availability?.available === false
+                  ? "Not available"
+                  : matchedEntry.key === "zapier"
+                    ? "Continue"
+                    : `Use ${matchedEntry.name}`}
               </Button>
             </div>
           )}
@@ -604,7 +621,7 @@ function GalleryStep({
               onKeyDown={(e) => {
                 if (e.key === "Enter") continueWithLink();
               }}
-              placeholder="https://example.com/actions"
+              placeholder={zapierSource ? "https://mcp.zapier.com/api/v1/connect?token=…" : "https://example.com/actions"}
               className="h-10"
             />
             <Button type="button" variant="outline" onClick={continueWithLink}>

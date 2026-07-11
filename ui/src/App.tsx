@@ -51,6 +51,7 @@ import { ProfileWizardRoute } from "./pages/tools/profiles/ProfileWizardRoute";
 import { ProfileDetailRoute } from "./pages/tools/profiles/ProfileDetailRoute";
 import { Connections } from "./pages/apps/Connections";
 import { Browse } from "./pages/apps/Browse";
+import { AppsConnect } from "./pages/apps/AppsConnect";
 import { AppsReview } from "./pages/apps/AppsReview";
 import { AppDetail } from "./pages/apps/AppDetail";
 import { AppNotConnected } from "./pages/apps/AppNotConnected";
@@ -113,7 +114,7 @@ function boardRoutes() {
       <Route path="tools/:tab" element={<LegacyToolsRedirect />} />
       <Route path="apps" element={<Connections />} />
       <Route path="apps/browse" element={<Browse />} />
-      <Route path="apps/connect" element={<Navigate to="/apps/browse" replace />} />
+      <Route path="apps/connect" element={<AppsConnectEntryRoute />} />
       <Route path="apps/connect/:appKey" element={<Navigate to="/apps/browse" replace />} />
       <Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps/browse" replace />} />
       <Route path="apps/review" element={<AppsReview />} />
@@ -262,6 +263,12 @@ function boardRoutes() {
       <Route path="*" element={<NotFoundPage scope="board" />} />
     </>
   );
+}
+
+function AppsConnectEntryRoute() {
+  const location = useLocation();
+  const searchParams = new URLSearchParams(location.search);
+  return searchParams.get("byo") === "1" ? <AppsConnect /> : <Navigate to="/apps/browse" replace />;
 }
 
 function InboxRootRedirect() {

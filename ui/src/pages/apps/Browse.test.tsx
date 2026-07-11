@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Browse } from "./Browse";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
+const navigateMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -16,6 +17,7 @@ vi.mock("@/api/tools", () => ({
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to }: { children: React.ReactNode; to: string }) => <a href={to}>{children}</a>,
+  useNavigate: () => navigateMock,
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -71,6 +73,7 @@ describe("Browse store door (PAP-13254 door 1)", () => {
   beforeEach(() => {
     listGalleryMock.mockResolvedValue({
       apps: [
+        galleryEntry({ key: "zapier", name: "Zapier", tagline: "Connect automations." }),
         galleryEntry({ key: "github", name: "GitHub", tagline: "Open PRs and issues." }),
         galleryEntry({ key: "slack", name: "Slack", tagline: "Post messages to channels." }),
         galleryEntry({ key: "acme", name: "Acme CRM", tagline: "Sync deals and contacts." }),
@@ -104,7 +107,7 @@ describe("Browse store door (PAP-13254 door 1)", () => {
 
     const text = container.textContent ?? "";
     expect(text).toContain("Browse");
-    expect(text).toContain("Connections are coming soon.");
+    expect(text).toContain("Connect Zapier or your own MCP server.");
     expect(text).toContain("Popular");
     expect(text).toContain("All apps");
     expect(text).toContain("GitHub");
@@ -114,10 +117,13 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     expect(text).toContain("Connect your own tool");
   });
 
-  it("fades all connection options and prevents unfinished setup flows", async () => {
+  it("enables Zapier and custom URLs while fading unfinished integrations", async () => {
     await renderBrowse();
 
-    const githubTile = Array.from(container.querySelectorAll("button")).find((button) =>
+    const zapierTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
+      button.textContent?.includes("Zapier"),
+    );
+    const githubTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
       button.textContent?.includes("GitHub"),
     );
     const tile = Array.from(container.querySelectorAll("button")).find((button) =>
@@ -127,11 +133,23 @@ describe("Browse store door (PAP-13254 door 1)", () => {
       button.textContent?.includes("Connect your own tool"),
     );
 
-    expect(githubTile?.disabled).toBe(true);
+    expect(zapierTiles).toHaveLength(2);
+    expect(zapierTiles.every((button) => !button.disabled)).toBe(true);
+    expect(githubTiles.every((button) => button.disabled)).toBe(true);
     expect(tile?.disabled).toBe(true);
-    expect(byoCard?.disabled).toBe(true);
+    expect(byoCard?.disabled).toBe(false);
     expect(tile?.textContent).toContain("Coming soon");
-    expect(byoCard?.textContent).toContain("Coming soon");
+    expect(zapierTiles[0]?.textContent).toContain("Connect");
+
+    await act(async () => {
+      zapierTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?byo=1&source=zapier");
+
+    await act(async () => {
+      byoCard?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?byo=1");
   });
 
   it("filters the gallery by the search query", async () => {
@@ -157,7 +175,7 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     expect(text).not.toContain("Popular");
   });
 
-  it("does not advertise a URL setup path while connections are unavailable", async () => {
+  it("keeps the custom URL option available when gallery search has no matches", async () => {
     await renderBrowse();
 
     const input = container.querySelector<HTMLInputElement>('input[type="search"]');
@@ -172,6 +190,6 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     await flushReact();
 
     expect(container.textContent).toContain("No planned apps match");
-    expect(container.textContent).not.toContain("You can still connect any tool");
+    expect(container.textContent).toContain("Connect your own tool");
   });
 });

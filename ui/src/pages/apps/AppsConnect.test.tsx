@@ -231,26 +231,36 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(input.credentialValues).toEqual({ "credentials.authorization": "secret-key" });
   });
 
-  it("a recognized domain offers a 'Use Zapier' shortcut into the app's key step (M3b)", async () => {
+  it("a Zapier MCP URL stays in the URL flow and includes its token in the submitted link", async () => {
     await render();
 
     const linkInput = Array.from(
       container.querySelectorAll<HTMLInputElement>("input"),
     ).find((i) => i.getAttribute("placeholder")?.startsWith("https://"));
-    await act(async () => setInputValue(linkInput!, "https://zapier.com/app/abc"));
+    const zapierUrl = "https://mcp.zapier.com/api/v1/connect?token=secret-token";
+    await act(async () => setInputValue(linkInput!, zapierUrl));
     await flushReact();
 
-    // The matcher recognizes the domain and surfaces a shortcut card.
     expect(container.textContent).toContain("This looks like Zapier.");
 
     await act(async () => {
-      buttonByText("Use Zapier")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonByText("Continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
-    // M3b for the matched app: titled "Connect Zapier", not the generic link frame.
-    expect(container.textContent).toContain("Connect Zapier");
-    expect(container.textContent).not.toContain("Does it need a key?");
+    expect(container.textContent).toContain("Connect with a link");
+    expect(container.textContent).toContain(zapierUrl);
+    expect(nameInputFrom(container)?.value).toBe("Zapier");
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+
+    await act(async () => {
+      buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(connectAppMock.mock.calls[0]?.[1]).toMatchObject({ link: zapierUrl, name: "Zapier" });
+    expect(connectAppMock.mock.calls[0]?.[1].credentialValues).toBeUndefined();
   });
 
   // PAP-10922: "Run your own" / "Paste a config" moved from the sidebar to rows
