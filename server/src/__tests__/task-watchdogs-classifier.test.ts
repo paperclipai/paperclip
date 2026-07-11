@@ -249,6 +249,58 @@ describe("task watchdog subtree classifier", () => {
     expect(result.includedIssueIds).toEqual([sourceId]);
   });
 
+  it("does not change the stop fingerprint when a task-watchdog-origin review issue is commented on or closed (SFB-87 repro)", () => {
+    // Regression for SFB-87: a watchdog agent commenting on / closing its own
+    // review issue (originKind: task_watchdog, parented under the watched
+    // source issue) must never perturb the *source* issue's stop fingerprint.
+    // excludedOriginKinds is supposed to make task_watchdog children fully
+    // invisible to the parent's fingerprint computation -- this proves it,
+    // independent of the separate touch-timestamp churn bug tracked by SFB-58.
+    const first = classify({
+      issues: [
+        issue({ status: "blocked" }),
+        issue({
+          id: watchdogId,
+          identifier: "PAP-3",
+          title: "Watchdog review",
+          parentId: sourceId,
+          originKind: "task_watchdog",
+          status: "in_progress",
+          latestCommentAt: new Date("2026-07-11T20:30:00.000Z"),
+        }),
+      ],
+    });
+    expect(first.state).toBe("stopped");
+    if (first.state !== "stopped") return;
+
+    const afterWatchdogChurn = classify({
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: first.stopFingerprint,
+      },
+      issues: [
+        issue({ status: "blocked" }),
+        issue({
+          id: watchdogId,
+          identifier: "PAP-3",
+          title: "Watchdog review",
+          parentId: sourceId,
+          originKind: "task_watchdog",
+          status: "done",
+          latestCommentAt: new Date("2026-07-11T21:07:44.975Z"),
+          documentCount: 1,
+          latestDocumentAt: new Date("2026-07-11T21:07:00.000Z"),
+        }),
+      ],
+    });
+
+    expect(afterWatchdogChurn).toMatchObject({
+      state: "already_reviewed",
+      stopFingerprint: first.stopFingerprint,
+    });
+  });
+
   it("defers a stopped verdict for an issue created inside the first-run grace window", () => {
     const createdAt = new Date("2026-06-18T16:32:45.731Z");
     const result = classify({
