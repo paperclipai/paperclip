@@ -72,7 +72,28 @@ export interface WatchdogDecisionInput {
   snoozedUntil?: string | null;
 }
 
+export interface BrowserProfile {
+  id: string;
+  name: string;
+  sessionName: string;
+  isDefault: boolean;
+  createdAt: string;
+}
+
+export interface BrowserProfilesResponse {
+  profiles: BrowserProfile[];
+  projects: Array<{ id: string; name: string; profileId: string }>;
+}
+
 export const heartbeatsApi = {
+  browserProfiles: (companyId: string) =>
+    api.get<BrowserProfilesResponse>(`/companies/${companyId}/browser-profiles`),
+  createBrowserProfile: (companyId: string, name: string) =>
+    api.post<BrowserProfile>(`/companies/${companyId}/browser-profiles`, { name }),
+  assignBrowserProfile: (companyId: string, projectId: string, profileId: string) =>
+    api.put<{ projectId: string; profileId: string }>(`/companies/${companyId}/browser-profiles/project-assignment`, { projectId, profileId }),
+  deleteBrowserProfile: (companyId: string, profileId: string) =>
+    api.delete<{ ok: true }>(`/companies/${companyId}/browser-profiles/${profileId}`),
   list: (companyId: string, agentId?: string, limit?: number) => {
     const searchParams = new URLSearchParams();
     if (agentId) searchParams.set("agentId", agentId);

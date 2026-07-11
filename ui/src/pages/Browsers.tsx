@@ -1,11 +1,13 @@
 import { memo, useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ExternalLink, Expand, Grid2X2, List, LoaderCircle, MonitorUp, WifiOff } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ExternalLink, Expand, Grid2X2, List, LoaderCircle, MonitorUp, Plus, Settings2, Trash2, WifiOff } from "lucide-react";
 import type { LiveRunForIssue } from "../api/heartbeats";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useBrowserStream, type BrowserStreamStatus } from "../components/LiveBrowserPreview";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -99,11 +101,73 @@ function ExpandedBrowser({ run }: { run: LiveRunForIssue }) {
   );
 }
 
+function BrowserProfilesDialog({ companyId, open, onOpenChange }: { companyId: string; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState("");
+  const queryKey = ["browser-profiles", companyId] as const;
+  const { data, isLoading } = useQuery({ queryKey, queryFn: () => heartbeatsApi.browserProfiles(companyId), enabled: open });
+  const refresh = () => queryClient.invalidateQueries({ queryKey });
+  const createProfile = useMutation({
+    mutationFn: () => heartbeatsApi.createBrowserProfile(companyId, name.trim()),
+    onSuccess: () => { setName(""); void refresh(); },
+  });
+  const assignProfile = useMutation({
+    mutationFn: ({ projectId, profileId }: { projectId: string; profileId: string }) => heartbeatsApi.assignBrowserProfile(companyId, projectId, profileId),
+    onSuccess: () => { void refresh(); },
+  });
+  const deleteProfile = useMutation({
+    mutationFn: (profileId: string) => heartbeatsApi.deleteBrowserProfile(companyId, profileId),
+    onSuccess: () => { void refresh(); },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl" aria-describedby={undefined}>
+        <div><DialogTitle>Browser profiles</DialogTitle><p className="mt-1 text-sm text-muted-foreground">Every project uses Default unless you assign another saved login.</p></div>
+        {isLoading ? <div className="flex min-h-40 items-center justify-center"><LoaderCircle className="size-5 animate-spin text-muted-foreground" /></div> : (
+          <div className="space-y-6">
+            <section className="space-y-2">
+              <h3 className="text-sm font-medium">Profiles</h3>
+              <div className="divide-y rounded-xl border">
+                {data?.profiles.map((profile) => (
+                  <div key={profile.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                    <div className="min-w-0"><p className="truncate text-sm font-medium">{profile.name}</p><p className="truncate text-xs text-muted-foreground">{profile.isDefault ? "Company default" : "Saved cookies and login state"}</p></div>
+                    {!profile.isDefault ? <Button variant="ghost" size="icon-sm" disabled={deleteProfile.isPending} onClick={() => deleteProfile.mutate(profile.id)} aria-label={`Delete ${profile.name}`}><Trash2 className="size-4" /></Button> : null}
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="New profile name" onKeyDown={(event) => { if (event.key === "Enter" && name.trim()) createProfile.mutate(); }} />
+                <Button disabled={!name.trim() || createProfile.isPending} onClick={() => createProfile.mutate()}><Plus className="mr-1.5 size-4" />Add profile</Button>
+              </div>
+            </section>
+            <section className="space-y-2">
+              <h3 className="text-sm font-medium">Project assignments</h3>
+              {data?.projects.length ? <div className="divide-y rounded-xl border">
+                {data.projects.map((project) => (
+                  <div key={project.id} className="flex items-center justify-between gap-4 px-3 py-2.5">
+                    <span className="min-w-0 truncate text-sm">{project.name}</span>
+                    <Select value={project.profileId} onValueChange={(profileId) => assignProfile.mutate({ projectId: project.id, profileId })} disabled={assignProfile.isPending}>
+                      <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+                      <SelectContent>{data.profiles.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                ))}
+              </div> : <p className="rounded-xl border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">No projects yet.</p>}
+            </section>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function Browsers() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [layout, setLayout] = useState<"grid" | "list">("grid");
   const [expanded, setExpanded] = useState<LiveRunForIssue | null>(null);
+  const [profilesOpen, setProfilesOpen] = useState(false);
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => setBreadcrumbs([{ label: "Browsers" }]), [setBreadcrumbs]);
@@ -131,6 +195,7 @@ export function Browsers() {
             <Button variant={layout === "grid" ? "secondary" : "ghost"} size="icon-sm" onClick={() => setLayout("grid")} aria-label="Grid view"><Grid2X2 className="size-4" /></Button>
             <Button variant={layout === "list" ? "secondary" : "ghost"} size="icon-sm" onClick={() => setLayout("list")} aria-label="List view"><List className="size-4" /></Button>
           </div>
+          <Button variant="outline" onClick={() => setProfilesOpen(true)}><Settings2 className="mr-1.5 size-4" />Profiles</Button>
         </div>
       </header>
 
@@ -148,6 +213,7 @@ export function Browsers() {
           {expanded ? <ExpandedBrowser run={expanded} /> : null}
         </DialogContent>
       </Dialog>
+      {selectedCompanyId ? <BrowserProfilesDialog companyId={selectedCompanyId} open={profilesOpen} onOpenChange={setProfilesOpen} /> : null}
     </div>
   );
 }

@@ -1161,8 +1161,8 @@ export function buildPaperclipEnv(
     vars.AGENT_BROWSER_SOCKET_DIR = "/tmp/pab";
     vars.AGENT_BROWSER_SESSION = browserSessionKey;
     vars.AGENT_BROWSER_NAMESPACE = browserSessionKey;
-    vars.AGENT_BROWSER_RESTORE = `paperclip-${agent.companyId}-${agent.id}`;
-    vars.AGENT_BROWSER_SESSION_NAME = `paperclip-${agent.companyId}-${agent.id}`;
+    vars.AGENT_BROWSER_RESTORE = `paperclip-${agent.companyId}-default`;
+    vars.AGENT_BROWSER_SESSION_NAME = `paperclip-${agent.companyId}-default`;
     vars.AGENT_BROWSER_STREAM_PORT = String(browserStreamPortForRun(runId));
   }
   const runtimeHost = resolveHostForUrl(

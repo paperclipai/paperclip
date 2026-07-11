@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests, agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
+import { agentWakeupRequests, agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -123,6 +123,49 @@ import {
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+
+type ManagedBrowserProfile = {
+  id: string;
+  name: string;
+  sessionName: string;
+  isDefault: boolean;
+  createdAt: string;
+};
+
+function defaultBrowserProfile(companyId: string): ManagedBrowserProfile {
+  return {
+    id: "default",
+    name: "Default",
+    sessionName: `paperclip-${companyId}-default`,
+    isDefault: true,
+    createdAt: "",
+  };
+}
+
+function browserProfilesFromSettings(companyId: string, settings: unknown): ManagedBrowserProfile[] {
+  const record = settings && typeof settings === "object" ? settings as Record<string, unknown> : {};
+  const stored = Array.isArray(record.browserProfiles) ? record.browserProfiles : [];
+  const profiles = stored.flatMap((value): ManagedBrowserProfile[] => {
+    if (!value || typeof value !== "object") return [];
+    const item = value as Record<string, unknown>;
+    if (typeof item.id !== "string" || typeof item.name !== "string" || typeof item.sessionName !== "string") return [];
+    return [{
+      id: item.id,
+      name: item.name,
+      sessionName: item.sessionName,
+      isDefault: false,
+      createdAt: typeof item.createdAt === "string" ? item.createdAt : "",
+    }];
+  });
+  return [defaultBrowserProfile(companyId), ...profiles];
+}
+
+function plainEnvValue(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return null;
+  const binding = value as { type?: unknown; value?: unknown };
+  return binding.type === "plain" && typeof binding.value === "string" ? binding.value : null;
+}
 
 function sendCredentialAssignmentError(
   res: Response,
@@ -4220,6 +4263,147 @@ export function agentRoutes(
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const runs = await heartbeat.list(companyId, agentId, limit);
     res.json(runs);
+  });
+
+  router.get("/companies/:companyId/browser-profiles", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const company = await db
+      .select({ settings: companies.settings })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    const profiles = browserProfilesFromSettings(companyId, company.settings);
+    const profileBySession = new Map(profiles.map((profile) => [profile.sessionName, profile.id]));
+    const projects = await db
+      .select({ id: projectsTable.id, name: projectsTable.name, env: projectsTable.env })
+      .from(projectsTable)
+      .where(and(eq(projectsTable.companyId, companyId), sql`${projectsTable.archivedAt} is null`))
+      .orderBy(projectsTable.name);
+    res.json({
+      profiles,
+      projects: projects.map((project) => {
+        const env = project.env && typeof project.env === "object" ? project.env as Record<string, unknown> : {};
+        const sessionName = plainEnvValue(env.AGENT_BROWSER_SESSION_NAME);
+        return {
+          id: project.id,
+          name: project.name,
+          profileId: (sessionName && profileBySession.get(sessionName)) || "default",
+        };
+      }),
+    });
+  });
+
+  router.post("/companies/:companyId/browser-profiles", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertBoardCanManageAgentsForCompany(req, companyId);
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+    if (!name || name.length > 80) {
+      res.status(400).json({ error: "Profile name must be between 1 and 80 characters" });
+      return;
+    }
+    const company = await db
+      .select({ settings: companies.settings })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    const settings = company.settings && typeof company.settings === "object" ? company.settings : {};
+    const existing = browserProfilesFromSettings(companyId, settings);
+    if (existing.some((profile) => profile.name.toLowerCase() === name.toLowerCase())) {
+      res.status(409).json({ error: "A browser profile with this name already exists" });
+      return;
+    }
+    const id = randomUUID();
+    const profile: ManagedBrowserProfile = {
+      id,
+      name,
+      sessionName: `paperclip-${companyId}-${id}`,
+      isDefault: false,
+      createdAt: new Date().toISOString(),
+    };
+    await db
+      .update(companies)
+      .set({
+        settings: { ...settings, browserProfiles: [...existing.filter((item) => !item.isDefault), profile] },
+        updatedAt: new Date(),
+      })
+      .where(eq(companies.id, companyId));
+    res.status(201).json(profile);
+  });
+
+  router.put("/companies/:companyId/browser-profiles/project-assignment", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertBoardCanManageAgentsForCompany(req, companyId);
+    const projectId = typeof req.body?.projectId === "string" ? req.body.projectId : "";
+    const profileId = typeof req.body?.profileId === "string" ? req.body.profileId : "default";
+    const [company, project] = await Promise.all([
+      db.select({ settings: companies.settings }).from(companies).where(eq(companies.id, companyId)).then((rows) => rows[0] ?? null),
+      db.select({ id: projectsTable.id, env: projectsTable.env }).from(projectsTable).where(and(eq(projectsTable.id, projectId), eq(projectsTable.companyId, companyId))).then((rows) => rows[0] ?? null),
+    ]);
+    if (!company || !project) {
+      res.status(404).json({ error: "Company or project not found" });
+      return;
+    }
+    const profile = browserProfilesFromSettings(companyId, company.settings).find((item) => item.id === profileId);
+    if (!profile) {
+      res.status(404).json({ error: "Browser profile not found" });
+      return;
+    }
+    const env = project.env && typeof project.env === "object" ? { ...project.env } : {};
+    if (profile.isDefault) {
+      delete env.AGENT_BROWSER_SESSION_NAME;
+      delete env.AGENT_BROWSER_RESTORE;
+    } else {
+      env.AGENT_BROWSER_SESSION_NAME = { type: "plain", value: profile.sessionName };
+      env.AGENT_BROWSER_RESTORE = { type: "plain", value: profile.sessionName };
+    }
+    await db.update(projectsTable).set({ env, updatedAt: new Date() }).where(eq(projectsTable.id, projectId));
+    res.json({ projectId, profileId: profile.id });
+  });
+
+  router.delete("/companies/:companyId/browser-profiles/:profileId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const profileId = req.params.profileId as string;
+    await assertBoardCanManageAgentsForCompany(req, companyId);
+    if (profileId === "default") {
+      res.status(400).json({ error: "The default browser profile cannot be deleted" });
+      return;
+    }
+    const company = await db.select({ settings: companies.settings }).from(companies).where(eq(companies.id, companyId)).then((rows) => rows[0] ?? null);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    const settings = company.settings && typeof company.settings === "object" ? company.settings : {};
+    const profiles = browserProfilesFromSettings(companyId, settings);
+    const profile = profiles.find((item) => item.id === profileId);
+    if (!profile) {
+      res.status(404).json({ error: "Browser profile not found" });
+      return;
+    }
+    const assignedProjects = await db.select({ id: projectsTable.id, env: projectsTable.env }).from(projectsTable).where(eq(projectsTable.companyId, companyId));
+    await db.transaction(async (tx) => {
+      for (const project of assignedProjects) {
+        const env = project.env && typeof project.env === "object" ? { ...project.env } : {};
+        if (plainEnvValue(env.AGENT_BROWSER_SESSION_NAME) !== profile.sessionName) continue;
+        delete env.AGENT_BROWSER_SESSION_NAME;
+        delete env.AGENT_BROWSER_RESTORE;
+        await tx.update(projectsTable).set({ env, updatedAt: new Date() }).where(eq(projectsTable.id, project.id));
+      }
+      await tx.update(companies).set({
+        settings: { ...settings, browserProfiles: profiles.filter((item) => !item.isDefault && item.id !== profileId) },
+        updatedAt: new Date(),
+      }).where(eq(companies.id, companyId));
+    });
+    res.json({ ok: true });
   });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {

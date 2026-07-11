@@ -8,6 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Browsers } from "./Browsers";
 
 const mockLiveRunsForCompany = vi.hoisted(() => vi.fn());
+const mockBrowserProfiles = vi.hoisted(() => vi.fn());
+const mockCreateBrowserProfile = vi.hoisted(() => vi.fn());
+const mockAssignBrowserProfile = vi.hoisted(() => vi.fn());
+const mockDeleteBrowserProfile = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const openedStreams: string[] = [];
 
@@ -19,7 +23,13 @@ class MockEventSource {
 }
 
 vi.mock("../api/heartbeats", () => ({
-  heartbeatsApi: { liveRunsForCompany: mockLiveRunsForCompany },
+  heartbeatsApi: {
+    liveRunsForCompany: mockLiveRunsForCompany,
+    browserProfiles: mockBrowserProfiles,
+    createBrowserProfile: mockCreateBrowserProfile,
+    assignBrowserProfile: mockAssignBrowserProfile,
+    deleteBrowserProfile: mockDeleteBrowserProfile,
+  },
 }));
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1" }),
@@ -42,6 +52,10 @@ describe("Browsers", () => {
     document.body.appendChild(container);
     openedStreams.length = 0;
     vi.stubGlobal("EventSource", MockEventSource);
+    mockBrowserProfiles.mockResolvedValue({
+      profiles: [{ id: "default", name: "Default", sessionName: "paperclip-company-1-default", isDefault: true, createdAt: "" }],
+      projects: [{ id: "project-1", name: "Storefront", profileId: "default" }],
+    });
   });
 
   afterEach(() => {
@@ -73,6 +87,22 @@ describe("Browsers", () => {
       "/api/heartbeat-runs/run-2/browser-stream",
     ]));
     expect(new Set(openedStreams).size).toBe(2);
+
+    await act(async () => root.unmount());
+  });
+
+  it("shows the default profile and project assignment in the profiles manager", async () => {
+    mockLiveRunsForCompany.mockResolvedValue([]);
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => { root.render(<QueryClientProvider client={client}><Browsers /></QueryClientProvider>); });
+    const profilesButton = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Profiles"));
+    await act(async () => { profilesButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
+
+    expect(document.body.textContent).toContain("Browser profiles");
+    expect(document.body.textContent).toContain("Company default");
+    expect(document.body.textContent).toContain("Storefront");
 
     await act(async () => root.unmount());
   });
