@@ -34,6 +34,9 @@ import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import {
+  DEFAULT_ONBOARDING_TASK_DESCRIPTION,
+  DEFAULT_ONBOARDING_TASK_TITLE,
+  buildOnboardingCeoHirePayload,
   buildOnboardingIssuePayload,
   buildOnboardingProjectPayload,
   selectDefaultCompanyGoalId
@@ -64,12 +67,6 @@ import {
 
 type Step = 1 | 2 | 3 | 4;
 type AdapterType = string;
-
-const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
-
-- hire a founding engineer
-- write a hiring plan
-- break the roadmap into concrete tasks and start delegating work`;
 
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
@@ -128,11 +125,9 @@ export function OnboardingWizard() {
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
 
   // Step 3
-  const [taskTitle, setTaskTitle] = useState(
-    "Hire your first engineer and create a hiring plan"
-  );
+  const [taskTitle, setTaskTitle] = useState(DEFAULT_ONBOARDING_TASK_TITLE);
   const [taskDescription, setTaskDescription] = useState(
-    DEFAULT_TASK_DESCRIPTION
+    DEFAULT_ONBOARDING_TASK_DESCRIPTION
   );
 
   // Auto-grow textarea for task description
@@ -304,8 +299,8 @@ export function OnboardingWizard() {
     setAdapterEnvLoading(false);
     setForceUnsetAnthropicApiKey(false);
     setUnsetAnthropicLoading(false);
-    setTaskTitle("Hire your first engineer and create a hiring plan");
-    setTaskDescription(DEFAULT_TASK_DESCRIPTION);
+    setTaskTitle(DEFAULT_ONBOARDING_TASK_TITLE);
+    setTaskDescription(DEFAULT_ONBOARDING_TASK_DESCRIPTION);
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
     setCreatedCompanyGoalId(null);
@@ -454,11 +449,12 @@ export function OnboardingWizard() {
       }
 
       const hire = await agentsApi.hire(createdCompanyId, {
-        name: agentName.trim(),
-        role: "ceo",
-        adapterType,
-        adapterConfig: buildAdapterConfig(),
-        runtimeConfig: buildNewAgentRuntimeConfig()
+        ...buildOnboardingCeoHirePayload({
+          name: agentName.trim(),
+          adapterType,
+          adapterConfig: buildAdapterConfig(),
+          runtimeConfig: buildNewAgentRuntimeConfig()
+        })
       });
       if (hire.approval) {
         await approvalsApi.approve(
@@ -1103,10 +1099,10 @@ export function OnboardingWizard() {
                       <ListTodo className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Give it something to do</h3>
+                      <h3 className="font-medium">Give the CEO a launch mandate</h3>
                       <p className="text-xs text-muted-foreground">
-                        Give your agent a small task to start with — a bug fix,
-                        a research question, writing a script.
+                        Start with a company-specific operating plan and the
+                        complete capability harness needed to execute it.
                       </p>
                     </div>
                   </div>

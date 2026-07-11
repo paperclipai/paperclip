@@ -46,6 +46,7 @@ Server enforcement: agent-created child issues are rejected when the resolved hi
     },
     "acceptanceChecks": [],
     "evidenceRequired": [],
+    "requiredOutputs": [],
     "blockIfMissing": [],
     "handoffNotes": {
       "managerReasoning": "",
@@ -67,6 +68,58 @@ Server enforcement: agent-created child issues are rejected when the resolved hi
 ```
 
 Required fields for every contract: `schemaVersion`, `contractType`, `taskType`, `core.objective`, `core.why`, `core.sourceOfTruth` (at least one non-empty entry), `core.acceptanceChecks` (at least one), `core.handoffNotes.managerReasoning`. Empty arrays are fine for the rest, but must be deliberate, not omitted by laziness.
+
+### Completion evidence contract
+
+When `core.evidenceRequired` or `core.requiredOutputs` is non-empty, Paperclip
+enforces a completion gate: the issue cannot transition to `done` until usable,
+company-scoped issue work products satisfy the declaration. Comments and process
+exit status do not count as evidence.
+
+Use `evidenceRequired` for a descriptive requirement that may be satisfied by
+any durable work product. Each non-empty descriptive entry requires a distinct
+qualifying work product:
+
+```json
+{
+  "evidenceRequired": ["Record the test command and result"]
+}
+```
+
+Use typed `requiredOutputs` when the output kind matters:
+
+```json
+{
+  "requiredOutputs": [
+    { "workProductType": "preview_url" },
+    { "workProductType": "artifact" }
+  ]
+}
+```
+
+Supported work-product types are `preview_url`, `runtime_service`,
+`pull_request`, `branch`, `commit`, `artifact`, and `document`. Failed,
+archived, changes-requested, unhealthy, or placeholder-only products do not
+satisfy the gate. Use those canonical type values; unsupported or misspelled
+typed outputs are rejected and legacy invalid declarations fail closed.
+
+A preview requires an HTTP(S) URL. A runtime service requires a scoped runtime
+service id and healthy state. Code references require a URL or provider id.
+Artifacts require a URL, external id, or recognized durable asset metadata such
+as `sha256`, `assetId`, or `attachmentId`; documents require a URL, external id,
+or document id. A title, free-form summary, arbitrary metadata, or run exit alone
+is not evidence. Obvious placeholder values and reserved example hosts are
+rejected. Work-product references are company-checked, and a completed
+issue cannot delete or degrade the evidence that satisfies its contract.
+
+This gate proves that durable, non-placeholder evidence references exist; it
+does not prove the external content is correct. The executor and independent
+reviewer still verify every acceptance check against the referenced output.
+
+An issue with declared completion evidence also cannot be created directly in
+`done`; register the outputs first, then transition it. The API returns stable error code
+`issue_completion_evidence_missing` plus declared and missing requirement types
+so the executor can register the missing output and retry completion.
 
 The `extensions` object is intentionally open-ended. QA, deployment, reference-fidelity, finance, or company-specific skills may add namespaced extension objects. A skill may validate its own extension, but it must not delete or reinterpret the core contract.
 
@@ -112,7 +165,7 @@ QA verifies the work **against the contract**, not against general quality intui
 - Required `core.sourceOfTruth` was actually used.
 - `core.constraints.mustPreserve` items preserved; `core.constraints.mustChange` items changed; `core.constraints.mustNotChange` items untouched.
 - Every `core.acceptanceChecks` item passes, with evidence.
-- Every `core.evidenceRequired` item exists (link it in the QA comment).
+- Every `core.evidenceRequired` item exists and is registered as a qualifying issue work product; link that work product in the QA comment.
 - `core.blockIfMissing` items were not silently skipped.
 - The output solves the contract's `core.objective` — not a related, plausible-looking problem.
 - For board-supplied image-reference work, the Paperclip image audit says `generationMode=reference_backed`, `actualImageInputsBound` is non-empty, and the exact required reference appears in `referenceImageInputs`. Prompt text, a method claim, or visual trait similarity alone is not evidence of input binding.
@@ -121,6 +174,25 @@ QA MUST fail work that is high quality but solves the wrong problem. "Looks grea
 
 ## Evidence
 
-Record evidence appropriate to the task type: files changed, tests run, screenshots, API checks, logs, old-vs-new comparison, deployment URL, artifact links, remaining risks. Attach it to the issue (comments, documents, work products, attachments) before requesting review.
+Record evidence appropriate to the task type: files changed, tests run, screenshots, API checks, logs, old-vs-new comparison, deployment URL, artifact links, remaining risks. Store supporting material in comments, documents, or attachments as useful, but also register every declared completion-evidence item as a qualifying issue work product before requesting review or marking done. A comment, issue document, screenshot, or attachment that has not been registered as a work product does not satisfy the completion gate.
 
-When evidence uses attachments, reference each attachment by filename/link and exact location: screenshot region, page number, table row, timestamp, or visible UI area. Preserve those attachment links in downstream execution-contract comments so reviewers can open the same evidence from the comment that mentions it.
+When evidence uses attachments, reference each attachment by filename/link and exact location: screenshot region, page number, table row, timestamp, or visible UI area. Register the durable attachment reference as an `artifact` work product, then preserve its link in downstream execution-contract comments so reviewers can open the same evidence from the comment that mentions it. For issue documents, register a `document` work product that references the document UUID, URL, or durable external id.
+
+For example, after creating the operating-harness issue document, register it:
+
+```sh
+curl -sS -X POST "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/work-products" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "document",
+    "provider": "paperclip_issue_document",
+    "title": "Operating harness assessment",
+    "status": "ready_for_review",
+    "metadata": {"documentId": "<issue-document-uuid>"},
+    "createdByRunId": "<current-run-uuid>"
+  }'
+```
+
+Use the actual UUID returned by the issue-document API and the current run UUID; placeholders do not qualify.

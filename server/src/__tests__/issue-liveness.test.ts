@@ -81,6 +81,169 @@ describe("issue graph liveness classifier", () => {
     });
   });
 
+  it("detects an agent-owned blocked issue with zero unresolved blockers and routes recovery to its reporting chain", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [issue()],
+      relations: [],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockedId,
+      state: "blocked_without_action_path",
+      recoveryIssueId: blockedId,
+      recommendedOwnerAgentId: managerId,
+      dependencyPath: [expect.objectContaining({ issueId: blockedId, status: "blocked" })],
+      incidentKey: `harness_liveness:${companyId}:${blockedId}:blocked_without_action_path:${blockedId}`,
+    });
+    expect(findings[0]?.recommendedOwnerCandidates[0]).toEqual({
+      agentId: managerId,
+      reason: "assignee_reporting_chain",
+      sourceIssueId: blockedId,
+    });
+  });
+
+  it("preserves every explicit bounded wait for an agent-owned blocked issue", () => {
+    const now = new Date("2026-07-10T12:00:00.000Z");
+    const baseIssue = issue();
+    const cases = [
+      {
+        name: "active run",
+        activeRuns: [{ companyId, issueId: blockedId, agentId: coderId, status: "running" }],
+      },
+      {
+        name: "queued wake",
+        queuedWakeRequests: [{ companyId, issueId: blockedId, agentId: coderId, status: "queued" }],
+      },
+      {
+        name: "pending typed interaction",
+        pendingInteractions: [{
+          companyId,
+          issueId: blockedId,
+          status: "pending",
+          createdAt: new Date(now.getTime() - 60 * 60 * 1000),
+        }],
+      },
+      {
+        name: "pending approval",
+        pendingApprovals: [{ companyId, issueId: blockedId, status: "pending" }],
+      },
+      {
+        name: "active recovery action",
+        openRecoveryIssues: [{ companyId, issueId: blockedId, status: "active" }],
+      },
+      {
+        name: "bounded monitor",
+        issues: [issue({
+          monitorNextCheckAt: new Date(now.getTime() + 60 * 60 * 1000),
+          executionPolicy: { monitor: { maxAttempts: 2 } },
+          monitorAttemptCount: 0,
+        })],
+      },
+    ];
+
+    for (const testCase of cases) {
+      expect(classifyIssueGraphLiveness({
+        issues: testCase.issues ?? [baseIssue],
+        relations: [],
+        agents: [agent(), manager],
+        activeRuns: testCase.activeRuns,
+        queuedWakeRequests: testCase.queuedWakeRequests,
+        pendingInteractions: testCase.pendingInteractions,
+        pendingApprovals: testCase.pendingApprovals,
+        openRecoveryIssues: testCase.openRecoveryIssues,
+        now,
+      }), testCase.name).toEqual([]);
+    }
+  });
+
+  it("does not let cross-company waits mask a blocked issue", () => {
+    const now = new Date("2026-07-10T12:00:00.000Z");
+    const findings = classifyIssueGraphLiveness({
+      issues: [issue()],
+      relations: [],
+      agents: [agent(), manager],
+      queuedWakeRequests: [{
+        companyId: "other-company",
+        issueId: blockedId,
+        agentId: coderId,
+        status: "queued",
+      }],
+      pendingInteractions: [{
+        companyId: "other-company",
+        issueId: blockedId,
+        status: "pending",
+        createdAt: new Date(now.getTime() - 60 * 60 * 1000),
+      }],
+      pendingApprovals: [{ companyId: "other-company", issueId: blockedId, status: "pending" }],
+      openRecoveryIssues: [{ companyId: "other-company", issueId: blockedId, status: "active" }],
+      now,
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.state).toBe("blocked_without_action_path");
+  });
+
+  it("waits without a finding while a dependency is unresolved, then detects the stranded issue when dependency state changes", () => {
+    const blocker = issue({
+      id: blockerId,
+      identifier: "PAP-1704",
+      title: "Expected dependency",
+      status: "todo",
+      assigneeAgentId: coderId,
+    });
+    const baseInput = {
+      issues: [issue(), blocker],
+      relations: blocks,
+      agents: [agent(), manager],
+      queuedWakeRequests: [{ companyId, issueId: blockerId, agentId: coderId, status: "queued" }],
+    };
+
+    expect(classifyIssueGraphLiveness(baseInput)).toEqual([]);
+
+    const findingsAfterDependencyCompleted = classifyIssueGraphLiveness({
+      ...baseInput,
+      issues: [issue(), { ...blocker, status: "done" }],
+      queuedWakeRequests: [],
+    });
+    expect(findingsAfterDependencyCompleted).toHaveLength(1);
+    expect(findingsAfterDependencyCompleted[0]).toMatchObject({
+      state: "blocked_without_action_path",
+      issueId: blockedId,
+      recoveryIssueId: blockedId,
+    });
+  });
+
+  it("detects a nested agent-owned blocked leaf with no unresolved dependency", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Stranded blocked leaf",
+          status: "blocked",
+          assigneeAgentId: coderId,
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockedId,
+      state: "blocked_without_action_path",
+      recoveryIssueId: blockerId,
+      recommendedOwnerAgentId: managerId,
+      dependencyPath: [
+        expect.objectContaining({ issueId: blockedId }),
+        expect.objectContaining({ issueId: blockerId }),
+      ],
+    });
+  });
+
   it("does not use free-form executive role or name matching for recovery ownership", () => {
     const rootAgentId = "root-agent";
     const spoofedExecutiveId = "spoofed-executive";

@@ -63,6 +63,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackAgentCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockSyncInstructionsBundleConfigFromFilePath = vi.hoisted(() => vi.fn());
+const mockRunIdempotentAgentHire = vi.hoisted(() => vi.fn());
 
 const mockAdapter = vi.hoisted(() => ({
   listSkills: vi.fn(),
@@ -112,6 +113,16 @@ function registerModuleMocks() {
   vi.doMock("../telemetry.js", () => ({
     getTelemetryClient: mockGetTelemetryClient,
   }));
+
+  vi.doMock("../services/agent-hire-idempotency.js", async () => {
+    const actual = await vi.importActual<typeof import("../services/agent-hire-idempotency.js")>(
+      "../services/agent-hire-idempotency.js",
+    );
+    return {
+      ...actual,
+      runIdempotentAgentHire: mockRunIdempotentAgentHire,
+    };
+  });
 
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
@@ -240,6 +251,7 @@ describe.sequential("agent skill routes", () => {
     mockTrackAgentCreated.mockReset();
     mockGetTelemetryClient.mockReset();
     mockSyncInstructionsBundleConfigFromFilePath.mockReset();
+    mockRunIdempotentAgentHire.mockReset();
     mockAdapter.listSkills.mockReset();
     mockAdapter.syncSkills.mockReset();
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
@@ -330,6 +342,12 @@ describe.sequential("agent skill routes", () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
+    mockRunIdempotentAgentHire.mockImplementation(
+      async (_db: unknown, _input: unknown, create: () => Promise<unknown>) => ({
+        value: await create(),
+        replayed: false,
+      }),
+    );
   });
 
   it("skips runtime materialization when listing Claude skills", async () => {
@@ -648,13 +666,24 @@ describe.sequential("agent skill routes", () => {
         adapterType: "claude_local",
       }),
       expect.objectContaining({
-        "AGENTS.md": expect.stringContaining("You are the CEO."),
-        "HEARTBEAT.md": expect.stringContaining("CEO Heartbeat Checklist"),
+        "AGENTS.md": expect.stringMatching(/You are the CEO\.[\s\S]*Operating harness bootstrap \(critical\)[\s\S]*smallest complete set of capability lanes/),
+        "HEARTBEAT.md": expect.stringMatching(/CEO Heartbeat Checklist[\s\S]*Operating Harness Refresh[\s\S]*Capability fit is authoritative/),
         "SOUL.md": expect.stringContaining("CEO Persona"),
         "TOOLS.md": expect.stringContaining("# Tools"),
       }),
       { entryFile: "AGENTS.md", replaceExisting: false },
     );
+
+    const ceoBundle = mockAgentInstructionsService.materializeManagedBundle.mock.calls
+      .find((call) => call[0]?.role === "ceo")?.[1] as Record<string, string> | undefined;
+    expect(ceoBundle).toBeDefined();
+    expect(ceoBundle?.["AGENTS.md"]).toContain("structured issue interaction");
+    expect(ceoBundle?.["AGENTS.md"]).toContain("required evidence outputs");
+    expect(ceoBundle?.["AGENTS.md"]).toContain("explicit escalation path");
+    expect(ceoBundle?.["AGENTS.md"]).toContain("Do not treat a pending hire as a reason to stop useful planning");
+    expect(ceoBundle?.["AGENTS.md"]).not.toMatch(/founding[ _-]?engineer/i);
+    expect(ceoBundle?.["AGENTS.md"]).not.toContain("default to the CTO");
+    expect(ceoBundle?.["AGENTS.md"]).not.toContain("hire one before delegating");
   });
 
   it("materializes the bundled default instruction set for non-CEO agents with no prompt template", async () => {
@@ -722,6 +751,167 @@ describe.sequential("agent skill routes", () => {
         }),
       }),
     );
+  });
+
+  it("passes a company-scoped key and normalized request fingerprint through keyed hires", async () => {
+    const db = createDb(true);
+
+    const res = await request(await createApp(db))
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "QA Agent",
+        role: "engineer",
+        adapterType: "claude_local",
+        desiredSkills: ["paperclip"],
+        adapterConfig: {},
+        idempotencyKey: "  harness:quality-verifier:v1  ",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockRunIdempotentAgentHire).toHaveBeenCalledWith(
+      db,
+      {
+        companyId: "company-1",
+        idempotencyKey: "harness:quality-verifier:v1",
+        requestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+      expect.any(Function),
+    );
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          _paperclipHireRequest: {
+            idempotencyKey: "harness:quality-verifier:v1",
+            requestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+          },
+        }),
+      }),
+      { allowServerManagedHireMetadata: true },
+    );
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          idempotencyKey: "harness:quality-verifier:v1",
+          requestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+      }),
+    );
+  });
+
+  it("rejects client injection of server-managed hire metadata on create, hire, and update routes", async () => {
+    const app = await createApp(createDb(false));
+    const reservedMetadata = {
+      _paperclipHireRequest: {
+        idempotencyKey: "harness:squatted:v1",
+        requestFingerprint: "f".repeat(64),
+      },
+    };
+
+    const [directCreate, hireCreate, update] = await Promise.all([
+      request(app)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Injected Direct Agent",
+          role: "engineer",
+          adapterType: "process",
+          adapterConfig: {},
+          metadata: reservedMetadata,
+        }),
+      request(app)
+        .post("/api/companies/company-1/agent-hires")
+        .send({
+          name: "Injected Hire Agent",
+          role: "engineer",
+          adapterType: "process",
+          adapterConfig: {},
+          metadata: reservedMetadata,
+        }),
+      request(app)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ metadata: reservedMetadata }),
+    ]);
+
+    expect(directCreate.status).toBe(400);
+    expect(hireCreate.status).toBe(400);
+    expect(update.status).toBe(400);
+    expect(JSON.stringify(directCreate.body)).toContain("reserved for server-managed hire idempotency");
+    expect(JSON.stringify(hireCreate.body)).toContain("reserved for server-managed hire idempotency");
+    expect(JSON.stringify(update.body)).toContain("reserved for server-managed hire idempotency");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("returns an existing keyed hire without repeating creation side effects", async () => {
+    const existingAgent = {
+      ...makeAgent("claude_local"),
+      status: "pending_approval",
+    };
+    const existingApproval = {
+      id: "approval-existing",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: { agentId: existingAgent.id },
+    };
+    mockRunIdempotentAgentHire.mockResolvedValueOnce({
+      value: { agent: existingAgent, approval: existingApproval },
+      replayed: true,
+    });
+
+    const res = await request(await createApp(createDb(true)))
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "QA Agent",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        idempotencyKey: "harness:quality-verifier:v1",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.agent.id).toBe(existingAgent.id);
+    expect(res.body.approval.id).toBe(existingApproval.id);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockTrackAgentCreated).not.toHaveBeenCalled();
+    expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
+  });
+
+  it("keeps keyed fingerprints stable across generated gateway device keys", async () => {
+    const db = createDb(true);
+    const app = await createApp(db);
+    const payload = {
+      name: "Gateway Operator",
+      role: "engineer",
+      adapterType: "openclaw_gateway",
+      adapterConfig: {},
+      idempotencyKey: "harness:gateway-operator:v1",
+    };
+
+    const first = await request(app)
+      .post("/api/companies/company-1/agent-hires")
+      .send(payload);
+    const second = await request(app)
+      .post("/api/companies/company-1/agent-hires")
+      .send(payload);
+
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    expect(second.status, JSON.stringify(second.body)).toBe(201);
+    const keyedCalls = mockRunIdempotentAgentHire.mock.calls.map((call) => call[1] as {
+      requestFingerprint: string;
+    });
+    expect(keyedCalls).toHaveLength(2);
+    expect(keyedCalls[0]?.requestFingerprint).toBe(keyedCalls[1]?.requestFingerprint);
+    const generatedDeviceKeys = mockAgentService.create.mock.calls.map((call) =>
+      (call[1] as { adapterConfig?: { devicePrivateKeyPem?: string } })
+        .adapterConfig?.devicePrivateKeyPem,
+    );
+    expect(generatedDeviceKeys).toHaveLength(2);
+    expect(generatedDeviceKeys.every((value) => typeof value === "string" && value.length > 0)).toBe(true);
+    expect(generatedDeviceKeys[0]).not.toBe(generatedDeviceKeys[1]);
   });
 
   it("preserves hire source issues, icons, desired skills, and approval payload details", async () => {

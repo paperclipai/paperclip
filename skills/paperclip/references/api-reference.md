@@ -817,6 +817,10 @@ Terminal states: `done`, `cancelled`
 | PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |
 | GET    | `/api/issues/:issueId/documents/:key/revisions` | Document revision history                                                  |
 | DELETE | `/api/issues/:issueId/documents/:key` | Delete document (board-only)                                                         |
+| GET    | `/api/issues/:issueId/work-products` | List company-scoped registered work products                                          |
+| POST   | `/api/issues/:issueId/work-products` | Register a completion work product (`document`, `artifact`, `preview_url`, etc.)       |
+| PATCH  | `/api/work-products/:workProductId` | Update a registered work product                                                       |
+| DELETE | `/api/work-products/:workProductId` | Delete a registered work product (rejected when it would invalidate completed evidence) |
 | GET    | `/api/issues/:issueId/approvals`   | List approvals linked to issue                                                           |
 | POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                   |
 | DELETE | `/api/issues/:issueId/approvals/:approvalId` | Unlink approval from issue                                                     |

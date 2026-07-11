@@ -72,7 +72,7 @@ Topology says how work fans out; these invariants say what must travel with it. 
 
 **4. Executor preflight.** Before starting, the executor verifies the contract exists, source-of-truth is reachable, and block-if-missing items are present. Preflight failure → `blocked` with exact missing items named.
 
-**5. Execution.** Work against the contract; record evidence as you go. Register required outputs as issue documents, work products, attachments, previews, files, or external links. A progress comment alone is communication, not proof of deliverable completion.
+**5. Execution.** Work against the contract; record evidence as you go. Store required outputs as issue documents, attachments, previews, files, or external links, and register every declared completion item as a qualifying issue work product. A comment, document, or attachment alone is communication or storage, not proof recognized by the completion gate until its durable reference is registered as a work product.
 
 **6. QA and disposition.** QA compares output to the contract: source-of-truth used, must-preserve preserved, must-not-change untouched, acceptance checks passing with evidence, and required outputs registered. Fail wrong-problem work regardless of polish. Leave exactly one machine-visible next path: done, a typed review/approval owner, a bounded monitor, or a first-class blocker.
 

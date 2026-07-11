@@ -83,6 +83,38 @@ export interface IssueAssigneeAdapterOverrides {
   useProjectWorkspace?: boolean;
 }
 
+export type IssueExecutionContractWorkProductType =
+  | "preview_url"
+  | "runtime_service"
+  | "pull_request"
+  | "branch"
+  | "commit"
+  | "artifact"
+  | "document";
+
+export type IssueExecutionContractRequiredOutput = Record<string, unknown> & (
+  | {
+      workProductType: IssueExecutionContractWorkProductType;
+      work_product_type?: IssueExecutionContractWorkProductType;
+      type?: IssueExecutionContractWorkProductType;
+    }
+  | {
+      workProductType?: IssueExecutionContractWorkProductType;
+      work_product_type: IssueExecutionContractWorkProductType;
+      type?: IssueExecutionContractWorkProductType;
+    }
+  | {
+      workProductType?: IssueExecutionContractWorkProductType;
+      work_product_type?: IssueExecutionContractWorkProductType;
+      type: IssueExecutionContractWorkProductType;
+    }
+);
+
+export type IssueExecutionContractRequiredOutputs =
+  | IssueExecutionContractWorkProductType
+  | IssueExecutionContractRequiredOutput
+  | Array<IssueExecutionContractWorkProductType | IssueExecutionContractRequiredOutput>;
+
 export interface IssueExecutionContractCore extends Record<string, unknown> {
   objective?: string;
   why?: string;
@@ -94,6 +126,8 @@ export interface IssueExecutionContractCore extends Record<string, unknown> {
   constraints?: unknown;
   evidenceRequired?: unknown;
   evidence_required?: unknown;
+  requiredOutputs?: IssueExecutionContractRequiredOutputs;
+  required_outputs?: IssueExecutionContractRequiredOutputs;
   handoffNotes?: Record<string, unknown>;
   handoff_notes?: Record<string, unknown>;
 }
@@ -633,6 +667,8 @@ export interface AskUserQuestionsPayload {
   version: 1;
   title?: string | null;
   submitLabel?: string | null;
+  /** Machine-readable context for the decision without overloading user-facing copy. */
+  context?: Record<string, unknown> | null;
   questions: AskUserQuestionsQuestion[];
 }
 

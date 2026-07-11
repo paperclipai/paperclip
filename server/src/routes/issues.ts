@@ -3187,7 +3187,7 @@ export function issueRoutes(
     const currentExecutionWorkspace = issue.executionWorkspaceId
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
-    const workProducts = await workProductsSvc.listForIssue(issue.id);
+    const workProducts = await workProductsSvc.listForIssue(issue.id, issue.companyId);
     res.json({
       ...issue,
       goalId: goal?.id ?? issue.goalId,
@@ -3848,7 +3848,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const workProducts = await workProductsSvc.listForIssue(issue.id);
+    const workProducts = await workProductsSvc.listForIssue(issue.id, issue.companyId);
     res.json(workProducts);
   });
 

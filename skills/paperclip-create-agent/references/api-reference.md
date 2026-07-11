@@ -30,15 +30,19 @@ Approval collaboration:
 
 Request body matches agent create shape:
 
+The strings below are placeholders, not a recommended org chart. Resolve every
+field from the target company's capability gap, current roster, and conventions.
+
 ```json
 {
-  "name": "CTO",
-  "role": "cto",
-  "title": "Chief Technology Officer",
-  "icon": "crown",
+  "idempotencyKey": "harness:<capability-lane>:v1",
+  "name": "<agent-name>",
+  "role": "<company-role-key>",
+  "title": "<role-title>",
+  "icon": "<allowed-icon>",
   "reportsTo": "uuid-or-null",
-  "capabilities": "Owns architecture and engineering execution",
-  "desiredSkills": ["vercel-labs/agent-browser/agent-browser"],
+  "capabilities": "<capability gap this hire closes>",
+  "desiredSkills": ["<existing-company-skill-key>"],
   "adapterType": "claude_local",
   "adapterConfig": {
     "cwd": "/absolute/path",
@@ -47,7 +51,7 @@ Request body matches agent create shape:
   "instructionsBundle": {
     "entryFile": "AGENTS.md",
     "files": {
-      "AGENTS.md": "You are CTO..."
+      "AGENTS.md": "You are {{agentName}} at {{companyName}}..."
     }
   },
   "runtimeConfig": {
@@ -62,6 +66,12 @@ Request body matches agent create shape:
 }
 ```
 
+`idempotencyKey` is optional, trimmed, and limited to 255 characters. For an
+operating-harness hire, derive a stable key from the capability intent, such as
+`harness:<capability-lane>:v1`. Reuse it when retrying the equivalent normalized
+request. Do not generate a random key per retry and do not derive it from a role
+title.
+
 Response:
 
 ```json
@@ -75,13 +85,18 @@ Response:
     "type": "hire_agent",
     "status": "pending",
     "payload": {
-      "desiredSkills": ["vercel-labs/agent-browser/agent-browser"]
+      "desiredSkills": ["<existing-company-skill-key>"]
     }
   }
 }
 ```
 
 If company setting disables required approval, `approval` is `null` and the agent is created as `idle`.
+
+The first keyed creation returns `201`. The same company and key with an
+equivalent normalized hire payload returns the existing agent and approval with
+`200`. Reusing the key with a different payload returns `409`. Keys never
+deduplicate across companies.
 
 `desiredSkills` accepts company skill ids, canonical keys, or a unique slug. The server resolves and stores canonical company skill keys.
 Leave timer heartbeats disabled by default. Only set `runtimeConfig.heartbeat.enabled=true` and include an `intervalSec` when the role truly needs scheduled recurring work or the user explicitly requested it.

@@ -449,6 +449,72 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
+  it("does not wake a stranded assignee when a liveness board interaction is answered or cancelled", async () => {
+    const baseInteraction = {
+      id: "interaction-liveness-board",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "ask_user_questions",
+      continuationPolicy: "none",
+      idempotencyKey: "harness-liveness-board:incident:1",
+      sourceCommentId: null,
+      sourceRunId: null,
+      payload: {
+        version: 1,
+        context: {
+          kind: "issue_graph_liveness_board_escalation",
+          continuation: { policy: "none", automaticWake: false },
+        },
+        questions: [{
+          id: "continuation_path",
+          prompt: "Which continuation is now in place?",
+          selectionMode: "single",
+          options: [{ id: "assign_or_restore_owner", label: "Assign owner" }],
+        }],
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    };
+    mockInteractionService.answerQuestions.mockResolvedValueOnce({
+      ...baseInteraction,
+      status: "answered",
+      result: {
+        version: 1,
+        answers: [{
+          questionId: "continuation_path",
+          optionIds: ["assign_or_restore_owner"],
+        }],
+      },
+    });
+    mockInteractionService.cancelQuestions.mockResolvedValueOnce({
+      ...baseInteraction,
+      status: "cancelled",
+      result: {
+        version: 1,
+        answers: [],
+        cancelled: true,
+      },
+    });
+    const app = await createApp();
+
+    const answered = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-liveness-board/respond")
+      .send({
+        answers: [{
+          questionId: "continuation_path",
+          optionIds: ["assign_or_restore_owner"],
+        }],
+      });
+    const cancelled = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-liveness-board/cancel")
+      .send({ reason: "No safe continuation yet" });
+
+    expect(answered.status).toBe(200);
+    expect(cancelled.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("accepts request confirmations and wakes the current assignee when configured for accept-only wakeups", async () => {
     mockInteractionService.acceptInteraction.mockResolvedValueOnce({
       interaction: {

@@ -4,13 +4,19 @@ Use this reference from step 4 of the hiring workflow. It lists the current role
 
 These templates are deliberately separate from the main Paperclip heartbeat skill and from `SKILL.md` in this folder — the core wake procedure and hiring workflow stay short, and role-specific depth lives here.
 
+Role files are drafting examples, not evidence that an agent with that name or
+title exists. Resolve current-company coverage by capabilities before selecting
+a template or opening a hire.
+
 ## Decision flow
 
 ```
-role match?
-├── exact template exists       → copy it, replace placeholders, submit
-├── adjacent template is close  → copy closest, adapt deliberately (charter, lenses, sections)
-└── no template is close        → use references/baseline-role-guide.md to build from scratch
+capability gap after current-company roster check?
+├── no                            → reuse the active or pending capability owner; do not hire
+└── yes
+    ├── exact template exists     → copy it, replace placeholders, submit
+    ├── adjacent template close   → copy closest, adapt deliberately (charter, lenses, sections)
+    └── no template is close      → use references/baseline-role-guide.md to build from scratch
 ```
 
 In the hire comment, state which path you took so the board can audit the reasoning.
@@ -19,16 +25,21 @@ In the hire comment, state which path you took so the board can audit the reason
 
 | Template | Use when hiring | Typical adapter | Lens density |
 |---|---|---|---|
-| [`Coder`](agents/coder.md) | Software engineers who implement code, debug issues, write tests, and coordinate with QA/CTO | `codex_local`, `claude_local`, `cursor`, or another coding adapter | Low (operational) |
+| [`Coder`](agents/coder.md) | Build/operations implementers who edit code, debug issues, test changes, and coordinate with the current verification and technical owners | `codex_local`, `claude_local`, `cursor`, or another coding adapter | Low (operational) |
 | [`QA`](agents/qa.md) | QA engineers who reproduce bugs, validate fixes, capture screenshots, and report actionable findings | `claude_local` or another browser-capable adapter | Low (operational) |
 | [`UX Designer`](agents/uxdesigner.md) | Product designers who produce UX specs, review interface quality, and evolve the design system | `codex_local`, `claude_local`, or another adapter with repo/design context | High (lens-heavy) |
 | [`SecurityEngineer`](agents/securityengineer.md) | Security engineers who threat-model, review auth/crypto/input handling, triage supply-chain and LLM-agent risk, and drive remediations | `claude_local`, `codex_local`, or another adapter with repo context | High (lens-heavy) |
 
-If you are hiring a role that is not in this index, do not force a fit. Use the adjacent-template path when one is genuinely close, or the generic fallback when none is.
+The labels in this index describe reusable examples only. Never construct an
+agent link, assignee, or reporting line from a template label. If a capability
+owner exists, use its actual current-company id; if not, surface the gap through
+the manager or hiring workflow. If a needed role is not in this index, do not
+force a fit. Use the adjacent-template path when one is genuinely close, or the
+generic fallback when none is.
 
 ### When to use each template
 
-- **Coder** — the hire primarily writes or edits code against existing conventions, runs focused tests, and hands off to QA. Pick Coder when the charter is "ship code that passes review and CI." Avoid for pure strategy, design, or security review.
+- **Coder** — the hire primarily writes or edits code against existing conventions, runs focused tests, and hands off to the resolved independent-verification owner when one is required. Pick this example when the charter is "ship code that passes review and CI." Avoid for pure strategy, design, or security review.
 - **QA** — the hire reproduces bugs in a running product, exercises flows in a browser or test harness, and produces evidence-grounded pass/fail reports. Pick QA when the charter is "confirm the user experience matches intent." Avoid for agents that only run static linters or unit tests — that belongs with a Coder.
 - **UX Designer** — the hire is accountable for the user experience and visual quality of product work. Pick UXDesigner when the role must make design calls, push back on unstyled implementations, and evolve the design system. Avoid for agents that only proofread or enforce style-guide consistency without making IA or voice decisions, or that only run automated accessibility scans — those are operational and can use the baseline guide. Content Design proper (microcopy, voice, IA) is a lens-using variant; see the adjacent-template path.
 - **SecurityEngineer** — the hire is accountable for security posture: threat-modeling, reviewing auth/crypto/input handling, supply-chain and LLM-agent risk, and driving remediations with evidence. Pick SecurityEngineer when the role must block insecure designs, propose concrete fixes, and handle sensitive disclosure. Avoid for agents that only run automated scanners with no triage responsibility — those are operational and can use the baseline guide with a short security-lens subset.
@@ -76,7 +87,7 @@ Source: adjacent to `coder.md`, but the charter is performance and reliability, 
 2. Rewrite the charter around performance: owns latency and throughput budgets, profiles hot paths, proposes concrete fixes with before/after measurements, and blocks merges that regress SLO.
 3. Add a focused lens section (about 6–10 lenses), for example: Amdahl's Law, Tail-at-Scale, Little's Law (throughput = concurrency / latency), N+1 queries, hot-cold partitioning, cache coherence, GC pause budget, backpressure, SLO vs SLI vs SLA, observability-before-optimization.
 4. Add a "performance review bar" describing evidence expected in a PR: flamegraph or trace, baseline vs fixed numbers, test that fails on regression.
-5. Drop UX-visual-quality content. Drop broad security lenses — route those to SecurityEngineer.
+5. Drop UX-visual-quality content. Drop broad security lenses — route those to the active current-company security capability owner, or surface the uncovered gap to the manager.
 
 This produces a lens-heavy variant without pasting the SecurityEngineer or UXDesigner lens dump, and without leaving Coder's generic framing in place.
 

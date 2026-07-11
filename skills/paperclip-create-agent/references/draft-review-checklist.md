@@ -8,6 +8,8 @@ Use it for every path: exact template, adjacent template, or generic fallback.
 
 ## A. Identity and framing
 
+- [ ] A current-company operating-harness assessment identifies the concrete capability gap this hire closes
+- [ ] No active in-company agent or equivalent pending hire approval already covers that gap
 - [ ] `name`, `role`, and `title` are set and consistent with each other
 - [ ] `AGENTS.md` names the agent, the role, and the company in the first sentence
 - [ ] The first paragraph points at the Paperclip skill as the source of truth for the heartbeat procedure
@@ -45,11 +47,12 @@ Use it for every path: exact template, adjacent template, or generic fallback.
 ## F. Collaboration routing
 
 - [ ] Cross-role handoffs are named only when the role actually touches that domain
-- [ ] UX-facing role or change → routes to `[UXDesigner](/PAP/agents/uxdesigner)`
-- [ ] Security-sensitive role, permissions, secrets, auth, adapters, tool access → routes to `[SecurityEngineer](/PAP/agents/securityengineer)`
-- [ ] Browser validation or user-facing verification → routes to `[QA](/PAP/agents/qa)`
-- [ ] Skill architecture / instruction quality changes → routes to the Skill Consultant when present
-- [ ] Engineering/runtime changes → routes to CTO and a coder
+- [ ] Every named handoff resolves to a current in-company agent with verified capability and access; no title or agent name is assumed
+- [ ] UX-facing work routes to the current product/design capability owner, or records a real gap
+- [ ] Security-sensitive work, permissions, secrets, auth, adapters, or tool access routes to a capable security/access owner, or records a real gap
+- [ ] Browser validation or user-facing verification routes to an independent verification owner with the needed runtime, or records a real gap
+- [ ] Skill architecture or instruction quality routes to the current instruction-governance owner when one exists
+- [ ] Engineering/runtime work routes to a capable build/operations owner and the required reviewer
 
 ## G. Governance fields
 
@@ -59,6 +62,7 @@ Use it for every path: exact template, adjacent template, or generic fallback.
 - [ ] Adapter config matches this Paperclip instance (cwd, model, credentials) per `/llms/agent-configuration/<adapter>.txt`
 - [ ] Local managed-bundle adapters send custom instructions through top-level `instructionsBundle.files["AGENTS.md"]` and do not set `adapterConfig.promptTemplate` or `bootstrapPromptTemplate`
 - [ ] Placeholders like `{{companyName}}`, `{{managerTitle}}`, `{{issuePrefix}}`, and any URL stubs are replaced with real values
+- [ ] No instructions, reporting lines, credential setup, or secret binding was copied from another company's live agent
 
 ## H. Safety and permissions (least privilege)
 

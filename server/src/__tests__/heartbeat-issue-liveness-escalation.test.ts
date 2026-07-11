@@ -3,6 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   budgetPolicies,
   companies,
@@ -63,6 +64,8 @@ vi.mock("../adapters/index.ts", async () => {
 
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { issueService } from "../services/issues.ts";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -294,7 +297,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(result.escalationsCreated).toBe(0);
   });
 
-  it("creates one bounded escalation for an assigned backlog blocker leaf", async () => {
+  it("retains one bounded escalation for an assigned backlog blocker until dependency state changes", async () => {
     await enableAutoRecovery();
     const { companyId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
       blockerStatus: "backlog",
@@ -304,11 +307,16 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
     const first = await heartbeat.reconcileIssueGraphLiveness();
     const second = await heartbeat.reconcileIssueGraphLiveness();
+    const third = await heartbeat.reconcileIssueGraphLiveness();
 
     expect(first.findings).toBe(1);
     expect(first.escalationsCreated).toBe(1);
-    expect(second.findings).toBe(0);
+    expect(second.findings).toBe(1);
     expect(second.escalationsCreated).toBe(0);
+    expect(second.existingEscalations).toBe(1);
+    expect(third.findings).toBe(1);
+    expect(third.escalationsCreated).toBe(0);
+    expect(third.existingEscalations).toBe(1);
 
     const escalations = await db
       .select()
@@ -332,6 +340,17 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
         blockerIssueId,
       ].join(":"),
     });
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, blockedIssueId));
+    expect(comments).toHaveLength(1);
+    const wakeups = await db
+      .select({ payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakeups.filter((row) => row.payload?.incidentKey === escalations[0]?.originId)).toHaveLength(1);
   });
 
   it("treats a recent pending interaction as a current waiting path", async () => {
@@ -488,6 +507,384 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       },
     });
     expect(events.filter((event) => event.action === "issue.blockers.updated")).toHaveLength(1);
+  });
+
+  it("creates exactly one reporting-manager escalation for an agent-owned blocked issue with no blockers", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId } = await seedBlockedChain();
+    await db
+      .delete(issueRelations)
+      .where(and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.relatedIssueId, blockedIssueId),
+      ));
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+    const third = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(first).toMatchObject({
+      findings: 1,
+      escalationsCreated: 1,
+      existingEscalations: 0,
+      boardEscalationsCreated: 0,
+    });
+    expect(second).toMatchObject({
+      findings: 1,
+      escalationsCreated: 0,
+      existingEscalations: 1,
+    });
+    expect(third).toMatchObject({
+      findings: 1,
+      escalationsCreated: 0,
+      existingEscalations: 1,
+    });
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, "harness_liveness_escalation"),
+      ));
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toMatchObject({
+      parentId: blockedIssueId,
+      assigneeAgentId: managerId,
+      originId: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
+        "blocked_without_action_path",
+        blockedIssueId,
+      ].join(":"),
+      originFingerprint: [
+        "harness_liveness_leaf",
+        companyId,
+        "blocked_without_action_path",
+        blockedIssueId,
+      ].join(":"),
+    });
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, blockedIssueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("blocked_without_action_path");
+
+    const wakeups = await db
+      .select({ agentId: agentWakeupRequests.agentId, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    const incidentWakeups = wakeups.filter(
+      (row) => row.payload?.incidentKey === escalations[0]?.originId,
+    );
+    expect(incidentWakeups).toEqual([
+      expect.objectContaining({ agentId: managerId }),
+    ]);
+
+    const events = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId));
+    expect(events.filter((event) =>
+      event.action === "issue.harness_liveness_escalation_created" &&
+      event.entityId === escalations[0]?.id
+    )).toHaveLength(1);
+    expect(events.find((event) =>
+      event.action === "issue.harness_liveness_escalation_created" &&
+      event.entityId === escalations[0]?.id
+    )?.details).toMatchObject({
+      findingState: "blocked_without_action_path",
+      ownerSelection: {
+        selectedAgentId: managerId,
+        selectedReason: "assignee_reporting_chain",
+        selectedSourceIssueId: blockedIssueId,
+      },
+    });
+
+    const boardInteractions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.companyId, companyId));
+    expect(boardInteractions).toHaveLength(0);
+  });
+
+  it("creates one durable board interaction across three passes when no invokable company candidate exists", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, coderId, blockerIssueId } = await seedBlockedChain();
+    await db
+      .update(agents)
+      .set({ status: "error" })
+      .where(inArray(agents.id, [managerId, coderId]));
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+    const third = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(first).toMatchObject({
+      findings: 1,
+      escalationsCreated: 0,
+      boardEscalationsCreated: 1,
+      existingBoardEscalations: 0,
+      skipped: 0,
+    });
+    expect(second).toMatchObject({ findings: 0, boardEscalationsCreated: 0 });
+    expect(third).toMatchObject({ findings: 0, boardEscalationsCreated: 0 });
+
+    const interactions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, companyId),
+        eq(issueThreadInteractions.issueId, blockerIssueId),
+      ));
+    expect(interactions).toHaveLength(1);
+    expect(interactions[0]).toMatchObject({
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "none",
+      createdByAgentId: null,
+      createdByUserId: null,
+    });
+    expect(interactions[0]?.idempotencyKey).toMatch(/^harness-liveness-board:[a-f0-9]{64}:1$/);
+    expect(interactions[0]?.payload).toMatchObject({
+      version: 1,
+      context: {
+        kind: "issue_graph_liveness_board_escalation",
+        version: 1,
+        generation: 1,
+        cause: "no_invokable_same_company_candidate",
+        companyId,
+        recoveryIssue: { id: blockerIssueId },
+        budgetBlockedCandidateAgentIds: [],
+        continuation: {
+          issueId: blockerIssueId,
+          policy: "none",
+          questionId: "continuation_path",
+          boardStateChangeRequiredBeforeSubmit: true,
+          automaticWake: false,
+        },
+      },
+      questions: [expect.objectContaining({
+        id: "continuation_path",
+        selectionMode: "single",
+        required: true,
+      })],
+    });
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
+    const events = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "issue.harness_liveness_board_escalation_created"),
+      ));
+    expect(events).toHaveLength(1);
+    expect(events[0]?.details).toMatchObject({
+      cause: "no_invokable_same_company_candidate",
+      recoveryIssueId: blockerIssueId,
+      interactionId: interactions[0]?.id,
+      budgetBlockedCandidateAgentIds: [],
+      continuation: {
+        issueId: blockerIssueId,
+        interactionId: interactions[0]?.id,
+        policy: "none",
+      },
+    });
+
+    const boardQueue = await issueService(db).list(companyId, {
+      awaitingDecisionForUserId: "board-user",
+    });
+    expect(boardQueue.map((issue) => issue.id)).toContain(blockerIssueId);
+
+    // Answering without making the selected state change must not permanently
+    // mask the live incident. The next pass creates exactly one new generation,
+    // and that pending generation then deduplicates subsequent passes.
+    await issueThreadInteractionService(db).answerQuestions(
+      { id: blockerIssueId, companyId },
+      interactions[0]!.id,
+      {
+        answers: [{
+          questionId: "continuation_path",
+          optionIds: ["assign_or_restore_owner"],
+        }],
+      },
+      { userId: "board-user" },
+    );
+    const afterUnfulfilledAnswer = await heartbeat.reconcileIssueGraphLiveness();
+    const afterReplacementPending = await heartbeat.reconcileIssueGraphLiveness();
+    const finalDedupePass = await heartbeat.reconcileIssueGraphLiveness();
+    expect(afterUnfulfilledAnswer).toMatchObject({
+      findings: 1,
+      boardEscalationsCreated: 1,
+      existingBoardEscalations: 0,
+    });
+    expect(afterReplacementPending).toMatchObject({ findings: 0, boardEscalationsCreated: 0 });
+    expect(finalDedupePass).toMatchObject({ findings: 0, boardEscalationsCreated: 0 });
+
+    const regeneratedInteractions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, companyId),
+        eq(issueThreadInteractions.issueId, blockerIssueId),
+      ));
+    expect(regeneratedInteractions).toHaveLength(2);
+    expect(regeneratedInteractions.map((interaction) => interaction.status).sort()).toEqual([
+      "answered",
+      "pending",
+    ]);
+    expect(regeneratedInteractions.map((interaction) => interaction.idempotencyKey).sort()).toEqual([
+      expect.stringMatching(/^harness-liveness-board:[a-f0-9]{64}:1$/),
+      expect.stringMatching(/^harness-liveness-board:[a-f0-9]{64}:2$/),
+    ]);
+    const replacement = regeneratedInteractions.find((interaction) => interaction.status === "pending");
+    expect(replacement?.payload).toMatchObject({
+      context: {
+        kind: "issue_graph_liveness_board_escalation",
+        generation: 2,
+        recoveryIssue: { id: blockerIssueId },
+      },
+    });
+  });
+
+  it("does not self-escalate an actionless blocked issue when its assignee is the only invokable root", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, coderId, blockedIssueId } = await seedBlockedChain();
+    await db
+      .delete(issueRelations)
+      .where(and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.relatedIssueId, blockedIssueId),
+      ));
+    await db.update(agents).set({ reportsTo: null }).where(eq(agents.id, coderId));
+    await db.update(agents).set({ status: "error" }).where(eq(agents.id, managerId));
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result).toMatchObject({
+      findings: 1,
+      escalationsCreated: 0,
+      boardEscalationsCreated: 1,
+      skipped: 0,
+    });
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
+    const interactions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, companyId),
+        eq(issueThreadInteractions.issueId, blockedIssueId),
+      ));
+    expect(interactions).toHaveLength(1);
+    expect(interactions[0]?.payload).toMatchObject({
+      context: {
+        cause: "stranded_assignee_is_only_invokable_candidate",
+        recoveryIssue: { id: blockedIssueId },
+        companyAgents: expect.arrayContaining([
+          expect.objectContaining({
+            agentId: coderId,
+            invokable: true,
+            excludedAsStrandedAssignee: true,
+          }),
+        ]),
+      },
+    });
+  });
+
+  it("deduplicates shared-leaf board recovery and preserves every source incident", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const secondBlockedIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: secondBlockedIssueId,
+      companyId,
+      title: "Second blocked source sharing one leaf",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      createdAt: new Date(Date.now() - 60 * 60 * 1000),
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: secondBlockedIssueId,
+      type: "blocks",
+    });
+    await db
+      .update(agents)
+      .set({ status: "error" })
+      .where(inArray(agents.id, [managerId, coderId]));
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+    const third = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(first).toMatchObject({
+      findings: 2,
+      boardEscalationsCreated: 1,
+      existingBoardEscalations: 1,
+      skipped: 0,
+    });
+    expect(first.boardInteractionIds).toHaveLength(1);
+    expect(second).toMatchObject({ findings: 0, boardEscalationsCreated: 0 });
+    expect(third).toMatchObject({ findings: 0, boardEscalationsCreated: 0 });
+
+    const interactions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, companyId),
+        eq(issueThreadInteractions.issueId, blockerIssueId),
+      ));
+    expect(interactions).toHaveLength(1);
+    expect(interactions[0]).toMatchObject({
+      status: "pending",
+      continuationPolicy: "none",
+    });
+    const context = (interactions[0]?.payload as {
+      context?: {
+        sourceIncidentCount?: number;
+        sourceIncidents?: Array<{
+          incidentKey?: string;
+          sourceIssue?: { id?: string };
+          recoveryIssueId?: string;
+        }>;
+      };
+    }).context;
+    expect(context?.sourceIncidentCount).toBe(2);
+    expect(context?.sourceIncidents).toHaveLength(2);
+    expect(context?.sourceIncidents?.map((incident) => incident.sourceIssue?.id).sort()).toEqual(
+      [blockedIssueId, secondBlockedIssueId].sort(),
+    );
+    expect(context?.sourceIncidents?.every((incident) =>
+      incident.recoveryIssueId === blockerIssueId &&
+      typeof incident.incidentKey === "string"
+    )).toBe(true);
+
+    const events = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "issue.harness_liveness_board_escalation_created"),
+      ));
+    expect(events).toHaveLength(1);
   });
 
   it("does not let an active source recovery action owned by an errored agent mask liveness", async () => {
@@ -654,6 +1051,85 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(blockers.map((row) => row.blockerIssueId).sort()).toEqual(
       [blockerIssueId, escalations[0]!.id].sort(),
     );
+  });
+
+  it("creates a structured board interaction when every same-company candidate is budget-blocked", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, coderId, blockerIssueId } = await seedBlockedChain();
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "company",
+      scopeId: companyId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 1,
+      hardStopEnabled: true,
+      isActive: true,
+    });
+    await db.insert(costEvents).values({
+      companyId,
+      agentId: coderId,
+      issueId: blockerIssueId,
+      provider: "test",
+      biller: "test",
+      billingType: "tokens",
+      model: "test-model",
+      costCents: 1,
+      occurredAt: new Date(),
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result).toMatchObject({
+      findings: 1,
+      escalationsCreated: 0,
+      boardEscalationsCreated: 1,
+      existingBoardEscalations: 0,
+      skipped: 0,
+    });
+    const interactions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, companyId),
+        eq(issueThreadInteractions.issueId, blockerIssueId),
+      ));
+    expect(interactions).toHaveLength(1);
+    expect(interactions[0]?.payload).toMatchObject({
+      context: {
+        cause: "all_same_company_candidates_budget_blocked",
+        companyId,
+        recoveryIssue: { id: blockerIssueId },
+        budgetBlockedCandidateAgentIds: [managerId, coderId],
+      },
+    });
+    const interactionContext = (interactions[0]?.payload as {
+      context?: { candidates?: Array<Record<string, unknown>> };
+    }).context;
+    expect(interactionContext?.candidates).toHaveLength(2);
+    expect(interactionContext?.candidates?.[0]).toMatchObject({
+      agentId: managerId,
+      reason: "root_agent",
+      eligible: true,
+      budgetBlock: {
+        scopeType: "company",
+        scopeId: companyId,
+      },
+    });
+    expect(interactionContext?.candidates?.[1]).toMatchObject({
+      agentId: coderId,
+      reason: "ordered_invokable_fallback",
+      eligible: true,
+      budgetBlock: {
+        scopeType: "company",
+        scopeId: companyId,
+      },
+    });
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
   });
 
   it("skips budget-blocked direct owners and assigns recovery to the manager fallback", async () => {

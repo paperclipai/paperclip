@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AGENT_ICON_NAMES,
+  AGENT_HIRE_REQUEST_METADATA_KEY,
   AGENT_ROLES,
   AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
@@ -59,6 +60,16 @@ const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
   }
 });
 
+const agentMetadataSchema = z.record(z.unknown()).superRefine((value, ctx) => {
+  if (Object.prototype.hasOwnProperty.call(value, AGENT_HIRE_REQUEST_METADATA_KEY)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `${AGENT_HIRE_REQUEST_METADATA_KEY} is reserved for server-managed hire idempotency`,
+      path: [AGENT_HIRE_REQUEST_METADATA_KEY],
+    });
+  }
+});
+
 export const createAgentInstructionsBundleSchema = z.object({
   entryFile: z.string().trim().min(1).optional(),
   files: z.record(z.string()).refine((files) => Object.keys(files).length > 0, {
@@ -107,7 +118,7 @@ export const createAgentSchema = z.object({
   permissions: agentPermissionsSchema.optional(),
   credentialId: z.string().uuid().optional().nullable(),
   credentialIds: z.array(z.string().uuid()).optional(),
-  metadata: z.record(z.unknown()).optional().nullable(),
+  metadata: agentMetadataSchema.optional().nullable(),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;
@@ -115,6 +126,7 @@ export type CreateAgent = z.infer<typeof createAgentSchema>;
 export const createAgentHireSchema = createAgentSchema.extend({
   sourceIssueId: z.string().uuid().optional().nullable(),
   sourceIssueIds: z.array(z.string().uuid()).optional(),
+  idempotencyKey: z.string().trim().min(1).max(255).optional(),
 });
 
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;

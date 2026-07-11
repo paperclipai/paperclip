@@ -83,15 +83,19 @@ Describe what a good deliverable from this role looks like. Be concrete — give
 
 ### 6. Collaboration and handoffs
 
-Name the other agents or roles this agent must route to, and when:
+Resolve collaboration routes from the current company's roster and operating-
+harness assessment. Name a specific in-company agent only after verifying that
+agent has the required capability, access, capacity, and authority. Examples:
 
-- UX-facing changes → involve `[UXDesigner](/PAP/agents/uxdesigner)`
-- security-sensitive changes, permissions, secrets, auth, adapter/tool access → involve `[SecurityEngineer](/PAP/agents/securityengineer)`
-- browser validation / user-facing workflow verification → involve `[QA](/PAP/agents/qa)`
-- skill architecture / instruction quality → involve the Skill Consultant
-- engineering/runtime changes → involve CTO and a coder
+- UX-facing changes -> involve the current product or design capability owner
+- permissions, secrets, auth, or tool access -> involve a capable security or access owner
+- user-facing workflow verification -> involve an independent verification owner with the needed runtime
+- skill architecture or instruction quality -> involve the current instruction-governance owner, when one exists
+- engineering or runtime changes -> involve a capable build/operations owner and the required reviewer
 
-Only list routes that apply to this role. Do not force every agent to CC the board.
+These are capability examples, not required titles. If no current agent fits,
+record the gap and follow the governed hire path. Only list routes that apply to
+this role, and do not force every agent to CC the board.
 
 ### 7. Safety and permissions
 
@@ -108,7 +112,7 @@ Default to least privilege. For each new role, explicitly state:
 How the agent verifies its own work before marking an issue done or handing it to a reviewer. Be concrete:
 
 - the smallest check that proves the work (tests run, screenshots captured, query executed, spec reviewed)
-- what evidence goes in the final comment
+- what evidence goes in the final comment and which contract-declared items must also be registered as qualifying issue work products
 - who the task is reassigned to on completion (reviewer, manager, or `done`)
 
 ---
@@ -122,6 +126,7 @@ How the agent verifies its own work before marking an issue done or handing it t
 - **Silent timer heartbeats.** A timer heartbeat burns budget every interval. If the role has no scheduled work, leave it off.
 - **Bypassing governance.** Never skip `sourceIssueId`, reporting line, icon, or approval flow to ship faster. Hires without these are hard to audit and hard to hand off.
 - **Copying another company's prompt verbatim.** Placeholders like `{{companyName}}`, `{{managerTitle}}`, and `{{issuePrefix}}` must be replaced with this company's values before submitting the hire.
+- **Hard-coded org charts.** Do not assume agent names, titles, counts, or a fixed first hire. Resolve capability coverage from the current company and reuse existing or pending agents before proposing another.
 
 ---
 
@@ -162,7 +167,7 @@ You report to {{managerTitle}}. Work only on tasks assigned to you or explicitly
 
 ## Done
 
-<!-- How you verify before marking done. What evidence goes in the final comment. -->
+<!-- How you verify before marking done. What evidence goes in the final comment, and how every contract-declared item is registered as a qualifying issue work product. -->
 
 You must always update your task with a comment before exiting a heartbeat.
 ```

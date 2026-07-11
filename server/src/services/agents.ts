@@ -28,6 +28,10 @@ import {
   normalizeIssueExecutionPolicy,
 } from "./issue-execution-policy.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+import {
+  assertAgentHireMetadataCanBeCreated,
+  preserveAgentHireIdempotencyMetadata,
+} from "./agent-hire-idempotency.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -77,6 +81,10 @@ interface TerminationAuditMetadata {
 interface AgentServiceRuntimeOptions {
   driveQueuedRunsForAgent?: (agentId: string) => Promise<unknown>;
   cancelRecoveryRun?: (runId: string) => Promise<unknown>;
+}
+
+interface CreateAgentOptions {
+  allowServerManagedHireMetadata?: boolean;
 }
 
 class RecoveryGenerationCancellationRequired extends Error {
@@ -1802,10 +1810,18 @@ export function agentService(db: Db, serviceOptions: AgentServiceRuntimeOptions 
         throw conflict("Pending approval agents cannot be activated directly");
       }
 
+      const persistedPatch = { ...normalizedPatch };
+      if (Object.prototype.hasOwnProperty.call(persistedPatch, "metadata")) {
+        persistedPatch.metadata = preserveAgentHireIdempotencyMetadata(
+          lockedExisting.metadata,
+          persistedPatch.metadata ?? null,
+        );
+      }
+
       const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(lockedExisting) : null;
       const updated = await executor
         .update(agents)
-        .set({ ...normalizedPatch, updatedAt: new Date() })
+        .set({ ...persistedPatch, updatedAt: new Date() })
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -1915,7 +1931,15 @@ export function agentService(db: Db, serviceOptions: AgentServiceRuntimeOptions 
 
     getById,
 
-    create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">) => {
+    create: async (
+      companyId: string,
+      data: Omit<typeof agents.$inferInsert, "companyId">,
+      options?: CreateAgentOptions,
+    ) => {
+      assertAgentHireMetadataCanBeCreated(
+        data.metadata,
+        options?.allowServerManagedHireMetadata === true,
+      );
       if (data.reportsTo) {
         await ensureManager(companyId, data.reportsTo);
       }

@@ -17,6 +17,7 @@ import {
   issueAttachments,
   issueInboxArchives,
   issueRelations,
+  issueWorkProducts,
   issues,
   projectWorkspaces,
   projects,
@@ -26,6 +27,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { workProductService } from "../services/work-products.ts";
 import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
@@ -247,6 +249,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
+    await db.delete(issueWorkProducts);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -2535,6 +2538,329 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(issue.description).toBe("Human-readable QA brief.");
     expect(issue.executionContract).toEqual({ ...executionContract, revision: 1 });
+  });
+
+  it("blocks done until company-scoped work products satisfy declared completion evidence", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other company",
+        issuePrefix: `O${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    const baseContract = makeValidExecutionContract();
+    const productsSvc = workProductService(db);
+    const issue = await svc.create(companyId, {
+      title: "Deploy and prove the delegated result",
+      status: "in_review",
+      executionContract: {
+        ...baseContract,
+        taskType: "deployment",
+        core: {
+          ...baseContract.core,
+          acceptanceChecks: ["The preview is reachable and the QA artifact is recorded."],
+          requiredOutputs: [
+            { workProductType: "preview_url" },
+            { workProductType: "artifact" },
+          ],
+        },
+      },
+    });
+
+    await expect(svc.update(issue.id, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "issue_completion_evidence_missing",
+        declaredRequirementTypes: ["work_product:artifact", "work_product:preview_url"],
+        missingRequirementTypes: ["work_product:artifact", "work_product:preview_url"],
+        qualifyingWorkProductCount: 0,
+      },
+    });
+
+    const foreignProjectId = randomUUID();
+    await db.insert(projects).values({
+      id: foreignProjectId,
+      companyId: otherCompanyId,
+      name: "Foreign project",
+      status: "in_progress",
+    });
+    await expect(productsSvc.createForIssue(issue.id, companyId, {
+      projectId: foreignProjectId,
+      type: "artifact",
+      provider: "paperclip",
+      title: "Cross-company artifact",
+      externalId: "foreign-artifact",
+      status: "active",
+    })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "issue_work_product_reference_scope_mismatch",
+        field: "projectId",
+        referencedId: foreignProjectId,
+      },
+    });
+
+    // Older data or direct database writes can contain a company-local product
+    // row whose referenced resource belongs to another company. Completion
+    // must ignore that row as evidence as well.
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId: issue.id,
+      projectId: foreignProjectId,
+      type: "artifact",
+      provider: "paperclip",
+      title: "Legacy cross-company reference",
+      externalId: "foreign-artifact-direct-row",
+      status: "active",
+    });
+
+    // A malformed cross-company association must never satisfy the issue's
+    // evidence contract, even though the database has independent FKs.
+    await db.insert(issueWorkProducts).values([
+      {
+        companyId: otherCompanyId,
+        issueId: issue.id,
+        type: "preview_url",
+        provider: "paperclip",
+        title: "Wrong-company preview",
+        url: "https://foreign.zenova.id/release-42",
+        status: "active",
+      },
+      {
+        companyId: otherCompanyId,
+        issueId: issue.id,
+        type: "artifact",
+        provider: "paperclip",
+        title: "Wrong-company QA evidence",
+        status: "active",
+        metadata: { sha256: "b".repeat(64) },
+      },
+    ]);
+    await expect(svc.update(issue.id, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "issue_completion_evidence_missing",
+        missingRequirementTypes: ["work_product:artifact", "work_product:preview_url"],
+        qualifyingWorkProductCount: 0,
+      },
+    });
+
+    await db.insert(issueWorkProducts).values([
+      {
+        companyId,
+        issueId: issue.id,
+        type: "preview_url",
+        provider: "paperclip",
+        title: "Placeholder preview",
+        status: "active",
+      },
+      {
+        companyId,
+        issueId: issue.id,
+        type: "artifact",
+        provider: "paperclip",
+        title: "Placeholder QA evidence",
+        status: "active",
+      },
+    ]);
+    await expect(svc.update(issue.id, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "issue_completion_evidence_missing",
+        missingRequirementTypes: ["work_product:artifact", "work_product:preview_url"],
+        qualifyingWorkProductCount: 0,
+      },
+    });
+
+    const [previewProduct] = await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId: issue.id,
+      type: "preview_url",
+      provider: "paperclip",
+      title: "Deployment preview",
+      url: "https://preview.zenova.id/release-42",
+      status: "ready_for_review",
+    }).returning();
+    await expect(svc.update(issue.id, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "issue_completion_evidence_missing",
+        missingRequirementTypes: ["work_product:artifact"],
+        qualifyingWorkProductTypes: ["preview_url"],
+      },
+    });
+
+    const [artifactProduct] = await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId: issue.id,
+      type: "artifact",
+      provider: "paperclip",
+      title: "QA evidence bundle",
+      status: "active",
+      metadata: { sha256: "a".repeat(64), testSuite: "focused" },
+    }).returning();
+    const completed = await svc.update(issue.id, { status: "done" });
+
+    expect(completed?.status).toBe("done");
+    expect(completed?.completedAt).toBeInstanceOf(Date);
+    await expect(productsSvc.update(previewProduct.id, {
+      url: "not-a-url",
+    })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "issue_completion_evidence_missing",
+        missingRequirementTypes: ["work_product:preview_url"],
+      },
+    });
+    await expect(productsSvc.update(artifactProduct.id, {
+      metadata: { placeholder: true },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "issue_completion_evidence_missing",
+        missingRequirementTypes: ["work_product:artifact"],
+      },
+    });
+    await expect(productsSvc.remove(artifactProduct.id)).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "issue_completion_evidence_missing",
+        missingRequirementTypes: ["work_product:artifact"],
+      },
+    });
+  });
+
+  it("leaves simple issues and unrelated legacy done updates unaffected while freezing the completed contract", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const simpleIssue = await svc.create(companyId, {
+      title: "Simple bookkeeping task",
+      status: "todo",
+    });
+    const ordinaryContractIssue = await svc.create(companyId, {
+      title: "Contract without explicit evidence",
+      status: "in_review",
+      executionContract: makeValidExecutionContract({ taskType: "qa" }),
+    });
+    const legacyContract = {
+      ...makeValidExecutionContract(),
+      core: {
+        ...makeValidExecutionContract().core,
+        acceptanceChecks: ["Evidence exists."],
+        evidenceRequired: ["Durable QA proof."],
+      },
+    };
+    await expect(svc.create(companyId, {
+      title: "Invalid directly completed contract",
+      status: "done",
+      executionContract: legacyContract,
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "issue_completion_evidence_missing", issueId: null },
+    });
+
+    const alreadyDone = await svc.create(companyId, {
+      title: "Legacy completed contract",
+      status: "todo",
+      executionContract: legacyContract,
+    });
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, alreadyDone.id));
+
+    expect((await svc.update(simpleIssue.id, { status: "done" }))?.status).toBe("done");
+    expect((await svc.update(ordinaryContractIssue.id, { status: "done" }))?.status).toBe("done");
+    await expect(svc.update(alreadyDone.id, {
+      executionContract: {
+        ...legacyContract,
+        core: {
+          ...legacyContract.core,
+          requiredOutputs: [{ workProductType: "artifact" }],
+        },
+      },
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "execution_contract_frozen", currentRevision: 1 },
+    });
+
+    const updatedLegacyIssue = await svc.update(alreadyDone.id, {
+      title: "Renamed legacy completed contract",
+      priority: "high",
+    });
+    expect(updatedLegacyIssue).toMatchObject({
+      status: "done",
+      title: "Renamed legacy completed contract",
+      priority: "high",
+      executionContract: { revision: 1 },
+    });
+  });
+
+  it("serializes completion against concurrent evidence removal", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const productsSvc = workProductService(db);
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const baseContract = makeValidExecutionContract();
+      const issue = await svc.create(companyId, {
+        title: `Concurrent evidence race ${attempt}`,
+        status: "in_review",
+        executionContract: {
+          ...baseContract,
+          core: {
+            ...baseContract.core,
+            acceptanceChecks: ["The artifact remains durable at completion."],
+            requiredOutputs: [{ workProductType: "artifact" }],
+          },
+        },
+      });
+      const product = await productsSvc.createForIssue(issue.id, companyId, {
+        type: "artifact",
+        provider: "paperclip",
+        title: "Race-safe artifact",
+        externalId: `artifact-${attempt}`,
+        status: "active",
+      });
+      expect(product).not.toBeNull();
+
+      const [completion, removal] = await Promise.allSettled([
+        svc.update(issue.id, { status: "done" }),
+        productsSvc.remove(product!.id),
+      ]);
+      const [finalIssue, finalProducts] = await Promise.all([
+        svc.getById(issue.id),
+        productsSvc.listForIssue(issue.id, companyId),
+      ]);
+
+      if (finalIssue?.status === "done") {
+        expect(completion.status).toBe("fulfilled");
+        expect(removal.status).toBe("rejected");
+        expect(finalProducts.map((entry) => entry.id)).toContain(product!.id);
+      } else {
+        expect(completion.status).toBe("rejected");
+        expect(removal.status).toBe("fulfilled");
+        expect(finalProducts).toHaveLength(0);
+      }
+    }
   });
 
   it("canonicalizes accepted legacy aliases before storing a new contract revision", async () => {

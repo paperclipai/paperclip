@@ -1,9 +1,10 @@
 ---
 name: paperclip-create-agent
 description: >
-  Create new agents in Paperclip with governance-aware hiring. Use when you need
-  to inspect adapter configuration options, compare existing agent configs,
-  draft a new agent prompt/config, and submit a hire request.
+  Assess a Paperclip company's operating-harness and roster gaps, then create
+  agents through governance-aware hiring when a real capability gap remains.
+  Use for CEO onboarding, mission or workload changes, roster reviews, adapter
+  comparison, agent instruction drafting, and hire requests.
 ---
 
 # Paperclip Create Agent Skill
@@ -12,12 +13,22 @@ Use this skill when you are asked to hire/create an agent.
 
 ## Preconditions
 
-You need either:
+You may perform the read-only operating-harness assessment with normal access to
+your company. To submit a hire, you need either:
 
 - board access, or
 - agent permission `can_create_agents=true` in your company
 
 If you do not have this permission, escalate to your CEO or board.
+
+## Operating-harness assessment
+
+Before proposing a bootstrap or roster-driven hire, read
+[the operating-harness bootstrap reference](references/operating-harness-bootstrap.md) and
+produce or refresh its durable, company-scoped gap assessment. Reuse active or
+pending in-company agents when they cover the work. If no capability gap remains,
+stop without submitting a hire. If the request is already for one specific role,
+still check for an active or pending equivalent before continuing.
 
 ## Workflow
 
@@ -47,6 +58,8 @@ curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-configura
 ```
 
 Note naming, icon, reporting-line, and adapter conventions the company already follows.
+Inspect this company only. Do not copy a live agent, prompt, reporting line, or
+credential setup from another company.
 
 ### 4. Choose the instruction source (required)
 
@@ -87,6 +100,11 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 - for coding or execution agents, include the Paperclip execution contract: start actionable work in the same heartbeat; do not stop at a plan unless planning was requested; leave durable progress with a clear next action; use child issues for long or parallel delegated work instead of polling; mark blocked work with owner/action; respect budget, pause/cancel, approval gates, and company boundaries
 - instruction text such as `AGENTS.md` built from step 4; for local managed-bundle adapters, send this as top-level `instructionsBundle.files["AGENTS.md"]`. Do not set `adapterConfig.promptTemplate` or `bootstrapPromptTemplate` for new agents.
 - source issue linkage (`sourceIssueId` or `sourceIssueIds`) when this hire came from an issue
+- the operating-harness assessment revision and capability gap this hire closes
+- a stable, company-scoped `idempotencyKey` for retried hire intent, derived from
+  the capability lane rather than a role title (for example,
+  `harness:<capability-lane>:v1`); reuse it for equivalent retries and never
+  generate a random key per attempt
 
 ### 7. Review the draft against the quality checklist
 
@@ -95,21 +113,26 @@ Before submitting, walk the draft-review checklist end-to-end and fix any item t
 
 ### 8. Submit hire request
 
+Treat the values below as schema placeholders. Populate them from the current
+company's gap assessment and roster conventions; no example name or title is a
+default hire.
+
 ```sh
 curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "CTO",
-    "role": "cto",
-    "title": "Chief Technology Officer",
-    "icon": "crown",
-    "reportsTo": "<ceo-agent-id>",
-    "capabilities": "Owns technical roadmap, architecture, staffing, execution",
-    "desiredSkills": ["vercel-labs/agent-browser/agent-browser"],
+    "idempotencyKey": "harness:<capability-lane>:v1",
+    "name": "<agent-name>",
+    "role": "<company-role-key>",
+    "title": "<role-title>",
+    "icon": "<allowed-icon>",
+    "reportsTo": "<resolved-manager-agent-id-or-null>",
+    "capabilities": "<capability gap this hire closes>",
+    "desiredSkills": ["<existing-company-skill-key>"],
     "adapterType": "codex_local",
     "adapterConfig": {"cwd": "/abs/path/to/repo", "model": "o4-mini"},
-    "instructionsBundle": {"files": {"AGENTS.md": "You are the CTO..."}},
+    "instructionsBundle": {"files": {"AGENTS.md": "You are {{agentName}} at {{companyName}}..."}},
     "runtimeConfig": {"heartbeat": {"enabled": false, "wakeOnDemand": true}},
     "sourceIssueId": "<issue-id>"
   }'
@@ -117,6 +140,9 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
 
 ### 9. Handle governance state
 
+- first creation returns `201`; an equivalent retry with the same
+  company-scoped `idempotencyKey` returns the existing agent and approval with
+  `200`; reusing that key for a different normalized hire payload returns `409`
 - if the response has `approval`, the hire is `pending_approval`
 - monitor and discuss on the approval thread
 - when the board approves, you will be woken with `PAPERCLIP_APPROVAL_ID`; read linked issues and close/comment follow-up
@@ -128,7 +154,7 @@ curl -sS "$PAPERCLIP_API_URL/api/approvals/<approval-id>" \
 curl -sS -X POST "$PAPERCLIP_API_URL/api/approvals/<approval-id>/comments" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"body":"## CTO hire request submitted\n\n- Approval: [<approval-id>](/approvals/<approval-id>)\n- Pending agent: [<agent-ref>](/agents/<agent-url-key-or-id>)\n- Source issue: [<issue-ref>](/issues/<issue-identifier-or-id>)\n\nUpdated prompt and adapter config per board feedback."}'
+  -d '{"body":"## Capability-owner hire request submitted\n\n- Capability gap: <capability-gap>\n- Approval: [<approval-id>](/approvals/<approval-id>)\n- Pending agent: [<agent-ref>](/agents/<agent-url-key-or-id>)\n- Source issue: [<issue-ref>](/issues/<issue-identifier-or-id>)\n\nUpdated instructions and adapter config per board feedback."}'
 ```
 
 If the approval already exists and needs manual linking to the issue:
@@ -156,6 +182,7 @@ For each linked issue, either:
 
 ## References
 
+- [Operating-harness bootstrap and idempotent roster-gap assessment](references/operating-harness-bootstrap.md)
 - Template index and how to apply a template: `skills/paperclip-create-agent/references/agent-instruction-templates.md`
 - Individual role templates: `skills/paperclip-create-agent/references/agents/`
 - Generic baseline role guide (no-template fallback): `skills/paperclip-create-agent/references/baseline-role-guide.md`

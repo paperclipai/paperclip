@@ -60,6 +60,7 @@ import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
 import { agentInstructionsService } from "./agent-instructions.js";
+import { withoutAgentHireIdempotencyMetadata } from "./agent-hire-idempotency.js";
 import { assetService } from "./assets.js";
 import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
@@ -3404,7 +3405,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           runtime: portableRuntimeConfig,
           permissions: portablePermissions,
           budgetMonthlyCents: (agent.budgetMonthlyCents ?? 0) > 0 ? agent.budgetMonthlyCents : undefined,
-          metadata: (agent.metadata as Record<string, unknown> | null) ?? null,
+          metadata: withoutAgentHireIdempotencyMetadata(
+            (agent.metadata as Record<string, unknown> | null) ?? null,
+          ),
         });
         if (isPlainRecord(extension) && agentEnvInputs.length > 0) {
           extension.inputs = {

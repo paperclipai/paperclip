@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -33,6 +34,7 @@ import { logActivity } from "../activity-log.js";
 import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { issueService } from "../issues.js";
 import { publishLiveEvent } from "../live-events.js";
@@ -493,6 +495,18 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
+type LivenessBoardEscalationCause =
+  | "no_invokable_same_company_candidate"
+  | "stranded_assignee_is_only_invokable_candidate"
+  | "all_same_company_candidates_budget_blocked";
+
+function livenessBoardEscalationIdempotencyKeyBase(finding: IssueLivenessFinding) {
+  // Multiple blocked sources can converge on the same stranded leaf. The board
+  // owns one decision for that leaf/state, not one duplicate decision per path.
+  const digest = createHash("sha256").update(livenessRecoveryLeafFingerprint(finding)).digest("hex");
+  return `harness-liveness-board:${digest}`;
+}
+
 type RecoveryRunCancellation = (
   runId: string,
   options: {
@@ -510,6 +524,7 @@ export function recoveryService(
 ) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
+  const interactionsSvc = issueThreadInteractionService(db);
   const treeControlSvc = issueTreeControlService(db);
   const budgets = budgetService(db);
   const instanceSettings = instanceSettingsService(db);
@@ -2775,21 +2790,13 @@ export function recoveryService(
 
     const openRecoveryIssues = recoveryIssueRows.flatMap((row) => {
       if (row.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation) {
-        const parsed = parseIssueGraphLivenessIncidentKey(row.originId);
-        if (!parsed || parsed.companyId !== row.companyId) return [];
-        if (parsed.state !== "blocked_by_assigned_backlog_issue") return [];
-        return [
-          {
-            companyId: row.companyId,
-            issueId: parsed.issueId,
-            status: row.status,
-          },
-          {
-            companyId: row.companyId,
-            issueId: parsed.leafIssueId,
-            status: row.status,
-          },
-        ];
+        // The escalation is the durable response to a liveness finding, not
+        // evidence that the underlying issue or dependency became healthy. If
+        // it masks its own finding, obsolete-recovery cleanup retires it on the
+        // next pass and a later pass recreates the same comment and wake. Keep
+        // the finding live so incident/leaf dedupe retains exactly one recovery
+        // until the real dependency or action-path state changes.
+        return [];
       }
 
       const issueId = readNonEmptyString(row.originId);
@@ -3157,21 +3164,101 @@ export function recoveryService(
         reason: "ordered_invokable_fallback" as const,
         sourceIssueId: finding.recoveryIssueId,
       }));
+    const companyAgentRows = await db
+      .select({
+        id: agents.id,
+        status: agents.status,
+        reportsTo: agents.reportsTo,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, issue.companyId))
+      .orderBy(asc(agents.id));
+    const companyAgentById = new Map(companyAgentRows.map((agent) => [agent.id, agent]));
+    const selfEscalationAgentId = finding.state === "blocked_without_action_path"
+      ? issue.assigneeAgentId
+      : null;
     const seenCandidates = new Set<string>();
     const candidates = detailedCandidates.filter((candidate) => {
       if (seenCandidates.has(candidate.agentId)) return false;
       seenCandidates.add(candidate.agentId);
       return true;
     });
+    for (const agent of companyAgentRows) {
+      if (
+        seenCandidates.has(agent.id) ||
+        agent.id === selfEscalationAgentId ||
+        !ISSUE_GRAPH_LIVENESS_RECOVERY_ACTION_OWNER_STATUSES.has(agent.status)
+      ) {
+        continue;
+      }
+      seenCandidates.add(agent.id);
+      candidates.push({
+        agentId: agent.id,
+        reason: "ordered_invokable_fallback" as const,
+        sourceIssueId: finding.recoveryIssueId,
+      });
+    }
     const budgetBlockedCandidateAgentIds: string[] = [];
+    const candidateEvidence: Array<{
+      agentId: string;
+      reason: string;
+      sourceIssueId: string;
+      status: string | null;
+      reportsTo: string | null;
+      eligible: boolean;
+      excludedReason: "stranded_assignee_self_escalation" | "not_invokable" | null;
+      budgetBlock: {
+        scopeType: string;
+        scopeId: string;
+        reason: string;
+      } | null;
+    }> = [];
 
     for (const candidate of candidates) {
+      const currentAgent = companyAgentById.get(candidate.agentId) ?? null;
+      const excludedReason = candidate.agentId === selfEscalationAgentId
+        ? "stranded_assignee_self_escalation" as const
+        : !currentAgent || !ISSUE_GRAPH_LIVENESS_RECOVERY_ACTION_OWNER_STATUSES.has(currentAgent.status)
+          ? "not_invokable" as const
+          : null;
+      if (excludedReason) {
+        candidateEvidence.push({
+          agentId: candidate.agentId,
+          reason: candidate.reason,
+          sourceIssueId: candidate.sourceIssueId,
+          status: currentAgent?.status ?? null,
+          reportsTo: currentAgent?.reportsTo ?? null,
+          eligible: false,
+          excludedReason,
+          budgetBlock: null,
+        });
+        continue;
+      }
+
       const budgetBlock = await budgets.getInvocationBlock(issue.companyId, candidate.agentId, {
         issueId: issue.id,
         projectId: issue.projectId,
       });
+      const budgetEvidence = budgetBlock
+        ? {
+          scopeType: budgetBlock.scopeType,
+          scopeId: budgetBlock.scopeId,
+          reason: budgetBlock.reason,
+        }
+        : null;
+      candidateEvidence.push({
+        agentId: candidate.agentId,
+        reason: candidate.reason,
+        sourceIssueId: candidate.sourceIssueId,
+        status: currentAgent!.status,
+        reportsTo: currentAgent!.reportsTo,
+        eligible: true,
+        excludedReason: null,
+        budgetBlock: budgetEvidence,
+      });
       if (!budgetBlock) {
         return {
+          kind: "agent" as const,
           agentId: candidate.agentId,
           reason: candidate.reason,
           sourceIssueId: candidate.sourceIssueId,
@@ -3182,12 +3269,46 @@ export function recoveryService(
             sourceIssueId: entry.sourceIssueId,
           })),
           budgetBlockedCandidateAgentIds,
+          candidateEvidence,
         };
       }
       budgetBlockedCandidateAgentIds.push(candidate.agentId);
     }
 
-    return null;
+    const invokableCompanyAgents = companyAgentRows.filter((agent) =>
+      ISSUE_GRAPH_LIVENESS_RECOVERY_ACTION_OWNER_STATUSES.has(agent.status)
+    );
+    const onlyInvokableAgentIsStrandedAssignee = Boolean(
+      selfEscalationAgentId &&
+      invokableCompanyAgents.length === 1 &&
+      invokableCompanyAgents[0]?.id === selfEscalationAgentId,
+    );
+    const eligibleCandidateCount = candidateEvidence.filter((candidate) => candidate.eligible).length;
+    const cause: LivenessBoardEscalationCause = eligibleCandidateCount > 0
+      ? "all_same_company_candidates_budget_blocked"
+      : onlyInvokableAgentIsStrandedAssignee
+        ? "stranded_assignee_is_only_invokable_candidate"
+        : "no_invokable_same_company_candidate";
+
+    return {
+      kind: "board" as const,
+      cause,
+      candidateAgentIds: candidates.map((entry) => entry.agentId),
+      candidateReasons: candidates.map((entry) => ({
+        agentId: entry.agentId,
+        reason: entry.reason,
+        sourceIssueId: entry.sourceIssueId,
+      })),
+      budgetBlockedCandidateAgentIds,
+      candidateEvidence,
+      companyAgentEvidence: companyAgentRows.map((agent) => ({
+        agentId: agent.id,
+        status: agent.status,
+        reportsTo: agent.reportsTo,
+        invokable: ISSUE_GRAPH_LIVENESS_RECOVERY_ACTION_OWNER_STATUSES.has(agent.status),
+        excludedAsStrandedAssignee: agent.id === selfEscalationAgentId,
+      })),
+    };
   }
 
   function shouldReuseRecoveryExecutionWorkspace(input: {
@@ -3197,6 +3318,246 @@ export function recoveryService(
   }) {
     if (input.finding.recoveryIssueId === input.finding.issueId) return false;
     return input.recoveryIssue.assigneeAgentId === input.ownerAgentId;
+  }
+
+  type LivenessBoardOwnerSelection = Extract<
+    Awaited<ReturnType<typeof resolveEscalationOwnerAgentId>>,
+    { kind: "board" }
+  >;
+
+  async function findLivenessBoardInteractionByKey(input: {
+    companyId: string;
+    issueId: string;
+    idempotencyKey: string;
+  }) {
+    return db
+      .select()
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, input.companyId),
+        eq(issueThreadInteractions.issueId, input.issueId),
+        eq(issueThreadInteractions.idempotencyKey, input.idempotencyKey),
+      ))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function listLivenessBoardInteractionGenerations(input: {
+    companyId: string;
+    issueId: string;
+    idempotencyKeyBase: string;
+  }) {
+    return db
+      .select()
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, input.companyId),
+        eq(issueThreadInteractions.issueId, input.issueId),
+        sql`${issueThreadInteractions.idempotencyKey} LIKE ${`${input.idempotencyKeyBase}:%`}`,
+      ))
+      .orderBy(desc(issueThreadInteractions.createdAt), desc(issueThreadInteractions.id));
+  }
+
+  async function createIssueGraphLivenessBoardEscalation(input: {
+    finding: IssueLivenessFinding;
+    sourceFindings: IssueLivenessFinding[];
+    issue: typeof issues.$inferSelect;
+    recoveryIssue: typeof issues.$inferSelect;
+    ownerSelection: LivenessBoardOwnerSelection;
+    runId?: string | null;
+  }) {
+    const idempotencyKeyBase = livenessBoardEscalationIdempotencyKeyBase(input.finding);
+    const generations = await listLivenessBoardInteractionGenerations({
+      companyId: input.issue.companyId,
+      issueId: input.recoveryIssue.id,
+      idempotencyKeyBase,
+    });
+    const pending = generations.find((interaction) => interaction.status === "pending");
+    if (pending) {
+      return { kind: "board_existing" as const, interactionId: pending.id };
+    }
+    const previousGeneration = generations.reduce((highest, interaction) => {
+      const suffix = interaction.idempotencyKey?.slice(idempotencyKeyBase.length + 1) ?? "";
+      const parsed = /^\d+$/.test(suffix) ? Number.parseInt(suffix, 10) : 0;
+      return Math.max(highest, parsed);
+    }, 0);
+    const generation = previousGeneration + 1;
+    const idempotencyKey = `${idempotencyKeyBase}:${generation}`;
+    const sourceIncidents = [...new Map(
+      input.sourceFindings
+        .filter((finding) =>
+          finding.companyId === input.finding.companyId &&
+          finding.state === input.finding.state &&
+          finding.recoveryIssueId === input.finding.recoveryIssueId
+        )
+        .map((finding) => [finding.incidentKey, finding] as const),
+    ).values()]
+      .sort((left, right) => left.incidentKey.localeCompare(right.incidentKey))
+      .map((finding) => {
+        const source = finding.dependencyPath.find((entry) => entry.issueId === finding.issueId) ??
+          finding.dependencyPath[0] ?? null;
+        return {
+          incidentKey: finding.incidentKey,
+          findingState: finding.state,
+          sourceIssue: {
+            id: finding.issueId,
+            identifier: finding.identifier ?? source?.identifier ?? null,
+            title: source?.title ?? null,
+          },
+          recoveryIssueId: finding.recoveryIssueId,
+          reason: finding.reason,
+          dependencyPath: finding.dependencyPath,
+        };
+      });
+
+    const continuationOptions = [
+      {
+        id: "assign_or_restore_owner",
+        label: "Assign or restore owner",
+        description:
+          "Assign an invokable same-company recovery owner, then submit this choice so reconciliation can continue safely.",
+      },
+      {
+        id: "restore_budget_then_continue",
+        label: "Restore budget",
+        description:
+          "Resolve the applicable budget hard-stop, then submit this choice so reconciliation can select a safe owner.",
+      },
+      {
+        id: "record_typed_waiting_path",
+        label: "Record waiting path",
+        description:
+          "Add the real dependency, approval, user owner, or bounded monitor that now owns the next action.",
+      },
+      {
+        id: "resolve_or_reclassify_issue",
+        label: "Resolve or reclassify",
+        description:
+          "Move the recovery issue to the status matching reality, including done or cancelled when appropriate.",
+      },
+    ];
+    const interactionInput = {
+      kind: "ask_user_questions" as const,
+      idempotencyKey,
+      title: `Board recovery required for ${input.recoveryIssue.identifier ?? input.recoveryIssue.title}`,
+      summary:
+        "Paperclip exhausted the reporting chain and every safe same-company recovery candidate. Make the state change matching your selected continuation before submitting it.",
+      // Never wake the deliberately excluded stranded assignee merely because
+      // the board answered or cancelled this interaction. Assignment/budget/
+      // dependency mutations own their normal wake behavior; reconciliation
+      // evaluates the resulting state independently.
+      continuationPolicy: "none" as const,
+      payload: {
+        version: 1 as const,
+        title: "Choose the durable continuation path",
+        submitLabel: "Continue recovery",
+        context: {
+          kind: "issue_graph_liveness_board_escalation",
+          version: 1,
+          generation,
+          cause: input.ownerSelection.cause,
+          incidentKey: input.finding.incidentKey,
+          findingState: input.finding.state,
+          companyId: input.issue.companyId,
+          sourceIssue: {
+            id: input.issue.id,
+            identifier: input.issue.identifier,
+          },
+          sourceIncidents,
+          sourceIncidentCount: sourceIncidents.length,
+          recoveryIssue: {
+            id: input.recoveryIssue.id,
+            identifier: input.recoveryIssue.identifier,
+          },
+          dependencyPath: input.finding.dependencyPath,
+          candidates: input.ownerSelection.candidateEvidence,
+          companyAgents: input.ownerSelection.companyAgentEvidence,
+          budgetBlockedCandidateAgentIds: input.ownerSelection.budgetBlockedCandidateAgentIds,
+          continuation: {
+            issueId: input.recoveryIssue.id,
+            policy: "none",
+            questionId: "continuation_path",
+            optionIds: continuationOptions.map((option) => option.id),
+            boardStateChangeRequiredBeforeSubmit: true,
+            automaticWake: false,
+          },
+        },
+        questions: [{
+          id: "continuation_path",
+          prompt:
+            "Which durable continuation did you put in place for this liveness incident?",
+          helpText:
+            "Apply the matching assignment, budget, dependency, approval, monitor, or status change first. This response never wakes the stranded assignee automatically.",
+          selectionMode: "single" as const,
+          required: true,
+          options: continuationOptions,
+        }],
+      },
+    };
+
+    let interaction: Awaited<ReturnType<typeof interactionsSvc.create>>;
+    try {
+      interaction = await interactionsSvc.create(
+        { id: input.recoveryIssue.id, companyId: input.issue.companyId },
+        interactionInput,
+        {},
+      );
+    } catch (error) {
+      const raced = await findLivenessBoardInteractionByKey({
+        companyId: input.issue.companyId,
+        issueId: input.recoveryIssue.id,
+        idempotencyKey,
+      });
+      if (raced) {
+        return { kind: "board_existing" as const, interactionId: raced.id };
+      }
+      throw error;
+    }
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: input.runId ?? null,
+      action: "issue.harness_liveness_board_escalation_created",
+      entityType: "issue",
+      entityId: input.recoveryIssue.id,
+      details: {
+        source: "recovery.reconcile_issue_graph_liveness",
+        cause: input.ownerSelection.cause,
+        incidentKey: input.finding.incidentKey,
+        findingState: input.finding.state,
+        sourceIssueId: input.issue.id,
+        sourceIdentifier: input.issue.identifier,
+        recoveryIssueId: input.recoveryIssue.id,
+        recoveryIdentifier: input.recoveryIssue.identifier,
+        sourceIncidents,
+        sourceIncidentCount: sourceIncidents.length,
+        interactionId: interaction.id,
+        idempotencyKey,
+        generation,
+        candidateEvidence: input.ownerSelection.candidateEvidence,
+        companyAgentEvidence: input.ownerSelection.companyAgentEvidence,
+        budgetBlockedCandidateAgentIds: input.ownerSelection.budgetBlockedCandidateAgentIds,
+        continuation: {
+          issueId: input.recoveryIssue.id,
+          interactionId: interaction.id,
+          policy: interaction.continuationPolicy,
+          questionId: "continuation_path",
+        },
+      },
+    });
+
+    logger.warn({
+      incidentKey: input.finding.incidentKey,
+      findingState: input.finding.state,
+      cause: input.ownerSelection.cause,
+      sourceIssueId: input.issue.id,
+      recoveryIssueId: input.recoveryIssue.id,
+      interactionId: interaction.id,
+    }, "created issue graph liveness board escalation");
+
+    return { kind: "board_created" as const, interactionId: interaction.id };
   }
 
   async function ensureIssueBlockedByEscalation(input: {
@@ -3248,6 +3609,7 @@ export function recoveryService(
 
   async function createIssueGraphLivenessEscalation(input: {
     finding: IssueLivenessFinding;
+    sourceFindings?: IssueLivenessFinding[];
     runId?: string | null;
   }) {
     const issue = await db
@@ -3281,7 +3643,16 @@ export function recoveryService(
     }
 
     const ownerSelection = await resolveEscalationOwnerAgentId(input.finding, recoveryIssue);
-    if (!ownerSelection) return { kind: "skipped" as const };
+    if (ownerSelection.kind === "board") {
+      return createIssueGraphLivenessBoardEscalation({
+        finding: input.finding,
+        sourceFindings: input.sourceFindings ?? [input.finding],
+        issue,
+        recoveryIssue,
+        ownerSelection,
+        runId: input.runId ?? null,
+      });
+    }
     const reuseRecoveryExecutionWorkspace = shouldReuseRecoveryExecutionWorkspace({
       finding: input.finding,
       recoveryIssue,
@@ -5067,6 +5438,13 @@ export function recoveryService(
     const cutoff = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
     const obsoleteRecoveryCleanup = await retireObsoleteLivenessRecoveryIssues(findings);
     const activityAtByIssueKey = await loadLivenessDependencyActivityAtByIssue(findings, now);
+    const sourceFindingsByRecoveryLeaf = new Map<string, IssueLivenessFinding[]>();
+    for (const finding of findings) {
+      const key = livenessRecoveryLeafFingerprint(finding);
+      const grouped = sourceFindingsByRecoveryLeaf.get(key) ?? [];
+      grouped.push(finding);
+      sourceFindingsByRecoveryLeaf.set(key, grouped);
+    }
     const result = {
       findings: findings.length,
       autoRecoveryEnabled,
@@ -5074,6 +5452,8 @@ export function recoveryService(
       cutoff: cutoff.toISOString(),
       escalationsCreated: 0,
       existingEscalations: 0,
+      boardEscalationsCreated: 0,
+      existingBoardEscalations: 0,
       skipped: 0,
       skippedAutoRecoveryDisabled: 0,
       skippedOutsideLookback: 0,
@@ -5082,6 +5462,7 @@ export function recoveryService(
       obsoleteRecoveryBlockerRelationsRemoved: obsoleteRecoveryCleanup.blockerRelationsRemoved,
       issueIds: [] as string[],
       escalationIssueIds: [] as string[],
+      boardInteractionIds: [] as string[],
       failed: 0,
       failedIssueIds: [] as string[],
       retiredRecoveryIssueIds: obsoleteRecoveryCleanup.retiredIssueIds,
@@ -5115,6 +5496,7 @@ export function recoveryService(
       try {
         escalation = await createIssueGraphLivenessEscalation({
           finding,
+          sourceFindings: sourceFindingsByRecoveryLeaf.get(livenessRecoveryLeafFingerprint(finding)) ?? [finding],
           runId: opts?.runId ?? null,
         });
       } catch (error) {
@@ -5138,6 +5520,18 @@ export function recoveryService(
         result.existingEscalations += 1;
         result.issueIds.push(finding.issueId);
         result.escalationIssueIds.push(escalation.escalationIssueId);
+      } else if (escalation.kind === "board_created") {
+        result.boardEscalationsCreated += 1;
+        result.issueIds.push(finding.issueId);
+        if (!result.boardInteractionIds.includes(escalation.interactionId)) {
+          result.boardInteractionIds.push(escalation.interactionId);
+        }
+      } else if (escalation.kind === "board_existing") {
+        result.existingBoardEscalations += 1;
+        result.issueIds.push(finding.issueId);
+        if (!result.boardInteractionIds.includes(escalation.interactionId)) {
+          result.boardInteractionIds.push(escalation.interactionId);
+        }
       } else {
         result.skipped += 1;
       }

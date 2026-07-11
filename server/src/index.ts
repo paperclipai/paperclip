@@ -752,7 +752,7 @@ export async function startServer(): Promise<StartedServer> {
         }
 
         const liveness = await heartbeat.reconcileIssueGraphLiveness();
-        if (liveness.escalationsCreated > 0) {
+        if (liveness.escalationsCreated > 0 || liveness.boardEscalationsCreated > 0) {
           logger.warn({ ...liveness }, `${phase} issue-graph liveness reconciliation created escalations`);
         }
 

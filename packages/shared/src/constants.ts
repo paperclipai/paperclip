@@ -78,6 +78,10 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
 };
 
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
+
+// Reserved for the server-owned marker that makes agent-hire retries durable.
+// Client-supplied agent metadata must never create or mutate this key.
+export const AGENT_HIRE_REQUEST_METADATA_KEY = "_paperclipHireRequest";
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
 export const MODEL_PROFILE_KEYS = ["cheap"] as const;

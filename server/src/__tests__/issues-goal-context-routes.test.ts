@@ -287,7 +287,24 @@ describe.sequential("issue goal context routes", () => {
       "11111111-1111-4111-8111-111111111111",
       { includeCommentBodies: false },
     );
+    expect(mockWorkProductService.listForIssue).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "company-1",
+    );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
+  });
+
+  it("scopes GET /issues/:id/work-products to the parent issue company", async () => {
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/work-products",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+    expect(mockWorkProductService.listForIssue).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "company-1",
+    );
   });
 
   it("surfaces the project goal from GET /issues/:id/heartbeat-context", async () => {

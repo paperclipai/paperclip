@@ -64,6 +64,10 @@ import {
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import {
+  assertIssueCompletionEvidence,
+  assertIssueCompletionEvidenceOnCreate,
+} from "./issue-completion-evidence.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
@@ -513,6 +517,7 @@ function canonicalizeExecutionContractAliases(value: Record<string, unknown>) {
     canonicalizeExecutionContractAlias(core, "sourceOfTruth", "source_of_truth");
     canonicalizeExecutionContractAlias(core, "acceptanceChecks", "acceptance_checks");
     canonicalizeExecutionContractAlias(core, "evidenceRequired", "evidence_required");
+    canonicalizeExecutionContractAlias(core, "requiredOutputs", "required_outputs");
     canonicalizeExecutionContractAlias(core, "handoffNotes", "handoff_notes");
     if (isRecord(core.handoffNotes)) {
       const handoffNotes = { ...core.handoffNotes };
@@ -3335,6 +3340,20 @@ export function issueService(db: Db) {
                 and ${issueRecoveryActions.ownerType} = 'board'
                 and ${issueRecoveryActions.status} in ('active', 'escalated')
             )`,
+            // Harness liveness only asks the board after manager and
+            // same-company agent recovery paths are exhausted. Surface that
+            // structured interaction in every authorized board member's
+            // "Needs you" queue; otherwise it would be durable but discoverable
+            // only by opening the exact recovery issue.
+            sql`exists (
+              select 1
+              from ${issueThreadInteractions}
+              where ${issueThreadInteractions.companyId} = ${companyId}
+                and ${issueThreadInteractions.issueId} = ${issues.id}
+                and ${issueThreadInteractions.status} = 'pending'
+                and ${issueThreadInteractions.payload} -> 'context' ->> 'kind'
+                  = 'issue_graph_liveness_board_escalation'
+            )`,
           )!,
         );
       }
@@ -3919,6 +3938,11 @@ export function issueService(db: Db) {
           parentId: issueData.parentId,
         });
       }
+      if (issueData.status === "done") {
+        assertIssueCompletionEvidenceOnCreate(
+          normalizeExecutionContractValue(issueData.executionContract),
+        );
+      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -4321,9 +4345,10 @@ export function issueService(db: Db) {
         }
       }
 
+      const completionRequested = issueData.status === "done";
       const runUpdate = async (tx: any) => {
         let lockedExisting = existing;
-        if (parentWillChange || executionContractWillChange) {
+        if (parentWillChange || executionContractWillChange || completionRequested) {
           const lockedRow = await tx
             .select()
             .from(issues)
@@ -4359,6 +4384,15 @@ export function issueService(db: Db) {
           if (nextParentId) {
             await assertIssueParentUpdateAllowed(tx, lockedExisting, nextParentId, { lockRows: true });
           }
+        }
+        if (completionRequested && lockedExisting.status !== "done") {
+          await assertIssueCompletionEvidence(tx, {
+            companyId: lockedExisting.companyId,
+            issueId: lockedExisting.id,
+            executionContract: executionContractWillChange
+              ? normalizeExecutionContractValue(issueData.executionContract)
+              : normalizeExecutionContractValue(lockedExisting.executionContract),
+          });
         }
 
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);

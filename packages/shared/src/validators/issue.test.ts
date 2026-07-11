@@ -109,6 +109,16 @@ describe("issue validators", () => {
     }).success).toBe(false);
 
     expect(createIssueSchema.safeParse({
+      title: "Conflicting output contract",
+      executionContract: {
+        core: {
+          requiredOutputs: [{ workProductType: "preview_url" }],
+          required_outputs: [{ workProductType: "artifact" }],
+        },
+      },
+    }).success).toBe(false);
+
+    expect(createIssueSchema.safeParse({
       title: "Conflicting handoff notes",
       executionContract: {
         core: {
@@ -116,6 +126,44 @@ describe("issue validators", () => {
             managerReasoning: "Canonical reasoning",
             manager_reasoning: "Different legacy reasoning",
           },
+        },
+      },
+    }).success).toBe(false);
+  });
+
+  it("accepts equivalent required-output aliases", () => {
+    const outputs = [{ workProductType: "preview_url" }];
+    const parsed = createIssueSchema.parse({
+      title: "Deployment lane",
+      executionContract: {
+        core: {
+          requiredOutputs: outputs,
+          required_outputs: outputs,
+        },
+      },
+    });
+
+    expect(parsed.executionContract?.core).toMatchObject({
+      requiredOutputs: outputs,
+      required_outputs: outputs,
+    });
+  });
+
+  it("rejects unsupported or ambiguous required-output types", () => {
+    expect(createIssueSchema.safeParse({
+      title: "Typo output",
+      executionContract: {
+        core: {
+          requiredOutputs: [{ workProductType: "preview_urll" }],
+        },
+      },
+    }).success).toBe(false);
+
+    expect(createIssueSchema.safeParse({
+      title: "Ambiguous output",
+      executionContract: {
+        core: {
+          requiredOutputs: [{ workProductType: "preview_url", type: "artifact" }],
         },
       },
     }).success).toBe(false);

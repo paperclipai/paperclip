@@ -7,6 +7,7 @@ export type IssueLivenessState =
   | "blocked_by_assigned_backlog_issue"
   | "blocked_by_uninvokable_assignee"
   | "blocked_by_cancelled_issue"
+  | "blocked_without_action_path"
   | "invalid_review_participant"
   | "in_review_without_action_path";
 
@@ -296,6 +297,15 @@ function ownerCandidatesForRecoveryIssue(
 ) {
   const candidates: IssueLivenessOwnerCandidate[] = [];
   const seen = new Set<string>();
+  const excludedAgentIds = new Set<string>();
+
+  // A liveness escalation must not loop straight back to the worker whose
+  // blocked issue has no action path. Managers and other company agents remain
+  // eligible, but a sole root assignee requires a board-owned continuation.
+  if (!options.includeStalledAssignee && issue.assigneeAgentId) {
+    excludedAgentIds.add(issue.assigneeAgentId);
+    seen.add(issue.assigneeAgentId);
+  }
 
   if (options.includeStalledAssignee && issue.status !== "cancelled" && issue.status !== "done") {
     addOwnerCandidate(
@@ -330,11 +340,12 @@ function ownerCandidatesForRecoveryIssue(
 
   const invokableAgents = orderedInvokableAgents(agents, issue.companyId);
   for (const agent of invokableAgents) {
-    if (!agent.reportsTo) {
+    if (!agent.reportsTo && !excludedAgentIds.has(agent.id)) {
       addOwnerCandidate(candidates, seen, agentsById, issue.companyId, agent.id, "root_agent", issue.id);
     }
   }
   for (const agent of invokableAgents) {
+    if (excludedAgentIds.has(agent.id)) continue;
     addOwnerCandidate(
       candidates,
       seen,
@@ -445,6 +456,70 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       hasCurrentPendingInteractionPath(issue.companyId, issue.id, pendingInteractions, nowMs) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
       hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);
+  }
+
+  function hasUnresolvedBlocker(issue: IssueLivenessIssueInput) {
+    return (blockersByBlockedIssueId.get(issue.id) ?? []).some((relation) => {
+      if (relation.companyId !== issue.companyId) return false;
+      const blocker = issuesById.get(relation.blockerIssueId);
+      return Boolean(
+        blocker &&
+          blocker.companyId === issue.companyId &&
+          blocker.status !== "done" &&
+          blocker.status !== "cancelled",
+      );
+    });
+  }
+
+  function blockedWithoutActionPathFinding(
+    source: IssueLivenessIssueInput,
+    blockedIssue: IssueLivenessIssueInput,
+    dependencyPath: IssueLivenessIssueInput[],
+  ): IssueLivenessFinding | null {
+    if (
+      blockedIssue.status !== "blocked" ||
+      !blockedIssue.assigneeAgentId ||
+      blockedIssue.assigneeUserId ||
+      hasUnresolvedBlocker(blockedIssue) ||
+      hasExplicitWaitingPath(blockedIssue)
+    ) {
+      return null;
+    }
+
+    // This is an escalation, not another attempt by the stranded worker. Start
+    // with the assignee's reporting chain and only fall back to company roots or
+    // other invokable agents when no reporting manager can take the incident.
+    const ownerCandidates = ownerCandidatesForRecoveryIssue(
+      blockedIssue,
+      input.agents,
+      agentsById,
+      { includeStalledAssignee: false },
+    );
+    const assignee = agentsById.get(blockedIssue.assigneeAgentId);
+    const assigneeIsInvokable = Boolean(
+      assignee &&
+        assignee.companyId === blockedIssue.companyId &&
+        isInvokableAgent(assignee),
+    );
+
+    return finding({
+      issue: source,
+      state: assigneeIsInvokable
+        ? "blocked_without_action_path"
+        : "blocked_by_uninvokable_assignee",
+      reason: assigneeIsInvokable
+        ? `${issueLabel(blockedIssue)} is agent-owned and blocked with zero unresolved blockers, but has no active run, queued wake, pending interaction, approval, bounded monitor, or recovery action owning the next step.`
+        : assignee
+          ? `${issueLabel(blockedIssue)} is blocked with zero unresolved blockers, but its assignee is ${assignee.status} and no explicit waiting or recovery path owns the next step.`
+          : `${issueLabel(blockedIssue)} is blocked with zero unresolved blockers, but its assignee no longer exists and no explicit waiting or recovery path owns the next step.`,
+      dependencyPath,
+      recoveryIssue: blockedIssue,
+      recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+      recommendedOwnerCandidates: ownerCandidates,
+      recommendedAction:
+        `Review ${issueLabel(blockedIssue)} and either resume it with a live execution path, record the typed dependency or approval it is waiting for, or move it to the status that reflects its actual state.`,
+      blockerIssueId: blockedIssue.id,
+    });
   }
 
   function reviewFinding(
@@ -644,6 +719,8 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
         const nested = firstBlockedChainFinding(source, blocker, path, new Set(seen));
         if (nested) return nested;
         if (hasExplicitWaitingPath(blocker)) continue;
+        const strandedBlocked = blockedWithoutActionPathFinding(source, blocker, path);
+        if (strandedBlocked) return strandedBlocked;
       }
 
       const leafFinding = blockedFindingForLeaf(source, blocker, path);
@@ -657,7 +734,12 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     if (issue.status === "blocked") {
       if (unresolvedBlockers.has(issue.id)) continue;
       const chainFinding = firstBlockedChainFinding(issue, issue, [issue], new Set());
-      if (chainFinding) findings.push(chainFinding);
+      if (chainFinding) {
+        findings.push(chainFinding);
+      } else {
+        const strandedBlocked = blockedWithoutActionPathFinding(issue, issue, [issue]);
+        if (strandedBlocked) findings.push(strandedBlocked);
+      }
     }
 
     if (issue.status === "in_review" && !unresolvedBlockers.has(issue.id)) {

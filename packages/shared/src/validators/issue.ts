@@ -28,6 +28,10 @@ import {
   BUDGET_WINDOW_KINDS,
   MODEL_PROFILE_KEYS,
 } from "../constants.js";
+import type {
+  IssueExecutionContractRequiredOutput,
+  SuggestedTaskDraft,
+} from "../types/issue.js";
 import { multilineTextSchema } from "./text.js";
 
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
@@ -74,6 +78,50 @@ const executionContractStructuredContentSchema = z.union([
   executionContractTextSchema,
   z.array(z.unknown()).max(500),
   z.record(z.unknown()),
+]);
+
+const executionContractWorkProductTypeSchema = z.enum([
+  "preview_url",
+  "runtime_service",
+  "pull_request",
+  "branch",
+  "commit",
+  "artifact",
+  "document",
+]);
+
+const executionContractRequiredOutputObjectSchema = z.object({
+  workProductType: executionContractWorkProductTypeSchema.optional(),
+  work_product_type: executionContractWorkProductTypeSchema.optional(),
+  type: executionContractWorkProductTypeSchema.optional(),
+}).passthrough().superRefine((value, ctx) => {
+  const declared = [value.workProductType, value.work_product_type, value.type]
+    .filter((entry): entry is z.infer<typeof executionContractWorkProductTypeSchema> => entry !== undefined);
+  if (declared.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "requiredOutputs entries must declare a supported workProductType",
+      path: ["workProductType"],
+    });
+    return;
+  }
+  if (new Set(declared).size > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "requiredOutputs type aliases must match",
+      path: ["workProductType"],
+    });
+  }
+}).transform((value) => value as IssueExecutionContractRequiredOutput);
+
+const executionContractRequiredOutputSchema = z.union([
+  executionContractWorkProductTypeSchema,
+  executionContractRequiredOutputObjectSchema,
+]);
+
+const executionContractRequiredOutputsSchema = z.union([
+  executionContractRequiredOutputSchema,
+  z.array(executionContractRequiredOutputSchema).max(500),
 ]);
 
 function executionContractValuesEqual(left: unknown, right: unknown): boolean {
@@ -142,12 +190,15 @@ const issueExecutionContractCoreSchema = z.object({
   constraints: executionContractStructuredContentSchema.optional(),
   evidenceRequired: executionContractStructuredContentSchema.optional(),
   evidence_required: executionContractStructuredContentSchema.optional(),
+  requiredOutputs: executionContractRequiredOutputsSchema.optional(),
+  required_outputs: executionContractRequiredOutputsSchema.optional(),
   handoffNotes: executionContractHandoffNotesSchema.optional(),
   handoff_notes: executionContractHandoffNotesSchema.optional(),
 }).passthrough().superRefine((value, ctx) => {
   addExecutionContractAliasConflict(value, "sourceOfTruth", "source_of_truth", ctx);
   addExecutionContractAliasConflict(value, "acceptanceChecks", "acceptance_checks", ctx);
   addExecutionContractAliasConflict(value, "evidenceRequired", "evidence_required", ctx);
+  addExecutionContractAliasConflict(value, "requiredOutputs", "required_outputs", ctx);
   addExecutionContractAliasConflict(value, "handoffNotes", "handoff_notes", ctx);
 });
 
@@ -631,7 +682,15 @@ export const issueDocumentKeySchema = z
   .max(64)
   .regex(/^[a-z0-9][a-z0-9_-]*$/, "Document key must be lowercase letters, numbers, _ or -");
 
-export const suggestedTaskDraftSchema = z.object({
+type SuggestedTaskDraftSchemaInput = Omit<SuggestedTaskDraft, "executionContract"> & {
+  executionContract?: z.input<typeof issueExecutionContractSchema> | null;
+};
+
+export const suggestedTaskDraftSchema: z.ZodType<
+  SuggestedTaskDraft,
+  z.ZodTypeDef,
+  SuggestedTaskDraftSchemaInput
+> = z.object({
   clientKey: z.string().trim().min(1).max(120),
   parentClientKey: z.string().trim().min(1).max(120).nullable().optional(),
   parentId: z.string().uuid().nullable().optional(),
@@ -657,7 +716,23 @@ export const suggestedTaskDraftSchema = z.object({
   }
 });
 
-export const suggestTasksPayloadSchema = z.object({
+type SuggestTasksPayloadSchemaOutput = {
+  version: 1;
+  defaultParentId?: string | null;
+  tasks: Array<z.output<typeof suggestedTaskDraftSchema>>;
+};
+
+type SuggestTasksPayloadSchemaInput = {
+  version: 1;
+  defaultParentId?: string | null;
+  tasks: Array<z.input<typeof suggestedTaskDraftSchema>>;
+};
+
+export const suggestTasksPayloadSchema: z.ZodType<
+  SuggestTasksPayloadSchemaOutput,
+  z.ZodTypeDef,
+  SuggestTasksPayloadSchemaInput
+> = z.object({
   version: z.literal(1),
   defaultParentId: z.string().uuid().nullable().optional(),
   tasks: z.array(suggestedTaskDraftSchema).min(1).max(50),
@@ -711,6 +786,7 @@ export const askUserQuestionsPayloadSchema = z.object({
   version: z.literal(1),
   title: z.string().trim().max(240).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
+  context: z.record(z.unknown()).nullable().optional(),
   questions: z.array(askUserQuestionsQuestionSchema).min(1).max(10),
 }).superRefine((value, ctx) => {
   const seenQuestionIds = new Set<string>();

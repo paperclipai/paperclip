@@ -24,6 +24,17 @@ export {
   type IssueFilters,
 } from "./issues.js";
 export { issueVisibilityService, type VisibilityPrincipal, type CollaboratorReason } from "./issue-visibility.js";
+export {
+  assertIssueCompletionEvidence,
+  assertIssueCompletionEvidenceOnCreate,
+  assertIssueCompletionEvidenceProducts,
+  deriveIssueCompletionEvidenceRequirement,
+  evaluateIssueCompletionEvidence,
+  loadCompanyScopedIssueCompletionEvidenceProducts,
+  type IssueCompletionEvidenceEvaluation,
+  type IssueCompletionEvidenceProduct,
+  type IssueCompletionEvidenceRequirement,
+} from "./issue-completion-evidence.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
 export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
