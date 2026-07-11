@@ -490,6 +490,31 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       "Respect budget, pause/cancel, approval gates, and company boundaries",
     );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "A custom Playwright/Puppeteer script, direct headless browser, reusable launch helper, or screenshots are not a substitute",
+    );
+  });
+
+  it("adds a hard managed-browser gate when a board comment requests live navigation", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_comment_mentioned",
+      issue: { id: "issue-1", identifier: "SME-6192", title: "Connect mailbox", status: "in_progress" },
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{
+        id: "comment-1",
+        issueId: "issue-1",
+        body: "Can you do it in our new live browser? I want to see you navigate.",
+        author: { type: "user", id: "user-1" },
+        attachments: [],
+      }],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("HARD LIVE-BROWSER GATE:");
+    expect(prompt).toContain("paperclip-browser-open <url>");
+    expect(prompt).toContain("Do not use direct Playwright/Puppeteer");
+    expect(prompt).toContain("custom or reusable `launch.js`");
+    expect(prompt).toContain("uploaded screenshots as a substitute");
   });
 
   it("adds the execution contract to scoped wake prompts", () => {

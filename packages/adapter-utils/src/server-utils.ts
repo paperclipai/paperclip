@@ -169,6 +169,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating direct child execution lanes, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
+  "- When the board explicitly requests the live, native, or managed browser, use Paperclip's managed browser commands. A custom Playwright/Puppeteer script, direct headless browser, reusable launch helper, or screenshots are not a substitute for the live browser stream.",
 ].join("\n");
 
 export interface PaperclipSkillEntry {
@@ -787,6 +788,9 @@ export function renderPaperclipWakePrompt(
   if (!normalized) return "";
   const resumedSession = options.resumedSession === true;
   const executionStage = normalized.executionStage;
+  const liveBrowserRequested = normalized.comments.some((comment) =>
+    /\b(?:live|native|managed|new)\s+browser\b|\bbrowser\s+(?:live|visibly)\b|\bsee\s+(?:you\s+)?(?:navigate|working|browse)\b/i.test(comment.body),
+  );
   const principalLabel = (principal: PaperclipWakeExecutionPrincipal | null) => {
     if (!principal || !principal.type) return "unknown";
     if (principal.type === "agent") return principal.agentId ? `agent ${principal.agentId}` : "agent";
@@ -862,6 +866,18 @@ export function renderPaperclipWakePrompt(
     lines.push(
       "- hidden execution contract: present",
       "Use `executionContract` from `PAPERCLIP_WAKE_PAYLOAD_JSON` for guardrails, source-of-truth, and acceptance checks. Still read any issue description as the human-readable brief; the contract does not replace or erase description context.",
+    );
+  }
+  if (liveBrowserRequested) {
+    lines.push(
+      "",
+      "HARD LIVE-BROWSER GATE:",
+      "- The board explicitly requested visible navigation in Paperclip's native live browser. This is an execution requirement, not a request for screenshot evidence.",
+      "- Start navigation with `paperclip-browser-open <url>` and perform each meaningful follow-up action with `agent-browser` so the issue viewport receives continuous frames.",
+      "- Do not use direct Playwright/Puppeteer, `headless: true`, a custom or reusable `launch.js`, an opaque batch browser script, or uploaded screenshots as a substitute, even if that path worked previously.",
+      "- Existing scripts may inform selectors or workflow logic, but the requested interaction itself must be replayed through observable managed-browser commands.",
+      "- Use `paperclip-browser-open <url> --camoufox` only when the board explicitly requests Camoufox; otherwise allow the managed launcher to fall back after a detected browser-security challenge.",
+      "- Before claiming visible progress, verify that managed browser commands have executed in this heartbeat. If the managed browser cannot run, report that blocker instead of silently switching to an invisible browser.",
     );
   }
   if (normalized.imageReferenceGuardrail?.required) {

@@ -18,6 +18,8 @@ Use this skill for browser navigation, form interaction, authenticated web workf
 
 ## Live movement
 
+When the board says "live browser", "native browser", "managed browser", "I want to see you navigate", or equivalent, this section is mandatory. Do not substitute a pre-existing Playwright/Puppeteer helper, direct `headless: true` browser, reusable batch script, or a sequence of uploaded screenshots. Even if such a helper already works, replay the requested interaction with the managed commands below so the issue receives continuous frames.
+
 Prefer small observable calls:
 
 ```sh
@@ -28,6 +30,8 @@ agent-browser screenshot --annotate
 ```
 
 Paperclip renders commands containing `agent-browser` or `camoufox` as browser activity inside the live run segment attached to the issue. Do not hide a long browser journey inside one opaque shell script.
+
+Existing automation scripts may be read for selectors and workflow knowledge, but they do not satisfy an explicit live-browser request. If managed navigation fails, report the blocker; never silently fall back to an invisible custom browser.
 
 ## Scope and persistent login state
 
