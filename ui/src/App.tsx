@@ -37,6 +37,7 @@ import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
 import { CompanyMcp } from "./pages/CompanyMcp";
 import { Secrets } from "./pages/Secrets";
+import { CompanyGithub } from "./pages/CompanyGithub";
 import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
@@ -85,6 +86,7 @@ function boardRoutes() {
       <Route path="company/export/*" element={<CompanyExport />} />
       <Route path="company/import" element={<CompanyImport />} />
       <Route path="company/settings/secrets" element={<Secrets />} />
+      <Route path="company/settings/github" element={<CompanyGithub />} />
       <Route path="skills/*" element={<CompanySkills />} />
       <Route path="mcp" element={<CompanyMcp />} />
       <Route path="settings" element={<LegacySettingsRedirect />} />

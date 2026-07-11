@@ -69,6 +69,7 @@ export { approvalComments } from "./approval_comments.js";
 export { activityLog } from "./activity_log.js";
 export { companySecretProviderConfigs } from "./company_secret_provider_configs.js";
 export { companySecrets } from "./company_secrets.js";
+export { companyGithubConnections } from "./company_github_connections.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { providerCredentials } from "./provider_credentials.js";
 export { agentCredentials } from "./agent_credentials.js";

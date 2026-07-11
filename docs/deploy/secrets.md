@@ -51,6 +51,13 @@ Project env applies to every issue run in that project. When a project env key
 matches an agent env key, the project value wins before Paperclip injects its
 own `PAPERCLIP_*` runtime variables.
 
+For GitHub credentials, prefer `Company Settings > GitHub` instead of manually
+adding `GH_TOKEN` to every agent. A GitHub connection references an encrypted
+company secret, and a project can select one connection from its workspace
+settings. The selected credential provides private clone, GitHub CLI, fetch,
+and push access for that project. Paperclip does not write the token into the
+repository remote or persisted Git configuration.
+
 ## Default Provider: `local_encrypted`
 
 Secrets are encrypted with a local master key stored at:

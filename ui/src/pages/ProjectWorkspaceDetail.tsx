@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { isUuidLike, type ProjectWorkspace } from "@paperclipai/shared";
-import { ArrowLeft, Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
+import { ArrowLeft, Check, ExternalLink, Github, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { ChoosePathButton } from "../components/PathInstructionsModal";
 import { projectsApi } from "../api/projects";
+import { githubConnectionsApi } from "../api/githubConnections";
 import {
   buildWorkspaceRuntimeControlSections,
   WorkspaceRuntimeControls,
@@ -296,6 +297,26 @@ export function ProjectWorkspaceDetail() {
     },
   });
 
+  const githubConnectionsQuery = useQuery({
+    queryKey: project?.companyId
+      ? queryKeys.githubConnections.list(project.companyId)
+      : ["github-connections", "disabled"],
+    queryFn: () => githubConnectionsApi.list(project!.companyId),
+    enabled: Boolean(project?.companyId),
+  });
+
+  const updateGithubConnection = useMutation({
+    mutationFn: (githubConnectionId: string | null) =>
+      projectsApi.update(project!.id, { githubConnectionId }, lookupCompanyId),
+    onSuccess: () => {
+      invalidateProject();
+      setErrorMessage(null);
+    },
+    onError: (error) => {
+      setErrorMessage(error instanceof Error ? error.message : "Failed to bind GitHub connection.");
+    },
+  });
+
   const setPrimaryWorkspace = useMutation({
     mutationFn: () => projectsApi.updateWorkspace(project!.id, routeWorkspaceId, { isPrimary: true }, lookupCompanyId),
     onSuccess: () => {
@@ -380,6 +401,37 @@ export function ProjectWorkspaceDetail() {
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.9fr)]">
         <div className="space-y-6">
+          <div className="overflow-hidden rounded-2xl border border-border bg-card">
+            <div className="flex items-start gap-3 border-b border-border bg-muted/30 p-5">
+              <div className="rounded-xl bg-foreground p-2 text-background"><Github className="h-4 w-4" /></div>
+              <div>
+                <h2 className="font-semibold">Project GitHub identity</h2>
+                <p className="mt-1 text-sm text-muted-foreground">Used automatically for private checkout, GitHub CLI, fetch, and push across this project.</p>
+              </div>
+            </div>
+            <div className="p-5">
+              <Field label="Bound connection" hint="The project selection overrides agent-level GitHub tokens.">
+                <select
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                  value={project.githubConnectionId ?? ""}
+                  disabled={githubConnectionsQuery.isLoading || updateGithubConnection.isPending}
+                  onChange={(event) => updateGithubConnection.mutate(event.target.value || null)}
+                >
+                  <option value="">No native GitHub credential</option>
+                  {(githubConnectionsQuery.data ?? []).filter((connection) => connection.enabled).map((connection) => (
+                    <option key={connection.id} value={connection.id}>
+                      {connection.name}{connection.accountLogin ? ` (@${connection.accountLogin})` : ""} · {connection.hostname}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                <span>The token is resolved only when Paperclip prepares or runs this project.</span>
+                <Link className="shrink-0 font-medium text-foreground underline underline-offset-4" to="/company/settings/github">Manage connections</Link>
+              </div>
+            </div>
+          </div>
+
           <div className="rounded-2xl border border-border bg-card p-5">
             <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
               <div className="space-y-2">

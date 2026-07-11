@@ -38,6 +38,7 @@ import { appendWithCap } from "../adapters/utils.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { environmentService } from "../services/environments.js";
 import { secretService } from "../services/secrets.js";
+import { githubConnectionService } from "../services/github-connections.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
@@ -70,6 +71,7 @@ export function projectRoutes(db: Db) {
   const svc = projectService(db);
   const access = accessService(db);
   const secretsSvc = secretService(db);
+  const githubConnections = githubConnectionService(db);
   const workspaceOperations = workspaceOperationService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const environmentsSvc = environmentService(db);
@@ -169,6 +171,9 @@ export function projectRoutes(db: Db) {
     };
 
     const { workspace, ...projectData } = req.body as CreateProjectPayload;
+    if (projectData.githubConnectionId) {
+      await githubConnections.assertConnection(companyId, projectData.githubConnectionId);
+    }
     await assertProjectEnvironmentSelection(
       companyId,
       readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy),
@@ -188,6 +193,9 @@ export function projectRoutes(db: Db) {
       );
     }
     const project = await svc.create(companyId, projectData);
+    if (project.githubConnectionId) {
+      await githubConnections.syncProjectBinding(companyId, project.id, project.githubConnectionId);
+    }
     if (project.env) {
       await secretsSvc.syncEnvBindingsForTarget?.(
         companyId,
@@ -252,6 +260,9 @@ export function projectRoutes(db: Db) {
     }
     assertCompanyAccess(req, existing.companyId);
     const body = { ...req.body };
+    if (body.githubConnectionId) {
+      await githubConnections.assertConnection(existing.companyId, body.githubConnectionId);
+    }
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),
@@ -273,6 +284,9 @@ export function projectRoutes(db: Db) {
     if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;
+    }
+    if (body.githubConnectionId !== undefined) {
+      await githubConnections.syncProjectBinding(project.companyId, project.id, project.githubConnectionId);
     }
     if (body.env !== undefined) {
       await secretsSvc.syncEnvBindingsForTarget?.(

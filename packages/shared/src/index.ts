@@ -1,5 +1,16 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  createGithubConnectionSchema,
+  updateGithubConnectionSchema,
+  type CreateGithubConnection,
+  type UpdateGithubConnection,
+} from "./validators/github-connection.js";
+export type {
+  CompanyGithubConnection,
+  GithubConnectionTestResult,
+  GithubConnectionTestStatus,
+} from "./types/github-connection.js";
+export {
   IMPROVEMENT_SUGGESTION_ORIGIN_KINDS,
   IMPROVEMENT_SUGGESTION_STATUSES,
   IMPROVEMENT_TARGET_LAYERS,

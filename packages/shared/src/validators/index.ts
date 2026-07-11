@@ -1,4 +1,10 @@
 export {
+  createGithubConnectionSchema,
+  updateGithubConnectionSchema,
+  type CreateGithubConnection,
+  type UpdateGithubConnection,
+} from "./github-connection.js";
+export {
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type InstanceGeneralSettings,

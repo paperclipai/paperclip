@@ -34,6 +34,7 @@ export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
+export { githubConnectionService, buildGithubCredentialEnv, githubApiBase } from "./github-connections.js";
 export { credentialService, resolveCredentialEnv, resolveAllCredentialEnv } from "./credentials.js";
 export { routineService } from "./routines.js";
 export { deadlineWardenService, shouldStartWork } from "./deadline-warden.js";

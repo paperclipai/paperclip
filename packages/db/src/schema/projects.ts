@@ -3,6 +3,7 @@ import type { AgentEnvConfig } from "@paperclipai/shared";
 import { companies } from "./companies.js";
 import { goals } from "./goals.js";
 import { agents } from "./agents.js";
+import { companyGithubConnections } from "./company_github_connections.js";
 
 export const projects = pgTable(
   "projects",
@@ -17,6 +18,7 @@ export const projects = pgTable(
     targetDate: date("target_date"),
     color: text("color"),
     env: jsonb("env").$type<AgentEnvConfig>(),
+    githubConnectionId: uuid("github_connection_id").references(() => companyGithubConnections.id, { onDelete: "set null" }),
     pauseReason: text("pause_reason"),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     executionWorkspacePolicy: jsonb("execution_workspace_policy").$type<Record<string, unknown>>(),
@@ -26,5 +28,6 @@ export const projects = pgTable(
   },
   (table) => ({
     companyIdx: index("projects_company_idx").on(table.companyId),
+    githubConnectionIdx: index("projects_github_connection_idx").on(table.githubConnectionId),
   }),
 );

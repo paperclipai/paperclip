@@ -69,6 +69,7 @@ import { companySkillService } from "./company-skills.js";
 import { buildRunSkillTelemetry } from "./skill-run-telemetry.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
+import { githubConnectionService } from "./github-connections.js";
 import { mcpOauthService } from "./mcp-oauth.js";
 import { companyMcpServerService } from "./company-mcp-servers.js";
 import {
@@ -771,12 +772,13 @@ async function cloneProjectWorkspaceRepo(input: {
   repoUrl: string;
   cwd: string;
   label: string;
+  gitEnv?: Record<string, string>;
 }) {
   await fs.mkdir(path.dirname(input.cwd), { recursive: true });
   await fs.rm(input.cwd, { recursive: true, force: true });
   try {
     await execFile("git", ["clone", input.repoUrl, input.cwd], {
-      env: sanitizeRuntimeServiceBaseEnv(process.env),
+      env: { ...sanitizeRuntimeServiceBaseEnv(process.env), ...(input.gitEnv ?? {}) },
       timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
     });
   } catch (error) {
@@ -820,6 +822,7 @@ async function repairInvalidProjectWorkspaceCheckout(input: {
   cwd: string;
   label: string;
   reason: string;
+  gitEnv?: Record<string, string>;
 }): Promise<{ cwd: string; warning: string | null }> {
   const movedAsidePath = await moveAsideProjectWorkspacePath(input.cwd);
   try {
@@ -827,6 +830,7 @@ async function repairInvalidProjectWorkspaceCheckout(input: {
       repoUrl: input.repoUrl,
       cwd: input.cwd,
       label: input.label,
+      gitEnv: input.gitEnv,
     });
   } catch (error) {
     return useEmptyProjectWorkspaceAfterRepoAccessFailure({
@@ -869,6 +873,7 @@ export async function ensureProjectWorkspacePath(input: {
   repoUrl: string | null;
   label?: string | null;
   repairInvalidCheckout?: boolean;
+  gitEnv?: Record<string, string>;
 }): Promise<{ cwd: string; warning: string | null }> {
   const cwd = path.resolve(input.cwd);
   const repoUrl = input.repoUrl?.trim() || null;
@@ -887,7 +892,7 @@ export async function ensureProjectWorkspacePath(input: {
 
   if (!stats) {
     try {
-      await cloneProjectWorkspaceRepo({ repoUrl, cwd, label });
+      await cloneProjectWorkspaceRepo({ repoUrl, cwd, label, gitEnv: input.gitEnv });
     } catch (error) {
       return useEmptyProjectWorkspaceAfterRepoAccessFailure({ repoUrl, cwd, label, error });
     }
@@ -901,7 +906,7 @@ export async function ensureProjectWorkspacePath(input: {
   const entries = await fs.readdir(cwd).catch(() => []);
   if (entries.length === 0) {
     try {
-      await cloneProjectWorkspaceRepo({ repoUrl, cwd, label });
+      await cloneProjectWorkspaceRepo({ repoUrl, cwd, label, gitEnv: input.gitEnv });
     } catch (error) {
       return useEmptyProjectWorkspaceAfterRepoAccessFailure({ repoUrl, cwd, label, error });
     }
@@ -916,6 +921,7 @@ export async function ensureProjectWorkspacePath(input: {
         cwd,
         label,
         reason: `it was not a git checkout for "${repoUrl}"`,
+        gitEnv: input.gitEnv,
       });
     }
     throw new Error(`Configured ${label} path "${cwd}" exists but is not a git checkout for "${repoUrl}".`);
@@ -928,6 +934,7 @@ export async function ensureProjectWorkspacePath(input: {
         cwd,
         label,
         reason: `it was a git checkout for "${git.originUrl ?? "unknown origin"}" but project expects "${repoUrl}"`,
+        gitEnv: input.gitEnv,
       });
     }
     throw new Error(
@@ -978,6 +985,7 @@ async function ensureManagedProjectWorkspace(input: {
   projectId: string;
   projectName?: string | null;
   repoUrl: string | null;
+  gitEnv?: Record<string, string>;
 }): Promise<{ cwd: string; warning: string | null }> {
   const cwd = resolveManagedProjectWorkspaceDir({
     companyId: input.companyId,
@@ -990,6 +998,7 @@ async function ensureManagedProjectWorkspace(input: {
     repoUrl: input.repoUrl,
     label: "managed project workspace",
     repairInvalidCheckout: true,
+    gitEnv: input.gitEnv,
   });
 }
 
@@ -3206,6 +3215,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
+  const githubConnections = githubConnectionService(db);
   const mcpOauthSvc = mcpOauthService(db);
   const companyMcpSvc = companyMcpServerService(db);
   const companySkills = companySkillService(db);
@@ -5050,6 +5060,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const preferredProjectWorkspaceId =
       issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
     const resolvedProjectId = issueProjectId ?? contextProjectId;
+    const projectGithub = resolvedProjectId
+      ? await githubConnections.resolveForProject({
+          companyId: agent.companyId,
+          projectId: resolvedProjectId,
+          actorId: agent.id,
+          issueId,
+        })
+      : null;
     const useProjectWorkspace = opts?.useProjectWorkspace !== false;
     const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
 
@@ -5098,6 +5116,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               projectId: workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
               projectName: opts?.projectName ?? null,
               repoUrl: workspaceRepoUrl,
+              gitEnv: projectGithub?.env,
             });
             projectCwd = managedWorkspace.cwd;
             managedWorkspaceWarning = managedWorkspace.warning;
@@ -5106,6 +5125,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               cwd: projectCwd,
               repoUrl: workspaceRepoUrl,
               label: `project workspace "${workspace.name ?? workspace.id}"`,
+              gitEnv: projectGithub?.env,
             });
             projectCwd = materializedWorkspace.cwd;
             managedWorkspaceWarning = materializedWorkspace.warning;
@@ -5132,6 +5152,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 projectId: workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
                 projectName: opts?.projectName ?? null,
                 repoUrl: workspaceRepoUrl,
+                gitEnv: projectGithub?.env,
               });
               return {
                 cwd: managedWorkspace.cwd,
@@ -5177,6 +5198,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         projectId: workspaceProjectId,
         projectName: opts?.projectName ?? null,
         repoUrl: null,
+        gitEnv: projectGithub?.env,
       });
       return {
         cwd: managedWorkspace.cwd,
@@ -9594,6 +9616,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         { agentId: agent.id, credentialId: agent.credentialId, err: err instanceof Error ? err.message : String(err) },
         "failed to apply provider credential env to execution run",
       );
+    }
+    if (projectContext?.id) {
+      const projectGithub = await githubConnections.resolveForProject({
+        companyId: agent.companyId,
+        projectId: projectContext.id,
+        actorId: agent.id,
+        issueId,
+        heartbeatRunId: run.id,
+      });
+      if (projectGithub) {
+        resolvedConfig.env = {
+          ...parseObject(resolvedConfig.env),
+          ...projectGithub.env,
+        };
+        for (const key of Object.keys(projectGithub.env)) {
+          secretKeys.add(key);
+        }
+      }
     }
     if (secretManifest.length > 0) {
       context.paperclipSecrets = {

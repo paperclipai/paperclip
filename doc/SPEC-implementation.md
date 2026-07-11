@@ -202,10 +202,12 @@ Invariant: at least one root `company` level goal per company.
 - `lead_agent_id` uuid fk `agents.id` null
 - `target_date` date null
 - `env` jsonb null (same secret-aware env binding format used by agent config)
+- `github_connection_id` uuid fk `company_github_connections.id` null
 
 Invariant:
 
 - project env is merged into run environment for issues in that project and overrides conflicting agent env keys before Paperclip runtime-owned keys are injected
+- a bound GitHub connection supplies authenticated clone, `gh`, fetch, and push access for that project without storing tokens in repository URLs
 
 ## 7.6 `issues` (core task entity)
 
