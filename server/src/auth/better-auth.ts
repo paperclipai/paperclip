@@ -75,7 +75,6 @@ export function shouldDisableSecureAuthCookies(input: {
     )
   );
 }
-
 function headersFromNodeHeaders(rawHeaders: IncomingHttpHeaders): Headers {
   const headers = new Headers();
   for (const [key, raw] of Object.entries(rawHeaders)) {
@@ -157,6 +156,11 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       enabled: true,
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
+    },
+    account: {
+      accountLinking: {
+        disableImplicitLinking: true,
+      },
     },
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
   };
