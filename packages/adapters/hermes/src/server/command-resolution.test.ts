@@ -31,6 +31,13 @@ test("extractHermesProfileFromArgs accepts separate, equals, and combined profil
   expect(extractHermesProfileFromArgs(["-p consulting"])).toBe("consulting");
 });
 
+test("extractHermesProfileFromArgs uses the last repeated profile arg", () => {
+  expect(extractHermesProfileFromArgs(["--profile", "base", "--profile", "research"]))
+    .toBe("research");
+  expect(extractHermesProfileFromArgs(["--profile=base", "-p=ops", "--profile studio"]))
+    .toBe("studio");
+});
+
 test("resolveHermesConfigPath uses configured HERMES_HOME and profile args", () => {
   expect(resolveHermesConfigPath({
     env: {

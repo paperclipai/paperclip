@@ -86,20 +86,27 @@ export function resolveHermesCommand(config: Record<string, unknown>): string {
 export function extractHermesProfileFromArgs(args: string[] | undefined): string | undefined {
   if (!args?.length) return undefined;
 
+  let profile: string | undefined;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === "--profile" || arg === "-p") {
-      return cfgString(args[i + 1]);
+      profile = cfgString(args[i + 1]) || profile;
+      continue;
     }
 
     const equalsMatch = arg.match(/^(?:--profile|-p)=(.+)$/);
-    if (equalsMatch?.[1]) return equalsMatch[1];
+    if (equalsMatch?.[1]) {
+      profile = equalsMatch[1];
+      continue;
+    }
 
     const splitMatch = arg.match(/^(?:--profile|-p)\s+(.+)$/);
-    if (splitMatch?.[1]) return splitMatch[1].trim() || undefined;
+    if (splitMatch?.[1]) {
+      profile = splitMatch[1].trim() || profile;
+    }
   }
 
-  return undefined;
+  return profile;
 }
 
 export function resolveHermesConfigPath(
