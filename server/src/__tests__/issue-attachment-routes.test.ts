@@ -1,5 +1,6 @@
 import { Readable } from "node:stream";
 import type { IncomingMessage } from "node:http";
+import { inflateRawSync } from "node:zlib";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,10 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
   createAttachment: vi.fn(),
   getAttachmentById: vi.fn(),
+  listAttachments: vi.fn(),
+}));
+const mockDocumentService = vi.hoisted(() => ({
+  listIssueDocuments: vi.fn(),
 }));
 const mockCompanyService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -56,7 +61,7 @@ function registerRouteMocks() {
     companySkillService: () => ({}),
     companyService: () => mockCompanyService,
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-    documentService: () => ({}),
+    documentService: () => mockDocumentService,
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
       listIssueVotesForUser: vi.fn(async () => []),
@@ -204,6 +209,33 @@ function parseBinaryResponse(res: IncomingMessage, callback: (error: Error | nul
   res.on("error", callback);
 }
 
+function readZipEntries(buffer: Buffer): Map<string, Buffer> {
+  const endOfCentralDirectory = buffer.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (endOfCentralDirectory < 0) throw new Error("ZIP end-of-central-directory record not found");
+  const entryCount = buffer.readUInt16LE(endOfCentralDirectory + 10);
+  let centralOffset = buffer.readUInt32LE(endOfCentralDirectory + 16);
+  const entries = new Map<string, Buffer>();
+
+  for (let index = 0; index < entryCount; index += 1) {
+    if (buffer.readUInt32LE(centralOffset) !== 0x02014b50) throw new Error("Invalid ZIP central directory entry");
+    const compressionMethod = buffer.readUInt16LE(centralOffset + 10);
+    const compressedSize = buffer.readUInt32LE(centralOffset + 20);
+    const filenameLength = buffer.readUInt16LE(centralOffset + 28);
+    const extraLength = buffer.readUInt16LE(centralOffset + 30);
+    const commentLength = buffer.readUInt16LE(centralOffset + 32);
+    const localOffset = buffer.readUInt32LE(centralOffset + 42);
+    const filename = buffer.subarray(centralOffset + 46, centralOffset + 46 + filenameLength).toString("utf8");
+    const localFilenameLength = buffer.readUInt16LE(localOffset + 26);
+    const localExtraLength = buffer.readUInt16LE(localOffset + 28);
+    const dataOffset = localOffset + 30 + localFilenameLength + localExtraLength;
+    const compressed = buffer.subarray(dataOffset, dataOffset + compressedSize);
+    entries.set(filename, compressionMethod === 0 ? compressed : inflateRawSync(compressed));
+    centralOffset += 46 + filenameLength + extraLength + commentLength;
+  }
+
+  return entries;
+}
+
 describe("normalizeIssueAttachmentMaxBytes", () => {
   it("keeps the process-level attachment cap as the final cap", async () => {
     const previous = process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
@@ -253,6 +285,8 @@ describe("issue attachment routes", () => {
       assigneeUserId: null,
       identifier: "PAP-1",
     });
+    mockIssueService.listAttachments.mockResolvedValue([]);
+    mockDocumentService.listIssueDocuments.mockResolvedValue([]);
     mockCompanyService.getById.mockResolvedValue({
       id: "company-1",
       attachmentMaxBytes: 1024 * 1024 * 1024,
@@ -260,6 +294,148 @@ describe("issue attachment routes", () => {
     mockWorkProductService.createForIssue.mockReset();
     mockWorkProductService.getById.mockReset();
     mockWorkProductService.update.mockReset();
+  });
+
+  it("streams attachments and visible documents in a private ZIP archive", async () => {
+    const storage = createStorageService();
+    const firstAttachment = {
+      ...makeAttachment("application/octet-stream", "report.txt"),
+      id: "attachment-a",
+      objectKey: "issues/issue-1/report-a.txt",
+      issueCommentId: "comment-1",
+    };
+    const duplicateAttachment = {
+      ...makeAttachment("application/octet-stream", "report.txt"),
+      id: "attachment-b",
+      objectKey: "issues/issue-1/report-b.txt",
+    };
+    const unnamedAttachment = {
+      ...makeAttachment("image/png", "ignored.png"),
+      id: "attachment-c",
+      objectKey: "issues/issue-1/unnamed",
+      originalFilename: null,
+    };
+    mockIssueService.listAttachments.mockResolvedValue([
+      duplicateAttachment,
+      unnamedAttachment,
+      firstAttachment,
+    ]);
+    mockDocumentService.listIssueDocuments.mockImplementation(async (_issueId, options) => options?.includeSystem
+      ? [
+          { key: "plan", body: "# Plan\n", updatedAt: new Date("2026-01-02T00:00:00.000Z") },
+          { key: "continuation-summary", body: "internal", updatedAt: new Date("2026-01-02T00:00:00.000Z") },
+        ]
+      : [{ key: "plan", body: "# Plan\n", updatedAt: new Date("2026-01-02T00:00:00.000Z") }]);
+    vi.mocked(storage.getObject).mockImplementation(async (_companyId, objectKey) => ({
+      stream: Readable.from({
+        "issues/issue-1/report-a.txt": Buffer.from([0x00, 0x01, 0xff]),
+        "issues/issue-1/report-b.txt": Buffer.from("second"),
+        "issues/issue-1/unnamed": Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      }[objectKey] ?? Buffer.alloc(0)),
+      contentLength: 0,
+    }));
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .get("/api/issues/11111111-1111-4111-8111-111111111111/attachments/archive")
+      .buffer(true)
+      .parse(parseBinaryResponse);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("application/zip");
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="attachments-PAP-1.zip"');
+    expect(res.headers["cache-control"]).toBe("private, no-store, no-transform");
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["content-length"]).toBeUndefined();
+    expect(res.headers["transfer-encoding"]).toBe("chunked");
+
+    const entries = readZipEntries(Buffer.from(res.body));
+    expect([...entries.keys()].sort()).toEqual([
+      "attachments/attachment-attachment-c.png",
+      "attachments/report-2.txt",
+      "attachments/report.txt",
+      "documents/plan.md",
+    ]);
+    expect(entries.get("attachments/report.txt")).toEqual(Buffer.from([0x00, 0x01, 0xff]));
+    expect(entries.get("attachments/report-2.txt")?.toString("utf8")).toBe("second");
+    expect(entries.get("documents/plan.md")?.toString("utf8")).toBe("# Plan\n");
+    expect(entries.has("documents/continuation-summary.md")).toBe(false);
+    expect(mockDocumentService.listIssueDocuments).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111");
+    expect(storage.getObject).toHaveBeenCalledTimes(3);
+  });
+
+  it("sanitizes traversal and control characters in archive entry names", async () => {
+    const storage = createStorageService(Buffer.from("safe"));
+    mockIssueService.listAttachments.mockResolvedValue([{
+      ...makeAttachment("text/plain", "../folder\\bad\u0000.txt"),
+      id: "attachment-safe",
+    }]);
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .get("/api/issues/11111111-1111-4111-8111-111111111111/attachments/archive")
+      .buffer(true)
+      .parse(parseBinaryResponse);
+
+    expect(res.status).toBe(200);
+    const [entryName] = readZipEntries(Buffer.from(res.body)).keys();
+    expect(entryName).toMatch(/^attachments\//);
+    expect(entryName).not.toContain("..");
+    expect(entryName).not.toContain("\\");
+    expect(entryName).not.toContain("\u0000");
+  });
+
+  it("returns 422 when an issue has no exportable archive entries", async () => {
+    const app = await createApp(createStorageService());
+    const res = await request(app)
+      .get("/api/issues/11111111-1111-4111-8111-111111111111/attachments/archive");
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Issue has no exportable attachments or documents");
+  });
+
+  it("returns 404 for a missing issue archive", async () => {
+    mockIssueService.getById.mockResolvedValue(null);
+    const app = await createApp(createStorageService());
+    const res = await request(app).get("/api/issues/missing/attachments/archive");
+
+    expect(res.status).toBe(404);
+  });
+
+  it("returns the normal server error response when storage fails before streaming", async () => {
+    const storage = createStorageService();
+    mockIssueService.listAttachments.mockResolvedValue([makeAttachment("text/plain", "report.txt")]);
+    vi.mocked(storage.getObject).mockRejectedValue(new Error("storage unavailable"));
+    const app = await createApp(storage);
+    const res = await request(app)
+      .get("/api/issues/11111111-1111-4111-8111-111111111111/attachments/archive");
+
+    expect(res.status).toBe(500);
+    expect(res.headers["content-disposition"]).toBeUndefined();
+    expect(res.body.error).toBe("Internal server error");
+  });
+
+  it("rejects cross-company issue archive reads before loading entries", async () => {
+    const storage = createStorageService();
+    const app = await createApp(storage, { companyIds: ["company-2"], source: "session" });
+    const res = await request(app)
+      .get("/api/issues/11111111-1111-4111-8111-111111111111/attachments/archive");
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.listAttachments).not.toHaveBeenCalled();
+    expect(storage.getObject).not.toHaveBeenCalled();
+  });
+
+  it("rejects issue archive reads outside the task boundary", async () => {
+    const storage = createStorageService();
+    mockAccessService.decide.mockResolvedValue({ allowed: false, explanation: "Denied by test mock" });
+    const app = await createApp(storage);
+    const res = await request(app)
+      .get("/api/issues/11111111-1111-4111-8111-111111111111/attachments/archive");
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.listAttachments).not.toHaveBeenCalled();
+    expect(storage.getObject).not.toHaveBeenCalled();
   });
 
   it("accepts zip uploads for issue attachments", async () => {

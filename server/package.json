@@ -78,6 +78,7 @@
     "sharp": "^0.35.3",
     "ssh2": "^1.17.0",
     "ws": "^8.19.0",
+    "zip-stream": "^7.0.5",
     "zod": "^3.24.2"
   },
   "devDependencies": {
@@ -89,6 +90,7 @@
     "@types/sharp": "^0.32.0",
     "@types/supertest": "^6.0.2",
     "@types/ws": "^8.18.1",
+    "@types/zip-stream": "^7.0.0",
     "cross-env": "^10.1.0",
     "supertest": "^7.0.0",
     "tsx": "^4.22.4",
