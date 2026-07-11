@@ -5088,6 +5088,197 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   };
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
+  const terminalRunFinalizeReconciliations = new Map<string, Promise<{
+    created: boolean;
+    wakeHealed: number;
+  }>>();
+
+  async function reconcileTerminalRunWorkspaceFinalize(
+    run: typeof heartbeatRuns.$inferSelect,
+    source: "run.failure" | "run.reap" | "startup_sweep" | "interval_sweep",
+  ) {
+    const existing = terminalRunFinalizeReconciliations.get(run.id);
+    if (existing) return existing;
+
+    const reconciliation = (async () => {
+      if (
+        !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+          run.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+        )
+      ) {
+        return { created: false, wakeHealed: 0 };
+      }
+
+      const context = parseObject(run.contextSnapshot);
+      const issueId = readNonEmptyString(context.issueId);
+      if (!issueId) return { created: false, wakeHealed: 0 };
+
+      const issue = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+          executionWorkspaceId: issues.executionWorkspaceId,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!issue || issue.status !== "done" || !issue.executionWorkspaceId) {
+        return { created: false, wakeHealed: 0 };
+      }
+
+      const latestOperation = await db
+        .select({
+          heartbeatRunId: workspaceOperations.heartbeatRunId,
+          phase: workspaceOperations.phase,
+        })
+        .from(workspaceOperations)
+        .where(
+          and(
+            eq(workspaceOperations.companyId, run.companyId),
+            eq(workspaceOperations.issueId, issue.id),
+            eq(workspaceOperations.executionWorkspaceId, issue.executionWorkspaceId),
+          ),
+        )
+        .orderBy(
+          desc(workspaceOperations.startedAt),
+          desc(workspaceOperations.createdAt),
+          desc(workspaceOperations.id),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (
+        !latestOperation ||
+        latestOperation.heartbeatRunId !== run.id ||
+        latestOperation.phase === "workspace_finalize"
+      ) {
+        return { created: false, wakeHealed: 0 };
+      }
+
+      const existingFinalize = await db
+        .select({ id: workspaceOperations.id })
+        .from(workspaceOperations)
+        .where(
+          and(
+            eq(workspaceOperations.companyId, run.companyId),
+            eq(workspaceOperations.heartbeatRunId, run.id),
+            eq(workspaceOperations.phase, "workspace_finalize"),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingFinalize) return { created: false, wakeHealed: 0 };
+
+      const now = new Date();
+      const reason = readNonEmptyString(run.errorCode) ?? run.status;
+      await db.insert(workspaceOperations).values({
+        id: randomUUID(),
+        companyId: run.companyId,
+        executionWorkspaceId: issue.executionWorkspaceId,
+        heartbeatRunId: run.id,
+        issueId: issue.id,
+        phase: "workspace_finalize",
+        status: "succeeded",
+        metadata: {
+          synthetic: true,
+          reason,
+          source,
+          outcome: "terminal_without_finalize",
+          terminalRunStatus: run.status,
+          terminalRunErrorCode: run.errorCode ?? null,
+        },
+        startedAt: now,
+        finishedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      const wakeResult = await recovery.reconcileResolvedDependencyWakeBackstop({
+        runId: run.id,
+        companyId: run.companyId,
+        blockerIssueId: issue.id,
+        source: "workspace.finalize",
+      });
+      return { created: true, wakeHealed: wakeResult.healed };
+    })().finally(() => {
+      terminalRunFinalizeReconciliations.delete(run.id);
+    });
+
+    terminalRunFinalizeReconciliations.set(run.id, reconciliation);
+    return reconciliation;
+  }
+
+  async function reconcileTerminalRunWorkspaceFinalizes(
+    source: "startup_sweep" | "interval_sweep" = "interval_sweep",
+  ) {
+    const blockerRows = await db
+      .select({
+        issueId: issues.id,
+        companyId: issues.companyId,
+        executionWorkspaceId: issues.executionWorkspaceId,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+      .where(
+        and(
+          eq(issueRelations.type, "blocks"),
+          eq(issues.status, "done"),
+          sql`${issues.executionWorkspaceId} is not null`,
+        ),
+      );
+
+    const seenIssueIds = new Set<string>();
+    const reconciledRunIds: string[] = [];
+    let checked = 0;
+    let created = 0;
+    let wakesHealed = 0;
+
+    for (const blocker of blockerRows) {
+      if (!blocker.executionWorkspaceId || seenIssueIds.has(blocker.issueId)) continue;
+      seenIssueIds.add(blocker.issueId);
+      checked += 1;
+
+      const latestOperation = await db
+        .select({ heartbeatRunId: workspaceOperations.heartbeatRunId })
+        .from(workspaceOperations)
+        .where(
+          and(
+            eq(workspaceOperations.companyId, blocker.companyId),
+            eq(workspaceOperations.issueId, blocker.issueId),
+            eq(workspaceOperations.executionWorkspaceId, blocker.executionWorkspaceId),
+          ),
+        )
+        .orderBy(
+          desc(workspaceOperations.startedAt),
+          desc(workspaceOperations.createdAt),
+          desc(workspaceOperations.id),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!latestOperation?.heartbeatRunId) continue;
+
+      const terminalRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.id, latestOperation.heartbeatRunId),
+            eq(heartbeatRuns.companyId, blocker.companyId),
+            inArray(heartbeatRuns.status, [...UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES]),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (!terminalRun) continue;
+
+      const result = await reconcileTerminalRunWorkspaceFinalize(terminalRun, source);
+      if (!result.created) continue;
+      created += 1;
+      wakesHealed += result.wakeHealed;
+      reconciledRunIds.push(terminalRun.id);
+    }
+
+    return { checked, created, wakesHealed, runIds: reconciledRunIds };
+  }
 
   function isPlanApprovalConfirmationPayload(payload: unknown) {
     const target = parseObject(parseObject(payload).target);
@@ -10715,6 +10906,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
       finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
+      try {
+        await reconcileTerminalRunWorkspaceFinalize(finalizedRun, "run.reap");
+      } catch (finalizeErr) {
+        logger.warn(
+          { err: finalizeErr, runId: finalizedRun.id },
+          "failed to reconcile workspace finalize after orphaned run reap",
+        );
+      }
       await releaseEnvironmentLeasesForRun({
         runId: finalizedRun.id,
         companyId: finalizedRun.companyId,
@@ -13236,6 +13435,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           message,
         });
         const livenessRun = await classifyAndPersistRunLiveness(failedRun) ?? failedRun;
+        try {
+          await reconcileTerminalRunWorkspaceFinalize(livenessRun, "run.failure");
+        } catch (finalizeErr) {
+          logger.warn(
+            { err: finalizeErr, runId: livenessRun.id },
+            "failed to reconcile workspace finalize after terminal run failure",
+          );
+        }
         try {
           await completeSkillTestRunForHeartbeatOutcome({
             run: livenessRun,
@@ -15965,6 +16172,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reportRunActivity: clearDetachedRunWarning,
 
     reapOrphanedRuns,
+    reconcileTerminalRunWorkspaceFinalizes,
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that
     // gate on suppression should prefer this over the env-only resolver.
