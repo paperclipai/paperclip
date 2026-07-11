@@ -497,6 +497,30 @@ const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   "approval_approved",
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
 ]);
+const ISSUE_DISPATCH_ORIGIN_BYPASS_WAKE_REASONS: ReadonlySet<string> = new Set([
+  "source_scoped_recovery_action",
+] as const);
+const SECURITY_SENSITIVE_WAKE_TERMS = [
+  "credential",
+  "credentials",
+  "secret",
+  "secrets",
+  "vault",
+  "vaultwarden",
+  "token",
+  "password",
+  "private key",
+  "tailscale",
+  "router",
+  "firewall",
+  "nat",
+  "port-forward",
+  "port forward",
+  "ingress",
+  "topology",
+  "infra recon",
+  "infrastructure recon",
+] as const;
 const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_assigned",
   "issue_checked_out",
@@ -2713,6 +2737,147 @@ function allowsIssueInteractionWake(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (!wakeReason || !ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
   return Boolean(deriveCommentId(contextSnapshot, null));
+}
+
+type DispatchOriginIssueSnapshot = {
+  id: string;
+  status: string;
+  assigneeAgentId: string | null;
+  assigneeUserId?: string | null;
+  executionState?: unknown;
+};
+
+type DispatchOriginValidation =
+  | { allowed: true }
+  | {
+      allowed: false;
+      reason: string;
+      errorCode:
+        | "dispatch_origin_issue_not_assigned"
+        | "dispatch_origin_security_sensitive_agent_not_whitelisted";
+      details: Record<string, unknown>;
+    };
+
+function agentIsSecuritySensitiveWakeAllowed(
+  agent: Pick<typeof agents.$inferSelect, "role" | "name" | "permissions" | "metadata">,
+) {
+  if (agent.role === "security") return true;
+  const normalizedName = agent.name.toLowerCase();
+  if (normalizedName.includes("relay")) return true;
+
+  const permissions = parseObject(agent.permissions);
+  const metadata = parseObject(agent.metadata);
+  const dispatchPermissions = parseObject(permissions.dispatch);
+  const paperclipPermissions = parseObject(permissions.paperclip);
+  const paperclipDispatchPermissions = parseObject(paperclipPermissions.dispatch);
+  const dispatchMetadata = parseObject(metadata.dispatch);
+  const paperclipMetadata = parseObject(metadata.paperclip);
+  const paperclipDispatchMetadata = parseObject(paperclipMetadata.dispatch);
+  return (
+    dispatchPermissions.securitySensitiveWake === true ||
+    paperclipDispatchPermissions.securitySensitiveWake === true ||
+    dispatchMetadata.securitySensitiveWake === true ||
+    paperclipDispatchMetadata.securitySensitiveWake === true ||
+    metadata.securitySensitiveWake === true
+  );
+}
+
+function collectWakeDispatchText(value: unknown, depth = 0): string[] {
+  if (depth > 4 || value === null || value === undefined) return [];
+  if (typeof value === "string") return [value];
+  if (typeof value === "number" || typeof value === "boolean") return [String(value)];
+  if (Array.isArray(value)) return value.flatMap((entry) => collectWakeDispatchText(entry, depth + 1));
+  if (typeof value !== "object") return [];
+
+  const out: string[] = [];
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (key === PAPERCLIP_WAKE_PAYLOAD_KEY || key === DEFERRED_WAKE_CONTEXT_KEY) continue;
+    out.push(key);
+    out.push(...collectWakeDispatchText(entry, depth + 1));
+  }
+  return out;
+}
+
+function isSecuritySensitiveWakeDispatch(input: {
+  reason: string | null;
+  payload: Record<string, unknown> | null;
+  contextSnapshot: Record<string, unknown> | null | undefined;
+}) {
+  const text = collectWakeDispatchText({
+    reason: input.reason,
+    payload: input.payload,
+    contextSnapshot: input.contextSnapshot,
+  }).join(" ").toLowerCase();
+  return SECURITY_SENSITIVE_WAKE_TERMS.some((term) => text.includes(term));
+}
+
+function currentReviewParticipantAgentId(issue: DispatchOriginIssueSnapshot) {
+  const executionState = parseIssueExecutionState(issue.executionState);
+  const participant = executionState?.currentParticipant ?? null;
+  return participant?.type === "agent" ? participant.agentId : null;
+}
+
+function validateWakeDispatchOrigin(input: {
+  agent: Pick<typeof agents.$inferSelect, "id" | "role" | "name" | "permissions" | "metadata">;
+  issue: DispatchOriginIssueSnapshot | null;
+  contextSnapshot: Record<string, unknown>;
+  reason: string | null;
+  payload: Record<string, unknown> | null;
+}): DispatchOriginValidation {
+  const wakeReason = readNonEmptyString(input.contextSnapshot.wakeReason) ?? input.reason;
+  const issueId = input.issue?.id ?? readNonEmptyString(input.contextSnapshot.issueId);
+  const issueAssignedToAgent =
+    Boolean(input.issue) &&
+    input.issue?.assigneeAgentId === input.agent.id &&
+    !input.issue?.assigneeUserId;
+  const issueReviewParticipantMatches =
+    Boolean(input.issue) &&
+    input.issue?.status === "in_review" &&
+    currentReviewParticipantAgentId(input.issue) === input.agent.id;
+  const explicitInteractionWake = allowsIssueInteractionWake(input.contextSnapshot);
+  const explicitSystemBypass = Boolean(wakeReason && ISSUE_DISPATCH_ORIGIN_BYPASS_WAKE_REASONS.has(wakeReason));
+
+  if (
+    input.issue &&
+    !issueAssignedToAgent &&
+    !issueReviewParticipantMatches &&
+    !explicitInteractionWake &&
+    !explicitSystemBypass
+  ) {
+    return {
+      allowed: false,
+      errorCode: "dispatch_origin_issue_not_assigned",
+      reason: "Wake denied because the target issue is not assigned to the receiving agent",
+      details: {
+        issueId,
+        wakeReason,
+        source: readNonEmptyString(input.contextSnapshot.source),
+      },
+    };
+  }
+
+  if (
+    isSecuritySensitiveWakeDispatch({
+      reason: input.reason,
+      payload: input.payload,
+      contextSnapshot: input.contextSnapshot,
+    }) &&
+    !agentIsSecuritySensitiveWakeAllowed(input.agent)
+  ) {
+    return {
+      allowed: false,
+      errorCode: "dispatch_origin_security_sensitive_agent_not_whitelisted",
+      reason: "Wake denied because security-sensitive dispatch requires an authorized relay or security agent",
+      details: {
+        issueId,
+        wakeReason,
+        source: readNonEmptyString(input.contextSnapshot.source),
+        agentRole: input.agent.role,
+      },
+    };
+  }
+
+  return { allowed: true };
 }
 
 async function listUnresolvedBlockerSummaries(
@@ -8488,6 +8653,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         executionRunId: issues.executionRunId,
         executionState: issues.executionState,
+        assigneeUserId: issues.assigneeUserId,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -9988,7 +10154,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return null;
       }
 
-      const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
+      const staleness = await evaluateQueuedRunStaleness(run, issueId, context, agent);
       if (staleness.stale) {
         await cancelQueuedRunForStaleIssue(run, issueId, staleness);
         logger.info(
@@ -10138,7 +10304,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_not_in_progress"
           | "issue_execution_lock_changed"
           | "issue_review_participant_changed"
-          | "issue_continuation_waiting_on_review";
+          | "issue_continuation_waiting_on_review"
+          | "dispatch_origin_issue_not_assigned"
+          | "dispatch_origin_security_sensitive_agent_not_whitelisted";
         details: Record<string, unknown>;
       };
 
@@ -10146,6 +10314,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
     context: Record<string, unknown>,
+    agent: Pick<typeof agents.$inferSelect, "id" | "role" | "name" | "permissions" | "metadata">,
   ): Promise<QueuedRunStaleness> {
     const issue = await db
       .select({
@@ -10154,6 +10323,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         executionRunId: issues.executionRunId,
         executionState: issues.executionState,
+        assigneeUserId: issues.assigneeUserId,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -10214,6 +10384,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           previousAssigneeAgentId: run.agentId,
           currentAssigneeAgentId: issue.assigneeAgentId,
         },
+      };
+    }
+
+    const wakeupPayload = run.wakeupRequestId
+      ? await db
+        .select({ payload: agentWakeupRequests.payload })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+        .then((rows) => parseObject(rows[0]?.payload))
+      : null;
+    const dispatchOrigin = validateWakeDispatchOrigin({
+      agent,
+      issue,
+      contextSnapshot: context,
+      reason: wakeReason ?? run.scheduledRetryReason ?? null,
+      payload: wakeupPayload,
+    });
+    if (!dispatchOrigin.allowed) {
+      return {
+        stale: true,
+        errorCode: dispatchOrigin.errorCode,
+        reason: dispatchOrigin.reason,
+        details: dispatchOrigin.details,
       };
     }
 
@@ -14390,7 +14583,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const continuationAttempt = readContinuationAttempt(enrichedContextSnapshot.livenessContinuationAttempt);
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
-    if (!projectId && issueId) {
+    let resolvedIssueForDispatch: DispatchOriginIssueSnapshot | null = null;
+    if (issueId) {
       // Look up by either UUID or identifier (e.g. "ENV-13"), but always scope
       // by companyId so a row from another tenant can never be returned even
       // when identifiers collide across companies. Guard the UUID arm because
@@ -14402,11 +14596,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? or(eq(issues.id, issueId), eq(issues.identifier, issueId.toUpperCase()))
         : eq(issues.identifier, issueId.toUpperCase());
       const resolvedIssue = await db
-      .select({ id: issues.id, projectId: issues.projectId, createdAt: issues.createdAt })
+        .select({
+          id: issues.id,
+          projectId: issues.projectId,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          executionState: issues.executionState,
+          createdAt: issues.createdAt,
+        })
         .from(issues)
         .where(and(eq(issues.companyId, agent.companyId), idMatch))
         .then((rows) => rows[0] ?? null);
       if (resolvedIssue) {
+        resolvedIssueForDispatch = resolvedIssue;
         if (worktreeExecutionCutoff && resolvedIssue.createdAt < worktreeExecutionCutoff) {
           await writeSkippedHeartbeatRequest("heartbeat.worktree_execution_cutoff", {
             reason: "worktree_execution_cutoff",
@@ -14415,7 +14618,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           });
           return null;
         }
-        projectId = resolvedIssue.projectId ?? null;
+        projectId = projectId ?? resolvedIssue.projectId ?? null;
         // Canonicalize context to the UUID so downstream lookups always use UUID
         if (resolvedIssue.id !== issueId) {
           issueId = resolvedIssue.id;
@@ -14426,10 +14629,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
     }
+    if (!resolvedIssueForDispatch && issueId && isUuidLike(issueId)) {
+      resolvedIssueForDispatch = await db
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          executionState: issues.executionState,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, agent.companyId), eq(issues.id, issueId)))
+        .then((rows) => rows[0] ?? null);
+    }
     // Propagate projectId into context so resolveWorkspaceForRun can bind the
     // project workspace even when context.projectId wasn't set by the caller.
     if (projectId && !readNonEmptyString(enrichedContextSnapshot.projectId)) {
       enrichedContextSnapshot.projectId = projectId;
+    }
+
+    const dispatchOrigin = validateWakeDispatchOrigin({
+      agent,
+      issue: resolvedIssueForDispatch,
+      contextSnapshot: enrichedContextSnapshot,
+      reason,
+      payload,
+    });
+    if (!dispatchOrigin.allowed) {
+      await writeSkippedRequest(dispatchOrigin.errorCode, {
+        payload: {
+          issueId: resolvedIssueForDispatch?.id ?? issueId ?? null,
+          dispatchDenied: dispatchOrigin.details,
+        },
+        error: dispatchOrigin.reason,
+      });
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        agentId,
+        runId: null,
+        action: "heartbeat.dispatch_denied",
+        entityType: resolvedIssueForDispatch ? "issue" : "agent",
+        entityId: resolvedIssueForDispatch?.id ?? agentId,
+        details: {
+          errorCode: dispatchOrigin.errorCode,
+          ...dispatchOrigin.details,
+        },
+      });
+      return null;
     }
     const isolatedWorkspacesEnabled = issueId
       ? (await instanceSettings.getExperimental()).enableIsolatedWorkspaces

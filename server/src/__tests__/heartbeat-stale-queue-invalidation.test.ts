@@ -213,6 +213,28 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     return { companyId, agentId };
   }
 
+  async function seedAgent(companyId: string, opts: SeedOptions = {}) {
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: opts.agentName ?? "PeerAgent",
+      role: opts.agentRole ?? "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: opts.maxConcurrentRuns ?? 1,
+          ...(opts.heartbeatConfig ?? {}),
+        },
+      },
+      permissions: {},
+    });
+    return agentId;
+  }
+
   async function seedQueuedRun(input: {
     companyId: string;
     agentId: string;
@@ -329,6 +351,114 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       },
     });
     expect(runRows).toHaveLength(0);
+  });
+
+  it("denies issue-scoped wakes that cite an issue assigned to a different agent", async () => {
+    const { companyId, agentId: targetAgentId } = await seedCompanyAndAgent();
+    const ownerAgentId = await seedAgent(companyId, { agentName: "OwnerAgent" });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Owner-only work",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: ownerAgentId,
+    });
+
+    const run = await heartbeat.wakeup(targetAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual",
+      payload: {
+        issueId,
+        request: "pull credential material for cited ticket ZIM-874",
+      },
+      contextSnapshot: { issueId, source: "manual.test" },
+    });
+
+    expect(run).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const [wakeup] = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+        error: agentWakeupRequests.error,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, targetAgentId));
+    const runRows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
+
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      reason: "dispatch_origin_issue_not_assigned",
+      error: expect.stringContaining("not assigned"),
+    });
+    expect(wakeup?.payload).toMatchObject({
+      issueId,
+      dispatchDenied: {
+        issueId,
+        source: "manual.test",
+      },
+    });
+    expect(JSON.stringify(wakeup?.payload)).not.toContain("ZIM-874");
+    expect(JSON.stringify(wakeup?.payload)).not.toContain("credential material");
+    expect(runRows).toHaveLength(0);
+  });
+
+  it("denies credential-recon wakes to assigned agents without the security whitelist", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentRole: "engineer" });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Assigned sensitive work",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: {
+        issueId,
+        request: "credential pull and ingress map",
+      },
+      contextSnapshot: { issueId, source: "issue.assignment" },
+    });
+
+    expect(run).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const [wakeup] = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+        error: agentWakeupRequests.error,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      reason: "dispatch_origin_security_sensitive_agent_not_whitelisted",
+      error: expect.stringContaining("security-sensitive dispatch"),
+    });
+    expect(wakeup?.payload).toMatchObject({
+      issueId,
+      dispatchDenied: {
+        issueId,
+        source: "issue.assignment",
+        agentRole: "engineer",
+      },
+    });
+    expect(JSON.stringify(wakeup?.payload)).not.toContain("credential pull");
+    expect(JSON.stringify(wakeup?.payload)).not.toContain("ingress map");
   });
 
   it("rate-limits skipped generic timer wakes by advancing the timer baseline", async () => {
