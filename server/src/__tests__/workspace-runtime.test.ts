@@ -4074,6 +4074,12 @@ describe("resolveShell (shell fallback)", () => {
 });
 
 describe("readLocalServicePortOwner", () => {
+  const originalPlatform = process.platform;
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+  });
+
   it("detects the owner of a listening TCP port", async () => {
     try {
       await execFileAsync("lsof", ["-v"]);
@@ -4106,6 +4112,93 @@ describe("readLocalServicePortOwner", () => {
     await fs.mkdir(serviceCwd);
 
     await expect(isLocalServiceProcessInWorkspace(serviceCwd, workspace)).resolves.toBe(true);
+  });
+
+  it("keeps a live registry record adoptable when cwd inspection is unsupported", async () => {
+    try {
+      await execFileAsync("lsof", ["-v"]);
+    } catch {
+      return;
+    }
+
+    const server = net.createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : null;
+    const serviceKey = `unsupported-cwd-${randomUUID()}`;
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = `unsupported-cwd-${randomUUID()}`;
+    expect(port).toBeTypeOf("number");
+
+    try {
+      await writeLocalServiceRegistryRecord({
+        version: 1,
+        serviceKey,
+        profileKind: "workspace-runtime",
+        serviceName: "node",
+        command: "node",
+        cwd: process.cwd(),
+        envFingerprint: "",
+        port,
+        url: null,
+        pid: process.pid,
+        processGroupId: null,
+        provider: "local_process",
+        runtimeServiceId: null,
+        reuseKey: null,
+        startedAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        metadata: null,
+      });
+      Object.defineProperty(process, "platform", { value: "darwin" });
+
+      await expect(findAdoptableLocalService({
+        serviceKey,
+        serviceName: "node",
+        command: "node",
+        cwd: process.cwd(),
+        port,
+      })).resolves.toMatchObject({ pid: process.pid, port });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+    }
+  });
+
+  it("uses a generic fixed-port conflict when owner cwd inspection is unsupported", async () => {
+    try {
+      await execFileAsync("lsof", ["-v"]);
+    } catch {
+      return;
+    }
+
+    const server = net.createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : null;
+    expect(port).toBeTypeOf("number");
+    Object.defineProperty(process, "platform", { value: "darwin" });
+
+    try {
+      await expect(startRuntimeServicesForWorkspaceControl({
+        actor: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+        issue: null,
+        workspace: buildWorkspace(process.cwd()),
+        config: {
+          workspaceRuntime: {
+            services: [{ name: "web", command: "node server.js", port, lifecycle: "shared" }],
+          },
+        },
+        adapterEnv: {},
+      })).rejects.toThrow(new RegExp(`port ${port} is already in use by pid ${process.pid} \\(cwd unavailable\\)$`, "i"));
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    }
   });
 
   it("refuses to adopt a listener whose real cwd belongs to another workspace", async () => {

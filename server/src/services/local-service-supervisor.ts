@@ -445,5 +445,6 @@ async function doesLocalServiceRecordMatchCwd(record: LocalServiceRegistryRecord
   const ownerPid = await readLocalServicePortOwner(record.port);
   if (!ownerPid) return false;
   const ownerCwd = await readLocalServiceProcessCwd(ownerPid);
-  return ownerCwd ? await isLocalServiceProcessInWorkspace(ownerCwd, record.cwd) : false;
+  if (!ownerCwd) return process.platform !== "linux";
+  return isLocalServiceProcessInWorkspace(ownerCwd, record.cwd);
 }

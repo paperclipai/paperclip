@@ -63,6 +63,7 @@ type ConfiguredRuntimeServicePort = {
   index: number;
   name: string;
   port: number | null;
+  invalidPort: boolean;
 };
 
 type ExecutionWorkspaceBaseTab = "services" | "configuration" | "runtime_logs" | "issues" | "routines";
@@ -182,17 +183,25 @@ export function readConfiguredRuntimeServicePorts(runtimeConfig: Record<string, 
       const config = service as Record<string, unknown>;
       if (commandsRequireServiceKind && config.kind !== "service") return;
       const portConfig = config.port;
+      const hasObjectPortValue = Boolean(
+        portConfig
+        && typeof portConfig === "object"
+        && !Array.isArray(portConfig)
+        && Object.hasOwn(portConfig, "value"),
+      );
       const portValue =
         typeof portConfig === "number"
           ? portConfig
-          : portConfig && typeof portConfig === "object" && !Array.isArray(portConfig)
+          : hasObjectPortValue
             ? (portConfig as Record<string, unknown>).value
             : null;
       entries.push({
         collection,
         index,
         name: typeof config.name === "string" && config.name.trim() ? config.name : `Service ${index + 1}`,
-        port: typeof portValue === "number" && Number.isInteger(portValue) && portValue > 0 ? portValue : null,
+        port: typeof portValue === "number" ? portValue : null,
+        invalidPort: (typeof portConfig === "number" || hasObjectPortValue)
+          && (typeof portValue !== "number" || !Number.isInteger(portValue) || portValue < 1 || portValue > 65535),
       });
     });
   };
@@ -212,22 +221,32 @@ export function updateConfiguredRuntimeServicePort(input: {
   if (!Array.isArray(entries)) return runtimeConfig;
   const entry = entries[input.service.index];
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) return runtimeConfig;
+  const config = entry as Record<string, unknown>;
+  const existingPort = config.port && typeof config.port === "object" && !Array.isArray(config.port)
+    ? config.port as Record<string, unknown>
+    : null;
 
   const trimmedPort = input.port.trim();
   if (!trimmedPort) {
-    delete (entry as Record<string, unknown>).port;
+    if (existingPort) {
+      const autoPort = { ...existingPort, type: "auto" };
+      delete autoPort.value;
+      config.port = autoPort;
+    } else {
+      delete config.port;
+    }
     return runtimeConfig;
   }
   const port = Number(trimmedPort);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return runtimeConfig;
-  (entry as Record<string, unknown>).port = { type: "fixed", value: port };
+  config.port = { ...existingPort, type: "fixed", value: port };
   return runtimeConfig;
 }
 
 export function getConfiguredRuntimeServicePortWarnings(services: ConfiguredRuntimeServicePort[]) {
   const servicesByPort = new Map<number, ConfiguredRuntimeServicePort[]>();
   for (const service of services) {
-    if (!service.port) continue;
+    if (service.invalidPort || !service.port) continue;
     const servicesForPort = servicesByPort.get(service.port) ?? [];
     servicesForPort.push(service);
     servicesByPort.set(service.port, servicesForPort);
@@ -311,9 +330,7 @@ function validateForm(form: WorkspaceFormState) {
     if (!runtimeJson.ok) {
       return runtimeJson.error;
     }
-    const invalidPort = readConfiguredRuntimeServicePorts(runtimeJson.value).find(
-      (service) => service.port !== null && (service.port < 1 || service.port > 65535),
-    );
+    const invalidPort = readConfiguredRuntimeServicePorts(runtimeJson.value).find((service) => service.invalidPort);
     if (invalidPort) return `${invalidPort.name} has an invalid fixed port.`;
   }
 
@@ -756,7 +773,7 @@ export function ExecutionWorkspaceDetail() {
       ? "execution_workspace"
       : inheritedRuntimeConfig
         ? "project_workspace"
-      : "none";
+        : "none";
 
   const configuredRuntimeConfig = useMemo(() => {
     if (!form || form.inheritRuntime) return inheritedRuntimeConfig;
