@@ -282,6 +282,18 @@ const CONNECTIONS: ToolConnection[] = [
     createdByUserId: null,
     createdAt: new Date("2026-06-01T00:00:00Z"),
     updatedAt: new Date("2026-06-01T00:00:00Z"),
+    installs: [
+      {
+        id: "install-gmail-sage",
+        companyId: COMPANY,
+        connectionId: "conn-gmail",
+        targetType: "agent",
+        targetId: "a-sage",
+        createdByAgentId: null,
+        createdByUserId: null,
+        createdAt: new Date("2026-06-01T00:00:00Z"),
+      },
+    ],
   } as ToolConnection,
   {
     id: "conn-slack",
@@ -335,6 +347,7 @@ function SeededIndex({
       bindings: DETAIL_PROFILE.bindings,
       allowedTools: GMAIL_TOOLS.slice(0, 4),
       allowedToolNames: GMAIL_TOOLS.slice(0, 4).map((tool) => tool.toolName),
+      installedConnections: [],
     } satisfies ToolProfileEffectiveSummary);
     c.setQueryData(queryKeys.projects.list(COMPANY), []);
     c.setQueryData(queryKeys.routines.list(COMPANY), []);
@@ -401,7 +414,7 @@ function SeededDetail({
 }
 
 function SeededAgentTools() {
-  const allowed = GMAIL_TOOLS.slice(0, 6);
+  const allowed = [...GMAIL_TOOLS.slice(0, 6), SLACK_TOOLS[0]];
   const policy: ToolPolicy = {
     id: "policy-write",
     companyId: COMPANY,
@@ -429,6 +442,7 @@ function SeededAgentTools() {
       bindings: DETAIL_PROFILE.bindings,
       allowedTools: allowed,
       allowedToolNames: allowed.map((tool) => tool.toolName),
+      installedConnections: CONNECTIONS.filter((connection) => connection.id === "conn-gmail"),
     } satisfies ToolProfileEffectiveSummary);
     c.setQueryData(queryKeys.tools.connections(COMPANY), { connections: CONNECTIONS });
     c.setQueryData(queryKeys.tools.catalog("conn-gmail"), { catalog: GMAIL_TOOLS });

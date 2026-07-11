@@ -8,6 +8,8 @@ import { AppsConnect } from "./AppsConnect";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
+const finishAppMock = vi.hoisted(() => vi.fn());
+const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const listAgentsMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSearch = vi.hoisted(() => ({ value: "" }));
@@ -17,6 +19,10 @@ vi.mock("@/api/tools", () => ({
   toolsApi: {
     listGallery: (companyId: string) => listGalleryMock(companyId),
     connectApp: (companyId: string, input: unknown) => connectAppMock(companyId, input),
+    finishApp: (companyId: string, connectionId: string, input: unknown) =>
+      finishAppMock(companyId, connectionId, input),
+    putConnectionInstalls: (connectionId: string, installs: unknown) =>
+      putConnectionInstallsMock(connectionId, installs),
   },
 }));
 
@@ -127,6 +133,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         },
       ],
     });
+    finishAppMock.mockResolvedValue({});
+    putConnectionInstallsMock.mockResolvedValue({ connectionId: "conn-1", installs: [] });
     connectAppMock.mockResolvedValue({
       connectionId: "conn-1",
       application: { id: "app-1", name: "example.com" },
@@ -303,7 +311,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await render();
 
-    expect(container.textContent).toContain("Step 1 of 3");
+    expect(container.textContent).toContain("Step 1 of 4");
     expect(container.textContent).toContain("Connect Zapier");
     expect(container.textContent).toContain("Add MCP URL");
     expect(container.querySelector('img[src="https://example.com/zapier.png"]')).toBeTruthy();
@@ -324,7 +332,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(connectAppMock).toHaveBeenCalledTimes(1);
     expect(connectAppMock.mock.calls[0]?.[1]).toMatchObject({ link: zapierUrl, name: "Zapier" });
-    expect(container.textContent).toContain("Step 2 of 3");
+    expect(container.textContent).toContain("Step 2 of 4");
     expect(container.querySelector('img[src="https://example.com/zapier.png"]')).toBeTruthy();
 
     await act(async () => {
@@ -332,7 +340,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Step 3 of 3");
+    expect(container.textContent).toContain("Step 3 of 4");
     expect(container.querySelector('img[src="https://example.com/zapier.png"]')).toBeTruthy();
 
     await act(async () => {
@@ -364,6 +372,35 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(container.textContent).toContain("1 agent selected");
     expect(container.textContent).not.toContain("Grace");
+
+    await act(async () => {
+      buttonByText("Continue to install")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Step 4 of 4");
+    expect(container.textContent).toContain("Install Zapier tools?");
+    expect(container.textContent).toContain("Not yet");
+
+    await act(async () => {
+      buttonContaining("Specific agents")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("1 agent selected");
+    await act(async () => {
+      buttonByText("Finish setup")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", "conn-1", {
+      enabledCatalogEntryIds: ["action-1"],
+      askFirstCatalogEntryIds: [],
+      access: { agentIds: ["agent-1"] },
+    });
+    expect(putConnectionInstallsMock).toHaveBeenCalledWith("conn-1", [
+      { targetType: "agent", targetId: "agent-1" },
+    ]);
   });
 
   // PAP-10922: "Run your own" / "Paste a config" moved from the sidebar to rows

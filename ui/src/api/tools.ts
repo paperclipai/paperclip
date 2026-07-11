@@ -1,6 +1,8 @@
 import type {
   ToolApplication,
   ToolConnection,
+  ToolConnectionInstall,
+  ToolConnectionInstallSnapshot,
   ConnectToolAppResult,
   FinishToolAppResult,
   ToolCatalogEntry,
@@ -268,6 +270,21 @@ export const toolsApi = {
     api.get<ToolConnectionsResponse>(`/companies/${companyId}/tools/connections`),
   getConnection: (connectionId: string) =>
     api.get<ToolConnection>(`/tool-connections/${connectionId}`),
+  // --- Installs (Phase 3b, PAP-13618): which agents carry this connection's
+  // tools in their runtime context. `installed ⊆ permitted`; the server
+  // auto-extends access (adds profile bindings) for any newly-installed target.
+  getConnectionInstalls: (connectionId: string) =>
+    api.get<{ connectionId: string; installs: ToolConnectionInstall[] }>(
+      `/tool-connections/${connectionId}/installs`,
+    ),
+  putConnectionInstalls: (
+    connectionId: string,
+    installs: Array<{ targetType: "company" | "agent"; targetId: string }>,
+  ) =>
+    api.put<ToolConnectionInstallSnapshot>(
+      `/tool-connections/${connectionId}/installs`,
+      { installs },
+    ),
   createConnection: (companyId: string, input: CreateToolConnectionInput) =>
     api.post<ToolConnection>(`/companies/${companyId}/tools/connections`, input),
   updateConnection: (connectionId: string, input: UpdateToolConnectionInput) =>

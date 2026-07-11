@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppDetail } from "./AppDetail";
 
 const getConnectionMock = vi.hoisted(() => vi.fn());
+const getConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listCatalogMock = vi.hoisted(() => vi.fn());
 const listProfilesMock = vi.hoisted(() => vi.fn());
@@ -16,6 +17,7 @@ const listConnectionActivityMock = vi.hoisted(() => vi.fn());
 const listActionRequestsMock = vi.hoisted(() => vi.fn());
 const updateConnectionMock = vi.hoisted(() => vi.fn());
 const finishAppMock = vi.hoisted(() => vi.fn());
+const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const refreshCatalogMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
@@ -25,6 +27,7 @@ const navigateComponentMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     getConnection: (connectionId: string) => getConnectionMock(connectionId),
+    getConnectionInstalls: (connectionId: string) => getConnectionInstallsMock(connectionId),
     listGallery: (companyId: string) => listGalleryMock(companyId),
     listCatalog: (connectionId: string) => listCatalogMock(connectionId),
     listProfiles: (companyId: string) => listProfilesMock(companyId),
@@ -37,6 +40,8 @@ vi.mock("@/api/tools", () => ({
       updateConnectionMock(connectionId, input),
     finishApp: (companyId: string, connectionId: string, input: unknown) =>
       finishAppMock(companyId, connectionId, input),
+    putConnectionInstalls: (connectionId: string, installs: unknown) =>
+      putConnectionInstallsMock(connectionId, installs),
     archiveConnection: vi.fn(),
     refreshCatalog: (connectionId: string) => refreshCatalogMock(connectionId),
     startOAuth: (connectionId: string) => startOAuthMock(connectionId),
@@ -164,6 +169,7 @@ describe("AppDetail", () => {
     mockParams.connectionId = "conn-1";
     mockParams.tab = "setup";
     getConnectionMock.mockResolvedValue(connection());
+    getConnectionInstallsMock.mockResolvedValue({ connectionId: "conn-1", installs: [] });
     listGalleryMock.mockResolvedValue({
       apps: [
         {
@@ -228,6 +234,7 @@ describe("AppDetail", () => {
     listActionRequestsMock.mockResolvedValue({ actionRequests: [] });
     updateConnectionMock.mockResolvedValue(connection({ enabled: false }));
     finishAppMock.mockResolvedValue({});
+    putConnectionInstallsMock.mockResolvedValue({ connectionId: "conn-1", installs: [] });
     refreshCatalogMock.mockResolvedValue({ discoveredCount: 0, quarantinedCount: 0, catalog: [] });
     startOAuthMock.mockResolvedValue({
       connectionId: "conn-1",
@@ -477,6 +484,31 @@ describe("AppDetail", () => {
       askFirstCatalogEntryIds: [],
       access: "all_agents",
     });
+  });
+
+  it("persists installed agents from the permissions tab", async () => {
+    mockParams.tab = "permissions";
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Installed on agents");
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Choose agents to install on"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const coderCheckbox = document.body.querySelector<HTMLElement>('[aria-label="Allow Coder"]');
+    expect(coderCheckbox).toBeTruthy();
+    await act(async () => {
+      coderCheckbox!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(putConnectionInstallsMock).toHaveBeenCalledWith("conn-1", [
+      { targetType: "agent", targetId: "agent-1" },
+    ]);
   });
 
   it("renders activity attribution with issue context and human resolver names", async () => {

@@ -1,14 +1,17 @@
-import { useMemo } from "react";
-import { useQuery, useQueries } from "@tanstack/react-query";
-import { HelpCircle } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { HelpCircle, PackageCheck } from "lucide-react";
 import type {
   AgentDetail as AgentDetailRecord,
   ToolCatalogEntry,
+  ToolConnection,
   ToolPolicy,
 } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { queryKeys } from "../lib/queryKeys";
 import { toolsApi } from "../api/tools";
+import { Checkbox } from "@/components/ui/checkbox";
+import { InlineBanner } from "@/components/InlineBanner";
 import { EnforcementBanner } from "../components/EnforcementBanner";
 import {
   RiskBadge,
@@ -16,6 +19,9 @@ import {
   LoadingState as ToolsLoadingState,
   ErrorState as ToolsErrorState,
 } from "./tools/shared";
+import { cn } from "../lib/utils";
+import { brandChipBadge } from "../lib/status-colors";
+import { installPayload, installStateFrom, isAgentInstalled, INSTALLED_HINT } from "../lib/tool-installs";
 
 /** Normalize a selector value (string or string[]) into a flat string list. */
 function selectorStringList(value: unknown): string[] {
@@ -46,6 +52,126 @@ export function policyGovernsAgent(policy: ToolPolicy, agentId: string): boolean
   return true;
 }
 
+function InstalledAppsSection({
+  agentName,
+  connections,
+  draft,
+  permittedConnectionIds,
+  pendingConnectionId,
+  saving,
+  unsaved,
+  error,
+  onChange,
+}: {
+  agentName: string;
+  connections: ToolConnection[];
+  draft: Record<string, boolean>;
+  permittedConnectionIds: Set<string>;
+  pendingConnectionId: string | null;
+  saving: boolean;
+  unsaved: boolean;
+  error: boolean;
+  onChange: (connectionId: string, installed: boolean) => void;
+}) {
+  return (
+    <section className="rounded-lg border border-border bg-card">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-3 py-2.5">
+        <div>
+          <h3 className="text-sm font-semibold text-foreground">Installed apps</h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Installed apps load tools into {agentName}'s context on every run. Permitted-only apps do not add context cost.
+          </p>
+        </div>
+        <InstallSaveStatusChip pending={saving} unsaved={unsaved} error={error} />
+      </div>
+
+      <div className="space-y-3 p-3">
+        <InlineBanner tone="info" compact>
+          Has access means the app is permitted. Installed means its tools are added to this agent's runtime context.
+        </InlineBanner>
+
+        {connections.length === 0 ? (
+          <p className="rounded-md border border-border bg-muted/30 px-3 py-4 text-sm text-muted-foreground">
+            No permitted apps yet. Bind an access profile to make apps available here.
+          </p>
+        ) : (
+          <div className="divide-y divide-border rounded-md border border-border">
+            {connections.map((connection) => {
+              const installState = installStateFrom(connection.installs);
+              const installedForAll = installState.onAll;
+              const checked = installedForAll || (draft[connection.id] ?? false);
+              const permitted = permittedConnectionIds.has(connection.id);
+              const rowPending = pendingConnectionId === connection.id;
+              return (
+                <label key={connection.id} className="flex items-start gap-3 px-3 py-3">
+                  <Checkbox
+                    checked={checked}
+                    disabled={installedForAll || rowPending}
+                    aria-label={`Install ${connection.name} on ${agentName}`}
+                    onCheckedChange={(next) => onChange(connection.id, Boolean(next))}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-medium text-foreground">{connection.name}</span>
+                      <InstallBadge installed={checked} installedForAll={installedForAll} permitted={permitted} />
+                      {rowPending ? <span className="text-xs text-muted-foreground">Saving...</span> : null}
+                    </span>
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      {installedForAll
+                        ? "Installed from the app page for every agent. Remove the all-agents install there."
+                        : checked
+                          ? "Loaded into this agent's runtime context."
+                          : INSTALLED_HINT}
+                    </span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function InstallBadge({
+  installed,
+  installedForAll,
+  permitted,
+}: {
+  installed: boolean;
+  installedForAll: boolean;
+  permitted: boolean;
+}) {
+  const label = installed ? (installedForAll ? "Installed for all" : "Installed") : permitted ? "Permitted only" : "Not permitted";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium",
+        installed ? brandChipBadge.green : brandChipBadge.gray,
+      )}
+    >
+      {installed ? <PackageCheck className="h-3 w-3" /> : null}
+      {label}
+    </span>
+  );
+}
+
+function InstallSaveStatusChip({
+  pending,
+  unsaved,
+  error,
+}: {
+  pending: boolean;
+  unsaved: boolean;
+  error: boolean;
+}) {
+  if (pending) return <span className="text-xs text-muted-foreground">Saving...</span>;
+  if (error) return <span className="text-xs text-destructive">Could not save</span>;
+  if (unsaved) return <span className="text-xs text-muted-foreground">Unsaved changes</span>;
+  return <span className="text-xs text-muted-foreground">Saved</span>;
+}
+
 const POLICY_EFFECT_LABEL: Record<string, string> = {
   allow: "allow",
   block: "block",
@@ -65,6 +191,12 @@ const DENIED_TOOLS_DISPLAY_LIMIT = 30;
  * which access profiles and rules shape the final list.
  */
 export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; companyId: string }) {
+  const queryClient = useQueryClient();
+  const [installDraft, setInstallDraft] = useState<Record<string, boolean>>({});
+  const lastSavedInstallRef = useRef<Record<string, boolean>>({});
+  const skipNextInstallAutosaveRef = useRef(true);
+  const failedInstallDraftRef = useRef<{ connectionId: string; installed: boolean } | null>(null);
+
   const effective = useQuery({
     queryKey: queryKeys.tools.effectiveProfilesForAgent(companyId, agent.id),
     queryFn: () => toolsApi.getEffectiveProfilesForAgent(companyId, agent.id),
@@ -81,6 +213,98 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
   });
 
   const connectionList = connectionsQuery.data?.connections ?? [];
+  const connectionInstallSignature = useMemo(
+    () =>
+      connectionList
+        .map((connection) => {
+          const installKey = (connection.installs ?? [])
+            .map((install) => `${install.targetType}:${install.targetId}`)
+            .sort()
+            .join(",");
+          return `${connection.id}=${installKey}`;
+        })
+        .join("|"),
+    [connectionList],
+  );
+
+  const syncInstall = useMutation({
+    mutationFn: ({ connection, installed }: { connection: ToolConnection; installed: boolean }) => {
+      const nextState = installStateFrom(connection.installs);
+      if (!nextState.onAll) {
+        if (installed) nextState.agentIds.add(agent.id);
+        else nextState.agentIds.delete(agent.id);
+      }
+      return toolsApi.putConnectionInstalls(
+        connection.id,
+        installPayload(connection.companyId ?? companyId, nextState),
+      );
+    },
+    onSuccess: async (_snapshot, variables) => {
+      failedInstallDraftRef.current = null;
+      lastSavedInstallRef.current = {
+        ...lastSavedInstallRef.current,
+        [variables.connection.id]: variables.installed,
+      };
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(companyId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.tools.effectiveProfilesForAgent(companyId, agent.id) }),
+      ]);
+    },
+    onError: (_error, variables) => {
+      failedInstallDraftRef.current = {
+        connectionId: variables.connection.id,
+        installed: variables.installed,
+      };
+    },
+  });
+
+  useEffect(() => {
+    setInstallDraft({});
+    lastSavedInstallRef.current = {};
+    skipNextInstallAutosaveRef.current = true;
+    failedInstallDraftRef.current = null;
+  }, [agent.id, companyId]);
+
+  useEffect(() => {
+    const next = Object.fromEntries(
+      connectionList.map((connection) => [
+        connection.id,
+        isAgentInstalled(installStateFrom(connection.installs), agent.id),
+      ]),
+    );
+    lastSavedInstallRef.current = next;
+    skipNextInstallAutosaveRef.current = true;
+    failedInstallDraftRef.current = null;
+    setInstallDraft(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent.id, connectionInstallSignature]);
+
+  useEffect(() => {
+    if (skipNextInstallAutosaveRef.current) {
+      skipNextInstallAutosaveRef.current = false;
+      return;
+    }
+    if (syncInstall.isPending) return;
+
+    const changedConnection = connectionList.find((connection) => {
+      const saved = lastSavedInstallRef.current[connection.id] ?? false;
+      const draft = installDraft[connection.id] ?? false;
+      const failed = failedInstallDraftRef.current;
+      return saved !== draft && !(failed?.connectionId === connection.id && failed.installed === draft);
+    });
+    if (!changedConnection) return;
+
+    const timeout = window.setTimeout(() => {
+      const installed = installDraft[changedConnection.id] ?? false;
+      const saved = lastSavedInstallRef.current[changedConnection.id] ?? false;
+      const failed = failedInstallDraftRef.current;
+      if (saved !== installed && !(failed?.connectionId === changedConnection.id && failed.installed === installed)) {
+        syncInstall.mutate({ connection: changedConnection, installed });
+      }
+    }, 250);
+
+    return () => window.clearTimeout(timeout);
+  }, [connectionList, installDraft, syncInstall.isPending, syncInstall.mutate]);
 
   // The effective endpoint returns the *allowed* slice of the catalog. To show
   // "Denied tools (suppressed)" we need the full company catalog, which is only
@@ -105,6 +329,21 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
         a.toolName.localeCompare(b.toolName),
       ),
     [effective.data?.allowedTools],
+  );
+
+  const permittedConnectionIds = useMemo(
+    () => new Set(allowedTools.map((tool) => tool.connectionId)),
+    [allowedTools],
+  );
+  const installedAppConnections = useMemo(
+    () =>
+      connectionList
+        .filter((connection) => permittedConnectionIds.has(connection.id) || (installDraft[connection.id] ?? false))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [connectionList, installDraft, permittedConnectionIds],
+  );
+  const hasInstallUnsavedChanges = installedAppConnections.some(
+    (connection) => (installDraft[connection.id] ?? false) !== (lastSavedInstallRef.current[connection.id] ?? false),
   );
 
   const catalogStamp = catalogQueries.map((q) => q.dataUpdatedAt).join(",");
@@ -156,6 +395,21 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
             default.
           </>
         }
+      />
+
+      <InstalledAppsSection
+        agentName={agent.name}
+        connections={installedAppConnections}
+        draft={installDraft}
+        permittedConnectionIds={permittedConnectionIds}
+        pendingConnectionId={syncInstall.isPending ? syncInstall.variables?.connection.id ?? null : null}
+        saving={syncInstall.isPending}
+        unsaved={hasInstallUnsavedChanges}
+        error={syncInstall.isError && hasInstallUnsavedChanges}
+        onChange={(connectionId, installed) => {
+          failedInstallDraftRef.current = null;
+          setInstallDraft((current) => ({ ...current, [connectionId]: installed }));
+        }}
       />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">

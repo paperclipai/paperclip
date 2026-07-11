@@ -1,25 +1,38 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, RefreshCw } from "lucide-react";
+import { Loader2, PackageCheck, RefreshCw } from "lucide-react";
 import type { Agent, ToolCatalogEntry } from "@paperclipai/shared";
 import { useSearchParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { AgentMultiSelect } from "@/components/AgentMultiSelect";
+import { InlineBanner } from "@/components/InlineBanner";
 import { cn } from "@/lib/utils";
+import { brandChipBadge } from "@/lib/status-colors";
+import {
+  autoExtendNotice,
+  INSTALL_ALL_WARNING,
+  installInfoNotice,
+  type InstallState,
+} from "@/lib/tool-installs";
 import { QuarantinePill } from "./SetupPanel";
 import type { AccessDraft, AppDetailSectionProps } from "./types";
 
 type ActionPermission = "off" | "allowed" | "ask";
 
 export function PermissionsPanel({
+  appName,
   access,
   agents,
+  install,
   readOnly,
   canChange,
   quarantined,
   enabledIds,
   askFirstIds,
   pending,
+  installPending,
   onSaveAccess,
+  onSaveInstall,
   onSetActionPermission,
   onTurnOnQuarantined,
   onRefreshActions,
@@ -28,7 +41,11 @@ export function PermissionsPanel({
   AppDetailSectionProps,
   "access" | "agents" | "readOnly" | "canChange" | "quarantined" | "enabledIds" | "askFirstIds" | "pending"
 > & {
+  appName: string;
+  install: InstallState;
+  installPending: boolean;
   onSaveAccess: (next: AccessDraft) => void;
+  onSaveInstall: (next: InstallState) => void;
   onSetActionPermission: (id: string, next: ActionPermission) => void;
   onTurnOnQuarantined: (ids: string[]) => void;
   onRefreshActions: () => void;
@@ -41,6 +58,14 @@ export function PermissionsPanel({
   return (
     <div className="space-y-6">
       <AccessSection access={access} agents={agents} disabled={pending} onSave={onSaveAccess} />
+      <InstalledSection
+        appName={appName}
+        agents={agents}
+        access={access}
+        install={install}
+        disabled={installPending}
+        onSave={onSaveInstall}
+      />
       <ActionsSection
         readOnly={readOnly}
         canChange={canChange}
@@ -152,6 +177,132 @@ function AccessSection({
         </div>
       )}
     </section>
+  );
+}
+
+function InstalledSection({
+  appName,
+  agents,
+  access,
+  install,
+  disabled,
+  onSave,
+}: {
+  appName: string;
+  agents: Agent[];
+  access: AccessDraft;
+  install: InstallState;
+  disabled: boolean;
+  onSave: (next: InstallState) => void;
+}) {
+  const liveAgents = agents.filter((a) => a.status !== "terminated");
+  const hasAccess = (agentId: string) => access.mode === "all" || access.agentIds.has(agentId);
+  // Agents that are installed but not (yet) in the access set — installing on
+  // them auto-extends access server-side. Surfaced amber so it's never silent.
+  const extendingAgents =
+    access.mode === "all"
+      ? []
+      : [...install.agentIds].filter((id) => !access.agentIds.has(id));
+  const installedCount = install.onAll ? liveAgents.length : install.agentIds.size;
+
+  return (
+    <section className="rounded-xl border border-border bg-card">
+      <div className="flex items-center justify-between gap-3 px-5 py-4">
+        <div>
+          <h2 className="text-sm font-bold text-foreground">Installed on agents</h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            Whose harness carries {appName}'s tools on every run.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {disabled && <span className="text-xs text-muted-foreground">Saving…</span>}
+          {install.onAll ? (
+            <InstalledBadge label="Installed on all agents" />
+          ) : install.agentIds.size > 0 ? (
+            <InstalledBadge label={`${installedCount} installed`} />
+          ) : (
+            <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+              Permitted only — not installed on any agent
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="space-y-3 border-t border-border px-5 py-4">
+        <InlineBanner tone="info" compact>
+          {installInfoNotice(appName)}
+        </InlineBanner>
+
+        {!install.onAll && (
+          <AgentMultiSelect
+            agents={liveAgents}
+            selectedAgentIds={install.agentIds}
+            disabled={disabled}
+            triggerLabel={
+              install.agentIds.size === 0
+                ? "Choose agents to install on"
+                : `${install.agentIds.size} ${install.agentIds.size === 1 ? "agent" : "agents"} installed`
+            }
+            getDescription={(agent) => (hasAccess(agent.id) ? "has access" : "no access yet")}
+            renderNameSuffix={(agent) =>
+              !hasAccess(agent.id) && install.agentIds.has(agent.id) ? (
+                <span className={cn("rounded border px-1 py-0 text-xs font-medium", brandChipBadge.amber)}>
+                  will grant access
+                </span>
+              ) : null
+            }
+            onChange={(agentIds) => onSave({ onAll: false, agentIds })}
+          />
+        )}
+
+        <label
+          className={cn(
+            "flex items-start gap-3 rounded-lg border px-3 py-2.5",
+            install.onAll ? "border-foreground bg-muted/40" : "border-border bg-muted/20",
+          )}
+        >
+          <Checkbox
+            checked={install.onAll}
+            disabled={disabled}
+            aria-label="Install on all agents"
+            onCheckedChange={(checked) =>
+              onSave(checked ? { onAll: true, agentIds: new Set() } : { onAll: false, agentIds: new Set() })
+            }
+          />
+          <span className="text-xs text-foreground">
+            <span className="font-semibold">Install on all agents</span>
+            <span className="mt-0.5 block text-muted-foreground">
+              {INSTALL_ALL_WARNING}
+            </span>
+          </span>
+        </label>
+
+        {extendingAgents.length > 0 ? (
+          <InlineBanner tone="warning" compact>
+            <span>
+              {autoExtendNotice(
+                extendingAgents.length === 1
+                  ? liveAgents.find((a) => a.id === extendingAgents[0])?.name ?? "1 agent"
+                  : `${extendingAgents.length} agents`,
+              )}{" "}
+              <span className="font-medium">
+                Review the {extendingAgents.length} access change
+                {extendingAgents.length === 1 ? "" : "s"}
+              </span>
+            </span>
+          </InlineBanner>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function InstalledBadge({ label }: { label: string }) {
+  return (
+    <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium", brandChipBadge.green)}>
+      <PackageCheck className="h-3 w-3" />
+      {label}
+    </span>
   );
 }
 

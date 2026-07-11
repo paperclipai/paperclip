@@ -22,6 +22,7 @@ import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
 import { authApi } from "@/api/auth";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
+import { installPayload, installStateFrom, type InstallState } from "@/lib/tool-installs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -58,6 +59,11 @@ export function AppDetail() {
     queryKey: queryKeys.tools.connection(connectionId),
     queryFn: () => toolsApi.getConnection(connectionId),
     enabled: !!connectionId && !!activeTab,
+  });
+  const installsQuery = useQuery({
+    queryKey: queryKeys.tools.connectionInstalls(connectionId),
+    queryFn: () => toolsApi.getConnectionInstalls(connectionId),
+    enabled: !!connectionId && activeTab === "permissions",
   });
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),
@@ -126,6 +132,10 @@ export function AppDetail() {
     [policiesQuery.data, connectionId],
   );
   const access = useMemo(() => accessFrom(profile), [profile]);
+  const install = useMemo(
+    () => installStateFrom(installsQuery.data?.installs ?? connection?.installs),
+    [connection?.installs, installsQuery.data?.installs],
+  );
   const agents = agentsQuery.data ?? [];
   const userLabelById = useMemo(() => {
     const labels = buildCompanyUserLabelMap(userDirectoryQuery.data?.users);
@@ -165,6 +175,24 @@ export function AppDetail() {
         tone: "error",
       }),
     onSettled: () => setPending(false),
+  });
+
+  const persistInstall = useMutation({
+    mutationFn: (next: InstallState) =>
+      toolsApi.putConnectionInstalls(connectionId, installPayload(selectedCompanyId!, next)),
+    onSuccess: (snapshot) => {
+      queryClient.setQueryData(queryKeys.tools.connectionInstalls(connectionId), snapshot);
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.profiles(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn't save installs",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      }),
   });
 
   const [renaming, setRenaming] = useState(false);
@@ -382,16 +410,20 @@ export function AppDetail() {
       )}
       {activeTab === "permissions" && (
         <PermissionsPanel
+          appName={appName}
           access={access}
           agents={agents}
+          install={install}
           readOnly={readOnly}
           canChange={canChange}
           quarantined={quarantined}
           enabledIds={enabledIds}
           askFirstIds={askFirstIds}
           pending={pending}
+          installPending={persistInstall.isPending || installsQuery.isLoading}
           refreshPending={refreshTools.isPending}
           onSaveAccess={(next) => apply({ access: next })}
+          onSaveInstall={(next) => persistInstall.mutate(next)}
           onRefreshActions={() => refreshTools.mutate()}
           onSetActionPermission={(id, next) => apply(actionPermissionMutation(id, next, enabledIds, askFirstIds))}
           onTurnOnQuarantined={(ids) => apply({ enabled: addAll(new Set(enabledIds), ids) })}

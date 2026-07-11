@@ -32,6 +32,7 @@ import { appCopyFor, credentialFieldLabel } from "@/lib/app-gallery-copy";
 import { advancedTabHref } from "@/pages/tools/tool-tabs";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { AgentMultiSelect } from "@/components/AgentMultiSelect";
+import { InlineBanner } from "@/components/InlineBanner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -40,13 +41,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { AppLogo } from "./AppLogo";
 import { parseGoogleSheetIds } from "./google-sheets";
+import { autoExtendNotice, INSTALL_ALL_WARNING, installInfoNotice, installPayload } from "@/lib/tool-installs";
 
-type Step = "gallery" | "key" | "actions" | "who" | "success";
+type Step = "gallery" | "key" | "actions" | "who" | "install" | "success";
 
 const ROUTE_STAGE_BY_STEP: Partial<Record<Step, string>> = {
   key: "setup",
   actions: "actions",
   who: "access",
+  install: "install",
   success: "complete",
 };
 
@@ -55,21 +58,24 @@ function appConnectHref(appKey: string, step: Step): string {
   return `/apps/connect/${encodeURIComponent(appKey)}/${stage}`;
 }
 type AppAccessSelection = "all_agents" | { agentIds: string[] };
+type InstallMode = "none" | "specific" | "all";
 const LINK_CREDENTIAL_CONFIG_PATH = "credentials.authorization";
 
-const STEP_LABELS = ["Pick app", "Add your key", "Choose actions"];
+const STEP_LABELS = ["Pick app", "Add your key", "Choose actions", "Choose access", "Install tools"];
 const STEP_INDEX: Record<Exclude<Step, "success">, number> = {
   gallery: 0,
   key: 1,
   actions: 2,
-  who: 2,
+  who: 3,
+  install: 4,
 };
 const ZAPIER_STEP_INDEX: Record<Exclude<Step, "gallery" | "success">, number> = {
   key: 0,
   actions: 1,
   who: 2,
+  install: 3,
 };
-const ZAPIER_STEP_LABELS = ["Add MCP URL", "Choose actions", "Choose access"];
+const ZAPIER_STEP_LABELS = ["Add MCP URL", "Choose actions", "Choose access", "Install tools"];
 
 function askFirstLevelsFrom(result: ConnectToolAppResult): string[] {
   const raw = (result.suggestedDefaults as { askFirstRiskLevels?: unknown })?.askFirstRiskLevels;
@@ -114,6 +120,8 @@ export function AppsConnect() {
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
   const [access, setAccess] = useState<"all" | "specific">("all");
   const [agentIds, setAgentIds] = useState<Set<string>>(new Set());
+  const [installMode, setInstallMode] = useState<InstallMode>("none");
+  const [installAgentIds, setInstallAgentIds] = useState<Set<string>>(new Set());
 
   const openGallery = () => {
     setEntry(null);
@@ -126,6 +134,8 @@ export function AppsConnect() {
     setGoogleSheetsLinks("");
     setGoogleSheetsError(null);
     setConnectResult(null);
+    setInstallMode("none");
+    setInstallAgentIds(new Set());
     setStep("gallery");
     navigate("/apps/connect");
   };
@@ -168,6 +178,8 @@ export function AppsConnect() {
       setGoogleSheetsError(null);
       setConnectResult(null);
     }
+    setInstallMode("none");
+    setInstallAgentIds(new Set());
     setStep("key");
   }, [appKey, entry?.key, galleryQuery.data, galleryQuery.isLoading, navigate]);
 
@@ -204,6 +216,8 @@ export function AppsConnect() {
       for (const a of result.actions.readOnly) defaults[a.catalogEntryId] = true;
       for (const a of result.actions.canMakeChanges) defaults[a.catalogEntryId] = false;
       setEnabled(defaults);
+      setInstallMode("none");
+      setInstallAgentIds(new Set());
       setAppStep("actions");
     },
     onError: (error) => {
@@ -224,7 +238,7 @@ export function AppsConnect() {
   });
 
   const finishMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const askFirstLevels = connectResult ? askFirstLevelsFrom(connectResult) : [];
       const changeActions = connectResult?.actions.canMakeChanges ?? [];
       const enabledIds = Object.entries(enabled)
@@ -235,11 +249,19 @@ export function AppsConnect() {
         .map((a) => a.catalogEntryId);
       const selection: AppAccessSelection =
         access === "all" ? "all_agents" : { agentIds: Array.from(agentIds) };
-      return toolsApi.finishApp(selectedCompanyId!, connectResult!.connectionId, {
+      const result = await toolsApi.finishApp(selectedCompanyId!, connectResult!.connectionId, {
         enabledCatalogEntryIds: enabledIds,
         askFirstCatalogEntryIds: askFirstIds,
         access: selection,
       });
+      const installState = installMode === "all"
+        ? { onAll: true, agentIds: new Set<string>() }
+        : { onAll: false, agentIds: installMode === "specific" ? installAgentIds : new Set<string>() };
+      await toolsApi.putConnectionInstalls(
+        connectResult!.connectionId,
+        installPayload(selectedCompanyId!, installState),
+      );
+      return result;
     },
     onSuccess: () => setAppStep("success"),
     onError: (error) => {
@@ -262,10 +284,15 @@ export function AppsConnect() {
   const zapierEntry = zapierSource
     ? galleryQuery.data?.apps.find((app) => app.key === "zapier") ?? null
     : null;
+  const stepLabels = zapierSource
+    ? ZAPIER_STEP_LABELS
+    : isGoogleSheetsEntry(entry)
+      ? ["Pick app", "Share sheet", "Choose actions", "Choose access", "Install tools"]
+      : STEP_LABELS;
   const stepIndex = zapierSource && step !== "gallery" && step !== "success"
     ? ZAPIER_STEP_INDEX[step]
     : step === "success"
-      ? 3
+      ? stepLabels.length
       : STEP_INDEX[step];
 
   return (
@@ -275,17 +302,11 @@ export function AppsConnect() {
           subtitle={
             step === "gallery"
               ? "Pick the app you want your agents to use."
-              : `Step ${stepIndex + 1} of 3`
+              : `Step ${stepIndex + 1} of ${stepLabels.length}`
           }
           step={step}
           activeIndex={stepIndex}
-          labels={
-            zapierSource
-              ? ZAPIER_STEP_LABELS
-              : isGoogleSheetsEntry(entry)
-                ? ["Pick app", "Share sheet", "Choose actions"]
-                : STEP_LABELS
-          }
+          labels={stepLabels}
           appIdentity={
             zapierSource
               ? { name: "Zapier", logoUrl: zapierEntry?.logoUrl ?? null }
@@ -312,6 +333,8 @@ export function AppsConnect() {
             setGoogleSheetsLinks("");
             setGoogleSheetsError(null);
             setConnectResult(null);
+            setInstallMode("none");
+            setInstallAgentIds(new Set());
             setStep("key");
             navigate(appConnectHref(picked.key, "key"));
           }}
@@ -326,6 +349,8 @@ export function AppsConnect() {
             setCredentials({});
             setGoogleSheetsLinks("");
             setGoogleSheetsError(null);
+            setInstallMode("none");
+            setInstallAgentIds(new Set());
             setStep("key");
           }}
           onRunYourOwn={() => navigate(advancedTabHref("run-your-own"))}
@@ -419,8 +444,23 @@ export function AppsConnect() {
           setAccess={setAccess}
           agentIds={agentIds}
           setAgentIds={setAgentIds}
-          submitting={finishMutation.isPending}
           onBack={() => setAppStep("actions")}
+          onContinue={() => setAppStep("install")}
+        />
+      )}
+
+      {step === "install" && connectResult && (
+        <InstallStep
+          appName={appName}
+          companyId={selectedCompanyId}
+          access={access}
+          accessAgentIds={agentIds}
+          installMode={installMode}
+          setInstallMode={setInstallMode}
+          installAgentIds={installAgentIds}
+          setInstallAgentIds={setInstallAgentIds}
+          submitting={finishMutation.isPending}
+          onBack={() => setAppStep("who")}
           onFinish={() => finishMutation.mutate()}
         />
       )}
@@ -431,6 +471,8 @@ export function AppsConnect() {
           logoUrl={entry?.logoUrl}
           enabledCount={Object.values(enabled).filter(Boolean).length}
           access={access}
+          installMode={installMode}
+          installCount={installAgentIds.size}
           onDone={() => navigate("/apps")}
         />
       )}
@@ -1311,9 +1353,8 @@ function WhoStep({
   setAccess,
   agentIds,
   setAgentIds,
-  submitting,
   onBack,
-  onFinish,
+  onContinue,
 }: {
   appName: string;
   companyId: string;
@@ -1321,9 +1362,8 @@ function WhoStep({
   setAccess: (a: "all" | "specific") => void;
   agentIds: Set<string>;
   setAgentIds: (s: Set<string>) => void;
-  submitting: boolean;
   onBack: () => void;
-  onFinish: () => void;
+  onContinue: () => void;
 }) {
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -1390,12 +1430,150 @@ function WhoStep({
       </div>
 
       <div className="mt-6 flex items-center justify-between">
+        <Button variant="ghost" onClick={onBack}>
+          Back
+        </Button>
+        <Button onClick={onContinue} disabled={!canFinish}>
+          Continue to install
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+export function InstallStep({
+  appName,
+  companyId,
+  access,
+  accessAgentIds,
+  installMode,
+  setInstallMode,
+  installAgentIds,
+  setInstallAgentIds,
+  submitting,
+  onBack,
+  onFinish,
+}: {
+  appName: string;
+  companyId: string;
+  access: "all" | "specific";
+  accessAgentIds: Set<string>;
+  installMode: InstallMode;
+  setInstallMode: (mode: InstallMode) => void;
+  installAgentIds: Set<string>;
+  setInstallAgentIds: (ids: Set<string>) => void;
+  submitting: boolean;
+  onBack: () => void;
+  onFinish: () => void;
+}) {
+  const agentsQuery = useQuery({
+    queryKey: queryKeys.agents.list(companyId),
+    queryFn: () => agentsApi.list(companyId),
+  });
+  const agents: Agent[] = (agentsQuery.data ?? []).filter((a) => a.status !== "terminated");
+  const installSpecific = () => {
+    setInstallMode("specific");
+    if (installAgentIds.size === 0 && access === "specific") setInstallAgentIds(new Set(accessAgentIds));
+  };
+  const extendingAgentIds = access === "all"
+    ? []
+    : installMode === "all"
+      ? agents.filter((agent) => !accessAgentIds.has(agent.id)).map((agent) => agent.id)
+      : [...installAgentIds].filter((id) => !accessAgentIds.has(id));
+  const canFinish = installMode !== "specific" || installAgentIds.size > 0;
+  const extendingLabel = extendingAgentIds.length === 1
+    ? agents.find((agent) => agent.id === extendingAgentIds[0])?.name ?? "1 agent"
+    : `${extendingAgentIds.length} agents`;
+
+  return (
+    <div className="mx-auto max-w-xl">
+      <div className="rounded-2xl border border-border bg-card p-8">
+        <h2 className="text-xl font-bold tracking-tight">Install {appName} tools?</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Access is permission. Install decides whose runs actually carry these tools.
+        </p>
+
+        <div className="mt-5">
+          <InlineBanner tone="info" compact>
+            {installInfoNotice(appName)}
+          </InlineBanner>
+        </div>
+
+        <div className="mt-6 space-y-3">
+          <button
+            type="button"
+            onClick={() => setInstallMode("none")}
+            className={cn(
+              "flex w-full items-start gap-3 rounded-xl border-2 p-4 text-left transition-colors",
+              installMode === "none" ? "border-foreground bg-muted/40" : "border-border hover:border-foreground/30",
+            )}
+          >
+            <Radio selected={installMode === "none"} />
+            <div>
+              <span className="font-semibold text-foreground">Not yet</span>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Keep {appName} permitted only. You can install it later from the app or agent page.
+              </p>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={installSpecific}
+            className={cn(
+              "flex w-full items-start gap-3 rounded-xl border-2 p-4 text-left transition-colors",
+              installMode === "specific" ? "border-foreground bg-muted/40" : "border-border hover:border-foreground/30",
+            )}
+          >
+            <Radio selected={installMode === "specific"} />
+            <div className="flex-1">
+              <span className="font-semibold text-foreground">Specific agents</span>
+              <p className="mt-1 text-xs text-muted-foreground">Tick the agents that should load {appName} every run.</p>
+            </div>
+          </button>
+
+          {installMode === "specific" ? (
+            <div className="ml-7 border-l border-border pl-4">
+              <AgentMultiSelect
+                agents={agents}
+                selectedAgentIds={installAgentIds}
+                onChange={setInstallAgentIds}
+                loading={agentsQuery.isLoading}
+                showSelectionPreview={false}
+              />
+            </div>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={() => setInstallMode("all")}
+            className={cn(
+              "flex w-full items-start gap-3 rounded-xl border-2 p-4 text-left transition-colors",
+              installMode === "all" ? "border-foreground bg-muted/40" : "border-border hover:border-foreground/30",
+            )}
+          >
+            <Radio selected={installMode === "all"} />
+            <div>
+              <span className="font-semibold text-foreground">All agents</span>
+              <p className="mt-1 text-xs text-muted-foreground">{INSTALL_ALL_WARNING}</p>
+            </div>
+          </button>
+
+          {extendingAgentIds.length > 0 ? (
+            <InlineBanner tone="warning" compact>
+              {autoExtendNotice(extendingLabel)}
+            </InlineBanner>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="mt-6 flex items-center justify-between">
         <Button variant="ghost" onClick={onBack} disabled={submitting}>
           Back
         </Button>
         <Button onClick={onFinish} disabled={submitting || !canFinish}>
           {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          {submitting ? "Finishing…" : "Finish setup"}
+          {submitting ? "Finishing..." : "Finish setup"}
         </Button>
       </div>
     </div>
@@ -1420,14 +1598,23 @@ function SuccessStep({
   logoUrl,
   enabledCount,
   access,
+  installMode,
+  installCount,
   onDone,
 }: {
   appName: string;
   logoUrl?: string | null;
   enabledCount: number;
   access: "all" | "specific";
+  installMode: InstallMode;
+  installCount: number;
   onDone: () => void;
 }) {
+  const installSummary = installMode === "all"
+    ? "Installed on all agents"
+    : installMode === "specific"
+      ? `${installCount} ${installCount === 1 ? "agent" : "agents"} installed`
+      : "Permitted only";
   return (
     <div className="mx-auto max-w-md py-10 text-center">
       <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full border-2 border-emerald-500 bg-emerald-500/10">
@@ -1437,10 +1624,14 @@ function SuccessStep({
         <AppLogo name={appName} logoUrl={logoUrl} size={28} />
         <h2 className="text-2xl font-bold tracking-tight">{appName} is ready.</h2>
       </div>
-      <p className="mt-2 text-sm text-muted-foreground">Agents will start using it in their next task.</p>
+      <p className="mt-2 text-sm text-muted-foreground">
+        {installMode === "none"
+          ? "Agents can use it after you install it on their Tools tab."
+          : "Installed agents will load it on their next run."}
+      </p>
       <p className="mt-1 text-xs text-muted-foreground">
         {enabledCount} {enabledCount === 1 ? "action" : "actions"} on ·{" "}
-        {access === "all" ? "All agents can use it" : "Specific agents can use it"}
+        {access === "all" ? "All agents can use it" : "Specific agents can use it"} · {installSummary}
       </p>
       <div className="mt-8">
         <Button size="lg" className="px-10" onClick={onDone}>

@@ -17,6 +17,7 @@ const mockToolsApi = vi.hoisted(() => ({
   listPolicies: vi.fn(),
   listCatalog: vi.fn(),
   listAudit: vi.fn(),
+  putConnectionInstalls: vi.fn(),
 }));
 
 vi.mock("../api/tools", () => ({ toolsApi: mockToolsApi }));
@@ -110,6 +111,8 @@ describe("AgentToolsTab", () => {
     mockToolsApi.listConnections.mockReset();
     mockToolsApi.listPolicies.mockReset();
     mockToolsApi.listCatalog.mockReset();
+    mockToolsApi.putConnectionInstalls.mockReset();
+    mockToolsApi.putConnectionInstalls.mockResolvedValue({ connectionId: "conn-1", installs: [] });
   });
 
   afterEach(async () => {
@@ -195,6 +198,7 @@ describe("AgentToolsTab", () => {
       ],
       allowedTools: [allowed],
       allowedToolNames: ["github.read_repo"],
+      installedConnections: [],
     } satisfies ToolProfileEffectiveSummary);
 
     mockToolsApi.listConnections.mockResolvedValue({
@@ -240,6 +244,7 @@ describe("AgentToolsTab", () => {
       bindings: [],
       allowedTools: [],
       allowedToolNames: [],
+      installedConnections: [],
     } satisfies ToolProfileEffectiveSummary);
     mockToolsApi.listConnections.mockResolvedValue({ connections: [] });
     mockToolsApi.listPolicies.mockResolvedValue({ policies: [] });
@@ -249,5 +254,39 @@ describe("AgentToolsTab", () => {
     const text = container.textContent ?? "";
     expect(text).toContain("No tools are allowed for this agent");
     expect(text).toContain("No active profile applies");
+  });
+
+  it("autosaves installed apps for the current agent", async () => {
+    const allowed = makeCatalogEntry({ id: "cat-allow", toolName: "github.read_repo" });
+    mockToolsApi.getEffectiveProfilesForAgent.mockResolvedValue({
+      agentId: "agent-1",
+      profiles: [],
+      entries: [],
+      bindings: [],
+      allowedTools: [allowed],
+      allowedToolNames: ["github.read_repo"],
+      installedConnections: [],
+    } satisfies ToolProfileEffectiveSummary);
+    mockToolsApi.listConnections.mockResolvedValue({
+      connections: [{ id: "conn-1", companyId: "company-1", name: "Production GitHub", installs: [] }],
+    });
+    mockToolsApi.listPolicies.mockResolvedValue({ policies: [] });
+    mockToolsApi.listCatalog.mockResolvedValue({ catalog: [allowed] });
+
+    await renderTab();
+
+    expect(container.textContent).toContain("Installed apps");
+    expect(container.textContent).toContain("Permitted only");
+    const installCheckbox = container.querySelector<HTMLElement>('[aria-label="Install Production GitHub on Coder"]');
+    expect(installCheckbox).toBeTruthy();
+    await act(async () => {
+      installCheckbox!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    });
+    await flushReact();
+
+    expect(mockToolsApi.putConnectionInstalls).toHaveBeenCalledWith("conn-1", [
+      { targetType: "agent", targetId: "agent-1" },
+    ]);
   });
 });
