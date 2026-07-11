@@ -238,6 +238,19 @@ export interface CompanySkillForkPrecheckResult {
   existingForks: CompanySkillForkSummary[];
 }
 
+export interface CompanySkillRenameRequest {
+  name: string;
+  slug?: string | null;
+}
+
+export interface CompanySkillRenameResult {
+  skill: CompanySkill;
+  previousName: string;
+  previousSlug: string;
+  previousKey: string;
+  reassignments: CompanySkillForkReassignment[];
+}
+
 export interface CompanySkillUpdateRequest {
   description?: string | null;
   iconUrl?: string | null;

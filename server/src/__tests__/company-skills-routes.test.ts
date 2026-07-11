@@ -22,6 +22,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
   starSkill: vi.fn(),
   unstarSkill: vi.fn(),
   forkSkill: vi.fn(),
+  renameSkill: vi.fn(),
   forkPrecheck: vi.fn(),
   listComments: vi.fn(),
   createComment: vi.fn(),
@@ -314,6 +315,15 @@ describe("company skill mutation permissions", () => {
         sourceRef: "abc123",
       },
       reassignments: [],
+    });
+    mockCompanySkillService.renameSkill.mockResolvedValue({
+      skill: { ...forkedSkill, id: "skill-1", name: "Ship PR", slug: "ship-pr", key: "company/company-1/ship-pr" },
+      previousName: "Review",
+      previousSlug: "review",
+      previousKey: "company/company-1/review",
+      reassignments: [
+        { agentId: "11111111-1111-4111-8111-111111111111", previousSkillKey: "company/company-1/review", nextSkillKey: "company/company-1/ship-pr" },
+      ],
     });
     mockCompanySkillService.forkPrecheck.mockResolvedValue({
       skillId: "skill-1",
@@ -1639,6 +1649,48 @@ describe("company skill mutation permissions", () => {
       action: "company.skill_comment_created",
       entityId: "comment-1",
     }));
+  });
+
+  it("renames a skill and logs the rename activity", async () => {
+    const app = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/skills/skill-1/rename")
+      .send({ name: "Ship PR", slug: "ship-pr" })
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      skill: { id: "skill-1", name: "Ship PR", slug: "ship-pr", key: "company/company-1/ship-pr" },
+      previousName: "Review",
+      previousSlug: "review",
+      previousKey: "company/company-1/review",
+    });
+    expect(mockCompanySkillService.renameSkill).toHaveBeenCalledWith(
+      "company-1",
+      "skill-1",
+      { name: "Ship PR", slug: "ship-pr" },
+      { type: "user", userId: "user-1" },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.skill_renamed",
+      entityType: "company_skill",
+      entityId: "skill-1",
+      details: expect.objectContaining({
+        previousSlug: "review",
+        slug: "ship-pr",
+        reassignedAgentIds: ["11111111-1111-4111-8111-111111111111"],
+      }),
+    }));
+  });
+
+  it("rejects a rename request with a missing name", async () => {
+    const app = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
+
+    await request(app)
+      .post("/api/companies/company-1/skills/skill-1/rename")
+      .send({ slug: "ship-pr" })
+      .expect(400);
+    expect(mockCompanySkillService.renameSkill).not.toHaveBeenCalled();
   });
 
   it("does not synthesize a shared board user id for board actors without user ids", async () => {
