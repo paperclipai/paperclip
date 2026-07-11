@@ -122,7 +122,7 @@ export function recordSelectionChange(active: boolean): void {
   if (active) {
     state.activeSelectionChanges += 1;
   }
-  state.lastSelectionChangeAt = active ? timestamp : null;
+  state.lastSelectionChangeAt = timestamp;
   record("selectionchange", {
     active,
     elapsedSincePreviousMs: elapsedSincePreviousMs ?? -1,

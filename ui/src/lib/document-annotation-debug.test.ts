@@ -32,13 +32,15 @@ describe("document annotation selection diagnostics", () => {
     const state = initializeSelectionDebug();
 
     recordSelectionChange(true);
+    recordSelectionChange(false);
     recordCaptureSelection(12.5, true);
     recordAnnotationCommit("DocumentAnnotationLayer", "update", 4.25);
+    expect(state.lastSelectionChangeAt).not.toBeNull();
     state.lastSelectionChangeAt = performance.now() - 200;
     recordMarkdownMutations(3);
 
     const snapshot = state.snapshot();
-    expect(snapshot.selectionChanges).toBe(1);
+    expect(snapshot.selectionChanges).toBe(2);
     expect(snapshot.activeSelectionChanges).toBe(1);
     expect(snapshot.captureCount).toBe(1);
     expect(snapshot.captureDurationMs).toBe(12.5);
