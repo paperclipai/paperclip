@@ -70,6 +70,31 @@ function cfgStringArray(v: unknown): string[] | undefined {
     ? (v as string[])
     : undefined;
 }
+function cfgEnvString(v: unknown): string | undefined {
+  if (typeof v === "string") return v;
+  if (
+    v &&
+    typeof v === "object" &&
+    "value" in v &&
+    typeof (v as { value?: unknown }).value === "string"
+  ) {
+    return (v as { value: string }).value;
+  }
+  return undefined;
+}
+
+function normalizeEnvConfig(envConfig: unknown): Record<string, string> {
+  if (!envConfig || typeof envConfig !== "object" || Array.isArray(envConfig)) {
+    return {};
+  }
+
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(envConfig)) {
+    const resolved = cfgEnvString(value);
+    if (resolved !== undefined) env[key] = resolved;
+  }
+  return env;
+}
 
 export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
@@ -456,10 +481,10 @@ export async function execute(
   }
 
   // ── Build environment ──────────────────────────────────────────────────
-  const userEnv = config.env as Record<string, string> | undefined;
+  const userEnv = normalizeEnvConfig(config.env);
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
-    ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
+    ...userEnv,
     ...buildPaperclipEnv(ctx.agent),
   };
 
