@@ -93,6 +93,66 @@ describe("task watchdog subtree classifier", () => {
     });
   });
 
+  it("does not re-flip an already-reviewed verdict when only touch timestamps change on a repeat no-op status heartbeat", () => {
+    const stopped = classify({
+      issues: [
+        issue({
+          status: "blocked",
+          updatedAt: new Date("2026-07-11T08:00:00.000Z"),
+          latestCommentAt: new Date("2026-07-11T08:00:00.000Z"),
+        }),
+      ],
+    });
+    expect(stopped.state).toBe("stopped");
+    if (stopped.state !== "stopped") return;
+
+    // Simulate the next heartbeat cycle: the assignee agent finds no
+    // actionable work (calendar gate not reached yet), posts another
+    // identical "still blocked, waiting on <date>" status comment, and
+    // re-affirms status=blocked. Status/assignee/blockers are unchanged, but
+    // latestCommentAt/updatedAt both advance because a comment was posted and
+    // the issue row was touched.
+    const reviewed = classify({
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: stopped.stopFingerprint,
+      },
+      issues: [
+        issue({
+          status: "blocked",
+          updatedAt: new Date("2026-07-11T09:00:00.000Z"),
+          latestCommentAt: new Date("2026-07-11T09:00:00.000Z"),
+        }),
+      ],
+    });
+
+    expect(reviewed).toMatchObject({
+      state: "already_reviewed",
+      stopFingerprint: stopped.stopFingerprint,
+    });
+  });
+
+  it("still re-evaluates when a structural field actually changes despite unchanged timestamps", () => {
+    const stopped = classify({
+      issues: [issue({ status: "blocked" })],
+    });
+    expect(stopped.state).toBe("stopped");
+    if (stopped.state !== "stopped") return;
+
+    const changed = classify({
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: stopped.stopFingerprint,
+      },
+      issues: [issue({ status: "blocked", assigneeAgentId: "agent-2" })],
+    });
+
+    expect(changed.state).toBe("stopped");
+    expect(changed.stopFingerprint).not.toBe(stopped.stopFingerprint);
+  });
+
   it("excludes task-watchdog issues and their descendants from watched subtree scans", () => {
     const result = classify({
       issues: [

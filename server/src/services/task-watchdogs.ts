@@ -269,7 +269,7 @@ function waitingPathIds(
 function stableStopFingerprint(input: {
   companyId: string;
   watchedIssueId: string;
-  leaves: TaskWatchdogStoppedLeaf[];
+  leaves: Omit<TaskWatchdogStoppedLeaf, "updatedAt" | "latestCommentAt" | "latestDocumentAt" | "latestWorkProductAt">[];
 }) {
   const payload = JSON.stringify({
     version: 1,
@@ -398,10 +398,25 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       latestDocumentAt: optionalIso(issue.latestDocumentAt),
       latestWorkProductAt: optionalIso(issue.latestWorkProductAt),
     }));
+  // The fingerprint must only change when something structurally relevant to
+  // "is this subtree actually stalled" changes (status, assignee, blockers,
+  // pending interactions/approvals). It deliberately excludes touch-only
+  // timestamps (`updatedAt`, `latestCommentAt`, `latestDocumentAt`,
+  // `latestWorkProductAt`): a legitimately blocked/waiting issue whose owning
+  // agent posts a routine "still waiting" status heartbeat (same status, same
+  // named unblock condition, no new blockers) bumps those timestamps on every
+  // cycle without changing anything the watchdog needs to re-review. Feeding
+  // them into the fingerprint defeats `lastReviewedFingerprint` dedupe and
+  // re-flips an already-reviewed stop verdict back to "stopped" every cycle,
+  // re-triggering the watchdog wake with no new information.
+  const fingerprintLeaves = leaves.map(
+    ({ updatedAt: _updatedAt, latestCommentAt: _latestCommentAt, latestDocumentAt: _latestDocumentAt, latestWorkProductAt: _latestWorkProductAt, ...structural }) =>
+      structural,
+  );
   const stopFingerprint = stableStopFingerprint({
     companyId: input.watchdog.companyId,
     watchedIssueId: input.watchdog.issueId,
-    leaves,
+    leaves: fingerprintLeaves,
   });
 
   if (input.watchdog.lastReviewedFingerprint === stopFingerprint) {

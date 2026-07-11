@@ -490,7 +490,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes.length).toBe(2);
   });
 
-  it("revalidates stale watchdog reviews against current source evidence before allowing mutations", async () => {
+  it("does not invalidate a watchdog mutation scope when only routine activity timestamps advance", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-REVALIDATE", status: "blocked" });
     const agentId = await seedAgent(companyId);
@@ -502,12 +502,18 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     const originalFingerprint = watchdog!.lastObservedFingerprint!;
     expect(originalFingerprint).toMatch(/^task_watchdog_stop:/);
 
+    // Simulate the assignee agent posting another routine "still blocked,
+    // same status" heartbeat comment, plus incidental document/work-product
+    // touches, none of which change the issue's status, assignee, or
+    // blockers. This must not invalidate an already-granted mutation scope —
+    // otherwise every routine heartbeat would lock the assignee (and other
+    // agents) out of the issue with a stale-scope rejection.
     const later = new Date(Date.now() + 60_000);
     await db.insert(issueComments).values({
       companyId,
       issueId: sourceId,
       authorType: "agent",
-      body: "Fresh source evidence.",
+      body: "Still blocked, same status.",
       updatedAt: later,
       createdAt: later,
     });
@@ -522,16 +528,43 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       stopFingerprint: originalFingerprint,
     });
 
+    expect(revalidated.allowed).toBe(true);
+    expect(revalidated.classification?.state).toBe("stopped");
+    if (revalidated.classification?.state !== "stopped") throw new Error("Expected stopped classification");
+    expect(revalidated.classification.stopFingerprint).toBe(originalFingerprint);
+  });
+
+  it("revalidates a stale watchdog review when the source subtree structurally changes", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-REVALIDATE-STRUCTURAL", status: "blocked" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const originalFingerprint = watchdog!.lastObservedFingerprint!;
+    expect(originalFingerprint).toMatch(/^task_watchdog_stop:/);
+
+    // A genuine structural change — the issue is reassigned to a different
+    // agent — must still invalidate a stale mutation scope.
+    const otherAgentId = await seedAgent(companyId);
+    await db.update(issues).set({ assigneeAgentId: otherAgentId }).where(eq(issues.id, sourceId));
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint: originalFingerprint,
+    });
+
     expect(revalidated.allowed).toBe(false);
     expect(revalidated.reason).toContain("stop fingerprint changed");
     expect(revalidated.classification?.state).toBe("stopped");
     if (revalidated.classification?.state !== "stopped") throw new Error("Expected stopped classification");
     expect(revalidated.classification.stopFingerprint).not.toBe(originalFingerprint);
-    expect(revalidated.classification.stoppedLeaves[0]).toMatchObject({
-      latestCommentAt: later.toISOString(),
-      latestDocumentAt: new Date(later.getTime() + 1_000).toISOString(),
-      latestWorkProductAt: new Date(later.getTime() + 2_000).toISOString(),
-    });
+    expect(revalidated.classification.stoppedLeaves[0]?.assigneeAgentId).toBe(otherAgentId);
   });
 
   it("revalidates a stale watchdog review as live when the source gets a fresh run path", async () => {
