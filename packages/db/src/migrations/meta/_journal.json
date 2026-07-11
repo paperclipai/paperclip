@@ -1142,6 +1142,13 @@
       "when": 1783633300000,
       "tag": "0164_environment_custom_image_instance_scope_cleanup",
       "breakpoints": true
+    },
+    {
+      "idx": 163,
+      "version": "7",
+      "when": 1783774800000,
+      "tag": "0165_tool_connection_installs",
+      "breakpoints": true
     }
   ]
 }

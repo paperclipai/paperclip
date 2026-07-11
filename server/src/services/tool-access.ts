@@ -18,6 +18,7 @@ import {
   toolApplications,
   toolActionRequests,
   toolCatalogEntries,
+  toolConnectionInstalls,
   toolConnections,
   toolOauthStates,
   toolStdioCommandTemplates,
@@ -57,6 +58,8 @@ import type {
   ToolCatalogEntry,
   ToolCatalogRefreshResult,
   ToolConnection,
+  ToolConnectionInstall,
+  ToolConnectionInstallSnapshot,
   ToolConnectionHealthCheckResult,
   ToolConnectionHealthStatus,
   ToolConnectionTransport,
@@ -96,6 +99,7 @@ import type {
   ReviewToolProfileNewTools,
   UpdateToolApplication,
   UpdateToolConnection,
+  PutToolConnectionInstalls,
   UpdateToolProfileEntry,
   UpdateToolProfileWithEntries,
   UnbindToolProfileBinding,
@@ -598,6 +602,19 @@ function toConnection(row: typeof toolConnections.$inferSelect): ToolConnection 
     createdByUserId: row.createdByUserId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function toConnectionInstall(row: typeof toolConnectionInstalls.$inferSelect): ToolConnectionInstall {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    connectionId: row.connectionId,
+    targetType: row.targetType,
+    targetId: row.targetId,
+    createdByAgentId: row.createdByAgentId,
+    createdByUserId: row.createdByUserId,
+    createdAt: row.createdAt,
   };
 }
 
@@ -2234,6 +2251,85 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const [row] = await db.select({ id: toolMcpGateways.id }).from(toolMcpGateways).where(and(eq(toolMcpGateways.id, targetId), eq(toolMcpGateways.companyId, companyId)));
       if (!row) throw unprocessable("Tool profile gateway binding target must belong to the same company");
     }
+  }
+
+  async function appProfileForConnection(
+    dbClient: Pick<Db, "select" | "insert">,
+    connection: typeof toolConnections.$inferSelect,
+  ) {
+    const profileKey = `app:${connection.id}`;
+    let [profile] = await dbClient
+      .select()
+      .from(toolProfiles)
+      .where(and(eq(toolProfiles.companyId, connection.companyId), eq(toolProfiles.profileKey, profileKey)))
+      .limit(1);
+    if (!profile) {
+      [profile] = await dbClient.insert(toolProfiles).values({
+        companyId: connection.companyId,
+        profileKey,
+        name: connection.name,
+        description: `Access profile for ${connection.name}.`,
+        status: "active",
+        defaultAction: "deny",
+        metadata: { source: "tool_connection_install", connectionId: connection.id },
+      }).returning();
+    }
+    const [existingEntry] = await dbClient
+      .select({ id: toolProfileEntries.id })
+      .from(toolProfileEntries)
+      .where(and(
+        eq(toolProfileEntries.companyId, connection.companyId),
+        eq(toolProfileEntries.profileId, profile.id),
+        eq(toolProfileEntries.selectorType, "connection"),
+        eq(toolProfileEntries.connectionId, connection.id),
+      ))
+      .limit(1);
+    if (!existingEntry) {
+      await dbClient.insert(toolProfileEntries).values({
+        companyId: connection.companyId,
+        profileId: profile.id,
+        selectorType: "connection",
+        effect: "include",
+        applicationId: connection.applicationId,
+        connectionId: connection.id,
+      });
+    }
+    return profile;
+  }
+
+  async function listConnectionInstalls(connectionId: string, companyId?: string): Promise<ToolConnectionInstall[]> {
+    const connection = await getConnectionRow(connectionId, companyId);
+    const rows = await db
+      .select()
+      .from(toolConnectionInstalls)
+      .where(and(
+        eq(toolConnectionInstalls.companyId, connection.companyId),
+        eq(toolConnectionInstalls.connectionId, connection.id),
+      ))
+      .orderBy(asc(toolConnectionInstalls.targetType), asc(toolConnectionInstalls.targetId));
+    return rows.map(toConnectionInstall);
+  }
+
+  async function resolveInstalledConnectionsForAgent(companyId: string, agentId: string): Promise<ToolConnection[]> {
+    await assertOptionalAgent(companyId, agentId, "Tool connection install agent");
+    const installRows = await db
+      .select()
+      .from(toolConnectionInstalls)
+      .where(and(
+        eq(toolConnectionInstalls.companyId, companyId),
+        sql`((${toolConnectionInstalls.targetType} = 'company' and ${toolConnectionInstalls.targetId} = ${companyId}) or (${toolConnectionInstalls.targetType} = 'agent' and ${toolConnectionInstalls.targetId} = ${agentId}))`,
+      ));
+    if (installRows.length === 0) return [];
+    const connectionIds = [...new Set(installRows.map((install) => install.connectionId))];
+    const rows = await db
+      .select()
+      .from(toolConnections)
+      .where(and(eq(toolConnections.companyId, companyId), inArray(toolConnections.id, connectionIds)))
+      .orderBy(asc(toolConnections.name));
+    return rows.map((row) => ({
+      ...toConnection(row),
+      installs: installRows.filter((install) => install.connectionId === row.id).map(toConnectionInstall),
+    }));
   }
 
   async function assertProfileEntryInput(companyId: string, input: CreateToolProfileEntryForProfile) {
@@ -5169,6 +5265,18 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         .orderBy(desc(toolConnections.updatedAt));
       const connections = rows.map(toConnection);
       if (connections.length === 0) return connections;
+      const installRows = await db
+        .select()
+        .from(toolConnectionInstalls)
+        .where(eq(toolConnectionInstalls.companyId, companyId))
+        .orderBy(asc(toolConnectionInstalls.targetType), asc(toolConnectionInstalls.targetId));
+      const installsByConnection = new Map<string, ToolConnectionInstall[]>();
+      for (const row of installRows) {
+        const installs = installsByConnection.get(row.connectionId) ?? [];
+        installs.push(toConnectionInstall(row));
+        installsByConnection.set(row.connectionId, installs);
+      }
+      for (const connection of connections) connection.installs = installsByConnection.get(connection.id) ?? [];
       // Enrich with "last used" = most recent tool-call event per connection so the
       // prosumer Apps list can surface a staleness signal without an N+1 fan-out.
       const lastUsedRows = await db
@@ -5241,7 +5349,85 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     },
 
     getConnection: async (connectionId: string, companyId?: string): Promise<ToolConnection> => {
-      return toConnection(await getConnectionRow(connectionId, companyId));
+      const connection = toConnection(await getConnectionRow(connectionId, companyId));
+      connection.installs = await listConnectionInstalls(connection.id, connection.companyId);
+      return connection;
+    },
+
+    listConnectionInstalls,
+
+    putConnectionInstalls: async (
+      connectionId: string,
+      input: PutToolConnectionInstalls,
+      actor?: ActorInfo,
+    ): Promise<ToolConnectionInstallSnapshot> => {
+      const connection = await getConnectionRow(connectionId);
+      const requested = new Map(input.installs.map((install) => [`${install.targetType}:${install.targetId}`, install]));
+      for (const install of requested.values()) {
+        if (install.targetType === "company") {
+          if (install.targetId !== connection.companyId) throw unprocessable("Company installs must target the connection company");
+        } else {
+          await assertOptionalAgent(connection.companyId, install.targetId, "Tool connection install agent");
+        }
+      }
+      const accessExtensions: Array<{ targetType: "company" | "agent"; targetId: string; profileId: string }> = [];
+      await db.transaction(async (tx) => {
+        const existing = await tx
+          .select()
+          .from(toolConnectionInstalls)
+          .where(and(
+            eq(toolConnectionInstalls.companyId, connection.companyId),
+            eq(toolConnectionInstalls.connectionId, connection.id),
+          ));
+        const existingKeys = new Set(existing.map((install) => `${install.targetType}:${install.targetId}`));
+        const removeIds = existing
+          .filter((install) => !requested.has(`${install.targetType}:${install.targetId}`))
+          .map((install) => install.id);
+        if (removeIds.length > 0) await tx.delete(toolConnectionInstalls).where(inArray(toolConnectionInstalls.id, removeIds));
+        const additions = [...requested.entries()].filter(([key]) => !existingKeys.has(key)).map(([, install]) => install);
+        if (additions.length > 0) {
+          await tx.insert(toolConnectionInstalls).values(additions.map((install) => ({
+            companyId: connection.companyId,
+            connectionId: connection.id,
+            targetType: install.targetType,
+            targetId: install.targetId,
+            createdByAgentId: actor?.actorType === "agent" ? actor.actorId ?? null : null,
+            createdByUserId: actor?.actorType === "user" ? actor.actorId ?? null : null,
+          })));
+        }
+        if (requested.size > 0) {
+          const profile = await appProfileForConnection(tx, connection);
+          for (const install of requested.values()) {
+            const [binding] = await tx
+              .insert(toolProfileBindings)
+              .values({
+                companyId: connection.companyId,
+                profileId: profile.id,
+                targetType: install.targetType,
+                targetId: install.targetId,
+                priority: 100,
+                metadata: { source: "tool_connection_install", connectionId: connection.id },
+                createdByAgentId: actor?.actorType === "agent" ? actor.actorId ?? null : null,
+                createdByUserId: actor?.actorType === "user" ? actor.actorId ?? null : null,
+              })
+              .onConflictDoNothing()
+              .returning({ id: toolProfileBindings.id });
+            if (binding) accessExtensions.push({ targetType: install.targetType, targetId: install.targetId, profileId: profile.id });
+          }
+        }
+      });
+      for (const extension of accessExtensions) {
+        await logActivity(db, {
+          companyId: connection.companyId,
+          actorType: actor?.actorType ?? "system",
+          actorId: actor?.actorId ?? "system",
+          action: "tool_connection.install_access_extended",
+          entityType: "tool_connection",
+          entityId: connection.id,
+          details: extension,
+        });
+      }
+      return { connectionId: connection.id, installs: await listConnectionInstalls(connection.id, connection.companyId) };
     },
 
     updateConnection: async (connectionId: string, input: UpdateToolConnection): Promise<ToolConnection> => {
@@ -5863,7 +6049,15 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         || (binding.targetType === "agent" && binding.targetId === agentId)
       ));
       if (bindings.length === 0) {
-        return { agentId, profiles: [], entries: [], bindings: [], allowedTools: [], allowedToolNames: [] };
+        return {
+          agentId,
+          profiles: [],
+          entries: [],
+          bindings: [],
+          allowedTools: [],
+          allowedToolNames: [],
+          installedConnections: await resolveInstalledConnectionsForAgent(companyId, agentId),
+        };
       }
       const profileIds = profileIdsInBindingOrder(bindings);
       const profiles = await db
@@ -5882,6 +6076,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           bindings: bindings.map(toProfileBinding),
           allowedTools: [],
           allowedToolNames: [],
+          installedConnections: await resolveInstalledConnectionsForAgent(companyId, agentId),
         };
       }
       const activeProfileIds = activeProfiles.map((profile) => profile.id);
@@ -5943,6 +6138,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         bindings: bindings.map(toProfileBinding),
         allowedTools,
         allowedToolNames: [...allowedToolNames].sort((a, b) => a.localeCompare(b)),
+        installedConnections: await resolveInstalledConnectionsForAgent(companyId, agentId),
       };
     },
 

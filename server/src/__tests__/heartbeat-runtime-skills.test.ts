@@ -4,14 +4,25 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, companySkills, createDb } from "@paperclipai/db";
+import {
+  agents,
+  companies,
+  companySkills,
+  createDb,
+  toolApplications,
+  toolConnectionInstalls,
+  toolConnections,
+  toolProfileBindings,
+  toolProfileEntries,
+  toolProfiles,
+} from "@paperclipai/db";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.ts";
-import { heartbeatService } from "../services/heartbeat.ts";
+import { heartbeatService, type PaperclipRuntimeMcpServer } from "../services/heartbeat.ts";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -43,7 +54,11 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let oldPaperclipHome: string | undefined;
   let paperclipHome: string | null = null;
-  const capturedRuns: Array<{ agentId: string; skills: PaperclipSkillEntry[] }> = [];
+  const capturedRuns: Array<{
+    agentId: string;
+    skills: PaperclipSkillEntry[];
+    mcpServers: PaperclipRuntimeMcpServer[];
+  }> = [];
   const cleanupDirs = new Set<string>();
 
   beforeAll(async () => {
@@ -58,6 +73,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
         capturedRuns.push({
           agentId: ctx.agent.id,
           skills: (ctx.config.paperclipRuntimeSkills ?? []) as PaperclipSkillEntry[],
+          mcpServers: (ctx.config.paperclipRuntimeMcpServers ?? []) as PaperclipRuntimeMcpServer[],
         });
         return {
           exitCode: 0,
@@ -77,6 +93,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
 
   afterEach(async () => {
     capturedRuns.length = 0;
+    await new Promise((resolve) => setTimeout(resolve, 100));
     await db.execute(sql.raw(`
       TRUNCATE TABLE
         "activity_log",
@@ -240,5 +257,96 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
       sourceStatus: "available",
     });
     expect((await fs.stat(firstSkillFile)).mtime.toISOString()).toBe(oldMtime.toISOString());
+  });
+
+  it("delivers installed connections and omits uninstalled connections from adapter runtime config", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Runtime MCP Delivery",
+      issuePrefix: `M${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Runtime MCP Capture",
+      role: "engineer",
+      status: "idle",
+      adapterType: TEST_ADAPTER_TYPE,
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const [application] = await db.insert(toolApplications).values({
+      companyId,
+      applicationKey: `runtime-${randomUUID().slice(0, 8)}`,
+      name: "Runtime MCP",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [installed, uninstalled] = await db.insert(toolConnections).values([
+      {
+        companyId,
+        applicationId: application!.id,
+        name: "Installed Runtime MCP",
+        transport: "remote_http",
+        status: "active",
+        enabled: true,
+        config: { url: "https://installed.example.test/mcp" },
+      },
+      {
+        companyId,
+        applicationId: application!.id,
+        name: "Uninstalled Runtime MCP",
+        transport: "remote_http",
+        status: "active",
+        enabled: true,
+        config: { url: "https://uninstalled.example.test/mcp" },
+      },
+    ]).returning();
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId,
+      profileKey: `app:${installed!.id}`,
+      name: installed!.name,
+      defaultAction: "deny",
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId,
+      profileId: profile!.id,
+      selectorType: "connection",
+      effect: "include",
+      applicationId: application!.id,
+      connectionId: installed!.id,
+    });
+    await db.insert(toolProfileBindings).values({
+      companyId,
+      profileId: profile!.id,
+      targetType: "agent",
+      targetId: agentId,
+    });
+    await db.insert(toolConnectionInstalls).values({
+      companyId,
+      connectionId: installed!.id,
+      targetType: "agent",
+      targetId: agentId,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    expect((await waitForRunToFinish(heartbeat, run!.id))?.status).toBe("succeeded");
+
+    const captured = capturedRuns.find((entry) => entry.agentId === agentId);
+    expect(captured?.mcpServers).toHaveLength(1);
+    expect(captured?.mcpServers[0]).toMatchObject({
+      connectionId: installed!.id,
+      name: installed!.name,
+      token: expect.stringMatching(/^pcgw_/),
+      url: expect.stringContaining("/api/tool-gateway/gateways/"),
+    });
+    expect(captured?.mcpServers.some((server) => server.connectionId === uninstalled!.id)).toBe(false);
   });
 });

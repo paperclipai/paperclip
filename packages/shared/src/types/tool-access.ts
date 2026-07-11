@@ -69,6 +69,7 @@ export type {
 export type ToolActorType = "agent" | "user" | "system" | "plugin";
 export type ToolConnectionTransport = "remote_http" | "local_stdio";
 export type ToolConnectionStatus = "draft" | "active" | "disabled" | "archived";
+export type ToolConnectionInstallTargetType = "company" | "agent";
 export type ToolCredentialPlacement = "header" | "env";
 
 export interface McpConnectionCredentialRef {
@@ -140,6 +141,23 @@ export interface ToolConnection {
   createdByUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
+  installs?: ToolConnectionInstall[];
+}
+
+export interface ToolConnectionInstall {
+  id: string;
+  companyId: string;
+  connectionId: string;
+  targetType: ToolConnectionInstallTargetType;
+  targetId: string;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdAt: Date;
+}
+
+export interface ToolConnectionInstallSnapshot {
+  connectionId: string;
+  installs: ToolConnectionInstall[];
 }
 
 export type ConnectionTokenScope = string | string[];
@@ -477,6 +495,7 @@ export interface ToolProfileEffectiveSummary {
   bindings: ToolProfileBinding[];
   allowedTools: ToolCatalogEntry[];
   allowedToolNames: string[];
+  installedConnections: ToolConnection[];
 }
 
 export interface ToolPolicy {

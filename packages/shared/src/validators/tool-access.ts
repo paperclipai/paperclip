@@ -36,6 +36,7 @@ export const toolApplicationTypeSchema = z.enum(TOOL_APPLICATION_TYPES);
 export const toolApplicationStatusSchema = z.enum(TOOL_APPLICATION_STATUSES);
 export const toolConnectionTransportSchema = z.enum(["remote_http", "local_stdio"]);
 export const toolConnectionStatusSchema = z.enum(["draft", "active", "disabled", "archived"]);
+export const toolConnectionInstallTargetTypeSchema = z.enum(["company", "agent"]);
 export const toolCredentialPlacementSchema = z.enum(["header", "env"]);
 export const toolConnectionKindSchema = z.enum(TOOL_CONNECTION_KINDS);
 export const toolConnectionHealthStatusSchema = z.enum(TOOL_CONNECTION_HEALTH_STATUSES);
@@ -157,6 +158,15 @@ export const updateToolConnectionSchema = createToolConnectionSchema.omit({ appl
 );
 
 export type UpdateToolConnection = z.infer<typeof updateToolConnectionSchema>;
+
+export const putToolConnectionInstallsSchema = z.object({
+  installs: z.array(z.object({
+    targetType: toolConnectionInstallTargetTypeSchema,
+    targetId: z.string().trim().min(1).max(200),
+  })).max(1000),
+}).strict();
+
+export type PutToolConnectionInstalls = z.infer<typeof putToolConnectionInstallsSchema>;
 
 export const connectionTokenIssuancePathSchema = z.enum(CONNECTION_TOKEN_ISSUANCE_PATHS);
 

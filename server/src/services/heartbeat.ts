@@ -60,6 +60,7 @@ import {
   routineRuns,
   routines,
   toolMcpGateways,
+  toolProfiles,
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
@@ -118,6 +119,7 @@ import {
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
 import { createToolGatewayService } from "./tool-gateway.js";
+import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
 import {
@@ -2072,6 +2074,116 @@ type ManagedMcpGatewayRunConfig = {
     tokenPrefix: string;
   }>;
 };
+
+export type PaperclipRuntimeMcpServer = {
+  name: string;
+  url: string;
+  token: string;
+  connectionId: string;
+};
+
+function paperclipApiBaseUrl(): string {
+  const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL) ?? "http://127.0.0.1:3100";
+  return configured.replace(/\/+$/, "").replace(/\/api$/, "");
+}
+
+export async function buildPaperclipRuntimeMcpServers(input: {
+  db: Db;
+  agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
+  runId: string;
+}): Promise<PaperclipRuntimeMcpServer[]> {
+  const effective = await toolAccessService(input.db).getEffectiveProfilesForAgent(
+    input.agent.companyId,
+    input.agent.id,
+  );
+  const permittedConnectionIds = new Set([
+    ...effective.entries
+      .filter((entry) => entry.effect === "include" && entry.connectionId)
+      .map((entry) => entry.connectionId!),
+    ...effective.allowedTools.map((tool) => tool.connectionId),
+  ]);
+  const uniqueConnections = effective.installedConnections.filter((connection) =>
+    permittedConnectionIds.has(connection.id)
+    && connection.status === "active"
+    && connection.enabled
+    && connection.transport === "remote_http"
+  );
+  if (uniqueConnections.length === 0) return [];
+
+  const service = createToolGatewayService(input.db);
+  const servers: PaperclipRuntimeMcpServer[] = [];
+  for (const connection of uniqueConnections) {
+    const profileKey = `app:${connection.id}`;
+    const [profile] = await input.db
+      .select()
+      .from(toolProfiles)
+      .where(and(eq(toolProfiles.companyId, connection.companyId), eq(toolProfiles.profileKey, profileKey)))
+      .limit(1);
+    if (!profile) continue;
+    const existingGateways = await input.db
+      .select()
+      .from(toolMcpGateways)
+      .where(and(
+        eq(toolMcpGateways.companyId, connection.companyId),
+        eq(toolMcpGateways.status, "active"),
+        isNull(toolMcpGateways.archivedAt),
+      ));
+    let gateway = existingGateways.find((candidate) =>
+      candidate.metadata?.managedRuntimeConnectionId === connection.id
+    );
+    if (!gateway) {
+      const slug = `runtime-${connection.id.replaceAll("-", "")}`;
+      try {
+        const created = await service.createNamedGateway({
+          companyId: connection.companyId,
+          body: {
+            name: `Runtime ${connection.name} ${connection.id.slice(0, 8)}`,
+            slug,
+            description: `Paperclip-managed runtime gateway for ${connection.name}.`,
+            profileId: profile.id,
+            defaultProfileMode: "gateway_only",
+            metadata: { managedRuntimeConnectionId: connection.id },
+          },
+          actor: { agentId: input.agent.id },
+        });
+        gateway = await input.db
+          .select()
+          .from(toolMcpGateways)
+          .where(eq(toolMcpGateways.id, created.id))
+          .then((rows) => rows[0]);
+      } catch (error) {
+        [gateway] = await input.db
+          .select()
+          .from(toolMcpGateways)
+          .where(and(eq(toolMcpGateways.companyId, connection.companyId), eq(toolMcpGateways.slug, slug)))
+          .limit(1);
+        if (!gateway) throw error;
+      }
+    }
+    if (!gateway) continue;
+    const token = await service.createNamedGatewayToken({
+      companyId: connection.companyId,
+      gatewayId: gateway.id,
+      body: {
+        name: `Run ${input.runId.slice(0, 8)} ${connection.name}`,
+        subjectType: "gateway_client",
+        subjectId: input.runId,
+        clientLabel: `${input.agent.name} heartbeat run`,
+        ownerNote: `Short-lived runtime MCP token for heartbeat run ${input.runId}.`,
+        allowedActions: ["tools/list", "tools/call"],
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      },
+      actor: { agentId: input.agent.id },
+    });
+    servers.push({
+      name: connection.name,
+      url: `${paperclipApiBaseUrl()}/api/tool-gateway/gateways/${gateway.id}/mcp`,
+      token: token.token,
+      connectionId: connection.id,
+    });
+  }
+  return servers;
+}
 
 const MANAGED_MCP_LOCAL_ADAPTERS = new Set(["codex_local"]);
 
@@ -12775,6 +12887,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
       try {
         const adapterContext = { ...context };
+        const runtimeMcpServers = await buildPaperclipRuntimeMcpServers({
+          db,
+          agent,
+          runId: run.id,
+        });
+        if (runtimeMcpServers.length > 0) {
+          runtimeConfig = {
+            ...runtimeConfig,
+            paperclipRuntimeMcpServers: runtimeMcpServers,
+          };
+        }
         const managedMcpConfig = await createManagedMcpRunConfig({
           db,
           agent,

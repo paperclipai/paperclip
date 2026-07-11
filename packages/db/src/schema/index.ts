@@ -103,6 +103,7 @@ export { secretAccessEvents } from "./secret_access_events.js";
 export {
   toolApplications,
   toolConnections,
+  toolConnectionInstalls,
   toolOauthStates,
   toolCatalogEntries,
   toolProfiles,

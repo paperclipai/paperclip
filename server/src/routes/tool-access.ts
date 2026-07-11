@@ -25,6 +25,7 @@ import {
   reviewToolProfileNewToolsSchema,
   createToolTrustRuleFromActionRequestSchema,
   importMcpJsonSchema,
+  putToolConnectionInstallsSchema,
   connectionTokenRequestSchema,
   revokeToolTrustRuleSchema,
   reorderToolPoliciesSchema,
@@ -511,6 +512,36 @@ export function toolAccessRoutes(
     assertCompanyAccess(req, connection.companyId);
     res.json(connection);
   });
+
+  router.get("/tool-connections/:connectionId/installs", async (req, res) => {
+    assertBoard(req);
+    const connection = await svc.getConnection(req.params.connectionId as string);
+    assertCompanyAccess(req, connection.companyId);
+    res.json({ connectionId: connection.id, installs: connection.installs ?? [] });
+  });
+
+  router.put(
+    "/tool-connections/:connectionId/installs",
+    validate(putToolConnectionInstallsSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const connection = await svc.getConnection(req.params.connectionId as string);
+      await assertBoardToolPermission(req, connection.companyId, "tools:manage_connections");
+      const snapshot = await svc.putConnectionInstalls(connection.id, req.body, getActorInfo(req));
+      await logActivity(db, {
+        companyId: connection.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_connection.installs_synced",
+        entityType: "tool_connection",
+        entityId: connection.id,
+        details: {
+          installs: snapshot.installs.map((install) => ({ targetType: install.targetType, targetId: install.targetId })),
+        },
+      });
+      res.json(snapshot);
+    },
+  );
 
   router.get("/tool-connections/:connectionId/test-agents", async (req, res) => {
     assertBoard(req);

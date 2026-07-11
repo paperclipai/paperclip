@@ -164,6 +164,7 @@ import {
   finishToolAppSchema,
   reconnectToolAppSchema,
   updateToolConnectionSchema,
+  putToolConnectionInstallsSchema,
   toolConnectionTestCallSchema,
   createToolPolicySchema,
   duplicateToolPolicySchema,
@@ -5628,6 +5629,21 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}",
   tags: ["tool-access"],
   summary: "Get a tool connection",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/installs",
+  tags: ["tool-access"],
+  summary: "List tool connection installs",
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/tool-connections/{connectionId}/installs",
+  tags: ["tool-access"],
+  summary: "Sync tool connection installs",
+  body: putToolConnectionInstallsSchema,
 });
 
 registerCurrentRoute({

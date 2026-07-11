@@ -23,6 +23,7 @@ import {
   toolApplications,
   toolCallEvents,
   toolCatalogEntries,
+  toolConnectionInstalls,
   toolConnections,
   toolOauthStates,
   toolInvocations,
@@ -439,6 +440,7 @@ describeEmbeddedPostgres("tool access service", () => {
     await db.delete(toolRuntimeMetricCounters);
     await db.delete(toolRuntimeSlots);
     await db.delete(toolStdioCommandTemplates);
+    await db.delete(toolConnectionInstalls);
     await db.delete(toolProfileBindings);
     await db.delete(toolProfileEntries);
     await db.delete(toolProfiles);
@@ -5729,6 +5731,46 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(new Date(usedRow!.lastUsedAt!).toISOString()).toBe(newest.toISOString());
     expect(unusedRow!.lastUsedAt).toBeNull();
+  });
+
+  it("syncs installs, auto-extends agent access, and exposes install state", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    const app = createRouteApp(db);
+
+    const put = await request(app)
+      .put(`/api/tool-connections/${connection.id}/installs`)
+      .send({ installs: [{ targetType: "agent", targetId: agent.id }] });
+
+    expect(put.status).toBe(200);
+    expect(put.body).toMatchObject({
+      connectionId: connection.id,
+      installs: [{ targetType: "agent", targetId: agent.id }],
+    });
+
+    const [install] = await db.select().from(toolConnectionInstalls);
+    expect(install).toMatchObject({ companyId: company.id, connectionId: connection.id, targetId: agent.id });
+    const profile = await db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, `app:${connection.id}`));
+    expect(profile).toHaveLength(1);
+    const binding = await db.select().from(toolProfileBindings).where(and(
+      eq(toolProfileBindings.profileId, profile[0]!.id),
+      eq(toolProfileBindings.targetType, "agent"),
+      eq(toolProfileBindings.targetId, agent.id),
+    ));
+    expect(binding).toHaveLength(1);
+    const events = await db.select().from(activityLog).where(eq(activityLog.action, "tool_connection.install_access_extended"));
+    expect(events).toHaveLength(1);
+
+    const effective = await toolAccessService(db).getEffectiveProfilesForAgent(company.id, agent.id);
+    expect(effective.installedConnections.map((item) => item.id)).toEqual([connection.id]);
+    expect(effective.allowedTools.some((tool) => tool.connectionId === connection.id)).toBe(true);
+
+    const get = await request(app).get(`/api/tool-connections/${connection.id}`);
+    expect(get.status).toBe(200);
+    expect(get.body.installs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ targetType: "agent", targetId: agent.id }),
+    ]));
   });
 });
 

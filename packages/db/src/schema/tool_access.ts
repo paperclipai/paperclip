@@ -3,6 +3,7 @@ import {
 } from "drizzle-orm";
 import {
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -25,6 +26,7 @@ import type {
   ToolCatalogEntryStatus,
   ToolConnectionHealthStatus,
   ToolConnectionKind,
+  ToolConnectionInstallTargetType,
   ToolConnectionStatus,
   ToolConnectionTransport,
   ToolCredentialSecretRef,
@@ -128,6 +130,31 @@ export const toolConnections = pgTable(
     index("tool_connections_application_idx").on(table.applicationId),
     index("tool_connections_company_enabled_idx").on(table.companyId, table.enabled),
     uniqueIndex("tool_connections_company_name_uq").on(table.companyId, table.name),
+  ],
+);
+
+export const toolConnectionInstalls = pgTable(
+  "tool_connection_installs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").notNull().references(() => toolConnections.id, { onDelete: "cascade" }),
+    targetType: text("target_type").$type<ToolConnectionInstallTargetType>().notNull(),
+    targetId: text("target_id").notNull(),
+    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    createdByUserId: text("created_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check("tool_connection_installs_target_type_check", sql`${table.targetType} in ('company', 'agent')`),
+    index("tool_connection_installs_company_target_idx").on(table.companyId, table.targetType, table.targetId),
+    index("tool_connection_installs_connection_idx").on(table.companyId, table.connectionId),
+    uniqueIndex("tool_connection_installs_target_uq").on(
+      table.companyId,
+      table.connectionId,
+      table.targetType,
+      table.targetId,
+    ),
   ],
 );
 
