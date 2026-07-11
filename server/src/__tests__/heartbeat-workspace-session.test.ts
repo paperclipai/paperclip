@@ -1013,6 +1013,73 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
     });
     expect(result.warning).toBeNull();
   });
+
+  it("preserves a task_session when the resolved cwd matches the persisted cwd", async () => {
+    const agentId = "agent-123";
+    // Use a real on-disk cwd so realpath resolution succeeds; the interesting
+    // case is that the task_session's cwd is neither project_primary nor the
+    // fallback agent home. The previous implementation dropped it wholesale.
+    const taskSessionCwd = await fs.mkdtemp(path.join(os.tmpdir(), "pcp-tasksess-"));
+    try {
+      const result = resolveRuntimeSessionParamsForWorkspace({
+        agentId,
+        previousSessionParams: {
+          sessionId: "task-session-abc",
+          cwd: taskSessionCwd,
+          workspaceId: "workspace-9",
+        },
+        resolvedWorkspace: buildResolvedWorkspace({
+          cwd: taskSessionCwd,
+          source: "task_session",
+          projectId: null,
+          workspaceId: "workspace-9",
+        }),
+      });
+
+      expect(result.sessionParams).toEqual({
+        sessionId: "task-session-abc",
+        cwd: taskSessionCwd,
+        workspaceId: "workspace-9",
+      });
+      expect(result.warning).toBeNull();
+    } finally {
+      await fs.rm(taskSessionCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a fallback-home session that was persisted via a symlink to the real fallback dir", async () => {
+    const agentId = "agent-symlink";
+    const realFallbackCwd = resolveDefaultAgentWorkspaceDir(agentId);
+    await fs.mkdir(realFallbackCwd, { recursive: true });
+    const symlinkDir = await fs.mkdtemp(path.join(os.tmpdir(), "pcp-symlink-"));
+    const symlinkPath = path.join(symlinkDir, "fallback-alias");
+    await fs.symlink(realFallbackCwd, symlinkPath);
+    try {
+      const result = resolveRuntimeSessionParamsForWorkspace({
+        agentId,
+        previousSessionParams: {
+          sessionId: "session-symlink",
+          cwd: symlinkPath, // persisted through symlinked path
+          workspaceId: null,
+        },
+        resolvedWorkspace: buildResolvedWorkspace({
+          cwd: realFallbackCwd, // resolver hands back the real fallback path
+          source: "agent_home",
+          projectId: null,
+          workspaceId: null,
+        }),
+      });
+
+      expect(result.sessionParams).toEqual({
+        sessionId: "session-symlink",
+        cwd: symlinkPath,
+        workspaceId: null,
+      });
+      expect(result.warning).toBeNull();
+    } finally {
+      await fs.rm(symlinkDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("applyPersistedExecutionWorkspaceConfig", () => {
