@@ -695,7 +695,7 @@ async function buildRuntime(input: {
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent, runId) };
+  const env: Record<string, string> = { ...buildPaperclipEnv(agent, runId, context) };
   env.PAPERCLIP_ACPX_CANCEL_FILE = controlCancelPath;
   env.PAPERCLIP_ACPX_PID_FILE = controlPidPath;
   const wakeTaskId =

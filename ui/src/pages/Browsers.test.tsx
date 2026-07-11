@@ -65,10 +65,11 @@ describe("Browsers", () => {
     vi.unstubAllGlobals();
   });
 
-  it("opens one isolated live stream per active run", async () => {
+  it("opens only the latest live stream for each issue", async () => {
     mockLiveRunsForCompany.mockResolvedValue([
       { id: "run-1", agentId: "agent-1", agentName: "Atlas", status: "running", adapterType: "codex", invocationSource: "issue", triggerDetail: null, startedAt: "2026-07-11T00:00:00Z", finishedAt: null, createdAt: "2026-07-11T00:00:00Z", issueId: "issue-1", issueIdentifier: "ELIA-10", issueTitle: "Research vendor" },
       { id: "run-2", agentId: "agent-2", agentName: "Nova", status: "running", adapterType: "codex", invocationSource: "issue", triggerDetail: null, startedAt: "2026-07-11T00:00:01Z", finishedAt: null, createdAt: "2026-07-11T00:00:01Z", issueId: "issue-2", issueIdentifier: "ELIA-11", issueTitle: "Validate checkout" },
+      { id: "run-0", agentId: "agent-1", agentName: "Atlas", status: "succeeded", adapterType: "codex", invocationSource: "issue", triggerDetail: null, startedAt: "2026-07-10T23:00:00Z", finishedAt: "2026-07-10T23:05:00Z", createdAt: "2026-07-10T23:00:00Z", issueId: "issue-1", issueIdentifier: "ELIA-10", issueTitle: "Research vendor" },
     ]);
     const root = createRoot(container);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -86,6 +87,7 @@ describe("Browsers", () => {
       "/api/heartbeat-runs/run-1/browser-stream",
       "/api/heartbeat-runs/run-2/browser-stream",
     ]));
+    expect(openedStreams).not.toContain("/api/heartbeat-runs/run-0/browser-stream");
     expect(new Set(openedStreams).size).toBe(2);
 
     await act(async () => root.unmount());

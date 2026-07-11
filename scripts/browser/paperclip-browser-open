@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -lt 1 ]; then
+  echo "usage: paperclip-browser-open <url> [--camoufox]" >&2
+  exit 2
+fi
+
+URL="$1"
+FORCE_PROVIDER="${PAPERCLIP_BROWSER_PROVIDER:-}"
+if [ "${2:-}" = "--camoufox" ] || [ "$FORCE_PROVIDER" = "camoufox" ]; then
+  exec paperclip-camoufox "$URL"
+fi
+
+agent-browser open "$URL"
+TITLE="$(agent-browser get title 2>/dev/null || true)"
+SNAPSHOT="$(agent-browser snapshot -c 2>/dev/null || true)"
+SIGNAL="$TITLE $SNAPSHOT"
+
+if printf '%s' "$SIGNAL" | grep -Eiq 'Just a moment|Verify you are human|Attention Required|Access denied|cf-chl-|challenge-platform|captcha|403 Forbidden|429 Too Many Requests'; then
+  echo "[paperclip-browser] agent-browser block signal detected; retrying once" >&2
+  agent-browser reload >/dev/null 2>&1 || true
+  TITLE="$(agent-browser get title 2>/dev/null || true)"
+  SNAPSHOT="$(agent-browser snapshot -c 2>/dev/null || true)"
+  SIGNAL="$TITLE $SNAPSHOT"
+fi
+
+if printf '%s' "$SIGNAL" | grep -Eiq 'Just a moment|Verify you are human|Attention Required|Access denied|cf-chl-|challenge-platform|captcha|403 Forbidden|429 Too Many Requests'; then
+  echo "[paperclip-browser] switching provider=camoufox" >&2
+  agent-browser close >/dev/null 2>&1 || true
+  exec paperclip-camoufox "$URL"
+fi
+
+printf '%s\n' '{"provider":"agent-browser","status":"ready"}'
+

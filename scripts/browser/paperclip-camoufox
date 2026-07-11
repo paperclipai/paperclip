@@ -1,0 +1,47 @@
+#!/opt/camoufox/bin/python
+import argparse
+import json
+import os
+import re
+from pathlib import Path
+
+from camoufox.sync_api import Camoufox
+
+
+def safe(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9._-]", "_", value)[:120] or "default"
+
+
+parser = argparse.ArgumentParser(description="Open a URL with Paperclip's managed Camoufox fallback")
+parser.add_argument("url")
+parser.add_argument("--screenshot")
+args = parser.parse_args()
+
+profile = safe(os.environ.get("AGENT_BROWSER_SESSION_NAME", "paperclip-default"))
+scope = safe(os.environ.get("PAPERCLIP_BROWSER_SCOPE_ID", os.environ.get("PAPERCLIP_RUN_ID", "manual")))
+root = Path(os.environ.get("PAPERCLIP_HOME", "/paperclip")) / "browser-profiles" / profile
+root.mkdir(parents=True, exist_ok=True)
+state_path = root / "camoufox-state.json"
+artifact_dir = Path(os.environ.get("PAPERCLIP_HOME", "/paperclip")) / "browser-artifacts"
+artifact_dir.mkdir(parents=True, exist_ok=True)
+screenshot_path = Path(args.screenshot) if args.screenshot else artifact_dir / f"{scope}-camoufox.jpg"
+
+with Camoufox(headless="virtual", humanize=True, persistent_context=False) as browser:
+    context_options = {"storage_state": str(state_path)} if state_path.exists() else {}
+    context = browser.new_context(**context_options)
+    page = context.new_page()
+    page.goto(args.url, wait_until="domcontentloaded", timeout=45_000)
+    page.screenshot(path=str(screenshot_path), type="jpeg", quality=78, full_page=False)
+    temporary_state = state_path.with_suffix(".tmp")
+    context.storage_state(path=str(temporary_state))
+    temporary_state.replace(state_path)
+    state_path.chmod(0o600)
+    print(json.dumps({
+        "provider": "camoufox",
+        "mode": "virtual-headful",
+        "url": page.url,
+        "title": page.title(),
+        "screenshot": str(screenshot_path),
+        "profile": profile,
+        "scope": scope,
+    }))

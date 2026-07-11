@@ -119,7 +119,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
 
   // ---- environment ----------------------------------------------------------
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent, runId) };
+  const env: Record<string, string> = { ...buildPaperclipEnv(agent, runId, context) };
   env.PAPERCLIP_RUN_ID = runId;
 
   const wakeTaskId =

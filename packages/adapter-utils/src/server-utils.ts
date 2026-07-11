@@ -1144,6 +1144,7 @@ export function browserSessionKeyForRun(runId: string): string {
 export function buildPaperclipEnv(
   agent: { id: string; companyId: string },
   runId?: string,
+  context?: Record<string, unknown> | null,
 ): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
@@ -1156,14 +1157,19 @@ export function buildPaperclipEnv(
     PAPERCLIP_COMPANY_ID: agent.companyId,
   };
   if (runId) {
-    const browserSessionKey = browserSessionKeyForRun(runId);
+    const browserScopeId =
+      (typeof context?.issueId === "string" && context.issueId.trim())
+      || (typeof context?.taskId === "string" && context.taskId.trim())
+      || runId;
+    const browserSessionKey = browserSessionKeyForRun(browserScopeId);
     vars.PAPERCLIP_RUN_ID = runId;
+    vars.PAPERCLIP_BROWSER_SCOPE_ID = browserScopeId;
     vars.AGENT_BROWSER_SOCKET_DIR = "/tmp/pab";
     vars.AGENT_BROWSER_SESSION = browserSessionKey;
     vars.AGENT_BROWSER_NAMESPACE = browserSessionKey;
     vars.AGENT_BROWSER_RESTORE = `paperclip-${agent.companyId}-default`;
     vars.AGENT_BROWSER_SESSION_NAME = `paperclip-${agent.companyId}-default`;
-    vars.AGENT_BROWSER_STREAM_PORT = String(browserStreamPortForRun(runId));
+    vars.AGENT_BROWSER_STREAM_PORT = String(browserStreamPortForRun(browserScopeId));
   }
   const runtimeHost = resolveHostForUrl(
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",

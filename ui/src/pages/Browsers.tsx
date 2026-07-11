@@ -182,7 +182,15 @@ export function Browsers() {
     enabled: !!selectedCompanyId,
     refetchInterval: 3_000,
   });
-  const orderedRuns = useMemo(() => [...runs].sort((a, b) => new Date(b.startedAt ?? b.createdAt).getTime() - new Date(a.startedAt ?? a.createdAt).getTime()), [runs]);
+  const orderedRuns = useMemo(() => {
+    const sorted = [...runs].sort((a, b) => new Date(b.startedAt ?? b.createdAt).getTime() - new Date(a.startedAt ?? a.createdAt).getTime());
+    const latestByIssue = new Map<string, LiveRunForIssue>();
+    for (const run of sorted) {
+      const key = run.issueId ?? run.id;
+      if (!latestByIssue.has(key)) latestByIssue.set(key, run);
+    }
+    return [...latestByIssue.values()];
+  }, [runs]);
   const activeRunCount = orderedRuns.filter((run) => run.status === "queued" || run.status === "running").length;
 
   return (

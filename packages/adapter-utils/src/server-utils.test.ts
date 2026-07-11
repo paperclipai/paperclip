@@ -37,6 +37,14 @@ describe("managed browser run environment", () => {
     expect(env.AGENT_BROWSER_RESTORE).toBe("paperclip-company-1-default");
     expect(env.AGENT_BROWSER_SESSION_NAME).toBe("paperclip-company-1-default");
   });
+
+  it("keeps browser daemon identity stable across runs for the same issue", () => {
+    const first = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" }, "run-1", { issueId: "issue-1" });
+    const followUp = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" }, "run-2", { issueId: "issue-1" });
+    expect(followUp.AGENT_BROWSER_SESSION).toBe(first.AGENT_BROWSER_SESSION);
+    expect(followUp.AGENT_BROWSER_STREAM_PORT).toBe(first.AGENT_BROWSER_STREAM_PORT);
+    expect(followUp.PAPERCLIP_BROWSER_SCOPE_ID).toBe("issue-1");
+  });
 });
 
 function isPidAlive(pid: number) {

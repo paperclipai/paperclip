@@ -7,13 +7,13 @@ metadata:
 
 # Managed browser automation
 
-Use this skill for browser navigation, form interaction, authenticated web workflows, screenshots, and browser-based verification. Paperclip automatically assigns each run an isolated agent-browser session and live-stream port; use the inherited defaults so the board can watch the viewport inside the active issue.
+Use this skill for browser navigation, form interaction, authenticated web workflows, screenshots, and browser-based verification. Paperclip assigns one agent-browser session and live-stream port per issue. Follow-up and retry runs on the same issue reuse that identity, tabs, and selected browser profile; use the inherited defaults so the board can watch the viewport inside the active issue.
 
 ## Provider policy
 
-1. Start with `agent-browser`. Run each meaningful action as a separate tool call so the active issue thread shows the movement live.
-2. After navigation, inspect the title and snapshot. Treat challenge/interstitial pages, repeated 403/429 responses, `cf-chl-*` content, "Just a moment", or "Verify you are human" as a block signal.
-3. Retry ordinary transient navigation once. If the block signal remains, switch to Camoufox for that origin and say so in the next progress comment.
+1. For initial navigation, run `paperclip-browser-open <url>`. It starts with agent-browser, inspects the result, retries once on a security challenge, and automatically switches to Camoufox if the challenge remains.
+2. If the user explicitly asks for Camoufox, run `paperclip-browser-open <url> --camoufox` (or `paperclip-camoufox <url>`) immediately. Do not start agent-browser first and do not substitute ordinary headless Chromium.
+3. The launcher prints JSON identifying the actual provider. Report a provider switch in the next progress comment.
 4. Camoufox is a fallback, not a promise to bypass every WAF. Stop for human captcha/2FA when required. Never attempt to defeat access controls or violate a site's terms.
 
 ## Live movement
@@ -21,7 +21,7 @@ Use this skill for browser navigation, form interaction, authenticated web workf
 Prefer small observable calls:
 
 ```sh
-agent-browser open https://example.com
+paperclip-browser-open https://example.com
 agent-browser snapshot -i
 agent-browser click @e2
 agent-browser screenshot --annotate
@@ -39,13 +39,13 @@ Recommended bindings:
 - `AGENT_BROWSER_SESSION_NAME`: stable non-secret persistence key. Paperclip assigns the company Default browser profile automatically; project-specific profiles selected in Browsers → Profiles override it.
 - Site credentials: store each username, password, token, or proxy credential as a company secret and bind only to the agent/project that needs it. Never place values in commands, comments, screenshots, or logs.
 
-Paperclip automatically isolates the live daemon session per run. If a runtime does not provide a restore key, derive a stable non-secret persistence scope without printing credentials:
+Paperclip automatically isolates the live daemon session per issue. Follow-ups and retries for that issue inherit the same daemon identity. If a runtime does not provide a restore key, derive a stable non-secret persistence scope without printing credentials:
 
 ```sh
 export AGENT_BROWSER_SESSION_NAME="paperclip-${PAPERCLIP_COMPANY_ID}-default"
 ```
 
-The injected session name automatically loads state on startup and saves it on shutdown. Close the session when the workflow is complete so state is flushed. Saved state remains encrypted at rest when `AGENT_BROWSER_ENCRYPTION_KEY` is bound.
+The injected session name automatically loads state on startup and saves it on shutdown. Do not close it between follow-ups or retries. Close it only when the issue's browser work is genuinely complete so state is flushed. Saved agent-browser state remains encrypted at rest when `AGENT_BROWSER_ENCRYPTION_KEY` is bound.
 
 Create and assign project-specific profiles from Browsers → Profiles. Paperclip writes the selected persistence scope into project runtime configuration automatically. Do not override `AGENT_BROWSER_STREAM_PORT`, `AGENT_BROWSER_NAMESPACE`, `AGENT_BROWSER_SESSION`, or `AGENT_BROWSER_SOCKET_DIR`; Paperclip owns those live-viewer values and deliberately keeps the Unix socket path short enough for agent-browser.
 
@@ -57,18 +57,24 @@ Human-owned 2FA, captcha, consent, and account recovery remain human gates. Post
 
 ## Camoufox fallback
 
-Camoufox exposes a Playwright-compatible Python API:
+The managed command uses Camoufox's virtual display, not invisible `headless=True`, and saves cookies/local storage under the selected Paperclip browser profile:
+
+```sh
+paperclip-camoufox https://example.com
+```
+
+For a continued or multi-step Camoufox workflow, use its Playwright-compatible Python API with the same virtual-headful mode:
 
 ```python
 from camoufox.sync_api import Camoufox
 
-with Camoufox(headless=True, humanize=True) as browser:
+with Camoufox(headless="virtual", humanize=True) as browser:
     page = browser.new_page()
     page.goto("https://example.com", wait_until="domcontentloaded")
     print(page.title())
 ```
 
-Keep reusable fallback scripts under the persistent agent or project workspace, never `/tmp`. Persist only the minimum storage state needed, under the Paperclip instance volume, and encrypt sensitive state before writing it. Camoufox fingerprinting can reduce automation signals but does not guarantee Cloudflare access.
+Keep reusable fallback scripts under the persistent agent or project workspace, never `/tmp`. The managed launcher stores Camoufox state at `/paperclip/browser-profiles/<profile>/camoufox-state.json` and a current screenshot under `/paperclip/browser-artifacts`. Camoufox commands and screenshots appear as issue activity, but Camoufox does not feed agent-browser's continuous WebSocket live viewer. Camoufox fingerprinting can reduce automation signals but does not guarantee Cloudflare access.
 
 Run Camoufox scripts with `/opt/camoufox/bin/python`; the `camoufox` command is available for `fetch`, `path`, `server`, and diagnostic operations.
 

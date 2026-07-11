@@ -82,6 +82,8 @@ RUN python3 -m venv /opt/camoufox \
   && XDG_CACHE_HOME=/opt/runtime-cache /opt/camoufox/bin/python -m camoufox fetch \
   && chmod 1777 /opt/runtime-cache \
   && ln -s /opt/camoufox/bin/camoufox /usr/local/bin/camoufox
+RUN install -m 0755 /app/scripts/browser/paperclip-camoufox /usr/local/bin/paperclip-camoufox \
+  && install -m 0755 /app/scripts/browser/paperclip-browser-open /usr/local/bin/paperclip-browser-open
 
 # Install Chromium + all system dependencies for headless browser automation
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers

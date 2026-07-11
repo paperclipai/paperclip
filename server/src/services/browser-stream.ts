@@ -24,9 +24,9 @@ function writeEvent(res: Response, event: string, payload: unknown) {
 export function pipeBrowserStreamToSse(
   runId: string,
   res: Response,
-  options?: { onFirstFrame?: () => void },
+  options?: { onFirstFrame?: () => void; scopeId?: string },
 ) {
-  const port = browserStreamPortForRun(runId);
+  const port = browserStreamPortForRun(options?.scopeId ?? runId);
   let socket: BrowserSocket | null = null;
   let retryTimer: NodeJS.Timeout | null = null;
   let closed = false;

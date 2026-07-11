@@ -4608,7 +4608,14 @@ export function agentRoutes(
       return;
     }
     assertCompanyAccess(req, run.companyId);
+    const runContext = run.contextSnapshot && typeof run.contextSnapshot === "object"
+      ? run.contextSnapshot as Record<string, unknown>
+      : {};
+    const browserScopeId = typeof runContext.issueId === "string" && runContext.issueId.trim()
+      ? runContext.issueId
+      : runId;
     pipeBrowserStreamToSse(runId, res, {
+      scopeId: browserScopeId,
       onFirstFrame: () => {
         void db
           .update(heartbeatRuns)
