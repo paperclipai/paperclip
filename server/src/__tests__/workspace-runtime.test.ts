@@ -4155,8 +4155,6 @@ describe("readLocalServicePortOwner", () => {
 
       await expect(findAdoptableLocalService({
         serviceKey,
-        serviceName: "node",
-        command: "node",
         cwd: process.cwd(),
         port,
       })).resolves.toMatchObject({ pid: expect.any(Number), port });
