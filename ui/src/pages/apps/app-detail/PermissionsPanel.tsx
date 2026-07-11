@@ -3,6 +3,7 @@ import { Loader2, RefreshCw } from "lucide-react";
 import type { Agent, ToolCatalogEntry } from "@paperclipai/shared";
 import { useSearchParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import { AgentMultiSelect } from "@/components/AgentMultiSelect";
 import { cn } from "@/lib/utils";
 import { QuarantinePill } from "./SetupPanel";
 import type { AccessDraft, AppDetailSectionProps } from "./types";
@@ -125,29 +126,12 @@ function AccessSection({
           </label>
 
           {draft.mode === "specific" && (
-            <div className="rounded-lg border border-border">
-              {liveAgents.length === 0 ? (
-                <div className="p-3 text-xs text-muted-foreground">No agents yet.</div>
-              ) : (
-                liveAgents.map((agent) => (
-                  <label key={agent.id} className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-accent/40">
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 rounded border-border"
-                      checked={draft.agentIds.has(agent.id)}
-                      onChange={() => {
-                        const next = new Set(draft.agentIds);
-                        if (next.has(agent.id)) next.delete(agent.id);
-                        else next.add(agent.id);
-                        setDraft({ mode: "specific", agentIds: next });
-                      }}
-                    />
-                    <span className="text-sm font-medium text-foreground">{agent.name}</span>
-                    {agent.title && <span className="truncate text-xs text-muted-foreground">- {agent.title}</span>}
-                  </label>
-                ))
-              )}
-            </div>
+            <AgentMultiSelect
+              agents={liveAgents}
+              selectedAgentIds={draft.agentIds}
+              onChange={(agentIds) => setDraft({ mode: "specific", agentIds })}
+              disabled={disabled}
+            />
           )}
 
           <div className="flex items-center gap-2 pt-1">

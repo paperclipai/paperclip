@@ -7,6 +7,7 @@ import { toolsApi, type ToolProfileBindingInput } from "@/api/tools";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { AgentMultiSelect, type AgentMultiSelectOption } from "@/components/AgentMultiSelect";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -264,7 +265,7 @@ export function ProfileWizard({
 
         {step === 3 ? (
           <StepAssign
-            agents={(agents.data ?? []).map((a) => ({ id: a.id, name: a.name }))}
+            agents={(agents.data ?? []).map((a) => ({ id: a.id, name: a.name, title: a.title, icon: a.icon }))}
             projects={(data.projects.data ?? []).map((p) => ({ id: p.id, name: p.name }))}
             routines={(data.routines.data ?? []).map((r) => ({ id: r.id, name: r.title }))}
             profiles={allProfiles}
@@ -545,7 +546,7 @@ export function StepAssign({
   companyDefault,
   onCompanyDefault,
 }: {
-  agents: TargetOption[];
+  agents: AgentMultiSelectOption[];
   projects?: TargetOption[];
   routines?: TargetOption[];
   profiles: ToolProfileWithDetails[];
@@ -596,34 +597,21 @@ export function StepAssign({
 
       <div className="space-y-2">
         <h3 className="text-sm font-medium text-foreground">Assign to agents</h3>
-        <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
-          {agents.length === 0 ? (
-            <p className="px-3 py-4 text-sm text-muted-foreground">No agents yet.</p>
-          ) : (
-            agents.map((agent) => {
-              const context = contextByAgent.get(agent.id) ?? [];
-              const bits = [...context];
-              if (defaultProfileName) bits.push("company default");
-              return (
-                <label key={agent.id} className="flex cursor-pointer items-center gap-3 px-3 py-2.5">
-                  <input
-                    type="checkbox"
-                    checked={selectedAgentIds.has(agent.id)}
-                    onChange={() => onToggleAgent(agent.id)}
-                  />
-                  <span className="flex flex-col">
-                    <span className="text-sm font-medium text-foreground">{agent.name}</span>
-                    {bits.length > 0 ? (
-                      <span className="text-xs text-muted-foreground">already has: {bits.join(" · ")}</span>
-                    ) : (
-                      <span className="text-xs text-muted-foreground/70">no profiles yet</span>
-                    )}
-                  </span>
-                </label>
-              );
-            })
-          )}
-        </div>
+        <AgentMultiSelect
+          agents={agents}
+          selectedAgentIds={selectedAgentIds}
+          onChange={(nextAgentIds) => {
+            for (const agent of agents) {
+              if (selectedAgentIds.has(agent.id) !== nextAgentIds.has(agent.id)) onToggleAgent(agent.id);
+            }
+          }}
+          getDescription={(agent) => {
+            const context = contextByAgent.get(agent.id) ?? [];
+            const bits = [...context];
+            if (defaultProfileName) bits.push("company default");
+            return bits.length > 0 ? `already has: ${bits.join(" · ")}` : "no profiles yet";
+          }}
+        />
         <p className="text-xs text-muted-foreground">
           If an agent has several profiles, it can use anything any of them allows.
         </p>
