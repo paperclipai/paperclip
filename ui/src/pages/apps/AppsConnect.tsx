@@ -30,8 +30,11 @@ import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
 import { appCopyFor, credentialFieldLabel } from "@/lib/app-gallery-copy";
 import { advancedTabHref } from "@/pages/tools/tool-tabs";
+import { AgentIcon } from "@/components/AgentIconPicker";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -257,6 +260,9 @@ export function AppsConnect() {
     connectResult?.application.name ??
     entry?.name ??
     (linkName.trim() || defaultLinkName(linkUrl) || "this app");
+  const zapierEntry = zapierSource
+    ? galleryQuery.data?.apps.find((app) => app.key === "zapier") ?? null
+    : null;
   const stepIndex = zapierSource && step !== "gallery" && step !== "success"
     ? ZAPIER_STEP_INDEX[step]
     : step === "success"
@@ -280,6 +286,11 @@ export function AppsConnect() {
               : isGoogleSheetsEntry(entry)
                 ? ["Pick app", "Share sheet", "Choose actions"]
                 : STEP_LABELS
+          }
+          appIdentity={
+            zapierSource
+              ? { name: "Zapier", logoUrl: zapierEntry?.logoUrl ?? null }
+              : undefined
           }
           onCancel={() => navigate(zapierSource ? "/apps/browse" : "/apps")}
         />
@@ -433,20 +444,29 @@ function StepHeader({
   step,
   activeIndex,
   labels,
+  appIdentity,
   onCancel,
 }: {
   subtitle: string;
   step: Step;
   activeIndex: number;
   labels: string[];
+  appIdentity?: { name: string; logoUrl: string | null };
   onCancel: () => void;
 }) {
   return (
     <div className="mb-6">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Connect an app</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
+        <div className="flex items-center gap-3">
+          {appIdentity ? (
+            <AppLogo name={appIdentity.name} logoUrl={appIdentity.logoUrl} size={44} />
+          ) : null}
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">
+              {appIdentity ? `Connect ${appIdentity.name}` : "Connect an app"}
+            </h1>
+            <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
+          </div>
         </div>
         <Button variant="ghost" size="sm" onClick={onCancel}>
           Cancel
@@ -1314,13 +1334,6 @@ function WhoStep({
   const agents: Agent[] = (agentsQuery.data ?? []).filter((a) => a.status !== "terminated");
   const canFinish = access === "all" || agentIds.size > 0;
 
-  const toggleAgent = (id: string) => {
-    const next = new Set(agentIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setAgentIds(next);
-  };
-
   return (
     <div className="mx-auto max-w-xl">
       <div className="rounded-2xl border border-border bg-card p-8">
@@ -1366,34 +1379,12 @@ function WhoStep({
           </button>
 
           {access === "specific" && (
-            <div className="rounded-xl border border-border p-2">
-              {agentsQuery.isLoading ? (
-                <div className="space-y-2 p-2">
-                  <Skeleton className="h-6 w-full" />
-                  <Skeleton className="h-6 w-full" />
-                </div>
-              ) : agents.length === 0 ? (
-                <div className="p-3 text-xs text-muted-foreground">No agents yet.</div>
-              ) : (
-                agents.map((agent) => (
-                  <label
-                    key={agent.id}
-                    className="flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/40"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={agentIds.has(agent.id)}
-                      onChange={() => toggleAgent(agent.id)}
-                      className="h-4 w-4 rounded border-border"
-                    />
-                    <span className="text-sm font-medium text-foreground">{agent.name}</span>
-                    {agent.title && (
-                      <span className="truncate text-xs text-muted-foreground">· {agent.title}</span>
-                    )}
-                  </label>
-                ))
-              )}
-            </div>
+            <AgentMultiSelect
+              agents={agents}
+              selectedAgentIds={agentIds}
+              onChange={setAgentIds}
+              loading={agentsQuery.isLoading}
+            />
           )}
         </div>
       </div>
@@ -1408,6 +1399,104 @@ function WhoStep({
         </Button>
       </div>
     </div>
+  );
+}
+
+function AgentMultiSelect({
+  agents,
+  selectedAgentIds,
+  onChange,
+  loading,
+}: {
+  agents: Agent[];
+  selectedAgentIds: Set<string>;
+  onChange: (next: Set<string>) => void;
+  loading: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState("");
+  const normalizedFilter = filter.trim().toLowerCase();
+  const filteredAgents = agents
+    .filter((agent) => `${agent.name} ${agent.title ?? ""}`.toLowerCase().includes(normalizedFilter))
+    .sort((a, b) => {
+      const aSelected = selectedAgentIds.has(a.id);
+      const bSelected = selectedAgentIds.has(b.id);
+      if (aSelected !== bSelected) return aSelected ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  const selectedCount = selectedAgentIds.size;
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) setFilter("");
+      }}
+    >
+      <PopoverTrigger asChild>
+        <Button variant="outline" className="w-full justify-between">
+          <span>
+            {selectedCount === 0
+              ? "Select agents"
+              : `${selectedCount} ${selectedCount === 1 ? "agent" : "agents"} selected`}
+          </span>
+          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-80 p-0" align="start">
+        <div className="border-b border-border p-3">
+          <Input
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            placeholder="Filter agents"
+            className="h-8"
+            autoFocus
+          />
+        </div>
+        {loading ? (
+          <div className="space-y-2 p-3">
+            <Skeleton className="h-6 w-full" />
+            <Skeleton className="h-6 w-full" />
+          </div>
+        ) : agents.length === 0 ? (
+          <div className="px-3 py-4 text-sm text-muted-foreground">No agents yet.</div>
+        ) : (
+          <div className="max-h-60 overflow-y-auto py-1">
+            {filteredAgents.map((agent) => (
+              <label key={agent.id} className="flex cursor-pointer items-start gap-2 px-3 py-2 hover:bg-accent/30">
+                <Checkbox
+                  checked={selectedAgentIds.has(agent.id)}
+                  aria-label={`Allow ${agent.name}`}
+                  onCheckedChange={(checked) => {
+                    const next = new Set(selectedAgentIds);
+                    if (checked) next.add(agent.id);
+                    else next.delete(agent.id);
+                    onChange(next);
+                  }}
+                />
+                <AgentIcon icon={agent.icon} className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate text-sm font-medium text-foreground">{agent.name}</span>
+                  {agent.title ? <span className="truncate text-xs text-muted-foreground">{agent.title}</span> : null}
+                </span>
+              </label>
+            ))}
+            {filteredAgents.length === 0 ? (
+              <div className="px-3 py-4 text-sm text-muted-foreground">No matches.</div>
+            ) : null}
+          </div>
+        )}
+        <div className="flex items-center justify-between border-t border-border px-3 py-2">
+          <span className="text-xs text-muted-foreground">
+            {selectedCount === 0 ? "No agents selected" : `${selectedCount} selected`}
+          </span>
+          <Button size="sm" onClick={() => setOpen(false)}>
+            Done
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

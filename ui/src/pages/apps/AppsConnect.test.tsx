@@ -8,6 +8,7 @@ import { AppsConnect } from "./AppsConnect";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
+const listAgentsMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSearch = vi.hoisted(() => ({ value: "" }));
 const mockParams = vi.hoisted(() => ({ appKey: undefined as string | undefined }));
@@ -20,7 +21,7 @@ vi.mock("@/api/tools", () => ({
 }));
 
 vi.mock("@/api/agents", () => ({
-  agentsApi: { list: vi.fn() },
+  agentsApi: { list: (companyId: string) => listAgentsMock(companyId) },
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -133,6 +134,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       catalog: [],
       suggestedDefaults: {},
     });
+    listAgentsMock.mockResolvedValue([
+      { id: "agent-1", name: "Ada", title: "CTO", status: "active", icon: "Bot" },
+      { id: "agent-2", name: "Grace", title: "Engineer", status: "active", icon: "Code" },
+    ]);
   });
 
   afterEach(() => {
@@ -263,13 +268,45 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock.mock.calls[0]?.[1].credentialValues).toBeUndefined();
   });
 
-  it("opens Zapier in a focused three-step wizard", async () => {
+  it("keeps Zapier visible and uses the compact agent multi-selector throughout its wizard", async () => {
     mockSearch.value = "byo=1&source=zapier";
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [
+        {
+          key: "zapier",
+          name: "Zapier",
+          tagline: "Automate things",
+          authKind: "api_key",
+          urlPatterns: ["https://zapier.com/*", "https://*.zapier.com/*"],
+          logoUrl: "https://example.com/zapier.png",
+          credentialFields: [],
+        },
+      ],
+    });
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "conn-1",
+      application: { id: "app-1", name: "Zapier" },
+      actions: {
+        readOnly: [
+          {
+            catalogEntryId: "action-1",
+            toolName: "find_record",
+            title: "Find record",
+            description: "Find a record.",
+            riskLevel: "read",
+          },
+        ],
+        canMakeChanges: [],
+      },
+      catalog: [],
+      suggestedDefaults: {},
+    });
     await render();
 
     expect(container.textContent).toContain("Step 1 of 3");
     expect(container.textContent).toContain("Connect Zapier");
     expect(container.textContent).toContain("Add MCP URL");
+    expect(container.querySelector('img[src="https://example.com/zapier.png"]')).toBeTruthy();
     expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
     expect(container.textContent).not.toContain("More ways to connect");
 
@@ -288,6 +325,45 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).toHaveBeenCalledTimes(1);
     expect(connectAppMock.mock.calls[0]?.[1]).toMatchObject({ link: zapierUrl, name: "Zapier" });
     expect(container.textContent).toContain("Step 2 of 3");
+    expect(container.querySelector('img[src="https://example.com/zapier.png"]')).toBeTruthy();
+
+    await act(async () => {
+      buttonByText("Continue with 1 action on")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Step 3 of 3");
+    expect(container.querySelector('img[src="https://example.com/zapier.png"]')).toBeTruthy();
+
+    await act(async () => {
+      buttonContaining("Only specific agents")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Select agents");
+    expect(container.textContent).not.toContain("Ada");
+    expect(container.textContent).not.toContain("Grace");
+
+    await act(async () => {
+      buttonByText("Select agents")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Ada");
+    expect(document.body.textContent).toContain("Grace");
+
+    const adaCheckbox = document.body.querySelector<HTMLElement>('[aria-label="Allow Ada"]');
+    await act(async () => {
+      adaCheckbox?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      buttonByText("Done")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("1 agent selected");
+    expect(container.textContent).not.toContain("Grace");
   });
 
   // PAP-10922: "Run your own" / "Paste a config" moved from the sidebar to rows
