@@ -182,13 +182,17 @@ its Architect immediately:
 - Coordinator moves on. Cargo runtime is the Architect's problem.
 
 If multiple `needs-build` tasks queue up at once, dispatch all their
-Architects in the same fire. Each Architect builds in its **own
-per-worktree `target/`** (the runtime no longer exports a shared
-`CARGO_TARGET_DIR` — fixed via AA-1554, 2026-06-12), so concurrent
-cargos run in parallel without an OS-level build lock. Concurrency is
-now bounded by CPU/RAM headroom, not a shared lock; the cargo cost
-belongs to each Architect's own worktree, not to the orchestration
-layer.
+Architects in the same fire — up to **two** will build concurrently and
+the rest queue. Each Architect builds in its **own per-worktree
+`target/`** (the runtime no longer exports a shared `CARGO_TARGET_DIR` —
+fixed via AA-1554, 2026-06-12), and cargo is wrapped in a **2-slot build
+semaphore** (`agents/architect/cargo-sem.sh`, AA-2014) that bounds live
+builds at 2 on this 8-core box, each pinned to a disjoint core set. So a
+third+ queued Architect waits on a slot rather than thrashing — you do
+not need to throttle dispatch yourself; dispatch them all and let the
+semaphore meter throughput. (Before AA-2014 this was a machine-wide
+`flock /tmp/cargo-global.lock` mutex = one builder at a time; do not
+re-introduce a single global cargo lock.)
 
 > History: until 2026-06-12 all Architects shared one
 > `CARGO_TARGET_DIR`, so cargo's single build lock serialized them.
