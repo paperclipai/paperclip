@@ -48,6 +48,7 @@ import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
 import { TtsDebugLog, describeBeforeInput, isTtsDebugEnabled } from "../lib/tts-debug";
+import { TtsDebugPanel } from "./TtsDebugPanel";
 
 /* ---- Mention types ---- */
 
@@ -623,20 +624,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const ttsDebug = useMemo(() => isTtsDebugEnabled(), []);
   const ttsLogRef = useRef<TtsDebugLog | null>(null);
   if (ttsDebug && !ttsLogRef.current) ttsLogRef.current = new TtsDebugLog();
-  // Bump to re-render the panel; records are coalesced into one rAF per frame.
-  const [ttsLogVersion, setTtsLogVersion] = useState(0);
-  const ttsFlushScheduledRef = useRef(false);
+  // Capture is a PURE append to the ref buffer — no setState, so recording an
+  // event never re-renders the editor subtree. The panel (<TtsDebugPanel>) reads
+  // the buffer on its own interval from a portal outside this tree. This is the
+  // NEO-409 observer-effect fix: the instrument must not perturb the setMarkdown
+  // reconcile timing it measures.
   const recordTts = useCallback(
     (type: string, detail: Record<string, unknown> = {}) => {
-      const log = ttsLogRef.current;
-      if (!log) return;
-      log.record(type, detail);
-      if (ttsFlushScheduledRef.current) return;
-      ttsFlushScheduledRef.current = true;
-      requestAnimationFrame(() => {
-        ttsFlushScheduledRef.current = false;
-        setTtsLogVersion((v) => v + 1);
-      });
+      ttsLogRef.current?.record(type, detail);
     },
     [],
   );
@@ -1209,33 +1204,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       )
     : null;
 
-  // NEO-405/NEO-409 debug panel — rendered text recomputed whenever a new event
-  // is captured (ttsLogVersion bumps). Only meaningful when `ttsDebug` is on.
-  const ttsLogText = useMemo(
-    () => (ttsDebug ? ttsLogRef.current?.format() ?? "" : ""),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [ttsDebug, ttsLogVersion],
-  );
-  const [ttsCopied, setTtsCopied] = useState(false);
-  const handleCopyTtsLog = useCallback(() => {
-    const log = ttsLogRef.current;
-    if (!log) return;
-    const text = log.format();
-    const done = () => {
-      setTtsCopied(true);
-      window.setTimeout(() => setTtsCopied(false), 1500);
-    };
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(done).catch(() => {
-        /* clipboard blocked — the panel text is still selectable for manual copy */
-      });
-    }
-  }, []);
-  const handleClearTtsLog = useCallback(() => {
-    ttsLogRef.current?.clear();
-    setTtsLogVersion((v) => v + 1);
-  }, []);
-
   if (richEditorError) {
     return (
       <div
@@ -1549,38 +1517,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
       {/* NEO-405/NEO-409 dictation logging panel — dev-only, gated behind
           ?ttsdebug=1 or localStorage["neo405-tts-debug"]="1". Never renders for
-          normal users. Instrumentation only; removed before promotion to live. */}
-      {ttsDebug && (
-        <div className="mt-2 border-t border-border/60 bg-muted/30 px-3 py-2">
-          <div className="mb-1 flex items-center justify-between gap-2">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              TTS debug · {ttsLogRef.current?.size() ?? 0} events
-            </span>
-            <span className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleCopyTtsLog}
-                className="rounded border border-border px-2 py-0.5 text-[11px] font-medium hover:bg-accent"
-              >
-                {ttsCopied ? "Copied ✓" : "Copy log"}
-              </button>
-              <button
-                type="button"
-                onClick={handleClearTtsLog}
-                className="rounded border border-border px-2 py-0.5 text-[11px] font-medium hover:bg-accent"
-              >
-                Clear
-              </button>
-            </span>
-          </div>
-          <textarea
-            readOnly
-            value={ttsLogText}
-            spellCheck={false}
-            className="h-40 w-full resize-y rounded bg-background/80 p-2 font-mono text-[10px] leading-4 text-foreground outline-none"
-          />
-        </div>
-      )}
+          normal users. Rendered via portal on document.body (see TtsDebugPanel)
+          so it lives outside this editor tree and cannot perturb dictation.
+          Instrumentation only; removed before promotion to live. */}
+      {ttsDebug && ttsLogRef.current && <TtsDebugPanel log={ttsLogRef.current} />}
     </div>
   );
 });
