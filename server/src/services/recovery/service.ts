@@ -2932,6 +2932,37 @@ export function recoveryService(
     }) ?? null;
   }
 
+  /**
+   * A blocked agent task can be healthy when it is waiting on a named human or
+   * external system. Those waits do not have an issue-relation edge, but a
+   * recent structured handoff comment is still a real continuation contract.
+   * Without this guard, the liveness loop wakes managers to rediscover an
+   * already-recorded OAuth, account, vendor, or customer dependency.
+   */
+  async function hasRecentExplicitExternalWait(finding: IssueLivenessFinding, now: Date) {
+    if (finding.state !== "blocked_without_action_path") return false;
+    const cutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, finding.companyId),
+          eq(issueComments.issueId, finding.recoveryIssueId),
+          gt(issueComments.createdAt, cutoff),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt))
+      .limit(12);
+
+    return comments.some(({ body }) => {
+      const text = body ?? "";
+      const hasExternalOwner = /\b(account owner|workspace administrator|human owner|customer|vendor|third[- ]party|external owner)\b/i.test(text);
+      const hasWakeContract = /\b(next wake path|resume (when|after)|waiting for|provide (the |a )?(valid |approved )?(identity|session|oauth|access)|approved (identity|session|oauth|access))\b/i.test(text);
+      return hasExternalOwner && hasWakeContract;
+    });
+  }
+
   async function removeRecoveryBlockerFromSource(recovery: typeof issues.$inferSelect) {
     const parsed = parseLivenessIncidentKey(recovery.originId);
     if (!parsed) return false;
@@ -3129,7 +3160,18 @@ export function recoveryService(
     const now = opts?.now ?? new Date();
     const lookbackHours = normalizeIssueGraphLivenessAutoRecoveryLookbackHours(opts?.lookbackHours);
     const cutoff = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
-    const findings = await collectIssueGraphLivenessFindings(now);
+    const rawFindings = await collectIssueGraphLivenessFindings(now);
+    const findings: IssueLivenessFinding[] = [];
+    for (const finding of rawFindings) {
+      if (await hasRecentExplicitExternalWait(finding, now)) {
+        logger.info({
+          incidentKey: finding.incidentKey,
+          recoveryIssueId: finding.recoveryIssueId,
+        }, "suppressed liveness escalation for explicit external wait");
+        continue;
+      }
+      findings.push(finding);
+    }
     const activityAtByIssueKey = await loadLivenessDependencyActivityAtByIssue(findings, now);
     const issueIds = [...new Set(findings.map((finding) => finding.recoveryIssueId))];
     const recoveryRows = issueIds.length > 0

@@ -483,13 +483,19 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       ? Math.max(0, now.getTime() - activeStartedAt.getTime())
       : null;
 
-    const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
+    // A currently active run is already an explicit continuation path. Do not
+    // turn normal live work (or a user-driven sequence of short runs) into a
+    // manager review merely because it emits several progress comments.
+    const hasActiveContinuation = activeRunCount > 0;
+    const noComment = !hasActiveContinuation && noCommentStreak >= thresholds.noCommentStreakRuns;
     const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
     const highChurn =
-      runCountLastHour >= thresholds.highChurnHourly ||
-      assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
-      runCountLastSixHours >= thresholds.highChurnSixHours ||
-      assigneeRunCommentCountLastSixHours >= thresholds.highChurnSixHours;
+      !hasActiveContinuation && (
+        (runCountLastHour >= thresholds.highChurnHourly &&
+          assigneeRunCommentCountLastHour >= thresholds.highChurnHourly) ||
+        (runCountLastSixHours >= thresholds.highChurnSixHours &&
+          assigneeRunCommentCountLastSixHours >= thresholds.highChurnSixHours)
+      );
     const trigger = choosePrimaryTrigger({ noComment, longActive, highChurn });
     if (!trigger) return null;
 
