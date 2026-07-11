@@ -13,19 +13,18 @@ vi.mock("../middleware/logger.js", () => ({
 }));
 
 // Build a drizzle-like mock db. The query builder chains are:
-//   findCeoAgentId:         db.select().from().where().orderBy().limit() → Promise<row[]>
-//   hasOpenAlertForResetAt: db.select().from().where().limit()           → Promise<row[]>
+//   hasOpenAlertForResetAt: db.select().from().where().limit()           → Promise<row[]>  [called first]
+//   findCeoAgentId:         db.select().from().where().orderBy().limit() → Promise<row[]>  [called second]
 //
-// We use a call counter so the first select chain goes to ceoResults and subsequent
-// ones go to alertResults.
+// We use a call counter so the first select chain goes to alertCheckResult and subsequent
+// ones go to ceoLookupResult.
 
 type SelectResultFactory = () => Promise<{ id: string }[]>;
 
-function buildMockDb(ceoResult: SelectResultFactory, alertResult: SelectResultFactory) {
+function buildMockDb(alertCheckResult: SelectResultFactory, ceoLookupResult: SelectResultFactory) {
   let callIndex = 0;
 
   function makeChain(resolve: SelectResultFactory) {
-    const chain: Record<string, unknown> = {};
     const then = (onFulfilled?: (value: { id: string }[]) => unknown) =>
       resolve().then(onFulfilled);
     const thenableChain = {
@@ -40,7 +39,7 @@ function buildMockDb(ceoResult: SelectResultFactory, alertResult: SelectResultFa
 
   return {
     select: vi.fn().mockImplementation(() => {
-      const resolver = callIndex === 0 ? ceoResult : alertResult;
+      const resolver = callIndex === 0 ? alertCheckResult : ceoLookupResult;
       callIndex++;
       return makeChain(resolver);
     }),
@@ -74,8 +73,8 @@ beforeEach(() => {
 describe("checkAndFireClaudeLocalQuotaAlert — threshold", () => {
   it("creates a critical alert issue when a weekly window is at 82%", async () => {
     const db = buildMockDb(
-      () => Promise.resolve([]),               // CEO: not found
-      () => Promise.resolve([]),               // alert: no existing open alert
+      () => Promise.resolve([]),               // alert check: no existing open alert
+      () => Promise.resolve([]),               // CEO lookup: not found
     );
 
     await checkAndFireClaudeLocalQuotaAlert(db as never, COMPANY_ID, () => Promise.resolve(makeOkResult(82)));
@@ -116,11 +115,10 @@ describe("checkAndFireClaudeLocalQuotaAlert — threshold", () => {
 
 describe("checkAndFireClaudeLocalQuotaAlert — deduplication", () => {
   it("does not create a second alert when an open alert already exists for the same reset week", async () => {
-    // call 0 → hasOpenAlertForResetAt: returns existing open alert → dedup fires
-    // call 1 → findCeoAgentId: never reached
+    // alert check returns an existing open alert → dedup fires → CEO lookup never called
     const db = buildMockDb(
-      () => Promise.resolve([{ id: "existing-alert-issue" }]),
-      () => Promise.resolve([]),
+      () => Promise.resolve([{ id: "existing-alert-issue" }]),  // alert check: already alerted
+      () => Promise.resolve([{ id: "ceo-id" }]),               // CEO lookup: not reached
     );
 
     await checkAndFireClaudeLocalQuotaAlert(
@@ -134,8 +132,8 @@ describe("checkAndFireClaudeLocalQuotaAlert — deduplication", () => {
 
   it("creates a new alert when no existing open alert found (first crossing)", async () => {
     const db = buildMockDb(
-      () => Promise.resolve([]),               // no CEO
-      () => Promise.resolve([]),               // no existing alert
+      () => Promise.resolve([]),               // alert check: no existing alert
+      () => Promise.resolve([]),               // CEO lookup: no CEO
     );
 
     await checkAndFireClaudeLocalQuotaAlert(
@@ -220,26 +218,26 @@ describe("checkAndFireClaudeLocalQuotaAlert — error resilience", () => {
 
 describe("checkAndFireClaudeLocalQuotaAlert — CEO assignment", () => {
   it("assigns the issue to the CEO agent when one exists", async () => {
-    // call 0 → hasOpenAlertForResetAt: no existing alert
-    // call 1 → findCeoAgentId: CEO found
     const db = buildMockDb(
-      () => Promise.resolve([]),
-      () => Promise.resolve([{ id: "ceo-agent-uuid" }]),
+      () => Promise.resolve([]),                               // alert check: no existing alert
+      () => Promise.resolve([{ id: "ceo-agent-uuid" }]),      // CEO lookup: found
     );
 
     await checkAndFireClaudeLocalQuotaAlert(db as never, COMPANY_ID, () => Promise.resolve(makeOkResult(82)));
 
+    expect(mockIssueCreate).toHaveBeenCalledOnce();
     expect(mockIssueCreate.mock.calls[0]![1].assigneeAgentId).toBe("ceo-agent-uuid");
   });
 
   it("creates the issue without an assignee when no CEO agent exists", async () => {
     const db = buildMockDb(
-      () => Promise.resolve([]),   // no CEO
-      () => Promise.resolve([]),
+      () => Promise.resolve([]),   // alert check: no existing alert
+      () => Promise.resolve([]),   // CEO lookup: no CEO
     );
 
     await checkAndFireClaudeLocalQuotaAlert(db as never, COMPANY_ID, () => Promise.resolve(makeOkResult(82)));
 
+    expect(mockIssueCreate).toHaveBeenCalledOnce();
     expect(mockIssueCreate.mock.calls[0]![1].assigneeAgentId).toBeUndefined();
   });
 });
