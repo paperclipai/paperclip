@@ -422,7 +422,11 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
         repairedConfig = true;
       }
 
-      if (Number.isInteger(runtimeConfig.server.port) && runtimeConfig.server.port > 0) {
+      if (
+        !nonEmpty(process.env.PORT)
+        && Number.isInteger(runtimeConfig.server.port)
+        && runtimeConfig.server.port > 0
+      ) {
         process.env.PORT = String(runtimeConfig.server.port);
       }
     } catch {
