@@ -342,6 +342,8 @@ describe("SharedPollingCoordinator", () => {
   });
 
   it("keeps active publish dedupe entries when inactive keys exceed the cache limit", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
     const channel = new MemorySharedChannel();
     const coordinator = startLeaderCoordinator(channel);
     const unsubscribe = coordinator.subscribeResource("company:resource-1", vi.fn());
@@ -352,9 +354,25 @@ describe("SharedPollingCoordinator", () => {
     coordinator.publish("company:resource-1", { index: 1 }, 34);
 
     expect(channel.posts.filter((message) => message.type === "result")).toHaveLength(33);
-    expect(getCoordinatorCaches(coordinator).lastPublished.has("company:resource-1")).toBe(true);
+    const caches = getCoordinatorCaches(coordinator);
+    expect(caches.latestResults.size).toBe(33);
+    expect(caches.lastPublished.size).toBe(33);
+    expect(caches.lastPublished.has("company:resource-1")).toBe(true);
+
+    vi.advanceTimersByTime(5 * 60_000 + 10_000);
+    expect(caches.latestResults.size).toBe(1);
+    expect(caches.lastPublished.size).toBe(1);
+    coordinator.publish("company:resource-1", { index: 1 }, 35);
+    expect(channel.posts.filter((message) => message.type === "result")).toHaveLength(33);
 
     unsubscribe();
+    vi.advanceTimersByTime(5 * 60_000 - 1);
+    expect(caches.latestResults.size).toBe(1);
+    expect(caches.lastPublished.size).toBe(1);
+    vi.advanceTimersByTime(10_001);
+    expect(caches.latestResults.size).toBe(0);
+    expect(caches.lastPublished.size).toBe(0);
+
     coordinator.stop();
   });
 

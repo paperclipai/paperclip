@@ -626,6 +626,7 @@ export class SharedPollingCoordinator {
       listeners?.delete(listener);
       if (listeners?.size === 0) {
         this.resourceListeners.delete(key);
+        this.markInactive(key);
       }
     };
   }
@@ -774,26 +775,36 @@ export class SharedPollingCoordinator {
   }
 
   private evictLeastRecentlyUsed<T>(entries: Map<string, T>): void {
-    while (entries.size > MAX_COORDINATOR_CACHE_ENTRIES) {
-      let evicted = false;
-      for (const key of entries.keys()) {
-        if ((this.resourceListeners.get(key)?.size ?? 0) > 0) continue;
-        entries.delete(key);
-        evicted = true;
-        break;
-      }
-      if (!evicted) return;
+    const inactiveKeys = Array.from(entries.keys()).filter(
+      (key) => (this.resourceListeners.get(key)?.size ?? 0) === 0,
+    );
+    while (inactiveKeys.length > MAX_COORDINATOR_CACHE_ENTRIES) {
+      const oldestInactiveKey = inactiveKeys.shift();
+      if (oldestInactiveKey === undefined) return;
+      entries.delete(oldestInactiveKey);
     }
   }
 
   private evictIdleEntries(): void {
     const expiresBefore = this.now() - COORDINATOR_CACHE_TTL_MS;
     for (const [key, entry] of this.latestResults) {
+      if ((this.resourceListeners.get(key)?.size ?? 0) > 0) continue;
       if (entry.lastAccessedAt < expiresBefore) this.latestResults.delete(key);
     }
     for (const [key, entry] of this.lastPublished) {
+      if ((this.resourceListeners.get(key)?.size ?? 0) > 0) continue;
       if (entry.lastAccessedAt < expiresBefore) this.lastPublished.delete(key);
     }
+  }
+
+  private markInactive(key: string): void {
+    const inactiveAt = this.now();
+    const latest = this.latestResults.get(key);
+    if (latest) latest.lastAccessedAt = inactiveAt;
+    const published = this.lastPublished.get(key);
+    if (published) published.lastAccessedAt = inactiveAt;
+    this.evictLeastRecentlyUsed(this.latestResults);
+    this.evictLeastRecentlyUsed(this.lastPublished);
   }
 
   private setSnapshot(snapshot: SharedPollingSnapshot): void {
