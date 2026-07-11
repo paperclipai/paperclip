@@ -727,9 +727,9 @@ export class SharedPollingCoordinator {
       return;
     }
 
+    this.setLatestResult(message.key, message);
     const listeners = this.resourceListeners.get(message.key);
     if (!listeners || listeners.size === 0) return;
-    this.setLatestResult(message.key, message);
     for (const listener of listeners) listener(message);
   }
 
@@ -775,9 +775,14 @@ export class SharedPollingCoordinator {
 
   private evictLeastRecentlyUsed<T>(entries: Map<string, T>): void {
     while (entries.size > MAX_COORDINATOR_CACHE_ENTRIES) {
-      const oldestKey = entries.keys().next().value;
-      if (oldestKey === undefined) return;
-      entries.delete(oldestKey);
+      let evicted = false;
+      for (const key of entries.keys()) {
+        if ((this.resourceListeners.get(key)?.size ?? 0) > 0) continue;
+        entries.delete(key);
+        evicted = true;
+        break;
+      }
+      if (!evicted) return;
     }
   }
 

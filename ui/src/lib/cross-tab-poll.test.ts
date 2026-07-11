@@ -305,7 +305,7 @@ describe("SharedPollingCoordinator", () => {
     coordinator.stop();
   });
 
-  it("retains broadcast payloads through quick resource resubscriptions", () => {
+  it("retains listenerless broadcasts through quick resource resubscriptions", () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
     const channel = new MemorySharedChannel();
@@ -320,10 +320,11 @@ describe("SharedPollingCoordinator", () => {
     };
 
     channel.emit(message);
-    expect(getCoordinatorCaches(coordinator).latestResults.size).toBe(0);
+    expect(getCoordinatorCaches(coordinator).latestResults.size).toBe(1);
 
-    const unsubscribe = coordinator.subscribeResource(message.key, vi.fn());
-    channel.emit(message);
+    const firstListener = vi.fn();
+    const unsubscribe = coordinator.subscribeResource(message.key, firstListener);
+    expect(firstListener).toHaveBeenCalledWith(message);
     expect(getCoordinatorCaches(coordinator).latestResults.size).toBe(1);
 
     unsubscribe();
@@ -337,6 +338,23 @@ describe("SharedPollingCoordinator", () => {
     vi.advanceTimersByTime(5 * 60_000 + 10_000);
     expect(getCoordinatorCaches(coordinator).latestResults.size).toBe(0);
 
+    coordinator.stop();
+  });
+
+  it("keeps active publish dedupe entries when inactive keys exceed the cache limit", () => {
+    const channel = new MemorySharedChannel();
+    const coordinator = startLeaderCoordinator(channel);
+    const unsubscribe = coordinator.subscribeResource("company:resource-1", vi.fn());
+
+    for (let index = 1; index <= 33; index += 1) {
+      coordinator.publish(`company:resource-${index}`, { index }, index);
+    }
+    coordinator.publish("company:resource-1", { index: 1 }, 34);
+
+    expect(channel.posts.filter((message) => message.type === "result")).toHaveLength(33);
+    expect(getCoordinatorCaches(coordinator).lastPublished.has("company:resource-1")).toBe(true);
+
+    unsubscribe();
     coordinator.stop();
   });
 
