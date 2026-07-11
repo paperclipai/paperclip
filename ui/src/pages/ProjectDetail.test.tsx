@@ -24,6 +24,7 @@ const mockBudgetsApi = vi.hoisted(() => ({ overview: vi.fn(), upsertPolicy: vi.f
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockInstanceSettingsApi = vi.hoisted(() => ({ getExperimental: vi.fn() }));
 const mockAssetsApi = vi.hoisted(() => ({ uploadImage: vi.fn() }));
+const mockGithubConnectionsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockIssuesList = vi.hoisted(() => vi.fn());
@@ -39,6 +40,7 @@ vi.mock("../api/budgets", () => ({ budgetsApi: mockBudgetsApi }));
 vi.mock("../api/execution-workspaces", () => ({ executionWorkspacesApi: mockExecutionWorkspacesApi }));
 vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
 vi.mock("../api/assets", () => ({ assetsApi: mockAssetsApi }));
+vi.mock("../api/githubConnections", () => ({ githubConnectionsApi: mockGithubConnectionsApi }));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to }: { children?: ReactNode; to: string }) => <a href={to}>{children}</a>,
@@ -205,6 +207,7 @@ describe("ProjectDetail", () => {
     mockBudgetsApi.overview.mockResolvedValue({ policies: [] });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
+    mockGithubConnectionsApi.list.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -295,5 +298,45 @@ describe("ProjectDetail", () => {
     };
     expect(latestProps.issues.map((item) => item.id)).toEqual(["issue-human"]);
     expect(latestProps.baseCreateIssueDefaults).toEqual({ workItemType: "human_task" });
+  });
+
+  it("exposes project GitHub binding directly on the configuration tab", async () => {
+    mockLocationState.pathname = "/projects/project-1/configuration";
+    mockGithubConnectionsApi.list.mockResolvedValue([
+      {
+        id: "github-1",
+        companyId: "company-1",
+        name: "Ade personal",
+        hostname: "github.com",
+        secretId: "secret-1",
+        secretName: "GITHUB_PERSONAL_TOKEN",
+        enabled: true,
+        accountLogin: "AdeChrysler",
+        lastTestedAt: new Date(),
+        lastTestStatus: "success",
+        lastTestMessage: "Connected as AdeChrysler",
+        projectCount: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProjectDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain("GitHub identity");
+    expect(container.textContent).toContain("Ade personal (@AdeChrysler)");
+    expect(container.querySelector('select[aria-label="Bound GitHub connection"]')).not.toBeNull();
   });
 });

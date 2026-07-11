@@ -15,6 +15,7 @@ import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
+import { githubConnectionsApi } from "../api/githubConnections";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { accessApi } from "../api/access";
@@ -42,7 +43,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
-import { Loader2, Users, Shield, ChevronDown, ChevronRight, Trash2, Plus, Bot, ListChecks, UserCheck } from "lucide-react";
+import { CheckCircle2, Github, Loader2, Users, Shield, ChevronDown, ChevronRight, Trash2, Plus, Bot, ListChecks, UserCheck, XCircle } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
@@ -1116,6 +1117,40 @@ export function ProjectDetail() {
     onSuccess: invalidateProject,
   });
 
+  const githubConnectionsQuery = useQuery({
+    queryKey: resolvedCompanyId
+      ? queryKeys.githubConnections.list(resolvedCompanyId)
+      : ["github-connections", "__project-disabled__"],
+    queryFn: () => githubConnectionsApi.list(resolvedCompanyId!),
+    enabled: activeTab === "configuration" && Boolean(resolvedCompanyId),
+  });
+
+  const bindGithubConnection = useMutation({
+    mutationFn: (githubConnectionId: string | null) =>
+      projectsApi.update(
+        projectLookupRef,
+        { githubConnectionId },
+        resolvedCompanyId ?? lookupCompanyId,
+      ),
+    onSuccess: (updatedProject) => {
+      invalidateProject();
+      const selected = githubConnectionsQuery.data?.find(
+        (connection) => connection.id === updatedProject.githubConnectionId,
+      );
+      pushToast({
+        title: selected ? `GitHub connection bound: ${selected.name}` : "GitHub connection removed",
+        tone: "success",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to bind GitHub connection",
+        body: error instanceof Error ? error.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
   const archiveProject = useMutation({
     mutationFn: (archived: boolean) =>
       projectsApi.update(
@@ -1506,7 +1541,72 @@ export function ProjectDetail() {
       ) : null}
 
       {activeTab === "configuration" && (
-        <div className="max-w-4xl">
+        <div className="max-w-4xl space-y-6">
+          <section className="overflow-hidden rounded-xl border border-border bg-card">
+            <div className="flex items-start gap-3 border-b border-border bg-muted/30 px-5 py-4">
+              <div className="rounded-lg bg-foreground p-2 text-background">
+                <Github className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold">GitHub identity</h2>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  Choose which company GitHub credential this project uses for private clones, GitHub CLI, fetch, and push.
+                </p>
+              </div>
+            </div>
+            <div className="space-y-3 p-5">
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Bound connection
+                </span>
+                <select
+                  aria-label="Bound GitHub connection"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                  value={project.githubConnectionId ?? ""}
+                  disabled={githubConnectionsQuery.isLoading || bindGithubConnection.isPending}
+                  onChange={(event) => bindGithubConnection.mutate(event.target.value || null)}
+                >
+                  <option value="">No native GitHub credential</option>
+                  {(githubConnectionsQuery.data ?? []).map((connection) => {
+                    const ready = connection.enabled && connection.lastTestStatus === "success";
+                    return (
+                      <option
+                        key={connection.id}
+                        value={connection.id}
+                        disabled={!ready && connection.id !== project.githubConnectionId}
+                      >
+                        {connection.name}
+                        {connection.accountLogin ? ` (@${connection.accountLogin})` : ""}
+                        {ready ? "" : " — needs attention"}
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
+
+              {(() => {
+                const selected = githubConnectionsQuery.data?.find(
+                  (connection) => connection.id === project.githubConnectionId,
+                );
+                if (!selected) return null;
+                const ready = selected.enabled && selected.lastTestStatus === "success";
+                return (
+                  <div className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-xs ${ready ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "border-destructive/25 bg-destructive/10 text-destructive"}`}>
+                    {ready ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+                    <span>{selected.lastTestMessage ?? (ready ? "Connection verified." : "Test or rotate this connection before using it.")}</span>
+                  </div>
+                );
+              })()}
+
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span>Only verified connections can be newly bound.</span>
+                <Link className="font-medium text-foreground underline underline-offset-4" to="/company/settings/github">
+                  Manage GitHub connections
+                </Link>
+              </div>
+            </div>
+          </section>
+
           <ProjectProperties
             project={project}
             onUpdate={(data) => updateProject.mutate(data)}
