@@ -231,10 +231,10 @@ export function githubConnectionService(db: Db) {
       const row = await getRow(companyId, id);
       if (!row) throw notFound("GitHub connection not found");
       if (!row.enabled) throw unprocessable("GitHub connection is disabled");
-      const token = await secrets.resolveSecretValue(companyId, row.secretId, "latest");
       const testedAt = new Date();
       let result: GithubConnectionTestResult;
       try {
+        const token = await secrets.resolveSecretValue(companyId, row.secretId, "latest");
         const response = await fetch(`${githubApiBase(row.hostname)}/user`, {
           headers: {
             Accept: "application/vnd.github+json",
@@ -250,7 +250,11 @@ export function githubConnectionService(db: Db) {
         const login = typeof payload.login === "string" ? payload.login : null;
         result = { ok: true, accountLogin: login, hostname: row.hostname, message: login ? `Connected as ${login}` : "Connection verified", testedAt };
       } catch (error) {
-        result = { ok: false, accountLogin: null, hostname: row.hostname, message: error instanceof Error ? error.message : "Connection failed", testedAt };
+        const rawMessage = error instanceof Error ? error.message : "Connection failed";
+        const message = /unable to authenticate data|unsupported state/i.test(rawMessage)
+          ? "Stored secret cannot be decrypted with the active master key. Rotate the secret and try again."
+          : rawMessage;
+        result = { ok: false, accountLogin: null, hostname: row.hostname, message, testedAt };
       }
       await db.update(companyGithubConnections).set({
         accountLogin: result.accountLogin,
