@@ -177,6 +177,8 @@ describe("Artifacts page", () => {
     const { root } = renderArtifacts(container);
 
     await waitForAssertion(() => {
+      expect(container.querySelector("h1")?.textContent).toBe("Artifacts");
+      expect(container.textContent).toContain("grouped into task stacks by default");
       expect(artifactsApiMock.list).toHaveBeenCalledWith("company-1", {
         kind: "all",
         q: undefined,

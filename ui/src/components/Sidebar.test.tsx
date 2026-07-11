@@ -391,6 +391,10 @@ describe("Sidebar", () => {
     const timelineLink = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Timeline");
     expect(timelineLink?.getAttribute("href")).toBe("/timeline");
 
+    const companyText = companySection?.textContent ?? "";
+    expect(companyText.indexOf("Costs")).toBeLessThan(companyText.indexOf("Timeline"));
+    expect(companyText.indexOf("Timeline")).toBeLessThan(companyText.indexOf("Activity"));
+
     flushSync(() => {
       root.unmount();
     });
