@@ -1,0 +1,13 @@
+{
+  "report_root": "~/.paperclip/seo-geo",
+  "sites": [
+    {
+      "name": "whitestag.ai",
+      "url": "https://whitestag.ai",
+      "wp_rest_base": "https://whitestag.ai/wp-json",
+      "credential_ref": "WHITESTAG_AI_WP",
+      "crawl_limit": 200,
+      "seo_plugin": "yoast"
+    }
+  ]
+}
