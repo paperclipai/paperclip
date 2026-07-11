@@ -1388,15 +1388,22 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     );
   });
 
-  it("creates a fresh escalation when the previous matching escalation is terminal", async () => {
+  it("suppresses a fresh escalation when a terminal incident has the same stranded leaf despite a classifier change", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
     const heartbeat = heartbeatService(db);
-    const incidentKey = [
+    const currentIncidentKey = [
       "harness_liveness",
       companyId,
       blockedIssueId,
       "blocked_by_unassigned_issue",
+      blockerIssueId,
+    ].join(":");
+    const terminalIncidentKey = [
+      "harness_liveness",
+      companyId,
+      blockedIssueId,
+      "in_review_without_action_path",
       blockerIssueId,
     ].join(":");
     const closedEscalationId = randomUUID();
@@ -1412,12 +1419,12 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       issueNumber: 3,
       identifier: "CLOSED-3",
       originKind: "harness_liveness_escalation",
-      originId: incidentKey,
+      originId: terminalIncidentKey,
     });
 
     const result = await heartbeat.reconcileIssueGraphLiveness();
 
-    expect(result.escalationsCreated).toBe(1);
+    expect(result.escalationsCreated).toBe(0);
     expect(result.existingEscalations).toBe(0);
 
     const openEscalations = await db
@@ -1427,15 +1434,14 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
         and(
           eq(issues.companyId, companyId),
           eq(issues.originKind, "harness_liveness_escalation"),
-          eq(issues.originId, incidentKey),
         ),
       );
-    expect(openEscalations).toHaveLength(2);
-    const freshEscalation = openEscalations.find((issue) => issue.status !== "done");
-    expect(freshEscalation).toMatchObject({
-      parentId: blockerIssueId,
+    expect(openEscalations).toHaveLength(1);
+    expect(openEscalations[0]).toMatchObject({
+      id: closedEscalationId,
+      parentId: blockedIssueId,
       assigneeAgentId: managerId,
-      status: expect.stringMatching(/^(todo|in_progress|done)$/),
+      status: "done",
     });
 
     const blockers = await db
@@ -1443,6 +1449,5 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(issueRelations)
       .where(eq(issueRelations.relatedIssueId, blockedIssueId));
     expect(blockers.some((row) => row.blockerIssueId === closedEscalationId)).toBe(false);
-    expect(blockers.some((row) => row.blockerIssueId === freshEscalation?.id)).toBe(true);
   });
 });

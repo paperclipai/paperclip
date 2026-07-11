@@ -2903,6 +2903,35 @@ export function recoveryService(
     }) ?? null;
   }
 
+  /**
+   * A liveness escalation is evidence about a stranded leaf, not a disposable
+   * work item. Agents can complete or cancel the recovery ticket without
+   * changing the original leaf. Recreating it every scheduler pass turns that
+   * one unresolved incident into board spam, especially when the classifier
+   * alternates between blocked and in_review. Keep the terminal incident as
+   * the durable suppression record for that stranded leaf.
+   */
+  async function findTerminalLivenessEscalationForLeaf(finding: IssueLivenessFinding) {
+    const leafIssueId = livenessRecoveryLeafIssueId(finding);
+    const candidates = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, finding.companyId),
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.id));
+
+    return candidates.find((row) => {
+      const parsed = parseLivenessIncidentKey(row.originId);
+      return parsed?.leafIssueId === leafIssueId;
+    }) ?? null;
+  }
+
   async function removeRecoveryBlockerFromSource(recovery: typeof issues.$inferSelect) {
     const parsed = parseLivenessIncidentKey(recovery.originId);
     if (!parsed) return false;
@@ -3640,6 +3669,19 @@ export function recoveryService(
         runId: input.runId ?? null,
       });
       return { kind: "existing" as const, escalationIssueId: existing.id };
+    }
+
+    const terminalIncident = await findTerminalLivenessEscalationForLeaf(input.finding);
+    if (terminalIncident) {
+      logger.warn({
+        incidentKey: input.finding.incidentKey,
+        findingState: input.finding.state,
+        sourceIssueId: issue.id,
+        recoveryIssueId: recoveryIssue.id,
+        terminalEscalationIssueId: terminalIncident.id,
+        terminalEscalationStatus: terminalIncident.status,
+      }, "suppressed repeated liveness escalation for an unresolved leaf");
+      return { kind: "suppressed_terminal_incident" as const, escalationIssueId: terminalIncident.id };
     }
 
     const ownerSelection = await resolveEscalationOwnerAgentId(input.finding, recoveryIssue);
