@@ -174,6 +174,7 @@ import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { checkAndFireStandupFallback } from "./standup-fallback.js";
+import { checkAndFireClaudeLocalQuotaAlert } from "./quota-alert.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -8485,6 +8486,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ).catch((err) => {
           logger.warn({ err, agentId: agent.id, companyId: agent.companyId }, "standup-fallback: check failed");
         });
+      }
+      if (agent.adapterType === "claude_local") {
+        const claudeAdapter = getServerAdapter("claude_local");
+        if (claudeAdapter.getQuotaWindows) {
+          checkAndFireClaudeLocalQuotaAlert(db, agent.companyId, claudeAdapter.getQuotaWindows.bind(claudeAdapter)).catch(
+            (err) => {
+              logger.warn({ err, agentId: agent.id, companyId: agent.companyId }, "quota-alert: check failed");
+            },
+          );
+        }
       }
     } catch (err) {
       const message = redactCurrentUserText(
