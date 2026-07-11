@@ -10,6 +10,7 @@ import type { BuiltInAgentState, BuiltInAgentStatus } from "@/api/builtInAgents"
 
 const listMock = vi.hoisted(() => vi.fn());
 const resumeMock = vi.hoisted(() => vi.fn());
+const experimentalSettingsMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/builtInAgents", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/builtInAgents")>();
@@ -21,6 +22,10 @@ vi.mock("@/api/builtInAgents", async (importOriginal) => {
 
 vi.mock("@/api/agents", () => ({
   agentsApi: { resume: resumeMock },
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: { getExperimental: experimentalSettingsMock },
 }));
 
 // The configure modal pulls in the full AgentConfigForm; stub it so the gate
@@ -90,6 +95,8 @@ describe("BuiltInAgentGate (PAP-12978)", () => {
     document.body.appendChild(container);
     listMock.mockReset();
     resumeMock.mockReset();
+    experimentalSettingsMock.mockReset();
+    experimentalSettingsMock.mockResolvedValue({ enableBuiltInAgents: true });
   });
 
   afterEach(() => {
@@ -106,6 +113,32 @@ describe("BuiltInAgentGate (PAP-12978)", () => {
     expect(container.textContent).toContain("Set up the Briefs Agent");
     expect(container.textContent).toContain("Configure its model to enable the feature");
     expect(container.querySelector('[data-testid="feature"]')).toBeNull();
+  });
+
+  it("does not request built-in agents while the experimental feature is disabled", async () => {
+    experimentalSettingsMock.mockResolvedValue({ enableBuiltInAgents: false });
+    await renderGate();
+
+    expect(listMock).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="feature"]')).not.toBeNull();
+  });
+
+  it("waits for the experimental flag before requesting built-in agents", async () => {
+    let resolveSettings: ((value: { enableBuiltInAgents: boolean }) => void) | undefined;
+    experimentalSettingsMock.mockImplementation(
+      () => new Promise<{ enableBuiltInAgents: boolean }>((resolve) => {
+        resolveSettings = resolve;
+      }),
+    );
+    listMock.mockResolvedValue([]);
+
+    await renderGate();
+    expect(listMock).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="feature"]')).not.toBeNull();
+
+    resolveSettings?.({ enableBuiltInAgents: true });
+    await flushReact();
+    expect(listMock).toHaveBeenCalledWith("c1");
   });
 
   it("renders the setup empty-state for not_provisioned", async () => {

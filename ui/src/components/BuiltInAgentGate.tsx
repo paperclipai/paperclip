@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { ConfigureBuiltInAgentModal } from "@/components/ConfigureBuiltInAgentModal";
 import { builtInAgentsApi, type BuiltInAgentState } from "@/api/builtInAgents";
 import { agentsApi } from "@/api/agents";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
 import { agentUrl } from "@/lib/utils";
 import { relativeTime } from "@/lib/utils";
@@ -36,10 +37,16 @@ export function BuiltInAgentGate({ agentKey, companyId, featureLabel, children }
   const queryClient = useQueryClient();
   const [configureOpen, setConfigureOpen] = useState(false);
 
+  const experimentalQuery = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    enabled: Boolean(companyId),
+  });
+  const builtInAgentsEnabled = experimentalQuery.data?.enableBuiltInAgents === true;
   const { data: states, isLoading } = useQuery({
     queryKey: queryKeys.builtInAgents.list(companyId ?? "__none__"),
     queryFn: () => builtInAgentsApi.list(companyId!),
-    enabled: Boolean(companyId),
+    enabled: Boolean(companyId) && builtInAgentsEnabled,
   });
 
   const state: BuiltInAgentState | undefined = states?.find((entry) => entry.definition.key === agentKey);
@@ -54,6 +61,9 @@ export function BuiltInAgentGate({ agentKey, companyId, featureLabel, children }
 
   // Unknown key or still resolving the company — fail open to the feature.
   if (!companyId) return <>{children}</>;
+  // The built-in-agent API is intentionally unavailable while the experimental
+  // feature is disabled. Do not probe it until the flag has been confirmed.
+  if (!experimentalQuery.isFetched || !builtInAgentsEnabled) return <>{children}</>;
   if (isLoading && !states) return <PageSkeleton variant="detail" />;
   if (!state) return <>{children}</>;
 
