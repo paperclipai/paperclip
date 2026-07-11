@@ -1,11 +1,9 @@
 ---
 name: release-changelog-discord-message
 description: >
-  Write the Discord release announcement for a stable Paperclip release. Companion
-  to `release-changelog` — that skill produces the file at `releases/vYYYY.MDD.P.md`;
-  this one turns that file into a single copy-pasteable Discord post in dotta's
-  voice and attaches it as the `discord_announcement` document on the release
-  issue.
+  Write the Discord announcement for a stable Paperclip release from the release
+  changelog. Use when a release issue needs a copy-pasteable dotta-voice Discord
+  post or refreshed discord_announcement document.
 ---
 
 # Release Discord Announcement Skill

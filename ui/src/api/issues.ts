@@ -252,6 +252,12 @@ export const issuesApi = {
     data: { answers: AskUserQuestionsAnswer[]; summaryMarkdown?: string | null },
   ) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/respond`, data),
+  submitInteractionVerdicts: (
+    id: string,
+    interactionId: string,
+    verdicts: { id: string; verdict: "approve" | "reject" | "defer"; reason?: string | null }[],
+  ) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/verdicts`, { verdicts }),
   getComment: (id: string, commentId: string) =>
     api.get<IssueComment>(`/issues/${id}/comments/${commentId}`),
   listFeedbackVotes: (id: string) => api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),

@@ -30,6 +30,12 @@ export interface FakeSandboxEnvironmentConfig {
   reuseLease: boolean;
   /** Stream agent CLI stdout/stderr during sandbox runs (bridge log-tail loop). */
   streamRunLogs?: boolean;
+  /**
+   * Archive the sandbox on lease release instead of deleting it, so operators
+   * can inspect it from the provider dashboard. Injected by test/probe paths;
+   * providers without archive support delete as usual.
+   */
+  archiveOnRelease?: boolean;
 }
 
 export interface PluginSandboxEnvironmentConfig {
@@ -38,6 +44,12 @@ export interface PluginSandboxEnvironmentConfig {
   timeoutMs?: number;
   /** Stream agent CLI stdout/stderr during sandbox runs (bridge log-tail loop). */
   streamRunLogs?: boolean;
+  /**
+   * Archive the sandbox on lease release instead of deleting it, so operators
+   * can inspect it from the provider dashboard. Injected by test/probe paths;
+   * providers without archive support delete as usual.
+   */
+  archiveOnRelease?: boolean;
   [key: string]: unknown;
 }
 

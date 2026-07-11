@@ -8,7 +8,11 @@ import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
 } from "@paperclipai/adapter-utils";
-import { readAdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import {
+  ensureAdapterExecutionTargetCommandResolvable,
+  readAdapterExecutionTarget,
+  resolveAdapterExecutionTargetCwd,
+} from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_ACP_ENGINE_MODE,
   DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS,
@@ -179,10 +183,30 @@ async function findAncestorBin(startDir: string, binName: string): Promise<strin
   }
 }
 
-async function commandIsResolvable(command: string): Promise<boolean> {
+async function commandIsResolvable(
+  command: string,
+  input?: CodexEngineResolutionInput,
+): Promise<boolean> {
   const trimmed = command.trim();
   if (!trimmed) return false;
   if (looksLikeShellCommand(trimmed)) return true;
+  const target = readAdapterExecutionTarget({
+    executionTarget: input?.executionTarget,
+    legacyRemoteExecution: input?.executionTransport?.remoteExecution,
+  });
+  if (target?.kind === "remote") {
+    try {
+      await ensureAdapterExecutionTargetCommandResolvable(
+        trimmed,
+        target,
+        resolveAdapterExecutionTargetCwd(target, asString(input?.config.cwd, ""), process.cwd()),
+        process.env,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
   if (path.isAbsolute(trimmed) || hasPathSeparator(trimmed)) return pathExists(trimmed);
   return (await findCommandOnPath(trimmed)) !== null;
 }
@@ -197,6 +221,22 @@ async function resolveCodexAcpCommand(config: Record<string, unknown>): Promise<
   );
 }
 
+function sandboxTargetHasProcessSessionBridge(
+  target: ReturnType<typeof readAdapterExecutionTarget>,
+): boolean {
+  return target?.kind === "remote" && target.transport === "sandbox" && Boolean(target.runner);
+}
+
+async function resolveCodexAcpCommandForTarget(
+  config: Record<string, unknown>,
+  target: ReturnType<typeof readAdapterExecutionTarget>,
+): Promise<string> {
+  const configured = firstNonEmptyString(config.agentCommand, config.acpAgentCommand);
+  if (configured) return configured;
+  if (target?.kind === "remote") return "codex-acp";
+  return resolveCodexAcpCommand(config);
+}
+
 async function defaultCodexAcpFallbackReason(
   input: CodexEngineResolutionInput,
 ): Promise<string | null> {
@@ -204,14 +244,17 @@ async function defaultCodexAcpFallbackReason(
     executionTarget: input.executionTarget,
     legacyRemoteExecution: input.executionTransport?.remoteExecution,
   });
-  if (target?.kind === "remote") {
-    return "Codex ACP currently supports only the local Paperclip host, but this run targets a remote environment.";
+  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target)) {
+    if (target.transport === "sandbox") {
+      return "Codex ACP requires a bidirectional remote process target; this sandbox exposes only one-shot command execution.";
+    }
+    return "Codex ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
   }
   if (!nodeVersionMeetsCodexAcpMinimum()) {
     return `Node ${process.version} does not satisfy Codex ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
   }
-  const command = await resolveCodexAcpCommand(input.config);
-  if (!(await commandIsResolvable(command))) {
+  const command = await resolveCodexAcpCommandForTarget(input.config, target);
+  if (!(await commandIsResolvable(command, input))) {
     return `Codex ACP server command is not available: ${command}.`;
   }
   return null;
@@ -257,10 +300,10 @@ export async function testCodexAcpEnvironment(
 
   if (targetIsRemote) {
     checks.push({
-      code: "codex_acp_remote_target_unsupported",
-      level: "error",
-      message: "Codex ACP currently runs on the local Paperclip host and cannot target a remote execution environment.",
-      hint: "Use engine=cli for remote or sandbox Codex runs.",
+      code: "codex_acp_remote_target",
+      level: "info",
+      message: "Codex ACP will run against the remote execution environment.",
+      hint: "Remote ACP requires a bidirectional process target such as SSH or Paperclip's sandbox process-session bridge.",
     });
   }
 
@@ -292,8 +335,11 @@ export async function testCodexAcpEnvironment(
       : `Run Codex ACP with Node >=${MIN_ACP_NODE_VERSION} or switch engine=cli.`,
   });
 
-  const command = await resolveCodexAcpCommand(config);
-  const commandResolvable = await commandIsResolvable(command);
+  const command = await resolveCodexAcpCommandForTarget(config, target);
+  const commandResolvable = await commandIsResolvable(command, {
+    config,
+    executionTarget: ctx.executionTarget,
+  });
   checks.push({
     code: commandResolvable ? "codex_acp_command_resolvable" : "codex_acp_command_missing",
     level: commandResolvable ? "info" : "error",

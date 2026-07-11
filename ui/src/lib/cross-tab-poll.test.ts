@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   LeaderElection,
+  SharedPollingCoordinator,
   createLeaseStore,
   createStorageRelayShared,
   type LeaseStore,
+  type SharedChannel,
   type SharedMessage,
 } from "./cross-tab-poll";
 
@@ -21,6 +23,48 @@ class MemoryLeaseStore implements LeaseStore {
   clear() {
     this.record = null;
   }
+}
+
+class MemorySharedChannel implements SharedChannel {
+  posts: SharedMessage[] = [];
+  private handler: ((message: SharedMessage) => void) | null = null;
+
+  post(message: SharedMessage) {
+    this.posts.push(message);
+  }
+
+  subscribe(handler: (message: SharedMessage) => void) {
+    this.handler = handler;
+    return () => {
+      this.handler = null;
+    };
+  }
+
+  emit(message: SharedMessage) {
+    this.handler?.(message);
+  }
+
+  close() {}
+}
+
+function startLeaderCoordinator(channel: MemorySharedChannel) {
+  const store = new MemoryLeaseStore();
+  const election = new LeaderElection({ now: () => Date.now(), store, random: () => 0 }, {
+    tabId: "leader",
+    leaseTtlMs: 10_000,
+  });
+  const coordinator = new SharedPollingCoordinator("company-1", {
+    tabId: "leader",
+    channel,
+    election,
+    tickMs: 10_000,
+    publishDebounceMs: 1_000,
+    now: () => Date.now(),
+    getVisible: () => true,
+  });
+  coordinator.start();
+  expect(coordinator.getSnapshot().isLeader).toBe(true);
+  return coordinator;
 }
 
 describe("LeaderElection", () => {
@@ -155,5 +199,74 @@ describe("createStorageRelayShared", () => {
       { type: "result", key: "company:live-runs", from: "leader", at: 123, data: [{ id: "run-1" }] },
     ]);
     unsubscribe();
+  });
+});
+
+describe("SharedPollingCoordinator", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("dedupes same-resource publishes and rate limits trailing result broadcasts", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const channel = new MemorySharedChannel();
+    const coordinator = startLeaderCoordinator(channel);
+
+    coordinator.publish("company:live-runs", [{ id: "run-1", lastEventAt: "a" }], 100);
+    expect(channel.posts.filter((message) => message.type === "result")).toEqual([
+      {
+        type: "result",
+        key: "company:live-runs",
+        from: "leader",
+        at: 1_000,
+        dataUpdatedAt: 100,
+        data: [{ id: "run-1", lastEventAt: "a" }],
+      },
+    ]);
+
+    coordinator.publish("company:live-runs", [{ lastEventAt: "a", id: "run-1" }], 100);
+    coordinator.publish("company:live-runs", [{ id: "run-1", lastEventAt: "a" }], 101);
+    expect(channel.posts.filter((message) => message.type === "result")).toHaveLength(1);
+
+    vi.setSystemTime(1_200);
+    coordinator.publish("company:live-runs", [{ id: "run-1", lastEventAt: "b" }], 200);
+    coordinator.publish("company:live-runs", [{ id: "run-1", lastEventAt: "b" }], 200);
+    expect(channel.posts.filter((message) => message.type === "result")).toHaveLength(1);
+
+    vi.advanceTimersByTime(799);
+    expect(channel.posts.filter((message) => message.type === "result")).toHaveLength(1);
+
+    vi.advanceTimersByTime(1);
+    expect(channel.posts.filter((message) => message.type === "result")).toHaveLength(2);
+    expect(channel.posts.at(-1)).toEqual({
+      type: "result",
+      key: "company:live-runs",
+      from: "leader",
+      at: 2_000,
+      dataUpdatedAt: 200,
+      data: [{ id: "run-1", lastEventAt: "b" }],
+    });
+
+    coordinator.stop();
+  });
+
+  it("preserves original result timestamps when reposting the latest result for a request", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(5_000);
+    const channel = new MemorySharedChannel();
+    const coordinator = startLeaderCoordinator(channel);
+
+    coordinator.publish("company:live-runs", [{ id: "run-1" }], 123);
+    const original = channel.posts[0];
+
+    vi.setSystemTime(9_000);
+    channel.emit({ type: "request", key: "company:live-runs", from: "follower", at: 9_000 });
+
+    expect(channel.posts[1]).toEqual({ ...original, from: "leader" });
+    expect(channel.posts[1]?.at).toBe(5_000);
+    expect(channel.posts[1]?.dataUpdatedAt).toBe(123);
+
+    coordinator.stop();
   });
 });

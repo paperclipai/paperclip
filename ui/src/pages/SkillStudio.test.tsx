@@ -95,7 +95,29 @@ vi.mock("@/components/SearchableSelect", () => ({
 }));
 
 vi.mock("@/components/MarkdownEditor", () => ({
-  MarkdownEditor: ({ value }: { value: string }) => <textarea readOnly value={value} />,
+  MarkdownEditor: ({
+    value,
+    onChange,
+    readOnly,
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    readOnly?: boolean;
+  }) => (
+    <textarea
+      data-testid="markdown-editor"
+      readOnly={readOnly}
+      value={value}
+      onChange={(event) => {
+        if (!readOnly) onChange(event.target.value);
+      }}
+      onKeyDown={(event) => {
+        if (!readOnly && event.key === "E") {
+          onChange(`${value}\n\nEdited body\n`);
+        }
+      }}
+    />
+  ),
 }));
 
 vi.mock("@/components/MarkdownBody", () => ({
@@ -178,6 +200,12 @@ async function inputValue(input: HTMLInputElement | HTMLTextAreaElement, value: 
 async function click(button: HTMLButtonElement) {
   await act(async () => {
     button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+}
+
+async function keyDown(element: HTMLElement, key: string) {
+  await act(async () => {
+    element.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key }));
   });
 }
 
@@ -554,6 +582,54 @@ describe("SkillStudio editor frontmatter", () => {
     const toggle = node.querySelector<HTMLButtonElement>('button[aria-controls="frontmatter-panel-body"]');
     expect(toggle?.getAttribute("aria-expanded")).toBe("false");
     expect(node.querySelector("#fm-name")).toBeNull();
+  });
+
+  it("marks rich markdown body edits dirty and saves the edited markdown", async () => {
+    mockCompanySkillsApi.updateFile.mockImplementationOnce((
+      _companyId: string,
+      _skillId: string,
+      path: string,
+      content: string,
+    ) => Promise.resolve({
+      path,
+      content,
+      markdown: true,
+      editable: true,
+      editableReason: null,
+    }));
+
+    const node = await renderStudio();
+
+    let bodyEditor: HTMLTextAreaElement | undefined;
+    await waitFor(() => {
+      bodyEditor = Array.from(node.querySelectorAll<HTMLTextAreaElement>('[data-testid="markdown-editor"]')).find(
+        (editor) => editor.value.includes("# Demo Skill"),
+      );
+      expect(bodyEditor).toBeTruthy();
+    });
+
+    await keyDown(bodyEditor as HTMLElement, "E");
+
+    await waitFor(() => expect(node.textContent).toContain("Unsaved"));
+
+    const saveButton = buttonsNamed(node, "Save").find((button) => !button.disabled);
+    expect(saveButton).toBeTruthy();
+    await click(saveButton as HTMLButtonElement);
+
+    await waitFor(() => {
+      expect(mockCompanySkillsApi.updateFile).toHaveBeenCalledWith(
+        "company-1",
+        "source-skill",
+        "SKILL.md",
+        expect.stringContaining("Edited body"),
+      );
+    });
+    expect(mockCompanySkillsApi.updateFile).toHaveBeenCalledWith(
+      "company-1",
+      "source-skill",
+      "SKILL.md",
+      expect.stringContaining("---\nname: Demo Skill"),
+    );
   });
 
   it("offers an 'Edit a copy' CTA on the read-only banner (PAP-13112)", async () => {

@@ -51,6 +51,14 @@ export function resolveInitialLogOffset(run: RunTranscriptSource, limitBytes: nu
   return Math.max(0, knownBytes - Math.max(0, limitBytes));
 }
 
+function readChunkSeq(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function isStructuredStreamingTextDelta(chunk: string) {
+  return /"type"\s*:\s*"(?:acpx\.text_delta|text)"/.test(chunk);
+}
+
 function parsePersistedLogContent(
   runId: string,
   content: string,
@@ -68,7 +76,7 @@ function parsePersistedLogContent(
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
-      const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown };
+      const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown; seq?: unknown };
       const stream = raw.stream === "stderr" || raw.stream === "system" ? raw.stream : "stdout";
       const chunk = typeof raw.chunk === "string" ? raw.chunk : "";
       const ts = typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
@@ -77,6 +85,7 @@ function parsePersistedLogContent(
         ts,
         stream,
         chunk,
+        seq: readChunkSeq(raw.seq),
         dedupeKey: `log:${runId}:${ts}:${stream}:${chunk}`,
       });
     } catch {
@@ -111,6 +120,10 @@ export function useLiveRunTranscripts({
   const [chunksByRun, setChunksByRun] = useState<Map<string, RunLogChunk[]>>(new Map());
   const [hydratedRunIds, setHydratedRunIds] = useState<Set<string>>(new Set());
   const seenChunkKeysRef = useRef(new Set<string>());
+  // Highest sequenced chunk trimmed out of a run's retained window; older
+  // records re-delivered by the other transport are dropped instead of being
+  // re-inserted ahead of newer output.
+  const trimmedSeqFloorByRunRef = useRef(new Map<string, number>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
   const missingTerminalLogRunIdsRef = useRef(new Set<string>());
@@ -149,8 +162,44 @@ export function useLiveRunTranscripts({
       let changed = false;
 
       for (const chunk of chunks) {
-        if (seenChunkKeysRef.current.has(chunk.dedupeKey)) continue;
-        seenChunkKeysRef.current.add(chunk.dedupeKey);
+        // Sequenced log chunks (persisted rows and websocket log payloads)
+        // dedupe and order by the server-assigned monotonic seq. Identical
+        // token deltas from ACP-style adapters often share the same
+        // millisecond ts and chunk text, so content-based keys drop real
+        // output; seq keeps every record and restores emit order when the
+        // websocket and the poller interleave.
+        if (typeof chunk.seq === "number") {
+          const seqFloor = trimmedSeqFloorByRunRef.current.get(runId) ?? 0;
+          if (chunk.seq <= seqFloor) continue;
+          const duplicateAt = existing.findIndex((item) => item.seq === chunk.seq);
+          if (duplicateAt !== -1) {
+            // Same record arrived via the other delivery path. Prefer the
+            // longer payload: websocket chunks may be tail-truncated while
+            // the persisted row is complete.
+            if (chunk.chunk.length > existing[duplicateAt]!.chunk.length) {
+              existing[duplicateAt] = { ts: chunk.ts, stream: chunk.stream, chunk: chunk.chunk, seq: chunk.seq };
+              changed = true;
+            }
+            continue;
+          }
+          // Insert in seq order relative to the trailing sequenced chunks so
+          // late-arriving records from the slower delivery path land where
+          // they were emitted. Unsequenced chunks act as an ordering barrier.
+          let insertAt = existing.length;
+          while (insertAt > 0) {
+            const prior = existing[insertAt - 1]!;
+            if (typeof prior.seq !== "number" || prior.seq < chunk.seq) break;
+            insertAt -= 1;
+          }
+          existing.splice(insertAt, 0, { ts: chunk.ts, stream: chunk.stream, chunk: chunk.chunk, seq: chunk.seq });
+          changed = true;
+          continue;
+        }
+
+        if (!isStructuredStreamingTextDelta(chunk.chunk)) {
+          if (seenChunkKeysRef.current.has(chunk.dedupeKey)) continue;
+          seenChunkKeysRef.current.add(chunk.dedupeKey);
+        }
         existing.push({ ts: chunk.ts, stream: chunk.stream, chunk: chunk.chunk });
         changed = true;
       }
@@ -159,7 +208,15 @@ export function useLiveRunTranscripts({
       if (seenChunkKeysRef.current.size > 12000) {
         seenChunkKeysRef.current.clear();
       }
-      next.set(runId, existing.slice(-maxChunksPerRun));
+      if (existing.length > maxChunksPerRun) {
+        const trimmed = existing.splice(0, existing.length - maxChunksPerRun);
+        let seqFloor = trimmedSeqFloorByRunRef.current.get(runId) ?? 0;
+        for (const item of trimmed) {
+          if (typeof item.seq === "number" && item.seq > seqFloor) seqFloor = item.seq;
+        }
+        if (seqFloor > 0) trimmedSeqFloorByRunRef.current.set(runId, seqFloor);
+      }
+      next.set(runId, existing);
       return next;
     });
   };
@@ -194,6 +251,11 @@ export function useLiveRunTranscripts({
     for (const runId of logOffsetByRunRef.current.keys()) {
       if (!knownRunIds.has(runId)) {
         logOffsetByRunRef.current.delete(runId);
+      }
+    }
+    for (const runId of trimmedSeqFloorByRunRef.current.keys()) {
+      if (!knownRunIds.has(runId)) {
+        trimmedSeqFloorByRunRef.current.delete(runId);
       }
     }
     for (const runId of missingTerminalLogRunIdsRef.current.keys()) {
@@ -316,6 +378,7 @@ export function useLiveRunTranscripts({
             ts,
             stream,
             chunk,
+            seq: readChunkSeq(payload["seq"]),
             dedupeKey: `log:${runId}:${ts}:${stream}:${chunk}`,
           }]);
           return;

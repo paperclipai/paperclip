@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
@@ -138,20 +139,112 @@ export interface RequiredBuiltInAgent {
 
 const BUILT_IN_AGENT_KEY_PATTERN = /^[a-z][a-z0-9_-]*$/;
 
-const BUILT_INS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../built-ins/agents");
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+const BUILT_INS_DIR = path.resolve(moduleDir, "../built-ins/agents");
+const SOURCE_BUILT_INS_DIR = path.resolve(moduleDir, "../../src/built-ins/agents");
 
-function readBuiltInText(relativePath: string) {
-  return readFileSync(path.join(BUILT_INS_DIR, relativePath), "utf8");
+const FALLBACK_REFLECTION_COACH_INSTRUCTIONS = [
+  "# Reflection Coach",
+  "",
+  "You are Paperclip's built-in Reflection Coach.",
+  "Review recent agent execution records, identify evidence-backed improvement patterns, and propose the smallest durable instruction, skill, or tool-description change.",
+  "Do not apply changes in the same run. Present a reviewable diff and wait for the required Paperclip issue-thread approval before any follow-up applies it.",
+  "",
+].join("\n");
+
+const FALLBACK_REFLECTION_COACH_ROUTINE = [
+  "Review recent agent work for coaching opportunities.",
+  "",
+  "Select recent target agents, inspect their work history and current instructions, then propose small, review-gated improvements that would prevent repeated misses.",
+  "",
+].join("\n");
+
+const FALLBACK_REFLECTION_COACH_SKILL = [
+  "---",
+  "name: reflection-coach",
+  "description: Reflect on another agent's recent execution record and propose the smallest review-gated improvement.",
+  "key: paperclipai/bundled/paperclip-operations/reflection-coach",
+  "---",
+  "",
+  "# Reflection Coach",
+  "",
+  "Review another agent's recent execution record, name evidence-backed patterns, and propose the smallest durable improvement as a reviewable diff. Do not hot-swap instructions or skills in the same run.",
+  "",
+].join("\n");
+
+const warnedBuiltInTextFallbacks = new Set<string>();
+const warnedBuiltInTextReadErrors = new Set<string>();
+
+function resolvePackageRoot(packageName: string) {
+  try {
+    return path.dirname(require.resolve(`${packageName}/package.json`));
+  } catch {
+    return null;
+  }
 }
 
-const REFLECTION_COACH_INSTRUCTIONS = readBuiltInText("reflection-coach/AGENTS.md");
-const REFLECTION_COACH_ROUTINE = readBuiltInText("reflection-coach/routines/recent-agent-reflection.md");
-const REFLECTION_COACH_SKILL = readFileSync(
-  path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "../../../packages/skills-catalog/catalog/bundled/paperclip-operations/reflection-coach/SKILL.md",
-  ),
-  "utf8",
+export function readBuiltInTextWithFallback(
+  label: string,
+  candidatePaths: string[],
+  fallbackText: string,
+) {
+  const attemptedPaths = candidatePaths.filter((candidatePath) => candidatePath.trim().length > 0);
+  for (const candidatePath of attemptedPaths) {
+    try {
+      return readFileSync(candidatePath, "utf8");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") {
+        const codeLabel = code || String(error);
+        const warningKey = [label, candidatePath, codeLabel].join(":");
+        if (!warnedBuiltInTextReadErrors.has(warningKey)) {
+          warnedBuiltInTextReadErrors.add(warningKey);
+          console.warn(
+            "[paperclip] Built-in agent asset " + label + " read error on " + candidatePath + ": " + codeLabel,
+          );
+        }
+      }
+      // Try every known runtime/source path before falling back to compiled text.
+    }
+  }
+
+  if (!warnedBuiltInTextFallbacks.has(label)) {
+    warnedBuiltInTextFallbacks.add(label);
+    console.warn(
+      `[paperclip] Built-in agent asset ${label} was not readable; using bundled fallback text. `
+      + `Checked: ${attemptedPaths.join(", ")}`,
+    );
+  }
+  return fallbackText;
+}
+
+function readBuiltInText(relativePath: string, fallbackText: string) {
+  return readBuiltInTextWithFallback(
+    relativePath,
+    [path.join(BUILT_INS_DIR, relativePath), path.join(SOURCE_BUILT_INS_DIR, relativePath)],
+    fallbackText,
+  );
+}
+
+const skillsCatalogRoot = resolvePackageRoot("@paperclipai/skills-catalog");
+const REFLECTION_COACH_INSTRUCTIONS = readBuiltInText("reflection-coach/AGENTS.md", FALLBACK_REFLECTION_COACH_INSTRUCTIONS);
+const REFLECTION_COACH_ROUTINE = readBuiltInText(
+  "reflection-coach/routines/recent-agent-reflection.md",
+  FALLBACK_REFLECTION_COACH_ROUTINE,
+);
+const REFLECTION_COACH_SKILL = readBuiltInTextWithFallback(
+  "reflection-coach/SKILL.md",
+  [
+    path.resolve(
+      moduleDir,
+      "../../../packages/skills-catalog/catalog/bundled/paperclip-operations/reflection-coach/SKILL.md",
+    ),
+    ...(skillsCatalogRoot
+      ? [path.join(skillsCatalogRoot, "catalog/bundled/paperclip-operations/reflection-coach/SKILL.md")]
+      : []),
+  ],
+  FALLBACK_REFLECTION_COACH_SKILL,
 );
 
 const DEFINITIONS = validateBuiltInAgentDefinitions([

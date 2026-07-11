@@ -65,6 +65,8 @@ import type {
   IssueThreadInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
+  RequestItemVerdictsInteraction,
+  RequestItemVerdictValue,
   SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
 import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "../lib/issue-thread-interactions";
@@ -220,6 +222,10 @@ interface IssueChatMessageContext {
   ) => Promise<void> | void;
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
+  ) => Promise<void> | void;
+  onSubmitInteractionVerdicts?: (
+    interaction: RequestItemVerdictsInteraction,
+    verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
   ) => Promise<void> | void;
   onUploadImage?: (file: File) => Promise<string>;
   issueStatus?: string;
@@ -481,6 +487,7 @@ interface IssueChatThreadProps {
   showComposer?: boolean;
   showJumpToLatest?: boolean;
   autoScrollToLatestOnInitialLoad?: boolean;
+  autoScrollToHashOnInitialLoad?: boolean;
   emptyMessage?: string;
   footer?: ReactNode;
   variant?: "full" | "embedded";
@@ -515,6 +522,10 @@ interface IssueChatThreadProps {
   ) => Promise<void> | void;
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
+  ) => Promise<void> | void;
+  onSubmitInteractionVerdicts?: (
+    interaction: RequestItemVerdictsInteraction,
+    verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
   ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
   issueWorkMode?: IssueWorkMode;
@@ -2723,6 +2734,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onRejectInteraction,
     onSubmitInteractionAnswers,
     onCancelInteraction,
+    onSubmitInteractionVerdicts,
     onUploadImage,
     externalReferences,
   } = useContext(IssueChatCtx);
@@ -2781,6 +2793,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             onRejectInteraction={onRejectInteraction}
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
             onCancelInteraction={onCancelInteraction}
+            onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
             onUploadImage={onUploadImage}
             externalReferences={externalReferences}
           />
@@ -4216,7 +4229,8 @@ export function IssueChatThread({
   composerHint = null,
   showComposer = true,
   showJumpToLatest,
-  autoScrollToLatestOnInitialLoad = true,
+  autoScrollToLatestOnInitialLoad = false,
+  autoScrollToHashOnInitialLoad = false,
   emptyMessage,
   footer,
   variant = "full",
@@ -4234,6 +4248,7 @@ export function IssueChatThread({
   onRejectInteraction,
   onSubmitInteractionAnswers,
   onCancelInteraction,
+  onSubmitInteractionVerdicts,
   composerRef,
   issueWorkMode,
   onWorkModeChange,
@@ -4246,6 +4261,7 @@ export function IssueChatThread({
 }: IssueChatThreadProps) {
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
+  const didInitialHashScrollDecisionRef = useRef(false);
   const virtualizedThreadRef = useRef<VirtualizedIssueChatThreadListHandle | null>(null);
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -4511,23 +4527,34 @@ export function IssueChatThread({
 
   useEffect(() => {
     const hash = location.hash || (typeof window !== "undefined" ? window.location.hash : "");
-    if (
-      !(
-        hash.startsWith("#comment-")
-        || hash.startsWith("#activity-")
-        || hash.startsWith("#run-")
-        || hash.startsWith("#interaction-")
-      )
-    ) return;
-    if (messages.length === 0 || lastScrolledHashRef.current === hash) return;
+    const isThreadHash = hash.startsWith("#comment-")
+      || hash.startsWith("#activity-")
+      || hash.startsWith("#run-")
+      || hash.startsWith("#interaction-");
+    if (messages.length === 0) return;
+    if (!isThreadHash) {
+      if (!didInitialHashScrollDecisionRef.current) {
+        didInitialHashScrollDecisionRef.current = true;
+      }
+      return;
+    }
+    if (lastScrolledHashRef.current === hash) return;
     const targetId = hash.slice(1);
     if (targetId.startsWith("comment-")) {
       const targetMessage = messages.find((message) => issueChatMessageAnchorId(message) === targetId);
       if (targetMessage && issueChatMessageIsDeleted(targetMessage)) {
+        didInitialHashScrollDecisionRef.current = true;
         lastScrolledHashRef.current = hash;
         if (typeof window !== "undefined") {
           window.history.replaceState(null, "", `${location.pathname}${location.search}`);
         }
+        return;
+      }
+    }
+    if (!didInitialHashScrollDecisionRef.current) {
+      didInitialHashScrollDecisionRef.current = true;
+      if (!autoScrollToHashOnInitialLoad) {
+        lastScrolledHashRef.current = hash;
         return;
       }
     }
@@ -4549,12 +4576,11 @@ export function IssueChatThread({
       cancelAnimationFrame(frame);
       window.clearTimeout(timeout);
     };
-  }, [location.hash, messageAnchorIndex, messages, useVirtualizedThread]);
+  }, [autoScrollToHashOnInitialLoad, location.hash, messageAnchorIndex, messages, useVirtualizedThread]);
 
-  // On first thread load, land on the latest comment instead of defaulting to
-  // the top (board rev-2 feedback for PAP-95). A deep-link hash takes
-  // precedence — the hash-scroll effect above owns that case. Runs once per
-  // mount, after messages first populate.
+  // Optional legacy behavior: callers may explicitly request landing on the
+  // latest comment. The shared default stays off so ordinary page loads keep
+  // the user's initial viewport stable.
   useEffect(() => {
     if (didInitialLatestScrollRef.current) return;
     if (!autoScrollToLatestOnInitialLoad) return;
@@ -4755,6 +4781,7 @@ export function IssueChatThread({
   const stableOnRejectInteraction = useStableEvent(onRejectInteraction);
   const stableOnSubmitInteractionAnswers = useStableEvent(onSubmitInteractionAnswers);
   const stableOnCancelInteraction = useStableEvent(onCancelInteraction);
+  const stableOnSubmitInteractionVerdicts = useStableEvent(onSubmitInteractionVerdicts);
   const stableOnUploadImage = useStableEvent(imageUploadHandler);
 
   const chatCtx = useMemo<IssueChatMessageContext>(
@@ -4779,6 +4806,7 @@ export function IssueChatThread({
       onRejectInteraction: stableOnRejectInteraction,
       onSubmitInteractionAnswers: stableOnSubmitInteractionAnswers,
       onCancelInteraction: stableOnCancelInteraction,
+      onSubmitInteractionVerdicts: stableOnSubmitInteractionVerdicts,
       onUploadImage: stableOnUploadImage,
       issueStatus,
       successfulRunHandoff,
@@ -4806,6 +4834,7 @@ export function IssueChatThread({
       stableOnRejectInteraction,
       stableOnSubmitInteractionAnswers,
       stableOnCancelInteraction,
+      stableOnSubmitInteractionVerdicts,
       stableOnUploadImage,
       issueStatus,
       successfulRunHandoff,

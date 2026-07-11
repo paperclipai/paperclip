@@ -89,9 +89,28 @@ export function useInboxDismissals(companyId: string | null | undefined) {
     },
     onSettled: () => {
       if (!companyId) return;
-      queryClient.invalidateQueries({ queryKey });
-      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+      invalidateDismissalConsumers();
     },
+  });
+
+  function invalidateDismissalConsumers() {
+    if (!companyId) return;
+    queryClient.invalidateQueries({ queryKey });
+    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+    // The attention feed derives its rows from server-side dismissals, so any
+    // dismiss/snooze/restore must re-pull it to keep the queue and curtains in sync.
+    queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
+  }
+
+  const snoozeMutation = useMutation({
+    mutationFn: ({ itemKey, snoozedUntil }: { itemKey: string; snoozedUntil: string }) =>
+      inboxDismissalsApi.snooze(companyId!, itemKey, snoozedUntil),
+    onSettled: invalidateDismissalConsumers,
+  });
+
+  const restoreMutation = useMutation({
+    mutationFn: ({ itemKey }: { itemKey: string }) => inboxDismissalsApi.restore(companyId!, itemKey),
+    onSettled: invalidateDismissalConsumers,
   });
 
   const dismissedAtByKey = useMemo(
@@ -103,7 +122,9 @@ export function useInboxDismissals(companyId: string | null | undefined) {
     dismissals,
     dismissedAtByKey,
     dismiss: (itemKey: string) => dismissMutation.mutate({ itemKey }),
-    isPending: dismissMutation.isPending,
+    snooze: (itemKey: string, snoozedUntil: string) => snoozeMutation.mutate({ itemKey, snoozedUntil }),
+    restore: (itemKey: string) => restoreMutation.mutate({ itemKey }),
+    isPending: dismissMutation.isPending || snoozeMutation.isPending || restoreMutation.isPending,
   };
 }
 

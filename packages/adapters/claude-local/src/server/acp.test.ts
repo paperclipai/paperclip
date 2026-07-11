@@ -258,6 +258,79 @@ describe("claude_local ACP lane", () => {
     ).resolves.toEqual({ engine: "acp", explicit: true });
   });
 
+  it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
+    setNodeVersion("v22.12.0");
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: { agentCommand: "claude-agent-acp" },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd: "/work",
+          runner: {
+            execute: async () => ({
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              stdout: "",
+              stderr: "",
+              pid: null,
+              startedAt: new Date().toISOString(),
+            }),
+          },
+        },
+      }),
+    ).resolves.toEqual({ engine: "acp", explicit: false });
+  });
+
+  it("falls back to the CLI lane for one-shot sandbox auto runs", async () => {
+    setNodeVersion("v22.12.0");
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: {},
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd: "/work",
+        },
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("bidirectional remote process"),
+    });
+  });
+
+  it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
+    setNodeVersion("v22.12.0");
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: {},
+        executionTarget: {
+          kind: "remote",
+          transport: "ssh",
+          remoteCwd: "/work",
+          spec: {
+            host: "127.0.0.1",
+            port: 22,
+            username: "fixture",
+            remoteCwd: "/work",
+            remoteWorkspacePath: "/work",
+            privateKey: null,
+            knownHosts: null,
+            strictHostKeyChecking: true,
+          },
+        },
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("sandbox remote targets only"),
+    });
+  });
+
   it("reports ACP prerequisites for the ACP lane", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-env-");
     const commandPath = path.join(root, "bin", "claude-agent-acp");

@@ -1002,6 +1002,13 @@
       "when": 1783520000000,
       "tag": "0144_case_document_annotations",
       "breakpoints": true
+    },
+    {
+      "idx": 145,
+      "version": "7",
+      "when": 1783641600000,
+      "tag": "0145_inbox_dismissal_snooze_kind",
+      "breakpoints": true
     }
   ]
 }

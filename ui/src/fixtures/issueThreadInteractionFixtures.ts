@@ -8,6 +8,7 @@ import type {
   AskUserQuestionsInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
+  RequestItemVerdictsInteraction,
   SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
 
@@ -696,6 +697,215 @@ export const staleTargetRequestCheckboxConfirmationInteraction =
       },
     },
   });
+
+// --- Per-item verdicts (C3, PAP-13249) ---------------------------------
+
+function createRequestItemVerdictsInteraction(
+  overrides: Partial<RequestItemVerdictsInteraction>,
+): RequestItemVerdictsInteraction {
+  return {
+    id: "interaction-verdicts-default",
+    companyId: issueThreadInteractionFixtureMeta.companyId,
+    issueId: issueThreadInteractionFixtureMeta.issueId,
+    kind: "request_item_verdicts",
+    title: "Review 5 blog posts",
+    summary:
+      "This task drafted five blog posts. Approve the ones that are ready and reject the rest with a reason — each decision fans out on its own.",
+    status: "pending",
+    continuationPolicy: "wake_assignee",
+    createdByAgentId: "agent-codex",
+    createdByUserId: null,
+    resolvedByAgentId: null,
+    resolvedByUserId: null,
+    createdAt: new Date("2026-04-20T15:02:00.000Z"),
+    updatedAt: new Date("2026-04-20T15:02:00.000Z"),
+    resolvedAt: null,
+    payload: {
+      version: 1,
+      prompt: "Review the 5 blog posts this task drafted.",
+      detailsMarkdown:
+        "Each approved post publishes immediately; rejected posts go back for a revision pass with your reason attached.",
+      items: [
+        {
+          id: "post-spring-recap",
+          label: "Spring launch recap",
+          description: "820 words · product marketing",
+          previewMarkdown: "**Spring launch recap** — a warm retrospective on the Q1 launch and what shipped.",
+          href: "/PAP/issues/PAP-9001",
+        },
+        {
+          id: "post-changelog-digest",
+          label: "Monthly changelog digest",
+          description: "540 words · engineering",
+          previewMarkdown: "A tidy digest of the month's shipped changes, grouped by area.",
+          href: "/PAP/issues/PAP-9002",
+        },
+        {
+          id: "post-founder-note",
+          label: "Founder's note on reliability",
+          description: "1,100 words · leadership",
+          previewMarkdown: "A candid note on the reliability push and the road ahead.",
+          href: "/PAP/issues/PAP-9003",
+        },
+        {
+          id: "post-customer-story",
+          label: "Customer story: Northwind",
+          description: "760 words · customer marketing",
+          previewMarkdown: "How Northwind cut review time in half with the new workflow.",
+          href: "/PAP/issues/PAP-9004",
+        },
+        {
+          id: "post-hiring-push",
+          label: "We're hiring: platform engineers",
+          description: "420 words · recruiting",
+          previewMarkdown: "An open call for platform engineers to join the team.",
+          href: "/PAP/issues/PAP-9005",
+        },
+      ],
+      verdicts: ["approve", "reject"],
+      requireReasonOn: ["reject"],
+      reasonLabel: "Why reject?",
+      allowBulkApprove: true,
+      supersedeOnUserComment: true,
+    },
+    result: null,
+    ...overrides,
+  };
+}
+
+/** S1 — expanded, all pending. */
+export const pendingRequestItemVerdictsInteraction = createRequestItemVerdictsInteraction({});
+
+/** S3/S4 — partial: two items applied (one approved, one rejected), three still actionable. */
+export const partialRequestItemVerdictsInteraction = createRequestItemVerdictsInteraction({
+  id: "interaction-verdicts-partial",
+  updatedAt: new Date("2026-04-20T15:08:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "resolved",
+    complete: false,
+    items: [
+      {
+        id: "post-spring-recap",
+        verdict: "approve",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:08:00.000Z"),
+      },
+      {
+        id: "post-changelog-digest",
+        verdict: "reject",
+        reason: "Tone is off-brand — too dry. Warm it up and re-submit.",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:08:00.000Z"),
+      },
+    ],
+  },
+});
+
+/** S5 — complete: every item has a terminal verdict. */
+export const completeRequestItemVerdictsInteraction = createRequestItemVerdictsInteraction({
+  id: "interaction-verdicts-complete",
+  status: "answered",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:14:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:14:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "resolved",
+    complete: true,
+    items: [
+      {
+        id: "post-spring-recap",
+        verdict: "approve",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:08:00.000Z"),
+      },
+      {
+        id: "post-changelog-digest",
+        verdict: "reject",
+        reason: "Tone is off-brand — too dry. Warm it up and re-submit.",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:08:00.000Z"),
+      },
+      {
+        id: "post-founder-note",
+        verdict: "approve",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:14:00.000Z"),
+      },
+      {
+        id: "post-customer-story",
+        verdict: "approve",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:14:00.000Z"),
+      },
+      {
+        id: "post-hiring-push",
+        verdict: "reject",
+        reason: "Hold the recruiting post until the req is approved.",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:14:00.000Z"),
+      },
+    ],
+  },
+});
+
+/** S6 — superseded by a later comment after two items were already applied. */
+export const supersededRequestItemVerdictsInteraction = createRequestItemVerdictsInteraction({
+  id: "interaction-verdicts-superseded",
+  status: "expired",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:16:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:16:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "superseded_by_comment",
+    complete: false,
+    commentId: "33333333-3333-4333-8333-333333333333",
+    items: [
+      {
+        id: "post-spring-recap",
+        verdict: "approve",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:08:00.000Z"),
+      },
+      {
+        id: "post-changelog-digest",
+        verdict: "reject",
+        reason: "Tone is off-brand — too dry. Warm it up and re-submit.",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:08:00.000Z"),
+      },
+    ],
+  },
+});
+
+/** S7 — long list (24 items) that virtualizes/paginates in the expanded view. */
+const manyVerdictItems = Array.from({ length: 24 }, (_, index) => {
+  const number = index + 1;
+  return {
+    id: `draft-post-${number}`,
+    label: `Draft post #${number}`,
+    description: `${300 + number * 17} words · auto-generated series`,
+  };
+});
+
+export const manyItemsRequestItemVerdictsInteraction = createRequestItemVerdictsInteraction({
+  id: "interaction-verdicts-many",
+  title: "Review 24 generated posts",
+  summary: "A batch-generation task produced 24 posts. Decide them in passes; the card stays until all are decided.",
+  payload: {
+    version: 1,
+    prompt: "Review the 24 posts this batch produced.",
+    detailsMarkdown: "The expanded list scrolls. Approve all to accept the batch, or decide item by item.",
+    items: manyVerdictItems,
+    verdicts: ["approve", "reject"],
+    requireReasonOn: ["reject"],
+    reasonLabel: "Why reject?",
+    allowBulkApprove: true,
+    supersedeOnUserComment: true,
+  },
+});
 
 export const issueThreadInteractionComments: IssueChatComment[] = [
   createComment({

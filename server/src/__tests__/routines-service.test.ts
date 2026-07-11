@@ -88,6 +88,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   async function seedFixture(opts?: {
+    runtimeEnv?: Record<string, string | undefined>;
     wakeup?: (
       agentId: string,
       wakeupOpts: {
@@ -147,6 +148,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
 
     const svc = routineService(db, {
+      runtimeEnv: opts?.runtimeEnv,
       heartbeat: {
         wakeup: async (wakeupAgentId, wakeupOpts) => {
           wakeups.push({ agentId: wakeupAgentId, opts: wakeupOpts });
@@ -202,6 +204,18 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     );
 
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
+  }
+
+  async function armWorktreeExecution(cutoff: Date, instanceId = "worktree-routines-test") {
+    await db.insert(instanceSettings).values({
+      singletonKey: "default",
+      general: {},
+      experimental: {
+        enableWorktreeRunExecution: true,
+        worktreeRunExecutionActivatedAt: cutoff.toISOString(),
+        worktreeRunExecutionActivationInstanceId: instanceId,
+      },
+    });
   }
 
   it("filters listed routines by project", async () => {
@@ -1744,6 +1758,80 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
+  });
+
+  it("records suppressed automatic runs when worktree execution is disabled while allowing manual runs", async () => {
+    const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "yes", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
+    const { companyId, routine, svc } = await seedFixture({ runtimeEnv });
+    const { trigger: scheduleTrigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" },
+      {},
+    );
+    const { trigger: webhookTrigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "webhook", signingMode: "none" },
+      {},
+    );
+    const pastDue = new Date("2020-01-01T00:00:00.000Z");
+    await db.update(routineTriggers).set({ nextRunAt: pastDue }).where(eq(routineTriggers.id, scheduleTrigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date())).toEqual({ triggered: 0 });
+    const webhookRun = await svc.firePublicTrigger(webhookTrigger.publicId!, { payload: { event: "created" } });
+    expect(webhookRun).toMatchObject({ source: "webhook", status: "skipped", failureReason: "worktree_execution_cutoff" });
+
+    const manualRun = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(manualRun.status).toBe("issue_created");
+
+    const automatedRuns = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(automatedRuns.filter((run) => run.failureReason === "worktree_execution_cutoff")).toHaveLength(2);
+    expect(automatedRuns.filter((run) => run.linkedIssueId)).toHaveLength(1);
+    const scheduleAfter = await db.select().from(routineTriggers).where(eq(routineTriggers.id, scheduleTrigger.id)).then((rows) => rows[0]);
+    expect(scheduleAfter!.nextRunAt!.getTime()).toBeGreaterThan(pastDue.getTime());
+    expect((await db.select().from(issues).where(eq(issues.companyId, companyId))).filter((issue) => issue.originKind === "routine_execution")).toHaveLength(1);
+  });
+
+  it("dispatches only post-cutoff scheduled routines in an armed worktree", async () => {
+    const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
+    const { companyId, agentId, projectId, routine: oldRoutine, svc } = await seedFixture({ runtimeEnv });
+    const cutoff = new Date("2025-01-01T00:00:00.000Z");
+    await armWorktreeExecution(cutoff);
+    const newRoutine = await svc.create(companyId, {
+      projectId,
+      goalId: null,
+      parentIssueId: null,
+      title: "new routine",
+      description: null,
+      assigneeAgentId: agentId,
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    }, {});
+    await db.update(routines).set({ createdAt: new Date("2024-12-31T23:59:59.000Z") }).where(eq(routines.id, oldRoutine.id));
+    await db.update(routines).set({ createdAt: new Date("2025-01-01T00:00:01.000Z") }).where(eq(routines.id, newRoutine.id));
+    const { trigger: oldTrigger } = await svc.createTrigger(oldRoutine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    const { trigger: newTrigger } = await svc.createTrigger(newRoutine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    await db.update(routineTriggers).set({ nextRunAt: new Date("2020-01-01T00:00:00.000Z") }).where(eq(routineTriggers.id, oldTrigger.id));
+    await db.update(routineTriggers).set({ nextRunAt: new Date("2020-01-01T00:00:00.000Z") }).where(eq(routineTriggers.id, newTrigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date())).toEqual({ triggered: 1 });
+    const oldRuns = await db.select().from(routineRuns).where(eq(routineRuns.routineId, oldRoutine.id));
+    expect(oldRuns).toMatchObject([{ status: "skipped", failureReason: "worktree_execution_cutoff", linkedIssueId: null }]);
+    const newRuns = await db.select().from(routineRuns).where(eq(routineRuns.routineId, newRoutine.id));
+    expect(newRuns).toMatchObject([{ status: "issue_created" }]);
+  });
+
+  it("applies the armed cutoff to webhook dispatch but not manual API runs", async () => {
+    const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
+    const { routine, svc } = await seedFixture({ runtimeEnv });
+    await armWorktreeExecution(new Date("2025-01-01T00:00:00.000Z"));
+    await db.update(routines).set({ createdAt: new Date("2024-12-31T23:59:59.000Z") }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, { kind: "webhook", signingMode: "none" }, {});
+
+    const webhookRun = await svc.firePublicTrigger(trigger.publicId!, { payload: { event: "created" } });
+    expect(webhookRun).toMatchObject({ status: "skipped", failureReason: "worktree_execution_cutoff", linkedIssueId: null });
+    expect((await svc.runRoutine(routine.id, { source: "api" })).status).toBe("issue_created");
   });
 
   it("suppresses scheduled ticks while the routine project is paused, then resumes when unpaused", async () => {
