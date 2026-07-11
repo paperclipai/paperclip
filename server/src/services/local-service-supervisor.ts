@@ -312,7 +312,9 @@ async function adoptLocalServiceFromPortOwner(input: {
 
   if (input.cwd) {
     const ownerCwd = await readLocalServiceProcessCwd(ownerPid);
-    if (!ownerCwd || !(await isLocalServiceProcessInWorkspace(ownerCwd, input.cwd))) {
+    if (!ownerCwd) {
+      if (process.platform === "linux") return null;
+    } else if (!(await isLocalServiceProcessInWorkspace(ownerCwd, input.cwd))) {
       return null;
     }
   }

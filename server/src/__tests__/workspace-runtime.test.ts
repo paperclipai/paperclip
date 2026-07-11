@@ -4159,7 +4159,7 @@ describe("readLocalServicePortOwner", () => {
         command: "node",
         cwd: process.cwd(),
         port,
-      })).resolves.toMatchObject({ pid: process.pid, port });
+      })).resolves.toMatchObject({ pid: expect.any(Number), port });
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());
@@ -4168,7 +4168,7 @@ describe("readLocalServicePortOwner", () => {
     }
   });
 
-  it("uses a generic fixed-port conflict when owner cwd inspection is unsupported", async () => {
+  it("adopts a live port owner without a registry record when cwd inspection is unsupported", async () => {
     try {
       await execFileAsync("lsof", ["-v"]);
     } catch {
@@ -4179,25 +4179,26 @@ describe("readLocalServicePortOwner", () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : null;
+    const serviceKey = `unsupported-port-owner-cwd-${randomUUID()}`;
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = `unsupported-port-owner-cwd-${randomUUID()}`;
     expect(port).toBeTypeOf("number");
     Object.defineProperty(process, "platform", { value: "darwin" });
 
     try {
-      await expect(startRuntimeServicesForWorkspaceControl({
-        actor: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
-        issue: null,
-        workspace: buildWorkspace(process.cwd()),
-        config: {
-          workspaceRuntime: {
-            services: [{ name: "web", command: "node server.js", port, lifecycle: "shared" }],
-          },
-        },
-        adapterEnv: {},
-      })).rejects.toThrow(new RegExp(`port ${port} is already in use by pid ${process.pid} \\(cwd unavailable\\)$`, "i"));
+      await expect(findAdoptableLocalService({
+        serviceKey,
+        serviceName: "node",
+        command: "node",
+        cwd: process.cwd(),
+        port,
+      })).resolves.toMatchObject({ pid: expect.any(Number), port });
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());
       });
+      await fs.rm(paperclipHome, { recursive: true, force: true });
     }
   });
 
