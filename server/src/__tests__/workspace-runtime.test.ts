@@ -44,6 +44,7 @@ import {
 } from "../services/workspace-runtime.ts";
 import {
   findAdoptableLocalService,
+  isLocalServiceProcessCwdCompatible,
   isLocalServiceProcessInWorkspace,
   readLocalServicePortOwner,
   writeLocalServiceRegistryRecord,
@@ -4166,38 +4167,12 @@ describe("readLocalServicePortOwner", () => {
     }
   });
 
-  it("adopts a live port owner without a registry record when cwd inspection is unsupported", async () => {
-    try {
-      await execFileAsync("lsof", ["-v"]);
-    } catch {
-      return;
-    }
-
-    const server = net.createServer();
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address();
-    const port = typeof address === "object" && address ? address.port : null;
-    const serviceKey = `unsupported-port-owner-cwd-${randomUUID()}`;
-    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
-    process.env.PAPERCLIP_HOME = paperclipHome;
-    process.env.PAPERCLIP_INSTANCE_ID = `unsupported-port-owner-cwd-${randomUUID()}`;
-    expect(port).toBeTypeOf("number");
+  it("treats unavailable process cwd as unknown off Linux and a mismatch on Linux", async () => {
     Object.defineProperty(process, "platform", { value: "darwin" });
+    await expect(isLocalServiceProcessCwdCompatible(null, process.cwd())).resolves.toBe(true);
 
-    try {
-      await expect(findAdoptableLocalService({
-        serviceKey,
-        serviceName: "node",
-        command: "node",
-        cwd: process.cwd(),
-        port,
-      })).resolves.toMatchObject({ pid: expect.any(Number), port });
-    } finally {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => error ? reject(error) : resolve());
-      });
-      await fs.rm(paperclipHome, { recursive: true, force: true });
-    }
+    Object.defineProperty(process, "platform", { value: "linux" });
+    await expect(isLocalServiceProcessCwdCompatible(null, process.cwd())).resolves.toBe(false);
   });
 
   it("refuses to adopt a listener whose real cwd belongs to another workspace", async () => {

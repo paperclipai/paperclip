@@ -312,9 +312,7 @@ async function adoptLocalServiceFromPortOwner(input: {
 
   if (input.cwd) {
     const ownerCwd = await readLocalServiceProcessCwd(ownerPid);
-    if (!ownerCwd) {
-      if (process.platform === "linux") return null;
-    } else if (!(await isLocalServiceProcessInWorkspace(ownerCwd, input.cwd))) {
+    if (!(await isLocalServiceProcessCwdCompatible(ownerCwd, input.cwd))) {
       return null;
     }
   }
@@ -442,11 +440,15 @@ export async function isLocalServiceProcessInWorkspace(processCwd: string, works
   }
 }
 
+export async function isLocalServiceProcessCwdCompatible(processCwd: string | null, workspaceCwd: string) {
+  if (!processCwd) return process.platform !== "linux";
+  return isLocalServiceProcessInWorkspace(processCwd, workspaceCwd);
+}
+
 async function doesLocalServiceRecordMatchCwd(record: LocalServiceRegistryRecord) {
   if (!record.port) return true;
   const ownerPid = await readLocalServicePortOwner(record.port);
   if (!ownerPid) return false;
   const ownerCwd = await readLocalServiceProcessCwd(ownerPid);
-  if (!ownerCwd) return process.platform !== "linux";
-  return isLocalServiceProcessInWorkspace(ownerCwd, record.cwd);
+  return isLocalServiceProcessCwdCompatible(ownerCwd, record.cwd);
 }
