@@ -30,6 +30,9 @@ function Frame({ label, children }: { label: string; children: React.ReactNode }
 const meta = {
   title: "Product/Issue/Blocked notice",
   component: IssueBlockedNotice,
+  // Each story supplies its own props via `render`; this default satisfies the
+  // component's one required prop (`blockers`) so the story args type-checks.
+  args: { blockers: [] },
   parameters: {
     docs: {
       description: {
