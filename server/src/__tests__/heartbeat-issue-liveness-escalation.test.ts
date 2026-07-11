@@ -1249,4 +1249,14 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .where(eq(issueRelations.relatedIssueId, blockedIssueId));
     expect(blockers.some((row) => row.blockerIssueId === escalations[0]!.id)).toBe(false);
   });
+
+  it("handles an armed cutoff when no liveness findings exist", async () => {
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileIssueGraphLiveness({
+      issueCreatedAtGte: new Date(),
+    });
+
+    expect(result.findings).toBe(0);
+  });
 });

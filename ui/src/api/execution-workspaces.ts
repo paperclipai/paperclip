@@ -129,7 +129,11 @@ export const executionWorkspacesApi = {
    *   never trusted); no `reason` needed.
    * - `mode: "override"` — audited break-glass; the server rejects agent actors, re-checks
    *   `runtime:manage` permission, and requires a non-empty operator `reason`.
+   * - `mode: "quarantine_restore"` — lossless dirty-worktree repair; the server quarantines the
+   *   dirty changes onto a rescue branch and restores the recorded branch. No `reason` needed.
    */
-  reconcile: (id: string, body: { mode: "forward" } | { mode: "override"; reason: string }) =>
-    api.post<ExecutionWorkspace>(`/execution-workspaces/${id}/reconcile-branch`, body),
+  reconcile: (
+    id: string,
+    body: { mode: "forward" } | { mode: "override"; reason: string } | { mode: "quarantine_restore" },
+  ) => api.post<ExecutionWorkspace>(`/execution-workspaces/${id}/reconcile-branch`, body),
 };

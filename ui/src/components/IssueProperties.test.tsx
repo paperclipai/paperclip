@@ -134,6 +134,7 @@ vi.mock("./AgentIconPicker", () => ({
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string } & ComponentProps<"a">) => <a href={to} {...props}>{children}</a>,
+  useCaseHref: () => (caseId: string) => `/cases/${caseId}`,
 }));
 
 vi.mock("@/components/ui/separator", () => ({

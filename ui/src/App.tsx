@@ -4,6 +4,9 @@ import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
 import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGate";
+import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
+import { Cases } from "./pages/Cases";
+import { CaseDetail } from "./pages/CaseDetail";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
 import { CloudAccessGate } from "./components/CloudAccessGate";
 import { Dashboard } from "./pages/Dashboard";
@@ -145,6 +148,14 @@ function boardRoutes() {
         <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
       ) : null}
       <Route path="routines" element={<Routines />} />
+      <Route
+        path="cases"
+        element={<CasesExperimentalGate><Cases /></CasesExperimentalGate>}
+      />
+      <Route
+        path="cases/:caseIdentifier"
+        element={<CasesExperimentalGate><CaseDetail /></CasesExperimentalGate>}
+      />
       <Route
         path="review-queue"
         element={<PipelinesExperimentalGate><ReviewQueue /></PipelinesExperimentalGate>}
@@ -444,6 +455,8 @@ export function App() {
           <Route path="routines/:routineId" element={<UnprefixedBoardRedirect />} />
           <Route path="review-queue" element={<UnprefixedBoardRedirect />} />
           <Route path="learnings" element={<UnprefixedBoardRedirect />} />
+          <Route path="cases" element={<UnprefixedBoardRedirect />} />
+          <Route path="cases/:caseIdentifier" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId/add" element={<UnprefixedBoardRedirect />} />

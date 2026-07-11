@@ -4432,7 +4432,21 @@ export function issueRoutes(
       res.status(403).json({ error: "Company search is outside this actor's authorization boundary" });
       return;
     }
-    const query = companySearchQuerySchema.parse(req.query);
+    const parsedQuery = companySearchQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      res.status(400).json({
+        error: parsedQuery.error.issues[0]?.message ?? "Invalid search query",
+      });
+      return;
+    }
+    let query = parsedQuery.data;
+    if (query.assigneeUserId === "me") {
+      if (req.actor.type !== "board" || !req.actor.userId) {
+        res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
+        return;
+      }
+      query = { ...query, assigneeUserId: req.actor.userId };
+    }
     const rateLimit = searchRateLimiter.consume(companySearchRateLimitActor(req, companyId));
     res.setHeader("X-RateLimit-Limit", String(rateLimit.limit));
     res.setHeader("X-RateLimit-Remaining", String(rateLimit.remaining));

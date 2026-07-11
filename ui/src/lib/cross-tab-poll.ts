@@ -184,6 +184,27 @@ export class LeaderElection {
   }
 }
 
+function stableFingerprint(value: unknown): string {
+  const seen = new WeakSet<object>();
+  try {
+    return JSON.stringify(value, (_key, entry: unknown) => {
+      if (!entry || typeof entry !== "object") return entry;
+      if (seen.has(entry)) return "[Circular]";
+      seen.add(entry);
+      if (Array.isArray(entry)) return entry;
+      const record = entry as Record<string, unknown>;
+      return Object.keys(record)
+        .sort()
+        .reduce<Record<string, unknown>>((acc, key) => {
+          acc[key] = record[key];
+          return acc;
+        }, {});
+    });
+  } catch {
+    return String(value);
+  }
+}
+
 /** Build a `LeaseStore` backed by a Storage-like object under one key. */
 export function createLeaseStore(
   storage: Pick<Storage, "getItem" | "setItem" | "removeItem">,
@@ -242,6 +263,8 @@ export interface SharedMessage {
   from: string;
   /** Epoch ms the payload was produced. */
   at: number;
+  /** React Query `dataUpdatedAt` for result freshness comparisons. */
+  dataUpdatedAt?: number;
   /** Present on `result` messages. */
   data?: unknown;
 }
@@ -364,11 +387,13 @@ export interface SharedPollingCoordinatorOptions {
   election?: LeaderElection;
   leaseTtlMs?: number;
   tickMs?: number;
+  publishDebounceMs?: number;
   now?: () => number;
   getVisible?: () => boolean;
 }
 
 const DEFAULT_COORDINATOR_TICK_MS = 1_000;
+const DEFAULT_PUBLISH_DEBOUNCE_MS = 1_000;
 const TAB_ID_STORAGE_KEY = "paperclip:shared-poll:tab-id";
 
 function sanitizeCompanyId(companyId: string): string {
@@ -434,10 +459,23 @@ export class SharedPollingCoordinator {
   private readonly election: LeaderElection;
   private readonly localOnlyFallback: boolean;
   private readonly tickMs: number;
+  private readonly publishDebounceMs: number;
+  private readonly now: () => number;
   private readonly getVisible: () => boolean;
   private readonly listeners = new Set<SharedPollingListener>();
   private readonly resourceListeners = new Map<string, Set<SharedPollingResourceListener>>();
   private readonly latestResults = new Map<string, SharedMessage>();
+  private readonly lastPublished = new Map<string, {
+    dataUpdatedAt: number;
+    fingerprint: string;
+    sentAt: number;
+  }>();
+  private readonly pendingPublishes = new Map<string, {
+    data: unknown;
+    dataUpdatedAt: number;
+    fingerprint: string;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
   private unsubscribeChannel: (() => void) | null = null;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private releaseListeners: Array<() => void> = [];
@@ -447,12 +485,14 @@ export class SharedPollingCoordinator {
     this.tabId = options.tabId ?? getSharedPollingTabId();
     this.channel = options.channel ?? createSharedChannel(sharedPollingChannelName(companyId));
     this.tickMs = options.tickMs ?? DEFAULT_COORDINATOR_TICK_MS;
+    this.publishDebounceMs = options.publishDebounceMs ?? DEFAULT_PUBLISH_DEBOUNCE_MS;
+    this.now = options.now ?? (() => Date.now());
     this.getVisible = options.getVisible ?? getBrowserVisible;
     const leaseStore = createBrowserLeaseStore(companyId);
     this.localOnlyFallback = !options.election && !leaseStore;
     this.election = options.election ?? new LeaderElection(
       {
-        now: options.now ?? (() => Date.now()),
+        now: this.now,
         store: leaseStore ?? {
           read: () => null,
           write: () => {},
@@ -485,6 +525,7 @@ export class SharedPollingCoordinator {
     }
     this.unsubscribeChannel?.();
     this.unsubscribeChannel = null;
+    this.clearPendingPublishes();
     for (const release of this.releaseListeners) release();
     this.releaseListeners = [];
     this.election.release();
@@ -520,21 +561,78 @@ export class SharedPollingCoordinator {
       type: "request",
       key,
       from: this.tabId,
-      at: Date.now(),
+      at: this.now(),
     });
   }
 
-  publish(key: string, data: unknown): void {
+  publish(key: string, data: unknown, dataUpdatedAt = this.now()): void {
     if (!this.snapshot.isLeader) return;
+    if (dataUpdatedAt <= 0) return;
+    const fingerprint = stableFingerprint(data);
+    const last = this.lastPublished.get(key);
+    if (last) {
+      if (dataUpdatedAt <= last.dataUpdatedAt) return;
+      if (fingerprint === last.fingerprint) {
+        this.cancelPendingPublish(key);
+        return;
+      }
+    }
+    const pending = this.pendingPublishes.get(key);
+    if (pending) {
+      if (dataUpdatedAt < pending.dataUpdatedAt) return;
+      if (dataUpdatedAt === pending.dataUpdatedAt && fingerprint === pending.fingerprint) return;
+      this.pendingPublishes.set(key, {
+        ...pending,
+        data,
+        dataUpdatedAt,
+        fingerprint,
+      });
+      return;
+    }
+
+    const elapsedSinceLastPublish = last ? this.now() - last.sentAt : Number.POSITIVE_INFINITY;
+    if (elapsedSinceLastPublish >= this.publishDebounceMs) {
+      this.postResult(key, data, dataUpdatedAt, fingerprint);
+      return;
+    }
+
+    const delay = Math.max(this.publishDebounceMs - elapsedSinceLastPublish, 0);
+    const timer = setTimeout(() => this.flushPendingPublish(key), delay);
+    this.pendingPublishes.set(key, { data, dataUpdatedAt, fingerprint, timer });
+  }
+
+  private postResult(key: string, data: unknown, dataUpdatedAt: number, fingerprint: string): void {
+    const sentAt = this.now();
     const message: SharedMessage = {
       type: "result",
       key,
       from: this.tabId,
-      at: Date.now(),
+      at: sentAt,
+      dataUpdatedAt,
       data,
     };
+    this.lastPublished.set(key, { dataUpdatedAt, fingerprint, sentAt });
     this.latestResults.set(key, message);
     this.channel.post(message);
+  }
+
+  private flushPendingPublish(key: string): void {
+    const pending = this.pendingPublishes.get(key);
+    if (!pending) return;
+    this.pendingPublishes.delete(key);
+    this.postResult(key, pending.data, pending.dataUpdatedAt, pending.fingerprint);
+  }
+
+  private cancelPendingPublish(key: string): void {
+    const pending = this.pendingPublishes.get(key);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingPublishes.delete(key);
+  }
+
+  private clearPendingPublishes(): void {
+    for (const pending of this.pendingPublishes.values()) clearTimeout(pending.timer);
+    this.pendingPublishes.clear();
   }
 
   private tick(): void {
@@ -551,7 +649,7 @@ export class SharedPollingCoordinator {
     if (message.type === "request") {
       if (!this.snapshot.isLeader) return;
       const latest = this.latestResults.get(message.key);
-      if (latest) this.channel.post({ ...latest, from: this.tabId, at: Date.now() });
+      if (latest) this.channel.post({ ...latest, from: this.tabId });
       return;
     }
 

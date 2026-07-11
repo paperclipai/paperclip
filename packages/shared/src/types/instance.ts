@@ -49,6 +49,7 @@ export interface InstanceExperimentalSettings {
   enableIsolatedWorkspaces: boolean;
   enableStreamlinedLeftNavigation: boolean;
   enablePipelines: boolean;
+  enableCases: boolean;
   enableConferenceRoomChat: boolean;
   enableTaskWatchdogs: boolean;
   enableIssuePlanDecompositions: boolean;
@@ -61,6 +62,7 @@ export interface InstanceExperimentalSettings {
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
+  enableWorkspaceDirtyQuarantineRepair: boolean;
   /**
    * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the
    * heartbeat run engine by default so previews never self-execute tasks. When
@@ -68,6 +70,16 @@ export interface InstanceExperimentalSettings {
    * runs actually execute inside the preview. Ignored outside a worktree.
    */
   enableWorktreeRunExecution: boolean;
+  /**
+   * Server-managed cutoff recorded when worktree run execution is enabled in
+   * this instance. Client PATCH payloads must not control this value.
+   */
+  worktreeRunExecutionActivatedAt: string | null;
+  /**
+   * Server-managed instance id captured with the cutoff so copied settings rows
+   * from another instance fail closed.
+   */
+  worktreeRunExecutionActivationInstanceId: string | null;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
 }
 

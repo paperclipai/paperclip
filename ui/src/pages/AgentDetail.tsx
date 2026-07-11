@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
+import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
   type AgentKey,
@@ -101,6 +101,7 @@ import {
   responsibleUserLabel,
 } from "@paperclipai/shared";
 import { ResponsibleUserDenialNotice } from "../components/ResponsibleUserDenialNotice";
+import { RunWorkspaceRecoverySurface } from "../components/RunWorkspaceRecoverySurface";
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
@@ -176,6 +177,17 @@ function redactEnvValue(key: string, value: unknown, censorUsernameInLogs: boole
 
 function isMarkdown(pathValue: string) {
   return pathValue.toLowerCase().endsWith(".md");
+}
+
+function shouldUseMarkdownInstructionsEditor(input: {
+  selectedFileExists: boolean;
+  selectedPath: string;
+  detail?: { markdown?: boolean } | null;
+  summary?: { markdown?: boolean } | null;
+}) {
+  const metadataMarkdown = input.detail?.markdown ?? input.summary?.markdown;
+  if (typeof metadataMarkdown === "boolean") return metadataMarkdown;
+  return isMarkdown(input.selectedPath);
 }
 
 function formatEnvForDisplay(envValue: unknown, censorUsernameInLogs: boolean): string {
@@ -1626,6 +1638,29 @@ function CostsSection({
 
 /* ---- Agent Configure Page ---- */
 
+/**
+ * Agent detail URLs use a name-derived key, so updates that change the agent's
+ * name (a rename or a config-revision rollback) can invalidate the reference
+ * currently in the URL. When that happens, refetching the old reference would
+ * 404 with "Agent not found". Instead, drop the stale cached queries and
+ * replace the URL with the new canonical reference. Returns true when a
+ * redirect happened.
+ */
+export function syncAgentRouteAfterRename(
+  queryClient: QueryClient,
+  navigate: NavigateFunction,
+  previous: { id: string; urlKey?: string | null; name?: string | null },
+  updated: { id: string; urlKey?: string | null; name?: string | null },
+  tab: string,
+): boolean {
+  const previousRef = agentRouteRef(previous);
+  const nextRef = agentRouteRef(updated);
+  if (nextRef === previousRef) return false;
+  queryClient.removeQueries({ queryKey: queryKeys.agents.detail(previousRef) });
+  navigate(`/agents/${nextRef}/${tab}`, { replace: true });
+  return true;
+}
+
 function AgentConfigurePage({
   agent,
   agentId,
@@ -1646,6 +1681,8 @@ function AgentConfigurePage({
   updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
 }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { tab: urlTab } = useParams<{ tab?: string }>();
   const [revisionsOpen, setRevisionsOpen] = useState(false);
 
   const { data: configRevisions } = useQuery({
@@ -1655,10 +1692,12 @@ function AgentConfigurePage({
 
   const rollbackConfig = useMutation({
     mutationFn: (revisionId: string) => agentsApi.rollbackConfigRevision(agent.id, revisionId, companyId),
-    onSuccess: () => {
+    onSuccess: (updated) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
+      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, urlTab ?? "configuration")) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      }
     },
   });
 
@@ -1758,6 +1797,8 @@ function ConfigurationTab({
   hideInstructionsFile?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { tab: urlTab } = useParams<{ tab?: string }>();
   const { pushToast } = useToastActions();
   const [awaitingRefreshAfterSave, setAwaitingRefreshAfterSave] = useState(false);
   const lastAgentRef = useRef(agent);
@@ -1792,11 +1833,13 @@ function ConfigurationTab({
     onMutate: () => {
       setAwaitingRefreshAfterSave(true);
     },
-    onSuccess: () => {
+    onSuccess: (updated) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
+      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, urlTab ?? "configuration")) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      }
       pushToast({ title: "Agent saved", tone: "success" });
     },
     onError: (err) => {
@@ -1950,7 +1993,7 @@ function ConfigurationTab({
 
 /* ---- Prompts Tab ---- */
 
-function PromptsTab({
+export function PromptsTab({
   agent,
   companyId,
   onDirtyChange,
@@ -2189,6 +2232,12 @@ function PromptsTab({
 
   const currentContent = selectedFileExists ? (selectedFileDetail?.content ?? "") : "";
   const displayValue = draft ?? currentContent;
+  const useMarkdownEditor = shouldUseMarkdownInstructionsEditor({
+    selectedFileExists,
+    selectedPath: selectedOrEntryFile,
+    detail: selectedFileDetail,
+    summary: selectedFileSummary,
+  });
   const bundleDirty = Boolean(
     bundleDraft &&
       (
@@ -2663,14 +2712,14 @@ function PromptsTab({
 
           {selectedFileExists && fileLoading && !selectedFileDetail ? (
             <PromptEditorSkeleton />
-          ) : isMarkdown(selectedOrEntryFile) ? (
+          ) : useMarkdownEditor ? (
             <MarkdownEditor
               key={selectedOrEntryFile}
               value={displayValue}
               onChange={(value) => setDraft(value ?? "")}
               placeholder="# Agent instructions"
               className="min-w-0 overflow-hidden"
-              contentClassName="min-h-(--sz-420px) max-w-full break-words text-sm font-mono"
+              contentClassName="min-h-(--sz-420px) max-w-full break-words text-sm leading-7"
               imageUploadHandler={async (file) => {
                 const namespace = `agents/${agent.id}/instructions/${selectedOrEntryFile.replaceAll("/", "-")}`;
                 const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
@@ -3049,6 +3098,10 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 
   return (
     <div className="space-y-4 min-w-0">
+      {/* Workspace-validation recovery: surfaces the recovery card when this run was declined over a
+          git workspace it could not validate, wired to the same reconcile / repair / re-issue /
+          break-glass handlers as the task detail page. */}
+      <RunWorkspaceRecoverySurface run={run} />
       {/* Run summary card */}
       <div className="border border-border rounded-lg overflow-hidden">
         <div className="flex flex-col sm:flex-row">

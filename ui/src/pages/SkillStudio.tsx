@@ -1264,6 +1264,9 @@ function SkillPane({
   // MDXEditor can emit a normalizing onChange on mount, which would otherwise
   // dirty the file on open and break the byte-identity guarantee (PAP-13156).
   const bodyInteractedRef = useRef(false);
+  const markBodyInteracted = useCallback(() => {
+    bodyInteractedRef.current = true;
+  }, []);
 
   const nodes: FileTreeNode[] = useMemo(
     () => buildFileTree(Object.fromEntries(paths.map((p) => [p, ""]))),
@@ -1510,9 +1513,12 @@ function SkillPane({
         ) : null}
         <div
           className="min-h-0 flex-1 overflow-auto px-3 pb-3"
-          onInput={() => {
-            bodyInteractedRef.current = true;
-          }}
+          onBeforeInputCapture={markBodyInteracted}
+          onDropCapture={markBodyInteracted}
+          onInput={markBodyInteracted}
+          onKeyDownCapture={markBodyInteracted}
+          onPasteCapture={markBodyInteracted}
+          onPointerDownCapture={markBodyInteracted}
         >
           {isMarkdown && markdownBlock ? (
             <MarkdownEditor

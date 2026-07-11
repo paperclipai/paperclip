@@ -11,6 +11,10 @@ import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { accessApi, type CurrentBoardAccess } from "../api/access";
+import {
+  canBoardManageRuntime,
+  readRecoveryReconcileWorkspaceId,
+} from "../lib/recovery-reconcile";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
@@ -295,59 +299,11 @@ export function canBoardResolveRecoveryAction(
   return membership.membershipRole !== "viewer" && membership.membershipRole !== null;
 }
 
-/**
- * Best-effort client mirror of the backend `runtime:manage` gate that the break-glass override
- * reconcile (`POST /execution-workspaces/:id/reconcile-branch` in `override` mode) actually
- * enforces. The server re-checks `runtime:manage` for every reconcile and is authoritative, so
- * this is defense-in-depth: it hides the "reconcile anyway" affordance from viewers rather than
- * showing a button that always 403s. For human board members `runtime:manage` grants on the
- * same non-viewer, active-membership condition as recovery resolution (see
- * `server/src/services/authorization.ts`), so the shape matches; per-permission-key overrides
- * are not surfaced to the client and remain the server's call.
- */
-export function canBoardManageRuntime(
-  companyId: string | null | undefined,
-  boardAccess: CurrentBoardAccess | undefined,
-) {
-  if (!companyId || !boardAccess) return false;
-  if (boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin) return true;
-  if (!boardAccess.memberships || boardAccess.memberships.length === 0) {
-    return boardAccess.companyIds.includes(companyId);
-  }
-
-  const membership = boardAccess.memberships.find(
-    (item) => item.companyId === companyId && item.status === "active",
-  );
-  if (!membership) return false;
-  return membership.membershipRole !== "viewer" && membership.membershipRole !== null;
-}
-
-/**
- * The execution workspace a reconcile action should target. The recovery card is rendered from a
- * specific `workspace_validation` recovery action whose evidence pins the workspace that diverged;
- * that workspace — not the page-level `issue.executionWorkspaceId` — is the authoritative target.
- * The page-level id can drift (e.g. a re-issue rebinds the issue to a new workspace) while the card
- * still shows the older action, so we prefer the action's evidence and only fall back to the
- * page-level id when the evidence carries no workspace reference.
- *
- * The branch-incoherence failure (the one that renders the reconcile-forward / break-glass actions)
- * records the workspace under `persistedExecutionWorkspaceId`; the not-reusable failure records it
- * under `executionWorkspaceId`. We accept either key so both divergence shapes pin correctly.
- */
-export function readRecoveryReconcileWorkspaceId(
-  action: IssueRecoveryAction | null | undefined,
-): string | null {
-  if (!action || action.kind !== "workspace_validation") return null;
-  const workspaceValidation = asRecord(action.evidence?.workspaceValidation);
-  if (!workspaceValidation) return null;
-  const persisted = workspaceValidation.persistedExecutionWorkspaceId;
-  if (typeof persisted === "string" && persisted.length > 0) return persisted;
-  const executionWorkspaceId = workspaceValidation.executionWorkspaceId;
-  if (typeof executionWorkspaceId === "string" && executionWorkspaceId.length > 0) {
-    return executionWorkspaceId;
-  }
-  return null;
-}
+// `canBoardManageRuntime` and `readRecoveryReconcileWorkspaceId` moved to `@/lib/recovery-reconcile`
+// so the run-page recovery surface can reuse them without importing this page module. Re-exported
+// here (from the top-of-file import) to keep existing import sites — and their tests — stable, while
+// the imported bindings stay usable within this module.
+export { canBoardManageRuntime, readRecoveryReconcileWorkspaceId };
 
 export function shouldScrollIssueDetailToTopOnNavigation(input: {
   previousIssueId: string | undefined;
@@ -899,6 +855,8 @@ type IssueDetailChatTabProps = {
   reissueIsolatedRecoveryActionPending?: boolean;
   onReconcileForwardRecoveryAction?: () => void;
   onBreakGlassOverrideRecoveryAction?: (reason: string) => void;
+  onQuarantineRestoreRecoveryAction?: () => void;
+  quarantineRestoreRecoveryActionPending?: boolean;
   canBreakGlassRecoveryAction?: boolean;
   reconcileRecoveryActionPending?: boolean;
   canFalsePositiveRecoveryAction?: boolean;
@@ -963,6 +921,7 @@ type IssueDetailChatTabProps = {
   onResumeFromBacklog?: () => Promise<void> | void;
   resumeFromBacklogPending?: boolean;
   externalReferences?: MarkdownExternalReferenceMap;
+  linkCaseReferences?: boolean;
 };
 
 const IssueDetailChatTab = memo(function IssueDetailChatTab({
@@ -983,6 +942,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   reissueIsolatedRecoveryActionPending,
   onReconcileForwardRecoveryAction,
   onBreakGlassOverrideRecoveryAction,
+  onQuarantineRestoreRecoveryAction,
+  quarantineRestoreRecoveryActionPending,
   canBreakGlassRecoveryAction,
   reconcileRecoveryActionPending,
   canFalsePositiveRecoveryAction,
@@ -1032,6 +993,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onResumeFromBacklog,
   resumeFromBacklogPending,
   externalReferences,
+  linkCaseReferences,
 }: IssueDetailChatTabProps) {
   const ThreadComponent = IssueChatThread;
   const { data: activity } = useQuery({
@@ -1207,6 +1169,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryActionPending}
         onReconcileForwardRecoveryAction={onReconcileForwardRecoveryAction}
         onBreakGlassOverrideRecoveryAction={onBreakGlassOverrideRecoveryAction}
+        onQuarantineRestoreRecoveryAction={onQuarantineRestoreRecoveryAction}
+        quarantineRestoreRecoveryActionPending={quarantineRestoreRecoveryActionPending}
         canBreakGlassRecoveryAction={canBreakGlassRecoveryAction}
         reconcileRecoveryActionPending={reconcileRecoveryActionPending}
         canFalsePositiveRecoveryAction={canFalsePositiveRecoveryAction}
@@ -1260,6 +1224,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         resumeFromBacklogPending={resumeFromBacklogPending}
         footer={footer}
         externalReferences={externalReferences}
+        linkCaseReferences={linkCaseReferences}
       />
     </div>
   );
@@ -1792,6 +1757,8 @@ export function IssueDetail() {
     retry: false,
   });
   const keyboardShortcutsEnabled = instanceGeneralSettings?.keyboardShortcuts === true;
+  // Experimental Cases: linkify `PAP-C7` chips in this issue's comment bodies.
+  const casesChipsEnabled = instanceExperimentalSettings?.enableCases === true;
   const feedbackDataSharingPreference = instanceGeneralSettings?.feedbackDataSharingPreference ?? "prompt";
   const showPlanDecompositionsSection =
     instanceExperimentalSettings?.enableIssuePlanDecompositions === true;
@@ -3729,21 +3696,30 @@ export function IssueDetail() {
     mutationFn: async (
       input:
         | { workspaceId: string; mode: "forward" }
-        | { workspaceId: string; mode: "override"; reason: string },
+        | { workspaceId: string; mode: "override"; reason: string }
+        | { workspaceId: string; mode: "quarantine_restore" },
     ) => {
       const { workspaceId, ...body } = input;
       return executionWorkspacesApi.reconcile(workspaceId, body);
     },
-    onSuccess: () => {
+    onSuccess: (_result, variables) => {
       // Refresh the detail card itself (not just the list collections): a successful reconcile
       // clears the active recovery action, so the card must re-fetch to stop showing stale actions.
       invalidateIssueDetail();
       invalidateIssueCollections();
-      pushToast({
-        title: "Workspace branch reconciled",
-        body: "The recorded branch now matches the live branch; the task will resume.",
-        tone: "success",
-      });
+      pushToast(
+        variables.mode === "quarantine_restore"
+          ? {
+              title: "Workspace repaired",
+              body: "Dirty changes were quarantined onto a rescue branch and the recorded branch restored; the task will resume.",
+              tone: "success",
+            }
+          : {
+              title: "Workspace branch reconciled",
+              body: "The recorded branch now matches the live branch; the task will resume.",
+              tone: "success",
+            },
+      );
     },
     onError: (err) => {
       pushToast({
@@ -3793,6 +3769,22 @@ export function IssueDetail() {
     },
     [reconcileExecutionWorkspaceId, reconcileRecoveryAction.mutateAsync, pushToast],
   );
+  // Repair action (workspace_validation, dirty divergence): quarantine the dirty worktree onto a
+  // rescue branch and restore the recorded branch. Lossless — no reason required.
+  const handleQuarantineRestoreRecoveryAction = useCallback(() => {
+    if (!reconcileExecutionWorkspaceId) {
+      pushToast({
+        title: "Repair failed",
+        body: "This task has no execution workspace to repair.",
+        tone: "error",
+      });
+      return;
+    }
+    void reconcileRecoveryAction.mutateAsync({
+      workspaceId: reconcileExecutionWorkspaceId,
+      mode: "quarantine_restore",
+    });
+  }, [reconcileExecutionWorkspaceId, reconcileRecoveryAction.mutateAsync, pushToast]);
 
   const treePreviewAffectedIssues = useMemo(
     () => (treeControlPreview?.issues ?? []).filter((candidate) => !candidate.skipped),
@@ -4690,6 +4682,8 @@ export function IssueDetail() {
               reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryAction.isPending}
               onReconcileForwardRecoveryAction={handleReconcileForwardRecoveryAction}
               onBreakGlassOverrideRecoveryAction={handleBreakGlassOverrideRecoveryAction}
+              onQuarantineRestoreRecoveryAction={handleQuarantineRestoreRecoveryAction}
+              quarantineRestoreRecoveryActionPending={reconcileRecoveryAction.isPending}
               canBreakGlassRecoveryAction={canManageBoardRuntime}
               reconcileRecoveryActionPending={reconcileRecoveryAction.isPending}
               canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}
@@ -4754,6 +4748,7 @@ export function IssueDetail() {
                 updateIssue.isPending && updateIssue.variables?.status === "todo"
               }
               externalReferences={externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined}
+              linkCaseReferences={casesChipsEnabled}
             />
           ) : null}
         </TabsContent>

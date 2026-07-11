@@ -146,6 +146,8 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
   const annotationsQueryKey = useMemo(
     () => annotationTarget.kind === "routine"
       ? queryKeys.routines.documentAnnotations(annotationTarget.routineId, annotationTarget.documentKey, "all")
+      : annotationTarget.kind === "case"
+        ? queryKeys.cases.documentAnnotations(annotationTarget.caseId, annotationTarget.documentKey, "all")
       : queryKeys.issues.documentAnnotations(annotationTarget.issueId, annotationTarget.documentKey, "all"),
     [annotationTarget],
   );
@@ -158,6 +160,12 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
           return query.queryKey[0] === "routines"
             && query.queryKey[1] === "document-annotations"
             && query.queryKey[2] === annotationTarget.routineId
+            && query.queryKey[3] === annotationTarget.documentKey;
+        }
+        if (annotationTarget.kind === "case") {
+          return query.queryKey[0] === "cases"
+            && query.queryKey[1] === "document-annotations"
+            && query.queryKey[2] === annotationTarget.caseId
             && query.queryKey[3] === annotationTarget.documentKey;
         }
         return query.queryKey[0] === "issues"
@@ -709,6 +717,7 @@ function buildOptimisticComment(input: {
     threadId: input.threadId,
     issueId: input.target.kind === "issue" ? input.target.issueId : null,
     routineId: input.target.kind === "routine" ? input.target.routineId : null,
+    caseId: input.target.kind === "case" ? input.target.caseId : null,
     documentId: "",
     body: input.body,
     authorType: "user",
@@ -747,6 +756,7 @@ function buildOptimisticThread(input: {
     id,
     issueId: input.target.kind === "issue" ? input.target.issueId : null,
     routineId: input.target.kind === "routine" ? input.target.routineId : null,
+    caseId: input.target.kind === "case" ? input.target.caseId : null,
     documentKey: input.documentKey,
     status: "open",
     anchorState: "active",

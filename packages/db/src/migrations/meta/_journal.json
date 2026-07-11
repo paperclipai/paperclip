@@ -981,6 +981,27 @@
       "when": 1783555301000,
       "tag": "0141_heartbeat_runs_company_created_at_index",
       "breakpoints": true
+    },
+    {
+      "idx": 142,
+      "version": "7",
+      "when": 1783555301100,
+      "tag": "0142_company_search_sort_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 143,
+      "version": "7",
+      "when": 1783457051766,
+      "tag": "0143_cases_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 144,
+      "version": "7",
+      "when": 1783520000000,
+      "tag": "0144_case_document_annotations",
+      "breakpoints": true
     }
   ]
 }

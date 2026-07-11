@@ -104,6 +104,11 @@ export const statusBadge: Record<string, string> = {
   approved: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   rejected: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
 
+  // Case statuses (PAP-12968 E3) — `draft` is the neutral pre-work state,
+  // rendered as a muted gray alias of `backlog`/`planned`. The other case
+  // statuses (in_progress/in_review/approved/done/cancelled) already map above.
+  draft: "bg-muted text-muted-foreground",
+
   // Issue statuses — consistent hues with issueStatusIcon above (PAP-75 brand
   // mapping: todo → amber, in_progress → blue "liveness").
   backlog: "bg-muted text-muted-foreground",

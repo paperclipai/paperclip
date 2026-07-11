@@ -171,10 +171,26 @@ function isPlanConfirmation(interaction: IssueThreadInteraction): boolean {
   return target?.type === "issue_document" && target?.key === "plan";
 }
 
-function planStatusClasses(status: IssueThreadInteraction["status"]) {
+function requestConfirmationResumeFailure(interaction: IssueThreadInteraction) {
+  if (interaction.kind !== "request_confirmation" && interaction.kind !== "request_checkbox_confirmation") return null;
+  return interaction.result?.resumeFailure ?? null;
+}
+
+function planStatusClasses(
+  status: IssueThreadInteraction["status"],
+  resumeFailure?: ReturnType<typeof requestConfirmationResumeFailure>,
+) {
   switch (status) {
     case "accepted":
     case "answered":
+      if (resumeFailure) {
+        return {
+          shell: "border-2 border-amber-500/70 bg-transparent",
+          badge: "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
+          label: "Approved — agent resume failed",
+          Icon: AlertTriangle,
+        };
+      }
       return {
         shell: "border-2 border-green-500/80 bg-transparent",
         badge: "border-green-500/60 bg-green-500/10 text-green-900 dark:bg-green-500/15 dark:text-green-100",
@@ -1119,6 +1135,32 @@ function RequestConfirmationResolution({
   const staleTarget = interaction.result?.staleTarget ?? null;
 
   if (interaction.status === "accepted") {
+    const resumeFailure = requestConfirmationResumeFailure(interaction);
+    if (resumeFailure) {
+      return (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
+            <span className="font-medium">Confirmed</span>
+            <RequestConfirmationTargetChip interaction={interaction} target={target} />
+          </div>
+          <div className="rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
+            <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
+              Agent resume failed
+            </div>
+            <p className="mt-1 leading-6">
+              {resumeFailure.status === "retrying"
+                ? `Paperclip is retrying the agent resume after approval (attempt ${resumeFailure.attempt}/${resumeFailure.maxAttempts}).`
+                : "Paperclip needs attention before the agent can resume this approved work."}
+            </p>
+            {resumeFailure.errorCode ? (
+              <p className="mt-1 leading-6">
+                Latest cause: <code className="font-mono text-(length:--text-micro)">{resumeFailure.errorCode}</code>
+              </p>
+            ) : null}
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
         <span className="font-medium">Confirmed</span>
@@ -1910,7 +1952,8 @@ export function IssueThreadInteractionCard({
   externalReferences,
 }: IssueThreadInteractionCardProps) {
   const isPlan = isPlanConfirmation(interaction);
-  const planStyles = isPlan ? planStatusClasses(interaction.status) : null;
+  const resumeFailure = requestConfirmationResumeFailure(interaction);
+  const planStyles = isPlan ? planStatusClasses(interaction.status, resumeFailure) : null;
   const StatusIcon = planStyles ? planStyles.Icon : statusIcon(interaction.status);
   const styles = planStyles ?? statusClasses(interaction.status);
   const createdByLabel = resolveActorLabel({

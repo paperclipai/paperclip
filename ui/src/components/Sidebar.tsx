@@ -10,6 +10,7 @@ import {
   Network,
   Boxes,
   Repeat,
+  Layers,
   GitBranch,
   Package,
   Settings,
@@ -78,6 +79,7 @@ export function Sidebar() {
   const showPipelines = experimentalSettings?.enablePipelines === true;
   const goalsLinkPending = experimentalSettings === undefined;
   const showGoalsLink = experimentalSettings?.enableGoalsSidebarLink === true;
+  const showCases = experimentalSettings?.enableCases === true;
   // Streamlined left navigation (top-level Projects link + starred children) is
   // now the standard product sidebar (PAP-12472). The former experimental
   // opt-out was retired; classic per-project collapsible mode is no longer
@@ -195,6 +197,9 @@ export function Sidebar() {
 
         <SidebarSection label="Work" collapsible={{ open: workOpen, onOpenChange: setWorkOpen }}>
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
+          {showCases ? (
+            <SidebarNavItem to="/cases" label="Cases" icon={Layers} textBadge="beta" />
+          ) : null}
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           {showPipelines ? (
             <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />

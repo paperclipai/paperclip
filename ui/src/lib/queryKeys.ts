@@ -185,6 +185,17 @@ export const queryKeys = {
     list: (companyId: string) => ["projects", companyId] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
   },
+  cases: {
+    list: (companyId: string) => ["cases", companyId] as const,
+    detail: (id: string) => ["cases", "detail", id] as const,
+    documents: (id: string) => ["cases", "documents", id] as const,
+    documentAnnotations: (caseId: string, key: string, status: "open" | "resolved" | "all" = "all") =>
+      ["cases", "document-annotations", caseId, key, status] as const,
+    events: (id: string) => ["cases", "events", id] as const,
+    children: (parentId: string) => ["cases", "children", parentId] as const,
+    revisions: (id: string, key: string) => ["cases", "revisions", id, key] as const,
+    forIssue: (issueId: string) => ["cases", "for-issue", issueId] as const,
+  },
   externalObjects: {
     byIssue: (issueId: string) => ["external-objects", "by-issue", issueId] as const,
     issueSummary: (issueId: string) => ["external-objects", "issue-summary", issueId] as const,
