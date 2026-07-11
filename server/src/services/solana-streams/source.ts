@@ -190,10 +190,14 @@ export class SolanaRpcSource implements SolanaStreamSource {
     const meta = "meta" in raw ? raw.meta : null;
     if (!tx) return null;
     const message = tx.message;
+    // v0 transactions can load extra accounts via address lookup tables; those
+    // addresses live in meta.loadedAddresses, not in message.staticAccountKeys.
+    // Include both so compiled instruction indexes resolve to the right keys.
+    const loadedAddresses = meta?.loadedAddresses ?? { writable: [], readonly: [] };
     const accountKeys = [
       ...message.staticAccountKeys.map((k) => publicKeyToString(k)),
-      ...(meta?.loadedAddresses?.writable ?? []).map((k) => publicKeyToString(k)),
-      ...(meta?.loadedAddresses?.readonly ?? []).map((k) => publicKeyToString(k)),
+      ...loadedAddresses.writable.map((k) => publicKeyToString(k)),
+      ...loadedAddresses.readonly.map((k) => publicKeyToString(k)),
     ];
     const instructions: SolanaStreamInstruction[] = message.compiledInstructions.map((ix) => {
       const programId = accountKeys[ix.programIdIndex] ?? "";
