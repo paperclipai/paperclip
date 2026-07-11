@@ -1,0 +1,36 @@
+import requests
+
+_YOAST_MAP = {
+    "seo_title": "_yoast_wpseo_title",
+    "meta_description": "_yoast_wpseo_metadesc",
+    "og_title": "_yoast_wpseo_opengraph-title",
+    "og_description": "_yoast_wpseo_opengraph-description",
+    "canonical": "_yoast_wpseo_canonical",
+    "focus_keyword": "_yoast_wpseo_focuskw",
+}
+
+class WPClient:
+    def __init__(self, rest_base, auth, session=None):
+        self.base = rest_base.rstrip("/")
+        self.auth = auth
+        self.http = session or requests.Session()
+
+    def _post(self, path, payload):
+        r = self.http.post(f"{self.base}{path}", json=payload, auth=self.auth, timeout=30)
+        r.raise_for_status()
+        return r.json()
+
+    def get_post_meta(self, post_id):
+        r = self.http.get(f"{self.base}/wp/v2/posts/{post_id}", auth=self.auth, timeout=30)
+        r.raise_for_status()
+        return r.json().get("meta", {})
+
+    def set_yoast_meta(self, post_id, field, value):
+        key = _YOAST_MAP[field]
+        return self._post(f"/wp/v2/posts/{post_id}", {"meta": {key: value}})
+
+    def set_alt_text(self, media_id, value):
+        return self._post(f"/wp/v2/media/{media_id}", {"alt_text": value})
+
+    def set_llms_txt(self, value):
+        return self._post("/whitestag-seo-geo/v1/llms", {"content": value})
