@@ -91,6 +91,23 @@ const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
 /**
+ * Env-gated allowlist for private/loopback hosts. Comma-separated list of
+ * exact host or host:port tokens (e.g. `127.0.0.1,127.0.0.1:8001`). Empty or
+ * unset preserves the default fail-closed SSRF policy. Matched by the original
+ * URL hostname / host header — DNS results are still pinned into the request.
+ */
+function getPrivateHostAllowlist(): Set<string> {
+  const raw = process.env["PAPERCLIP_PLUGIN_ALLOW_PRIVATE_HOSTS"];
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter((s) => s.length > 0),
+  );
+}
+
+/**
  * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
  * link-local, etc.) that plugins should never be able to reach.
  *
@@ -187,7 +204,15 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     // Filter to only non-private IPs instead of rejecting the entire request
     // when some IPs are private. This handles multi-homed hosts that resolve
     // to both private and public addresses.
-    const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
+    // Env-gated allowlist bypasses the private-IP filter for exact host or
+    // host:port matches (self-hosted loopback services).
+    const allowlist = getPrivateHostAllowlist();
+    const hostLower = originalHostname.toLowerCase();
+    const hostPortLower = hostHeader.toLowerCase();
+    const allowPrivate = allowlist.has(hostLower) || allowlist.has(hostPortLower);
+    const safeResults = allowPrivate
+      ? results
+      : results.filter((entry) => !isPrivateIP(entry.address));
     if (safeResults.length === 0) {
       throw new Error(
         `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
