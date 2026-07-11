@@ -4122,6 +4122,22 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
+    if (activeRecoveryAction.ownerType === "board" && !activeRecoveryAction.ownerAgentId) {
+      res.status(403).json({
+        error: "Board-owned recovery action requires board resolution",
+        details: {
+          issueId: issue.id,
+          recoveryActionId: activeRecoveryAction.id,
+          actorAgentId,
+          assigneeAgentId: issue.assigneeAgentId,
+          recoveryOwnerType: activeRecoveryAction.ownerType,
+          recoveryOwnerAgentId: activeRecoveryAction.ownerAgentId,
+          source: input.source,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Secure Defaults"],
+        },
+      });
+      return false;
+    }
     if (issue.assigneeAgentId === actorAgentId) return true;
     if (
       issue.assigneeAgentId &&

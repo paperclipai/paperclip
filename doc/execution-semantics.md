@@ -463,6 +463,18 @@ A blocker chain is covered only when its unresolved leaf is live or explicitly w
 
 A `blocked` issue is stalled when the unresolved blocker leaf has no active run, queued wake, typed participant, pending interaction or approval, user owner, external owner/action, or recovery action. In that case the parent should show the first stalled leaf instead of presenting the dependency as calmly covered.
 
+#### Stale blocked posture and terminal-blocker repair
+
+`blocked` is valid only while a real unresolved dependency or another explicit waiting path exists. A blocker that is already `done` is completion evidence, not a durable unresolved dependency. An issue that remains `blocked` after all blockers are done, or that has no blocker and no other waiting-path primitive, is stale and must be repaired rather than displayed as legitimately waiting.
+
+Repair must preserve the meaning of terminal blocker outcomes:
+
+- `done` blockers are satisfied and must be removed from the effective unresolved blocker set
+- `cancelled` blockers are not satisfied; the source issue remains explicitly blocked while a bounded recovery action names whether to replace, waive, or escalate that dependency
+- when no unresolved blocker remains and deliverable work is still open, Paperclip must queue a normal-model continuation such as `issue_blockers_resolved`, or open an explicit control-plane recovery action when it cannot safely identify or invoke the continuation owner
+
+A status-only recovery run may perform this control-plane repair: revalidate blocker state, clear the stale waiting posture, queue the normal-model continuation, or open the explicit recovery action. It must not perform the source deliverable, update persistent deliverable surfaces, or treat its own comment/run as the issue's continuing live path. Repair is bounded and non-recursive: a recovery action must not create or retain a dependency on itself, and repeated reconciliation must reuse the existing continuation or recovery action instead of deepening a recovery tree.
+
 ## 9. Crash and Restart Recovery
 
 Paperclip now treats crash/restart recovery as a stranded-assigned-work problem, not just a stranded-run problem.
@@ -517,6 +529,8 @@ This keeps the post-decomposition umbrella (§7) on a real waiting path instead 
 ### 9.3 Recovery model-profile lane
 
 Cheap model profiles are only for status-only operational recovery overhead. Paperclip may request `modelProfile: "cheap"` for bounded recovery-owner work that updates task liveness, clears bad status, records a disposition, or asks for human/manager intervention. Those wakes must carry guard context such as `allowDeliverableWork: false`, `allowDocumentUpdates: false`, and `resumeRequiresNormalModel: true`.
+
+`resumeRequiresNormalModel: true` is an execution contract, not an informational hint. Before a status-only recovery run finishes with source work remaining, it must leave either a queued normal-model continuation for the responsible worker or an explicit control-plane recovery action that names the owner and action required to create that continuation. Leaving the issue in stale `blocked`, writing a comment, or recording that normal-model work is needed does not satisfy the handoff.
 
 Automatic retries that can continue source work must use the original/normal model lane. This includes failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, assigned-todo dispatch recovery, and any run that can update repo files, issue documents, plans, work products, or attachments. When a cheap status-only recovery determines that actual work remains, it must hand back to a normal-model worker run before source work or persistent deliverable updates resume. Cheap recovery hints must be scrubbed from copied retry, resume, child, and downstream source-work contexts.
 

@@ -997,6 +997,69 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("rejects the source assignee when a recovery action is board-owned without an agent owner", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: coderId, assigneeUserId: null })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "board",
+      ownerAgentId: null,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:board-owner-required",
+      evidence: { latestIssueStatus: "blocked" },
+      nextAction: "A board operator must choose the recovery disposition.",
+      wakePolicy: { type: "board_escalation" },
+    });
+    const runId = randomUUID();
+    const app = createApp({
+      type: "agent",
+      agentId: coderId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId,
+      issueId: sourceIssueId,
+    });
+
+    await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "done",
+        resolutionNote: "The stranded assignee should not be able to clear a board escalation.",
+      })
+      .expect(403);
+
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(sourceIssue).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: coderId,
+      assigneeUserId: null,
+    });
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "active",
+      ownerType: "board",
+      ownerAgentId: null,
+      outcome: null,
+      resolvedAt: null,
+    });
+  });
+
   it("allows the named recovery owner to resolve a board-owned source recovery action", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     await db
