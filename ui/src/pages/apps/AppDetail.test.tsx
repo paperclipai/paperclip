@@ -296,6 +296,24 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain(expectedText);
   });
 
+  it("hides secret URL parameters in advanced technical details", async () => {
+    mockParams.tab = "advanced";
+    getConnectionMock.mockResolvedValue(
+      connection({
+        config: {
+          url: "https://mcp.zapier.com/api/v1/connect?token=zapier-secret&region=us",
+        },
+      }),
+    );
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain(
+      "https://mcp.zapier.com/api/v1/connect?token=REDACTED&region=us",
+    );
+    expect(container.textContent).not.toContain("zapier-secret");
+  });
+
   it("shows new quarantined actions on the review tab instead of an empty state", async () => {
     mockParams.tab = "review";
 

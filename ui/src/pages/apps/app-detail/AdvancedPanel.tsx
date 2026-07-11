@@ -7,6 +7,7 @@ import { toolsApi } from "@/api/tools";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/context/ToastContext";
+import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 import type { AppDetailSectionProps } from "./types";
 
 export function AdvancedPanel({
@@ -261,7 +262,7 @@ export function DangerZone({
 export function connectionAddress(connection: ToolConnection): string {
   const config = connection.config ?? connection.transportConfig ?? {};
   const value = config.url ?? config.endpoint ?? config.remoteUrl;
-  if (typeof value === "string" && value.trim().length > 0) return value;
+  if (typeof value === "string" && value.trim().length > 0) return redactUrlSecrets(value);
   if (connection.transport === "local_stdio") return "Local command";
   return "Not set";
 }

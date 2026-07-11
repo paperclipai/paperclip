@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/context/ToastContext";
+import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 import {
   LoadingState,
   ErrorState,
@@ -47,7 +48,7 @@ export const TRANSPORT_LABEL: Record<string, string> = {
 export function connectionEndpoint(conn: ToolConnection): string | null {
   const config = { ...(conn.transportConfig ?? {}), ...(conn.config ?? {}) } as Record<string, unknown>;
   const url = config.url ?? config.endpoint ?? config.endpointUrl;
-  if (typeof url === "string" && url.trim()) return url.trim();
+  if (typeof url === "string" && url.trim()) return redactUrlSecrets(url);
   const template = config.templateId ?? config.template ?? config.command;
   if (typeof template === "string" && template.trim()) return template.trim();
   if (Array.isArray(config.command)) return config.command.join(" ");
@@ -564,4 +565,3 @@ export function AddConnectionDialog({
     </Dialog>
   );
 }
-
