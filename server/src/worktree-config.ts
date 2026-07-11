@@ -392,6 +392,7 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
   if (fs.existsSync(context.configPath)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(context.configPath, "utf8")) as PaperclipConfig;
+      let runtimeConfig = parsed;
       const siblingPorts = collectSiblingWorktreePorts(context);
       const hasSiblingPortCollision =
         siblingPorts.serverPorts.has(parsed.server.port) ||
@@ -413,14 +414,16 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
               )
             : undefined;
 
-        writeConfigFile(
-          context.configPath,
-          buildIsolatedWorktreeConfig(parsed, context, {
-            serverPort: selectedServerPort,
-            databasePort: selectedDatabasePort,
-          }),
-        );
+        runtimeConfig = buildIsolatedWorktreeConfig(parsed, context, {
+          serverPort: selectedServerPort,
+          databasePort: selectedDatabasePort,
+        });
+        writeConfigFile(context.configPath, runtimeConfig);
         repairedConfig = true;
+      }
+
+      if (Number.isInteger(runtimeConfig.server.port) && runtimeConfig.server.port > 0) {
+        process.env.PORT = String(runtimeConfig.server.port);
       }
     } catch {
       // Leave invalid configs to the normal startup validation path.
