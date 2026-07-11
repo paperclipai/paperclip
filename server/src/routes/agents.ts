@@ -4269,7 +4269,7 @@ export function agentRoutes(
       .select(columns)
       .from(heartbeatRuns)
       .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
-      .leftJoin(issuesTable, eq(issuesTable.id, runIssueId))
+      .leftJoin(issuesTable, sql<boolean>`${issuesTable.id}::text = ${runIssueId}`)
       .where(
         and(
           eq(heartbeatRuns.companyId, companyId),
@@ -4287,7 +4287,7 @@ export function agentRoutes(
         .select(columns)
         .from(heartbeatRuns)
         .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
-        .leftJoin(issuesTable, eq(issuesTable.id, runIssueId))
+        .leftJoin(issuesTable, sql<boolean>`${issuesTable.id}::text = ${runIssueId}`)
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
