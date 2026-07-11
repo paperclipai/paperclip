@@ -142,6 +142,46 @@ describeEmbeddedPostgres("createSeoDocGovernanceScheduler", () => {
     expect(enqueueWakeup).toHaveBeenCalledTimes(2);
   });
 
+  it("does not duplicate escalation comments when wake enqueue fails transiently", async () => {
+    const { companyId, issueId } = await createIssue("INS-324");
+    const enqueueWakeup = vi.fn()
+      .mockRejectedValueOnce(new Error("transient wake failure"))
+      .mockResolvedValue(null);
+
+    await docsSvc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      format: "markdown",
+      body: governedBody("2026-03-01", "critical"),
+    });
+
+    const scheduler = createSeoDocGovernanceScheduler({
+      db,
+      enqueueWakeup,
+      intervalMs: 60_000,
+      now: () => new Date("2026-04-21T00:00:00.000Z"),
+    });
+
+    await expect(scheduler.runOnce(new Date("2026-04-21T00:00:00.000Z"))).resolves.toMatchObject({
+      escalatedDocKeys: ["INS-324#document-plan"],
+    });
+    await expect(scheduler.runOnce(new Date("2026-04-21T00:00:00.000Z"))).resolves.toMatchObject({
+      escalatedDocKeys: [],
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    const registryEntry = await db
+      .select({
+        lastEscalatedAt: seoDocRegistryEntries.lastEscalatedAt,
+      })
+      .from(seoDocRegistryEntries)
+      .where(and(eq(seoDocRegistryEntries.companyId, companyId), eq(seoDocRegistryEntries.issueId, issueId)))
+      .then((rows) => rows[0] ?? null);
+    expect(registryEntry?.lastEscalatedAt?.toISOString()).toBe("2026-04-21T00:00:00.000Z");
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
   it("continues auditing other docs when one governed document is malformed", async () => {
     const malformed = await createIssue("INS-322");
     const healthy = await createIssue("INS-323");

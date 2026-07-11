@@ -461,36 +461,6 @@ export function seoDocGovernanceService(db: Db, deps: SeoDocGovernanceDeps = {})
             body: escalationBody(row.docKey, `[@CMO](${buildAgentMentionHref(cmoAgent.id)})`),
           }).returning({ id: issueComments.id });
           await db.update(issues).set({ updatedAt: auditNow }).where(eq(issues.id, row.issueId));
-          if (deps.enqueueWakeup) {
-            const issueOwner = await db
-              .select({
-                responsibleUserId: issues.responsibleUserId,
-                createdByUserId: issues.createdByUserId,
-              })
-              .from(issues)
-              .where(eq(issues.id, row.issueId))
-              .then((issueRows) => issueRows[0] ?? null);
-            const responsibleUserId = issueOwner?.responsibleUserId ?? issueOwner?.createdByUserId ?? undefined;
-            await deps.enqueueWakeup(cmoAgent.id, {
-              source: "automation",
-              triggerDetail: "system",
-              reason: "issue_comment_mentioned",
-              payload: {
-                issueId: row.issueId,
-                commentId: comment.id,
-              },
-              requestedByActorType: "system",
-              contextSnapshot: {
-                issueId: row.issueId,
-                taskId: row.issueId,
-                commentId: comment.id,
-                wakeCommentId: comment.id,
-                wakeReason: "issue_comment_mentioned",
-                source: "comment.mention",
-                ...(responsibleUserId ? { responsibleUserId } : {}),
-              },
-            });
-          }
           await db
             .update(seoDocRegistryEntries)
             .set({
@@ -499,6 +469,43 @@ export function seoDocGovernanceService(db: Db, deps: SeoDocGovernanceDeps = {})
             })
             .where(eq(seoDocRegistryEntries.id, row.id));
           result.escalatedDocKeys.push(row.docKey);
+          if (deps.enqueueWakeup) {
+            try {
+              const issueOwner = await db
+                .select({
+                  responsibleUserId: issues.responsibleUserId,
+                  createdByUserId: issues.createdByUserId,
+                })
+                .from(issues)
+                .where(eq(issues.id, row.issueId))
+                .then((issueRows) => issueRows[0] ?? null);
+              const responsibleUserId = issueOwner?.responsibleUserId ?? issueOwner?.createdByUserId ?? undefined;
+              await deps.enqueueWakeup(cmoAgent.id, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "issue_comment_mentioned",
+                payload: {
+                  issueId: row.issueId,
+                  commentId: comment.id,
+                },
+                requestedByActorType: "system",
+                contextSnapshot: {
+                  issueId: row.issueId,
+                  taskId: row.issueId,
+                  commentId: comment.id,
+                  wakeCommentId: comment.id,
+                  wakeReason: "issue_comment_mentioned",
+                  source: "comment.mention",
+                  ...(responsibleUserId ? { responsibleUserId } : {}),
+                },
+              });
+            } catch (error) {
+              log.warn(
+                { err: error, docKey: row.docKey, issueId: row.issueId },
+                "failed to enqueue seo governance escalation wakeup",
+              );
+            }
+          }
         } catch (error) {
           log.warn({ err: error, docKey: row.docKey }, "failed to emit seo governance escalation comment");
         }
