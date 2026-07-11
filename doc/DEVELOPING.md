@@ -182,7 +182,17 @@ Every local install keeps runtime state directly under the selected instance roo
   workspaces/<agent-id>/                         # default agent workspaces
   projects/                                      # project execution workspaces
   companies/<company-id>/codex-home/             # per-company codex_local home
+  browser/                                         # encrypted browser session/profile state
 ```
+
+## Managed browser automation
+
+The production image includes `agent-browser` and Camoufox. The bundled
+`browser-automation` skill defines provider fallback, live issue visibility,
+credential handling, and session scoping. Store `AGENT_BROWSER_ENCRYPTION_KEY`
+and site credentials as company secrets, then bind them to an agent or project
+environment. Set `PAPERCLIP_BROWSER_SESSION` in project env when projects must
+not share login state. Project env overrides agent defaults during issue runs.
 
 `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` override the home root and instance id respectively. `paperclipai onboard` echoes the resolved values in its banner (`Local home: <home> | instance: <id> | config: <path>`) so you can confirm where state will land before continuing.
 

@@ -283,7 +283,25 @@ function isCommandTool(name: string, input: unknown): boolean {
   return Boolean(record && (typeof record.command === "string" || typeof record.cmd === "string"));
 }
 
+function commandText(input: unknown): string {
+  if (typeof input === "string") return input;
+  const record = asRecord(input);
+  if (!record) return "";
+  const value = record.command ?? record.cmd;
+  return typeof value === "string" ? value : "";
+}
+
+function browserCommandLabel(input: unknown): string | null {
+  const command = commandText(input);
+  if (!command) return null;
+  if (/(?:^|[\s/])agent-browser(?:\s|$)/i.test(command)) return "Browser · agent-browser";
+  if (/(?:^|[\s/])(?:python(?:3)?\s+-m\s+)?camoufox(?:\s|$)/i.test(command)) return "Browser · Camoufox";
+  return null;
+}
+
 function displayToolName(name: string, input: unknown): string {
+  const browserLabel = browserCommandLabel(input);
+  if (browserLabel) return browserLabel;
   if (isCommandTool(name, input)) return "Executing command";
   return humanizeLabel(name);
 }

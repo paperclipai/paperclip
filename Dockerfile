@@ -61,15 +61,24 @@ RUN node --import ./server/node_modules/tsx/dist/loader.mjs -e "import('./packag
 FROM base AS production
 WORKDIR /app
 COPY --from=build /app /app
-RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client bsdextrautils zbar-tools && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client bsdextrautils zbar-tools python3 python3-pip python3-venv && rm -rf /var/lib/apt/lists/*
 ARG CLAUDE_CODE_VERSION=2.1.141
 ARG CODEX_VERSION=0.144.1
 ARG AGENT_BROWSER_VERSION=0.27.0
+ARG CAMOUFOX_VERSION=0.4.11
 # claude-p: drop-in `claude -p` replacement that drives the interactive Claude
 # Code TUI in a PTY (used by the claude_tui adapter). Ships a prebuilt glibc
 # binary via npm postinstall; base image is Debian (glibc) so it runs as-is.
 ARG CLAUDE_P_VERSION=0.1.0
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex@${CODEX_VERSION} claude-p@${CLAUDE_P_VERSION} playwright agent-browser@${AGENT_BROWSER_VERSION}
+
+# Camoufox is the managed fallback when Chromium automation reaches a durable
+# bot challenge. Keep it isolated from the system Python and fetch its pinned
+# Firefox build during image creation so agent runs never install code at runtime.
+RUN python3 -m venv /opt/camoufox \
+  && /opt/camoufox/bin/pip install --no-cache-dir "camoufox==${CAMOUFOX_VERSION}" \
+  && /opt/camoufox/bin/python -m camoufox fetch \
+  && ln -s /opt/camoufox/bin/python /usr/local/bin/camoufox-python
 
 # Install Chromium + all system dependencies for headless browser automation
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
