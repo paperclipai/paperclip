@@ -69,6 +69,7 @@ import { setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
+import { heartbeatService } from "./services/heartbeat.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
@@ -275,7 +276,8 @@ export async function createApp(
     jobStore,
     workerManager,
   });
-  const seoDocGovernanceScheduler = createSeoDocGovernanceScheduler({ db });
+  const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
+  const seoDocGovernanceScheduler = createSeoDocGovernanceScheduler({ db, enqueueWakeup: heartbeat.wakeup });
   const toolDispatcher = createPluginToolDispatcher({
     workerManager,
     lifecycleManager: lifecycle,

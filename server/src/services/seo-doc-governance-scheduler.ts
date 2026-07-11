@@ -10,12 +10,13 @@ export function createSeoDocGovernanceScheduler(opts: {
   db: Db;
   intervalMs?: number;
   now?: () => Date;
+  enqueueWakeup?: NonNullable<Parameters<typeof seoDocGovernanceService>[1]>["enqueueWakeup"];
 }): {
   start(): void;
   stop(): void;
   runOnce(now?: Date): Promise<SeoDocAuditResult>;
 } {
-  const governance = seoDocGovernanceService(opts.db);
+  const governance = seoDocGovernanceService(opts.db, { enqueueWakeup: opts.enqueueWakeup });
   const intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
   const nowFn = opts.now ?? (() => new Date());
   const log = logger.child({ service: "seo-doc-governance-scheduler" });

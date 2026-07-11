@@ -1,7 +1,7 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { documents, issueComments, issueDocuments, issues, seoDocRegistryEntries } from "@paperclipai/db";
-import { asString, isFrontmatterPlainRecord, parseFrontmatterMarkdown } from "@paperclipai/shared";
+import { agents, documents, issueComments, issueDocuments, issues, seoDocRegistryEntries } from "@paperclipai/db";
+import { asString, buildAgentMentionHref, isFrontmatterPlainRecord, parseFrontmatterMarkdown } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 
 export type SeoDocCadence = "weekly" | "biweekly" | "monthly";
@@ -49,6 +49,30 @@ export interface SeoDocAuditResult {
   escalatedDocKeys: string[];
   violations: SeoDocViolation[];
 }
+
+type SeoDocGovernanceWakeup = {
+  source: "automation";
+  triggerDetail: "system";
+  reason: "issue_comment_mentioned";
+  payload: {
+    issueId: string;
+    commentId: string;
+  };
+  requestedByActorType: "system";
+  contextSnapshot: {
+    issueId: string;
+    taskId: string;
+    commentId: string;
+    wakeCommentId: string;
+    wakeReason: "issue_comment_mentioned";
+    source: "comment.mention";
+    responsibleUserId?: string;
+  };
+};
+
+type SeoDocGovernanceDeps = {
+  enqueueWakeup?: (agentId: string, wakeup: SeoDocGovernanceWakeup) => Promise<unknown> | unknown;
+};
 
 type ValidationErrorCode = "missing_owner" | "missing_update_cadence" | "missing_frontmatter";
 
@@ -133,13 +157,13 @@ function isStale(entry: { updateCadence: SeoDocCadence; lastUpdated: Date }, now
   return now.getTime() - entry.lastUpdated.getTime() > thresholdMs;
 }
 
-function escalationBody(docKey: string): string {
+function escalationBody(docKey: string, cmoMention: string): string {
   return [
     "SEO governance escalation: critical document is stale.",
     "",
     `- Document: ${docKey}`,
     "- Action required: update governance metadata/body and refresh `last_updated`.",
-    "- Escalation: @CMO",
+    `- Escalation: ${cmoMention}`,
   ].join("\n");
 }
 
@@ -163,8 +187,17 @@ function buildValidationError(code: ValidationErrorCode, docKey: string): Error 
   return error;
 }
 
-export function seoDocGovernanceService(db: Db) {
+export function seoDocGovernanceService(db: Db, deps: SeoDocGovernanceDeps = {}) {
   const log = logger.child({ service: "seo-doc-governance" });
+
+  async function findCompanyCmo(companyId: string) {
+    return db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), eq(agents.role, "cmo")))
+      .orderBy(asc(agents.createdAt), asc(agents.id))
+      .then((rows) => rows[0] ?? null);
+  }
 
   async function validateDependencies(docKey: string, dependencies: SeoDocDependencyRef[]): Promise<SeoDocViolation[]> {
     const violations: SeoDocViolation[] = [];
@@ -415,13 +448,49 @@ export function seoDocGovernanceService(db: Db) {
         if (!shouldEscalate) continue;
 
         try {
-          await db.insert(issueComments).values({
+          const cmoAgent = await findCompanyCmo(companyId);
+          if (!cmoAgent) {
+            log.warn({ companyId, docKey: row.docKey }, "failed to emit seo governance escalation comment: no CMO agent found");
+            continue;
+          }
+
+          const [comment] = await db.insert(issueComments).values({
             companyId,
             issueId: row.issueId,
             authorType: "system",
-            body: escalationBody(row.docKey),
-          });
+            body: escalationBody(row.docKey, `[@CMO](${buildAgentMentionHref(cmoAgent.id)})`),
+          }).returning({ id: issueComments.id });
           await db.update(issues).set({ updatedAt: auditNow }).where(eq(issues.id, row.issueId));
+          if (deps.enqueueWakeup) {
+            const issueOwner = await db
+              .select({
+                responsibleUserId: issues.responsibleUserId,
+                createdByUserId: issues.createdByUserId,
+              })
+              .from(issues)
+              .where(eq(issues.id, row.issueId))
+              .then((issueRows) => issueRows[0] ?? null);
+            const responsibleUserId = issueOwner?.responsibleUserId ?? issueOwner?.createdByUserId ?? undefined;
+            await deps.enqueueWakeup(cmoAgent.id, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_comment_mentioned",
+              payload: {
+                issueId: row.issueId,
+                commentId: comment.id,
+              },
+              requestedByActorType: "system",
+              contextSnapshot: {
+                issueId: row.issueId,
+                taskId: row.issueId,
+                commentId: comment.id,
+                wakeCommentId: comment.id,
+                wakeReason: "issue_comment_mentioned",
+                source: "comment.mention",
+                ...(responsibleUserId ? { responsibleUserId } : {}),
+              },
+            });
+          }
           await db
             .update(seoDocRegistryEntries)
             .set({

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  agents,
   companies,
   createDb,
   documentRevisions,
@@ -47,6 +48,7 @@ describeEmbeddedPostgres("createSeoDocGovernanceScheduler", () => {
   }, 30_000);
 
   afterEach(async () => {
+    await db.delete(agents);
     await db.delete(issueComments);
     await db.delete(seoDocRegistryEntries);
     await db.delete(issueDocuments);
@@ -62,12 +64,24 @@ describeEmbeddedPostgres("createSeoDocGovernanceScheduler", () => {
 
   async function createIssue(identifier: string) {
     const companyId = randomUUID();
+    const cmoAgentId = randomUUID();
     const issueId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
       issuePrefix: `I${companyId.replace(/-/g, "").slice(0, 5).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: cmoAgentId,
+      companyId,
+      name: "CMO",
+      role: "cmo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
     });
     await db.insert(issues).values({
       id: issueId,
@@ -79,11 +93,12 @@ describeEmbeddedPostgres("createSeoDocGovernanceScheduler", () => {
       priority: "high",
       createdByUserId: "user-1",
     });
-    return { companyId, issueId };
+    return { companyId, issueId, cmoAgentId };
   }
 
   it("emits one escalation for critical stale docs until last_updated changes", async () => {
-    const { issueId } = await createIssue("INS-321");
+    const { issueId, cmoAgentId } = await createIssue("INS-321");
+    const enqueueWakeup = vi.fn(async () => null);
 
     const created = await docsSvc.upsertIssueDocument({
       issueId,
@@ -92,11 +107,25 @@ describeEmbeddedPostgres("createSeoDocGovernanceScheduler", () => {
       body: governedBody("2026-03-01", "critical"),
     });
 
-    const scheduler = createSeoDocGovernanceScheduler({ db, intervalMs: 60_000, now: () => new Date("2026-04-21T00:00:00.000Z") });
+    const scheduler = createSeoDocGovernanceScheduler({
+      db,
+      enqueueWakeup,
+      intervalMs: 60_000,
+      now: () => new Date("2026-04-21T00:00:00.000Z"),
+    });
     expect((await scheduler.runOnce(new Date("2026-04-21T00:00:00.000Z"))).escalatedDocKeys).toContain("INS-321#document-plan");
     expect((await scheduler.runOnce(new Date("2026-04-21T00:00:00.000Z"))).escalatedDocKeys).toEqual([]);
 
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).toHaveLength(1);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueWakeup).toHaveBeenNthCalledWith(
+      1,
+      cmoAgentId,
+      expect.objectContaining({
+        reason: "issue_comment_mentioned",
+        payload: expect.objectContaining({ issueId }),
+      }),
+    );
 
     await docsSvc.upsertIssueDocument({
       issueId,
@@ -109,7 +138,8 @@ describeEmbeddedPostgres("createSeoDocGovernanceScheduler", () => {
     expect((await scheduler.runOnce(new Date("2026-05-10T00:00:00.000Z"))).escalatedDocKeys).toContain("INS-321#document-plan");
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(2);
-    expect(comments[0]?.body).toContain("@CMO");
+    expect(comments[0]?.body).toContain(`[@CMO](agent://${cmoAgentId})`);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
   });
 
   it("continues auditing other docs when one governed document is malformed", async () => {
