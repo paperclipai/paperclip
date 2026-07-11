@@ -116,6 +116,32 @@ describe("IssueAttachmentsSection", () => {
     vi.unstubAllGlobals();
   });
 
+  it("renders download-all beside upload with a direct archive link", async () => {
+    const attachment = makeAttachment();
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueAttachmentsSection
+            attachments={[attachment]}
+            downloadAllHref="/api/issues/issue-1/attachments/archive"
+            uploadButton={<button type="button" aria-label="Upload attachment">Upload</button>}
+            onImageClick={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const downloadAll = container.querySelector<HTMLAnchorElement>(
+      'a[aria-label="Download all attachments"]',
+    );
+    expect(downloadAll?.getAttribute("href")).toBe("/api/issues/issue-1/attachments/archive");
+    expect(downloadAll?.getAttribute("title")).toBe("Download all attachments");
+    expect(downloadAll?.getAttribute("target")).toBeNull();
+    expect(container.querySelector('button[aria-label="Upload attachment"]')).toBeTruthy();
+  });
+
   it("renders markdown attachments with the document markdown presentation", async () => {
     const attachment = makeAttachment({
       id: "markdown-attachment",

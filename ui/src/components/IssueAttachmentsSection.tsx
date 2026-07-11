@@ -22,6 +22,7 @@ import { Card } from "@/components/ui/card";
 
 interface IssueAttachmentsSectionProps {
   attachments: IssueAttachment[];
+  downloadAllHref?: string;
   uploadButton?: ReactNode;
   error?: string | null;
   dragActive?: boolean;
@@ -212,6 +213,7 @@ function GenericAttachmentRow({
 
 export function IssueAttachmentsSection({
   attachments,
+  downloadAllHref,
   uploadButton,
   error,
   dragActive = false,
@@ -269,7 +271,20 @@ export function IssueAttachmentsSection({
           <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
           <span className="text-xs text-muted-foreground">{attachments.length}</span>
         </div>
-        {uploadButton}
+        <div className="flex items-center gap-1">
+          {downloadAllHref ? (
+            <Button asChild variant="ghost" size="icon-sm">
+              <a
+                href={downloadAllHref}
+                aria-label="Download all attachments"
+                title="Download all attachments"
+              >
+                <Download className="h-4 w-4" />
+              </a>
+            </Button>
+          ) : null}
+          {uploadButton}
+        </div>
       </div>
 
       {error && (
