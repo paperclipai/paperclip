@@ -308,6 +308,16 @@ function manifestManagedTargets(manifest: ManagedSkillManifest): Set<string> {
   );
 }
 
+function manifestManagedEntry(
+  manifest: ManagedSkillManifest,
+  runtimeName: string,
+  source: string,
+): ManagedSkillManifest["skills"][string] | undefined {
+  const entry = manifest.skills[runtimeName];
+  if (!entry) return undefined;
+  return entry.source === path.resolve(source) ? entry : undefined;
+}
+
 async function isSafeManagedTarget(
   manifest: ManagedSkillManifest,
   target: string,
@@ -347,8 +357,12 @@ async function buildHermesSkillSnapshot(config: Record<string, unknown>): Promis
   for (const entry of paperclipEntries) {
     const desired = desiredSet.has(entry.key);
     const hermesName = await readSkillDeclaredName(entry.source, entry.runtimeName);
-    const targetPath = path.join(hermesSkillsHome, hermesName);
-    const managed = isManifestManaged(manifest, entry.runtimeName, entry.source, targetPath);
+    const preferredTargetPath = path.join(hermesSkillsHome, hermesName);
+    const manifestEntry = manifestManagedEntry(manifest, entry.runtimeName, entry.source);
+    const targetPath = manifestEntry ? path.resolve(manifestEntry.target) : preferredTargetPath;
+    const managed = manifestEntry
+      ? isManifestManaged(manifest, entry.runtimeName, entry.source, targetPath)
+      : false;
     const targetExists = await fs.stat(path.join(targetPath, "SKILL.md")).then(() => true).catch(() => false);
     const state = managed && targetExists
       ? desired
@@ -369,7 +383,7 @@ async function buildHermesSkillSnapshot(config: Record<string, unknown>): Promis
       sourcePath: entry.source,
       targetPath,
       detail: state === "installed"
-        ? "Copied into the Hermes profile skills directory under the SKILL.md name."
+        ? "Copied into the Hermes profile skills directory."
         : state === "stale"
           ? "Copied into the Hermes profile skills directory but no longer selected."
           : desired
@@ -448,9 +462,12 @@ export async function syncHermesSkills(
     if (!desiredSet.has(available.key)) continue;
     const hermesName = await readSkillDeclaredName(available.source, available.runtimeName);
     const preferredTarget = path.join(skillsHome, hermesName);
-    const target = await isSafeManagedTarget(manifest, preferredTarget)
-      ? preferredTarget
-      : path.join(skillsHome, available.runtimeName);
+    let target = preferredTarget;
+    if (!(await isSafeManagedTarget(manifest, preferredTarget))) {
+      const fallbackTarget = path.join(skillsHome, available.runtimeName);
+      if (!(await isSafeManagedTarget(manifest, fallbackTarget))) continue;
+      target = fallbackTarget;
+    }
     await copyDirectory(available.source, target);
     nextManifest.skills[available.runtimeName] = {
       key: available.key,

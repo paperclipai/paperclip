@@ -194,4 +194,108 @@ describe("Hermes skill sync", () => {
       }),
     );
   });
+
+  test("uses the runtime-name fallback when the declared Hermes skill name is user-owned", async () => {
+    const sourceRoot = path.join(tempRoot, "paperclip-runtime-skills");
+    const hermesHome = path.join(tempRoot, "Hermes");
+    const source = await writeSkill(sourceRoot, "paperclip-task-bridge");
+    const profileSkillsHome = path.join(hermesHome, "profiles", "paco-studio", "skills");
+    const userOwnedTarget = await writeSkill(profileSkillsHome, "shared-name", "User-owned skill");
+    await fs.writeFile(
+      path.join(source, "SKILL.md"),
+      "---\nname: shared-name\ndescription: Paperclip bridge\n---\n\n# shared-name\n",
+      "utf8",
+    );
+
+    runtimeSkills.entries = [
+      {
+        key: "paperclip-task-bridge",
+        runtimeName: "paperclip-task-bridge",
+        source,
+      },
+    ];
+
+    const config = {
+      env: { HERMES_HOME: hermesHome },
+      extraArgs: ["--profile", "paco-studio"],
+      paperclipSkillSync: { desiredSkills: ["paperclip-task-bridge"] },
+    };
+
+    const snapshot = await syncHermesSkills(
+      {
+        adapterType: "hermes_local",
+        agentId: "agent-id",
+        companyId: "company-id",
+        config,
+      },
+      ["paperclip-task-bridge"],
+    );
+
+    const fallbackTarget = path.join(profileSkillsHome, "paperclip-task-bridge");
+
+    await expect(fs.readFile(path.join(userOwnedTarget, "SKILL.md"), "utf8")).resolves.toContain(
+      "User-owned skill",
+    );
+    await expect(fs.readFile(path.join(fallbackTarget, "SKILL.md"), "utf8")).resolves.toContain(
+      "name: shared-name",
+    );
+    expect(snapshot.entries).toContainEqual(
+      expect.objectContaining({
+        key: "paperclip-task-bridge",
+        state: "installed",
+        targetPath: fallbackTarget,
+      }),
+    );
+  });
+
+  test("does not overwrite a user-owned runtime-name fallback target", async () => {
+    const sourceRoot = path.join(tempRoot, "paperclip-runtime-skills");
+    const hermesHome = path.join(tempRoot, "Hermes");
+    const source = await writeSkill(sourceRoot, "paperclip-task-bridge");
+    const profileSkillsHome = path.join(hermesHome, "profiles", "paco-studio", "skills");
+    const declaredTarget = await writeSkill(profileSkillsHome, "shared-name", "User-owned declared skill");
+    const fallbackTarget = await writeSkill(profileSkillsHome, "paperclip-task-bridge", "User-owned fallback skill");
+    await fs.writeFile(
+      path.join(source, "SKILL.md"),
+      "---\nname: shared-name\ndescription: Paperclip bridge\n---\n\n# shared-name\n",
+      "utf8",
+    );
+
+    runtimeSkills.entries = [
+      {
+        key: "paperclip-task-bridge",
+        runtimeName: "paperclip-task-bridge",
+        source,
+      },
+    ];
+
+    const config = {
+      env: { HERMES_HOME: hermesHome },
+      extraArgs: ["--profile", "paco-studio"],
+      paperclipSkillSync: { desiredSkills: ["paperclip-task-bridge"] },
+    };
+
+    const snapshot = await syncHermesSkills(
+      {
+        adapterType: "hermes_local",
+        agentId: "agent-id",
+        companyId: "company-id",
+        config,
+      },
+      ["paperclip-task-bridge"],
+    );
+
+    await expect(fs.readFile(path.join(declaredTarget, "SKILL.md"), "utf8")).resolves.toContain(
+      "User-owned declared skill",
+    );
+    await expect(fs.readFile(path.join(fallbackTarget, "SKILL.md"), "utf8")).resolves.toContain(
+      "User-owned fallback skill",
+    );
+    expect(snapshot.entries).toContainEqual(
+      expect.objectContaining({
+        key: "paperclip-task-bridge",
+        state: "missing",
+      }),
+    );
+  });
 });
