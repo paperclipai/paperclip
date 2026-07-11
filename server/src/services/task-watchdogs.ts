@@ -413,28 +413,29 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
     }));
   // The fingerprint must only change when something structurally relevant to
   // "is this subtree actually stalled" changes (status, assignee, blockers,
-  // pending interactions/approvals, or genuinely new document/work-product
-  // evidence). It deliberately excludes touch-only timestamps (`updatedAt`,
-  // `latestCommentAt`, `latestDocumentAt`, `latestWorkProductAt`): a
-  // legitimately blocked/waiting issue whose owning agent posts a routine
-  // "still waiting" status heartbeat (same status, same named unblock
-  // condition, no new blockers) bumps those timestamps on every cycle without
-  // changing anything the watchdog needs to re-review. Feeding them into the
-  // fingerprint defeats `lastReviewedFingerprint` dedupe and re-flips an
-  // already-reviewed stop verdict back to "stopped" every cycle, re-triggering
-  // the watchdog wake with no new information.
+  // pending interactions/approvals, or genuinely new/changed document/
+  // work-product evidence). It deliberately excludes touch-only timestamps
+  // (`updatedAt`, `latestCommentAt`): a legitimately blocked/waiting issue
+  // whose owning agent posts a routine "still waiting" status heartbeat (same
+  // status, same named unblock condition, no new blockers) bumps those
+  // timestamps on every cycle without changing anything the watchdog needs to
+  // re-review. Feeding them into the fingerprint defeats
+  // `lastReviewedFingerprint` dedupe and re-flips an already-reviewed stop
+  // verdict back to "stopped" every cycle, re-triggering the watchdog wake
+  // with no new information.
   //
-  // `documentCount`/`workProductCount` are kept in the structural projection
-  // (unlike their `*At` timestamp counterparts) because, unlike comments,
-  // documents and work products are not created as a byproduct of routine
-  // status reporting — a genuinely new document or work product should still
-  // bust the fingerprint and force re-review even when status/assignee/
-  // blockers are unchanged. `latestCommentAt` stays excluded because the
-  // routine heartbeat's own "still waiting" comment is exactly the no-op
-  // evidence this fingerprint must not react to.
+  // `documentCount`/`workProductCount` AND `latestDocumentAt`/
+  // `latestWorkProductAt` are all kept in the structural projection (unlike
+  // `latestCommentAt`) because, unlike comments, documents and work products
+  // are not created or edited as a byproduct of routine status reporting.
+  // Counts alone catch new evidence but miss in-place edits to an existing
+  // document/work product (e.g. updated source evidence with the row count
+  // unchanged); including the latest-touched timestamp for those two tables
+  // closes that gap without reintroducing the comment-churn problem, since
+  // routine "still waiting" heartbeats never touch the documents/work-products
+  // tables.
   const fingerprintLeaves = leaves.map(
-    ({ updatedAt: _updatedAt, latestCommentAt: _latestCommentAt, latestDocumentAt: _latestDocumentAt, latestWorkProductAt: _latestWorkProductAt, ...structural }) =>
-      structural,
+    ({ updatedAt: _updatedAt, latestCommentAt: _latestCommentAt, ...structural }) => structural,
   );
   const stopFingerprint = stableStopFingerprint({
     companyId: input.watchdog.companyId,

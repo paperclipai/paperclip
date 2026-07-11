@@ -153,6 +153,74 @@ describe("task watchdog subtree classifier", () => {
     expect(changed.stopFingerprint).not.toBe(stopped.stopFingerprint);
   });
 
+  it("re-evaluates when an existing document is edited in place even though the document count is unchanged", () => {
+    const stopped = classify({
+      issues: [
+        issue({
+          status: "blocked",
+          documentCount: 1,
+          latestDocumentAt: new Date("2026-07-11T08:00:00.000Z"),
+        }),
+      ],
+    });
+    expect(stopped.state).toBe("stopped");
+    if (stopped.state !== "stopped") return;
+
+    // Same document row count (no insert/delete), but the existing document's
+    // content was edited — e.g. a blocked issue's attached evidence doc was
+    // updated with new source information. The count alone would miss this;
+    // latestDocumentAt must still bust the fingerprint.
+    const edited = classify({
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: stopped.stopFingerprint,
+      },
+      issues: [
+        issue({
+          status: "blocked",
+          documentCount: 1,
+          latestDocumentAt: new Date("2026-07-11T09:00:00.000Z"),
+        }),
+      ],
+    });
+
+    expect(edited.state).toBe("stopped");
+    expect(edited.stopFingerprint).not.toBe(stopped.stopFingerprint);
+  });
+
+  it("re-evaluates when an existing work product is edited in place even though the work-product count is unchanged", () => {
+    const stopped = classify({
+      issues: [
+        issue({
+          status: "blocked",
+          workProductCount: 1,
+          latestWorkProductAt: new Date("2026-07-11T08:00:00.000Z"),
+        }),
+      ],
+    });
+    expect(stopped.state).toBe("stopped");
+    if (stopped.state !== "stopped") return;
+
+    const edited = classify({
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: stopped.stopFingerprint,
+      },
+      issues: [
+        issue({
+          status: "blocked",
+          workProductCount: 1,
+          latestWorkProductAt: new Date("2026-07-11T09:00:00.000Z"),
+        }),
+      ],
+    });
+
+    expect(edited.state).toBe("stopped");
+    expect(edited.stopFingerprint).not.toBe(stopped.stopFingerprint);
+  });
+
   it("excludes task-watchdog issues and their descendants from watched subtree scans", () => {
     const result = classify({
       issues: [
