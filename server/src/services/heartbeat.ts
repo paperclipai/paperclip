@@ -433,6 +433,24 @@ function readTransientRecoveryContractFromRun(
     : null;
 }
 
+function readQueuedRunRetryNotBefore(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot" | "resultJson">,
+  contextSnapshot?: Record<string, unknown>,
+) {
+  const context = contextSnapshot ?? parseObject(run.contextSnapshot);
+  const resultJson = parseObject(run.resultJson);
+  const value =
+    resultJson.retryNotBefore ??
+    resultJson.transientRetryNotBefore ??
+    context.retryNotBefore ??
+    context.transientRetryNotBefore;
+  if (!(typeof value === "string" || typeof value === "number" || value instanceof Date)) {
+    return null;
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function isResolvedInteractionContinuationWakeContext(contextSnapshot: unknown) {
   const context = parseObject(contextSnapshot);
   const interactionId = readNonEmptyString(context.interactionId);
@@ -9947,6 +9965,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const issueId = readNonEmptyString(context.issueId);
+    const retryNotBefore = readQueuedRunRetryNotBefore(run, context);
+    if (retryNotBefore && retryNotBefore.getTime() > Date.now()) {
+      return null;
+    }
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
       const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(db, {
@@ -10302,22 +10324,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       error: staleness.reason,
     });
 
-    await db
-      .update(issues)
-      .set({
-        executionRunId: null,
-        executionAgentNameKey: null,
-        executionLockedAt: null,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(issues.companyId, run.companyId),
-          eq(issues.id, issueId),
-          eq(issues.executionRunId, run.id),
-        ),
-      );
-
     await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
       eventType: "lifecycle",
       stream: "system",
@@ -10326,7 +10332,78 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: staleness.details,
     });
 
+    await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true });
+
+    if (staleness.errorCode === "issue_assignee_changed") {
+      await ensureQueuedRunWakePathAfterReassignment(cancelled, issueId);
+    }
+
     return cancelled;
+  }
+
+  async function ensureQueuedRunWakePathAfterReassignment(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+  ) {
+    const issue = await db
+      .select({
+        assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue?.assigneeAgentId || issue.assigneeAgentId === run.agentId) return null;
+    if (issue.status === "done" || issue.status === "cancelled") return null;
+
+    const activeExecutionPath = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, run.companyId),
+        inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (activeExecutionPath) return null;
+
+    const pendingWakePath = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.agentId, issue.assigneeAgentId),
+        inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]),
+        or(
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          sql`${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId' = ${issueId}`,
+        ),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (pendingWakePath) return null;
+
+    return enqueueWakeup(issue.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assignment_recovery",
+      payload: {
+        issueId,
+        retryOfRunId: run.id,
+      },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assignment_recovery",
+        retryReason: "assignment_recovery",
+        source: "issue.assignment_recovery",
+        retryOfRunId: run.id,
+      },
+      idempotencyKey: `stale-queued-reassignment-recovery:${issueId}:${run.id}`,
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat",
+    });
   }
 
   function truncateAgentErrorReason(reason: string | null | undefined): string | null {
