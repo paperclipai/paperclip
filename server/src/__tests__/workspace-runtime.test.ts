@@ -44,7 +44,7 @@ import {
 } from "../services/workspace-runtime.ts";
 import {
   findAdoptableLocalService,
-  isLocalServiceProcessCwdCompatible,
+  isLocalServiceRegistryCwdCompatible,
   isLocalServiceProcessInWorkspace,
   readLocalServicePortOwner,
   writeLocalServiceRegistryRecord,
@@ -4167,12 +4167,12 @@ describe("readLocalServicePortOwner", () => {
     }
   });
 
-  it("treats unavailable process cwd as unknown off Linux and a mismatch on Linux", async () => {
+  it("trusts unavailable cwd for registry records only off Linux", async () => {
     Object.defineProperty(process, "platform", { value: "darwin" });
-    await expect(isLocalServiceProcessCwdCompatible(null, process.cwd())).resolves.toBe(true);
+    await expect(isLocalServiceRegistryCwdCompatible(null, process.cwd())).resolves.toBe(true);
 
     Object.defineProperty(process, "platform", { value: "linux" });
-    await expect(isLocalServiceProcessCwdCompatible(null, process.cwd())).resolves.toBe(false);
+    await expect(isLocalServiceRegistryCwdCompatible(null, process.cwd())).resolves.toBe(false);
   });
 
   it("refuses to adopt a listener whose real cwd belongs to another workspace", async () => {
