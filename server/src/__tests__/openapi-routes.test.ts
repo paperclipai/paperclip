@@ -15,10 +15,12 @@ const apiPrefixes: Record<string, string> = {
   "activity.ts": "/api",
   "adapters.ts": "/api",
   "agents.ts": "/api",
+  "attention.ts": "/api",
   "approvals.ts": "/api",
   "assets.ts": "/api",
   "auth.ts": "/api/auth",
   "board-chat.ts": "/api",
+  "built-in-agents.ts": "/api",
   "cloud-upstreams.ts": "/api",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
@@ -54,6 +56,8 @@ const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head",
 const explicitOpenApiCoverageExclusions = new Set([
   // Pipeline routes are experimental and not yet represented in the public OpenAPI document.
   "pipelines.ts",
+  // Case routes are experimental (enableCases flag) and not yet in the public OpenAPI document.
+  "cases.ts",
 ]);
 
 function createApp() {
@@ -184,6 +188,13 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/plugins/install"].post["x-paperclip-authorization"]).toEqual({
       actor: "board",
       instanceAdmin: true,
+    });
+    expect(spec.paths["/api/execution-workspaces/{id}/reconcile-branch"].post.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+    ]);
+    expect(spec.paths["/api/execution-workspaces/{id}/reconcile-branch"].post["x-paperclip-authorization"]).toEqual({
+      actor: "board",
     });
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["403"]).toBeDefined();

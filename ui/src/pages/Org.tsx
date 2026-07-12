@@ -10,6 +10,7 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { ChevronRight, GitBranch } from "lucide-react";
 import { cn } from "../lib/utils";
+import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 
 function OrgTree({
   nodes,
@@ -67,15 +68,9 @@ function OrgTreeNode({
         <span
           className={cn(
             "h-2 w-2 rounded-full shrink-0",
-            node.status === "active"
-              ? "bg-green-400"
-              : node.status === "paused"
-                ? "bg-yellow-400"
-                : node.status === "pending_approval"
-                  ? "bg-amber-400"
-                : node.status === "error"
-                  ? "bg-red-400"
-                  : "bg-neutral-400"
+            // Gallery feedback r3: route through the canonical agentStatusDot
+            // map (identical hues for existing keys; adds the blue running dot).
+            agentStatusDot[node.status] ?? agentStatusDotDefault,
           )}
         />
         <span className="font-medium flex-1">{node.name}</span>

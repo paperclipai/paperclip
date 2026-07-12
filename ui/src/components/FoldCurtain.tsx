@@ -102,7 +102,7 @@ export function FoldCurtain({
         ref={contentRef}
         className={cn(
           "fold-curtain__content relative overflow-hidden",
-          allowTransition && "motion-safe:transition-[max-height] motion-reduce:transition-none",
+          allowTransition && "motion-safe:transition-(--tp-max-height) motion-reduce:transition-none",
           contentClassName,
         )}
         style={{

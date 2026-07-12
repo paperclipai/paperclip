@@ -18,6 +18,164 @@ import { eq } from "drizzle-orm";
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
 const instanceExperimentalSettingsStorageSchema = instanceExperimentalSettingsSchema.strip();
+const TRUTHY_RUNTIME_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
+
+interface InstanceSettingsServiceOptions {
+  runtimeEnv?: Record<string, string | undefined>;
+  now?: () => Date;
+}
+
+type WorktreeRunExecutionSuppressedReason =
+  | "not_worktree_runtime"
+  | "flag_disabled"
+  | "missing_cutoff"
+  | "missing_instance_id"
+  | "instance_id_mismatch"
+  | "settings_read_error";
+
+export type WorktreeRunExecutionActivationState =
+  | {
+      armed: true;
+      cutoff: string;
+      activationInstanceId: string;
+      reason: null;
+    }
+  | {
+      armed: false;
+      cutoff: null;
+      activationInstanceId: string | null;
+      reason: WorktreeRunExecutionSuppressedReason;
+    };
+
+export function isTruthyRuntimeEnvValue(value: string | undefined) {
+  return typeof value === "string" && TRUTHY_RUNTIME_ENV_VALUES.has(value.trim().toLowerCase());
+}
+
+function getRuntimeInstanceId(env: Record<string, string | undefined>) {
+  const instanceId = env.PAPERCLIP_INSTANCE_ID?.trim();
+  return instanceId ? instanceId : null;
+}
+
+function stripServerManagedExperimentalPatchFields(
+  patch: PatchInstanceExperimentalSettings | Record<string, unknown>,
+): PatchInstanceExperimentalSettings {
+  const {
+    worktreeRunExecutionActivatedAt: _ignoredActivatedAt,
+    worktreeRunExecutionActivationInstanceId: _ignoredActivationInstanceId,
+    ...patchable
+  } = patch as Record<string, unknown>;
+  return patchable as PatchInstanceExperimentalSettings;
+}
+
+export function applyExperimentalSettingsPatch(
+  current: unknown,
+  patch: PatchInstanceExperimentalSettings | Record<string, unknown>,
+  options: InstanceSettingsServiceOptions = {},
+): InstanceExperimentalSettings {
+  const previousExperimental = normalizeExperimentalSettings(current);
+  const patchable = stripServerManagedExperimentalPatchFields(patch);
+  const nextExperimental = normalizeExperimentalSettings({
+    ...previousExperimental,
+    ...patchable,
+  });
+  const hasWorktreeRunExecutionPatch = Object.prototype.hasOwnProperty.call(
+    patchable,
+    "enableWorktreeRunExecution",
+  );
+
+  if (!hasWorktreeRunExecutionPatch) {
+    return nextExperimental;
+  }
+
+  if (nextExperimental.enableWorktreeRunExecution !== true) {
+    return {
+      ...nextExperimental,
+      worktreeRunExecutionActivatedAt: null,
+      worktreeRunExecutionActivationInstanceId: null,
+    };
+  }
+
+  if (previousExperimental.enableWorktreeRunExecution === true) {
+    return nextExperimental;
+  }
+
+  const runtimeEnv = options.runtimeEnv ?? process.env;
+  if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) {
+    return nextExperimental;
+  }
+
+  return {
+    ...nextExperimental,
+    worktreeRunExecutionActivatedAt: (options.now ?? (() => new Date()))().toISOString(),
+    worktreeRunExecutionActivationInstanceId: getRuntimeInstanceId(runtimeEnv),
+  };
+}
+
+function suppressWorktreeRunExecution(
+  reason: WorktreeRunExecutionSuppressedReason,
+  activationInstanceId: string | null = null,
+): WorktreeRunExecutionActivationState {
+  return {
+    armed: false,
+    cutoff: null,
+    activationInstanceId,
+    reason,
+  };
+}
+
+export function resolveWorktreeRunExecutionActivation(
+  experimental: InstanceExperimentalSettings,
+  currentInstanceId: string | null | undefined,
+): WorktreeRunExecutionActivationState {
+  if (experimental.enableWorktreeRunExecution !== true) {
+    return suppressWorktreeRunExecution(
+      "flag_disabled",
+      experimental.worktreeRunExecutionActivationInstanceId,
+    );
+  }
+  if (!experimental.worktreeRunExecutionActivatedAt) {
+    return suppressWorktreeRunExecution(
+      "missing_cutoff",
+      experimental.worktreeRunExecutionActivationInstanceId,
+    );
+  }
+  if (!currentInstanceId) {
+    return suppressWorktreeRunExecution(
+      "missing_instance_id",
+      experimental.worktreeRunExecutionActivationInstanceId,
+    );
+  }
+  if (experimental.worktreeRunExecutionActivationInstanceId !== currentInstanceId) {
+    return suppressWorktreeRunExecution(
+      "instance_id_mismatch",
+      experimental.worktreeRunExecutionActivationInstanceId,
+    );
+  }
+  return {
+    armed: true,
+    cutoff: experimental.worktreeRunExecutionActivatedAt,
+    activationInstanceId: currentInstanceId,
+    reason: null,
+  };
+}
+
+export async function resolveWorktreeRunExecutionActivationState(options: {
+  getExperimental: () => Promise<InstanceExperimentalSettings>;
+  runtimeEnv?: Record<string, string | undefined>;
+}): Promise<WorktreeRunExecutionActivationState> {
+  const runtimeEnv = options.runtimeEnv ?? process.env;
+  if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) {
+    return suppressWorktreeRunExecution("not_worktree_runtime");
+  }
+  try {
+    return resolveWorktreeRunExecutionActivation(
+      await options.getExperimental(),
+      getRuntimeInstanceId(runtimeEnv),
+    );
+  } catch {
+    return suppressWorktreeRunExecution("settings_read_error");
+  }
+}
 
 function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   const parsed = instanceGeneralSettingsStorageSchema.safeParse(raw ?? {});
@@ -48,15 +206,25 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
       enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
       enablePipelines: parsed.data.enablePipelines ?? false,
+      enableCases: parsed.data.enableCases ?? false,
       enableConferenceRoomChat: parsed.data.enableConferenceRoomChat ?? false,
       enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
       enableExperimentalFileViewer: parsed.data.enableExperimentalFileViewer ?? false,
       enableTaskWatchdogs: parsed.data.enableTaskWatchdogs ?? false,
       enableCloudSync: parsed.data.enableCloudSync ?? false,
       enableExternalObjects: parsed.data.enableExternalObjects ?? false,
+      enableBuiltInAgents: parsed.data.enableBuiltInAgents ?? false,
+      enableDecisions: parsed.data.enableDecisions ?? false,
+      enableGoalsSidebarLink: parsed.data.enableGoalsSidebarLink ?? false,
       enableServerInfoDebugView: parsed.data.enableServerInfoDebugView ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
+      enableWorkspaceBranchReconcileForward: parsed.data.enableWorkspaceBranchReconcileForward ?? true,
+      enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
+      enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
+      worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
+      worktreeRunExecutionActivationInstanceId:
+        parsed.data.worktreeRunExecutionActivationInstanceId ?? null,
       issueGraphLivenessAutoRecoveryLookbackHours:
         parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
         DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -67,15 +235,24 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
     enablePipelines: false,
+    enableCases: false,
     enableConferenceRoomChat: false,
     enableTaskWatchdogs: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableCloudSync: false,
     enableExternalObjects: false,
+    enableBuiltInAgents: false,
+    enableDecisions: false,
+    enableGoalsSidebarLink: false,
     enableServerInfoDebugView: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
+    enableWorkspaceBranchReconcileForward: true,
+    enableWorkspaceDirtyQuarantineRepair: true,
+    enableWorktreeRunExecution: false,
+    worktreeRunExecutionActivatedAt: null,
+    worktreeRunExecutionActivationInstanceId: null,
     issueGraphLivenessAutoRecoveryLookbackHours:
       DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   };
@@ -92,7 +269,7 @@ function toInstanceSettings(row: typeof instanceSettings.$inferSelect): Instance
   } as InstanceSettings;
 }
 
-export function instanceSettingsService(db: Db) {
+export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
   async function getOrCreateRow() {
     const existing = await db
       .select()
@@ -180,10 +357,7 @@ export function instanceSettingsService(db: Db) {
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
-      const nextExperimental = normalizeExperimentalSettings({
-        ...normalizeExperimentalSettings(current.experimental),
-        ...patch,
-      });
+      const nextExperimental = applyExperimentalSettingsPatch(current.experimental, patch, options);
       const now = new Date();
       const [updated] = await db
         .update(instanceSettings)
