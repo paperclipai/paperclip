@@ -49,6 +49,10 @@ import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import {
+  FAILED_HEARTBEAT_STATUSES,
+  FAILED_HEARTBEAT_FRESHNESS_MS,
+} from "../services/sidebar-badges.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
@@ -2080,6 +2084,10 @@ export function agentRoutes(db: Db) {
 
     const minCountParam = req.query.minCount as string | undefined;
     const minCount = minCountParam ? Math.max(0, Math.min(20, parseInt(minCountParam, 10) || 0)) : 0;
+    // Opt-in: also return each agent's latest run when it errored recently, so
+    // the sidebar can render a red dot. Kept off by default so the other
+    // live-runs consumers (dashboard, issue rail) only ever see live runs.
+    const includeRecentErrors = req.query.includeRecentErrors === "1";
 
     const columns = {
       id: heartbeatRuns.id,
@@ -2107,8 +2115,38 @@ export function agentRoutes(db: Db) {
       )
       .orderBy(desc(heartbeatRuns.createdAt));
 
-    if (minCount > 0 && liveRuns.length < minCount) {
-      const activeIds = liveRuns.map((r) => r.id);
+    const result = [...liveRuns];
+
+    if (includeRecentErrors) {
+      // Latest run per (non-terminated) agent, then keep only the ones that are
+      // a fresh failure. Matches the inbox badge's semantics exactly: an agent
+      // is "errored" only when its most recent run failed within the freshness
+      // window — a newer queued/running run supersedes an older failure.
+      const latestRunPerAgent = await db
+        .selectDistinctOn([heartbeatRuns.agentId], columns)
+        .from(heartbeatRuns)
+        .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            not(eq(agentsTable.status, "terminated")),
+          ),
+        )
+        .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt));
+
+      const freshnessCutoff = Date.now() - FAILED_HEARTBEAT_FRESHNESS_MS;
+      for (const run of latestRunPerAgent) {
+        if (
+          FAILED_HEARTBEAT_STATUSES.includes(run.status) &&
+          new Date(run.createdAt).getTime() >= freshnessCutoff
+        ) {
+          result.push(run);
+        }
+      }
+    }
+
+    if (minCount > 0 && result.length < minCount) {
+      const activeIds = result.map((r) => r.id);
       const recentRuns = await db
         .select(columns)
         .from(heartbeatRuns)
@@ -2121,13 +2159,13 @@ export function agentRoutes(db: Db) {
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt))
-        .limit(minCount - liveRuns.length);
+        .limit(minCount - result.length);
 
-      res.json([...liveRuns, ...recentRuns]);
+      res.json([...result, ...recentRuns]);
       return;
     }
 
-    res.json(liveRuns);
+    res.json(result);
   });
 
   router.get("/heartbeat-runs/:runId", async (req, res) => {

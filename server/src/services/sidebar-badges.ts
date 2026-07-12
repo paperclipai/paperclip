@@ -4,12 +4,14 @@ import { agents, approvals, heartbeatRuns } from "@paperclipai/db";
 import type { SidebarBadges } from "@paperclipai/shared";
 
 const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"];
-const FAILED_HEARTBEAT_STATUSES = ["failed", "timed_out"];
+export const FAILED_HEARTBEAT_STATUSES = ["failed", "timed_out"];
 // Only count a failed run toward the inbox badge if it happened within this
 // window. Older failures get ignored — they're stale noise (e.g., hit an API
 // rate limit overnight) and keep the badge stuck at "1" with nothing for the
-// user to click on in the actual inbox view.
-const FAILED_HEARTBEAT_FRESHNESS_MS = 60 * 60 * 1000; // 1 hour
+// user to click on in the actual inbox view. Shared with the sidebar agent
+// run dots (live-runs?includeRecentErrors) so "recently errored" means the
+// same thing in both surfaces.
+export const FAILED_HEARTBEAT_FRESHNESS_MS = 60 * 60 * 1000; // 1 hour
 
 export function sidebarBadgeService(db: Db) {
   return {
