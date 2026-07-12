@@ -2444,6 +2444,11 @@ export function issueRoutes(
     pluginWorkerManager?: PluginWorkerManager;
     taskWatchdogEnqueueWakeup?: TaskWatchdogServiceDeps["enqueueWakeup"] | null;
     issueListDiagnostics?: IssueListDiagnostics;
+    approveToolActionRequest?: (input: {
+      companyId: string;
+      actionRequestId: string;
+      actor: { agentId?: string | null; userId?: string | null };
+    }) => Promise<unknown>;
   } = {},
 ) {
   const router = Router();
@@ -8983,6 +8988,24 @@ export function issueRoutes(
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
+      const toolAction = interaction.payload && typeof interaction.payload === "object"
+        ? (interaction.payload as { toolAction?: { actionRequestId?: unknown } }).toolAction
+        : null;
+      if (
+        interaction.kind === "request_confirmation"
+        && interaction.status === "accepted"
+        && typeof toolAction?.actionRequestId === "string"
+        && opts.approveToolActionRequest
+      ) {
+        await opts.approveToolActionRequest({
+          companyId: issue.companyId,
+          actionRequestId: toolAction.actionRequestId,
+          actor: {
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+        });
+      }
       const continuationWakeIssue = continuationIssue ?? issue;
 
       await logActivity(db, {

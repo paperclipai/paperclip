@@ -80,6 +80,7 @@ export function signToolArguments(args: {
   toolName: string;
   canonicalArguments: string;
   approvalSnapshot?: unknown;
+  executionOnApprove?: boolean;
   signingSecret?: string;
 }) {
   const payloadValue: Record<string, unknown> = {
@@ -87,6 +88,9 @@ export function signToolArguments(args: {
     toolName: args.toolName,
     canonicalArguments: args.canonicalArguments,
   };
+  if (args.executionOnApprove === true) {
+    payloadValue.executionOnApprove = true;
+  }
   if (args.approvalSnapshot !== undefined) {
     payloadValue.approvalSnapshot = args.approvalSnapshot;
   }
@@ -101,6 +105,7 @@ export function verifyToolArgumentsSignature(input: {
   toolName: string;
   canonicalArguments: string;
   approvalSnapshot?: unknown;
+  executionOnApprove?: boolean;
   signingSecret?: string;
 }) {
   if (!input.signedArguments) return false;
@@ -117,6 +122,9 @@ export function verifyToolArgumentsSignature(input: {
     toolName: input.toolName,
     canonicalArguments: input.canonicalArguments,
   };
+  if (input.executionOnApprove !== undefined) {
+    expectedPayloadValue.executionOnApprove = input.executionOnApprove;
+  }
   if (input.approvalSnapshot !== undefined) {
     expectedPayloadValue.approvalSnapshot = input.approvalSnapshot;
   }
@@ -133,7 +141,7 @@ export function readSignedToolArgumentsPayload(input: {
   invocationId: string;
   toolName: string;
   signingSecret?: string;
-}): { arguments: unknown; approvalSnapshot?: unknown } | null {
+}): { arguments: unknown; approvalSnapshot?: unknown; executionOnApprove?: boolean } | null {
   if (!input.signedArguments) return null;
   let parsed: { payload?: unknown };
   try {
@@ -147,6 +155,7 @@ export function readSignedToolArgumentsPayload(input: {
     toolName?: unknown;
     canonicalArguments?: unknown;
     approvalSnapshot?: unknown;
+    executionOnApprove?: unknown;
   };
   try {
     payload = JSON.parse(parsed.payload);
@@ -161,6 +170,7 @@ export function readSignedToolArgumentsPayload(input: {
     toolName: input.toolName,
     canonicalArguments: payload.canonicalArguments,
     approvalSnapshot: payload.approvalSnapshot,
+    executionOnApprove: payload.executionOnApprove === true ? true : undefined,
     signingSecret: input.signingSecret,
   })) {
     return null;
@@ -169,6 +179,7 @@ export function readSignedToolArgumentsPayload(input: {
     return {
       arguments: JSON.parse(payload.canonicalArguments) as unknown,
       ...(payload.approvalSnapshot !== undefined ? { approvalSnapshot: payload.approvalSnapshot } : {}),
+      ...(payload.executionOnApprove === true ? { executionOnApprove: true } : {}),
     };
   } catch {
     return null;

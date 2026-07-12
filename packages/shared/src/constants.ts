@@ -1063,7 +1063,16 @@ export const TOOL_INVOCATION_APPROVAL_STATES = [
 ] as const;
 export type ToolInvocationApprovalState = (typeof TOOL_INVOCATION_APPROVAL_STATES)[number];
 
-export const TOOL_ACTION_REQUEST_STATUSES = ["pending", "approved", "rejected", "expired", "cancelled", "executed"] as const;
+export const TOOL_ACTION_REQUEST_STATUSES = [
+  "pending",
+  "approved",
+  "executing",
+  "rejected",
+  "expired",
+  "cancelled",
+  "executed",
+  "failed",
+] as const;
 export type ToolActionRequestStatus = (typeof TOOL_ACTION_REQUEST_STATUSES)[number];
 
 export const TOOL_AUDIT_EVENT_TYPES = [

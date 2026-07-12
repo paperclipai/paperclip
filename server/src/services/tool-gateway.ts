@@ -1438,6 +1438,35 @@ export function createToolGatewayService(
       .where(eq(issueThreadInteractions.id, linked.interactionId));
   }
 
+  async function approvalRequiredInstructions(issueId: string): Promise<string> {
+    const [issue] = await db
+      .select({ identifier: issues.identifier })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .limit(1);
+    const task = issue?.identifier ?? issueId;
+    return `A human approval card was posted on task ${task}. Do not retry this call now. Wrap up other work and end your run noting you are waiting on tool approval (status in_review). You will be woken when it is decided; if approved, the action runs automatically and your wake includes the result.`;
+  }
+
+  async function throwApprovalRequired(input: {
+    invocationId: string;
+    actionRequestId: string;
+    interactionId?: string | null;
+    issueId: string;
+    toolName: string;
+    argumentsHash: string;
+  }): Promise<never> {
+    throw new ToolGatewayHttpError(409, "Tool action requires approval", "approval_required", {
+      invocationId: input.invocationId,
+      actionRequestId: input.actionRequestId,
+      interactionId: input.interactionId ?? null,
+      issueId: input.issueId,
+      tool: input.toolName,
+      argumentsHash: input.argumentsHash,
+      instructions: await approvalRequiredInstructions(input.issueId),
+    });
+  }
+
   async function requestApprovalForRecordedToolCall(input: {
     invocation: typeof toolInvocations.$inferSelect;
     actionRequest: typeof toolActionRequests.$inferSelect | null;
@@ -1481,7 +1510,11 @@ export function createToolGatewayService(
         409,
         "Tool action requires approval, but this gateway session is not attached to an issue",
         "approval_path_missing",
-        { invocationId: input.invocation.id, tool: input.tool.name },
+        {
+          invocationId: input.invocation.id,
+          tool: input.tool.name,
+          instructions: "This session is not attached to a task, so an approval card cannot be posted. Re-run this action from a run that has the task checked out.",
+        },
       );
     }
 
@@ -1511,6 +1544,7 @@ export function createToolGatewayService(
         toolName: input.tool.name,
         canonicalArguments,
         approvalSnapshot: approvalSnapshot ?? undefined,
+        executionOnApprove: true,
         signingSecret: options.toolActionSigningSecret,
       });
     } catch (error) {
@@ -1686,12 +1720,12 @@ export function createToolGatewayService(
       },
     });
 
-    throw new ToolGatewayHttpError(409, "Tool action requires approval", "approval_required", {
+    return throwApprovalRequired({
       invocationId: input.invocation.id,
       actionRequestId: actionRequest.id,
       interactionId: interaction.id,
-      approvalId: formalApprovalId,
-      tool: input.tool.name,
+      issueId: input.session.issueId,
+      toolName: input.tool.name,
       argumentsHash: canonicalArgumentsHash,
     });
   }
@@ -3926,6 +3960,343 @@ export function createToolGatewayService(
     }
   }
 
+  async function waitForActionRequestExecution(actionRequestId: string) {
+    for (let attempt = 0; attempt < 500; attempt += 1) {
+      const [row] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.id, actionRequestId))
+        .limit(1);
+      if (!row || row.status !== "executing") return row ?? null;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new ToolGatewayHttpError(409, "Approved tool action is still executing", "action_execution_in_progress", {
+      actionRequestId,
+    });
+  }
+
+  function storedInvocationResult(invocation: typeof toolInvocations.$inferSelect): unknown {
+    const summary = invocation.resultSummary?.summary;
+    if (typeof summary !== "string") return null;
+    try {
+      return JSON.parse(summary);
+    } catch {
+      return summary;
+    }
+  }
+
+  async function markApprovedActionFailed(input: {
+    actionRequestId: string;
+    invocationId: string;
+    error: unknown;
+  }) {
+    const reasonCode = input.error instanceof ToolGatewayHttpError
+      ? input.error.reasonCode
+      : "tool_execution_failed";
+    const message = input.error instanceof Error ? input.error.message : String(input.error);
+    const now = new Date();
+    await db.update(toolInvocations).set({
+      status: "failed",
+      errorCode: reasonCode,
+      errorMessage: message,
+      completedAt: now,
+      updatedAt: now,
+    }).where(eq(toolInvocations.id, input.invocationId));
+    await db.update(toolActionRequests).set({
+      status: "failed",
+      resolvedAt: now,
+      updatedAt: now,
+    }).where(eq(toolActionRequests.id, input.actionRequestId));
+    await reflectToolActionInteractionLifecycle({
+      actionRequestId: input.actionRequestId,
+      status: "failed",
+      errorCode: reasonCode,
+      errorMessage: message,
+    });
+    return { reasonCode, message };
+  }
+
+  async function executeApprovedAgentInvocation(input: {
+    actionRequest: typeof toolActionRequests.$inferSelect;
+    invocation: typeof toolInvocations.$inferSelect;
+  }) {
+    const { actionRequest, invocation } = input;
+    if (!invocation.agentId || !invocation.issueId || isTestOriginInvocation(invocation)) {
+      throw new ToolGatewayHttpError(409, "Tool action request is not an agent-origin action", "action_origin_invalid");
+    }
+
+    const [claimed] = await db
+      .update(toolActionRequests)
+      .set({ status: "executing", updatedAt: new Date() })
+      .where(and(eq(toolActionRequests.id, actionRequest.id), eq(toolActionRequests.status, "approved")))
+      .returning();
+    if (!claimed) {
+      const settled = await waitForActionRequestExecution(actionRequest.id);
+      const [settledInvocation] = await db
+        .select()
+        .from(toolInvocations)
+        .where(eq(toolInvocations.id, invocation.id))
+        .limit(1);
+      if (settled?.status === "executed" && settledInvocation) {
+        return storedInvocationResult(settledInvocation);
+      }
+      if (settled?.status === "failed") {
+        throw new ToolGatewayHttpError(
+          502,
+          settledInvocation?.errorMessage ?? "Approved tool action failed",
+          settledInvocation?.errorCode ?? "tool_execution_failed",
+          { actionRequestId: actionRequest.id, invocationId: invocation.id },
+        );
+      }
+      throw new ToolGatewayHttpError(409, "Tool action request was already consumed", "action_already_consumed");
+    }
+
+    const signedPayload = readSignedToolArgumentsPayload({
+      signedArguments: claimed.signedArguments,
+      invocationId: invocation.id,
+      toolName: invocation.toolName,
+      signingSecret: options.toolActionSigningSecret,
+    });
+    if (!signedPayload) {
+      const error = new ToolGatewayHttpError(409, "Approved tool action arguments signature is invalid", "signed_arguments_invalid");
+      await markApprovedActionFailed({ actionRequestId: claimed.id, invocationId: invocation.id, error });
+      throw error;
+    }
+    if (signedPayload.executionOnApprove !== true) {
+      throw new ToolGatewayHttpError(
+        409,
+        "This approval predates execute-on-approve and must remain inert",
+        "legacy_approved_action_inert",
+      );
+    }
+
+    const [issue] = await db
+      .select({ projectId: issues.projectId })
+      .from(issues)
+      .where(and(eq(issues.id, invocation.issueId), eq(issues.companyId, invocation.companyId)))
+      .limit(1);
+    const session: ToolGatewaySession = {
+      id: `approved-action:${claimed.id}`,
+      token: "",
+      companyId: invocation.companyId,
+      agentId: invocation.agentId,
+      runId: invocation.runId,
+      issueId: invocation.issueId,
+      projectId: issue?.projectId ?? null,
+      gatewayId: invocation.gatewayId,
+      gatewayPublicId: invocation.gatewayPublicId,
+      gatewayTokenId: invocation.gatewayTokenId,
+      actorType: "agent",
+      actorId: invocation.agentId,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
+    };
+    let tool: ToolGatewayDescriptor;
+    let liveApprovalSnapshot: Awaited<ReturnType<typeof connectedRemoteApprovalSnapshot>>;
+    try {
+      tool = await findToolForSession(session, invocation.toolName);
+      liveApprovalSnapshot = await connectedRemoteApprovalSnapshot(session, tool);
+    } catch (error) {
+      await markApprovedActionFailed({ actionRequestId: claimed.id, invocationId: invocation.id, error });
+      throw error;
+    }
+    if (!approvalSnapshotsMatch(signedPayload.approvalSnapshot, liveApprovalSnapshot)) {
+      const error = new ToolGatewayHttpError(409, "Approved tool action target changed after review", "approved_tool_target_changed");
+      await markApprovedActionFailed({ actionRequestId: claimed.id, invocationId: invocation.id, error });
+      throw error;
+    }
+    const parameters = signedPayload.arguments;
+    const canonicalArguments = canonicalToolArguments(parameters);
+    if (
+      claimed.canonicalArgumentsHash !== summarizeToolValue(parameters).sha256
+      || !verifyToolArgumentsSignature({
+        signedArguments: claimed.signedArguments,
+        invocationId: invocation.id,
+        toolName: invocation.toolName,
+        canonicalArguments,
+        approvalSnapshot: signedPayload.approvalSnapshot,
+        executionOnApprove: true,
+        signingSecret: options.toolActionSigningSecret,
+      })
+    ) {
+      const error = new ToolGatewayHttpError(409, "Approved tool action arguments do not match reviewed hash", "signed_arguments_mismatch");
+      await markApprovedActionFailed({ actionRequestId: claimed.id, invocationId: invocation.id, error });
+      throw error;
+    }
+
+    const argumentsSummary = validateToolContent({
+      value: parameters,
+      direction: "arguments",
+      sensitiveMode: "redact",
+      promptInjectionMode: "ignore",
+    }).summary;
+    const startedAt = Date.now();
+    await db
+      .update(toolInvocations)
+      .set({ status: "executing", approvalState: "approved", startedAt: new Date(), updatedAt: new Date() })
+      .where(eq(toolInvocations.id, invocation.id));
+    await reflectToolActionInteractionLifecycle({ actionRequestId: claimed.id, status: "executing" });
+
+    try {
+      const executionTimeoutMs = timeoutMs(undefined);
+      const result = tool.providerType === "mcp_remote_http"
+        ? (await executeRemoteHttpTool(session, tool, parameters, executionTimeoutMs, invocation.id)).result
+        : tool.providerType === "mcp_local_stdio"
+          ? (await executeLocalStdioTool(session, tool, parameters, executionTimeoutMs)).result
+          : tool.providerType !== "paperclip_plugin"
+            ? await runWithTimeout(executeBuiltinTool(session, tool, parameters), executionTimeoutMs)
+            : (() => { throw new ToolGatewayHttpError(409, "Plugin actions cannot execute outside their originating run", "approved_execution_unsupported"); })();
+      const resultValidation = validateToolContent({
+        value: result,
+        direction: "result",
+        sensitiveMode: "redact",
+        promptInjectionMode: "block",
+      });
+      const now = new Date();
+      await db.update(toolInvocations).set({
+        status: "succeeded",
+        resultHash: resultValidation.summary.sha256 ?? null,
+        resultSummary: resultValidation.summary,
+        resultSizeBytes: resultValidation.summary.sizeBytes ?? null,
+        completedAt: now,
+        updatedAt: now,
+      }).where(eq(toolInvocations.id, invocation.id));
+      await db.update(toolActionRequests).set({ status: "executed", resolvedAt: now, updatedAt: now }).where(eq(toolActionRequests.id, claimed.id));
+      await reflectToolActionInteractionLifecycle({ actionRequestId: claimed.id, status: "executed" });
+      await writeToolCallEvent({
+        invocationId: invocation.id,
+        actionRequestId: claimed.id,
+        session,
+        eventType: "call_completed",
+        outcome: "success",
+        toolName: tool.name,
+        policyDecision: "allow",
+        reasonCode: "approved_action_executed",
+        argumentsSummary,
+        resultSummary: resultValidation.summary,
+        metadata: { durationMs: Date.now() - startedAt },
+        tool,
+      });
+      return resultValidation.value;
+    } catch (error) {
+      const { reasonCode } = await markApprovedActionFailed({
+        actionRequestId: claimed.id,
+        invocationId: invocation.id,
+        error,
+      });
+      await writeToolCallEvent({
+        invocationId: invocation.id,
+        actionRequestId: claimed.id,
+        session,
+        eventType: "call_failed",
+        outcome: "failure",
+        toolName: tool.name,
+        policyDecision: "deny",
+        reasonCode,
+        argumentsSummary,
+        metadata: { durationMs: Date.now() - startedAt },
+        tool,
+      });
+      throw error;
+    }
+  }
+
+  async function matchingAgentActionRequest(input: {
+    session: ToolGatewaySession;
+    toolName: string;
+    argumentsHash: string;
+  }) {
+    if (!input.session.issueId || !input.session.agentId) return null;
+    const [match] = await db
+      .select({ actionRequest: toolActionRequests, invocation: toolInvocations })
+      .from(toolActionRequests)
+      .innerJoin(toolInvocations, eq(toolInvocations.id, toolActionRequests.invocationId))
+      .where(and(
+        eq(toolActionRequests.companyId, input.session.companyId),
+        eq(toolActionRequests.issueId, input.session.issueId),
+        eq(toolActionRequests.canonicalArgumentsHash, input.argumentsHash),
+        eq(toolInvocations.agentId, input.session.agentId),
+        eq(toolInvocations.toolName, input.toolName),
+        inArray(toolActionRequests.status, ["pending", "approved", "executing", "rejected", "executed"]),
+      ))
+      .orderBy(desc(toolActionRequests.createdAt))
+      .limit(1);
+    if (!match) return null;
+    if (
+      match.actionRequest.status === "pending"
+      && match.actionRequest.expiresAt
+      && match.actionRequest.expiresAt.getTime() <= Date.now()
+    ) {
+      const now = new Date();
+      await db.update(toolActionRequests).set({ status: "expired", resolvedAt: now, updatedAt: now }).where(and(
+        eq(toolActionRequests.id, match.actionRequest.id),
+        eq(toolActionRequests.status, "pending"),
+      ));
+      await db.update(toolInvocations).set({
+        approvalState: "expired",
+        idempotencyKey: null,
+        updatedAt: now,
+      }).where(eq(toolInvocations.id, match.invocation.id));
+      await reflectToolActionInteractionLifecycle({ actionRequestId: match.actionRequest.id, status: "expired" });
+      return null;
+    }
+    return match;
+  }
+
+  async function replayMatchingAgentAction(input: {
+    session: ToolGatewaySession;
+    toolName: string;
+    argumentsHash: string;
+  }) {
+    const match = await matchingAgentActionRequest(input);
+    if (!match) return null;
+    const { actionRequest, invocation } = match;
+    if (actionRequest.status === "pending") {
+      await throwApprovalRequired({
+        invocationId: invocation.id,
+        actionRequestId: actionRequest.id,
+        interactionId: actionRequest.interactionId,
+        issueId: input.session.issueId!,
+        toolName: input.toolName,
+        argumentsHash: input.argumentsHash,
+      });
+    }
+    if (actionRequest.status === "rejected") {
+      throw new ToolGatewayHttpError(409, "This tool action was declined; do not retry the same call", "action_declined", {
+        invocationId: invocation.id,
+        actionRequestId: actionRequest.id,
+        instructions: "The action was declined. Do not retry the same call; adjust your approach or report the decline on the task.",
+      });
+    }
+    if (actionRequest.status === "executed") {
+      return { matched: true as const, result: storedInvocationResult(invocation), invocationId: invocation.id };
+    }
+    if (actionRequest.status === "executing") {
+      const settled = await waitForActionRequestExecution(actionRequest.id);
+      const [settledInvocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, invocation.id)).limit(1);
+      if (settled?.status === "executed" && settledInvocation) {
+        return { matched: true as const, result: storedInvocationResult(settledInvocation), invocationId: invocation.id };
+      }
+      throw new ToolGatewayHttpError(
+        502,
+        settledInvocation?.errorMessage ?? "Approved tool action failed",
+        settledInvocation?.errorCode ?? "tool_execution_failed",
+      );
+    }
+    if (actionRequest.status === "approved" && actionRequest.decidedAt) {
+      const signedPayload = readSignedToolArgumentsPayload({
+        signedArguments: actionRequest.signedArguments,
+        invocationId: invocation.id,
+        toolName: invocation.toolName,
+        signingSecret: options.toolActionSigningSecret,
+      });
+      if (signedPayload?.executionOnApprove !== true) return null;
+      const result = await executeApprovedAgentInvocation({ actionRequest, invocation });
+      return { matched: true as const, result, invocationId: invocation.id };
+    }
+    return null;
+  }
+
   /**
    * Project an ask-first test request + its invocation onto the lifecycle the
    * Test tab panel renders. Recovers the redacted parameter snapshot (the
@@ -4523,6 +4894,7 @@ export function createToolGatewayService(
           toolName: tool.name,
           canonicalArguments,
           approvalSnapshot: approvalSnapshot ?? undefined,
+          executionOnApprove: true,
           signingSecret: options.toolActionSigningSecret,
         });
         const previewMarkdown = buildHumanizedActionPreview({ tool, argumentsSummary: argumentValidation.summary });
@@ -4725,6 +5097,16 @@ export function createToolGatewayService(
       }
       if (actionRequest.status === "approved") {
         await reflectToolActionInteractionLifecycle({ actionRequestId: actionRequest.id, status: "approved" });
+        if (!isTestOriginInvocation(invocation) && signedPayload.executionOnApprove === true) {
+          try {
+            await executeApprovedAgentInvocation({ actionRequest, invocation });
+          } catch {
+            // The execution outcome is persisted on the invocation/request and
+            // reflected onto the accepted interaction for the continuation wake.
+          }
+          const [settled] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, actionRequest.id)).limit(1);
+          return settled ?? actionRequest;
+        }
         return actionRequest;
       }
       const now = new Date();
@@ -4734,6 +5116,9 @@ export function createToolGatewayService(
           status: "approved",
           resolvedByAgentId: input.actor.agentId ?? null,
           resolvedByUserId: input.actor.userId ?? null,
+          decidedByAgentId: input.actor.agentId ?? null,
+          decidedByUserId: input.actor.userId ?? null,
+          decidedAt: now,
           resolvedAt: now,
           updatedAt: now,
         })
@@ -4756,8 +5141,16 @@ export function createToolGatewayService(
           signedPayload.arguments,
           updated.id,
         );
+      } else if (signedPayload.executionOnApprove === true) {
+        try {
+          await executeApprovedAgentInvocation({ actionRequest: updated, invocation });
+        } catch {
+          // Persisted failure is the approval result; accepting the card itself
+          // remains successful and the agent wake receives the failure context.
+        }
       }
-      return updated;
+      const [settled] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, updated.id)).limit(1);
+      return settled ?? updated;
     },
 
     async declineActionRequest(input: {
@@ -4921,6 +5314,23 @@ export function createToolGatewayService(
       let effectiveParameters: unknown = requestedParameters;
       let effectiveArgumentsSummary = argumentValidation.summary;
 
+      if (!input.approvedActionRequestId) {
+        const replay = await replayMatchingAgentAction({
+          session,
+          toolName: tool.name,
+          argumentsHash: argumentValidation.summary.sha256 ?? "",
+        });
+        if (replay?.matched) {
+          return {
+            invocationId: replay.invocationId,
+            status: "replayed" as const,
+            tool: virtualToolName ?? tool.name,
+            targetTool: virtualToolName ? tool.name : undefined,
+            result: replay.result,
+          };
+        }
+      }
+
       if (input.approvedActionRequestId) {
         let [actionRequest] = await db
           .select()
@@ -5076,6 +5486,7 @@ export function createToolGatewayService(
             toolName: storedInvocation.toolName,
             canonicalArguments: storedCanonical,
             approvalSnapshot: signedPayload.approvalSnapshot,
+            executionOnApprove: signedPayload.executionOnApprove,
             signingSecret: options.toolActionSigningSecret,
           })
         ) {

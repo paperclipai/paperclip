@@ -157,7 +157,7 @@ async function createApp(actor: Record<string, unknown> = {
   companyIds: ["company-1"],
   source: "local_implicit",
   isInstanceAdmin: false,
-}) {
+}, routeOptions: Record<string, unknown> = {}) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
@@ -168,7 +168,7 @@ async function createApp(actor: Record<string, unknown> = {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes(mockDb as any, {} as any));
+  app.use("/api", issueRoutes(mockDb as any, {} as any, routeOptions));
   app.use(errorHandler);
   return app;
 }
@@ -550,6 +550,39 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
+  });
+
+  it("executes an accepted tool-action confirmation through the gateway callback", async () => {
+    const approveToolActionRequest = vi.fn().mockResolvedValue({ status: "executed" });
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-tool-action",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Approve the action?",
+          toolAction: { version: 1, actionRequestId: "action-request-1" },
+        },
+        result: { version: 1, outcome: "accepted" },
+      },
+      createdIssues: [],
+    });
+    const app = await createApp(undefined, { approveToolActionRequest });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-tool-action/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(approveToolActionRequest).toHaveBeenCalledWith({
+      companyId: "company-1",
+      actionRequestId: "action-request-1",
+      actor: { agentId: null, userId: "local-board" },
+    });
   });
 
   it("accepts request checkbox confirmations with selected option ids and wakes the assignee", async () => {
