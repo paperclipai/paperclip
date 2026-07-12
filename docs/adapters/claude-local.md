@@ -9,7 +9,9 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 
 - Claude Code CLI installed (`claude` command available)
 - Either `ANTHROPIC_API_KEY` in adapter env/host env, or a Claude Code
-  subscription login available to the execution target
+  subscription login available through `CLAUDE_CONFIG_DIR` / `~/.claude` to the execution target
+
+For API-key-free local operation, see [Subscription CLI auth](/adapters/subscription-cli-auth).
 
 ## Configuration Fields
 
@@ -69,6 +71,8 @@ On-call checklist if you see this in production:
 ## Skills Injection
 
 The adapter creates a temporary directory with symlinks to Paperclip skills and passes it via `--add-dir`. This makes skills discoverable without polluting the agent's working directory.
+
+For Docker deployments that use Claude Code subscription auth, mount the desired Claude config directory into the container and set `CLAUDE_CONFIG_DIR` to that mounted path. The example `docker/docker-compose.subscription-auth.yml` keeps the mount read-only by default.
 
 ## Remote credential ownership
 
