@@ -41,6 +41,7 @@ safe_profile="$(printf '%s' "$PROFILE_NAME" | tr -c 'a-zA-Z0-9._-' '_')"
 profile_dir="$PROFILE_ROOT/$safe_profile"
 state_path="$profile_dir/agent-browser-state.json"
 camoufox_state_path="$profile_dir/camoufox-state.json"
+camoufox_marker_path="$profile_dir/.camoufox-imported"
 if [ -n "${AGENT_BROWSER_ENCRYPTION_KEY:-}" ]; then
   state_path="$state_path.enc"
 fi
@@ -145,6 +146,9 @@ save_shared_state() {
 
 first="${1:-}"
 second="${2:-}"
+artifact_root="${PAPERCLIP_HOME:-/paperclip}/browser-artifacts"
+safe_scope="$(printf '%s' "${PAPERCLIP_BROWSER_SCOPE_ID:-${PAPERCLIP_RUN_ID:-manual}}" | tr -c 'a-zA-Z0-9._-' '_')"
+provider_path="$artifact_root/$safe_scope-provider"
 sync_state=true
 case "$first:$second" in
   skills:*|session:list)
@@ -156,13 +160,23 @@ if [ "$sync_state" = true ]; then
   acquire_command_lock || exit $?
 fi
 
+if [ "$sync_state" = true ] && [ "$first" != "paperclip-sync-camoufox" ]; then
+  mkdir -p "$artifact_root"
+  printf '%s\n' "agent-browser" > "$provider_path"
+  chmod 600 "$provider_path" 2>/dev/null || true
+fi
+
 # A Camoufox fallback is a provider change, not a different browser identity.
 # agent-browser's `state load` prepares future launches but does not mutate an
-# already-running Chromium context. A newer Camoufox state therefore restarts
-# only this issue daemon and supplies that state at context launch.
+# already-running Chromium context. Track the exact fallback snapshot already
+# imported instead of comparing timestamps: a later logged-out Chromium save
+# must not suppress a valid Camoufox login that has never been imported.
 import_camoufox=false
+camoufox_fingerprint=""
 if [ "$sync_state" = true ] && [ -s "$camoufox_state_path" ]; then
-  if [ ! -s "$state_path" ] || [ "$camoufox_state_path" -nt "$state_path" ]; then
+  camoufox_fingerprint="$(cksum "$camoufox_state_path" | awk '{print $1 ":" $2}')"
+  imported_fingerprint="$(cat "$camoufox_marker_path" 2>/dev/null || true)"
+  if [ "$first" = "paperclip-sync-camoufox" ] || [ "$camoufox_fingerprint" != "$imported_fingerprint" ]; then
     import_camoufox=true
   fi
 fi
@@ -198,7 +212,10 @@ if [ "$first" = "paperclip-sync-camoufox" ]; then
   status=$?
   if [ "$status" -eq 0 ]; then
     acquire_lock || exit $?
-    save_shared_state || true
+    if save_shared_state; then
+      printf '%s\n' "$camoufox_fingerprint" > "$camoufox_marker_path"
+      chmod 600 "$camoufox_marker_path" 2>/dev/null || true
+    fi
     release_lock
   fi
   exit "$status"
@@ -220,7 +237,10 @@ status=$?
 
 if [ "$sync_state" = true ] && [ "$first" != "close" ] && [ "$status" -eq 0 ]; then
   acquire_lock || exit $?
-  save_shared_state || true
+  if save_shared_state && [ "$import_camoufox" = true ]; then
+    printf '%s\n' "$camoufox_fingerprint" > "$camoufox_marker_path"
+    chmod 600 "$camoufox_marker_path" 2>/dev/null || true
+  fi
   release_lock
 fi
 

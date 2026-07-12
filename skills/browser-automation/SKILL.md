@@ -82,7 +82,7 @@ with Camoufox(headless="virtual", humanize=True) as browser:
     print(page.title())
 ```
 
-Keep reusable fallback scripts under the persistent agent or project workspace, never `/tmp`. The managed launcher stores Camoufox state at `/paperclip/browser-profiles/<profile>/camoufox-state.json`, copies its cookies into the issue's native agent-browser daemon, navigates that live viewport to the resulting URL, and stores a current screenshot under `/paperclip/browser-artifacts`. Therefore an authenticated Camoufox result and the embedded live browser must show the same profile state. Do not claim the fallback succeeded when its JSON reports `nativeSync: false`.
+Keep reusable fallback scripts under the persistent agent or project workspace, never `/tmp`. The managed launcher stores Camoufox state at `/paperclip/browser-profiles/<profile>/camoufox-state.json`, publishes Camoufox's own viewport frame to the issue live-browser card, attempts a best-effort cookie handoff to agent-browser, and stores the current frame under `/paperclip/browser-artifacts`. Some security-sensitive sites, including Google, may reject a valid session when cookies move between Firefox/Camoufox and Chromium; in that case keep the entire authenticated workflow in Camoufox and leave the issue viewer on the truthful Camoufox frame. Never represent a signed-out agent-browser viewport as the Camoufox result.
 
 Prefer `paperclip-camoufox` over a custom Python launcher. If a multi-step custom Camoufox script is unavoidable, it must save Playwright storage state to the selected profile's exact `camoufox-state.json` path and then run `agent-browser paperclip-sync-camoufox <current-url>` before reporting completion. A screenshot alone does not synchronize the native viewer.
 

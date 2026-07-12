@@ -1,4 +1,6 @@
 import { createRequire } from "node:module";
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
 import type { Response } from "express";
 import { browserStreamPortForRun } from "@paperclipai/adapter-utils/server-utils";
 import { logger } from "../middleware/logger.js";
@@ -26,12 +28,19 @@ export function pipeBrowserStreamToSse(
   res: Response,
   options?: { onFirstFrame?: () => void; scopeId?: string },
 ) {
-  const port = browserStreamPortForRun(options?.scopeId ?? runId);
+  const scopeId = options?.scopeId ?? runId;
+  const port = browserStreamPortForRun(scopeId);
+  const artifactRoot = path.join(process.env.PAPERCLIP_HOME?.trim() || "/paperclip", "browser-artifacts");
+  const safeScope = scopeId.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const providerPath = path.join(artifactRoot, `${safeScope}-provider`);
+  const camoufoxFramePath = path.join(artifactRoot, `${safeScope}-camoufox.jpg`);
   let socket: BrowserSocket | null = null;
   let retryTimer: NodeJS.Timeout | null = null;
   let closed = false;
   let connectedOnce = false;
   let receivedFrame = false;
+  let activeProvider: "agent-browser" | "camoufox" = "agent-browser";
+  let lastCamoufoxFrameMtime = 0;
 
   res.status(200);
   res.set({
@@ -53,6 +62,7 @@ export function pipeBrowserStreamToSse(
       writeEvent(res, "status", { status: "live", provider: "agent-browser" });
     });
     nextSocket.on("message", (raw) => {
+      if (activeProvider === "camoufox") return;
       const text = typeof raw === "string" ? raw : raw.toString("utf8");
       try {
         const message = JSON.parse(text) as { type?: unknown; data?: unknown; metadata?: unknown };
@@ -86,10 +96,38 @@ export function pipeBrowserStreamToSse(
     if (!res.writableEnded) res.write(": keepalive\n\n");
   }, 15_000);
 
+  const camoufoxPoll = setInterval(async () => {
+    if (closed || res.writableEnded) return;
+    try {
+      const selected = (await readFile(providerPath, "utf8")).trim();
+      const nextProvider = selected === "camoufox" ? "camoufox" : "agent-browser";
+      if (nextProvider !== activeProvider) {
+        activeProvider = nextProvider;
+        writeEvent(res, "status", { status: "live", provider: activeProvider });
+      }
+      if (activeProvider !== "camoufox") return;
+      const frameStat = await stat(camoufoxFramePath);
+      if (frameStat.mtimeMs <= lastCamoufoxFrameMtime) return;
+      const frame = await readFile(camoufoxFramePath);
+      lastCamoufoxFrameMtime = frameStat.mtimeMs;
+      if (!receivedFrame) {
+        receivedFrame = true;
+        options?.onFirstFrame?.();
+      }
+      writeEvent(res, "frame", {
+        data: frame.toString("base64"),
+        metadata: { provider: "camoufox", capturedAt: frameStat.mtime.toISOString() },
+      });
+    } catch {
+      // Provider marker or frame is not present yet.
+    }
+  }, 500);
+
   const cleanup = () => {
     if (closed) return;
     closed = true;
     clearInterval(keepalive);
+    clearInterval(camoufoxPoll);
     if (retryTimer) clearTimeout(retryTimer);
     socket?.close();
   };

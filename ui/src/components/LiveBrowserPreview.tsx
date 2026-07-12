@@ -3,10 +3,12 @@ import { ChevronDown, ChevronUp, Eye, LoaderCircle, WifiOff } from "lucide-react
 import { cn } from "../lib/utils";
 
 export type BrowserStreamStatus = "waiting" | "live" | "disconnected";
+export type BrowserStreamProvider = "agent-browser" | "camoufox";
 
 export function useBrowserStream(runId: string) {
   const [status, setStatus] = useState<BrowserStreamStatus>("waiting");
   const [frame, setFrame] = useState<string | null>(null);
+  const [provider, setProvider] = useState<BrowserStreamProvider>("agent-browser");
 
   useEffect(() => {
     setStatus("waiting");
@@ -21,17 +23,19 @@ export function useBrowserStream(runId: string) {
     const source = new EventSource(`/api/heartbeat-runs/${encodeURIComponent(runId)}/browser-stream`);
     source.addEventListener("status", (event) => {
       try {
-        const payload = JSON.parse((event as MessageEvent).data) as { status?: BrowserStreamStatus };
+        const payload = JSON.parse((event as MessageEvent).data) as { status?: BrowserStreamStatus; provider?: BrowserStreamProvider };
         if (payload.status) setStatus(payload.status);
+        if (payload.provider) setProvider(payload.provider);
       } catch {
         setStatus("disconnected");
       }
     });
     source.addEventListener("frame", (event) => {
       try {
-        const payload = JSON.parse((event as MessageEvent).data) as { data?: unknown };
+        const payload = JSON.parse((event as MessageEvent).data) as { data?: unknown; metadata?: { provider?: BrowserStreamProvider } };
         if (typeof payload.data !== "string") return;
         setFrame(`data:image/jpeg;base64,${payload.data}`);
+        if (payload.metadata?.provider) setProvider(payload.metadata.provider);
         setStatus("live");
       } catch {
         // Keep the last good frame visible.
@@ -41,7 +45,7 @@ export function useBrowserStream(runId: string) {
     return () => source.close();
   }, [runId]);
 
-  return { status, frame };
+  return { status, frame, provider };
 }
 
 interface LiveBrowserPreviewProps {
@@ -50,7 +54,7 @@ interface LiveBrowserPreviewProps {
 }
 
 export function LiveBrowserPreview({ runId, agentName }: LiveBrowserPreviewProps) {
-  const { status, frame } = useBrowserStream(runId);
+  const { status, frame, provider } = useBrowserStream(runId);
   const [collapsed, setCollapsed] = useState(false);
 
   const statusLabel = status === "live" ? "Live" : status === "waiting" ? "Waiting for browser" : "Reconnecting";
@@ -72,7 +76,7 @@ export function LiveBrowserPreview({ runId, agentName }: LiveBrowserPreviewProps
           <span className="min-w-0">
             <span className="block text-sm font-semibold">Live browser</span>
             <span className="block truncate text-xs text-slate-400">
-              {agentName ? `${agentName} · ` : ""}agent-browser
+              {agentName ? `${agentName} · ` : ""}{provider}
             </span>
           </span>
         </span>

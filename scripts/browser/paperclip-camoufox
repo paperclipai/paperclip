@@ -26,13 +26,19 @@ state_path = root / "camoufox-state.json"
 artifact_dir = Path(os.environ.get("PAPERCLIP_HOME", "/paperclip")) / "browser-artifacts"
 artifact_dir.mkdir(parents=True, exist_ok=True)
 screenshot_path = Path(args.screenshot) if args.screenshot else artifact_dir / f"{scope}-camoufox.jpg"
+provider_path = artifact_dir / f"{scope}-provider"
+provider_path.write_text("camoufox\n")
+provider_path.chmod(0o600)
 
 with Camoufox(headless="virtual", humanize=True, persistent_context=False) as browser:
     context_options = {"storage_state": str(state_path)} if state_path.exists() else {}
     context = browser.new_context(**context_options)
     page = context.new_page()
     page.goto(args.url, wait_until="domcontentloaded", timeout=45_000)
-    page.screenshot(path=str(screenshot_path), type="jpeg", quality=78, full_page=False)
+    temporary_screenshot = screenshot_path.with_suffix(".tmp.jpg")
+    page.screenshot(path=str(temporary_screenshot), type="jpeg", quality=78, full_page=False)
+    temporary_screenshot.replace(screenshot_path)
+    screenshot_path.chmod(0o600)
     temporary_state = state_path.with_suffix(".tmp")
     context.storage_state(path=str(temporary_state))
     temporary_state.replace(state_path)
