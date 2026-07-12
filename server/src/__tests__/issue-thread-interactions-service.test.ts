@@ -232,6 +232,9 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(listed).toHaveLength(1);
     expect(listed[0]?.status).toBe("accepted");
 
+    const pendingOnly = await interactionsSvc.listForIssue(issueId, { status: "pending" });
+    expect(pendingOnly).toEqual([]);
+
     await expect(interactionsSvc.acceptSuggestedTasks({
       id: issueId,
       companyId,
