@@ -5327,6 +5327,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
+  let resumeQueuedRunsInFlight: Promise<void> | null = null;
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function completeSkillTestRunForHeartbeatOutcome(input: {
@@ -10843,22 +10844,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function resumeQueuedRuns() {
-    if ((await getSchedulingSuppression()).suppressed) return;
-    const cutoff = await getWorktreeExecutionCutoff();
+    if (resumeQueuedRunsInFlight) {
+      await resumeQueuedRunsInFlight;
+      return;
+    }
 
-    const queuedRuns = await db
-      .select({ agentId: heartbeatRuns.agentId })
-      .from(heartbeatRuns)
-      .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
-      .where(and(
-        eq(heartbeatRuns.status, "queued"),
-        eq(companies.status, "active"),
-        cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
-      ));
+    resumeQueuedRunsInFlight = (async () => {
+      if ((await getSchedulingSuppression()).suppressed) return;
+      const cutoff = await getWorktreeExecutionCutoff();
 
-    const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
-    for (const agentId of agentIds) {
-      await startNextQueuedRunForAgent(agentId);
+      const queuedRuns = await db
+        .select({ agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
+        .where(and(
+          eq(heartbeatRuns.status, "queued"),
+          eq(companies.status, "active"),
+          cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+        ));
+
+      const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
+      for (const agentId of agentIds) {
+        await startNextQueuedRunForAgent(agentId);
+      }
+    })();
+
+    try {
+      await resumeQueuedRunsInFlight;
+    } finally {
+      resumeQueuedRunsInFlight = null;
     }
   }
 
@@ -16095,6 +16109,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           skipped: 0,
         };
       }
+
+      await resumeQueuedRuns();
       const cutoff = await getWorktreeExecutionCutoff();
 
       const allAgents = await db
