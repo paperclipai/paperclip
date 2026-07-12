@@ -45,6 +45,8 @@ describe("runJwtMiddleware", () => {
       "company-1",
       "claude_local",
       "run-1",
+      undefined,
+      undefined,
       { connectionIds: ["conn-a", "conn-b"] },
     );
     expect(jwt).not.toBeNull();

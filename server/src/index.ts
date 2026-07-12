@@ -842,8 +842,8 @@ export async function startServer(): Promise<StartedServer> {
     // the scheduler-side resolver agrees with the request-side resolver on
     // which oauth providers exist and how to lazy-refresh tokens.
     const oauthRegistryFromApp = (
-      app as unknown as { locals: { oauthRegistry?: ProviderRegistry } }
-    ).locals.oauthRegistry;
+      app as unknown as { locals?: { oauthRegistry?: ProviderRegistry } }
+    ).locals?.oauthRegistry;
     const oauthDeps = oauthRegistryFromApp
       ? { registry: oauthRegistryFromApp, refreshFn: refreshConnectionImpl }
       : undefined;
