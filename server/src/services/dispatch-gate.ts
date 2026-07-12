@@ -24,6 +24,12 @@ export interface DispatchGateBlockedResult {
 
 export type DispatchGateAcquireResult = { ok: true } | DispatchGateBlockedResult;
 
+/** The confirmed transition a settled launch result maps to. */
+export type DispatchGateSettlement =
+  | { kind: "quota"; blockedUntil: Date | null; reason: string }
+  | { kind: "idle" }
+  | { kind: "unknown" };
+
 let _db: Db | null = null;
 
 /** Wire the shared database once at server startup (mirrors setPluginEventBus). */
@@ -161,10 +167,47 @@ export async function resumeDispatchGate(scopeKey: string): Promise<void> {
 }
 
 /**
- * Wrap an async launch function with the gate: acquire, run, then release on
- * confirmed settlement or classify a quota block. A thrown/rejected `run`
- * leaves ownership ambiguous, so it transitions to `unknown` rather than
- * `idle` — never inferred as a clean release.
+ * Apply a settled outcome to the gate: a confirmed quota result persists the
+ * block as part of the same transition that frees ownership, a confirmed
+ * non-quota result releases to idle, and anything else — including the
+ * classifier itself throwing — fails closed to `unknown` rather than being
+ * assumed safe. Shared by every launch surface that settles a result outside
+ * of `withDispatchGate`'s run()-wrapping shape: board chat and Claude login
+ * both acquire the gate well before a result becomes available (an
+ * event-driven child process, or a call awaited far from the acquire site),
+ * so they cannot use `run()` to bracket acquisition and settlement.
+ */
+export async function settleDispatchGateResult<TResult>(
+  scopeKey: string,
+  owner: DispatchGateOwner,
+  result: TResult,
+  classify: (result: TResult) => DispatchGateSettlement,
+): Promise<void> {
+  let settlement: DispatchGateSettlement;
+  try {
+    settlement = classify(result);
+  } catch {
+    settlement = { kind: "unknown" };
+  }
+
+  if (settlement.kind === "quota") {
+    await recordDispatchGateQuotaBlock(scopeKey, owner, {
+      blockedUntil: settlement.blockedUntil,
+      reason: settlement.reason,
+      operatorResumeRequired: settlement.blockedUntil === null,
+    });
+  } else if (settlement.kind === "unknown") {
+    await markDispatchGateUnknown(scopeKey, owner);
+  } else {
+    await releaseDispatchGate(scopeKey, owner);
+  }
+}
+
+/**
+ * Wrap an async launch function with the gate: acquire, run, then settle via
+ * `settleDispatchGateResult`. A thrown/rejected `run` leaves ownership
+ * ambiguous before a result even exists, so it transitions to `unknown`
+ * directly — never inferred as a clean release.
  */
 export async function withDispatchGate<TResult>(
   scopeKey: string,
@@ -186,15 +229,9 @@ export async function withDispatchGate<TResult>(
     throw err;
   }
 
-  const quota = options.classifyQuota?.(result) ?? null;
-  if (quota) {
-    await recordDispatchGateQuotaBlock(scopeKey, owner, {
-      blockedUntil: quota.blockedUntil,
-      reason: quota.reason,
-      operatorResumeRequired: quota.blockedUntil === null,
-    });
-  } else {
-    await releaseDispatchGate(scopeKey, owner);
-  }
+  await settleDispatchGateResult(scopeKey, owner, result, (settled) => {
+    const quota = options.classifyQuota?.(settled) ?? null;
+    return quota ? { kind: "quota", ...quota } : { kind: "idle" };
+  });
   return result;
 }

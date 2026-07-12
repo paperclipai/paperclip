@@ -12,7 +12,14 @@ import {
   acquireDispatchGate,
   CLAUDE_LOCAL_DEFAULT_SCOPE,
   releaseDispatchGate,
+  settleDispatchGateResult,
+  type DispatchGateSettlement,
 } from "../services/dispatch-gate.js";
+import {
+  describeClaudeFailure,
+  extractClaudeRetryNotBefore,
+  isClaudeProviderQuotaError,
+} from "@paperclipai/adapter-claude-local/server";
 
 /**
  * Strip structured action signals (`%%ACTIONS%%{...}%%/ACTIONS%%`) from a
@@ -67,6 +74,44 @@ export function isConciergeReply(comment: {
 
 /** Max simultaneous `claude` subprocesses across all board-chat requests. */
 const MAX_CONCURRENT_BOARD_CHATS = 3;
+
+/** Bounded tail of stderr — enough for quota-message matching without unbounded growth over a long chat. */
+const STDERR_QUOTA_EVIDENCE_CAP = 4000;
+
+function appendCapped(buf: string, chunk: string, cap: number): string {
+  const next = buf + chunk;
+  return next.length > cap ? next.slice(next.length - cap) : next;
+}
+
+/**
+ * Confirmed quota/session-limit text reuses the adapter's own narrow
+ * classifier — the same one the registered `execute` path uses — so board
+ * chat never runs a second, competing quota detector. Our own 120s timeout
+ * kill is always a confirmed, understood outcome, never quota and never
+ * ambiguous. A process killed by something other than our own timeout that
+ * produced neither a parseable result nor any stderr text at all is
+ * genuinely ambiguous — we cannot confirm what happened, so it fails closed
+ * to `unknown` rather than being assumed idle.
+ */
+function classifyBoardChatOutcome(outcome: {
+  timedOut: boolean;
+  signalKilled: boolean;
+  lastResultEvent: Record<string, unknown> | null;
+  stderrTail: string;
+}): DispatchGateSettlement {
+  if (outcome.timedOut) return { kind: "idle" };
+  if (outcome.signalKilled && !outcome.lastResultEvent && !outcome.stderrTail.trim()) {
+    return { kind: "unknown" };
+  }
+
+  const classifierInput = {
+    parsed: outcome.lastResultEvent,
+    stderr: outcome.stderrTail,
+    errorMessage: outcome.lastResultEvent ? describeClaudeFailure(outcome.lastResultEvent) : null,
+  };
+  if (!isClaudeProviderQuotaError(classifierInput)) return { kind: "idle" };
+  return { kind: "quota", blockedUntil: extractClaudeRetryNotBefore(classifierInput), reason: "provider_quota" };
+}
 
 export function boardChatRoutes(
   db: Db,
@@ -281,6 +326,8 @@ export function boardChatRoutes(
     let fullResponse = "";
     let streamedViaDelta = false;
     let killed = false;
+    let lastResultEvent: Record<string, unknown> | null = null;
+    let stderrTail = "";
 
     // 120s timeout — board conversations can involve multiple API calls.
     const timeout = setTimeout(() => {
@@ -361,20 +408,28 @@ export function boardChatRoutes(
               if (block.type === "text" && block.text) writeChunk(block.text);
             }
           }
-        } else if (event.type === "result" && event.result && !fullResponse) {
-          writeChunk(event.result);
+        } else if (event.type === "result") {
+          lastResultEvent = event;
+          if (event.result && !fullResponse) writeChunk(event.result);
         }
       }
     });
 
     proc.stderr.on("data", (data: Buffer) => {
-      console.error("[board/chat/stream stderr]", data.toString());
+      const text = data.toString();
+      stderrTail = appendCapped(stderrTail, text, STDERR_QUOTA_EVIDENCE_CAP);
+      console.error("[board/chat/stream stderr]", text);
     });
 
-    proc.on("close", async (exitCode) => {
+    proc.on("close", async (exitCode, signal) => {
       clearTimeout(timeout);
       releaseSlot();
-      await releaseDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner);
+      await settleDispatchGateResult(
+        CLAUDE_LOCAL_DEFAULT_SCOPE,
+        gateOwner,
+        { timedOut: killed, signalKilled: signal !== null, lastResultEvent, stderrTail },
+        classifyBoardChatOutcome,
+      );
 
       // Persist the board's reply under the "board-concierge" sentinel so the
       // UI renders it as an assistant bubble (see BoardChat `isUser` check).

@@ -88,12 +88,17 @@ import {
   isTruthyRuntimeEnvValue,
   resolveWorktreeRunExecutionActivationState,
 } from "../services/instance-settings.js";
-import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
+import {
+  extractClaudeRetryNotBefore,
+  isClaudeProviderQuotaError,
+  runClaudeLogin,
+} from "@paperclipai/adapter-claude-local/server";
 import {
   acquireDispatchGate,
   CLAUDE_LOCAL_DEFAULT_SCOPE,
   markDispatchGateUnknown,
-  releaseDispatchGate,
+  settleDispatchGateResult,
+  type DispatchGateSettlement,
 } from "../services/dispatch-gate.js";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
@@ -120,6 +125,26 @@ import {
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+
+/**
+ * Confirmed quota/session-limit text reuses the adapter's own narrow
+ * classifier — the same one the registered `execute` path uses — so login
+ * never runs a second, competing quota detector. `claude login` is a plain
+ * request/response call (not stream-json), so there is no structured result
+ * event to parse; the classifier's stdout/stderr fallback carries the
+ * signal. A run our own timeout cut short is a confirmed, understood
+ * outcome, never a quota result.
+ */
+function classifyClaudeLoginQuota(result: {
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+}): DispatchGateSettlement {
+  if (result.timedOut) return { kind: "idle" };
+  const classifierInput = { parsed: null, stdout: result.stdout, stderr: result.stderr, errorMessage: null };
+  if (!isClaudeProviderQuotaError(classifierInput)) return { kind: "idle" };
+  return { kind: "quota", blockedUntil: extractClaudeRetryNotBefore(classifierInput), reason: "provider_quota" };
+}
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -3646,7 +3671,7 @@ export function agentRoutes(
       await markDispatchGateUnknown(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner);
       throw err;
     }
-    await releaseDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner);
+    await settleDispatchGateResult(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner, result, classifyClaudeLoginQuota);
 
     res.json(result);
   });
