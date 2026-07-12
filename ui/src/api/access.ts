@@ -245,6 +245,11 @@ export type CurrentBoardAccess = {
   }>;
   source: string;
   keyId: string | null;
+  /** Trusted-gateway stack context; null outside cloud-tenant requests. */
+  cloudStack?: {
+    stackId: string;
+    stackRole: "owner" | "admin" | "member" | "support";
+  } | null;
 };
 
 function buildInviteListQuery(options: {
