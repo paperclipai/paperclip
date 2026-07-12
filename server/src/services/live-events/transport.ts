@@ -1,4 +1,4 @@
-import type { LiveEvent, LiveEventType } from "@paperclipai/shared";
+import { LIVE_EVENT_TYPES, type LiveEvent, type LiveEventType } from "@paperclipai/shared";
 
 /**
  * Cross-replica fan-out transport for live events.
@@ -141,6 +141,12 @@ export function envelopeToEvents(companyId: string, envelope: TransportEnvelope)
     case "resync": {
       if (raw.companyId !== companyId) return [];
       if (typeof raw.type !== "string") return [];
+      // Unlike full/batch events (which carry real payloads worth
+      // forwarding even when this replica predates their type), a resync
+      // marker only synthesizes an event — synthesizing one with a type
+      // outside LIVE_EVENT_TYPES would hand consumers a LiveEvent that no
+      // exhaustive switch or handler map can dispatch. Drop it instead.
+      if (!(LIVE_EVENT_TYPES as readonly string[]).includes(raw.type)) return [];
       return [
         {
           id: 0,

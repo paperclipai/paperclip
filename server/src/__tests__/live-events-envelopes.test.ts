@@ -167,4 +167,14 @@ describe("envelopeToEvents", () => {
     } as unknown as Parameters<typeof envelopeToEvents>[1];
     expect(envelopeToEvents("company-a", numericType)).toEqual([]);
   });
+
+  it("returns [] for a resync envelope whose type is not a known LiveEventType", () => {
+    const unknownType = {
+      kind: "resync",
+      origin: "origin-1",
+      companyId: "company-a",
+      type: "some-unknown-string",
+    } as unknown as Parameters<typeof envelopeToEvents>[1];
+    expect(envelopeToEvents("company-a", unknownType)).toEqual([]);
+  });
 });

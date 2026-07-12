@@ -270,5 +270,13 @@ describeEmbedded("scheduler leadership", () => {
     await other.leadership.stop();
     await other.leadership.stop();
     expect(other.onLost).toHaveBeenCalledTimes(1);
+
+    // Single-use contract: start() after stop() no-ops (with a warning) and
+    // never re-enters the election.
+    other.leadership.start();
+    await sleep(2 * RETRY_MS + JITTER_MS + 50);
+    expect(other.leadership.isLeader()).toBe(false);
+    expect(other.onAcquired).toHaveBeenCalledTimes(1);
+    expect(await currentLeaderRow()).toBeUndefined();
   });
 });

@@ -37,7 +37,14 @@ export interface SchedulerLeadershipOptions {
 }
 
 export interface SchedulerLeadership {
-  /** Begin campaigning. The first pass runs immediately, so a single replica acquires at boot without waiting retryMs. */
+  /**
+   * Begin campaigning. The first pass runs immediately, so a single replica
+   * acquires at boot without waiting retryMs.
+   *
+   * Single-use: an instance cannot be restarted. Once `stop()` has been
+   * called, `start()` logs a warning and no-ops — create a new instance
+   * (with a fresh leaderId) to campaign again.
+   */
   start(): void;
   /**
    * Graceful shutdown: halt the loop, await any in-flight pass, then — if
@@ -170,7 +177,17 @@ export function createSchedulerLeadership(opts: SchedulerLeadershipOptions): Sch
   }
 
   function start(): void {
-    if (started || stopped) return;
+    if (stopped) {
+      // Single-use contract: stop() is permanent. Silently resuming candidacy
+      // here would race the resign/onLost sequence stop() may already have
+      // run, so surface the misuse instead of no-oping quietly.
+      logger.warn(
+        { leaderId },
+        "scheduler leadership start() called after stop(); instance is single-use — create a new instance to campaign again",
+      );
+      return;
+    }
+    if (started) return;
     started = true;
     tick(); // first pass immediately — a lone replica acquires at boot
   }

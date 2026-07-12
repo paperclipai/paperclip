@@ -319,6 +319,9 @@ describe("GET /health", () => {
           message: "Latest database backup is stale.",
         },
       ],
+      // Scheduler candidacy booleans ride on the redacted view too — the
+      // operator identifies the leader pod via unauthenticated probes.
+      scheduler: { candidate: false, isLeader: false },
     });
   });
 
