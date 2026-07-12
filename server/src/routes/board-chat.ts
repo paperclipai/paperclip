@@ -67,6 +67,8 @@ export function boardChatRoutes(
   opts: { deploymentMode: DeploymentMode },
 ) {
   const router = Router();
+  const instanceSettings = instanceSettingsService(db);
+  const issueSvc = issueService(db);
   let liveBoardChats = 0;
 
   // The board skill is read from disk once and cached. Resolves to the
@@ -98,7 +100,7 @@ export function boardChatRoutes(
     // Conference Room Chat is an experimental surface (PAP-136/PAP-137): the
     // API is gated alongside the UI so the endpoint is inert while the flag
     // is off, not just hidden.
-    const experimental = await instanceSettingsService(db).getExperimental();
+    const experimental = await instanceSettings.getExperimental();
     if (experimental.enableConferenceRoomChat !== true) {
       res.status(403).json({
         error: "Conference Room Chat is not enabled",
@@ -145,7 +147,6 @@ export function boardChatRoutes(
       return;
     }
 
-    const issueSvc = issueService(db);
     let issueId = taskId;
     const actor = getActorInfo(req);
 

@@ -5087,6 +5087,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const costs = costService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
 
   function isPlanApprovalConfirmationPayload(payload: unknown) {
@@ -10876,7 +10877,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(eq(agentRuntimeState.agentId, agent.id));
 
     if (additionalCostCents > 0 || hasTokenUsage) {
-      const costs = costService(db, budgetHooks);
       await costs.createEvent(agent.companyId, {
         heartbeatRunId: run.id,
         agentId: agent.id,

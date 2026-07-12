@@ -58,6 +58,7 @@ export function companySkillRoutes(db: Db) {
   const svc = companySkillService(db);
   const issues = issueService(db);
   const heartbeat = heartbeatService(db);
+  const changeConsentGate = changeConsentGateService(db);
 
   function asString(value: unknown): string | null {
     if (typeof value !== "string") return null;
@@ -134,7 +135,7 @@ export function companySkillRoutes(db: Db) {
 
     if (decision.reason === "deny_missing_consent" && req.actor.type === "agent" && targetKeys.length > 0) {
       try {
-        await changeConsentGateService(db).assertConsented({
+        await changeConsentGate.assertConsented({
           companyId,
           actorAgentId: req.actor.agentId,
           actorRunId: req.actor.runId ?? null,

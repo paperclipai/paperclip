@@ -3023,6 +3023,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const issues = issueService(db);
   const companySkills = companySkillService(db);
   const secrets = secretService(db);
+  const routinesShared = routineService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const defaultSecretProvider = getConfiguredSecretProvider();
 
@@ -3417,9 +3418,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       grants.sort((left, right) => left.permissionKey.localeCompare(right.permissionKey));
     }
 
-    const projectsSvc = projectService(db);
-    const issuesSvc = issueService(db);
-    const routinesSvc = routineService(db);
+    const projectsSvc = projects;
+    const issuesSvc = issues;
+    const routinesSvc = routinesShared;
     const allProjectsRaw = include.projects || include.issues ? await projectsSvc.list(companyId) : [];
     const allProjects = allProjectsRaw.filter((project) => !project.archivedAt);
     const allRoutinesRaw = include.issues ? await routinesSvc.list(companyId) : [];
@@ -4954,7 +4955,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
 
       if (include.issues) {
-        const routines = routineService(db);
+        const routines = routinesShared;
         for (const manifestIssue of sourceManifest.issues) {
           const markdownRaw = readPortableTextFile(plan.source.files, manifestIssue.path);
           const parsed = markdownRaw ? parseFrontmatterMarkdown(markdownRaw) : null;

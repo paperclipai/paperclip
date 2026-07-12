@@ -43,6 +43,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const budgets = budgetService(db);
   const artifacts = companyArtifactsService(db, storage);
   const feedback = feedbackService(db);
+  const timeline = workTimelineService(db);
   const importJobs = new Map<string, ImportJobRecord>();
   const importJobTerminalRetentionMs = 5 * 60 * 1000;
 
@@ -160,7 +161,6 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
 
     const query = timelineQuerySchema.parse(req.query);
-    const timeline = workTimelineService(db);
     const result = await timeline.getTimeline({
       companyId,
       from: parseDateQuery(query.from, "from"),
