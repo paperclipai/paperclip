@@ -166,6 +166,10 @@ function registerRouteMocks() {
     issueService: () => mockIssueService,
   }));
 
+  vi.doMock("../services/issue-reports.js", () => ({
+    issueReportService: () => mockIssueReportService,
+  }));
+
   vi.doMock("../services/work-products.js", () => ({
     workProductService: () => mockWorkProductService,
   }));
@@ -223,7 +227,6 @@ function registerRouteMocks() {
       syncIssue: async () => undefined,
     }),
     issueService: () => mockIssueService,
-    issueReportService: () => mockIssueReportService,
     issueThreadInteractionService: () => mockIssueThreadInteractionService,
     taskWatchdogService: () => mockTaskWatchdogService,
     logActivity: mockLogActivity,

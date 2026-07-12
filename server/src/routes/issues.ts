@@ -104,7 +104,6 @@ import {
   issueApprovalService,
   issueRecoveryActionService,
   issueThreadInteractionService,
-  issueReportService,
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
   issueReferenceService,
@@ -118,6 +117,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { issueReportService } from "../services/issue-reports.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
