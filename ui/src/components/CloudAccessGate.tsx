@@ -5,7 +5,9 @@ import { ApiError } from "@/api/client";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { queryKeys } from "@/lib/queryKeys";
+import { resolveCloudZeroCompanyState } from "@/lib/cloud-zero-company";
 import { BootstrapPendingPage } from "@/components/BootstrapPendingPage";
+import { WorkspaceSetupPendingPage } from "@/components/WorkspaceSetupPendingPage";
 import { Card } from "@/components/ui/card";
 
 function NoBoardAccessPage() {
@@ -57,6 +59,12 @@ export function CloudAccessGate() {
     queryFn: () => accessApi.getCurrentBoardAccess(),
     enabled: isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data,
     retry: false,
+    refetchInterval: (query) => {
+      const data = query.state.data as import("@/api/access").CurrentBoardAccess | undefined;
+      if (!data) return false;
+      return resolveCloudZeroCompanyState(data) === "waiting" ? 3000 : false;
+    },
+    refetchIntervalInBackground: true,
   });
   const claimMutation = useMutation({
     mutationFn: () => accessApi.claimBootstrapAdmin(),
@@ -116,13 +124,12 @@ export function CloudAccessGate() {
     return <Navigate to={`/auth?next=${next}`} replace />;
   }
 
-  if (
-    isAuthenticatedMode &&
-    sessionQuery.data &&
-    !boardAccessQuery.data?.isInstanceAdmin &&
-    (boardAccessQuery.data?.companyIds.length ?? 0) === 0
-  ) {
-    return <NoBoardAccessPage />;
+  if (isAuthenticatedMode && sessionQuery.data && boardAccessQuery.data) {
+    const zeroCompanyState = resolveCloudZeroCompanyState(boardAccessQuery.data);
+    if (zeroCompanyState === "waiting") return <WorkspaceSetupPendingPage />;
+    if (zeroCompanyState === "no_access") return <NoBoardAccessPage />;
+    // "onboard" and null fall through: Layout auto-opens the onboarding
+    // wizard whenever the companies list is empty.
   }
 
   return <Outlet />;
