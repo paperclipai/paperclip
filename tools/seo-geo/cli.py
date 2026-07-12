@@ -54,6 +54,12 @@ def _cmd_audit(args, environ, fetch):
 def _http_fetch(url):
     import requests
     r = requests.get(url, timeout=30); r.raise_for_status()
+    # Fehlt der charset im Content-Type (z.B. "text/plain"), raet requests ISO-8859-1
+    # und macht aus UTF-8-Bytes Mojibake. Das Web ist praktisch immer UTF-8 —
+    # utf-8-sig entfernt zugleich ein evtl. vorhandenes BOM.
+    ctype = (r.headers.get("content-type") or "").lower()
+    if "charset=" not in ctype:
+        return r.content.decode("utf-8-sig", errors="replace")
     return r.text
 
 def main(argv, environ, fetch=None, client_factory=None) -> int:

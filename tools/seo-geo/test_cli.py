@@ -46,3 +46,25 @@ def test_apply_moves_failing_changeset_to_failed(tmp_path):
     assert rc == 0
     assert not (root / "applied" / "cs1.json").exists()
     assert (root / "failed" / "cs1.json").exists()
+
+
+def test_http_fetch_decodes_utf8_when_charset_missing():
+    """Server ohne charset im Content-Type: requests raet ISO-8859-1 und macht aus
+    einem UTF-8-BOM Mojibake. Wir muessen trotzdem korrekt als UTF-8 dekodieren."""
+    import requests_mock
+    from cli import _http_fetch
+    body = "﻿# WHITESTAG\n> Beschreibung mit Umlaut: schön\n".encode("utf-8")
+    with requests_mock.Mocker() as m:
+        m.get("https://x.de/llms.txt", content=body,
+              headers={"Content-Type": "text/plain"})   # KEIN charset
+        text = _http_fetch("https://x.de/llms.txt")
+    assert text.lstrip("﻿").startswith("#")
+    assert "schön" in text
+
+def test_http_fetch_respects_declared_charset():
+    import requests_mock
+    from cli import _http_fetch
+    with requests_mock.Mocker() as m:
+        m.get("https://x.de/p", content="<html>schön</html>".encode("utf-8"),
+              headers={"Content-Type": "text/html; charset=UTF-8"})
+        assert "schön" in _http_fetch("https://x.de/p")
