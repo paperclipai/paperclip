@@ -18,6 +18,7 @@ import {
   testAdapterEnvironmentSchema,
   // Issue
   createIssueSchema,
+  createIssueReportSchema,
   updateIssueSchema,
   createIssueLabelSchema,
   addIssueCommentSchema,
@@ -470,6 +471,33 @@ const jsonBody = (schema: z.ZodTypeAny) => ({
 });
 
 const r = responses;
+
+const issueReportPayloadOpenApiSchema = z.object({
+  type: z.string(),
+  summary: z.string().nullable().optional(),
+  data: z.record(z.string(), z.unknown()),
+}).strict();
+
+const issueReportOpenApiSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  targetIssueId: z.string().uuid(),
+  originIssueId: z.string().uuid(),
+  originRunId: z.string().uuid(),
+  originAgentId: z.string().uuid(),
+  fingerprint: z.string(),
+  payload: issueReportPayloadOpenApiSchema,
+  wakeRequested: z.boolean(),
+  consumedByRunId: z.string().uuid().nullable(),
+  consumedAt: z.string().datetime().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
+const createIssueReportResponseOpenApiSchema = z.object({
+  report: issueReportOpenApiSchema,
+  deduplicated: z.boolean(),
+}).strict();
 
 const externalObjectSummariesBodySchema = z.object({
   issueIds: z.array(z.string().uuid()).max(1000),
@@ -1836,6 +1864,41 @@ registry.registerPath({
   summary: "List issue comments",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/reports",
+  tags: ["issues"],
+  summary: "List typed reports delivered to an issue",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(z.array(issueReportOpenApiSchema)),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/reports",
+  tags: ["issues"],
+  summary: "Deliver a typed, non-executing report to a readable issue",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(createIssueReportSchema),
+  },
+  responses: {
+    200: r.ok(createIssueReportResponseOpenApiSchema),
+    201: r.ok(createIssueReportResponseOpenApiSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({
