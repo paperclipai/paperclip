@@ -53,6 +53,8 @@ Paperclip's managed agent-browser wrapper merges the selected profile's latest c
 
 Create and assign project-specific profiles from Browsers → Profiles. Paperclip writes the selected persistence scope into project runtime configuration automatically. Do not override `AGENT_BROWSER_STREAM_PORT`, `AGENT_BROWSER_NAMESPACE`, `AGENT_BROWSER_SESSION`, or `AGENT_BROWSER_SOCKET_DIR`; Paperclip owns those live-viewer values and deliberately keeps the Unix socket path short enough for agent-browser.
 
+Never pass `--session`, `--session-name`, `--profile`, `--state`, `--cdp`, `--auto-connect`, or a provider override to `agent-browser`, and never override `HOME`. Paperclip rejects these in managed runs because they detach the browser from its issue and bypass the assigned company/project profile. If the shared profile is briefly busy, retry the same managed command; do not create a private fallback session.
+
 ## Login
 
 Prefer session reuse. If login is required, use environment-bound credentials without echoing them and avoid command arguments that expose values in transcripts. Use the agent-browser encrypted auth vault when selectors are stable, or fill fields through the browser tool using secret-backed environment variables only when the runtime prevents argument logging.

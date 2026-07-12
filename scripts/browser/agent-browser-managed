@@ -4,9 +4,32 @@ set -u
 REAL_AGENT_BROWSER="${PAPERCLIP_AGENT_BROWSER_REAL:-/usr/local/bin/agent-browser-real}"
 PROFILE_NAME="${AGENT_BROWSER_SESSION_NAME:-}"
 PROFILE_ROOT="${PAPERCLIP_BROWSER_PROFILE_ROOT:-/paperclip/browser-profiles}"
+RUNTIME_HOME="${PAPERCLIP_BROWSER_RUNTIME_HOME:-}"
 
 if [ -z "$PROFILE_NAME" ] || [ -z "${PAPERCLIP_COMPANY_ID:-}" ]; then
   exec "$REAL_AGENT_BROWSER" "$@"
+fi
+
+for argument in "$@"; do
+  case "$argument" in
+    --session|--session=*|--session-name|--session-name=*|--profile|--profile=*|--state|--state=*|--cdp|--cdp=*|--auto-connect|--provider|--provider=*|-p)
+      echo "[paperclip-browser] '$argument' is not allowed in a managed run; Paperclip owns issue sessions and company/project profiles" >&2
+      exit 64
+      ;;
+  esac
+done
+
+case "${1:-}" in
+  state|profiles)
+    echo "[paperclip-browser] '${1:-}' is managed by Paperclip and cannot be invoked directly in an agent run" >&2
+    exit 64
+    ;;
+esac
+
+if [ -n "$RUNTIME_HOME" ]; then
+  mkdir -p "$RUNTIME_HOME"
+  chmod 700 "$RUNTIME_HOME" 2>/dev/null || true
+  export HOME="$RUNTIME_HOME"
 fi
 
 # Paperclip owns persistence. Native `--session-name` persistence appends the
@@ -24,26 +47,31 @@ lock_dir="$profile_dir/.state-lock"
 mkdir -p "$profile_dir"
 chmod 700 "$profile_dir" 2>/dev/null || true
 
-# One profile can back many isolated issue daemons. Serialize the short
-# load/action/save transaction so concurrent issues merge the latest cookies
-# and storage instead of overwriting one another with stale snapshots.
-lock_waited=0
-while ! mkdir "$lock_dir" 2>/dev/null; do
-  lock_pid="$(cat "$lock_dir/pid" 2>/dev/null || true)"
-  if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
-    rm -rf "$lock_dir" 2>/dev/null || true
-    continue
-  fi
-  if [ "$lock_waited" -ge 60 ]; then
-    echo "[paperclip-browser] timed out waiting for shared profile '$safe_profile'" >&2
-    exit 75
-  fi
-  sleep 1
-  lock_waited=$((lock_waited + 1))
-done
-printf '%s\n' "$$" > "$lock_dir/pid"
+lock_held=false
+acquire_lock() {
+  lock_waited=0
+  while ! mkdir "$lock_dir" 2>/dev/null; do
+    lock_created="$(stat -c %Y "$lock_dir" 2>/dev/null || printf '0')"
+    now="$(date +%s)"
+    if [ "$lock_created" -gt 0 ] && [ $((now - lock_created)) -gt 15 ]; then
+      rm -rf "$lock_dir" 2>/dev/null || true
+      continue
+    fi
+    if [ "$lock_waited" -ge 10 ]; then
+      echo "[paperclip-browser] shared profile '$safe_profile' is busy; retry the managed command instead of creating another session" >&2
+      return 75
+    fi
+    sleep 1
+    lock_waited=$((lock_waited + 1))
+  done
+  printf '%s\n' "$$" > "$lock_dir/pid"
+  lock_held=true
+}
 release_lock() {
-  rm -rf "$lock_dir" 2>/dev/null || true
+  if [ "$lock_held" = true ]; then
+    rm -rf "$lock_dir" 2>/dev/null || true
+    lock_held=false
+  fi
 }
 trap release_lock EXIT HUP INT TERM
 
@@ -69,12 +97,13 @@ first="${1:-}"
 second="${2:-}"
 sync_state=true
 case "$first:$second" in
-  skills:*|profiles:*|session:list|state:list|state:show|state:rename|state:clear|state:clean)
+  skills:*|session:list)
     sync_state=false
     ;;
 esac
 
 if [ "$sync_state" = true ] && [ -s "$state_path" ]; then
+  acquire_lock || exit $?
   # `state load` merges into an already-running issue daemon.
   if [ "$first" = "open" ]; then
     # Explicitly start the isolated daemon before loading. This also works on
@@ -83,17 +112,22 @@ if [ "$sync_state" = true ] && [ -s "$state_path" ]; then
     "$REAL_AGENT_BROWSER" open >/dev/null 2>&1 || true
   fi
   "$REAL_AGENT_BROWSER" state load "$state_path" >/dev/null 2>&1 || true
+  release_lock
 fi
 
 if [ "$sync_state" = true ] && [ "$first" = "close" ]; then
+  acquire_lock || exit $?
   save_shared_state || true
+  release_lock
 fi
 
 "$REAL_AGENT_BROWSER" "$@"
 status=$?
 
 if [ "$sync_state" = true ] && [ "$first" != "close" ] && [ "$status" -eq 0 ]; then
+  acquire_lock || exit $?
   save_shared_state || true
+  release_lock
 fi
 
 exit "$status"

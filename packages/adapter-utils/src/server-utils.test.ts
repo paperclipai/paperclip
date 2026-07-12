@@ -46,6 +46,22 @@ describe("managed browser run environment", () => {
     expect(followUp.PAPERCLIP_BROWSER_SCOPE_ID).toBe("issue-1");
   });
 
+  it("keeps the same issue daemon across an agent handoff but isolates another issue", () => {
+    const engineer = buildPaperclipEnv({ id: "engineer", companyId: "company-1" }, "run-1", { issueId: "issue-a" });
+    const ceo = buildPaperclipEnv({ id: "ceo", companyId: "company-1" }, "run-2", { issueId: "issue-a" });
+    const otherIssue = buildPaperclipEnv({ id: "engineer", companyId: "company-1" }, "run-3", { issueId: "issue-b" });
+
+    expect(ceo.AGENT_BROWSER_SESSION).toBe(engineer.AGENT_BROWSER_SESSION);
+    expect(ceo.AGENT_BROWSER_NAMESPACE).toBe(engineer.AGENT_BROWSER_NAMESPACE);
+    expect(ceo.AGENT_BROWSER_STREAM_PORT).toBe(engineer.AGENT_BROWSER_STREAM_PORT);
+    expect(ceo.AGENT_BROWSER_SESSION_NAME).toBe(engineer.AGENT_BROWSER_SESSION_NAME);
+    expect(otherIssue.AGENT_BROWSER_SESSION).not.toBe(engineer.AGENT_BROWSER_SESSION);
+    expect(otherIssue.AGENT_BROWSER_NAMESPACE).not.toBe(engineer.AGENT_BROWSER_NAMESPACE);
+    expect(otherIssue.AGENT_BROWSER_STREAM_PORT).not.toBe(engineer.AGENT_BROWSER_STREAM_PORT);
+    expect(otherIssue.AGENT_BROWSER_SESSION_NAME).toBe(engineer.AGENT_BROWSER_SESSION_NAME);
+    expect(engineer.PAPERCLIP_BROWSER_RUNTIME_HOME).toBe("/paperclip/browser-runtime/company-1");
+  });
+
   it("derives one encrypted shared profile key per company when a server key is configured", () => {
     const previous = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
     process.env.PAPERCLIP_SECRETS_MASTER_KEY = "test-master-key";
@@ -510,6 +526,9 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       "A custom Playwright/Puppeteer script, direct headless browser, reusable launch helper, or screenshots are not a substitute",
     );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "never pass agent-browser session/profile/state/CDP/provider overrides or override HOME",
+    );
   });
 
   it("adds a hard managed-browser gate when a board comment requests live navigation", () => {
@@ -532,6 +551,7 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Do not use direct Playwright/Puppeteer");
     expect(prompt).toContain("custom or reusable `launch.js`");
     expect(prompt).toContain("uploaded screenshots as a substitute");
+    expect(prompt).toContain("Never pass `--session`, `--session-name`, `--profile`, `--state`");
   });
 
   it("adds the execution contract to scoped wake prompts", () => {
@@ -1125,6 +1145,52 @@ describe("refreshPaperclipWorkspaceEnvForExecution", () => {
         workspaceId: "workspace-2",
       },
     ]);
+  });
+
+  it("preserves issue-owned browser identity while allowing an assigned project profile", () => {
+    const env: Record<string, string> = {
+      PAPERCLIP_COMPANY_ID: "company-1",
+      PAPERCLIP_BROWSER_SCOPE_ID: "issue-1",
+      PAPERCLIP_BROWSER_PROFILE_ROOT: "/paperclip/browser-profiles",
+      PAPERCLIP_BROWSER_RUNTIME_HOME: "/paperclip/browser-runtime/company-1",
+      AGENT_BROWSER_SOCKET_DIR: "/tmp/pab",
+      AGENT_BROWSER_SESSION: "pc-managed",
+      AGENT_BROWSER_NAMESPACE: "pc-managed",
+      AGENT_BROWSER_STREAM_PORT: "23456",
+      AGENT_BROWSER_ENCRYPTION_KEY: "a".repeat(64),
+      AGENT_BROWSER_SESSION_NAME: "paperclip-company-1-default",
+      AGENT_BROWSER_RESTORE: "paperclip-company-1-default",
+    };
+
+    refreshPaperclipWorkspaceEnvForExecution({
+      env,
+      envConfig: {
+        PAPERCLIP_COMPANY_ID: "attacker-company",
+        PAPERCLIP_BROWSER_SCOPE_ID: "other-issue",
+        PAPERCLIP_BROWSER_PROFILE_ROOT: "/tmp/escape",
+        PAPERCLIP_BROWSER_RUNTIME_HOME: "/tmp/home",
+        AGENT_BROWSER_SOCKET_DIR: "/tmp/other",
+        AGENT_BROWSER_SESSION: "manual-session",
+        AGENT_BROWSER_NAMESPACE: "manual-session",
+        AGENT_BROWSER_STREAM_PORT: "39999",
+        AGENT_BROWSER_ENCRYPTION_KEY: "b".repeat(64),
+        AGENT_BROWSER_SESSION_NAME: "paperclip-company-1-project-finance",
+      },
+    });
+
+    expect(env).toMatchObject({
+      PAPERCLIP_COMPANY_ID: "company-1",
+      PAPERCLIP_BROWSER_SCOPE_ID: "issue-1",
+      PAPERCLIP_BROWSER_PROFILE_ROOT: "/paperclip/browser-profiles",
+      PAPERCLIP_BROWSER_RUNTIME_HOME: "/paperclip/browser-runtime/company-1",
+      AGENT_BROWSER_SOCKET_DIR: "/tmp/pab",
+      AGENT_BROWSER_SESSION: "pc-managed",
+      AGENT_BROWSER_NAMESPACE: "pc-managed",
+      AGENT_BROWSER_STREAM_PORT: "23456",
+      AGENT_BROWSER_ENCRYPTION_KEY: "a".repeat(64),
+      AGENT_BROWSER_SESSION_NAME: "paperclip-company-1-project-finance",
+      AGENT_BROWSER_RESTORE: "paperclip-company-1-project-finance",
+    });
   });
 });
 

@@ -170,6 +170,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
   "- When the board explicitly requests the live, native, or managed browser, use Paperclip's managed browser commands. A custom Playwright/Puppeteer script, direct headless browser, reusable launch helper, or screenshots are not a substitute for the live browser stream.",
+  "- Paperclip owns browser identity: never pass agent-browser session/profile/state/CDP/provider overrides or override HOME. If a managed profile is briefly busy, retry the managed command; never create a private browser session as fallback.",
 ].join("\n");
 
 export interface PaperclipSkillEntry {
@@ -876,6 +877,7 @@ export function renderPaperclipWakePrompt(
       "- Start navigation with `paperclip-browser-open <url>` and perform each meaningful follow-up action with `agent-browser` so the issue viewport receives continuous frames.",
       "- Do not use direct Playwright/Puppeteer, `headless: true`, a custom or reusable `launch.js`, an opaque batch browser script, or uploaded screenshots as a substitute, even if that path worked previously.",
       "- Existing scripts may inform selectors or workflow logic, but the requested interaction itself must be replayed through observable managed-browser commands.",
+      "- Never pass `--session`, `--session-name`, `--profile`, `--state`, `--cdp`, `--auto-connect`, or provider overrides, and never override `HOME`; those detach the browser from the issue/profile selected by Paperclip.",
       "- Use `paperclip-browser-open <url> --camoufox` only when the board explicitly requests Camoufox; otherwise allow the managed launcher to fall back after a detected browser-security challenge.",
       "- Before claiming visible progress, verify that managed browser commands have executed in this heartbeat. If the managed browser cannot run, report that blocker instead of silently switching to an invisible browser.",
     );
@@ -1187,6 +1189,7 @@ export function buildPaperclipEnv(
     vars.AGENT_BROWSER_SESSION_NAME = `paperclip-${agent.companyId}-default`;
     vars.AGENT_BROWSER_STREAM_PORT = String(browserStreamPortForRun(browserScopeId));
     vars.PAPERCLIP_BROWSER_PROFILE_ROOT = "/paperclip/browser-profiles";
+    vars.PAPERCLIP_BROWSER_RUNTIME_HOME = `/paperclip/browser-runtime/${agent.companyId}`;
     const browserKeySeed = process.env.PAPERCLIP_SECRETS_MASTER_KEY?.trim()
       || process.env.PAPERCLIP_CREDENTIAL_KEY?.trim();
     if (browserKeySeed) {
@@ -1406,8 +1409,25 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
     executionCwd: shapedWorkspaceEnv.workspaceCwd,
     executionTargetIsRemote: input.executionTargetIsRemote,
   });
+  const managedBrowserEnv = Object.fromEntries(
+    [
+      "PAPERCLIP_COMPANY_ID",
+      "PAPERCLIP_BROWSER_SCOPE_ID",
+      "PAPERCLIP_BROWSER_PROFILE_ROOT",
+      "PAPERCLIP_BROWSER_RUNTIME_HOME",
+      "AGENT_BROWSER_SOCKET_DIR",
+      "AGENT_BROWSER_SESSION",
+      "AGENT_BROWSER_NAMESPACE",
+      "AGENT_BROWSER_STREAM_PORT",
+      "AGENT_BROWSER_ENCRYPTION_KEY",
+    ].flatMap((key) => input.env[key] === undefined ? [] : [[key, input.env[key]]]),
+  );
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
     input.env[key] = value;
+  }
+  Object.assign(input.env, managedBrowserEnv);
+  if (typeof input.env.AGENT_BROWSER_SESSION_NAME === "string" && input.env.AGENT_BROWSER_SESSION_NAME.trim()) {
+    input.env.AGENT_BROWSER_RESTORE = input.env.AGENT_BROWSER_SESSION_NAME;
   }
 
   return shapedWorkspaceEnv;
