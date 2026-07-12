@@ -108,6 +108,7 @@ import {
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
+import { ScrollToBottom } from "./ScrollToBottom";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
@@ -5010,6 +5011,7 @@ export function IssueChatThread({
             data-testid="issue-chat-composer-dock"
             className="sticky bottom-(--sz-calc-8) z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
           >
+            <ScrollToBottom placement="composer" />
             <IssueChatComposer
               ref={composerRef}
               onImageUpload={imageUploadHandler}

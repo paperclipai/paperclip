@@ -116,7 +116,6 @@ import { ImageGalleryModal, type GalleryMediaItem } from "../components/ImageGal
 import { FileViewerProvider, useRequiredFileViewer } from "../context/FileViewerContext";
 import { FileViewerSheet } from "../components/FileViewerSheet";
 import { ArtifactFileChip } from "../components/ArtifactFileChip";
-import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { ProductivityReviewBadge } from "../components/ProductivityReviewBadge";
@@ -5038,7 +5037,6 @@ export function IssueDetail() {
           onPromptOpenChange={setFileViewerPromptOpen}
         />
       ) : null}
-      <ScrollToBottom />
     </div>
     </FileViewerProvider>
   );

@@ -33,9 +33,8 @@ function distanceFromBottom(target: ReturnType<typeof resolveScrollTarget>) {
  * Floating scroll-to-bottom button that follows the active page scroller.
  * On desktop that is `#main-content`; on mobile it falls back to window/page scroll.
  */
-export function ScrollToBottom() {
+export function ScrollToBottom({ placement = "viewport" }: { placement?: "composer" | "viewport" }) {
   const [visible, setVisible] = useState(false);
-  const { panelVisible, panelContent } = usePanel();
 
   useEffect(() => {
     const check = () => {
@@ -70,12 +69,39 @@ export function ScrollToBottom() {
 
   if (!visible) return null;
 
+  if (placement === "composer") {
+    return (
+      <ScrollToBottomButton
+        onClick={scroll}
+        className="absolute bottom-full left-1/2 -translate-x-1/2 transition-colors"
+      />
+    );
+  }
+
+  return <ViewportScrollToBottomButton onClick={scroll} />;
+}
+
+function ViewportScrollToBottomButton({ onClick }: { onClick: () => void }) {
+  const { panelVisible, panelContent } = usePanel();
+
+  return (
+    <ScrollToBottomButton
+      onClick={onClick}
+      className={cn(
+        "fixed bottom-(--sz-calc-21) right-6 transition-(--tp-background-color-right) md:bottom-6",
+        panelVisible && panelContent && "md:right-(--sz-calc-22)",
+      )}
+    />
+  );
+}
+
+function ScrollToBottomButton({ onClick, className }: { onClick: () => void; className: string }) {
   return (
     <button
-      onClick={scroll}
+      onClick={onClick}
       className={cn(
-        "fixed bottom-(--sz-calc-21) right-6 z-40 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background shadow-md hover:bg-accent transition-(--tp-background-color-right) duration-200 md:bottom-6",
-        panelVisible && panelContent && "md:right-(--sz-calc-22)",
+        "z-40 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background shadow-md hover:bg-accent duration-200",
+        className,
       )}
       aria-label="Scroll to bottom"
     >
