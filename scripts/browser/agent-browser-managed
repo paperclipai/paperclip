@@ -40,12 +40,58 @@ unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_RESTORE
 safe_profile="$(printf '%s' "$PROFILE_NAME" | tr -c 'a-zA-Z0-9._-' '_')"
 profile_dir="$PROFILE_ROOT/$safe_profile"
 state_path="$profile_dir/agent-browser-state.json"
+camoufox_state_path="$profile_dir/camoufox-state.json"
 if [ -n "${AGENT_BROWSER_ENCRYPTION_KEY:-}" ]; then
   state_path="$state_path.enc"
 fi
 lock_dir="$profile_dir/.state-lock"
 mkdir -p "$profile_dir"
 chmod 700 "$profile_dir" 2>/dev/null || true
+
+# Every command for an issue talks to the same browser daemon. Serialize the
+# complete load/action/save cycle so overlapping agent shell calls cannot race
+# the daemon, invalidate snapshot refs, or render an unrelated empty page.
+issue_identity="${AGENT_BROWSER_SESSION:-${PAPERCLIP_BROWSER_SCOPE_ID:-${PAPERCLIP_RUN_ID:-manual}}}"
+safe_issue="$(printf '%s' "$issue_identity" | tr -c 'a-zA-Z0-9._-' '_')"
+command_lock_root="${AGENT_BROWSER_SOCKET_DIR:-${RUNTIME_HOME:-/tmp}}/.paperclip-command-locks"
+command_lock_dir="$command_lock_root/$safe_issue"
+mkdir -p "$command_lock_root"
+chmod 700 "$command_lock_root" 2>/dev/null || true
+
+command_lock_held=false
+acquire_command_lock() {
+  command_waited=0
+  while ! mkdir "$command_lock_dir" 2>/dev/null; do
+    owner_pid="$(cat "$command_lock_dir/pid" 2>/dev/null || printf '0')"
+    case "$owner_pid" in
+      ''|*[!0-9]*) owner_pid=0 ;;
+    esac
+    if [ "$owner_pid" -gt 0 ] && ! kill -0 "$owner_pid" 2>/dev/null; then
+      rm -rf "$command_lock_dir" 2>/dev/null || true
+      continue
+    fi
+    lock_created="$(stat -c %Y "$command_lock_dir" 2>/dev/null || printf '0')"
+    now="$(date +%s)"
+    if [ "$owner_pid" -eq 0 ] && [ "$lock_created" -gt 0 ] && [ $((now - lock_created)) -gt 5 ]; then
+      rm -rf "$command_lock_dir" 2>/dev/null || true
+      continue
+    fi
+    if [ "$command_waited" -ge 180 ]; then
+      echo "[paperclip-browser] issue browser '$safe_issue' is still busy after 180 seconds" >&2
+      return 75
+    fi
+    sleep 1
+    command_waited=$((command_waited + 1))
+  done
+  printf '%s\n' "$$" > "$command_lock_dir/pid"
+  command_lock_held=true
+}
+release_command_lock() {
+  if [ "$command_lock_held" = true ]; then
+    rm -rf "$command_lock_dir" 2>/dev/null || true
+    command_lock_held=false
+  fi
+}
 
 lock_held=false
 acquire_lock() {
@@ -73,7 +119,11 @@ release_lock() {
     lock_held=false
   fi
 }
-trap release_lock EXIT HUP INT TERM
+cleanup_locks() {
+  release_lock
+  release_command_lock
+}
+trap cleanup_locks EXIT HUP INT TERM
 
 save_shared_state() {
   temporary_base="$profile_dir/.agent-browser-state.$$.json"
@@ -102,17 +152,52 @@ case "$first:$second" in
     ;;
 esac
 
-if [ "$sync_state" = true ] && [ -s "$state_path" ]; then
+if [ "$sync_state" = true ]; then
+  acquire_command_lock || exit $?
+fi
+
+# A Camoufox fallback is a provider change, not a different browser identity.
+# If it produced newer cookies, merge them into the native issue daemon before
+# the next action and then persist the combined company/project profile.
+import_camoufox=false
+if [ "$sync_state" = true ] && [ -s "$camoufox_state_path" ]; then
+  if [ ! -s "$state_path" ] || [ "$camoufox_state_path" -nt "$state_path" ]; then
+    import_camoufox=true
+  fi
+fi
+
+if [ "$sync_state" = true ] && { [ -s "$state_path" ] || [ "$import_camoufox" = true ]; }; then
   acquire_lock || exit $?
   # `state load` merges into an already-running issue daemon.
-  if [ "$first" = "open" ]; then
+  if [ "$first" = "open" ] || [ "$first" = "paperclip-sync-camoufox" ]; then
     # Explicitly start the isolated daemon before loading. This also works on
     # agent-browser releases where AGENT_BROWSER_STATE launch loading is late
     # or incomplete, then the caller's real `open <url>` uses the same daemon.
     "$REAL_AGENT_BROWSER" open >/dev/null 2>&1 || true
   fi
-  "$REAL_AGENT_BROWSER" state load "$state_path" >/dev/null 2>&1 || true
+  if [ -s "$state_path" ]; then
+    "$REAL_AGENT_BROWSER" state load "$state_path" >/dev/null 2>&1 || true
+  fi
+  if [ "$import_camoufox" = true ]; then
+    "$REAL_AGENT_BROWSER" state load "$camoufox_state_path" >/dev/null 2>&1 || true
+  fi
   release_lock
+fi
+
+if [ "$first" = "paperclip-sync-camoufox" ]; then
+  sync_url="${2:-about:blank}"
+  case "$sync_url" in
+    http://*|https://*|about:blank) ;;
+    *) echo "[paperclip-browser] invalid Camoufox sync URL" >&2; exit 64 ;;
+  esac
+  "$REAL_AGENT_BROWSER" open "$sync_url" >/dev/null
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    acquire_lock || exit $?
+    save_shared_state || true
+    release_lock
+  fi
+  exit "$status"
 fi
 
 if [ "$sync_state" = true ] && [ "$first" = "close" ]; then

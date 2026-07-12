@@ -31,6 +31,8 @@ agent-browser screenshot --annotate
 
 Paperclip renders commands containing `agent-browser` or `camoufox` as browser activity inside the live run segment attached to the issue. Do not hide a long browser journey inside one opaque shell script.
 
+Run browser commands sequentially and wait for each command to finish before starting the next one. Snapshot references belong to the page state that produced them; overlapping `open`, `snapshot`, and `click` calls can invalidate those references even though Paperclip protects the issue daemon with a command queue.
+
 Existing automation scripts may be read for selectors and workflow knowledge, but they do not satisfy an explicit live-browser request. If managed navigation fails, report the blocker; never silently fall back to an invisible custom browser.
 
 ## Scope and persistent login state
@@ -80,7 +82,9 @@ with Camoufox(headless="virtual", humanize=True) as browser:
     print(page.title())
 ```
 
-Keep reusable fallback scripts under the persistent agent or project workspace, never `/tmp`. The managed launcher stores Camoufox state at `/paperclip/browser-profiles/<profile>/camoufox-state.json` and a current screenshot under `/paperclip/browser-artifacts`. Camoufox commands and screenshots appear as issue activity, but Camoufox does not feed agent-browser's continuous WebSocket live viewer. Camoufox fingerprinting can reduce automation signals but does not guarantee Cloudflare access.
+Keep reusable fallback scripts under the persistent agent or project workspace, never `/tmp`. The managed launcher stores Camoufox state at `/paperclip/browser-profiles/<profile>/camoufox-state.json`, copies its cookies into the issue's native agent-browser daemon, navigates that live viewport to the resulting URL, and stores a current screenshot under `/paperclip/browser-artifacts`. Therefore an authenticated Camoufox result and the embedded live browser must show the same profile state. Do not claim the fallback succeeded when its JSON reports `nativeSync: false`.
+
+Prefer `paperclip-camoufox` over a custom Python launcher. If a multi-step custom Camoufox script is unavoidable, it must save Playwright storage state to the selected profile's exact `camoufox-state.json` path and then run `agent-browser paperclip-sync-camoufox <current-url>` before reporting completion. A screenshot alone does not synchronize the native viewer.
 
 Run Camoufox scripts with `/opt/camoufox/bin/python`; the `camoufox` command is available for `fetch`, `path`, `server`, and diagnostic operations.
 

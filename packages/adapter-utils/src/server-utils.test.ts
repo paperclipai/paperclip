@@ -529,6 +529,8 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       "never pass agent-browser session/profile/state/CDP/provider overrides or override HOME",
     );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Run managed browser commands sequentially");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("synchronize its saved cookies");
   });
 
   it("adds a hard managed-browser gate when a board comment requests live navigation", () => {
@@ -552,6 +554,8 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("custom or reusable `launch.js`");
     expect(prompt).toContain("uploaded screenshots as a substitute");
     expect(prompt).toContain("Never pass `--session`, `--session-name`, `--profile`, `--state`");
+    expect(prompt).toContain("Run browser actions sequentially");
+    expect(prompt).toContain("synchronized into the same issue's native live viewer");
   });
 
   it("adds the execution contract to scoped wake prompts", () => {

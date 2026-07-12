@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 
 from camoufox.sync_api import Camoufox
@@ -36,6 +37,18 @@ with Camoufox(headless="virtual", humanize=True, persistent_context=False) as br
     context.storage_state(path=str(temporary_state))
     temporary_state.replace(state_path)
     state_path.chmod(0o600)
+    native_sync = False
+    try:
+        synced = subprocess.run(
+            ["agent-browser", "paperclip-sync-camoufox", page.url],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+            check=False,
+        )
+        native_sync = synced.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        native_sync = False
     print(json.dumps({
         "provider": "camoufox",
         "mode": "virtual-headful",
@@ -44,4 +57,5 @@ with Camoufox(headless="virtual", humanize=True, persistent_context=False) as br
         "screenshot": str(screenshot_path),
         "profile": profile,
         "scope": scope,
+        "nativeSync": native_sync,
     }))
