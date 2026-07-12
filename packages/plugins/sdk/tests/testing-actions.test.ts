@@ -73,6 +73,30 @@ describe("createTestHarness action context", () => {
   });
 });
 
+describe("createTestHarness managed routines", () => {
+  it("preserves declared activity gate settings", async () => {
+    const harness = createTestHarness({
+      manifest: {
+        ...manifest,
+        capabilities: ["routines.managed"],
+        routines: [{
+          routineKey: "quiet-watcher",
+          title: "Quiet watcher",
+          activityGatePolicy: "require_external_activity",
+          activityGateScope: "project",
+        }],
+      },
+    });
+
+    const resolved = await harness.ctx.routines.managed.reconcile("quiet-watcher", "company-1");
+
+    expect(resolved.routine).toMatchObject({
+      activityGatePolicy: "require_external_activity",
+      activityGateScope: "project",
+    });
+  });
+});
+
 describe("createTestHarness issue interactions", () => {
   it("creates request_checkbox_confirmation interactions through the typed host helper", async () => {
     const harness = createTestHarness({
