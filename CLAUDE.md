@@ -44,7 +44,7 @@ Node.js 20+, Express, TypeScript (ES2023/NodeNext), Drizzle ORM, React 19, Vite,
 5. **DB changes.** Edit schema -> export from index.ts -> `pnpm db:generate` -> `pnpm -r typecheck`.
 6. **Modes.** `local_trusted` (loopback, no login) | `authenticated/private` (LAN/Tailscale) | `authenticated/public` (internet).
 7. **No lockfile commits.** CI owns `pnpm-lock.yaml`.
-8. **`gh` needs `--repo adacovsk/paperclip`.** `origin` here is `adacovsk/paperclip`, but bare `gh` (`gh pr create`/`merge`/`repo view`) resolves this dir to `paperclipai/paperclip` and fails with `No commits between master and <branch>`. Always pass `--repo adacovsk/paperclip` explicitly; default branch is `master`.
+8. **Never PR onto `paperclipai/paperclip` (upstream).** This fork (`adacovsk/paperclip`, remote `origin`) has diverged from upstream — hundreds of commits each way — so upstream is a *different codebase*, not a merge target. All work integrates into `adacovsk/paperclip:master` (what the local instance and every operator worktree track). **Always pass `--repo adacovsk/paperclip` to every `gh` command** (`pr create`/`merge`/`view`/`repo view`). Bare `gh` resolves this dir to the parent `paperclipai/paperclip` and will *silently open the PR against upstream* (it does not reliably fail — it succeeds against the wrong repo, then shows as CONFLICTING because upstream rewrote the files). If you ever find a PR of ours open on `paperclipai/*`, it was mis-targeted — close it and recreate with `--repo adacovsk/paperclip`. Default branch is `master`.
 
 ## Done When
 
