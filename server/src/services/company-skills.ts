@@ -103,6 +103,7 @@ type CompanySkillListDbRow = Pick<
   | "metadata"
   | "createdAt"
   | "updatedAt"
+  | "lastUsedAt"
 >;
 type CompanySkillListRow = Pick<
   CompanySkill,
@@ -135,6 +136,7 @@ type CompanySkillListRow = Pick<
   | "metadata"
   | "createdAt"
   | "updatedAt"
+  | "lastUsedAt"
 >;
 type CompanySkillReferenceRow = Pick<
   CompanySkillRow,
@@ -334,6 +336,7 @@ function selectCompanySkillColumns() {
     metadata: companySkills.metadata,
     createdAt: companySkills.createdAt,
     updatedAt: companySkills.updatedAt,
+    lastUsedAt: companySkills.lastUsedAt,
   };
 }
 
@@ -1317,6 +1320,7 @@ function toCompanySkill(row: CompanySkillRow): CompanySkill {
     forkCount: Math.max(0, row.forkCount ?? 0),
     currentVersionId: row.currentVersionId ?? null,
     metadata: isPlainRecord(row.metadata) ? row.metadata : null,
+    lastUsedAt: row.lastUsedAt ?? null,
   };
 }
 
@@ -1345,6 +1349,7 @@ function toCompanySkillListRow(row: CompanySkillListDbRow): CompanySkillListRow 
     forkCount: Math.max(0, row.forkCount ?? 0),
     currentVersionId: row.currentVersionId ?? null,
     metadata: isPlainRecord(row.metadata) ? row.metadata : null,
+    lastUsedAt: row.lastUsedAt ?? null,
   };
 }
 
@@ -2168,6 +2173,7 @@ function toCompanySkillListItem(skill: CompanySkillListRow, attachedAgentCount: 
     currentVersionId: skill.currentVersionId,
     createdAt: skill.createdAt,
     updatedAt: skill.updatedAt,
+    lastUsedAt: skill.lastUsedAt,
     attachedAgentCount,
     editable: source.editable,
     editableReason: source.editableReason,
@@ -4083,6 +4089,7 @@ export function companySkillService(db: Db) {
       },
       createdAt: new Date(),
       updatedAt: new Date(),
+      lastUsedAt: null,
     });
   }
 
@@ -4687,6 +4694,14 @@ export function companySkillService(db: Db) {
     return skill;
   }
 
+  async function touchLastUsed(companyId: string, skillId: string): Promise<CompanySkill | null> {
+    await db
+      .update(companySkills)
+      .set({ lastUsedAt: new Date() })
+      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, skillId)));
+    return getById(companyId, skillId);
+  }
+
   return {
     list,
     listFull,
@@ -4719,6 +4734,7 @@ export function companySkillService(db: Db) {
     updateFile,
     createLocalSkill,
     deleteSkill,
+    touchLastUsed,
     importFromSource,
     installFromCatalog,
     scanProjectWorkspaces,

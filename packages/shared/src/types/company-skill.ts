@@ -50,6 +50,7 @@ export interface CompanySkill {
   metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
+  lastUsedAt: Date | null;
 }
 
 export interface CompanySkillListItem {
@@ -81,6 +82,7 @@ export interface CompanySkillListItem {
   currentVersionId: string | null;
   createdAt: Date;
   updatedAt: Date;
+  lastUsedAt: Date | null;
   attachedAgentCount: number;
   editable: boolean;
   editableReason: string | null;

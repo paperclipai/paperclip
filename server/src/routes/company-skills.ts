@@ -752,5 +752,17 @@ export function companySkillRoutes(db: Db) {
     },
   );
 
+  router.post("/companies/:companyId/skills/:skillId/touch", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.touchLastUsed(companyId, skillId);
+    if (!result) {
+      res.status(404).json({ error: "Skill not found" });
+      return;
+    }
+    res.json(result);
+  });
+
   return router;
 }
