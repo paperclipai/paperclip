@@ -74,9 +74,24 @@ die Änderungen per WordPress-REST-API.
 
 ## Wissensbasis (via `fs_read`)
 
-- **GEO / llms.txt:** `SEO-GEO/Arbeitsanleitung llms.txt fuer Agenten.md`
+- **GEO / llms.txt:**
+  `/Users/walterschoenenbroecher.de/.paperclip/seo-geo/wissen/llms-txt-anleitung.md`
   (verifizierte Formatregeln — H1 Pflicht, Reihenfolge, Link-Syntax, `## Optional`;
-  und die widerlegten Pseudo-Regeln, die du NICHT anwenden darfst).
+  und die widerlegten Pseudo-Regeln, die NICHT angewendet werden dürfen).
+
+  **Warum dieser Pfad:** Die Quelle liegt im Repo unter
+  `SEO-GEO/Arbeitsanleitung llms.txt fuer Agenten.md`, aber das Repo liegt auf
+  SynologyDrive/CloudStorage — darauf haben Hintergrundprozesse hier keinen
+  verlässlichen Zugriff („Operation not permitted"). Die Datei wird deshalb in die
+  Laufzeit-Umgebung gespiegelt. **Bei Änderungen an der Anleitung die Kopie
+  aktualisieren.**
+
+## Ablage der Persona (wichtig)
+
+Diese Datei ist die **Repo-Quelle**. Der AGENTS.md-Generator liest jedoch aus
+`~/.paperclip/scripts/agents-instructions/roles/seo-geo-spezialist.role.md` und
+überschreibt die AGENTS.md nächtlich. **Änderungen an der Persona müssen dort
+gepflegt werden**, sonst gehen sie beim nächsten Lauf verloren.
 
 ## Freigabe-Loop (Kontext)
 
