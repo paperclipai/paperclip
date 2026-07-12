@@ -18,12 +18,29 @@ import { parentCtxFromServerTrace } from "./trace-utils.js";
 import { mapProvider } from "../provider-map.js";
 import { METRIC_NAMES } from "../constants.js";
 
-// Debounce for fallback API lookups during cold starts (issue #5 from review).
-// Prevents repeated companies.list + issues.list calls when multiple runs
-// start before agentIssueMap is populated.
-let lastFallbackLookupMs = 0;
-let lastCostFallbackLookupMs = 0;
+// Per-agent debounce for fallback API lookups during cold starts (issue #5 from
+// review). Prevents repeated companies.list + issues.list calls when the SAME
+// agent starts multiple runs before agentIssueMap is populated. Keyed by agentId
+// (PR #8477 review): the fallback query is per-agent (assigneeAgentId), so a
+// module-global debounce would starve concurrent agents — a second agent starting
+// within the window got skipped and exported spans with empty issue context.
+const lastFallbackLookupMsByAgent = new Map<string, number>();
+const lastCostFallbackLookupMsByAgent = new Map<string, number>();
 const FALLBACK_LOOKUP_DEBOUNCE_MS = 10_000; // 10 seconds
+
+/**
+ * Returns true (and records `now`) when this agent's fallback debounce window has
+ * elapsed, so each agent gets its own single lookup independent of other agents.
+ */
+function shouldRunFallbackLookup(
+  byAgent: Map<string, number>,
+  agentId: string,
+  now: number,
+): boolean {
+  if (now - (byAgent.get(agentId) ?? 0) < FALLBACK_LOOKUP_DEBOUNCE_MS) return false;
+  byAgent.set(agentId, now);
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // agent.run.started — create run span (child of issue span when available)
@@ -63,10 +80,10 @@ export async function handleRunStartedTraces(
   // Fallback: when agentIssueMap is empty (issue was already in_progress before
   // this run started), query the agent's assigned issue to populate context.
   // The agent.run.started event may not include companyId, so look it up first.
-  // Debounced to avoid repeated API calls during cold starts with multiple runs.
+  // Debounced per-agent to avoid repeated API calls when one agent starts multiple
+  // runs in a cold-start window, without blocking other agents' own lookups.
   const now = Date.now();
-  if (!agentIssue && now - lastFallbackLookupMs >= FALLBACK_LOOKUP_DEBOUNCE_MS) {
-    lastFallbackLookupMs = now;
+  if (!agentIssue && shouldRunFallbackLookup(lastFallbackLookupMsByAgent, agentId, now)) {
     try {
       let companyId = event.companyId || "";
       if (!companyId) {
@@ -613,8 +630,7 @@ export async function handleCostTraces(
   // Fallback: when agentIssueMap is empty (e.g. after plugin restart or missed
   // issue.updated event), query the API for the agent's active issue.
   const now = Date.now();
-  if (!agentIssue && agentId && now - lastCostFallbackLookupMs >= FALLBACK_LOOKUP_DEBOUNCE_MS) {
-    lastCostFallbackLookupMs = now;
+  if (!agentIssue && agentId && shouldRunFallbackLookup(lastCostFallbackLookupMsByAgent, agentId, now)) {
     try {
       let companyId = event.companyId || "";
       if (!companyId) {
