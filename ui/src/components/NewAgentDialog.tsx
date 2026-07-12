@@ -27,6 +27,7 @@ import { isVisualAdapterChoice } from "../adapters/metadata";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { useToast } from "../context/ToastContext";
+import { Badge } from "@/components/ui/badge";
 
 /**
  * Adapter types that are suitable for agent creation (excludes internal
@@ -226,7 +227,7 @@ export function NewAgentDialog() {
       <DialogContent
         showCloseButton={false}
         className={cn(
-          "max-h-[min(calc(100dvh-2rem),46rem)] p-0 gap-0 overflow-hidden flex flex-col",
+          "max-h-(--sz-calc-16) p-0 gap-0 overflow-hidden flex flex-col",
           mode === "invite" || mode === "prompt" ? "sm:max-w-2xl" : "sm:max-w-md",
         )}
       >
@@ -311,13 +312,13 @@ export function NewAgentDialog() {
                     }}
                   >
                     {opt.recommended && (
-                      <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
+                      <Badge variant="ghost" className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-(length:--text-nano) font-semibold px-1.5 leading-none">
                         Recommended
-                      </span>
+                      </Badge>
                     )}
                     <opt.icon className="h-4 w-4" />
                     <span className="font-medium">{opt.label}</span>
-                    <span className="text-muted-foreground text-[10px]">
+                    <span className="text-muted-foreground text-(length:--text-nano)">
                       {opt.desc}
                     </span>
                   </button>
@@ -395,7 +396,7 @@ export function NewAgentDialog() {
               <Textarea
                 readOnly
                 value={latestAgentPrompt ?? ""}
-                className="h-[24rem] resize-y font-mono text-xs"
+                className="h-(--sz-24rem) resize-y font-mono text-xs"
               />
               <Button
                 size="sm"

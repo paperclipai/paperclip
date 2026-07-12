@@ -126,6 +126,7 @@ describe("codex remote environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "codex_local",
       config: {
+        engine: "cli",
         command: "codex",
       },
       executionTarget: remoteTarget,
@@ -199,6 +200,7 @@ describe("codex remote environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "codex_local",
       config: {
+        engine: "cli",
         command: "codex",
         env: {
           OPENAI_API_KEY: "sk-test",
@@ -249,7 +251,7 @@ describe("codex remote environment diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "codex_local",
-      config: { command: "codex" },
+      config: { engine: "cli", command: "codex" },
       executionTarget: remoteTarget,
       environmentName: "QA Daytona",
     });

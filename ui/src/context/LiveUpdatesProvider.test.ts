@@ -100,7 +100,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
-  it("keeps heartbeat progress invalidation scoped to live run data", () => {
+  it("keeps heartbeat progress invalidation scoped away from hot list queries", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
       invalidateQueries: (input: unknown) => {
@@ -118,19 +118,19 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     );
 
     expect(invalidations).toContainEqual({
-      queryKey: queryKeys.liveRuns("company-1"),
-    });
-    expect(invalidations).toContainEqual({
-      queryKey: queryKeys.heartbeats("company-1"),
-    });
-    expect(invalidations).toContainEqual({
-      queryKey: queryKeys.agents.list("company-1"),
-    });
-    expect(invalidations).toContainEqual({
       queryKey: queryKeys.agents.detail("agent-1"),
     });
-    expect(invalidations).toContainEqual({
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.liveRuns("company-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.heartbeats("company-1"),
+    });
+    expect(invalidations).not.toContainEqual({
       queryKey: queryKeys.heartbeats("company-1", "agent-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.agents.list("company-1"),
     });
     expect(invalidations).not.toContainEqual({
       queryKey: queryKeys.dashboard("company-1"),
@@ -438,6 +438,47 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
     expect(invalidations).toContainEqual({
       queryKey: ["routines", "document-annotations", "routine-1", "description"],
+    });
+  });
+
+  it("refreshes case document annotation caches when case annotation activity arrives", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "case",
+        entityId: "case-1",
+        action: "case.document_annotation_comment_added",
+        actorType: "user",
+        actorId: "user-2",
+        details: {
+          documentKey: "body",
+          threadId: "thread-1",
+          commentId: "comment-1",
+        },
+      },
+      { userId: "user-1", agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.cases.list("company-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.cases.detail("case-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.cases.events("case-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: ["cases", "document-annotations", "case-1", "body"],
     });
   });
 

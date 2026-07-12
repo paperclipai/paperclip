@@ -375,8 +375,11 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
       throw forbidden("Instance admin required");
     }
-    const company = await svc.create(req.body);
     const ownerPrincipalId = req.actor.userId ?? "local-board";
+    const company = await svc.create({
+      ...req.body,
+      defaultResponsibleUserId: req.body.defaultResponsibleUserId ?? ownerPrincipalId,
+    });
     await access.ensureMembership(company.id, "user", ownerPrincipalId, "owner", "active");
     await access.ensureRoleDefaultGrants(
       company.id,
