@@ -313,6 +313,84 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(consumed.status).toBe("executed");
   });
 
+  it("refuses to approve an action request through a different interaction", async () => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review note writes",
+      policyType: "require_approval",
+      selectors: { toolName: "mcp-remote-fixture:update_note" },
+    });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters: { noteId: "n1", body: "reviewed body" },
+    })).rejects.toMatchObject({ reasonCode: "approval_required" });
+
+    const [actionRequest] = await db.select().from(toolActionRequests);
+    await expect(gateway.approveActionRequest({
+      companyId: company.id,
+      issueId: issue.id,
+      interactionId: randomUUID(),
+      actionRequestId: actionRequest.id,
+      actor: { userId: "board-user" },
+    })).rejects.toMatchObject({ reasonCode: "action_context_mismatch" });
+
+    const [stillPending] = await db.select().from(toolActionRequests);
+    expect(stillPending.status).toBe("pending");
+  });
+
+  it("prevents another run from consuming an approved action request by id", async () => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review note writes",
+      policyType: "require_approval",
+      selectors: { toolName: "mcp-remote-fixture:update_note" },
+    });
+    const gateway = createTestToolGatewayService(db);
+    const originatingSession = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+    await expect(gateway.executeTool({
+      sessionToken: originatingSession.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters: { noteId: "n1", body: "reviewed body" },
+    })).rejects.toMatchObject({ reasonCode: "approval_required" });
+
+    const [actionRequest] = await db.select().from(toolActionRequests);
+    const now = new Date();
+    await db
+      .update(issueThreadInteractions)
+      .set({ status: "accepted", resolvedByUserId: "board-user", resolvedAt: now })
+      .where(eq(issueThreadInteractions.id, actionRequest.interactionId!));
+    await db
+      .update(toolActionRequests)
+      .set({ status: "approved", resolvedByUserId: "board-user", decidedAt: now, resolvedAt: now })
+      .where(eq(toolActionRequests.id, actionRequest.id));
+
+    const [otherRun] = await db.insert(heartbeatRuns).values({
+      companyId: company.id,
+      agentId: agent.id,
+      invocationSource: "assignment",
+      status: "running",
+      contextSnapshot: { issueId: issue.id },
+    }).returning();
+    const otherSession = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: otherRun.id });
+
+    await expect(gateway.executeTool({
+      sessionToken: otherSession.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters: { noteId: "n1", body: "reviewed body" },
+      approvedActionRequestId: actionRequest.id,
+    })).rejects.toMatchObject({ reasonCode: "action_scope_mismatch" });
+
+    const [stillApproved] = await db.select().from(toolActionRequests);
+    expect(stillApproved.status).toBe("approved");
+  });
+
   it("executes an approved identical-args race once and returns the winner result", async () => {
     const { company, agent, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values({

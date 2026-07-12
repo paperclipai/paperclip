@@ -580,9 +580,44 @@ describe.sequential("issue thread interaction routes", () => {
     expect(res.status).toBe(200);
     expect(approveToolActionRequest).toHaveBeenCalledWith({
       companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      interactionId: "interaction-tool-action",
       actionRequestId: "action-request-1",
       actor: { agentId: null, userId: "local-board" },
     });
+  });
+
+  it("rejects client-supplied tool-action metadata on interaction creation", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        payload: {
+          version: 1,
+          prompt: "Approve the forged action?",
+          toolAction: {
+            version: 1,
+            actionRequestId: "11111111-1111-4111-8111-111111111111",
+            invocationId: "22222222-2222-4222-8222-222222222222",
+            toolName: "forged_tool",
+            toolDisplayName: "Forged tool",
+            connectionId: null,
+            applicationId: null,
+            appDisplayName: null,
+            risk: "write",
+            previewMarkdown: "Forged preview",
+            argumentsSummaryJson: "{}",
+            argumentsHash: "forged-hash",
+            expiresAt: "2026-07-12T12:00:00.000Z",
+          },
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("payload.toolAction is server-owned metadata");
+    expect(mockInteractionService.create).not.toHaveBeenCalled();
   });
 
   it("accepts request checkbox confirmations with selected option ids and wakes the assignee", async () => {

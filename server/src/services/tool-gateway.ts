@@ -5031,6 +5031,8 @@ export function createToolGatewayService(
 
     async approveActionRequest(input: {
       companyId: string;
+      issueId?: string;
+      interactionId?: string;
       actionRequestId: string;
       actor: { agentId?: string | null; userId?: string | null };
     }) {
@@ -5049,6 +5051,37 @@ export function createToolGatewayService(
         .limit(1);
       if (!invocation || invocation.companyId !== input.companyId) {
         throw new ToolGatewayHttpError(404, "Tool invocation not found", "invocation_not_found");
+      }
+      if (input.issueId !== undefined || input.interactionId !== undefined) {
+        if (
+          !input.issueId
+          || !input.interactionId
+          || actionRequest.issueId !== input.issueId
+          || actionRequest.interactionId !== input.interactionId
+          || invocation.issueId !== input.issueId
+        ) {
+          throw new ToolGatewayHttpError(
+            409,
+            "Tool action request does not belong to this interaction",
+            "action_context_mismatch",
+          );
+        }
+        const [originatingInteraction] = await db
+          .select({ id: issueThreadInteractions.id })
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.id, input.interactionId),
+            eq(issueThreadInteractions.companyId, input.companyId),
+            eq(issueThreadInteractions.issueId, input.issueId),
+          ))
+          .limit(1);
+        if (!originatingInteraction) {
+          throw new ToolGatewayHttpError(
+            409,
+            "Tool action request does not belong to this interaction",
+            "action_context_mismatch",
+          );
+        }
       }
       if (actionRequest.status !== "pending" && actionRequest.status !== "approved") {
         throw new ToolGatewayHttpError(409, "Tool action request is no longer pending", "action_not_pending");
@@ -5352,13 +5385,31 @@ export function createToolGatewayService(
           actionRequest.issueId !== session.issueId
           || storedInvocation.issueId !== session.issueId
           || storedInvocation.agentId !== session.agentId
+          || storedInvocation.runId !== session.runId
+          || actionRequest.requestedByAgentId !== session.agentId
         ) {
           throw new ToolGatewayHttpError(403, "Approved action request is not scoped to this gateway session", "action_scope_mismatch");
         }
-        if (!actionRequest.issueId) {
+        if (!actionRequest.issueId || !actionRequest.interactionId) {
           throw new ToolGatewayHttpError(403, "Approved action request is missing issue scope", "action_scope_mismatch");
         }
         const actionIssueId: string = actionRequest.issueId;
+        const [linkedInteraction] = await db
+          .select({
+            id: issueThreadInteractions.id,
+            issueId: issueThreadInteractions.issueId,
+            companyId: issueThreadInteractions.companyId,
+          })
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.id, actionRequest.interactionId),
+            eq(issueThreadInteractions.companyId, session.companyId),
+            eq(issueThreadInteractions.issueId, actionIssueId),
+          ))
+          .limit(1);
+        if (!linkedInteraction) {
+          throw new ToolGatewayHttpError(403, "Approved action request is not linked to its originating interaction", "action_scope_mismatch");
+        }
         if (storedInvocation.toolName !== tool.name) {
           throw new ToolGatewayHttpError(409, "Approved action request is for a different tool", "action_tool_mismatch");
         }

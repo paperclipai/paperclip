@@ -2446,6 +2446,8 @@ export function issueRoutes(
     issueListDiagnostics?: IssueListDiagnostics;
     approveToolActionRequest?: (input: {
       companyId: string;
+      issueId: string;
+      interactionId: string;
       actionRequestId: string;
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
@@ -8939,6 +8941,9 @@ export function issueRoutes(
     const actor = getActorInfo(req);
     const agentSourceRunId = req.actor.type === "agent" ? requireAgentRunId(req, res) : null;
     if (req.actor.type === "agent" && !agentSourceRunId) return;
+    if (req.body.kind === "request_confirmation" && req.body.payload?.toolAction !== undefined) {
+      throw unprocessable("payload.toolAction is server-owned metadata and cannot be supplied when creating an interaction");
+    }
 
     const interaction = await issueThreadInteractionService(db).create(issue, {
       ...req.body,
@@ -8999,6 +9004,8 @@ export function issueRoutes(
       ) {
         await opts.approveToolActionRequest({
           companyId: issue.companyId,
+          issueId: issue.id,
+          interactionId: interaction.id,
           actionRequestId: toolAction.actionRequestId,
           actor: {
             agentId: actor.agentId,
