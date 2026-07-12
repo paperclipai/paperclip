@@ -204,6 +204,39 @@ describe("AuditTab", () => {
     expect(container.textContent).toContain("zapier-request-1");
   });
 
+  it("explains when permitted MCP connections were not installed for a run", async () => {
+    listActivityMock.mockResolvedValue({
+      events: [event({
+        action: "tool_gateway.runtime_mcp_delivery",
+        normalizedOutcome: "unknown",
+        toolDisplayName: null,
+        appDisplayName: null,
+        connectionDisplayName: null,
+        applicationDisplayName: null,
+        connectionId: null,
+        applicationId: null,
+        details: {
+          reasonCode: "permitted_connections_not_installed",
+          agentId: "agent-1",
+          runId: "run-1",
+          deliveredServerCount: 0,
+          permittedNotInstalledCount: 1,
+          permittedNotInstalledConnections: [{ id: "conn-zapier", name: "Zapier" }],
+        },
+      })],
+      nextCursor: null,
+    });
+    await render();
+
+    expect(container.textContent).toContain("Fable's run received 0 MCP servers — 1 permitted connection not installed");
+    await clickButton("received 0 MCP servers");
+    expect(container.textContent).toContain("Permitted connections were not installed");
+    await clickButton("Details");
+    await flushReact();
+    expect(container.textContent).toContain("Delivered MCP servers0");
+    expect(container.querySelector('a[href="/apps/conn-zapier/permissions"]')?.textContent).toBe("Zapier");
+  });
+
   it("shows the true-empty state when there is no activity", async () => {
     listActivityMock.mockResolvedValue({ events: [], nextCursor: null });
     await render();

@@ -53,6 +53,7 @@ export function policyGovernsAgent(policy: ToolPolicy, agentId: string): boolean
 }
 
 function InstalledAppsSection({
+  agentId,
   agentName,
   connections,
   draft,
@@ -63,6 +64,7 @@ function InstalledAppsSection({
   error,
   onChange,
 }: {
+  agentId: string;
   agentName: string;
   connections: ToolConnection[];
   draft: Record<string, boolean>;
@@ -99,32 +101,51 @@ function InstalledAppsSection({
             {connections.map((connection) => {
               const installState = installStateFrom(connection.installs);
               const installedForAll = installState.onAll;
-              const checked = installedForAll || (draft[connection.id] ?? false);
+              const checked = installedForAll || (draft[connection.id] ?? installState.agentIds.has(agentId));
               const permitted = permittedConnectionIds.has(connection.id);
               const rowPending = pendingConnectionId === connection.id;
               return (
-                <label key={connection.id} className="flex items-start gap-3 px-3 py-3">
-                  <Checkbox
-                    checked={checked}
-                    disabled={installedForAll || rowPending}
-                    aria-label={`Install ${connection.name} on ${agentName}`}
-                    onCheckedChange={(next) => onChange(connection.id, Boolean(next))}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="flex flex-wrap items-center gap-2">
-                      <span className="truncate text-sm font-medium text-foreground">{connection.name}</span>
-                      <InstallBadge installed={checked} installedForAll={installedForAll} permitted={permitted} />
-                      {rowPending ? <span className="text-xs text-muted-foreground">Saving...</span> : null}
+                <div key={connection.id} className="space-y-2 px-3 py-3">
+                  <label className="flex items-start gap-3">
+                    <Checkbox
+                      checked={checked}
+                      disabled={installedForAll || rowPending}
+                      aria-label={`Install ${connection.name} on ${agentName}`}
+                      onCheckedChange={(next) => onChange(connection.id, Boolean(next))}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex flex-wrap items-center gap-2">
+                        <span className="truncate text-sm font-medium text-foreground">{connection.name}</span>
+                        <InstallBadge installed={checked} installedForAll={installedForAll} permitted={permitted} />
+                        {rowPending ? <span className="text-xs text-muted-foreground">Saving...</span> : null}
+                      </span>
+                      <span className="mt-0.5 block text-xs text-muted-foreground">
+                        {installedForAll
+                          ? "Installed from the app page for every agent. Remove the all-agents install there."
+                          : checked
+                            ? "Loaded into this agent's runtime context."
+                            : INSTALLED_HINT}
+                      </span>
                     </span>
-                    <span className="mt-0.5 block text-xs text-muted-foreground">
-                      {installedForAll
-                        ? "Installed from the app page for every agent. Remove the all-agents install there."
-                        : checked
-                          ? "Loaded into this agent's runtime context."
-                          : INSTALLED_HINT}
-                    </span>
-                  </span>
-                </label>
+                  </label>
+                  {permitted && !checked ? (
+                    <InlineBanner
+                      tone="warning"
+                      compact
+                      className="ml-7"
+                      actions={(
+                        <Link
+                          to={`/apps/${connection.id}/permissions`}
+                          className="text-xs font-medium text-primary hover:underline"
+                        >
+                          Open permissions
+                        </Link>
+                      )}
+                    >
+                      Permitted but not installed — tools will not appear in runs.
+                    </InlineBanner>
+                  ) : null}
+                </div>
               );
             })}
           </div>
@@ -332,8 +353,13 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
   );
 
   const permittedConnectionIds = useMemo(
-    () => new Set(allowedTools.map((tool) => tool.connectionId)),
-    [allowedTools],
+    () => new Set([
+      ...(effective.data?.entries ?? [])
+        .filter((entry) => entry.effect === "include" && entry.connectionId)
+        .map((entry) => entry.connectionId!),
+      ...allowedTools.map((tool) => tool.connectionId),
+    ]),
+    [allowedTools, effective.data?.entries],
   );
   const installedAppConnections = useMemo(
     () =>
@@ -398,6 +424,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
       />
 
       <InstalledAppsSection
+        agentId={agent.id}
         agentName={agent.name}
         connections={installedAppConnections}
         draft={installDraft}

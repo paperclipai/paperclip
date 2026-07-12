@@ -89,6 +89,9 @@ function formattedArguments(details: Record<string, unknown> | null): string | u
 /** Plain-words "why" for the row expander, keyed off the reason code. */
 function plainReason(event: ToolGatewayActivityEvent): string {
   const code = detailString(event.details, "reasonCode");
+  if (code === "permitted_connections_not_installed") {
+    return "Permitted connections were not installed, so their tools were not added to this run.";
+  }
   switch (event.normalizedOutcome) {
     case "allowed":
       return "Allowed by your rules.";
@@ -156,6 +159,13 @@ function ActivityRow({
   const contentType = detailString(response, "contentType");
   const responseBytes = detailNumber(response, "bodySizeBytes");
   const upstreamRequestId = detailString(response, "upstreamRequestId");
+  const permittedNotInstalledCount = detailNumber(event.details, "permittedNotInstalledCount");
+  const permittedNotInstalledConnections = Array.isArray(event.details?.permittedNotInstalledConnections)
+    ? event.details.permittedNotInstalledConnections
+      .map(detailRecord)
+      .filter((connection): connection is Record<string, unknown> => connection !== null)
+    : [];
+  const isRuntimeMcpDeliveryDiagnostic = reasonCode === "permitted_connections_not_installed";
 
   return (
     <li className="text-sm">
@@ -170,15 +180,23 @@ function ActivityRow({
           <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
         )}
         <span className="min-w-0 flex-1">
-          <span className="block text-foreground">
-            <span className="font-medium">{who}</span> used <span className="font-medium">{action}</span>
-            {app ? (
-              <>
-                {" "}
-                in <span className="font-medium">{app}</span>
-              </>
-            ) : null}
-          </span>
+          {isRuntimeMcpDeliveryDiagnostic ? (
+            <span className="block text-foreground">
+              <span className="font-medium">{who}</span>'s run received 0 MCP servers —{" "}
+              <span className="font-medium">{permittedNotInstalledCount ?? permittedNotInstalledConnections.length}</span>{" "}
+              permitted {(permittedNotInstalledCount ?? permittedNotInstalledConnections.length) === 1 ? "connection" : "connections"} not installed
+            </span>
+          ) : (
+            <span className="block text-foreground">
+              <span className="font-medium">{who}</span> used <span className="font-medium">{action}</span>
+              {app ? (
+                <>
+                  {" "}
+                  in <span className="font-medium">{app}</span>
+                </>
+              ) : null}
+            </span>
+          )}
         </span>
         <span className="flex shrink-0 items-center gap-2 whitespace-nowrap">
           <OutcomeChip outcome={event.normalizedOutcome} />
@@ -239,6 +257,23 @@ function ActivityRow({
                 {contentType ? <DetailFact label="Content type" value={contentType} mono /> : null}
                 {responseBytes !== undefined ? <DetailFact label="Response size" value={`${responseBytes} bytes`} /> : null}
                 {upstreamRequestId ? <DetailFact label="Upstream ID" value={upstreamRequestId} mono /> : null}
+                {isRuntimeMcpDeliveryDiagnostic ? (
+                  <>
+                    <DetailFact label="Delivered MCP servers" value="0" mono />
+                    {permittedNotInstalledConnections.map((connection) => {
+                      const connectionId = detailString(connection, "id");
+                      const connectionName = detailString(connection, "name") ?? "Unnamed connection";
+                      return connectionId ? (
+                        <div key={connectionId} className="flex gap-2">
+                          <span className="shrink-0 text-muted-foreground">Not installed</span>
+                          <Link to={`/apps/${connectionId}/permissions`} className="font-medium text-primary hover:underline">
+                            {connectionName}
+                          </Link>
+                        </div>
+                      ) : null;
+                    })}
+                  </>
+                ) : null}
                 {argumentsText ? (
                   <div className="space-y-1">
                     <span className="text-muted-foreground">Parameters (redacted)</span>

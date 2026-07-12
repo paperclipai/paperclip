@@ -24,6 +24,7 @@ const TOOL_GATEWAY_ACTIONS = [
   "tool_gateway.call_failed",
   "tool_gateway.call_deferred",
   "tool_gateway.approval_requested",
+  "tool_gateway.runtime_mcp_delivery",
 ];
 
 const TOOL_GATEWAY_WINDOWS: Record<string, number> = {

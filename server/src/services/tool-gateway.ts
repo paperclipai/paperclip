@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNull, lte, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -3918,6 +3918,38 @@ export function createToolGatewayService(
   }
 
   return {
+    async recordRuntimeMcpDeliveryDiagnostic(input: {
+      companyId: string;
+      agentId: string;
+      runId: string;
+      permittedNotInstalledConnections: Array<{ id: string; name: string }>;
+    }) {
+      if (input.permittedNotInstalledConnections.length === 0) return;
+      const [run] = await db
+        .select({ issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'` })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.id, input.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+        ))
+        .limit(1);
+      await writeAudit({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        runId: input.runId,
+        issueId: run?.issueId ?? null,
+        action: "tool_gateway.runtime_mcp_delivery",
+        details: {
+          decision: "diagnostic",
+          reasonCode: "permitted_connections_not_installed",
+          deliveredServerCount: 0,
+          permittedNotInstalledCount: input.permittedNotInstalledConnections.length,
+          permittedNotInstalledConnections: input.permittedNotInstalledConnections,
+        },
+      });
+    },
+
     async listNamedGateways(companyId: string): Promise<ToolMcpGatewayWithTokens[]> {
       // Archived gateways are retired — they must not appear in the list UI.
       const gateways = await db

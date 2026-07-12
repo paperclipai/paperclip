@@ -60,6 +60,7 @@ import {
   routineRuns,
   routines,
   toolMcpGateways,
+  toolConnections,
   toolProfiles,
   workspaceOperations,
 } from "@paperclipai/db";
@@ -2097,15 +2098,40 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       .map((entry) => entry.connectionId!),
     ...effective.allowedTools.map((tool) => tool.connectionId),
   ]);
+  const installedConnectionIds = new Set(effective.installedConnections.map((connection) => connection.id));
+  const permittedConnections = permittedConnectionIds.size > 0
+    ? await input.db
+      .select({
+        id: toolConnections.id,
+        name: toolConnections.name,
+        transport: toolConnections.transport,
+      })
+      .from(toolConnections)
+      .where(and(
+        eq(toolConnections.companyId, input.agent.companyId),
+        inArray(toolConnections.id, [...permittedConnectionIds]),
+      ))
+    : [];
+  const permittedNotInstalledConnections = permittedConnections
+    .filter((connection) => connection.transport === "remote_http" && !installedConnectionIds.has(connection.id))
+    .map(({ id, name }) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
   const uniqueConnections = effective.installedConnections.filter((connection) =>
     permittedConnectionIds.has(connection.id)
     && connection.status === "active"
     && connection.enabled
     && connection.transport === "remote_http"
   );
-  if (uniqueConnections.length === 0) return [];
-
   const service = createToolGatewayService(input.db);
+  if (uniqueConnections.length === 0) {
+    await service.recordRuntimeMcpDeliveryDiagnostic({
+      companyId: input.agent.companyId,
+      agentId: input.agent.id,
+      runId: input.runId,
+      permittedNotInstalledConnections,
+    });
+    return [];
+  }
   const servers: AdapterRuntimeMcpServer[] = [];
   for (const connection of uniqueConnections) {
     const profileKey = `app:${connection.id}`;
@@ -2175,6 +2201,14 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       url: `${paperclipApiBaseUrl()}/api/tool-gateway/gateways/${gateway.id}/mcp`,
       token: token.token,
       connectionId: connection.id,
+    });
+  }
+  if (servers.length === 0) {
+    await service.recordRuntimeMcpDeliveryDiagnostic({
+      companyId: input.agent.companyId,
+      agentId: input.agent.id,
+      runId: input.runId,
+      permittedNotInstalledConnections,
     });
   }
   return servers;

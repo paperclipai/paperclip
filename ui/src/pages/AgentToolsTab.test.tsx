@@ -277,6 +277,8 @@ describe("AgentToolsTab", () => {
 
     expect(container.textContent).toContain("Installed apps");
     expect(container.textContent).toContain("Permitted only");
+    expect(container.textContent).toContain("Permitted but not installed — tools will not appear in runs.");
+    expect(container.querySelector('a[href="/apps/conn-1/permissions"]')?.textContent).toBe("Open permissions");
     const installCheckbox = container.querySelector<HTMLElement>('[aria-label="Install Production GitHub on Coder"]');
     expect(installCheckbox).toBeTruthy();
     await act(async () => {

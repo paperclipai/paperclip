@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   activityLog,
   companies,
   createDb,
+  heartbeatRuns,
   toolAccessAuditEvents,
   toolApplications,
   toolConnectionInstalls,
@@ -40,6 +42,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await db.delete(toolMcpGatewayTokens);
     await db.delete(activityLog);
     await db.delete(toolAccessAuditEvents);
+    await db.delete(heartbeatRuns);
     await db.delete(toolMcpGateways);
     await db.delete(toolConnectionInstalls);
     await db.delete(toolProfileBindings);
@@ -148,5 +151,90 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       expect(token.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now() + 61 * 60 * 1000);
     }
     expect(JSON.stringify(tokens)).not.toContain(first[0]!.token);
+  });
+
+  it("audits permitted remote MCP connections that were not installed when delivery is empty", async () => {
+    const [company] = await db.insert(companies).values({
+      name: `Runtime MCP diagnostic ${randomUUID()}`,
+      issuePrefix: `RD${randomUUID().slice(0, 5).toUpperCase()}`,
+    }).returning();
+    const [agent] = await db.insert(agents).values({
+      companyId: company!.id,
+      name: "Runtime MCP Diagnostic Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company!.id,
+      applicationKey: `runtime-diagnostic-${randomUUID().slice(0, 8)}`,
+      name: "Zapier",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company!.id,
+      applicationId: application!.id,
+      name: "Zapier",
+      transport: "remote_http",
+      status: "active",
+      enabled: true,
+      config: { url: "https://zapier.example.test/mcp" },
+    }).returning();
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company!.id,
+      profileKey: `app:${connection!.id}`,
+      name: "Zapier",
+      defaultAction: "deny",
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company!.id,
+      profileId: profile!.id,
+      selectorType: "connection",
+      effect: "include",
+      applicationId: application!.id,
+      connectionId: connection!.id,
+    });
+    await db.insert(toolProfileBindings).values({
+      companyId: company!.id,
+      profileId: profile!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: company!.id,
+      agentId: agent!.id,
+      status: "running",
+      contextSnapshot: {},
+    });
+
+    const servers = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId });
+
+    expect(servers).toEqual([]);
+    const [activity] = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "tool_gateway.runtime_mcp_delivery"));
+    expect(activity).toMatchObject({
+      companyId: company!.id,
+      agentId: agent!.id,
+      runId,
+      details: expect.objectContaining({
+        reasonCode: "permitted_connections_not_installed",
+        deliveredServerCount: 0,
+        permittedNotInstalledCount: 1,
+        permittedNotInstalledConnections: [{ id: connection!.id, name: "Zapier" }],
+      }),
+    });
+    const [audit] = await db.select().from(toolAccessAuditEvents);
+    expect(audit).toMatchObject({
+      companyId: company!.id,
+      actorType: "agent",
+      actorId: agent!.id,
+      reasonCode: "permitted_connections_not_installed",
+      details: expect.objectContaining({ runId, deliveredServerCount: 0 }),
+    });
   });
 });
