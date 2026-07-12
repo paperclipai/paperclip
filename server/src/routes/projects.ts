@@ -143,12 +143,8 @@ export function projectRoutes(db: Db) {
 
   router.get("/projects/:id/external-object-summary", async (req, res) => {
     const id = req.params.id as string;
-    const project = await svc.getById(id);
-    if (!project) {
-      res.status(404).json({ error: "Project not found" });
-      return;
-    }
-    assertCompanyAccess(req, project.companyId);
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project) return;
     const summary = await externalObjectsSvc.getProjectSummary(project.id);
     res.json(summary);
   });
