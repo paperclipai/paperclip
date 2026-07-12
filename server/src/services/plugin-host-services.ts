@@ -2702,7 +2702,16 @@ export function buildHostServices(
         // Subscribe to live events and forward to the plugin worker as notifications.
         // Track the subscription so it can be cleaned up on dispose() if the run
         // never reaches a terminal status (hang, crash, network partition).
-        if (notifyWorker) {
+        //
+        // This block is intentionally unconditional (not gated on `notifyWorker`).
+        // The same subscription drives the vendor-neutral `agent.session.*`
+        // telemetry via emitSessionTelemetry(), which must close the session span
+        // opened by `create()` regardless of whether a plugin worker is attached.
+        // Gating it on `notifyWorker` (undefined is permitted by the optional
+        // signature) would leak session spans until shutdown. Worker forwarding
+        // below is optional-chained (`notifyWorker?.(...)`), so it safely no-ops
+        // when no worker is present.
+        {
           const TERMINAL_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
 
           const cleanup = () => {
