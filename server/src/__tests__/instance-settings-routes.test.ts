@@ -19,6 +19,7 @@ const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockResumeDispatchGate = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
@@ -28,6 +29,10 @@ function registerModuleMocks() {
   }));
   vi.doMock("../services/environments.js", () => ({
     environmentService: () => mockEnvironmentService,
+  }));
+  vi.doMock("../services/dispatch-gate.js", () => ({
+    resumeDispatchGate: mockResumeDispatchGate,
+    CLAUDE_LOCAL_DEFAULT_SCOPE: "claude_local/default",
   }));
 }
 
@@ -54,8 +59,10 @@ describe("instance settings routes", () => {
     vi.doUnmock("../routes/instance-settings.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../services/dispatch-gate.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockResumeDispatchGate.mockReset();
     mockInstanceSettingsService.get.mockReset();
     mockInstanceSettingsService.getGeneral.mockReset();
     mockInstanceSettingsService.getExperimental.mockReset();
@@ -626,5 +633,106 @@ describe("instance settings routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+  });
+
+  describe("dispatch gate quota resume", () => {
+    const resumeRoute = "/api/instance/settings/experimental/dispatch-gate/claude-local/resume-quota";
+
+    it("lets an instance-admin board actor resume an idle quota block", async () => {
+      mockResumeDispatchGate.mockResolvedValue({ ok: true });
+      const app = await createApp({
+        type: "board",
+        userId: "local-board",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      });
+
+      const res = await request(app).post(resumeRoute).send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ scopeKey: "claude_local/default", ok: true });
+      expect(mockResumeDispatchGate).toHaveBeenCalledWith("claude_local/default");
+      expect(mockLogActivity).toHaveBeenCalledTimes(2);
+    });
+
+    it("rejects a non-instance-admin board actor without calling the service", async () => {
+      const app = await createApp({
+        type: "board",
+        userId: "user-1",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: ["company-1"],
+      });
+
+      const res = await request(app).post(resumeRoute).send({});
+
+      expect(res.status).toBe(403);
+      expect(mockResumeDispatchGate).not.toHaveBeenCalled();
+    });
+
+    it("rejects an agent actor without calling the service", async () => {
+      const app = await createApp({
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        source: "agent_key",
+      });
+
+      const res = await request(app).post(resumeRoute).send({});
+
+      expect(res.status).toBe(403);
+      expect(mockResumeDispatchGate).not.toHaveBeenCalled();
+    });
+
+    it("cannot be redirected to another scope via request parameters", async () => {
+      mockResumeDispatchGate.mockResolvedValue({ ok: true });
+      const app = await createApp({
+        type: "board",
+        userId: "local-board",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      });
+
+      await request(app).post(resumeRoute).send({ scopeKey: "some-other-scope" });
+
+      expect(mockResumeDispatchGate).toHaveBeenCalledWith("claude_local/default");
+    });
+
+    it("returns 409 and does not log activity when ownership is active or unknown", async () => {
+      mockResumeDispatchGate.mockResolvedValue({
+        ok: false,
+        reason: "not_idle",
+        ownershipState: "active",
+        ownerKind: "adapter",
+        ownerId: "run-1",
+      });
+      const app = await createApp({
+        type: "board",
+        userId: "local-board",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      });
+
+      const res = await request(app).post(resumeRoute).send({});
+
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({ error: "dispatch_gate_not_idle", ownershipState: "active" });
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("returns 404 when no gate row exists for the scope", async () => {
+      mockResumeDispatchGate.mockResolvedValue({ ok: false, reason: "not_found" });
+      const app = await createApp({
+        type: "board",
+        userId: "local-board",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      });
+
+      const res = await request(app).post(resumeRoute).send({});
+
+      expect(res.status).toBe(404);
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
   });
 });

@@ -242,4 +242,57 @@ pnpm paperclipai secrets migrate-inline-env --company-id <company-id> --apply
 pnpm secrets:migrate-inline-env --apply
 ```
 
+## Claude-local dispatch gate recovery
+
+`dispatch_gate_state` holds one durable row per launch scope (today only
+`claude_local/default`) mediating every real `claude` CLI launch. Its
+`ownership_state` is `idle | active | unknown`; a confirmed provider-quota hit
+additionally sets `blocked_until` / `operator_resume_required` / `block_reason`
+on an otherwise-idle row. There are two distinct, non-overlapping recovery
+operations — never conflate them.
+
+**Quota resume** (clearing a still-active quota block early) is available to
+an instance administrator via:
+
+```
+POST /api/instance/settings/experimental/dispatch-gate/claude-local/resume-quota
+```
+
+It only clears `blocked_until`, `operator_resume_required`, and
+`block_reason`, and only when `ownership_state` is already `idle` — the check
+is enforced inside one atomic database update, not a separate read. It never
+touches `ownership_state`, `owner_kind`, or `owner_id`, and it refuses (409)
+if ownership is `active` or `unknown`. Paperclip does not need to be stopped
+for this operation, since ownership is provably idle throughout any quota
+block (no launch can acquire the scope while a block is active). Every
+successful call is recorded in the activity log
+(`instance.settings.dispatch_gate_quota_resumed`).
+
+**Unknown-owner reconciliation** (clearing `ownership_state = 'unknown'`,
+the fail-closed state left behind by an ambiguous/crashed termination) has
+**no API, CLI, or automatic path** — by design. The schema stores no process
+ID, so no in-app or database check can prove a `claude` process is no longer
+running; only a human directly inspecting the host can establish that.
+Restarting Paperclip, an elapsed amount of time, or a missing PID are each
+explicitly insufficient evidence and must never be used to justify this
+action. To reconcile, an operator must:
+
+1. Stop Paperclip completely.
+2. Read the current row: `SELECT * FROM dispatch_gate_state WHERE scope_key = 'claude_local/default';`
+3. Independently check the host OS process list and confirm no `claude`
+   process belonging to this installation is running.
+4. Record who is performing the action, when, and why, outside the database
+   (there is no in-app audit trail for a direct SQL statement).
+5. Run, exactly:
+   ```sql
+   UPDATE dispatch_gate_state
+   SET ownership_state = 'idle', owner_kind = NULL, owner_id = NULL, updated_at = now()
+   WHERE scope_key = 'claude_local/default' AND ownership_state = 'unknown';
+   ```
+   This changes only ownership fields and never touches `blocked_until`,
+   `operator_resume_required`, or `block_reason`.
+6. Re-read the row to confirm `ownership_state = 'idle'` before restarting
+   Paperclip. Verifying the fix with a real launch is a separate, explicitly
+   authorized action, not part of this procedure.
+
 Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVIDER.md).

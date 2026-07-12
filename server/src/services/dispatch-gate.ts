@@ -149,12 +149,22 @@ export async function recordDispatchGateQuotaBlock(
     );
 }
 
-/** Explicit operator resume — the only way to clear an `operatorResumeRequired` block. */
-export async function resumeDispatchGate(scopeKey: string): Promise<void> {
-  await requireDb()
+export type DispatchGateResumeQuotaResult =
+  | { ok: true } | { ok: false; reason: "not_found" }
+  | { ok: false; reason: "not_idle"; ownershipState: string; ownerKind: string | null; ownerId: string | null };
+
+/** Explicit operator resume; the idle precondition is enforced inside this one atomic UPDATE, never by a prior read. */
+export async function resumeDispatchGate(scopeKey: string): Promise<DispatchGateResumeQuotaResult> {
+  const db = requireDb();
+  const cleared = await db
     .update(dispatchGateState)
     .set({ blockedUntil: null, operatorResumeRequired: false, blockReason: null, updatedAt: new Date() })
-    .where(eq(dispatchGateState.scopeKey, scopeKey));
+    .where(and(eq(dispatchGateState.scopeKey, scopeKey), eq(dispatchGateState.ownershipState, "idle")))
+    .returning({ scopeKey: dispatchGateState.scopeKey });
+  if (cleared.length > 0) return { ok: true };
+  const [row] = await db.select().from(dispatchGateState).where(eq(dispatchGateState.scopeKey, scopeKey));
+  if (!row) return { ok: false, reason: "not_found" };
+  return { ok: false, reason: "not_idle", ownershipState: row.ownershipState, ownerKind: row.ownerKind, ownerId: row.ownerId };
 }
 
 /**

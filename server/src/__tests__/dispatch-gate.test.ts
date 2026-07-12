@@ -16,6 +16,7 @@ import type {
 import {
   acquireDispatchGate,
   CLAUDE_LOCAL_DEFAULT_SCOPE,
+  markDispatchGateUnknown,
   recordDispatchGateQuotaBlock,
   releaseDispatchGate,
   resumeDispatchGate,
@@ -434,5 +435,99 @@ describeEmbeddedPostgres("dispatch gate", () => {
     const [row] = await db.select().from(dispatchGateState).where(eq(dispatchGateState.scopeKey, CLAUDE_LOCAL_DEFAULT_SCOPE));
     expect(row?.blockedUntil).not.toBeNull();
     await resumeDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE);
+  });
+
+  describe("resumeDispatchGate atomic idle-only guard", () => {
+    it("clears only quota fields on an idle, quota-blocked row and preserves null owner identity", async () => {
+      const owner = { kind: "adapter", id: randomUUID() };
+      expect((await acquireDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, owner)).ok).toBe(true);
+      await recordDispatchGateQuotaBlock(CLAUDE_LOCAL_DEFAULT_SCOPE, owner, {
+        blockedUntil: new Date(Date.now() + 60_000),
+        reason: "provider_quota",
+        operatorResumeRequired: true,
+      });
+
+      const result = await resumeDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE);
+      expect(result).toEqual({ ok: true });
+
+      const [row] = await db.select().from(dispatchGateState).where(eq(dispatchGateState.scopeKey, CLAUDE_LOCAL_DEFAULT_SCOPE));
+      expect(row?.blockedUntil).toBeNull();
+      expect(row?.operatorResumeRequired).toBe(false);
+      expect(row?.blockReason).toBeNull();
+      expect(row?.ownershipState).toBe("idle");
+      expect(row?.ownerKind).toBeNull();
+      expect(row?.ownerId).toBeNull();
+    });
+
+    it("refuses and changes nothing when ownership is active", async () => {
+      const owner = { kind: "adapter", id: randomUUID() };
+      expect((await acquireDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, owner)).ok).toBe(true);
+      const futureBlock = new Date(Date.now() + 60_000);
+      // Hypothetical stale quota fields seeded directly, to prove the atomic
+      // guard rejects on ownershipState alone regardless of how the row got here.
+      await db
+        .update(dispatchGateState)
+        .set({ blockedUntil: futureBlock, operatorResumeRequired: true, blockReason: "provider_quota" })
+        .where(eq(dispatchGateState.scopeKey, CLAUDE_LOCAL_DEFAULT_SCOPE));
+
+      const result = await resumeDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE);
+      expect(result).toEqual({ ok: false, reason: "not_idle", ownershipState: "active", ownerKind: owner.kind, ownerId: owner.id });
+
+      const [row] = await db.select().from(dispatchGateState).where(eq(dispatchGateState.scopeKey, CLAUDE_LOCAL_DEFAULT_SCOPE));
+      expect(row?.blockedUntil).not.toBeNull();
+      expect(row?.operatorResumeRequired).toBe(true);
+      expect(row?.ownershipState).toBe("active");
+      expect(row?.ownerKind).toBe(owner.kind);
+      expect(row?.ownerId).toBe(owner.id);
+      await releaseDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, owner);
+    });
+
+    it("refuses and changes nothing when ownership is unknown", async () => {
+      const owner = { kind: "adapter", id: randomUUID() };
+      expect((await acquireDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, owner)).ok).toBe(true);
+      await markDispatchGateUnknown(CLAUDE_LOCAL_DEFAULT_SCOPE, owner);
+      await db
+        .update(dispatchGateState)
+        .set({ blockedUntil: new Date(Date.now() + 60_000), operatorResumeRequired: true, blockReason: "provider_quota" })
+        .where(eq(dispatchGateState.scopeKey, CLAUDE_LOCAL_DEFAULT_SCOPE));
+
+      const result = await resumeDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE);
+      expect(result).toEqual({ ok: false, reason: "not_idle", ownershipState: "unknown", ownerKind: owner.kind, ownerId: owner.id });
+
+      const [row] = await db.select().from(dispatchGateState).where(eq(dispatchGateState.scopeKey, CLAUDE_LOCAL_DEFAULT_SCOPE));
+      expect(row?.blockedUntil).not.toBeNull();
+      expect(row?.ownershipState).toBe("unknown");
+      expect(row?.ownerKind).toBe(owner.kind);
+      expect(row?.ownerId).toBe(owner.id);
+    });
+
+    it("reports no matching gate state for a scope that was never created, without creating one", async () => {
+      const missingScope = "claude_local/never-created";
+      const result = await resumeDispatchGate(missingScope);
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+
+      const [row] = await db.select().from(dispatchGateState).where(eq(dispatchGateState.scopeKey, missingScope));
+      expect(row).toBeUndefined();
+    });
+
+    it("enforces the idle precondition atomically against a concurrent acquire, with no torn state", async () => {
+      const seedOwner = { kind: "adapter", id: randomUUID() };
+      expect((await acquireDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, seedOwner)).ok).toBe(true);
+      await releaseDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, seedOwner);
+
+      const owner = { kind: "adapter", id: randomUUID() };
+      const [resumeResult, acquireResult] = await Promise.all([
+        resumeDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE),
+        acquireDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, owner),
+      ]);
+      expect(acquireResult.ok).toBe(true);
+      if (!resumeResult.ok) expect(resumeResult.reason).toBe("not_idle");
+
+      const [row] = await db.select().from(dispatchGateState).where(eq(dispatchGateState.scopeKey, CLAUDE_LOCAL_DEFAULT_SCOPE));
+      expect(row?.ownershipState).toBe("active");
+      expect(row?.ownerKind).toBe(owner.kind);
+      expect(row?.ownerId).toBe(owner.id);
+      await releaseDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, owner);
+    });
   });
 });
