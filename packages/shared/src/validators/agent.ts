@@ -14,7 +14,7 @@ export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
   canCreateSkills: z.boolean().optional().default(true),
   trustPreset: trustPresetSchema.optional(),
-  authorizationPolicy: trustAuthorizationPolicySchema.optional(),
+  authorizationPolicy: trustAuthorizationPolicySchema.optional().nullable(),
 }).catchall(z.unknown());
 
 export const agentInstructionsBundleModeSchema = z.enum(["managed", "external"]);
@@ -227,7 +227,7 @@ export const updateAgentPermissionsSchema = z.object({
   canCreateSkills: z.boolean().optional(),
   canAssignTasks: z.boolean(),
   trustPreset: trustPresetSchema.optional(),
-  authorizationPolicy: trustAuthorizationPolicySchema.optional(),
+  authorizationPolicy: trustAuthorizationPolicySchema.optional().nullable(),
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;

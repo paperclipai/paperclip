@@ -27,7 +27,7 @@ import {
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { syncAgentAdapterEnvBindings } from "./agent-secret-bindings.js";
-import { normalizeAgentPermissions } from "./agent-permissions.js";
+import { normalizeAgentPermissions, sanitizePermissionsForUpdate } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import { secretService } from "./secrets.js";
 import {
@@ -826,10 +826,12 @@ export function agentService(db: Db) {
         });
       }
 
+      const nextPermissions = sanitizePermissionsForUpdate(existing.permissions, permissions);
+
       const updated = await db
         .update(agents)
         .set({
-          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }, existing.role),
+          permissions: normalizeAgentPermissions(nextPermissions, existing.role),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
