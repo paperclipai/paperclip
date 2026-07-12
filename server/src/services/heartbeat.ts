@@ -10228,6 +10228,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!validation.ok) return null;
 
     const claimedAt = new Date();
+    const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
     const responsibleUserId = await resolveResponsibleUserIdForRun({
       run,
       contextSnapshot: context,
