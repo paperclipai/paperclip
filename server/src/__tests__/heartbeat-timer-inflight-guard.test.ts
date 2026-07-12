@@ -212,6 +212,47 @@ describeEmbeddedPostgres("heartbeat timer in-flight guard", () => {
     );
   });
 
+  it("does not block a timer wake on a stale abandoned in-flight run", async () => {
+    // Zombie queued/scheduled_retry runs from months ago (KEN-6175) must not
+    // starve an agent's timer wakes forever; the guard ignores runs whose
+    // updatedAt is older than the staleness bound.
+    const { companyId, agentId } = await insertAgent();
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      status: "queued",
+      invocationSource: "issue_created",
+      triggerDetail: "system",
+      responsibleUserId: "responsible-user",
+      createdAt: new Date("2026-05-01T08:00:00.000Z"),
+      updatedAt: new Date("2026-05-01T08:00:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    const run = await heartbeat.wakeup(agentId, timerWakeOptions());
+
+    expect(run).not.toBeNull();
+    expect(run?.agentId).toBe(agentId);
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const latest = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      if (latest && latest.status !== "queued" && latest.status !== "running") break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    const skipped = await db
+      .select({ reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.status, "skipped"))
+      .orderBy(desc(agentWakeupRequests.createdAt));
+    expect(skipped.map((row) => row.reason)).not.toContain("agent_run_in_flight");
+  }, 20_000);
+
   it("does not block a timer wake when the agent's latest run is terminal", async () => {
     const { companyId, agentId } = await insertAgent();
     await db.insert(heartbeatRuns).values({
