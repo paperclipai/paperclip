@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { createDb, dispatchGateState, type Db } from "@paperclipai/db";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -342,5 +342,97 @@ describeEmbeddedPostgres("dispatch gate", () => {
 
     const [row] = await db.select().from(dispatchGateState).where(eq(dispatchGateState.scopeKey, CLAUDE_LOCAL_DEFAULT_SCOPE));
     expect(row?.ownershipState).toBe("idle");
+  });
+
+  it("holds across two independently initialized gate module instances, each with its own Postgres connection — not one module-global binding", async () => {
+    // vi.resetModules() forces the next dynamic import to re-evaluate
+    // dispatch-gate.ts from scratch, giving it a private `_db` closure
+    // distinct from this file's own top-level import and from the other
+    // "instance" below. Each instance is wired to its own separately
+    // opened postgres.js connection (still against the same physical
+    // database) — if atomicity depended on a single shared in-memory
+    // reference, one of these two independent instances would not see
+    // the other's row lock and both launches would proceed.
+    vi.resetModules();
+    const instanceA = await import("../services/dispatch-gate.js");
+    const dbConnA = createDb(tempDb!.connectionString);
+    instanceA.setDispatchGateDb(dbConnA);
+
+    vi.resetModules();
+    const instanceB = await import("../services/dispatch-gate.js");
+    const dbConnB = createDb(tempDb!.connectionString);
+    instanceB.setDispatchGateDb(dbConnB);
+
+    expect(instanceA.acquireDispatchGate).not.toBe(instanceB.acquireDispatchGate);
+    expect(instanceA).not.toBe(instanceB);
+
+    let launchCalls = 0;
+    const launch = async () => {
+      launchCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return "ok" as const;
+    };
+
+    const [resultA, resultB] = await Promise.all([
+      instanceA.withDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, { kind: "instanceA", id: randomUUID() }, launch, {
+        onBlocked: () => "blocked" as const,
+      }),
+      instanceB.withDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, { kind: "instanceB", id: randomUUID() }, launch, {
+        onBlocked: () => "blocked" as const,
+      }),
+    ]);
+
+    expect(launchCalls).toBe(1);
+    expect([resultA, resultB].filter((r) => r === "ok")).toHaveLength(1);
+    expect([resultA, resultB].filter((r) => r === "blocked")).toHaveLength(1);
+
+    const [row] = await db.select().from(dispatchGateState).where(eq(dispatchGateState.scopeKey, CLAUDE_LOCAL_DEFAULT_SCOPE));
+    expect(row?.ownershipState).toBe("idle");
+  });
+
+  it("keeps a quota block enforced after the recording instance is fully disposed and a brand-new instance/connection is initialized (restart simulation)", async () => {
+    vi.resetModules();
+    const instanceA = await import("../services/dispatch-gate.js");
+    const dbConnA = createDb(tempDb!.connectionString);
+    instanceA.setDispatchGateDb(dbConnA);
+
+    const ownerA = { kind: "instanceA", id: randomUUID() };
+    const acquiredA = await instanceA.acquireDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, ownerA);
+    expect(acquiredA.ok).toBe(true);
+    await instanceA.recordDispatchGateQuotaBlock(CLAUDE_LOCAL_DEFAULT_SCOPE, ownerA, {
+      blockedUntil: new Date(Date.now() + 60_000),
+      reason: "provider_quota",
+      operatorResumeRequired: false,
+    });
+
+    // Fully dispose instance A: close its underlying Postgres connection
+    // and drop every in-memory reference to it. Nothing about instance B
+    // below reuses any state from instance A — this simulates a Paperclip
+    // process restart between the block being recorded and the next
+    // acquisition attempt.
+    await (dbConnA as unknown as { $client: { end: () => Promise<void> } }).$client.end();
+
+    vi.resetModules();
+    const instanceB = await import("../services/dispatch-gate.js");
+    const dbConnB = createDb(tempDb!.connectionString);
+    instanceB.setDispatchGateDb(dbConnB);
+
+    let launchCalls = 0;
+    const result = await instanceB.withDispatchGate(
+      CLAUDE_LOCAL_DEFAULT_SCOPE,
+      { kind: "instanceB", id: randomUUID() },
+      async () => {
+        launchCalls += 1;
+        return "ok" as const;
+      },
+      { onBlocked: () => "blocked" as const },
+    );
+
+    expect(result).toBe("blocked");
+    expect(launchCalls).toBe(0);
+
+    const [row] = await db.select().from(dispatchGateState).where(eq(dispatchGateState.scopeKey, CLAUDE_LOCAL_DEFAULT_SCOPE));
+    expect(row?.blockedUntil).not.toBeNull();
+    await resumeDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE);
   });
 });
