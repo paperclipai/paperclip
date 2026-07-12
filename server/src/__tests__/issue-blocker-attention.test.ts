@@ -630,6 +630,11 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       action: { label: "External owner action", detail: null },
       redaction: { externalDetailsRedacted: true, secretFieldsOmitted: true },
     });
+    expect(issue?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: null,
+      unresolvedBlockerCount: 0,
+    });
     expect(JSON.stringify(issue?.blockedInboxAttention)).not.toContain(owner);
     expect(JSON.stringify(issue?.blockedInboxAttention)).not.toContain(action);
 

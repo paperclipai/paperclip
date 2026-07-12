@@ -1649,7 +1649,7 @@ type IssueBlockerAttentionInputNode =
     IssueBlockerAttentionNode,
     "id" | "companyId" | "parentId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId"
   >
-  & { executionRunId?: string | null };
+  & { executionRunId?: string | null; description?: string | null };
 
 type IssueBlockerAttentionEdge = {
   issueId: string;
@@ -2360,6 +2360,10 @@ async function listIssueBlockerAttentionMap(
   for (const root of roots) {
     const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
     if (topLevelEdges.length === 0) {
+      if (externalWaitFromDescription(root.description ?? null)) {
+        attentionMap.set(root.id, createIssueBlockerAttention({ state: "covered" }));
+        continue;
+      }
       attentionMap.set(root.id, createIssueBlockerAttention({
         state: "needs_attention",
         reason: "missing_blocker_path",
