@@ -141,7 +141,6 @@ function createRoutine(overrides: Partial<Routine> = {}): Routine {
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
     evolutionMode: "off",
-    consecutiveAutoEvolutions: 0,
     variables: [],
     latestRevisionId: "revision-2",
     latestRevisionNumber: 2,

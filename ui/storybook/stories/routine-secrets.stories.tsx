@@ -181,7 +181,6 @@ function makeRoutine(latestRevisionId: string, latestRevisionNumber: number): Ro
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
     evolutionMode: "off",
-    consecutiveAutoEvolutions: 0,
     variables: [],
     env: makeSnapshot({
       OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-openai", version: "latest" },

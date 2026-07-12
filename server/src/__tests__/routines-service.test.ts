@@ -31,7 +31,6 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { ROUTINE_EVOLUTION_AUTO_FREEZE_CAP } from "@paperclipai/shared";
 import { issueService } from "../services/issues.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import * as providerRegistry from "../secrets/provider-registry.ts";
@@ -2265,7 +2264,6 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       const persisted = await db.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0]!);
       expect(persisted.description).toBe("Run the frog routine, then check the pond too");
       expect(persisted.latestRevisionNumber).toBe(routine.latestRevisionNumber + 1);
-      expect(persisted.consecutiveAutoEvolutions).toBe(1);
     });
 
     it("noChange records no revision and leaves the routine untouched", async () => {
@@ -2283,52 +2281,38 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       const persisted = await db.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0]!);
       expect(persisted.description).toBe(routine.description);
       expect(persisted.latestRevisionNumber).toBe(routine.latestRevisionNumber);
-      expect(persisted.consecutiveAutoEvolutions).toBe(0);
     });
 
-    it("freezes evolutionMode to gated after the auto-evolution loop-guard cap is exceeded", async () => {
+    it("auto mode self-evolves freely with NO cap and never auto-freezes to gated", async () => {
       const { companyId, agentId, routine, svc } = await seedFixture();
       await db.update(routines).set({ evolutionMode: "auto" }).where(eq(routines.id, routine.id));
 
+      // Run many consecutive unattended (agent-only, no human) self-evolutions — well past
+      // the old cap of 5. None of them should flip the routine to gated.
       let lastResult;
-      for (let i = 0; i < ROUTINE_EVOLUTION_AUTO_FREEZE_CAP + 1; i += 1) {
+      for (let i = 0; i < 12; i += 1) {
         const runId = await insertHeartbeatRun(companyId, agentId);
         lastResult = await svc.evolveRoutine(
           routine.id,
           { description: `Iteration ${i}`, changeSummary: `Self-evolution ${i}` },
           { agentId, runId },
         );
+        expect(lastResult.status).toBe("applied");
       }
 
-      expect(lastResult?.status).toBe("applied");
       const persisted = await db.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0]!);
-      // The (cap + 1)th unattended self-evolution trips the guard: it freezes to "gated"
-      // and the counter resets so a fresh gated window starts clean.
-      expect(persisted.evolutionMode).toBe("gated");
-      expect(persisted.consecutiveAutoEvolutions).toBe(0);
+      expect(persisted.evolutionMode).toBe("auto");
+      expect(persisted.description).toBe("Iteration 11");
+      // Each evolution is its own reversible revision — 12 evolutions on top of the initial one.
+      expect(persisted.latestRevisionNumber).toBe(routine.latestRevisionNumber + 12);
 
+      // The removed loop-guard must not emit any freeze activity.
       const frozenLog = await db
         .select()
         .from(activityLog)
         .where(eq(activityLog.action, "routine.evolution_frozen"))
         .then((rows) => rows[0] ?? null);
-      expect(frozenLog).not.toBeNull();
-      expect(frozenLog?.entityId).toBe(routine.id);
-    });
-
-    it("a human-authored update resets the auto-evolution loop-guard counter", async () => {
-      const { companyId, agentId, routine, svc } = await seedFixture();
-      await db.update(routines).set({ evolutionMode: "auto" }).where(eq(routines.id, routine.id));
-      const runId = await insertHeartbeatRun(companyId, agentId);
-      await svc.evolveRoutine(routine.id, { description: "Self edit", changeSummary: "self" }, { agentId, runId });
-
-      let persisted = await db.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0]!);
-      expect(persisted.consecutiveAutoEvolutions).toBe(1);
-
-      await svc.update(routine.id, { title: "ascii frog (reviewed)" }, { userId: "board-user" });
-
-      persisted = await db.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0]!);
-      expect(persisted.consecutiveAutoEvolutions).toBe(0);
+      expect(frozenLog).toBeNull();
     });
 
     it("gated mode records a pending proposal without changing the live routine", async () => {
@@ -2359,9 +2343,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       expect(proposals[0]?.id).toBe(result.proposal.id);
     });
 
-    it("approving a gated proposal applies it via a new revision and resets the loop-guard", async () => {
+    it("approving a gated proposal applies it via a new revision", async () => {
       const { companyId, agentId, routine, svc } = await seedFixture();
-      await db.update(routines).set({ evolutionMode: "gated", consecutiveAutoEvolutions: 3 }).where(eq(routines.id, routine.id));
+      await db.update(routines).set({ evolutionMode: "gated" }).where(eq(routines.id, routine.id));
       const runId = await insertHeartbeatRun(companyId, agentId);
       const proposeResult = await svc.evolveRoutine(
         routine.id,
@@ -2385,7 +2369,6 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       const persisted = await db.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0]!);
       expect(persisted.description).toBe("Approved instructions");
       expect(persisted.latestRevisionNumber).toBe(routine.latestRevisionNumber + 1);
-      expect(persisted.consecutiveAutoEvolutions).toBe(0);
     });
 
     it("rejecting a gated proposal marks it rejected without touching the live routine", async () => {
@@ -2464,7 +2447,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       expect(issue.description).toMatch(/held for human/i);
     });
 
-    it("injects an auto-mode self-rewrite step noting the change is immediate and reversible", async () => {
+    it("injects an auto-mode self-rewrite step framed as triage (proceed autonomously; escalate only critical/irreversible)", async () => {
       const { routine, svc } = await seedFixture();
       await db.update(routines).set({ evolutionMode: "auto" }).where(eq(routines.id, routine.id));
 
@@ -2478,7 +2461,13 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       expect(issue.description).toMatch(/AUTO evolution mode/);
       expect(issue.description).toContain(`POST /routines/${routine.id}/evolve`);
       expect(issue.description).toMatch(/reversible/i);
-      expect(issue.description).toMatch(new RegExp(`${ROUTINE_EVOLUTION_AUTO_FREEZE_CAP} consecutive`));
+      // Triage framing: proceed autonomously; escalate ONLY genuinely critical/irreversible changes.
+      expect(issue.description).toMatch(/TRIAGE/);
+      expect(issue.description).toMatch(/proceed autonomously/i);
+      expect(issue.description).toMatch(/critical or irreversible/i);
+      // The old auto-freeze cap language must be gone.
+      expect(issue.description).not.toMatch(/consecutive/i);
+      expect(issue.description).not.toMatch(/switched to gated/i);
     });
   });
 });

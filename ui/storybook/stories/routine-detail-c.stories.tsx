@@ -88,7 +88,6 @@ const routine: RoutineDetailType = {
   concurrencyPolicy: "coalesce_if_active",
   catchUpPolicy: "skip_missed",
   evolutionMode: "off",
-  consecutiveAutoEvolutions: 0,
   variables,
   env: { DATABASE_URL: { type: "secret_ref", secretId: "secret-prod-db", version: "latest" } } as never,
   latestRevisionId: "rev-17",

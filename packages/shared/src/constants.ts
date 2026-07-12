@@ -564,11 +564,6 @@ export type RoutineEvolutionMode = (typeof ROUTINE_EVOLUTION_MODES)[number];
 export const ROUTINE_EVOLUTION_PROPOSAL_STATUSES = ["pending", "approved", "rejected", "superseded"] as const;
 export type RoutineEvolutionProposalStatus = (typeof ROUTINE_EVOLUTION_PROPOSAL_STATUSES)[number];
 
-// Loop-guard: after this many CONSECUTIVE auto-applied self-evolutions with no human touch
-// (no board/user-authored revision, restore, or proposal decision in between), a routine's
-// evolutionMode is force-flipped from "auto" to "gated" so a human has to look at it.
-export const ROUTINE_EVOLUTION_AUTO_FREEZE_CAP = 5;
-
 export const ROUTINE_TRIGGER_KINDS = ["schedule", "webhook", "api"] as const;
 export type RoutineTriggerKind = (typeof ROUTINE_TRIGGER_KINDS)[number];
 

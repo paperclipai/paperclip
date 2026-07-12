@@ -37,7 +37,6 @@ export const routines = pgTable(
     activityGatePolicy: text("activity_gate_policy").notNull().default("always"),
     activityGateScope: text("activity_gate_scope").notNull().default("company"),
     evolutionMode: text("evolution_mode").notNull().default("off"),
-    consecutiveAutoEvolutions: integer("consecutive_auto_evolutions").notNull().default(0),
     originKind: text("origin_kind").notNull().default("manual"),
     originId: text("origin_id"),
     variables: jsonb("variables").$type<RoutineVariable[]>().notNull().default([]),

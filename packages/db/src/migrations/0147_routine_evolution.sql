@@ -1,7 +1,5 @@
 ALTER TABLE "routines" ADD COLUMN "evolution_mode" text DEFAULT 'off' NOT NULL;
 --> statement-breakpoint
-ALTER TABLE "routines" ADD COLUMN "consecutive_auto_evolutions" integer DEFAULT 0 NOT NULL;
---> statement-breakpoint
 CREATE TABLE "routine_evolution_proposals" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,

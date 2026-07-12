@@ -50,7 +50,6 @@ import type {
   UpdateRoutineTrigger,
 } from "@paperclipai/shared";
 import {
-  ROUTINE_EVOLUTION_AUTO_FREEZE_CAP,
   WORKSPACE_BRANCH_ROUTINE_VARIABLE,
   getBuiltinRoutineVariableValues,
   extractRoutineVariableNames,
@@ -1602,18 +1601,23 @@ export function routineService(
    * spine: it never edits routine.description directly — it only tells the run's agent
    * how to call POST /routines/:id/evolve, which reuses appendRoutineRevision (auto) or
    * creates a gated proposal (gated).
+   *
+   * The framing is TRIAGE, not "await approval by default": in auto mode the agent
+   * proceeds autonomously on reversible improvements (every evolution is a reversible
+   * revision — a two-way door) and only escalates a change for human decision when it is
+   * genuinely critical or irreversible. Routines whose changes are inherently critical
+   * can be set to gated mode so EVERY change routes to a human first.
    */
   function buildRoutineEvolutionStepSection(routine: RoutineRow): string {
     const modeNote = routine.evolutionMode === "gated"
-      ? "This routine runs in GATED evolution mode: your proposal is recorded and held for human "
-        + "approval. It will NOT change this routine's live behavior until a board member approves it "
-        + "(or is discarded if rejected)."
-      : "This routine runs in AUTO evolution mode: your proposed change is applied immediately via the "
-        + "routine's normal revision history, takes effect starting with the NEXT run, and is fully "
-        + "reversible (a board member or the assigned agent can restore any prior revision at any time). "
-        + "Repeated unattended self-evolutions are capped — after "
-        + `${ROUTINE_EVOLUTION_AUTO_FREEZE_CAP} consecutive auto-applied changes with no human review, `
-        + "this routine is automatically switched to gated mode.";
+      ? "This routine runs in GATED evolution mode: it is opted in to human review, so your proposed "
+        + "change is recorded and held for human approval. It will NOT change this routine's live behavior "
+        + "until a board member approves it (or is discarded if rejected)."
+      : "This routine runs in AUTO evolution mode: apply reversible improvements yourself without waiting "
+        + "for anyone. Your change takes effect on the NEXT run and is fully reversible — any prior revision "
+        + "can be restored at any time (a two-way door), so there is no cap on how often this routine may "
+        + "self-improve. Escalate to a human (see below) ONLY for a genuinely critical or irreversible "
+        + "change.";
     return [
       "---",
       "",
@@ -1623,16 +1627,21 @@ export function routineService(
         + "finished the work above, reflect on what THIS run's result taught you about how this routine's "
         + "instructions should read.",
       "",
-      "Decide whether the routine's instructions should change to make the next run more effective. Only "
-        + "additive or clarifying edits to the task steps are appropriate here — you MUST NOT weaken, remove, "
-        + "or soften any escalation path, budget limit, or safety guardrail that already appears in the "
-        + "current instructions.",
+      "TRIAGE the change: if the routine's instructions should change to make the next run more effective "
+        + "AND the change is reversible and non-critical (a wording tweak, an added or clarified task step, "
+        + "a refined check), just make it — proceed autonomously, do not wait for a human. Flag for human "
+        + "decision ONLY when the change is genuinely critical or irreversible: anything that weakens, "
+        + "removes, or softens an escalation path, a budget limit, or a safety guardrail, or that would "
+        + "trigger an irreversible action. When in doubt about criticality, escalate rather than apply.",
       "",
       `Then call \`POST /routines/${routine.id}/evolve\` with a JSON body of EITHER:`,
       "- `{ \"description\": \"<the full, complete replacement routine instructions>\", \"changeSummary\": \"<why "
-        + "you changed it>\" }` to propose new instructions, or",
+        + "you changed it>\" }` to record new instructions, or",
       "- `{ \"noChange\": true, \"changeSummary\": \"<why nothing needed to change>\" }` if the current "
         + "instructions are already right.",
+      "",
+      "If a change is critical/irreversible and this routine is NOT in gated mode, do NOT apply it — instead "
+        + "escalate it to a human through your normal escalation path and leave the routine unchanged.",
       "",
       modeNote,
     ].join("\n");
@@ -2292,10 +2301,6 @@ export function routineService(
           }
         }
 
-        // A human/board actor directly editing the routine is a "human touch" for the
-        // self-evolution loop-guard: it resets the consecutive-auto-evolution counter,
-        // same as restoring a revision or deciding a gated proposal does.
-        const resetsEvolutionLoopGuard = Boolean(actor.userId);
         const [updated] = await txDb
           .update(routines)
           .set({
@@ -2310,7 +2315,6 @@ export function routineService(
             concurrencyPolicy: candidate.concurrencyPolicy,
             catchUpPolicy: candidate.catchUpPolicy,
             evolutionMode: candidate.evolutionMode,
-            consecutiveAutoEvolutions: resetsEvolutionLoopGuard ? 0 : locked.consecutiveAutoEvolutions,
             variables: candidate.variables,
             env: candidate.env,
             responsibleUserId: candidate.responsibleUserId,
@@ -2649,9 +2653,6 @@ export function routineService(
             catchUpPolicy: routineSnapshot.catchUpPolicy,
             // Pre-evolution-feature revisions have no evolutionMode in their snapshot; default to "off".
             evolutionMode: routineSnapshot.evolutionMode ?? "off",
-            // A restore is always a deliberate, gated action (assertBoardCanAssignTasks), so it
-            // counts as a human touch for the self-evolution loop-guard.
-            consecutiveAutoEvolutions: 0,
             variables: routineSnapshot.variables,
             env: routineSnapshot.env,
             updatedByAgentId: actor.agentId ?? null,
@@ -2805,52 +2806,17 @@ export function routineService(
           .returning();
         if (!updated) throw notFound("Routine not found");
 
+        // auto mode self-evolves freely with NO cap: every evolution is a reversible
+        // revision (a two-way door via restoreRevision), so unattended self-improvement is
+        // safe. Human involvement is reserved for genuinely critical/irreversible changes,
+        // which the agent is instructed to escalate (or which a gated routine routes to a
+        // human). The evolution is still fully audited via the activity log at the route layer.
         const appended = await appendRoutineRevision(txDb, updated, actor, {
           changeSummary: input.changeSummary,
         });
 
-        // Loop-guard: an evolve call with no board/human actor is an unattended self-evolution.
-        // Track consecutive occurrences with no human touch; freeze to "gated" past the cap so a
-        // routine can't drift unattended forever (the "not a dead end" guarantee).
-        // NOTE: a human restoreRevision restores the snapshot's evolutionMode and resets this
-        // counter, so a human can intentionally reset (un-do) this freeze — that's deliberate.
-        let finalRoutine = appended.routine;
-        let frozeAtCount: number | null = null;
-        if (!actor.userId) {
-          const nextCount = (locked.consecutiveAutoEvolutions ?? 0) + 1;
-          const shouldFreeze = nextCount > ROUTINE_EVOLUTION_AUTO_FREEZE_CAP;
-          const [afterGuard] = await txDb
-            .update(routines)
-            .set({
-              consecutiveAutoEvolutions: shouldFreeze ? 0 : nextCount,
-              evolutionMode: shouldFreeze ? "gated" : appended.routine.evolutionMode,
-            })
-            .where(eq(routines.id, locked.id))
-            .returning();
-          if (afterGuard) finalRoutine = afterGuard;
-          if (shouldFreeze) frozeAtCount = nextCount;
-        }
-
-        return { revision: appended.revision, routine: finalRoutine, frozeAtCount };
+        return { revision: appended.revision, routine: appended.routine };
       });
-
-      if (result.frozeAtCount !== null) {
-        try {
-          await logActivity(db, {
-            companyId: routine.companyId,
-            actorType: "system",
-            actorId: "routine-evolution-loop-guard",
-            agentId: actor.agentId ?? null,
-            runId: actor.runId ?? null,
-            action: "routine.evolution_frozen",
-            entityType: "routine",
-            entityId: routine.id,
-            details: { consecutiveAutoEvolutions: result.frozeAtCount, cap: ROUTINE_EVOLUTION_AUTO_FREEZE_CAP },
-          });
-        } catch (err) {
-          logger.warn({ err, routineId: routine.id }, "failed to log routine evolution freeze");
-        }
-      }
 
       return { status: "applied", routine: result.routine, revision: result.revision };
     },
@@ -2870,9 +2836,8 @@ export function routineService(
     },
 
     // Shared approve/reject path for gated evolution proposals. Approve reuses
-    // appendRoutineRevision (same audited path as restoreRevision/update) and resets the
-    // loop-guard counter, since a human (or the owning agent, per the same ownership rule
-    // restoreRevision already uses) deciding a proposal is a human checkpoint.
+    // appendRoutineRevision (the same audited path as restoreRevision/update). The route
+    // layer enforces that only a human/board actor can reach this for a decision.
     decideEvolutionProposal: async (
       routineId: string,
       proposalId: string,
@@ -2944,7 +2909,6 @@ export function routineService(
           .set({
             title: proposal.proposedTitle ?? locked.title,
             description: proposal.proposedDescription,
-            consecutiveAutoEvolutions: 0,
             updatedByUserId: actor.userId ?? null,
             updatedByAgentId: actor.agentId ?? null,
             updatedAt: now,
