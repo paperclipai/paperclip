@@ -173,7 +173,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(actorOverride: Record<string, unknown> = {}) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -187,6 +187,7 @@ async function createApp() {
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...actorOverride,
     };
     next();
   });
@@ -515,6 +516,67 @@ describe("issue update comment wakeups", () => {
           source: "issue.comment",
         }),
       }),
+    );
+  });
+
+  it("does not comment-wake the assignee when its own active run authored the comment via the board actor (ENGA-1828 F2(B))", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-self",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "族B 完了: blog 1 / note 0（詳細→document posting-summary）",
+    });
+    // The assignee agent is mid-heartbeat and posts its own closing comment
+    // through the board (`local-board`) actor path, carrying its run id.
+    mockHeartbeatService.getActiveRunForAgent.mockImplementation(async (agentId: string) =>
+      agentId === ASSIGNEE_AGENT_ID ? ({ id: "run-self" } as any) : null,
+    );
+
+    const res = await request(await createApp({ runId: "run-self" }))
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({ body: "族B 完了: blog 1 / note 0（詳細→document posting-summary）" });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() =>
+      expect(mockHeartbeatService.getActiveRunForAgent).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("still comment-wakes the assignee when the comment run is not the assignee's active run", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-other-run",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "handling from a different run",
+    });
+    // The assignee's active run id differs from the run that authored the comment,
+    // so the wake must still fire (e.g. another agent posting under a board key).
+    mockHeartbeatService.getActiveRunForAgent.mockImplementation(async (agentId: string) =>
+      agentId === ASSIGNEE_AGENT_ID ? ({ id: "run-assignee-active" } as any) : null,
+    );
+
+    const res = await request(await createApp({ runId: "run-different" }))
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({ body: "handling from a different run" });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({ reason: "issue_commented" }),
     );
   });
 
