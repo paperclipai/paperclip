@@ -102,7 +102,7 @@ function PanelFrame({
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     qc.setQueryData(queryKeys.auth.session, {
       session: { id: "sess-1", userId: currentUserId },
-      user: { id: currentUserId, email: "dotta@magicmachine.co", name: "Dotta", image: null },
+      user: { id: currentUserId, email: "dotta@example.local", name: "Dotta", image: null },
     });
     return qc;
   });

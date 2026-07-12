@@ -84,7 +84,7 @@ function AdapterRow({
                 : <span title="Installed from npm"><Package className="h-4 w-4 text-red-500" /></span>
             )}
             {adapter.version && (
-              <Badge variant="secondary" className="font-mono text-[10px]">
+              <Badge variant="secondary" className="font-mono text-(length:--text-nano)">
                 v{adapter.version}
               </Badge>
             )}
@@ -546,7 +546,8 @@ export function AdapterManager() {
             </CardContent>
           </Card>
         ) : (
-          <ul className="divide-y rounded-md border bg-card">
+          <Card className="block py-0">
+          <ul className="divide-y">
             {externalAdapters.map((adapter) => {
               const isBuiltinOverride = adapter.overriddenBuiltin;
               const overridePaused = isBuiltinOverride && !!adapter.overridePaused;
@@ -580,6 +581,7 @@ export function AdapterManager() {
               );
             })}
           </ul>
+          </Card>
         )}
       </section>
 
@@ -593,7 +595,8 @@ export function AdapterManager() {
         {builtinAdapters.length === 0 && overriddenBuiltins.length === 0 ? (
           <div className="text-sm text-muted-foreground">No built-in adapters found.</div>
         ) : (
-          <ul className="divide-y rounded-md border bg-card">
+          <Card className="block py-0">
+          <ul className="divide-y">
             {builtinAdapters.map((adapter) => (
               <AdapterRow
                 key={adapter.type}
@@ -620,6 +623,7 @@ export function AdapterManager() {
                     supportsLocalAgentJwt: false,
                     requiresMaterializedRuntimeSkills: false,
                     supportsModelProfiles: false,
+                    supportsAcp: false,
                   },
                 }}
                 canRemove={false}
@@ -630,6 +634,7 @@ export function AdapterManager() {
               />
             ))}
           </ul>
+          </Card>
         )}
       </section>
 

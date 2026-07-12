@@ -5,11 +5,6 @@
     "publishFromCi": true
   },
   {
-    "dir": "packages/adapters/acpx-local",
-    "name": "@paperclipai/adapter-acpx-local",
-    "publishFromCi": true
-  },
-  {
     "dir": "packages/adapters/claude-local",
     "name": "@paperclipai/adapter-claude-local",
     "publishFromCi": true

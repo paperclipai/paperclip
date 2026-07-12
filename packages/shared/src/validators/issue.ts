@@ -12,6 +12,7 @@ import {
   ISSUE_COMMENT_METADATA_ROW_TYPES,
   ISSUE_COMMENT_PRESENTATION_KINDS,
   ISSUE_COMMENT_PRESENTATION_TONES,
+  ISSUE_HARNESS_KINDS,
   ISSUE_MONITOR_SCHEDULED_BY,
   ISSUE_PRIORITIES,
   ISSUE_RECOVERY_ACTION_KINDS,
@@ -27,6 +28,7 @@ import {
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
   MODEL_PROFILE_KEYS,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
+  REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
 import { lowTrustReviewPresetPolicySchema, trustAuthorizationPolicySchema } from "./trust-policy.js";
@@ -384,10 +386,13 @@ const createIssueBaseSchema = z.object({
   description: multilineTextSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES),
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
+  harnessKind: z.enum(ISSUE_HARNESS_KINDS).optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
   requestDepth: issueRequestDepthInputSchema.optional().default(0),
+  createdByUserId: z.string().optional().nullable(),
+  responsibleUserId: z.string().optional().nullable(),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
@@ -447,7 +452,11 @@ export const createIssueLabelSchema = z.object({
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
-export const updateIssueSchema = createIssueBaseSchema.omit({ watchdog: true }).partial().extend({
+export const updateIssueSchema = createIssueBaseSchema.omit({
+  createdByUserId: true,
+  responsibleUserId: true,
+  watchdog: true,
+}).partial().extend({
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
@@ -847,12 +856,24 @@ export const requestCheckboxConfirmationPayloadSchema = z.object({
   }
 });
 
+export const requestConfirmationResumeFailureSchema = z.object({
+  status: z.enum(["retrying", "needs_attention"]),
+  errorCode: z.string().trim().min(1).max(120).nullable(),
+  attempt: z.number().int().min(0).max(100),
+  maxAttempts: z.number().int().min(0).max(100),
+  runId: z.string().uuid().nullable().optional(),
+  retryRunId: z.string().uuid().nullable().optional(),
+  recoveryActionId: z.string().uuid().nullable().optional(),
+  updatedAt: z.string().trim().min(1).nullable().optional(),
+});
+
 export const requestConfirmationResultSchema = z.object({
   version: z.literal(1),
   outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target"]),
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
+  resumeFailure: requestConfirmationResumeFailureSchema.nullable().optional(),
 });
 
 export const requestCheckboxConfirmationResultSchema = requestConfirmationResultSchema.extend({
@@ -871,6 +892,121 @@ export const requestCheckboxConfirmationResultSchema = requestConfirmationResult
       });
     }
     seenOptionIds.add(optionId);
+  }
+});
+
+export const requestItemVerdictValueSchema = z.enum(["approve", "reject", "defer"]);
+
+export const requestItemVerdictsItemSchema = z.object({
+  id: z.string().trim().min(1).max(120),
+  label: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).nullable().optional(),
+  previewMarkdown: z.string().max(20000).nullable().optional(),
+  href: requestConfirmationHrefSchema.nullable().optional(),
+  attachmentId: z.string().uuid().nullable().optional(),
+});
+
+export const requestItemVerdictsPayloadSchema = z.object({
+  version: z.literal(1),
+  prompt: z.string().trim().min(1).max(1000),
+  detailsMarkdown: z.string().max(20000).nullable().optional(),
+  items: z.array(requestItemVerdictsItemSchema)
+    .min(1)
+    .max(REQUEST_ITEM_VERDICTS_ITEM_LIMIT),
+  verdicts: z.array(requestItemVerdictValueSchema)
+    .min(2)
+    .max(3)
+    .optional()
+    .default(["approve", "reject"]),
+  requireReasonOn: z.array(requestItemVerdictValueSchema)
+    .max(3)
+    .optional()
+    .default(["reject"]),
+  reasonLabel: z.string().trim().min(1).max(160).nullable().optional(),
+  allowBulkApprove: z.boolean().optional().default(true),
+  supersedeOnUserComment: z.boolean().optional(),
+  target: requestConfirmationTargetSchema.nullable().optional(),
+}).superRefine((value, ctx) => {
+  const itemIds = new Set<string>();
+  for (const [index, item] of value.items.entries()) {
+    if (itemIds.has(item.id)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Item ids must be unique within one item verdict request",
+        path: ["items", index, "id"],
+      });
+    }
+    itemIds.add(item.id);
+  }
+
+  const verdicts = new Set<string>();
+  for (const [index, verdict] of value.verdicts.entries()) {
+    if (verdicts.has(verdict)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "verdicts must be unique",
+        path: ["verdicts", index],
+      });
+    }
+    verdicts.add(verdict);
+  }
+  if (!verdicts.has("approve") || !verdicts.has("reject")) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "verdicts must include approve and reject; defer is optional",
+      path: ["verdicts"],
+    });
+  }
+
+  const reasonVerdicts = new Set<string>();
+  for (const [index, verdict] of value.requireReasonOn.entries()) {
+    if (reasonVerdicts.has(verdict)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "requireReasonOn must be unique",
+        path: ["requireReasonOn", index],
+      });
+      continue;
+    }
+    reasonVerdicts.add(verdict);
+    if (!verdicts.has(verdict)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "requireReasonOn must reference enabled verdicts",
+        path: ["requireReasonOn", index],
+      });
+    }
+  }
+});
+
+export const requestItemVerdictsResultItemSchema = z.object({
+  id: z.string().trim().min(1).max(120),
+  verdict: requestItemVerdictValueSchema,
+  reason: z.string().trim().max(4000).nullable().optional(),
+  resolvedByUserId: z.string().trim().min(1).max(255),
+  resolvedAt: z.union([z.string().datetime(), z.date()]),
+  commentId: z.string().uuid().nullable().optional(),
+});
+
+export const requestItemVerdictsResultSchema = z.object({
+  version: z.literal(1),
+  outcome: z.enum(["resolved", "superseded_by_comment", "stale_target", "cancelled"]),
+  complete: z.boolean(),
+  items: z.array(requestItemVerdictsResultItemSchema)
+    .max(REQUEST_ITEM_VERDICTS_ITEM_LIMIT),
+  commentId: z.string().uuid().nullable().optional(),
+  staleTarget: requestConfirmationTargetSchema.nullable().optional(),
+}).superRefine((value, ctx) => {
+  const itemIds = new Set<string>();
+  for (const [index, item] of value.items.entries()) {
+    if (itemIds.has(item.id)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "result item ids must be unique",
+        path: ["items", index, "id"],
+      });
+    }
+    itemIds.add(item.id);
   }
 });
 
@@ -914,6 +1050,16 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     summary: z.string().trim().max(1000).nullable().optional(),
     continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
     payload: requestCheckboxConfirmationPayloadSchema,
+  }),
+  z.object({
+    kind: z.literal("request_item_verdicts"),
+    idempotencyKey: z.string().trim().max(255).nullable().optional(),
+    sourceCommentId: z.string().uuid().nullable().optional(),
+    sourceRunId: z.string().uuid().nullable().optional(),
+    title: z.string().trim().max(240).nullable().optional(),
+    summary: z.string().trim().max(1000).nullable().optional(),
+    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
+    payload: requestItemVerdictsPayloadSchema,
   }),
 ]);
 
@@ -968,6 +1114,29 @@ export const respondIssueThreadInteractionSchema = z.object({
   summaryMarkdown: multilineTextSchema.pipe(z.string().max(20000)).nullable().optional(),
 });
 export type RespondIssueThreadInteraction = z.infer<typeof respondIssueThreadInteractionSchema>;
+
+export const submitIssueThreadInteractionVerdictsSchema = z.object({
+  verdicts: z.array(z.object({
+    id: z.string().trim().min(1).max(120),
+    verdict: requestItemVerdictValueSchema,
+    reason: z.string().trim().max(4000).nullable().optional(),
+  }))
+    .min(1)
+    .max(REQUEST_ITEM_VERDICTS_ITEM_LIMIT),
+}).superRefine((value, ctx) => {
+  const itemIds = new Set<string>();
+  for (const [index, verdict] of value.verdicts.entries()) {
+    if (itemIds.has(verdict.id)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "verdict item ids must be unique",
+        path: ["verdicts", index, "id"],
+      });
+    }
+    itemIds.add(verdict.id);
+  }
+});
+export type SubmitIssueThreadInteractionVerdicts = z.infer<typeof submitIssueThreadInteractionVerdictsSchema>;
 
 export const linkIssueApprovalSchema = z.object({
   approvalId: z.string().uuid(),
