@@ -47,6 +47,7 @@ const mockAgentService = vi.hoisted(() => ({
   terminate: vi.fn(),
   update: vi.fn(),
   updatePermissions: vi.fn(),
+  rollbackConfigRevision: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
 }));
@@ -312,6 +313,7 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.terminate.mockReset();
     mockAgentService.update.mockReset();
     mockAgentService.updatePermissions.mockReset();
+    mockAgentService.rollbackConfigRevision.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
     mockAgentService.resolveByReference.mockReset();
     mockBuiltInAgentService.ensureCompanyDefaultAgentGrants.mockReset();
@@ -360,6 +362,7 @@ describe.sequential("agent permission routes", () => {
     });
     mockAgentService.update.mockResolvedValue(baseAgent);
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
+    mockAgentService.rollbackConfigRevision.mockResolvedValue(baseAgent);
     mockBuiltInAgentService.ensureCompanyDefaultAgentGrants.mockResolvedValue(0);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
@@ -2035,6 +2038,77 @@ describe.sequential("agent permission routes", () => {
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
         action: "agent_config:read",
         resource: { type: "company", companyId },
+      }));
+    });
+
+    it("redacts secret-bearing config values from rollback mutation responses", async () => {
+      const secretBearingAgent = {
+        ...baseAgent,
+        adapterConfig: {
+          model: "local/model",
+          env: {
+            OPENAI_API_KEY: "synthetic-rollback-secret",
+            PUBLIC_MODE: "debug",
+          },
+        },
+        runtimeConfig: {
+          modelProfiles: {
+            default: {
+              enabled: true,
+              adapterConfig: {
+                env: {
+                  ANTHROPIC_API_KEY: "synthetic-runtime-rollback-secret",
+                  LOG_LEVEL: "info",
+                },
+              },
+            },
+          },
+        },
+      };
+      mockAgentService.getById.mockResolvedValue(secretBearingAgent);
+      mockAgentService.rollbackConfigRevision.mockResolvedValue(secretBearingAgent);
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${agentId}/config-revisions/revision-1/rollback`)
+        .send({}));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(JSON.stringify(res.body)).not.toContain("synthetic-rollback-secret");
+      expect(JSON.stringify(res.body)).not.toContain("synthetic-runtime-rollback-secret");
+      expect(res.body.adapterConfig).toMatchObject({
+        model: "local/model",
+        env: {
+          OPENAI_API_KEY: "***REDACTED***",
+          PUBLIC_MODE: "debug",
+        },
+      });
+      expect(res.body.runtimeConfig).toMatchObject({
+        modelProfiles: {
+          default: {
+            enabled: true,
+            adapterConfig: {
+              env: {
+                ANTHROPIC_API_KEY: "***REDACTED***",
+                LOG_LEVEL: "info",
+              },
+            },
+          },
+        },
+      });
+      expect(mockAgentService.rollbackConfigRevision).toHaveBeenCalledWith(agentId, "revision-1", {
+        agentId: null,
+        userId: "board-user",
+      });
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "agent.config_rolled_back",
       }));
     });
   });

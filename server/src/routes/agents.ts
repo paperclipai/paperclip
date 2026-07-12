@@ -2295,7 +2295,7 @@ export function agentRoutes(
       details: { revisionId },
     });
 
-    res.json(updated);
+    res.json(redactAgentReadConfig(updated));
   });
 
   router.get("/agents/:id/runtime-state", async (req, res) => {
