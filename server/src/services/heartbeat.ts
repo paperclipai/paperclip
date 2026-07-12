@@ -14503,6 +14503,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
+    if (source === "timer") {
+      // Plain timer wakes carry no issueId, so the issue-execution lock below
+      // never applies to them: a timer tick landing mid-run would start a
+      // second concurrent run that re-executes the agent's in_progress issue
+      // with side effects that are not gated on checkout. Skip the wake while
+      // any run for this agent is still in flight.
+      const inFlightRun = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (inFlightRun) {
+        await writeSkippedHeartbeatRequest("agent_run_in_flight", {
+          reason: "Agent already has a heartbeat run in flight; timer wake skipped to prevent a concurrent run.",
+          inFlightRunId: inFlightRun.id,
+          inFlightRunStatus: inFlightRun.status,
+        });
+        await markTimerHeartbeatChecked(agentId, source);
+        return null;
+      }
+    }
+
     const genericTimerWake =
       source === "timer" &&
       !issueId &&
