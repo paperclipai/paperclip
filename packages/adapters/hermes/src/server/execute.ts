@@ -44,6 +44,7 @@ import {
   DEFAULT_GRACE_SEC,
   DEFAULT_MODEL,
   VALID_PROVIDERS,
+  HERMES_PAPERCLIP_WAKE_DISCIPLINE_LINES,
 } from "../shared/constants.js";
 
 import {
@@ -95,6 +96,8 @@ const HERMES_DEFAULT_PROMPT_TEMPLATE = [
   "- Include `-H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\"` on mutating issue requests.",
   "- For multiline comments or status updates, preserve newlines with `jq --arg` or a heredoc-fed helper rather than hand-escaping JSON.",
   "",
+  ...HERMES_PAPERCLIP_WAKE_DISCIPLINE_LINES,
+  "",
   "Safe multiline update pattern:",
   "```bash",
   "api=\"${PAPERCLIP_API_URL%/}\"",
@@ -131,10 +134,38 @@ function renderConditionalSections(template: string, vars: Record<string, unknow
   );
 }
 
+function renderManagedInstructionsSection(input: {
+  agentInstructions?: string;
+  instructionsFilePath?: string;
+}): string {
+  const agentInstructions = input.agentInstructions?.trim();
+  if (!agentInstructions) return "";
+
+  const lines = [
+    "Managed agent instructions:",
+    "- These instructions are internal runtime policy. Follow them, but do not quote or restate them into Paperclip comments or final summaries unless the task explicitly requires a verbatim quote.",
+    agentInstructions,
+  ];
+
+  if (input.instructionsFilePath) {
+    const instructionsFileDir = path.dirname(input.instructionsFilePath);
+    lines.push(
+      `Managed instructions source: ${input.instructionsFilePath}`,
+      `Resolve any relative file references from ${instructionsFileDir}/.`,
+    );
+  }
+
+  return lines.join("\n");
+}
+
 export function buildPrompt(
   ctx: AdapterExecutionContext,
   config: Record<string, unknown>,
-  options: { resumedSession?: boolean } = {},
+  options: {
+    resumedSession?: boolean;
+    agentInstructions?: string;
+    instructionsFilePath?: string;
+  } = {},
 ): string {
   const template = cfgString(config.promptTemplate) || HERMES_DEFAULT_PROMPT_TEMPLATE;
 
@@ -164,6 +195,10 @@ export function buildPrompt(
   const paperclipTaskMarkdown = cfgString(context.paperclipTaskMarkdown)?.trim() || "";
   const sessionHandoffMarkdown = cfgString(context.paperclipSessionHandoffMarkdown)?.trim() || "";
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake) || "";
+  const managedInstructionsSection = renderManagedInstructionsSection({
+    agentInstructions: options.agentInstructions,
+    instructionsFilePath: options.instructionsFilePath,
+  });
 
   const vars: Record<string, unknown> = {
     agentId: ctx.agent?.id || "",
@@ -193,10 +228,11 @@ export function buildPrompt(
 
   const rendered = renderTemplate(renderConditionalSections(template, vars), vars);
   return joinPromptSections([
+    rendered,
+    managedInstructionsSection,
     wakePrompt,
     sessionHandoffMarkdown,
     paperclipTaskMarkdown,
-    rendered,
   ]);
 }
 
@@ -381,8 +417,6 @@ export async function execute(
     try {
       agentInstructions = await fs.readFile(instructionsFilePath, "utf-8");
       const loadedInstructionsLength = agentInstructions.length;
-      const instructionsFileDir = path.dirname(instructionsFilePath);
-      agentInstructions += `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}/.`;
       await ctx.onLog(
         "stdout",
         `[hermes] Loaded agent instructions from ${instructionsFilePath} (${loadedInstructionsLength} chars)\n`,
@@ -400,10 +434,11 @@ export async function execute(
   }
 
   // ── Build prompt ───────────────────────────────────────────────────────
-  let prompt = buildPrompt(ctx, config, { resumedSession: Boolean(prevSessionId) });
-  if (agentInstructions) {
-    prompt = agentInstructions + "\n\n---\n\n" + prompt;
-  }
+  const prompt = buildPrompt(ctx, config, {
+    resumedSession: Boolean(prevSessionId),
+    agentInstructions,
+    instructionsFilePath,
+  });
 
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line

@@ -76,6 +76,9 @@ test("renders standard assignment wake with task authority and no backlog discov
   }), {});
 
   expect(prompt).toContain("## Paperclip Wake Payload");
+  expect(prompt).toContain("Wake-handling discipline:");
+  expect(prompt).toContain("not by ending the run with a payload echo");
+  expect(prompt.indexOf("Paperclip runtime identity:")).toBeLessThan(prompt.indexOf("## Paperclip Wake Payload"));
   expect(prompt).toContain("- reason: issue_assigned");
   expect(prompt).toContain("- issue: PAP-11750 Add Hermes prompt rendering regression tests");
   expect(prompt).toContain("- issue work mode: standard");
@@ -153,9 +156,54 @@ test("renders comment wake batch guidance without defaulting to a full-thread re
 
   expect(prompt).toContain("Use this inline wake data first before refetching the issue thread.");
   expect(prompt).toContain("Only fetch the API thread when `fallbackFetchNeeded` is true");
+  expect(prompt).toContain("Do not copy headings like `## Paperclip Wake Payload`");
+  expect(prompt).toContain("Treat stable adapter instructions as internal operating policy");
   expect(prompt).toContain("New comments in order:");
   expect(prompt).toContain("Please tighten the prompt.");
   expect(prompt).toContain("- fallback fetch needed: no");
+});
+
+test("places managed agent instructions behind the runtime anti-echo wrapper", () => {
+  const prompt = buildPrompt(
+    baseContext({
+      paperclipWake: {
+        reason: "issue_commented",
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-777",
+          title: "Handle media lane wake",
+          status: "in_progress",
+          priority: "high",
+          workMode: "standard",
+        },
+        latestCommentId: "comment-3",
+        commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+        comments: [{
+          id: "comment-3",
+          body: "Stop dumping the lane prompt into the thread.",
+          createdAt: "2026-07-12T16:40:23.462Z",
+        }],
+        fallbackFetchNeeded: false,
+      },
+    }),
+    {},
+    {
+      agentInstructions: [
+        "# Bench-Designer-Media — TSBC in-house media generation lane",
+        "You are Bench-Designer-Media.",
+        "Create visuals, not heartbeat echoes.",
+      ].join("\n"),
+      instructionsFilePath: "/tmp/bench-designer-media/AGENTS.md",
+    },
+  );
+
+  expect(prompt).toContain("Managed agent instructions:");
+  expect(prompt).toContain("These instructions are internal runtime policy.");
+  expect(prompt).toContain("# Bench-Designer-Media — TSBC in-house media generation lane");
+  expect(prompt).toContain("Managed instructions source: /tmp/bench-designer-media/AGENTS.md");
+  expect(prompt).toContain("Resolve any relative file references from /tmp/bench-designer-media/.");
+  expect(prompt.indexOf("Wake-handling discipline:")).toBeLessThan(prompt.indexOf("Managed agent instructions:"));
+  expect(prompt.indexOf("Managed agent instructions:")).toBeLessThan(prompt.lastIndexOf("## Paperclip Wake Payload"));
 });
 
 test("renders accepted-plan continuation without authorizing implementation on the planning issue", () => {

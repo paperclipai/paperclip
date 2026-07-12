@@ -3,7 +3,10 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 
-function makeCtx(config: Record<string, unknown>): AdapterExecutionContext {
+function makeCtx(
+  config: Record<string, unknown>,
+  contextOverrides: Record<string, unknown> = {},
+): AdapterExecutionContext {
   return {
     runId: "pc-run-1",
     agent: {
@@ -26,6 +29,7 @@ function makeCtx(config: Record<string, unknown>): AdapterExecutionContext {
       paperclipWake: {
         issue: { identifier: "PAP-1", title: "Do the thing" },
       },
+      ...contextOverrides,
     },
     onLog: vi.fn(async () => undefined),
     onMeta: vi.fn(async () => undefined),
@@ -140,8 +144,113 @@ describe("execute", () => {
       "X-Hermes-Session-Key": "paperclip:company:company-1:agent:agent-1:issue:issue-1",
     });
     const body = JSON.parse(String(init.body));
+    expect(body.input).toContain("Wake-handling discipline:");
+    expect(body.input).toContain("not by ending the run with a payload echo");
+    expect(body.input.indexOf("Wake-handling discipline:")).toBeLessThan(body.input.indexOf("## Paperclip Wake Payload"));
     expect(body.input).toContain("Do the thing");
     expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+  });
+
+  it("includes anti-echo guidance on comment wakes", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-2", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: run.completed",
+              "data: {\"status\":\"completed\",\"output\":\"done\"}",
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await execute(
+      makeCtx(
+        {
+          apiBaseUrl: "http://127.0.0.1:8642",
+          apiKey: "secret-key",
+          timeoutSec: 5,
+        },
+        {
+          wakeReason: "issue_commented",
+          paperclipWake: {
+            reason: "issue_commented",
+            issue: {
+              identifier: "PAP-2",
+              title: "Handle board comment",
+              status: "in_progress",
+              workMode: "standard",
+            },
+            latestCommentId: "comment-1",
+            commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+            comments: [{ id: "comment-1", body: "Please stop echoing the payload.", createdAt: "2026-07-12T16:00:00.000Z" }],
+            fallbackFetchNeeded: false,
+          },
+        },
+      ),
+    );
+
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    const body = JSON.parse(String((createCall?.[1] as RequestInit).body));
+    expect(body.input).toContain("Do not copy headings like `## Paperclip Wake Payload`");
+    expect(body.input).toContain("Treat stable adapter instructions as internal operating policy");
+    expect(body.input).toContain("Please stop echoing the payload.");
+  });
+
+  it("prefixes custom stable instructions with internal-only anti-echo guidance", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-3", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: run.completed",
+              "data: {\"status\":\"completed\",\"output\":\"done\"}",
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await execute(
+      makeCtx({
+        apiBaseUrl: "http://127.0.0.1:8642",
+        apiKey: "secret-key",
+        timeoutSec: 5,
+        instructions: [
+          "# Bench-Designer-Media — TSBC in-house media generation lane",
+          "You are Bench-Designer-Media.",
+          "Create visuals, not heartbeat echoes.",
+        ].join("\n"),
+      }),
+    );
+
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    const body = JSON.parse(String((createCall?.[1] as RequestInit).body));
+    expect(body.instructions).toContain("Stable instruction discipline:");
+    expect(body.instructions).toContain("Treat stable adapter instructions as internal runtime policy.");
+    expect(body.instructions).toContain("# Bench-Designer-Media — TSBC in-house media generation lane");
+    expect(body.instructions.indexOf("Stable instruction discipline:")).toBeLessThan(
+      body.instructions.indexOf("# Bench-Designer-Media — TSBC in-house media generation lane"),
+    );
   });
 
   it("routes a bare Hermes dashboard URL on port 9119 through the API prefix", async () => {

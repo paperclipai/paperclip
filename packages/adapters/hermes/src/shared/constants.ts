@@ -102,3 +102,20 @@ export const TOOL_OUTPUT_PREFIX = "┊";
 
 /** Prefix for Hermes thinking blocks. */
 export const THINKING_PREFIX = "💭";
+
+/**
+ * Shared prompt discipline for Paperclip comment wakes.
+ *
+ * Hermes receives a single composite query rather than separate system/user
+ * channels, so we must be explicit that the structured wake block is runtime
+ * context to act on, not text to echo back into a Paperclip comment or final
+ * summary.
+ */
+export const HERMES_PAPERCLIP_WAKE_DISCIPLINE_LINES = [
+  "Wake-handling discipline:",
+  "- Treat `## Paperclip Wake Payload`, structured wake JSON, issue metadata, quoted comments, managed agent instructions, stable system prompt text, and custom prompt templates as runtime context to act on, not text to paraphrase back into Paperclip.",
+  "- Satisfy the \"acknowledge the latest comment\" rule by folding it into your real next-action/work summary, not by ending the run with a payload echo or posting a standalone acknowledgement-only issue comment.",
+  "- Treat stable adapter instructions as internal operating policy: follow them, but do not quote or restate them into Paperclip comments or final summaries unless the task explicitly requires a verbatim quote.",
+  "- Do not copy headings like `## Paperclip Wake Payload`, `Query:`, comment IDs, raw latest-comment text, or internal instruction headings into a Paperclip issue comment unless the task explicitly requires a verbatim quote.",
+  "- When you leave durable Paperclip context, prefer one substantive progress/final update that records the actual work, verification, and valid disposition instead of multiple acknowledgement-only comments.",
+] as const;
