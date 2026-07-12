@@ -441,12 +441,17 @@ describe("codex_local ACP lane", () => {
       mode: "persistent",
       cwd: root,
     });
+    // The model is applied via a `-c model=...` startup config override (it
+    // accepts manual model ids some codex-acp versions reject through
+    // set_config_option); only effort and fast mode go through session config.
     expect(runtimes[0]?.setConfigInputs.map((input) => [input.key, input.value])).toEqual([
-      ["model", "gpt-5.5"],
       ["reasoning_effort", "high"],
       ["service_tier", "fast"],
       ["features.fast_mode", "true"],
     ]);
+    expect(meta[0]?.commandNotes?.join("\n")).toContain(
+      "Requested ACPX model: gpt-5.5 (set via -c model=... startup config override).",
+    );
     expect(meta[0]?.commandNotes?.join("\n")).toContain("Prepared ACPX Codex skill home");
     expect(meta[0]?.env?.CODEX_HOME).toBe(path.join(root, "codex-home"));
   });

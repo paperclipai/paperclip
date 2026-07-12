@@ -1093,6 +1093,16 @@ async function buildRuntime(input: {
       agentCommand = normalized;
     }
   }
+  // For the codex agent, set the model via a `-c model=...` startup config
+  // override rather than session/set_config_option — the override feeds the
+  // same config surface as ~/.codex/config.toml, which accepts manual model
+  // ids, while some codex-acp versions validate set_config_option values
+  // against their advertised model list and reject unlisted ids (ACP -32602).
+  // This mirrors the ANTHROPIC_MODEL startup env approach for claude below.
+  if (requestedModel && acpxAgent === "codex" && agentCommandShell) {
+    agentCommandShell = `${agentCommandShell} -c ${shellQuote(`model=${JSON.stringify(requestedModel)}`)}`;
+    agentCommand = agentCommandShell;
+  }
   const childStderrDir = path.join(stateDir, "run-stderr");
   const childStderrLogPath = agentCommand ? path.join(childStderrDir, `${runId}.log`) : null;
   const wrapper = agentCommand
@@ -1225,9 +1235,10 @@ async function buildRuntime(input: {
 function sessionConfigOptions(prepared: AcpxPreparedRuntime): Array<{ key: string; value: string }> {
   const options: Array<{ key: string; value: string }> = [];
   // Model for the claude agent is pre-set via ANTHROPIC_MODEL env var at
-  // startup; skip set_config_option to avoid ACP-server model-name validation
-  // that rejects bare IDs like "claude-opus-4-7" in some runtime versions.
-  if (prepared.requestedModel && prepared.acpxAgent !== "claude") {
+  // startup, and for the codex agent via a `-c model=...` startup config
+  // override; skip set_config_option for both to avoid ACP-server model-name
+  // validation that rejects bare/manual IDs in some runtime versions.
+  if (prepared.requestedModel && prepared.acpxAgent !== "claude" && prepared.acpxAgent !== "codex") {
     options.push({ key: "model", value: prepared.requestedModel });
   }
   if (prepared.requestedThinkingEffort) {
@@ -1245,31 +1256,47 @@ function sessionConfigOptions(prepared: AcpxPreparedRuntime): Array<{ key: strin
   return options;
 }
 
+// Session config options are preferences, not prerequisites: a value the ACP
+// server rejects (e.g. -32602 for a model id its validation list does not
+// advertise) must degrade the run, never kill it. Failures are logged loudly
+// and returned as notes so they surface in the run's command metadata.
 async function applySessionConfigOptions(input: {
   runtime: AcpRuntime;
   handle: AcpRuntimeHandle;
   prepared: AcpxPreparedRuntime;
   onLog: AdapterExecutionContext["onLog"];
-}) {
+}): Promise<string[]> {
   const options = sessionConfigOptions(input.prepared);
-  if (options.length === 0) return;
+  if (options.length === 0) return [];
+  const notes: string[] = [];
   if (!input.runtime.setConfigOption) {
     const message =
-      "ACPX runtime does not expose session config controls; upgrade ACPX or remove configured model, effort, and fast mode overrides.";
+      `ACPX runtime does not expose session config controls; continuing without ` +
+      `${options.map((option) => option.key).join(", ")} override(s). Upgrade ACPX to apply them.`;
     await input.onLog("stderr", `[paperclip] ${message}\n`);
-    throw new Error(message);
+    return [message];
   }
   for (const option of options) {
-    await input.runtime.setConfigOption({
-      handle: input.handle,
-      key: option.key,
-      value: option.value,
-    });
-    await input.onLog(
-      "stdout",
-      `[paperclip] Applied ACPX ${input.prepared.acpxAgent} config ${option.key}=${option.value}\n`,
-    );
+    try {
+      await input.runtime.setConfigOption({
+        handle: input.handle,
+        key: option.key,
+        value: option.value,
+      });
+      await input.onLog(
+        "stdout",
+        `[paperclip] Applied ACPX ${input.prepared.acpxAgent} config ${option.key}=${option.value}\n`,
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      const message =
+        `ACPX ${input.prepared.acpxAgent} rejected session config ${option.key}=${option.value} ` +
+        `(${reason}); continuing with the agent's default ${option.key}.`;
+      await input.onLog("stderr", `[paperclip] ${message}\n`);
+      notes.push(message);
+    }
   }
+  return notes;
 }
 
 async function cleanupRemoteBridges(prepared: AcpxPreparedRuntime): Promise<void> {
@@ -1454,7 +1481,7 @@ function resultErrorMessage(result: AcpRuntimeTurnResult): string | null {
   return result.error.message;
 }
 
-type AcpxExecutionPhase = "ensure_session" | "configure_session" | "turn";
+type AcpxExecutionPhase = "ensure_session" | "turn";
 
 function describeErrorDiagnostics(err: unknown): {
   errorName: string;
@@ -1519,7 +1546,6 @@ function classifyError(
     if (acpCode === "ACP_BACKEND_MISSING") return "acpx_backend_missing";
     if (acpCode === "ACP_BACKEND_UNAVAILABLE") return "acpx_backend_unavailable";
     if (phase === "ensure_session") return "acpx_session_init_failed";
-    if (phase === "configure_session") return "acpx_session_config_failed";
     if (phase === "turn") return "acpx_turn_failed";
     return null;
   })();
@@ -1799,50 +1825,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
     }
     const sessionHandle = handle;
-    try {
-      await applySessionConfigOptions({
-        runtime,
-        handle: sessionHandle,
-        prepared,
-        onLog: ctx.onLog,
-      });
-    } catch (err) {
-      const { classified, message } = await emitAcpxFailure({
-        ctx,
-        prepared,
-        err,
-        phase: "configure_session",
-      });
-      await runtime.close({
-        handle: sessionHandle,
-        reason: "paperclip config cleanup",
-        discardPersistentState: false,
-      }).catch(() => {});
-      const existing = warmHandles.get(prepared.sessionKey);
-      if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
-        clearWarmHandleTimer(existing);
-        warmHandles.delete(prepared.sessionKey);
-      }
-      await cleanupRemoteBridges(prepared);
-      return {
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        errorMessage: message,
-        ...classified,
-        provider: "acpx",
-        model: prepared.requestedModel || null,
-        clearSession,
-        resultJson: {
-          phase: "configure_session",
-          agent: prepared.acpxAgent,
-          requestedModel: prepared.requestedModel || null,
-          requestedThinkingEffort: prepared.requestedThinkingEffort || null,
-          fastMode: prepared.fastMode,
-        },
-        summary: message,
-      };
-    }
+    const sessionConfigNotes = await applySessionConfigOptions({
+      runtime,
+      handle: sessionHandle,
+      prepared,
+      onLog: ctx.onLog,
+    });
     const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env);
     const runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
     await emitAcpxLog(ctx, {
@@ -1870,11 +1858,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? [
                 prepared.acpxAgent === "claude"
                   ? `Requested ACPX model: ${prepared.requestedModel} (set via ANTHROPIC_MODEL env at startup).`
-                  : `Requested ACPX model: ${prepared.requestedModel}.`,
+                  : prepared.acpxAgent === "codex"
+                    ? `Requested ACPX model: ${prepared.requestedModel} (set via -c model=... startup config override).`
+                    : `Requested ACPX model: ${prepared.requestedModel}.`,
               ]
             : []),
           ...(prepared.requestedThinkingEffort ? [`Requested ACPX thinking effort: ${prepared.requestedThinkingEffort}.`] : []),
           ...(prepared.fastMode ? ["Requested ACPX Codex fast mode."] : []),
+          ...sessionConfigNotes,
           ...(Array.isArray(prepared.skillsIdentity.commandNotes)
             ? prepared.skillsIdentity.commandNotes.filter((note): note is string => typeof note === "string")
             : []),

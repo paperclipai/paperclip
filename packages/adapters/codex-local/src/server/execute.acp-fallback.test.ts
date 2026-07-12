@@ -158,4 +158,45 @@ describe("codex_local ACP startup fallback", () => {
 
     expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
   });
+
+  it("returns successful structured ACP results without touching the CLI lane", async () => {
+    const succeeded = {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      errorCode: null,
+      provider: "acpx",
+      model: "gpt-5.5-pro",
+      resultJson: { status: "completed" },
+      summary: "acp turn done",
+    };
+    executeCodexAcp.mockResolvedValueOnce(succeeded as never);
+    const ctx = buildContext({ model: "gpt-5.5-pro" });
+
+    const result = await execute(ctx as never);
+
+    expect(result).toBe(succeeded);
+    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back to the CLI lane for failed structured ACP results", async () => {
+    const failed = {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "turn failed",
+      errorCode: "acpx_turn_failed",
+      provider: "acpx",
+      resultJson: { phase: "turn" },
+      summary: "turn failed",
+    };
+    executeCodexAcp.mockResolvedValueOnce(failed as never);
+    const ctx = buildContext();
+
+    const result = await execute(ctx as never);
+
+    expect(result).toBe(failed);
+    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+  });
 });

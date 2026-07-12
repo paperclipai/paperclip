@@ -114,15 +114,16 @@ async function runExecutor(
     executionTransport?: Record<string, unknown>;
     authToken?: string;
     executionTarget?: Record<string, unknown>;
+    runtimeOverrides?: Record<string, unknown>;
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
   const execute = createAcpxEngineExecutor({
-    createRuntime: (options) => {
-      runtimeOptions.push(options as unknown as Record<string, unknown>);
-      return buildRuntime() as never;
+    createRuntime: (createOptions) => {
+      runtimeOptions.push(createOptions as unknown as Record<string, unknown>);
+      return { ...buildRuntime(), ...options.runtimeOverrides } as never;
     },
   });
 
@@ -1310,4 +1311,113 @@ describe("shared ACP engine execution timeouts", () => {
     expect(result.errorMessage).toBe(expectedMessage);
     expect(cancelReasons).toContain(expectedMessage);
   }, 15_000);
+});
+
+describe("ACPX session config application", () => {
+  it("applies the codex model via a -c startup config override instead of set_config_option", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const setConfigOption = [] as Array<{ key: string; value: string }>;
+
+    const { meta } = await runExecutor(
+      {
+        agent: "codex",
+        agentCommand: "node ./fake-codex-acp.js",
+        model: "gpt-5.5-pro",
+        stateDir,
+        env: { CODEX_HOME: path.join(root, "codex-home") },
+      },
+      {
+        runtimeOverrides: {
+          setConfigOption: async (input: { key: string; value: string }) => {
+            setConfigOption.push({ key: input.key, value: input.value });
+          },
+        },
+      },
+    );
+
+    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
+    const wrapperFile = wrappers.find((name) => name.endsWith(".sh"));
+    expect(wrapperFile).toBeTruthy();
+    const wrapper = await fs.readFile(path.join(stateDir, "wrappers", wrapperFile!), "utf8");
+    expect(wrapper).toContain('exec node ./fake-codex-acp.js -c \'model="gpt-5.5-pro"\'');
+    expect(setConfigOption).toEqual([]);
+    const commandNotes = (meta[0]?.commandNotes ?? []) as string[];
+    expect(commandNotes.join("\n")).toContain("set via -c model=... startup config override");
+  });
+
+  it("still applies codex reasoning effort via set_config_option alongside the model startup override", async () => {
+    const root = await makeTempRoot();
+    const setConfigOption = [] as Array<{ key: string; value: string }>;
+
+    await runExecutor(
+      {
+        agent: "codex",
+        agentCommand: "node ./fake-codex-acp.js",
+        model: "gpt-5.5-pro",
+        modelReasoningEffort: "high",
+        stateDir: path.join(root, "state"),
+        env: { CODEX_HOME: path.join(root, "codex-home") },
+      },
+      {
+        runtimeOverrides: {
+          setConfigOption: async (input: { key: string; value: string }) => {
+            setConfigOption.push({ key: input.key, value: input.value });
+          },
+        },
+      },
+    );
+
+    expect(setConfigOption).toEqual([{ key: "reasoning_effort", value: "high" }]);
+  });
+
+  it("degrades gracefully when the ACP server rejects a session config option", async () => {
+    const root = await makeTempRoot();
+
+    const { logs, meta, result } = await runExecutor(
+      {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        model: "gpt-5.5-pro",
+        stateDir: path.join(root, "state"),
+      },
+      {
+        runtimeOverrides: {
+          setConfigOption: async () => {
+            throw new Error("Invalid params (ACP -32602)");
+          },
+        },
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode ?? null).toBeNull();
+    const stderrText = logs
+      .filter((entry) => entry.stream === "stderr")
+      .map((entry) => entry.text)
+      .join("\n");
+    expect(stderrText).toContain('rejected session config model=gpt-5.5-pro');
+    expect(stderrText).toContain("continuing with the agent's default model");
+    const commandNotes = (meta[0]?.commandNotes ?? []) as string[];
+    expect(commandNotes.join("\n")).toContain("continuing with the agent's default model");
+  });
+
+  it("warns and continues when the ACPX runtime lacks session config controls", async () => {
+    const root = await makeTempRoot();
+
+    const { logs, result } = await runExecutor({
+      agent: "custom",
+      agentCommand: "node ./fake-acp.js",
+      thinkingEffort: "high",
+      stateDir: path.join(root, "state"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const stderrText = logs
+      .filter((entry) => entry.stream === "stderr")
+      .map((entry) => entry.text)
+      .join("\n");
+    expect(stderrText).toContain("does not expose session config controls");
+    expect(stderrText).toContain("continuing without effort override(s)");
+  });
 });
