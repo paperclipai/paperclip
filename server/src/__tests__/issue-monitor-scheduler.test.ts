@@ -162,6 +162,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values({

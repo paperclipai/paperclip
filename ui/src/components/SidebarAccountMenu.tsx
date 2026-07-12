@@ -18,6 +18,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
 import { SidebarServerInfo } from "./SidebarServerInfo";
+import { Badge } from "@/components/ui/badge";
 
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
@@ -144,7 +145,7 @@ export function SidebarAccountMenu({
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground"
+            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground"
             aria-label="Open account menu"
           >
             <Avatar size="sm">
@@ -158,9 +159,9 @@ export function SidebarAccountMenu({
           side="top"
           align="start"
           sideOffset={10}
-          className="w-[277px] max-w-[calc(100vw-1rem)] overflow-hidden rounded-t-2xl rounded-b-none border-border p-0 shadow-2xl"
+          className="w-(--sz-277px) max-w-(--sz-calc-24) overflow-hidden rounded-t-2xl rounded-b-none border-border p-0 shadow-2xl"
         >
-          <div className="h-24 bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--accent))_55%,hsl(var(--muted))_100%)]" />
+          <div className="h-24 bg-(image:--gradient-extract-25)" />
           <div className="-mt-8 px-4 pb-4">
             <div className="flex items-start gap-3">
               <div className="rounded-2xl border-4 border-popover bg-popover p-0.5 shadow-sm">
@@ -172,9 +173,9 @@ export function SidebarAccountMenu({
               <div className="min-w-0 flex-1 pt-1">
                 <div className="flex items-center gap-2">
                   <h2 className="truncate text-base font-semibold text-foreground">{displayName}</h2>
-                  <span className="rounded-full bg-accent px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <Badge variant="ghost" className="bg-accent text-(length:--text-nano) font-semibold uppercase tracking-wide text-muted-foreground">
                     {accountBadge}
-                  </span>
+                  </Badge>
                 </div>
                 <p className="truncate text-sm text-muted-foreground">{secondaryLabel}</p>
                 {version ? (

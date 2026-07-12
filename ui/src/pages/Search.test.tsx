@@ -34,6 +34,14 @@ const projectsApiMock = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const issuesApiMock = vi.hoisted(() => ({
+  listLabels: vi.fn(),
+}));
+
+const authApiMock = vi.hoisted(() => ({
+  getSession: vi.fn(),
+}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => companyState,
 }));
@@ -60,6 +68,14 @@ vi.mock("../api/agents", () => ({
 
 vi.mock("../api/projects", () => ({
   projectsApi: projectsApiMock,
+}));
+
+vi.mock("../api/issues", () => ({
+  issuesApi: issuesApiMock,
+}));
+
+vi.mock("../api/auth", () => ({
+  authApi: authApiMock,
 }));
 
 vi.mock("@/lib/router", async () => {
@@ -153,8 +169,12 @@ describe("Search page", () => {
     searchApiMock.search.mockReset();
     agentsApiMock.list.mockReset();
     projectsApiMock.list.mockReset();
+    issuesApiMock.listLabels.mockReset();
+    authApiMock.getSession.mockReset();
     agentsApiMock.list.mockResolvedValue([]);
     projectsApiMock.list.mockResolvedValue([]);
+    issuesApiMock.listLabels.mockResolvedValue([]);
+    authApiMock.getSession.mockResolvedValue({ user: { id: "user-1" }, session: { userId: "user-1" } });
     window.localStorage.clear();
   });
 
@@ -169,7 +189,18 @@ describe("Search page", () => {
       scope: "all",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 1, artifact: 0, agent: 0, project: 0 },
+      sort: "relevance",
+      countsByType: { issue: 1, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
       hasMore: false,
       results: [
         {
@@ -239,7 +270,18 @@ describe("Search page", () => {
       scope: "artifacts",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 0, artifact: 1, agent: 0, project: 0 },
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 0, document: 0, artifact: 1, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
       hasMore: false,
       results: [
         {
@@ -297,6 +339,138 @@ describe("Search page", () => {
     });
   });
 
+  it("renders comment and document result rows with exact anchors, source chips, and highlights", async () => {
+    searchApiMock.search.mockResolvedValueOnce({
+      query: "needle",
+      normalizedQuery: "needle",
+      scope: "all",
+      limit: 20,
+      offset: 0,
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 1, document: 1, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
+      hasMore: false,
+      results: [
+        {
+          id: "issue-comment",
+          type: "issue",
+          score: 180,
+          title: "PAP-77 Comment source",
+          href: "/PAP/issues/PAP-77#comment-comment-77",
+          matchedFields: ["comment"],
+          sourceLabel: "Comment",
+          snippet: "thread needle evidence",
+          snippets: [
+            {
+              field: "comment",
+              label: "Comment",
+              text: "thread needle evidence",
+              highlights: [{ start: 7, end: 13 }],
+            },
+          ],
+          issue: {
+            id: "issue-comment",
+            identifier: "PAP-77",
+            title: "Comment source",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+            projectId: null,
+            updatedAt: new Date().toISOString(),
+          },
+          updatedAt: new Date().toISOString(),
+          previewImageUrl: null,
+        },
+        {
+          id: "issue-document",
+          type: "issue",
+          score: 170,
+          title: "PAP-78 Document source",
+          href: "/PAP/issues/PAP-78#document-plan",
+          matchedFields: ["document"],
+          sourceLabel: "Plan",
+          snippet: "plan needle evidence",
+          snippets: [
+            {
+              field: "document",
+              label: "Plan",
+              text: "plan needle evidence",
+              highlights: [{ start: 5, end: 11 }],
+            },
+          ],
+          issue: {
+            id: "issue-document",
+            identifier: "PAP-78",
+            title: "Document source",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+            projectId: null,
+            updatedAt: new Date().toISOString(),
+          },
+          updatedAt: new Date().toISOString(),
+          previewImageUrl: null,
+        },
+      ],
+    });
+
+    const { root } = renderSearch("/search?q=needle", container);
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('a[href="/PAP/issues/PAP-77#comment-comment-77"]')).not.toBeNull();
+      expect(container.querySelector('a[href="/PAP/issues/PAP-78#document-plan"]')).not.toBeNull();
+      expect(container.textContent).toContain("Comment");
+      expect(container.textContent).toContain("Doc");
+      expect(container.querySelectorAll("mark")).toHaveLength(2);
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders the explicit loading state while search is pending", async () => {
+    searchApiMock.search.mockReturnValueOnce(new Promise(() => {}));
+
+    const { root } = renderSearch("/search?q=slow", container);
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="search-loading"]')?.textContent).toContain("slow");
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders the explicit error state with retry and fallback actions", async () => {
+    searchApiMock.search.mockRejectedValueOnce(Object.assign(new Error("Search failed"), { status: 500 }));
+
+    const { root } = renderSearch("/search?q=broken", container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Couldn’t run that search");
+      expect(container.textContent).toContain("The server returned 500.");
+      expect(container.textContent).toContain("Retry");
+      expect(container.textContent).toContain("Open Tasks filter view");
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
   it("debounces typing into the input and dispatches a search after the debounce window", async () => {
     searchApiMock.search.mockResolvedValue({
       query: "deflake",
@@ -304,7 +478,18 @@ describe("Search page", () => {
       scope: "all",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 0, artifact: 0, agent: 0, project: 0 },
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
       hasMore: false,
       results: [],
     });
@@ -348,7 +533,18 @@ describe("Search page", () => {
       scope: "all",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 1, artifact: 0, agent: 0, project: 0 },
+      sort: "relevance",
+      countsByType: { issue: 1, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
       hasMore: false,
       results: [
         {
@@ -402,7 +598,18 @@ describe("Search page", () => {
       scope: "comments",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 0, artifact: 0, agent: 0, project: 0 },
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
       hasMore: false,
       results: [],
     });
@@ -419,4 +626,365 @@ describe("Search page", () => {
       root.unmount();
     });
   });
+
+  it("parses URL filters into search params and operator pills", async () => {
+    searchApiMock.search.mockResolvedValueOnce({
+      query: "auth",
+      normalizedQuery: "auth",
+      scope: "all",
+      limit: 20,
+      offset: 0,
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
+      hasMore: false,
+      results: [],
+    });
+
+    const { root } = renderSearch("/search?q=auth&status=todo&updatedWithin=7d", container);
+
+    await waitForAssertion(() => {
+      expect(searchApiMock.search).toHaveBeenCalledWith("company-1", {
+        q: "auth",
+        scope: "all",
+        limit: 20,
+        status: ["todo"],
+        updatedWithin: "7d",
+      });
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("status:todo");
+      expect(container.textContent).toContain("updated:>7d");
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("parses typed operators before dispatching search", async () => {
+    searchApiMock.search.mockResolvedValue({
+      query: "auth",
+      normalizedQuery: "auth",
+      scope: "all",
+      limit: 20,
+      offset: 0,
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
+      hasMore: false,
+      results: [],
+    });
+
+    const { root } = renderSearch("/search", container);
+    const input = container.querySelector('input[aria-label="Search query"]') as HTMLInputElement;
+
+    flushSync(() => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      nativeSetter.call(input, "auth status:blocked");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    await waitForAssertion(() => {
+      expect(searchApiMock.search).toHaveBeenCalledWith("company-1", {
+        q: "auth",
+        scope: "all",
+        limit: 20,
+        status: ["blocked"],
+      });
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("status:blocked");
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("drops a committed operator filter from requests when its token is deleted", async () => {
+    searchApiMock.search.mockResolvedValue(emptyResponse());
+
+    const { root } = renderSearch("/search", container);
+    const input = container.querySelector('input[aria-label="Search query"]') as HTMLInputElement;
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+
+    flushSync(() => {
+      nativeSetter.call(input, "auth status:blocked");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await waitForAssertion(() => {
+      expect(searchApiMock.search).toHaveBeenCalledWith("company-1", {
+        q: "auth",
+        scope: "all",
+        limit: 20,
+        status: ["blocked"],
+      });
+    });
+
+    // Deleting the operator token must also delete its filter from the request.
+    flushSync(() => {
+      nativeSetter.call(input, "auth");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await waitForAssertion(() => {
+      const lastCall = searchApiMock.search.mock.calls.at(-1);
+      expect(lastCall?.[1]).toEqual({ q: "auth", scope: "all", limit: 20 });
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("removes an operator-derived filter chip and strips its token from the query", async () => {
+    searchApiMock.search.mockResolvedValue(emptyResponse());
+
+    const { root } = renderSearch("/search", container);
+    const input = container.querySelector('input[aria-label="Search query"]') as HTMLInputElement;
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+
+    flushSync(() => {
+      nativeSetter.call(input, "auth status:blocked");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await waitForAssertion(() => {
+      expect(searchApiMock.search).toHaveBeenCalledWith("company-1", {
+        q: "auth",
+        scope: "all",
+        limit: 20,
+        status: ["blocked"],
+      });
+    });
+
+    const removeButton = await (async () => {
+      let button: HTMLButtonElement | null = null;
+      await waitForAssertion(() => {
+        button = container.querySelector<HTMLButtonElement>('button[aria-label="Remove filter Status: Blocked"]');
+        expect(button).not.toBeNull();
+      });
+      return button!;
+    })();
+
+    flushSync(() => {
+      removeButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // The chip removal wins over the typed token: the input keeps only the plain
+    // text and the re-query carries no status filter.
+    await waitForAssertion(() => {
+      expect(input.value).toBe("auth");
+      const lastCall = searchApiMock.search.mock.calls.at(-1);
+      expect(lastCall?.[1]).toEqual({ q: "auth", scope: "all", limit: 20 });
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows operator autocomplete suggestions and applies one to the current token", async () => {
+    searchApiMock.search.mockResolvedValue({
+      query: "auth",
+      normalizedQuery: "auth",
+      scope: "all",
+      limit: 20,
+      offset: 0,
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
+      hasMore: false,
+      results: [],
+    });
+
+    const { root } = renderSearch("/search", container);
+    const input = container.querySelector('input[aria-label="Search query"]') as HTMLInputElement;
+    expect(input).not.toBeNull();
+
+    flushSync(() => {
+      input.focus();
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      nativeSetter.call(input, "auth sta");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    let suggestionButton: HTMLButtonElement | null = null;
+    await waitForAssertion(() => {
+      const suggestions = container.querySelector('[data-testid="search-operator-suggestions"]');
+      expect(suggestions).not.toBeNull();
+      expect(suggestions!.textContent).toContain("status:todo");
+      expect(suggestions!.textContent).toContain("status:blocked");
+      expect(suggestions!.textContent).not.toContain("assignee:me");
+      suggestionButton = container.querySelector('button[aria-label="Insert operator status:todo"]');
+      expect(suggestionButton).not.toBeNull();
+    });
+
+    flushSync(() => {
+      suggestionButton!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      suggestionButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(input.value).toBe("auth status:todo");
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  function emptyResponse(overrides: Record<string, unknown> = {}) {
+    return {
+      query: "auth",
+      normalizedQuery: "auth",
+      scope: "all",
+      limit: 20,
+      offset: 0,
+      sort: "relevance",
+      countsByType: { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: {
+        status: {},
+        priority: {},
+        assigneeAgentId: {},
+        assigneeUserId: {},
+        projectId: {},
+        labelId: {},
+        updatedWithin: {},
+      },
+      zeroResults: null,
+      hasMore: false,
+      results: [],
+      ...overrides,
+    };
+  }
+
+  it("round-trips the sort param through the URL and into the search request", async () => {
+    searchApiMock.search.mockResolvedValue(emptyResponse({ sort: "updated" }));
+
+    const { root } = renderSearch("/search?q=auth&sort=updated", container);
+
+    await waitForAssertion(() => {
+      expect(searchApiMock.search).toHaveBeenCalledWith("company-1", {
+        q: "auth",
+        scope: "all",
+        limit: 20,
+        sort: "updated",
+      });
+    });
+
+    await waitForAssertion(() => {
+      // The Sort menu trigger reflects the active sort.
+      expect(container.textContent).toContain("Recently updated");
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders a removable filter chip and re-queries without the filter when removed", async () => {
+    searchApiMock.search.mockResolvedValue(emptyResponse());
+
+    const { root } = renderSearch("/search?q=auth&status=todo", container);
+
+    // First request carries the status filter from the URL.
+    await waitForAssertion(() => {
+      expect(searchApiMock.search).toHaveBeenCalledWith("company-1", {
+        q: "auth",
+        scope: "all",
+        limit: 20,
+        status: ["todo"],
+      });
+    });
+
+    // A removable chip is rendered for the active filter.
+    const removeButton = await (async () => {
+      let button: HTMLButtonElement | null = null;
+      await waitForAssertion(() => {
+        button = container.querySelector<HTMLButtonElement>('button[aria-label="Remove filter Status: Todo"]');
+        expect(button).not.toBeNull();
+      });
+      return button!;
+    })();
+
+    flushSync(() => {
+      removeButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // After removal the search re-fires with no status filter.
+    await waitForAssertion(() => {
+      const lastCall = searchApiMock.search.mock.calls.at(-1);
+      expect(lastCall?.[1]).toEqual({ q: "auth", scope: "all", limit: 20 });
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders zero-results recovery with loosen suggestions when filters empty the page", async () => {
+    searchApiMock.search.mockResolvedValueOnce(
+      emptyResponse({
+        zeroResults: {
+          unfilteredTotal: 12,
+          loosenSuggestions: [
+            { filter: "status", values: ["done"], resultCount: 12, additionalCount: 12 },
+          ],
+        },
+      }),
+    );
+
+    const { root } = renderSearch("/search?q=auth&status=done", container);
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="search-zero-results-recovery"]')).not.toBeNull();
+      expect(container.textContent).toContain("No results with these filters");
+      expect(container.textContent).toContain("12 results match");
+      expect(container.textContent).toContain("Loosen a filter");
+      expect(container.textContent).toContain("+12 results");
+      expect(container.textContent).toContain("Clear all filters");
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
 });

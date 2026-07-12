@@ -223,7 +223,7 @@ export function FileViewerMetadataRow({
   state: FileViewerUrlState | null;
 }) {
   return (
-    <div className="flex min-h-[18px] flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+    <div className="flex min-h-(--sz-18px) flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
       {resolvedResource ? (
         <>
           {resolvedResource.previewKind ? <span className="capitalize">{resolvedResource.previewKind}</span> : null}
@@ -354,7 +354,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
       role="region"
       aria-label={`${resource.title} source`}
       tabIndex={0}
-      className="paperclip-file-viewer-code flex-1 overflow-auto bg-[var(--paperclip-code-bg,theme(colors.muted.DEFAULT))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+      className="paperclip-file-viewer-code flex-1 overflow-auto bg-(--code-bg-resolved) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
     >
       <pre className="m-0 font-mono text-xs leading-5">
         {lines.map((lineText, index) => {
@@ -366,17 +366,20 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
               ref={isHighlighted ? highlightedLineRef : undefined}
               data-line-number={lineNumber}
               className={cn(
-                "grid grid-cols-[auto_minmax(0,1fr)]",
-                isHighlighted && "bg-[var(--paperclip-code-highlight-bg,rgba(250,204,21,0.12))]",
+                "grid grid-cols-(--gtc-5)",
+                // Batch 4 resolved the former half-migrated var(--x, fallback)
+                // pattern here into --code-highlight-bg-resolved (see
+                // ui/src/index.css MISC token block + TOKEN-AUDIT.md Batch 4 log).
+                isHighlighted && "bg-(--code-highlight-bg-resolved)",
               )}
             >
               <span
                 aria-hidden="true"
                 className={cn(
-                  "sticky left-0 z-10 shrink-0 select-none pl-3 pr-4 text-right text-[var(--paperclip-code-gutter-fg,theme(colors.muted.foreground))] opacity-70",
-                  "bg-[var(--paperclip-code-bg,theme(colors.muted.DEFAULT))]",
+                  "sticky left-0 z-10 shrink-0 select-none pl-3 pr-4 text-right text-(--code-gutter-fg-resolved) opacity-70",
+                  "bg-(--code-bg-resolved)",
                   isHighlighted &&
-                    "opacity-100 bg-[var(--paperclip-code-highlight-bg,rgba(250,204,21,0.12))] border-l-2 border-[var(--paperclip-code-highlight-border,rgb(234,179,8))]",
+                    "opacity-100 bg-(--code-highlight-bg-resolved) border-l-2 border-(--code-highlight-border-resolved)",
                 )}
                 style={{ width: gutterWidth, minWidth: gutterWidth }}
               >
@@ -733,7 +736,7 @@ export function FileViewerSheet({
   return (
     <Dialog open={computedOpen} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="flex h-[min(840px,calc(100dvh-2rem))] w-[calc(100vw-2rem)] max-w-[min(1280px,calc(100vw-2rem))] flex-col gap-0 overflow-hidden p-0 sm:w-[94vw] sm:max-w-[1280px]"
+        className="flex h-(--sz-calc-3) w-(--sz-calc-4) max-w-(--sz-calc-5) flex-col gap-0 overflow-hidden p-0 sm:w-(--sz-94vw) sm:max-w-(--sz-1280px)"
         aria-labelledby={FILE_VIEWER_LABELLED_BY_ID}
         aria-describedby={FILE_VIEWER_DESCRIBED_BY_ID}
         showCloseButton={false}
@@ -746,7 +749,7 @@ export function FileViewerSheet({
         }}
       >
         <DialogHeader className="border-b border-border gap-1 p-3">
-          <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2">
+          <div className="grid min-w-0 grid-cols-(--gtc-6) items-start gap-2">
             {browseMode ? (
               <FolderSearch aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
             ) : (

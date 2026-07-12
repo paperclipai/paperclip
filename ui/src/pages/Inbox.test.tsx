@@ -23,6 +23,8 @@ const apiMocks = vi.hoisted(() => ({
   issuesList: vi.fn(),
   issuesCount: vi.fn(),
   issueLabels: vi.fn(),
+  archiveFromInbox: vi.fn(),
+  unarchiveFromInbox: vi.fn(),
   agentsList: vi.fn(),
   heartbeatRunsList: vi.fn(),
   liveRunsForCompany: vi.fn(),
@@ -60,12 +62,13 @@ vi.mock("../api/execution-workspaces", () => ({
 vi.mock("../api/issues", () => ({
   issuesApi: {
     list: apiMocks.issuesList,
+    listCompact: apiMocks.issuesList,
     count: apiMocks.issuesCount,
     listLabels: apiMocks.issueLabels,
     markRead: vi.fn(),
     markUnread: vi.fn(),
-    archiveFromInbox: vi.fn(),
-    unarchiveFromInbox: vi.fn(),
+    archiveFromInbox: apiMocks.archiveFromInbox,
+    unarchiveFromInbox: apiMocks.unarchiveFromInbox,
   },
 }));
 
@@ -166,6 +169,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
+    responsibleUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
     issueNumber: 904,
@@ -194,6 +198,16 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     ...overrides,
     workMode: overrides.workMode ?? "standard",
   };
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
 }
 
 function createJoinRequest(
@@ -255,6 +269,8 @@ function resetInboxApiMocks() {
   apiMocks.issuesList.mockResolvedValue([]);
   apiMocks.issuesCount.mockResolvedValue({ count: 0 });
   apiMocks.issueLabels.mockResolvedValue([]);
+  apiMocks.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
+  apiMocks.unarchiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
   apiMocks.agentsList.mockResolvedValue([]);
   apiMocks.heartbeatRunsList.mockResolvedValue([]);
   apiMocks.liveRunsForCompany.mockResolvedValue([]);
@@ -361,13 +377,18 @@ describe("Inbox toolbar", () => {
       true,
       true,
     ]);
+    expect(apiMocks.issuesList.mock.calls.map((call) => call[1]?.limit)).toEqual([
+      500,
+      500,
+      500,
+    ]);
 
     act(() => {
       root.unmount();
     });
   });
 
-  it("syncs hover with j/k selection on inbox rows", async () => {
+  it("paints row hover via CSS only, without moving React selection state", async () => {
     routerMock.location.pathname = "/inbox/mine";
     const issueA = createIssue({ id: "issue-a", identifier: "PAP-1001", title: "First inbox row" });
     const issueB = createIssue({ id: "issue-b", identifier: "PAP-1002", title: "Second inbox row" });
@@ -398,27 +419,84 @@ describe("Inbox toolbar", () => {
     expect(linkOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
     expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
 
+    // Hovering paints via CSS `:hover` only — it must NOT flip a row into the
+    // state-selected band (which would swap to hover:bg-transparent). Coupling
+    // hover to React state was the per-hover re-render storm behind the lag;
+    // scrubbing the list must not touch selection state. (Keyboard nav that
+    // continues from the hovered row is exercised in live/e2e verification —
+    // this unit mocks keyboardShortcutsEnabled off.)
     await act(async () => {
       rows[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
       rows[1]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
     });
-
-    // After hovering row 1, that row is "selected" — same visual state as j/k selection.
-    await vi.waitFor(() => {
-      expect(linkOf(rows[1]!)?.className).toContain("hover:bg-transparent");
-    });
     expect(linkOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
+    expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
+    expect(linkOf(rows[1]!)?.className).not.toContain("hover:bg-transparent");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps other issue archive controls enabled while one archive is pending", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const issueA = createIssue({ id: "issue-a", identifier: "PAP-1001", title: "First inbox row" });
+    const issueB = createIssue({ id: "issue-b", identifier: "PAP-1002", title: "Second inbox row" });
+    apiMocks.issuesList.mockResolvedValue([issueA, issueB]);
+    const archiveA = createDeferred<{ id: string; archivedAt: Date }>();
+    apiMocks.archiveFromInbox.mockImplementation((id: string) =>
+      id === "issue-a" ? archiveA.promise : Promise.resolve({ id, archivedAt: new Date() }),
+    );
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
 
     await act(async () => {
-      rows[0]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-      rows[0]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("First inbox row");
+      expect(container.textContent).toContain("Second inbox row");
     });
 
-    // Hovering a different row moves the selection to follow the mouse.
-    await vi.waitFor(() => {
-      expect(linkOf(rows[0]!)?.className).toContain("hover:bg-transparent");
+    const initialArchiveButtons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button[aria-label="Archive"]'),
+    );
+    expect(initialArchiveButtons.length).toBeGreaterThanOrEqual(2);
+
+    await act(async () => {
+      initialArchiveButtons[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
-    expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
+
+    await vi.waitFor(() => {
+      expect(apiMocks.archiveFromInbox).toHaveBeenCalledWith("issue-a");
+      expect(container.textContent).not.toContain("First inbox row");
+      expect(container.textContent).toContain("Second inbox row");
+    });
+
+    const remainingArchiveButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Archive"]',
+    );
+    expect(remainingArchiveButton).not.toBeNull();
+    expect(remainingArchiveButton?.disabled).toBe(false);
+
+    await act(async () => {
+      remainingArchiveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+
+    await vi.waitFor(() => {
+      expect(apiMocks.archiveFromInbox).toHaveBeenCalledWith("issue-b");
+    });
+
+    await act(async () => {
+      archiveA.resolve({ id: "issue-a", archivedAt: new Date() });
+    });
 
     act(() => {
       root.unmount();
@@ -444,6 +522,7 @@ describe("FailedRunInboxRow", () => {
       id: "run-1",
       companyId: "company-1",
       agentId: "agent-1",
+      responsibleUserId: null,
       invocationSource: "assignment",
       triggerDetail: null,
       status: "failed",
@@ -536,7 +615,9 @@ describe("InboxIssueMetaLeading", () => {
     );
     const liveBadge = container.querySelector('span[class*="px-1.5"][class*="bg-blue-500/10"]');
     const liveBadgeLabel = Array.from(container.querySelectorAll("span")).find(
-      (node) => node.textContent === "Live" && node.className.includes("text-"),
+      // The pill chassis is a Badge (itself a span with textContent "Live");
+      // the label is the inner span without the rounded-full chassis class.
+      (node) => node.textContent === "Live" && node.className.includes("text-") && !node.className.includes("rounded-full"),
     );
     const liveDot = container.querySelector('span[class*="bg-blue-500"]');
     const pulseRing = container.querySelector('span[class*="animate-pulse"]');

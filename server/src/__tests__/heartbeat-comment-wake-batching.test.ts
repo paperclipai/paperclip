@@ -203,6 +203,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values({
@@ -242,6 +243,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       title: "Hire an agent",
       status: "blocked",
       priority: "medium",
+      responsibleUserId: "responsible-user",
       assigneeAgentId: agentId,
       executionRunId: runId,
       executionAgentNameKey: "ceo",
@@ -318,6 +320,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values({
@@ -347,6 +350,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         title: "Batch wake comments",
         status: "todo",
         priority: "medium",
+        responsibleUserId: "responsible-user",
         assigneeAgentId: agentId,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
@@ -517,6 +521,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values({
@@ -546,6 +551,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         title: "Interrupt queued comment",
         status: "todo",
         priority: "medium",
+        responsibleUserId: "responsible-user",
         assigneeAgentId: agentId,
         issueNumber: 2,
         identifier: `${issuePrefix}-2`,
@@ -663,6 +669,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values({
@@ -692,6 +699,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         title: "Reopen after deferred comment",
         status: "todo",
         priority: "medium",
+        responsibleUserId: "responsible-user",
         assigneeAgentId: agentId,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
@@ -856,6 +864,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values([
@@ -907,6 +916,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         title: "Do not reopen from agent mention",
         status: "todo",
         priority: "medium",
+        responsibleUserId: "responsible-user",
         assigneeAgentId,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
@@ -1055,6 +1065,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values({
@@ -1084,6 +1095,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         title: "Self-comment must not reopen",
         status: "todo",
         priority: "medium",
+        responsibleUserId: "responsible-user",
         assigneeAgentId: agentId,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
@@ -1221,6 +1233,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values({
@@ -1250,6 +1263,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         title: "Human follow-up must survive mixed deferred batches",
         status: "todo",
         priority: "medium",
+        responsibleUserId: "responsible-user",
         assigneeAgentId: agentId,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
@@ -1432,6 +1446,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values({
@@ -1461,6 +1476,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         title: "Require a comment",
         status: "todo",
         priority: "medium",
+        responsibleUserId: "responsible-user",
         assigneeAgentId: agentId,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
@@ -1582,6 +1598,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values([
@@ -1633,6 +1650,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         title: "Prevent concurrent mention execution",
         status: "todo",
         priority: "high",
+        responsibleUserId: "responsible-user",
         assigneeAgentId: primaryAgentId,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
@@ -1783,6 +1801,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values([
@@ -1834,6 +1853,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         title: "Mention should not steal execution ownership",
         status: "todo",
         priority: "medium",
+        responsibleUserId: "responsible-user",
         assigneeAgentId: primaryAgentId,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
@@ -1930,6 +1950,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values({
@@ -1959,6 +1980,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         title: "Use existing comment",
         status: "todo",
         priority: "medium",
+        responsibleUserId: "responsible-user",
         assigneeAgentId: agentId,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
