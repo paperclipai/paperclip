@@ -1895,7 +1895,7 @@ export function agentRoutes(
         agent.companyId,
         agent.adapterType,
         agent.adapterConfig as Record<string, unknown>,
-        agent.role ?? null,
+        agent.role ?? "general",
         requestedSkills,
         // Toggling a resolvable skill must not fail just because the agent
         // already carries stale desired keys (e.g. a skill removed from the
@@ -2393,11 +2393,12 @@ export function agentRoutes(
         rawHireAdapterConfig,
       ),
     );
+    const effectiveHireRole = hireInput.role ?? "general";
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
       hireInput.adapterType,
       requestedAdapterConfig,
-      hireInput.role ?? null,
+      effectiveHireRole,
       normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
@@ -2587,11 +2588,12 @@ export function agentRoutes(
         rawCreateAdapterConfig,
       ),
     );
+    const effectiveCreateRole = createInput.role ?? "general";
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
       createInput.adapterType,
       requestedAdapterConfig,
-      createInput.role ?? null,
+      effectiveCreateRole,
       normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({

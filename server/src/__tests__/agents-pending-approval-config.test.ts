@@ -13,6 +13,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { agentService } from "../services/agents.ts";
 import { approvalService } from "../services/approvals.ts";
 
@@ -154,5 +155,60 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
       budgetMonthlyCents: 1234,
       metadata: { source: "hire-form" },
     });
+  });
+
+  it("re-prunes manager-only desired skills from the approved snapshot before activation", async () => {
+    const companyId = await seedCompany();
+    const agentSvc = agentService(db);
+    const approvalSvc = approvalService(db);
+    const pending = await agentSvc.create(companyId, {
+      name: "Pending Engineer",
+      role: "engineer",
+      title: null,
+      icon: null,
+      capabilities: null,
+      adapterType: "process",
+      adapterConfig: { paperclipSkillSync: { desiredSkills: [] } },
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      metadata: null,
+      status: "pending_approval",
+      spentMonthlyCents: 0,
+      permissions: {},
+      lastHeartbeatAt: null,
+    });
+    const approval = await approvalSvc.create(companyId, {
+      type: "hire_agent",
+      requestedByAgentId: null,
+      requestedByUserId: "board-user",
+      status: "pending",
+      payload: {
+        name: "Pending Engineer",
+        adapterType: "process",
+        adapterConfig: {
+          paperclipSkillSync: {
+            desiredSkills: ["paperclipai/paperclip/autoplan"],
+          },
+        },
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+        metadata: null,
+        agentId: pending.id,
+      },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      updatedAt: new Date(),
+    });
+
+    await approvalSvc.approve(approval.id, "board-user", "Approved generic hire");
+
+    const activated = await agentSvc.getById(pending.id);
+    expect(activated).toMatchObject({
+      status: "idle",
+      role: "engineer",
+    });
+    expect(readPaperclipSkillSyncPreference((activated?.adapterConfig ?? {}) as Record<string, unknown>).desiredSkills)
+      .toEqual([]);
   });
 });

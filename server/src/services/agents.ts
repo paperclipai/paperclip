@@ -31,6 +31,11 @@ import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import { secretService } from "./secrets.js";
 import {
+  pruneManagerOnlySkillEntriesForRole,
+  readPaperclipSkillSyncPreference,
+  writePaperclipSkillSyncPreference,
+} from "@paperclipai/adapter-utils/server-utils";
+import {
   builtInAgentMarkersEqual,
   readBuiltInAgentMarker,
 } from "./built-in-agent-metadata.js";
@@ -180,6 +185,15 @@ function configPatchFromApprovalPayload(payload: Record<string, unknown>) {
     patch.permissions = payload.permissions;
   }
   return patch;
+}
+
+function pruneDesiredSkillsForRoleInAdapterConfig(
+  adapterConfig: Record<string, unknown>,
+  role: string | null | undefined,
+): Record<string, unknown> {
+  const preference = readPaperclipSkillSyncPreference(adapterConfig);
+  const desiredSkillEntries = pruneManagerOnlySkillEntriesForRole(preference.desiredSkillEntries, role ?? "general");
+  return writePaperclipSkillSyncPreference(adapterConfig, desiredSkillEntries);
 }
 
 function parseFiniteNumberLike(value: unknown): number | null {
@@ -776,10 +790,15 @@ export function agentService(db: Db) {
         if (!existing || existing.status !== "pending_approval") return null;
         const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
         let patch = { ...approvedPatch } as Partial<typeof agents.$inferInsert>;
+        const effectiveRole =
+          typeof patch.role === "string" && patch.role.trim().length > 0
+            ? patch.role
+            : existing.role;
         if (
           Object.prototype.hasOwnProperty.call(patch, "adapterConfig") &&
           isPlainRecord(patch.adapterConfig)
         ) {
+          patch.adapterConfig = pruneDesiredSkillsForRoleInAdapterConfig(patch.adapterConfig, effectiveRole);
           patch.adapterConfig = await secretService(txDb).normalizeAdapterConfigForPersistence(
             existing.companyId,
             patch.adapterConfig,
