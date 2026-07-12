@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseAcpxStdoutLine } from "@paperclipai/adapter-acpx-local/ui";
+import { parseAcpxStdoutLine } from "@paperclipai/adapter-utils/acpx-engine/ui";
 import type { TranscriptEntry } from "../../adapters";
 import { buildTranscript, type RunLogChunk } from "../../adapters";
 import { ThemeProvider } from "../../context/ThemeContext";

@@ -482,7 +482,7 @@ async function assertPipelineWriteAccess(
   });
   if (!decision.allowed) {
     throw new HttpError(403, decision.explanation, {
-      code: "pipeline_write_forbidden",
+      code: decision.code ?? "pipeline_write_forbidden",
       reason: decision.reason,
       pipelineId: input.pipelineId,
     });
@@ -900,7 +900,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     });
     if (!decision.allowed) {
       throw new HttpError(403, decision.explanation, {
-        code: "pipeline_write_forbidden",
+        code: decision.code ?? "pipeline_write_forbidden",
         reason: decision.reason,
       });
     }

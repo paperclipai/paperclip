@@ -113,6 +113,111 @@ function fingerprintThreadMessage(message: ThreadMessage) {
   return JSON.stringify(message);
 }
 
+function issueChatMessageCustom(message: ThreadMessage): Record<string, unknown> {
+  const custom = message.metadata?.custom;
+  return custom && typeof custom === "object" && !Array.isArray(custom)
+    ? custom as Record<string, unknown>
+    : {};
+}
+
+function isLiveRunThreadMessage(message: ThreadMessage) {
+  return message.role === "assistant"
+    && message.status?.type === "running"
+    && issueChatMessageCustom(message)["kind"] === "live-run";
+}
+
+export function preserveReadableStreamingRetraction(previousText: string, nextText: string) {
+  if (!previousText || !nextText) return nextText;
+
+  if (nextText.length >= previousText.length && nextText.startsWith(previousText)) {
+    return revealCompleteStreamingWords(previousText, nextText);
+  }
+
+  const overlapLength = longestSuffixPrefixOverlap(previousText, nextText);
+  if (overlapLength >= 8 && overlapLength < previousText.length) {
+    const removedPrefix = previousText.slice(0, previousText.length - overlapLength);
+    if (isQuietStreamingRemovalBoundary(removedPrefix)) {
+      return nextText;
+    }
+
+    return nextText;
+  }
+
+  if (nextText.length >= previousText.length || !previousText.startsWith(nextText)) {
+    return revealCompleteStreamingWords(previousText, nextText);
+  }
+
+  const nextLength = nextText.length;
+  if (previousText[nextLength] === "\n") return nextText;
+
+  const nextLineBreak = previousText.indexOf("\n", nextLength);
+  if (nextLineBreak === -1) return previousText;
+  return previousText.slice(0, nextLineBreak);
+}
+
+function revealCompleteStreamingWords(previousText: string, nextText: string) {
+  if (nextText.length <= previousText.length || !nextText.startsWith(previousText)) {
+    return nextText;
+  }
+
+  const addedText = nextText.slice(previousText.length);
+  if (!addedText) return nextText;
+
+  const boundaryIndex = lastReadableWordBoundary(addedText);
+  if (boundaryIndex === -1) return nextText;
+  return previousText + addedText.slice(0, boundaryIndex + 1);
+}
+
+function lastReadableWordBoundary(text: string) {
+  let index = -1;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (/\s/.test(char) || /[.,;:!?)}\]"'`]/.test(char)) {
+      index = i;
+    }
+  }
+  return index;
+}
+
+function longestSuffixPrefixOverlap(previousText: string, nextText: string) {
+  const maxLength = Math.min(previousText.length, nextText.length);
+  for (let length = maxLength; length > 0; length -= 1) {
+    if (previousText.endsWith(nextText.slice(0, length))) {
+      return length;
+    }
+  }
+  return 0;
+}
+
+function isQuietStreamingRemovalBoundary(removedPrefix: string) {
+  return /(?:\n\s*\n|\n|[.!?]\s+)$/.test(removedPrefix);
+}
+
+function smoothLiveRunRetractions(
+  message: ThreadMessage,
+  previousMessage: ThreadMessage | undefined,
+): ThreadMessage {
+  if (!previousMessage || !isLiveRunThreadMessage(message) || !isLiveRunThreadMessage(previousMessage)) {
+    return message;
+  }
+
+  let changed = false;
+  const content = message.content.map((part, index) => {
+    if (part.type !== "text" && part.type !== "reasoning") return part;
+
+    const previousPart = previousMessage.content[index];
+    if (previousPart?.type !== part.type) return part;
+
+    const text = preserveReadableStreamingRetraction(previousPart.text, part.text);
+    if (text === part.text) return part;
+
+    changed = true;
+    return { ...part, text };
+  });
+
+  return changed ? ({ ...message, content } as ThreadMessage) : message;
+}
+
 export function stabilizeThreadMessages(
   messages: readonly ThreadMessage[],
   previousMessages: readonly ThreadMessage[],
@@ -122,12 +227,13 @@ export function stabilizeThreadMessages(
   let sameSequence = previousMessages.length === messages.length;
 
   const stabilizedMessages = messages.map((message, index) => {
-    const fingerprint = fingerprintThreadMessage(message);
     const cached = previousById.get(message.id);
+    const displayMessage = smoothLiveRunRetractions(message, cached?.message);
+    const fingerprint = fingerprintThreadMessage(displayMessage);
     const stableMessage =
       cached && cached.fingerprint === fingerprint
         ? cached.message
-        : message;
+        : displayMessage;
     nextById.set(message.id, {
       fingerprint,
       message: stableMessage,
@@ -367,7 +473,7 @@ function authorNameForComment(
     return agentMap?.get(authorAgentId)?.name ?? (options?.isSystemNotice ? "Paperclip" : authorAgentId.slice(0, 8));
   }
   const authorUserId = comment.authorUserId ?? null;
-  if (!authorUserId) return "You";
+  if (!authorUserId) return options?.isSystemNotice ? "Paperclip" : "You";
   const userLabel = userLabelMap?.get(authorUserId)?.trim();
   if (userLabel) return userLabel;
   return formatAssigneeUserLabel(authorUserId, currentUserId, userLabelMap) ?? "You";

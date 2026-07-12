@@ -88,7 +88,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { command: "claude", model: "claude-opus-4-8" },
+      config: { engine: "cli", command: "claude", model: "claude-opus-4-8" },
       executionTarget: sandboxTarget,
       environmentName: "Daytona",
     });
@@ -114,7 +114,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { command: "claude" },
+      config: { engine: "cli", command: "claude" },
       executionTarget: sandboxTarget,
       environmentName: "Daytona",
     });
@@ -133,7 +133,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { command: "claude" },
+      config: { engine: "cli", command: "claude" },
       executionTarget: sandboxTarget,
       environmentName: "Daytona",
     });
@@ -152,7 +152,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { command: "claude" },
+      config: { engine: "cli", command: "claude" },
       executionTarget: sandboxTarget,
       environmentName: "Daytona",
     });

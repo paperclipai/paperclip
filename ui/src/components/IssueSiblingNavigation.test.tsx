@@ -105,7 +105,7 @@ describe("IssueSiblingNavigation", () => {
 
     expect(links[0].className).toContain("rounded-lg");
     expect(links[0].className).toContain("hover:bg-accent/50");
-    expect(links[0].className).toContain("focus-visible:ring-[3px]");
+    expect(links[0].className).toContain("focus-visible:ring-(length:--rad-3)");
     expect(node.querySelector(".truncate")?.textContent).toBe("Previous sibling title");
   });
 
