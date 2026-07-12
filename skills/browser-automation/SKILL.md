@@ -16,7 +16,7 @@ Use this skill for browser navigation, form interaction, authenticated web workf
 3. The launcher prints JSON identifying the actual provider. Report a provider switch in the next progress comment.
 4. Camoufox is a fallback, not a promise to bypass every WAF. Stop for human captcha/2FA when required. Never attempt to defeat access controls or violate a site's terms.
 
-The launcher also preserves provider affinity: when the selected profile already contains Camoufox cookies for the target domain, it resumes Camoufox immediately. Do not bypass the launcher and retry credentials in agent-browser; sites such as Google can accept the existing Camoufox session while rejecting a cross-browser cookie transplant.
+Agent-browser and Camoufox have independent authentication state. Never copy, merge, import, or translate cookies between them. Authenticate each provider manually when needed. The default remains agent-browser; use Camoufox only after the launcher detects a browser-security block or when the board explicitly requests it.
 
 ## Live movement
 
@@ -84,9 +84,9 @@ with Camoufox(headless="virtual", humanize=True) as browser:
     print(page.title())
 ```
 
-Keep reusable fallback scripts under the persistent agent or project workspace, never `/tmp`. The managed launcher stores Camoufox state at `/paperclip/browser-profiles/<profile>/camoufox-state.json`, publishes Camoufox's own viewport frame to the issue live-browser card, attempts a best-effort cookie handoff to agent-browser, and stores the current frame under `/paperclip/browser-artifacts`. Some security-sensitive sites, including Google, may reject a valid session when cookies move between Firefox/Camoufox and Chromium; in that case keep the entire authenticated workflow in Camoufox and leave the issue viewer on the truthful Camoufox frame. Never represent a signed-out agent-browser viewport as the Camoufox result.
+Keep reusable fallback scripts under the persistent agent or project workspace, never `/tmp`. The managed launcher stores Camoufox's independent state at `/paperclip/browser-profiles/<profile>/camoufox-state.json`, publishes Camoufox's own viewport frame to the issue live-browser card, and stores the current frame under `/paperclip/browser-artifacts`. It never modifies agent-browser's encrypted state. If Camoufox needs authentication, authenticate Camoufox directly and continue that fallback workflow there.
 
-Prefer `paperclip-camoufox` over a custom Python launcher. If a multi-step custom Camoufox script is unavoidable, it must save Playwright storage state to the selected profile's exact `camoufox-state.json` path and then run `agent-browser paperclip-sync-camoufox <current-url>` before reporting completion. A screenshot alone does not synchronize the native viewer.
+Prefer `paperclip-camoufox` over a custom Python launcher. If a multi-step custom Camoufox script is unavoidable, it must load and save Playwright storage state at the selected profile's exact `camoufox-state.json` path and publish screenshots to the issue artifact path. Do not invoke agent-browser during that Camoufox workflow.
 
 Run Camoufox scripts with `/opt/camoufox/bin/python`; the `camoufox` command is available for `fetch`, `path`, `server`, and diagnostic operations.
 

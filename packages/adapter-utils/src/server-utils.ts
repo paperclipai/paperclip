@@ -171,7 +171,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
   "- When the board explicitly requests the live, native, or managed browser, use Paperclip's managed browser commands. A custom Playwright/Puppeteer script, direct headless browser, reusable launch helper, or screenshots are not a substitute for the live browser stream.",
   "- Paperclip owns browser identity: never pass agent-browser session/profile/state/CDP/provider overrides or override HOME. If a managed profile is briefly busy, retry the managed command; never create a private browser session as fallback.",
-  "- Run managed browser commands sequentially and wait for each to finish. Camoufox fallback must synchronize its saved cookies and resulting URL into the native live viewer before browser work is reported complete.",
+  "- Run managed browser commands sequentially and wait for each to finish. Agent-browser and Camoufox have independent authentication state: never copy or merge cookies between them; authenticate each provider separately when needed.",
 ].join("\n");
 
 export interface PaperclipSkillEntry {
@@ -880,7 +880,7 @@ export function renderPaperclipWakePrompt(
       "- Existing scripts may inform selectors or workflow logic, but the requested interaction itself must be replayed through observable managed-browser commands.",
       "- Never pass `--session`, `--session-name`, `--profile`, `--state`, `--cdp`, `--auto-connect`, or provider overrides, and never override `HOME`; those detach the browser from the issue/profile selected by Paperclip.",
       "- Use `paperclip-browser-open <url> --camoufox` only when the board explicitly requests Camoufox; otherwise allow the managed launcher to fall back after a detected browser-security challenge.",
-      "- Run browser actions sequentially and wait for each command to finish. A Camoufox result is complete only after its cookies and resulting URL are synchronized into the same issue's native live viewer.",
+      "- Run browser actions sequentially and wait for each command to finish. Keep agent-browser and Camoufox authentication independent; never copy or merge cookies between providers.",
       "- Before claiming visible progress, verify that managed browser commands have executed in this heartbeat. If the managed browser cannot run, report that blocker instead of silently switching to an invisible browser.",
     );
   }

@@ -40,8 +40,6 @@ unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_RESTORE
 safe_profile="$(printf '%s' "$PROFILE_NAME" | tr -c 'a-zA-Z0-9._-' '_')"
 profile_dir="$PROFILE_ROOT/$safe_profile"
 state_path="$profile_dir/agent-browser-state.json"
-camoufox_state_path="$profile_dir/camoufox-state.json"
-camoufox_marker_path="$profile_dir/.camoufox-imported"
 if [ -n "${AGENT_BROWSER_ENCRYPTION_KEY:-}" ]; then
   state_path="$state_path.enc"
 fi
@@ -160,30 +158,13 @@ if [ "$sync_state" = true ]; then
   acquire_command_lock || exit $?
 fi
 
-if [ "$sync_state" = true ] && [ "$first" != "paperclip-sync-camoufox" ]; then
+if [ "$sync_state" = true ]; then
   mkdir -p "$artifact_root"
   printf '%s\n' "agent-browser" > "$provider_path"
   chmod 600 "$provider_path" 2>/dev/null || true
 fi
 
-# A Camoufox fallback is a provider change, not a different browser identity.
-# agent-browser's `state load` prepares future launches but does not mutate an
-# already-running Chromium context. Track the exact fallback snapshot already
-# imported instead of comparing timestamps: a later logged-out Chromium save
-# must not suppress a valid Camoufox login that has never been imported.
-import_camoufox=false
-camoufox_fingerprint=""
-if [ "$sync_state" = true ] && [ -s "$camoufox_state_path" ]; then
-  camoufox_fingerprint="$(cksum "$camoufox_state_path" | awk '{print $1 ":" $2}')"
-  imported_fingerprint="$(cat "$camoufox_marker_path" 2>/dev/null || true)"
-  if [ "$first" = "paperclip-sync-camoufox" ] || [ "$camoufox_fingerprint" != "$imported_fingerprint" ]; then
-    import_camoufox=true
-  fi
-fi
-
-if [ "$sync_state" = true ] && [ "$import_camoufox" = true ]; then
-  "$REAL_AGENT_BROWSER" close >/dev/null 2>&1 || true
-elif [ "$sync_state" = true ] && [ -s "$state_path" ]; then
+if [ "$sync_state" = true ] && [ -s "$state_path" ]; then
   # Existing issue daemons ignore the launch-only variable and retain their
   # tabs, but some releases still forward it to a daemon that was launched
   # without an encryption key. Only provide it when no live daemon exists.
@@ -198,49 +179,18 @@ elif [ "$sync_state" = true ] && [ -s "$state_path" ]; then
   fi
 fi
 
-if [ "$first" = "paperclip-sync-camoufox" ]; then
-  sync_url="${2:-about:blank}"
-  case "$sync_url" in
-    http://*|https://*|about:blank) ;;
-    *) echo "[paperclip-browser] invalid Camoufox sync URL" >&2; exit 64 ;;
-  esac
-  # Camoufox writes standard Playwright JSON. Do not ask agent-browser to
-  # decrypt that plaintext launch state; subsequent shared saves remain
-  # encrypted because the wrapper's key is still present.
-  env -u AGENT_BROWSER_ENCRYPTION_KEY AGENT_BROWSER_STATE="$camoufox_state_path" \
-    "$REAL_AGENT_BROWSER" open "$sync_url" >/dev/null
-  status=$?
-  if [ "$status" -eq 0 ]; then
-    acquire_lock || exit $?
-    if save_shared_state; then
-      printf '%s\n' "$camoufox_fingerprint" > "$camoufox_marker_path"
-      chmod 600 "$camoufox_marker_path" 2>/dev/null || true
-    fi
-    release_lock
-  fi
-  exit "$status"
-fi
-
 if [ "$sync_state" = true ] && [ "$first" = "close" ]; then
   acquire_lock || exit $?
   save_shared_state || true
   release_lock
 fi
 
-if [ "$import_camoufox" = true ]; then
-  env -u AGENT_BROWSER_ENCRYPTION_KEY AGENT_BROWSER_STATE="$camoufox_state_path" \
-    "$REAL_AGENT_BROWSER" "$@"
-else
-  "$REAL_AGENT_BROWSER" "$@"
-fi
+"$REAL_AGENT_BROWSER" "$@"
 status=$?
 
 if [ "$sync_state" = true ] && [ "$first" != "close" ] && [ "$status" -eq 0 ]; then
   acquire_lock || exit $?
-  if save_shared_state && [ "$import_camoufox" = true ]; then
-    printf '%s\n' "$camoufox_fingerprint" > "$camoufox_marker_path"
-    chmod 600 "$camoufox_marker_path" 2>/dev/null || true
-  fi
+  save_shared_state || true
   release_lock
 fi
 

@@ -12,36 +12,6 @@ if [ "${2:-}" = "--camoufox" ] || [ "$FORCE_PROVIDER" = "camoufox" ]; then
   exec paperclip-camoufox "$URL"
 fi
 
-# Preserve provider affinity for authenticated profiles. Security-sensitive
-# sessions (notably Google) may remain valid in Camoufox while rejecting the
-# same cookies in Chromium, so a target with matching Camoufox cookies must
-# resume in Camoufox instead of silently starting a signed-out agent-browser.
-PROFILE_NAME="${AGENT_BROWSER_SESSION_NAME:-paperclip-default}"
-SAFE_PROFILE="$(printf '%s' "$PROFILE_NAME" | tr -c 'a-zA-Z0-9._-' '_')"
-PROFILE_ROOT="${PAPERCLIP_BROWSER_PROFILE_ROOT:-${PAPERCLIP_HOME:-/paperclip}/browser-profiles}"
-CAMOUFOX_STATE="$PROFILE_ROOT/$SAFE_PROFILE/camoufox-state.json"
-if [ -s "$CAMOUFOX_STATE" ] && /opt/camoufox/bin/python - "$URL" "$CAMOUFOX_STATE" <<'PY'
-import json
-import sys
-from urllib.parse import urlparse
-
-host = (urlparse(sys.argv[1]).hostname or "").lower()
-try:
-    state = json.load(open(sys.argv[2], encoding="utf-8"))
-except (OSError, ValueError):
-    raise SystemExit(1)
-
-def matches(domain: str) -> bool:
-    domain = domain.lstrip(".").lower()
-    return bool(host and domain and (host == domain or host.endswith("." + domain)))
-
-raise SystemExit(0 if any(matches(str(cookie.get("domain", ""))) for cookie in state.get("cookies", [])) else 1)
-PY
-then
-  echo "[paperclip-browser] resuming authenticated provider=camoufox" >&2
-  exec paperclip-camoufox "$URL"
-fi
-
 agent-browser open "$URL"
 TITLE="$(agent-browser get title 2>/dev/null || true)"
 SNAPSHOT="$(agent-browser snapshot -c 2>/dev/null || true)"
