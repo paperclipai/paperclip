@@ -89,6 +89,12 @@ import {
   resolveWorktreeRunExecutionActivationState,
 } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
+import {
+  acquireDispatchGate,
+  CLAUDE_LOCAL_DEFAULT_SCOPE,
+  markDispatchGateUnknown,
+  releaseDispatchGate,
+} from "../services/dispatch-gate.js";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
@@ -3612,17 +3618,35 @@ export function agentRoutes(
 
     const config = asRecord(agent.adapterConfig) ?? {};
     const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(agent.companyId, config);
-    const result = await runClaudeLogin({
-      runId: `claude-login-${randomUUID()}`,
-      agent: {
-        id: agent.id,
-        companyId: agent.companyId,
-        name: agent.name,
-        adapterType: agent.adapterType,
-        adapterConfig: agent.adapterConfig,
-      },
-      config: runtimeConfig,
-    });
+
+    const gateOwner = { kind: "login", id: `claude-login-${randomUUID()}` };
+    const gateAcquisition = await acquireDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner);
+    if (!gateAcquisition.ok) {
+      res.status(429).json({
+        error: "Claude is busy with another launch — retry shortly",
+        code: "CLAUDE_LOCAL_BUSY",
+      });
+      return;
+    }
+
+    let result;
+    try {
+      result = await runClaudeLogin({
+        runId: gateOwner.id,
+        agent: {
+          id: agent.id,
+          companyId: agent.companyId,
+          name: agent.name,
+          adapterType: agent.adapterType,
+          adapterConfig: agent.adapterConfig,
+        },
+        config: runtimeConfig,
+      });
+    } catch (err) {
+      await markDispatchGateUnknown(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner);
+      throw err;
+    }
+    await releaseDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner);
 
     res.json(result);
   });

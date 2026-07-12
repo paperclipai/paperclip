@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,11 @@ import type { Db } from "@paperclipai/db";
 import type { DeploymentMode } from "@paperclipai/shared";
 import { instanceSettingsService, issueService } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import {
+  acquireDispatchGate,
+  CLAUDE_LOCAL_DEFAULT_SCOPE,
+  releaseDispatchGate,
+} from "../services/dispatch-gate.js";
 
 /**
  * Strip structured action signals (`%%ACTIONS%%{...}%%/ACTIONS%%`) from a
@@ -205,6 +211,21 @@ export function boardChatRoutes(
         `Respond to the latest user turn.`
       : message;
 
+    // Board chat spawns a real `claude` process directly (see below) — it
+    // must go through the same durable dispatch gate as every other Claude
+    // launch surface so it can never run concurrently with e.g. an agent's
+    // heartbeat. Acquired here, right before the spawn, so nothing above this
+    // point (which can throw for ordinary reasons) can leak a held gate.
+    const gateOwner = { kind: "board_chat", id: randomUUID() };
+    const gateAcquisition = await acquireDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner);
+    if (!gateAcquisition.ok) {
+      res.status(429).json({
+        error: "Claude is busy with another launch — retry shortly",
+        code: "CLAUDE_LOCAL_BUSY",
+      });
+      return;
+    }
+
     // Set up SSE.
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -353,6 +374,7 @@ export function boardChatRoutes(
     proc.on("close", async (exitCode) => {
       clearTimeout(timeout);
       releaseSlot();
+      await releaseDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner);
 
       // Persist the board's reply under the "board-concierge" sentinel so the
       // UI renders it as an assistant bubble (see BoardChat `isUser` check).
@@ -380,9 +402,13 @@ export function boardChatRoutes(
       }
     });
 
-    proc.on("error", (err) => {
+    proc.on("error", async (err) => {
       clearTimeout(timeout);
       releaseSlot();
+      // Spawn itself failed (e.g. ENOENT) — no process ever ran, so the gate
+      // is safe to release outright; `close` may also fire after this and
+      // will no-op since the row is already idle.
+      await releaseDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner);
       console.error("[board/chat/stream spawn error]", err);
       if (res.writable) {
         res.write(

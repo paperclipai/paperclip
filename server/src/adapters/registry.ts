@@ -1,8 +1,18 @@
+import { randomUUID } from "node:crypto";
 import type {
+  AdapterEnvironmentTestContext,
+  AdapterEnvironmentTestResult,
+  AdapterExecutionContext,
+  AdapterExecutionResult,
   AdapterModelProfileDefinition,
   AdapterRuntimeCommandSpec,
   ServerAdapterModule,
 } from "./types.js";
+import {
+  CLAUDE_LOCAL_DEFAULT_SCOPE,
+  withDispatchGate,
+  type DispatchGateBlockedResult,
+} from "../services/dispatch-gate.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 import {
@@ -181,10 +191,80 @@ The standalone ACPX adapter has been retired. Use:
 Paperclip keeps this tombstone registered so stale acpx_local rows fail clearly instead of falling back to the process adapter.
 `;
 
+function dispatchGateBlockedMessage(blocked: DispatchGateBlockedResult): string {
+  if (blocked.reason === "quota_blocked") {
+    return blocked.operatorResumeRequired
+      ? "Claude Code is blocked on a provider quota limit pending operator resume."
+      : `Claude Code is blocked on a provider quota limit until ${blocked.blockedUntil?.toISOString() ?? "an unknown time"}.`;
+  }
+  return `Claude Code is already in use (owner: ${blocked.ownerKind ?? "unknown"}/${blocked.ownerId ?? "unknown"}, state: ${blocked.reason}).`;
+}
+
+/** Reuses the adapter's own structured classification — no competing quota detector. */
+function classifyClaudeExecutionQuota(
+  result: AdapterExecutionResult,
+): { blockedUntil: Date | null; reason: string } | null {
+  if (result.errorFamily !== "provider_quota") return null;
+  const resetAt = result.retryNotBefore ? new Date(result.retryNotBefore) : null;
+  return {
+    blockedUntil: resetAt && !Number.isNaN(resetAt.getTime()) ? resetAt : null,
+    reason: result.errorCode ?? "provider_quota",
+  };
+}
+
+function synthesizeBlockedExecutionResult(blocked: DispatchGateBlockedResult): AdapterExecutionResult {
+  return {
+    exitCode: null,
+    signal: null,
+    timedOut: false,
+    errorCode: `dispatch_gate_${blocked.reason}`,
+    errorMessage: dispatchGateBlockedMessage(blocked),
+    // Ownership contention is transient (existing retry scheduling applies); a
+    // live quota block reuses the existing provider_quota recovery path.
+    errorFamily: blocked.reason === "quota_blocked" ? "provider_quota" : "transient_upstream",
+    retryNotBefore: blocked.blockedUntil ? blocked.blockedUntil.toISOString() : null,
+  };
+}
+
+function synthesizeBlockedTestEnvironmentResult(blocked: DispatchGateBlockedResult): AdapterEnvironmentTestResult {
+  return {
+    adapterType: "claude_local",
+    status: "fail",
+    checks: [
+      {
+        code: `dispatch_gate_${blocked.reason}`,
+        level: "error",
+        message: dispatchGateBlockedMessage(blocked),
+      },
+    ],
+    testedAt: new Date().toISOString(),
+  };
+}
+
+const claudeExecuteStamped = stampClaudeAgentIdHeader(claudeExecute);
+
+const claudeExecuteWithGate = (ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> =>
+  withDispatchGate(
+    CLAUDE_LOCAL_DEFAULT_SCOPE,
+    { kind: "adapter", id: ctx.runId },
+    () => claudeExecuteStamped(ctx),
+    { classifyQuota: classifyClaudeExecutionQuota, onBlocked: synthesizeBlockedExecutionResult },
+  );
+
+const claudeTestEnvironmentWithGate = (
+  ctx: AdapterEnvironmentTestContext,
+): Promise<AdapterEnvironmentTestResult> =>
+  withDispatchGate(
+    CLAUDE_LOCAL_DEFAULT_SCOPE,
+    { kind: "hello_probe", id: randomUUID() },
+    () => claudeTestEnvironment(ctx),
+    { onBlocked: synthesizeBlockedTestEnvironmentResult },
+  );
+
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
-  execute: stampClaudeAgentIdHeader(claudeExecute),
-  testEnvironment: claudeTestEnvironment,
+  execute: claudeExecuteWithGate,
+  testEnvironment: claudeTestEnvironmentWithGate,
   acp: {
     agentId: "claude",
     skillsMode: "ephemeral",
