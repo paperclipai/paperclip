@@ -514,4 +514,15 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(started.apiUrl).toBe("https://tunnel.example.localtunnel.me");
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3100");
   });
+
+  it("brackets IPv6 loopback ::1 in PAPERCLIP_RUNTIME_API_URL to produce a valid URL", async () => {
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      host: "::1",
+      port: 3100,
+    }));
+
+    await startServer();
+
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://[::1]:3100");
+  });
 });

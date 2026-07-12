@@ -725,8 +725,10 @@ export async function startServer(): Promise<StartedServer> {
   // Use the loopback URL for PAPERCLIP_RUNTIME_API_URL so agents stay connected even
   // when the public tunnel URL changes or goes down (CES-3523). authPublicBaseUrl
   // continues to be used only for OAuth callbacks and external access.
+  const loopbackHost =
+    runtimeListenHost === "::1" ? `[${runtimeListenHost}]` : runtimeListenHost;
   const agentRuntimeApiUrl = isLoopbackHost(runtimeListenHost)
-    ? `http://${runtimeListenHost}:${listenPort}`
+    ? `http://${loopbackHost}:${listenPort}`
     : runtimeApiUrl;
   process.env.PAPERCLIP_RUNTIME_API_URL = agentRuntimeApiUrl;
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
