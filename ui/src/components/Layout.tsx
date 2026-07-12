@@ -52,6 +52,16 @@ function getCompanyRouteSegment(pathname: string, companyPrefix: string | undefi
   return segments[1]?.toLowerCase() ?? null;
 }
 
+function isSkillsStoreRoute(pathname: string, companyPrefix: string | undefined) {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments[0]?.toLowerCase() === "skills") return true;
+  if (!companyPrefix) return false;
+  return (
+    segments[0]?.toUpperCase() === companyPrefix.toUpperCase() &&
+    segments[1]?.toLowerCase() === "skills"
+  );
+}
+
 export function Layout() {
   const {
     sidebarOpen,
@@ -83,8 +93,8 @@ export function Layout() {
   const navigationType = useNavigationType();
   const isCompanySettingsRoute = location.pathname.includes("/company/settings");
   // The Skills Store renders its own secondary (category) sidebar, so the main
-  // app nav collapses to its rail throughout the /skills section (PAP-10879).
-  const isSkillsRoute = /(^|\/)skills(\/|$)/.test(location.pathname);
+  // app nav collapses to its rail throughout the Skills Store section (PAP-10879).
+  const isSkillsRoute = isSkillsStoreRoute(location.pathname, companyPrefix);
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
@@ -338,6 +348,7 @@ export function Layout() {
     onToggleCollapse: toggleCollapse,
     onTogglePanel: togglePanel,
     onShowShortcuts: () => setShortcutsOpen(true),
+    onGoToInbox: () => navigate("/inbox"),
   });
 
   useEffect(() => {
@@ -498,7 +509,7 @@ export function Layout() {
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
       <div
       className={cn(
-        "bg-background text-foreground pt-[env(safe-area-inset-top)]",
+        "bg-background text-foreground pt-(--sz-safe-top)",
         // overflow-x-clip on mobile keeps a stray wide descendant from making the
         // whole viewport scroll horizontally. clip (not hidden) leaves overflow-y
         // computed as visible, so native body scroll + the sticky breadcrumb keep
@@ -508,7 +519,7 @@ export function Layout() {
       >
       <a
         href="#main-content"
-        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[200] focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-(--z-200) focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         Skip to Main Content
       </a>
@@ -527,7 +538,7 @@ export function Layout() {
         {isMobile ? (
           <div
             className={cn(
-              "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-[env(safe-area-inset-top)] transition-transform duration-100 ease-out",
+              "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-(--sz-safe-top) transition-transform duration-100 ease-out",
               sidebarOpen ? "translate-x-0" : "-translate-x-full"
             )}
           >
@@ -591,7 +602,7 @@ export function Layout() {
                 // changes (e.g. switching skill-detail tabs) don't widen/shift
                 // when the vertical scrollbar appears or disappears (PAP-10907).
                 isMobile
-                  ? "overflow-visible pb-[calc(5rem+env(safe-area-inset-bottom))]"
+                  ? "overflow-visible pb-(--sz-calc-14)"
                   : "overflow-auto [scrollbar-gutter:stable]",
               )}
             >

@@ -1,10 +1,9 @@
 ---
 name: deal-with-security-advisory
 description: >
-  Handle a GitHub Security Advisory response for Paperclip, including
-  confidential fix development in a temporary private fork, human coordination
-  on advisory-thread comments, CVE request, synchronized advisory publication,
-  and immediate security release steps.
+  Handle confidential GitHub Security Advisory response for Paperclip. Use when
+  coordinating advisory triage, private-fork fixes, CVE/publication steps, and
+  immediate security releases.
 ---
 
 # Security Vulnerability Response Instructions

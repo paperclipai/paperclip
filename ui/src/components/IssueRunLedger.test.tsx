@@ -93,6 +93,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
+    responsibleUserId: null,
     checkoutRunId: null,
     executionRunId: null,
     executionAgentNameKey: null,
@@ -159,6 +160,7 @@ function renderLedger(props: Partial<ComponentProps<typeof IssueRunLedgerContent
       agentMap={props.agentMap ?? new Map([["agent-1", { name: "CodexCoder" }]])}
       activityEvents={props.activityEvents}
       renderActivityEvent={props.renderActivityEvent}
+      resolveUserLabel={props.resolveUserLabel}
       pendingWatchdogDecision={props.pendingWatchdogDecision}
       canRecordWatchdogDecisions={props.canRecordWatchdogDecisions}
       watchdogDecisionError={props.watchdogDecisionError}
@@ -374,6 +376,11 @@ describe("IssueRunLedger", () => {
           createdAt: "2026-04-18T19:56:00.000Z",
         }),
         createRun({
+          runId: "run-background-task",
+          resultJson: { stopReason: "unmanaged_background_task_stopped" },
+          createdAt: "2026-04-18T19:55:30.000Z",
+        }),
+        createRun({
           runId: "run-paused",
           resultJson: { stopReason: "paused" },
           createdAt: "2026-04-18T19:55:00.000Z",
@@ -384,6 +391,7 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("timeout (30s timeout)");
     expect(container.textContent).toContain("cancelled");
     expect(container.textContent).toContain("budget paused");
+    expect(container.textContent).toContain("unmanaged background task stopped");
     expect(container.textContent).toContain("paused by board");
   });
 
@@ -521,5 +529,82 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).not.toContain("Mark false positive");
     expect(container.querySelectorAll("button")).toHaveLength(0);
     expect(onWatchdogDecision).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the responsible user a run acts on behalf of", () => {
+    renderLedger({
+      runs: [createRun({ runId: "run-obo-1", responsibleUserId: "user-2" })],
+      resolveUserLabel: (userId) => (userId === "user-2" ? "Ada Lovelace" : null),
+    });
+
+    const chip = container.querySelector('[data-testid="run-on-behalf-of"]');
+    expect(chip).not.toBeNull();
+    expect(chip?.textContent).toContain("on behalf of");
+    expect(chip?.textContent).toContain("Ada Lovelace");
+  });
+
+  it("omits the on-behalf-of chip when the run has no responsible user", () => {
+    renderLedger({
+      runs: [createRun({ runId: "run-obo-2", responsibleUserId: null })],
+      resolveUserLabel: () => "Ada Lovelace",
+    });
+
+    expect(container.querySelector('[data-testid="run-on-behalf-of"]')).toBeNull();
+  });
+
+  it("renders actionable copy for a responsible-user-unauthorized run failure", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-denied-1",
+          status: "failed",
+          livenessState: "failed",
+          responsibleUserId: "user-2",
+          errorCode: "RESPONSIBLE_USER_UNAUTHORIZED",
+        }),
+      ],
+      resolveUserLabel: () => "Ada Lovelace",
+    });
+
+    const notice = container.querySelector('[data-testid="responsible-user-denial-notice"]');
+    expect(notice).not.toBeNull();
+    expect(notice?.getAttribute("data-denial-tone")).toBe("unauthorized");
+    expect(notice?.textContent).toContain("Ada Lovelace");
+    expect(notice?.textContent).toContain("Responsible user not authorized");
+  });
+
+  it("steers the responsible-user-unavailable failure toward marking work blocked", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-denied-2",
+          status: "failed",
+          livenessState: "failed",
+          responsibleUserId: "user-3",
+          errorCode: "RESPONSIBLE_USER_UNAVAILABLE",
+        }),
+      ],
+      resolveUserLabel: () => "Grace Hopper",
+    });
+
+    const notice = container.querySelector('[data-testid="responsible-user-denial-notice"]');
+    expect(notice).not.toBeNull();
+    expect(notice?.getAttribute("data-denial-tone")).toBe("unavailable");
+    expect(notice?.textContent?.toLowerCase()).toContain("blocked");
+  });
+
+  it("does not render a denial notice for a generic agent failure", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-denied-3",
+          status: "failed",
+          livenessState: "failed",
+          errorCode: "budget_blocked",
+        }),
+      ],
+    });
+
+    expect(container.querySelector('[data-testid="responsible-user-denial-notice"]')).toBeNull();
   });
 });

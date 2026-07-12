@@ -37,6 +37,10 @@ changes that behavior. Low-trust containment instead limits what the low-trust
 agent can read or mutate through the Paperclip API and prevents raw untrusted
 output from being automatically promoted into higher-trust agent context.
 
+Low-trust agents cannot read or mutate agent configuration, instruction bundles,
+or company skill configuration through direct grants. Configuration changes from
+low-trust work must go through higher-trust review and promotion paths instead.
+
 ## Runtime Containment
 
 Managed `low_trust_review` runs fail closed unless Paperclip can enforce the

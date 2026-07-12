@@ -37,6 +37,9 @@ function makeSecret(id: string, overrides: Partial<CompanySecret> = {}): Company
   return {
     id,
     companyId: "co",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
     key: id,
     name: id.toUpperCase(),
     provider: "local_encrypted",
@@ -325,6 +328,95 @@ describe("EnvironmentVariablesEditor", () => {
     expect(save.className).toContain("h-9");
     expect(save.className).toContain("px-4");
     expect(revert.className).toContain("h-9");
+  });
+
+  it("lists which variables changed in the unsaved-changes banner", async () => {
+    render(
+      <EnvironmentVariablesEditor
+        value={{ FOO: { type: "plain", value: "old" }, BAR: { type: "plain", value: "keep" } }}
+        secrets={secrets}
+        onChange={() => {}}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+
+    // Edit FOO's value.
+    const valueInput = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    setter.call(valueInput, "new");
+    valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+    expect(container.textContent).toContain("Edited: FOO");
+
+    // Remove BAR.
+    const removeButtons = [...container.querySelectorAll<HTMLButtonElement>('button[aria-label^="Remove"]')];
+    removeButtons.at(-1)!.click();
+    await flush();
+    expect(container.textContent).toContain("Removed: BAR");
+
+    // Add a brand-new variable.
+    const addButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Add variable"))!;
+    addButton.click();
+    await flush();
+    const newNameInput = nameInputs().at(-1)!;
+    setter.call(newNameInput, "API_TOKEN");
+    newNameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+    expect(container.textContent).toContain("New: API_TOKEN");
+    expect(container.textContent).toContain("Edited: FOO");
+    expect(container.textContent).toContain("Removed: BAR");
+  });
+
+  it("does not show a phantom unsaved-changes banner for a saved value that round-trips lossily", () => {
+    // Incomplete refs and unpadded names are dropped by the editor's emit
+    // semantics — the committed baseline must drop them too, or the banner
+    // shows the moment the form opens with no user edits.
+    render(
+      <EnvironmentVariablesEditor
+        value={{
+          "  PADDED_NAME  ": { type: "plain", value: "x" },
+          DANGLING_SECRET: { type: "secret_ref", secretId: "", version: "latest" },
+          DANGLING_USER_SECRET: { type: "user_secret_ref", key: "", version: "latest", required: true },
+        }}
+        secrets={secrets}
+        onChange={() => {}}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    expect(container.textContent).not.toContain("Unsaved changes");
+  });
+
+  it("warns via beforeunload only while the draft is dirty", async () => {
+    render(
+      <EnvironmentVariablesEditor
+        value={{ FOO: { type: "plain", value: "" } }}
+        secrets={secrets}
+        onChange={() => {}}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+
+    function dispatchBeforeUnload(): boolean {
+      const event = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    }
+
+    expect(dispatchBeforeUnload()).toBe(false);
+
+    const valueInput = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(valueInput, "bar");
+    valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+    expect(dispatchBeforeUnload()).toBe(true);
+
+    const revert = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.trim() === "Revert",
+    )!;
+    revert.click();
+    await flush();
+    expect(dispatchBeforeUnload()).toBe(false);
   });
 
   it("marks a newly typed variable name as unsaved before saving", async () => {
@@ -692,8 +784,8 @@ describe("EnvironmentVariablesEditor", () => {
     ).toBeTruthy();
   });
 
-  it("opens the store popover from the source dropdown Text→Secret (with a value) and keeps it open (PAP-12478)", () => {
-    // Regression: switching a *non-empty* Text row to "Secret reference" via the
+  it("opens the store popover from the source dropdown Text→Company secret (with a value) and keeps it open (PAP-12478)", () => {
+    // Regression: switching a *non-empty* Text row to "Company secret" via the
     // in-field Value source dropdown must open the anchored store-as-secret
     // popover (§6.3) — value preserved, not discarded. This is the same nested
     // DropdownMenu→Popover open-while-closing race as the ⋯ and picker paths
@@ -714,9 +806,9 @@ describe("EnvironmentVariablesEditor", () => {
     pointerClick(sourceButton!);
     settleFakeTimers();
     const secretItem = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((el) =>
-      el.textContent?.includes("Secret reference"),
+      el.textContent?.includes("Company secret"),
     );
-    expect(secretItem, "Secret reference menu item should be present").toBeTruthy();
+    expect(secretItem, "Company secret menu item should be present").toBeTruthy();
     pointerClick(secretItem!);
     settleFakeTimers();
     // The store popover is open (heading rendered) and stays open — it must not

@@ -5,6 +5,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
 import { issuesApi } from "../api/issues";
+import { authApi } from "../api/auth";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -34,12 +35,17 @@ import {
 } from "lucide-react";
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
+import {
+  SEARCH_OPERATOR_QUICK_FILTERS,
+  buildSearchPathFromQuery,
+  parseSearchQuery,
+  type SearchQueryParserContext,
+} from "../lib/search-query-parser";
 
 const SEARCH_ALL_VALUE = "__paperclip-search-all__";
 
-export function buildFullSearchPath(query: string) {
-  const trimmed = query.trim();
-  return trimmed.length === 0 ? "/search" : `/search?q=${encodeURIComponent(trimmed)}`;
+export function buildFullSearchPath(query: string, context: SearchQueryParserContext = {}) {
+  return buildSearchPathFromQuery(query, context);
 }
 
 const ISSUE_DETAIL_PATH_RE = /\/issues\/[^/?#]+(?:$|\?|#|\/)/;
@@ -114,18 +120,6 @@ export function CommandPalette() {
     if (!open) setQuery("");
   }, [open]);
 
-  const { data: issues = [] } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && open && searchQuery.length === 0,
-  });
-
-  const { data: searchedIssues = [] } = useQuery({
-    queryKey: queryKeys.issues.search(selectedCompanyId!, searchQuery, undefined, 10),
-    queryFn: () => issuesApi.list(selectedCompanyId!, { q: searchQuery, limit: 10, includeRoutineExecutions: true }),
-    enabled: !!selectedCompanyId && open && searchQuery.length > 0,
-  });
-
   const { data: agents = [] } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
@@ -142,13 +136,47 @@ export function CommandPalette() {
     [allProjects],
   );
 
+  const { data: labels = [] } = useQuery({
+    queryKey: queryKeys.issues.labels(selectedCompanyId!),
+    queryFn: () => issuesApi.listLabels(selectedCompanyId!),
+    enabled: !!selectedCompanyId && open,
+  });
+
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+    enabled: open,
+  });
+
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const parserContext = useMemo<SearchQueryParserContext>(() => ({
+    currentUserId,
+    agents,
+    projects,
+    labels,
+  }), [agents, currentUserId, labels, projects]);
+  const parsedQuery = useMemo(() => parseSearchQuery(query, parserContext), [parserContext, query]);
+  const quickSearchQuery = parsedQuery.query.trim();
+
+  const { data: issues = [] } = useQuery({
+    queryKey: queryKeys.issues.list(selectedCompanyId!),
+    queryFn: () => issuesApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && open && searchQuery.length === 0,
+  });
+
+  const { data: searchedIssues = [] } = useQuery({
+    queryKey: queryKeys.issues.search(selectedCompanyId!, quickSearchQuery, undefined, 10),
+    queryFn: () => issuesApi.list(selectedCompanyId!, { q: quickSearchQuery, limit: 10, includeRoutineExecutions: true }),
+    enabled: !!selectedCompanyId && open && quickSearchQuery.length > 0,
+  });
+
   function go(path: string) {
     setOpen(false);
     navigate(path);
   }
 
   function goFullSearch() {
-    go(buildFullSearchPath(searchQuery));
+    go(buildFullSearchPath(searchQuery, parserContext));
   }
 
   const agentName = (id: string | null) => {
@@ -157,16 +185,16 @@ export function CommandPalette() {
   };
 
   const visibleIssues = useMemo(
-    () => (searchQuery.length > 0 ? searchedIssues : issues),
-    [issues, searchedIssues, searchQuery],
+    () => (quickSearchQuery.length > 0 ? searchedIssues : issues),
+    [issues, searchedIssues, quickSearchQuery],
   );
 
   // Client-side typeahead ranking over the already-loaded projects. cmdk ranks
   // items by their `value` (which defaults to the rendered name) and would bury
   // or drop description-only matches, so we rank in JS and force-match below.
   const matchedProjects = useMemo(() => {
-    if (searchQuery.length === 0) return [];
-    const q = searchQuery.toLowerCase();
+    if (quickSearchQuery.length === 0) return [];
+    const q = quickSearchQuery.toLowerCase();
     return projects
       .map((project) => ({
         project,
@@ -180,7 +208,7 @@ export function CommandPalette() {
       .sort((a, b) => b.score - a.score)
       .slice(0, MAX_MATCHED_PROJECTS)
       .map((entry) => entry.project);
-  }, [projects, searchQuery]);
+  }, [projects, quickSearchQuery]);
 
   const showSearchAll = searchQuery.length > 0;
   const showPromotedProjects = showSearchAll && matchedProjects.length > 0;
@@ -198,6 +226,11 @@ export function CommandPalette() {
         value={query}
         onValueChange={setQuery}
         onKeyDown={(event) => {
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            goFullSearch();
+            return;
+          }
           if (event.key === "Enter" && showEmptyHint) {
             event.preventDefault();
             goFullSearch();
@@ -209,7 +242,7 @@ export function CommandPalette() {
           {showSearchAll ? (
             <span>
               No quick task matches. Press{" "}
-              <kbd className="rounded border border-border bg-muted px-1 py-0.5 text-[10px]">↵</kbd>{" "}
+              <kbd className="rounded border border-border bg-muted px-1 py-0.5 text-(length:--text-nano)">↵</kbd>{" "}
               to <span className="font-medium">search all</span> or keep typing to refine.
             </span>
           ) : (
@@ -231,13 +264,29 @@ export function CommandPalette() {
               </span>
               <span className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground">
                 <span>open full search</span>
-                <kbd className="rounded border border-border bg-background px-1 py-0.5 text-[10px]">↵</kbd>
+                <kbd className="rounded border border-border bg-background px-1 py-0.5 text-(length:--text-nano)">↵</kbd>
               </span>
             </CommandItem>
           </CommandGroup>
         ) : null}
 
         {showSearchAll ? <CommandSeparator /> : null}
+
+        <CommandGroup heading="Quick filters">
+          {SEARCH_OPERATOR_QUICK_FILTERS.map((chip) => (
+            <CommandItem
+              key={chip}
+              value={`quick-filter ${chip}`}
+              onSelect={() => setQuery((current) => current.trim() ? `${current.trim()} ${chip}` : chip)}
+              data-testid="command-filter-chip"
+            >
+              <Search className="mr-2 h-4 w-4" />
+              <span className="font-mono text-xs">{chip}</span>
+            </CommandItem>
+          ))}
+        </CommandGroup>
+
+        <CommandSeparator />
 
         {showPromotedProjects && (
           <>

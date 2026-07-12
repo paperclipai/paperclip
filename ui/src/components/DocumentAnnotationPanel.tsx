@@ -71,7 +71,7 @@ export function DocumentAnnotationPanel(props: AnnotationPanelProps) {
         <SheetContent
           side="bottom"
           showCloseButton={false}
-          className="paperclip-doc-annotation-sheet z-[60] flex max-h-[88vh] flex-col rounded-none border-t border-border bg-popover p-0 text-popover-foreground shadow-2xl"
+          className="paperclip-doc-annotation-sheet z-(--z-60) flex max-h-(--sz-88vh) flex-col rounded-none border-t border-border bg-popover p-0 text-popover-foreground shadow-2xl"
         >
           <SheetTitle className="sr-only">
             Comments on {props.documentKey} revision {props.documentRevisionNumber}
@@ -91,7 +91,7 @@ export function DocumentAnnotationPanel(props: AnnotationPanelProps) {
       aria-label={`Annotations for ${props.documentKey.toUpperCase()}, revision ${props.documentRevisionNumber}`}
       data-testid="document-annotation-panel"
       className={cn(
-        "isolate flex h-full max-h-[80vh] w-[360px] shrink-0 flex-col overflow-hidden rounded-none border border-border bg-popover text-popover-foreground shadow-xl",
+        "isolate flex h-full max-h-(--sz-80vh) w-(--sz-360px) shrink-0 flex-col overflow-hidden rounded-none border border-border bg-popover text-popover-foreground shadow-xl",
         props.className,
       )}
       style={props.desktopWidth ? { width: props.desktopWidth, maxWidth: props.desktopWidth } : undefined}
@@ -146,6 +146,8 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
   const annotationsQueryKey = useMemo(
     () => annotationTarget.kind === "routine"
       ? queryKeys.routines.documentAnnotations(annotationTarget.routineId, annotationTarget.documentKey, "all")
+      : annotationTarget.kind === "case"
+        ? queryKeys.cases.documentAnnotations(annotationTarget.caseId, annotationTarget.documentKey, "all")
       : queryKeys.issues.documentAnnotations(annotationTarget.issueId, annotationTarget.documentKey, "all"),
     [annotationTarget],
   );
@@ -158,6 +160,12 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
           return query.queryKey[0] === "routines"
             && query.queryKey[1] === "document-annotations"
             && query.queryKey[2] === annotationTarget.routineId
+            && query.queryKey[3] === annotationTarget.documentKey;
+        }
+        if (annotationTarget.kind === "case") {
+          return query.queryKey[0] === "cases"
+            && query.queryKey[1] === "document-annotations"
+            && query.queryKey[2] === annotationTarget.caseId
             && query.queryKey[3] === annotationTarget.documentKey;
         }
         return query.queryKey[0] === "issues"
@@ -328,7 +336,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
         data-testid={bodyTestId}
         className="flex items-center justify-end gap-1 border-b border-border bg-popover px-2 py-1.5"
       >
-        <span className="text-[11px] tabular-nums text-muted-foreground">
+        <span className="text-(length:--text-micro) tabular-nums text-muted-foreground">
           rev {props.documentRevisionNumber}
         </span>
         <Button
@@ -348,7 +356,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
       {props.newCommentDisabled && props.newCommentDisabledReason ? (
         <p
           data-testid="document-annotation-disabled-reason"
-          className="border-b border-border bg-muted px-3 py-1.5 text-[11px] text-muted-foreground"
+          className="border-b border-border bg-muted px-3 py-1.5 text-(length:--text-micro) text-muted-foreground"
         >
           {props.newCommentDisabledReason}
         </p>
@@ -356,7 +364,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
       {mutationError ? (
         <p
           data-testid="document-annotation-error"
-          className="border-b border-border bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive"
+          className="border-b border-border bg-destructive/10 px-3 py-1.5 text-(length:--text-micro) text-destructive"
         >
           {mutationError}
         </p>
@@ -408,7 +416,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
               {currentUser.image ? <AvatarImage src={currentUser.image} alt={currentUser.name} /> : null}
               <AvatarFallback>{deriveInitials(currentUser.name)}</AvatarFallback>
             </Avatar>
-            <span className="truncate text-[11px] font-medium text-foreground">{currentUser.name}</span>
+            <span className="truncate text-(length:--text-micro) font-medium text-foreground">{currentUser.name}</span>
           </div>
           <Textarea
             ref={composerRef}
@@ -626,7 +634,7 @@ function CommentRow({
         focused && "ring-2 ring-primary/40",
       )}
     >
-      <div className="mb-0.5 flex items-center justify-between gap-2 text-[11px]">
+      <div className="mb-0.5 flex items-center justify-between gap-2 text-(length:--text-micro)">
         <span className="flex min-w-0 items-center gap-1.5">
           <Avatar size="xs" className="shrink-0">
             {author.role === "agent" ? (
@@ -709,6 +717,7 @@ function buildOptimisticComment(input: {
     threadId: input.threadId,
     issueId: input.target.kind === "issue" ? input.target.issueId : null,
     routineId: input.target.kind === "routine" ? input.target.routineId : null,
+    caseId: input.target.kind === "case" ? input.target.caseId : null,
     documentId: "",
     body: input.body,
     authorType: "user",
@@ -747,6 +756,7 @@ function buildOptimisticThread(input: {
     id,
     issueId: input.target.kind === "issue" ? input.target.issueId : null,
     routineId: input.target.kind === "routine" ? input.target.routineId : null,
+    caseId: input.target.kind === "case" ? input.target.caseId : null,
     documentKey: input.documentKey,
     status: "open",
     anchorState: "active",

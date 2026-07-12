@@ -13,6 +13,7 @@ import type {
   IssueReferenceSourceKind,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
+  IssueHarnessKind,
   IssueOriginKind,
   IssuePriority,
   IssueRecoveryActionKind,
@@ -146,6 +147,7 @@ export interface AcceptedPlanDecompositionChild {
   description?: string | null;
   status: IssueStatus;
   workMode: IssueWorkMode;
+  harnessKind?: IssueHarnessKind | null;
   priority: IssuePriority;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
@@ -210,6 +212,175 @@ export interface IssueRelationIssueSummary {
   assigneeUserId: string | null;
   terminalBlockers?: IssueRelationIssueSummary[];
   activeRecoveryAction?: IssueRecoveryAction | null;
+}
+
+export type IssueBlockerDiagnosticFlag =
+  | "done_but_blocking"
+  | "cancelled_blocker_in_set"
+  | "workspace_finalize_pending";
+
+export interface IssueBlockerDiagnosticIssueSummary {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+}
+
+export interface IssueBlockerDiagnosticNode extends IssueBlockerDiagnosticIssueSummary {
+  isUnresolved: boolean;
+  isDependencyReady: boolean;
+  isPendingFinalize: boolean;
+  flags: IssueBlockerDiagnosticFlag[];
+}
+
+export interface IssueBlockerDiagnosticsReadiness {
+  allBlockersDone: boolean;
+  isDependencyReady: boolean;
+  unresolvedBlockerCount: number;
+  pendingFinalizeBlockerCount: number;
+}
+
+export interface IssueBlockerDiagnosticsResponse {
+  issue: IssueBlockerDiagnosticIssueSummary;
+  diagnosis: string | null;
+  readiness: IssueBlockerDiagnosticsReadiness | null;
+  blockers: IssueBlockerDiagnosticNode[];
+  omittedUnauthorizedBlockerCount: number | null;
+  truncated: boolean;
+  caps: {
+    maxBlockers: number;
+  };
+}
+
+export type IssueWakeDiagnosticWakeFailureClass = "failed" | "cancelled" | "skipped";
+
+export interface IssueWakeDiagnosticWakeRequest {
+  kind: "wake_request";
+  agentId: string | null;
+  source: string;
+  reason: string | null;
+  status: string;
+  coalescedCount: number;
+  runId: string | null;
+  requestedAt: string;
+  claimedAt: string | null;
+  finishedAt: string | null;
+  failureClass: IssueWakeDiagnosticWakeFailureClass | null;
+}
+
+export interface IssueWakeDiagnosticActivityRecord {
+  kind: "activity";
+  action: string;
+  entityType: string;
+  agentId: string | null;
+  runId: string | null;
+  createdAt: string;
+  source: string | null;
+  requestedReason: string | null;
+  previousReason: string | null;
+  rootIssueId: string | null;
+  holdId: string | null;
+  summary: string;
+}
+
+export type IssueWakeDiagnosticEvent =
+  | IssueWakeDiagnosticWakeRequest
+  | IssueWakeDiagnosticActivityRecord;
+
+export interface IssueWakeDiagnosticsResponse {
+  issue: IssueBlockerDiagnosticIssueSummary;
+  diagnosis: string | null;
+  likelyReason: string | null;
+  events: IssueWakeDiagnosticEvent[];
+  wakeRequestCount: number;
+  activityRecordCount: number;
+  truncated: boolean;
+  truncatedSections: {
+    wakeRequests: boolean;
+    activityRecords: boolean;
+  };
+  caps: {
+    maxWakeRequests: number;
+    maxActivityRecords: number;
+    lookbackDays: number;
+  };
+}
+
+export interface IssueSubtreeDiagnosticNode {
+  issue: IssueBlockerDiagnosticIssueSummary;
+  parentId: string | null;
+  depth: number;
+  diagnosis: string | null;
+  likelyReason: string | null;
+  blockers: IssueBlockerDiagnosticNode[];
+  blockerReadiness: IssueBlockerDiagnosticsReadiness | null;
+  omittedUnauthorizedBlockerCount: number | null;
+  wakeEvents: IssueWakeDiagnosticEvent[];
+  wakeRequestCount: number;
+  activityRecordCount: number;
+  truncated: boolean;
+  truncatedSections: {
+    blockers: boolean;
+    wakeRequests: boolean;
+    activityRecords: boolean;
+  };
+}
+
+export type IssueSubtreeDiagnosticEdge =
+  | {
+    kind: "parent";
+    fromIssueId: string;
+    toIssueId: string;
+    timestamp: string | null;
+  }
+  | {
+    kind: "blocks";
+    fromIssueId: string;
+    toIssueId: string;
+    timestamp: string | null;
+  }
+  | {
+    kind: "wake_request";
+    issueId: string;
+    agentId: string | null;
+    reason: string | null;
+    status: string;
+    timestamp: string;
+  }
+  | {
+    kind: "activity";
+    issueId: string;
+    action: string;
+    timestamp: string;
+  };
+
+export interface IssueSubtreeDiagnosticsResponse {
+  issue: IssueBlockerDiagnosticIssueSummary;
+  diagnosis: string | null;
+  likelyReason: string | null;
+  nodes: IssueSubtreeDiagnosticNode[];
+  edges: IssueSubtreeDiagnosticEdge[];
+  nodeCount: number;
+  omittedUnauthorizedNodeCount: number | null;
+  truncated: boolean;
+  truncatedSections: {
+    nodes: boolean;
+    depth: boolean;
+    blockers: boolean;
+    wakeRequests: boolean;
+    activityRecords: boolean;
+  };
+  caps: {
+    maxDepth: number;
+    maxNodes: number;
+    maxBlockersPerNode: number;
+    maxWakeRequestsPerNode: number;
+    maxActivityRecordsPerNode: number;
+    lookbackDays: number;
+  };
 }
 
 export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs_attention";
@@ -550,6 +721,7 @@ export interface Issue {
   executionLockedAt: Date | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  responsibleUserId: string | null;
   issueNumber: number | null;
   identifier: string | null;
   originKind?: IssueOriginKind;
@@ -603,6 +775,57 @@ export interface Issue {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export type CompactIssue = Pick<
+  Issue,
+  | "id"
+  | "companyId"
+  | "projectId"
+  | "projectWorkspaceId"
+  | "goalId"
+  | "parentId"
+  | "title"
+  | "description"
+  | "status"
+  | "workMode"
+  | "priority"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "checkoutRunId"
+  | "executionRunId"
+  | "executionAgentNameKey"
+  | "executionLockedAt"
+  | "createdByAgentId"
+  | "createdByUserId"
+  | "issueNumber"
+  | "identifier"
+  | "originKind"
+  | "originId"
+  | "originRunId"
+  | "requestDepth"
+  | "billingCode"
+  | "executionWorkspaceId"
+  | "startedAt"
+  | "completedAt"
+  | "cancelledAt"
+  | "createdAt"
+  | "updatedAt"
+> & {
+  labelIds?: string[];
+  labels?: IssueLabel[];
+  blockedBy?: IssueRelationIssueSummary[];
+  blockerAttention?: IssueBlockerAttention;
+  blockedInboxAttention?: IssueBlockedInboxAttention | null;
+  productivityReview?: IssueProductivityReview | null;
+  scheduledRetry?: IssueScheduledRetry | null;
+  liveDescendantCount?: number;
+  myLastTouchAt?: Date | null;
+  lastExternalCommentAt?: Date | null;
+  lastActivityAt?: Date | null;
+  isUnreadForMe?: boolean;
+  activeRecoveryAction: IssueRecoveryAction | null;
+  successfulRunHandoff: SuccessfulRunHandoffState | null;
+};
 
 /**
  * Where a comment's derived (non-stored-author) agent attribution came from,
@@ -859,16 +1082,68 @@ export interface RequestCheckboxConfirmationPayload {
   target?: RequestConfirmationTarget | null;
 }
 
+export type RequestItemVerdictValue = "approve" | "reject" | "defer";
+
+export interface RequestItemVerdictsItem {
+  id: string;
+  label: string;
+  description?: string | null;
+  previewMarkdown?: string | null;
+  href?: string | null;
+  attachmentId?: string | null;
+}
+
+export interface RequestItemVerdictsPayload {
+  version: 1;
+  prompt: string;
+  detailsMarkdown?: string | null;
+  items: RequestItemVerdictsItem[];
+  verdicts?: RequestItemVerdictValue[];
+  requireReasonOn?: RequestItemVerdictValue[];
+  reasonLabel?: string | null;
+  allowBulkApprove?: boolean;
+  supersedeOnUserComment?: boolean;
+  target?: RequestConfirmationTarget | null;
+}
+
 export interface RequestConfirmationResult {
   version: 1;
   outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target";
   reason?: string | null;
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
+  resumeFailure?: {
+    status: "retrying" | "needs_attention";
+    errorCode: string | null;
+    attempt: number;
+    maxAttempts: number;
+    runId?: string | null;
+    retryRunId?: string | null;
+    recoveryActionId?: string | null;
+    updatedAt?: string | null;
+  } | null;
 }
 
 export interface RequestCheckboxConfirmationResult extends RequestConfirmationResult {
   selectedOptionIds?: string[];
+}
+
+export interface RequestItemVerdictsResultItem {
+  id: string;
+  verdict: RequestItemVerdictValue;
+  reason?: string | null;
+  resolvedByUserId: string;
+  resolvedAt: Date | string;
+  commentId?: string | null;
+}
+
+export interface RequestItemVerdictsResult {
+  version: 1;
+  outcome: "resolved" | "superseded_by_comment" | "stale_target" | "cancelled";
+  complete: boolean;
+  items: RequestItemVerdictsResultItem[];
+  commentId?: string | null;
+  staleTarget?: RequestConfirmationTarget | null;
 }
 
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {
@@ -912,23 +1187,32 @@ export interface RequestCheckboxConfirmationInteraction extends IssueThreadInter
   result?: RequestCheckboxConfirmationResult | null;
 }
 
+export interface RequestItemVerdictsInteraction extends IssueThreadInteractionBase {
+  kind: "request_item_verdicts";
+  payload: RequestItemVerdictsPayload;
+  result?: RequestItemVerdictsResult | null;
+}
+
 export type IssueThreadInteraction =
   | SuggestTasksInteraction
   | AskUserQuestionsInteraction
   | RequestConfirmationInteraction
-  | RequestCheckboxConfirmationInteraction;
+  | RequestCheckboxConfirmationInteraction
+  | RequestItemVerdictsInteraction;
 
 export type IssueThreadInteractionPayload =
   | SuggestTasksPayload
   | AskUserQuestionsPayload
   | RequestConfirmationPayload
-  | RequestCheckboxConfirmationPayload;
+  | RequestCheckboxConfirmationPayload
+  | RequestItemVerdictsPayload;
 
 export type IssueThreadInteractionResult =
   | SuggestTasksResult
   | AskUserQuestionsResult
   | RequestConfirmationResult
-  | RequestCheckboxConfirmationResult;
+  | RequestCheckboxConfirmationResult
+  | RequestItemVerdictsResult;
 
 export interface IssueAttachment {
   id: string;
