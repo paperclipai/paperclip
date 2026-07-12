@@ -218,7 +218,7 @@ const MANAGER_ONLY_SKILL_KEYS = new Set([
 
 const IC_ONLY_ROLES = new Set(["engineer", "qa"]);
 
-function isICOnlyRole(role: string | null | undefined): boolean {
+export function isICOnlyRole(role: string | null | undefined): boolean {
   if (!role) return false;
   return IC_ONLY_ROLES.has(role.trim().toLowerCase());
 }
@@ -228,6 +228,14 @@ function isManagerOnlyEntry(entry: { key: string; runtimeName?: string | null })
   const rn = entry.runtimeName?.trim();
   if (!rn) return false;
   return MANAGER_ONLY_SKILL_KEYS.has(`paperclipai/paperclip/${rn}`);
+}
+
+export function pruneManagerOnlySkillEntriesForRole<T extends { key: string; runtimeName?: string | null }>(
+  entries: readonly T[],
+  agentRole: string | null | undefined,
+): T[] {
+  if (!isICOnlyRole(agentRole)) return Array.from(entries);
+  return entries.filter((entry) => !isManagerOnlyEntry(entry));
 }
 
 export interface PaperclipSkillEntry {
@@ -2620,10 +2628,22 @@ export function resolvePaperclipDesiredSkillNames(
   if (!preference.explicit) {
     return Array.from(new Set(requiredSkills));
   }
-  const desiredSkills = preference.desiredSkills
-    .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
-    .filter(Boolean);
-  return Array.from(new Set([...requiredSkills, ...desiredSkills]));
+  const desiredSkills = pruneManagerOnlySkillEntriesForRole(
+    preference.desiredSkills
+      .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
+      .filter(Boolean)
+      .map((key) => ({ key })),
+    agentRole,
+  ).map((entry) => entry.key);
+  const merged = [...requiredSkills, ...desiredSkills];
+  if (!stripManagerOnly) return Array.from(new Set(merged));
+  // ponytail: fail-closed — manager-only keys must never reach IC roles regardless of input path
+  return Array.from(new Set(merged)).filter((key) => {
+    const entry = availableEntries.find((e) => e.key === key);
+    if (entry?.managerOnly === false) return true;
+    if (entry?.managerOnly === true) return false;
+    return !isManagerOnlyEntry({ key, runtimeName: entry?.runtimeName });
+  });
 }
 
 export function writePaperclipSkillSyncPreference(
