@@ -16,6 +16,8 @@ Use this skill for browser navigation, form interaction, authenticated web workf
 3. The launcher prints JSON identifying the actual provider. Report a provider switch in the next progress comment.
 4. Camoufox is a fallback, not a promise to bypass every WAF. Stop for human captcha/2FA when required. Never attempt to defeat access controls or violate a site's terms.
 
+The launcher also preserves provider affinity: when the selected profile already contains Camoufox cookies for the target domain, it resumes Camoufox immediately. Do not bypass the launcher and retry credentials in agent-browser; sites such as Google can accept the existing Camoufox session while rejecting a cross-browser cookie transplant.
+
 ## Live movement
 
 When the board says "live browser", "native browser", "managed browser", "I want to see you navigate", or equivalent, this section is mandatory. Do not substitute a pre-existing Playwright/Puppeteer helper, direct `headless: true` browser, reusable batch script, or a sequence of uploaded screenshots. Even if such a helper already works, replay the requested interaction with the managed commands below so the issue receives continuous frames.
