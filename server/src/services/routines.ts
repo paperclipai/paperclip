@@ -2902,6 +2902,13 @@ export function routineService(
           .where(eq(routines.id, routine.id))
           .then((rows) => rows[0] ?? null);
         if (!locked) throw notFound("Routine not found");
+        if (locked.latestRevisionNumber !== proposal.baseRevisionNumber) {
+          throw conflict("Routine evolution proposal is stale; review the latest routine revision before approving", {
+            code: "stale_routine_evolution_proposal",
+            proposalBaseRevisionNumber: proposal.baseRevisionNumber,
+            latestRevisionNumber: locked.latestRevisionNumber,
+          });
+        }
 
         const now = new Date();
         const [updatedRoutine] = await txDb

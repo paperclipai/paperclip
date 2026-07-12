@@ -47,6 +47,8 @@ import {
   updateRoutineTriggerSchema,
   rotateRoutineTriggerSecretSchema,
   runRoutineSchema,
+  evolveRoutineSchema,
+  decideRoutineEvolutionProposalSchema,
   // Goal
   createGoalSchema,
   updateGoalSchema,
@@ -2258,6 +2260,44 @@ registry.registerPath({
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
+
+registry.registerPath({
+  method: "post",
+  path: "/api/routines/{id}/evolve",
+  tags: ["routines"],
+  summary: "Apply or propose a routine self-evolution",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(evolveRoutineSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/routines/{id}/evolution-proposals",
+  tags: ["routines"],
+  summary: "List routine evolution proposals",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+for (const route of [
+  ["post", "/api/routines/{id}/evolution-proposals/{pid}/approve", "Approve a routine evolution proposal"],
+  ["post", "/api/routines/{id}/evolution-proposals/{pid}/reject", "Reject a routine evolution proposal"],
+] as const) {
+  registry.registerPath({
+    method: route[0],
+    path: route[1],
+    tags: ["routines"],
+    summary: route[2],
+    request: {
+      params: z.object({ id: z.string(), pid: z.string() }),
+      body: jsonBody(decideRoutineEvolutionProposalSchema),
+    },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  });
+}
 
 registry.registerPath({
   method: "patch",

@@ -2371,6 +2371,32 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       expect(persisted.latestRevisionNumber).toBe(routine.latestRevisionNumber + 1);
     });
 
+    it("rejects approving a stale gated proposal after the routine changes", async () => {
+      const { companyId, agentId, routine, svc } = await seedFixture();
+      await db.update(routines).set({ evolutionMode: "gated" }).where(eq(routines.id, routine.id));
+      const runId = await insertHeartbeatRun(companyId, agentId);
+      const proposeResult = await svc.evolveRoutine(
+        routine.id,
+        { description: "Stale approved instructions", changeSummary: "Try a gated proposal" },
+        { agentId, runId },
+      );
+      if (proposeResult.status !== "proposed") throw new Error("expected proposed result");
+
+      await svc.updateRoutine(
+        routine.id,
+        { description: "Human edited instructions", baseRevisionId: routine.latestRevisionId },
+        { userId: "board-user" },
+      );
+
+      await expect(
+        svc.decideEvolutionProposal(routine.id, proposeResult.proposal.id, "approved", { userId: "board-user" }),
+      ).rejects.toThrow(/stale/i);
+
+      const persisted = await db.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0]!);
+      expect(persisted.description).toBe("Human edited instructions");
+      expect(persisted.latestRevisionNumber).toBe(routine.latestRevisionNumber + 1);
+    });
+
     it("rejecting a gated proposal marks it rejected without touching the live routine", async () => {
       const { companyId, agentId, routine, svc } = await seedFixture();
       await db.update(routines).set({ evolutionMode: "gated" }).where(eq(routines.id, routine.id));
