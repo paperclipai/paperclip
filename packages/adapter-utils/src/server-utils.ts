@@ -19,11 +19,26 @@ export interface RunProcessResult {
   stderr: string;
   pid: number | null;
   startedAt: string | null;
+  terminalResultCleanup?: TerminalResultCleanupEvidence | null;
 }
 
 export interface TerminalResultCleanupOptions {
   hasTerminalResult: (output: { stdout: string; stderr: string }) => boolean;
   graceMs?: number;
+}
+
+export const UNMANAGED_BACKGROUND_TASK_STOP_REASON = "unmanaged_background_task_stopped";
+export const UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON =
+  "unmanaged background task stopped; no durable live path";
+
+export interface TerminalResultCleanupEvidence {
+  kind: "terminal_result_cleanup";
+  stopped: true;
+  stopReason: typeof UNMANAGED_BACKGROUND_TASK_STOP_REASON;
+  reason: typeof UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON;
+  terminalResultSeen: boolean;
+  signal: NodeJS.Signals | null;
+  forceKilled: boolean;
 }
 
 interface RunningProcess {
@@ -58,7 +73,8 @@ function resolveProcessGroupId(child: ChildProcess) {
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
 }
 
-function signalRunningProcess(
+// Exported so the direct-child fallback branch can be unit-tested directly.
+export function signalRunningProcess(
   running: Pick<RunningProcess, "child" | "processGroupId">,
   signal: NodeJS.Signals,
 ) {
@@ -70,7 +86,10 @@ function signalRunningProcess(
       // Fall back to the direct child signal if group signaling fails.
     }
   }
-  if (!running.child.killed) {
+  // Gate on real liveness: `child.killed` only means a signal was sent, not that
+  // the process exited, so escalating on it would suppress a follow-up SIGKILL.
+  // `exitCode`/`signalCode` are null until the child actually closes.
+  if (running.child.exitCode === null && running.child.signalCode === null) {
     running.child.kill(signal);
   }
 }
@@ -122,6 +141,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
   "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
   "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
+  "- Use `PAPERCLIP_SCRATCH_DIR` / `PAPERCLIP_RUN_SCRATCH_DIR` for temporary scratch files instead of ad hoc `/tmp` paths; Paperclip removes that run-owned directory after the run ends.",
   "- To ask for that input, create an interaction on the current issue with POST /api/issues/{issueId}/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response; for request_confirmation this resumes only after acceptance.",
   "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/{issueId}/comments or PATCH /api/issues/{issueId} comment payload. Generic agent comments on closed issues are inert by default.",
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
@@ -591,6 +611,10 @@ type PaperclipWakeCheckboxSelection = {
   }>;
 };
 
+type PaperclipWakeExecutionWorkspace = {
+  branchName: string | null;
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
@@ -608,6 +632,7 @@ type PaperclipWakePayload = {
   interactionKind: string | null;
   interactionStatus: string | null;
   checkboxSelection: PaperclipWakeCheckboxSelection | null;
+  executionWorkspace: PaperclipWakeExecutionWorkspace | null;
   annotationDeltas: PaperclipWakeAnnotationDelta[];
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
@@ -1120,6 +1145,29 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
   };
 }
 
+function normalizePaperclipWakeExecutionWorkspace(value: unknown): PaperclipWakeExecutionWorkspace | null {
+  const workspace = parseObject(value);
+  // Strip control characters (illegal in git refs, and the newline route into
+  // the prompt) but keep the ref otherwise exact -- the guard must name the
+  // real branch. Renderers escape the name for their output format.
+  const branchName =
+    asString(workspace.branchName, "")
+      .replace(/[\u0000-\u001f\u007f]/g, "")
+      .trim()
+      .slice(0, 300) || null;
+  if (!branchName) return null;
+  return { branchName };
+}
+
+// Wrap a value in a Markdown inline-code span whose backtick fence is longer
+// than any backtick run inside the value, so the value cannot close the span.
+function markdownInlineCode(value: string): string {
+  const longestBacktickRun = value.match(/`+/g)?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
+  if (longestBacktickRun === 0) return `\`${value}\``;
+  const fence = "`".repeat(longestBacktickRun + 1);
+  return `${fence} ${value} ${fence}`;
+}
+
 export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
   const payload = parseObject(value);
   const comments = Array.isArray(payload.comments)
@@ -1161,7 +1209,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
   const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !normalizePaperclipWakeIssue(payload.issue)) {
+  const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1183,6 +1232,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
     checkboxSelection,
+    executionWorkspace,
     childIssueSummaries,
     childIssueSummaryTruncated: asBoolean(payload.childIssueSummaryTruncated, false),
     commentIds,
@@ -1324,6 +1374,11 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.checkedOutByHarness) {
     lines.push("- checkout: already claimed by the harness for this run");
+  }
+  if (!resumedSession && normalized.executionWorkspace?.branchName) {
+    lines.push(
+      `- execution workspace branch: you are running in an execution workspace on branch ${markdownInlineCode(normalized.executionWorkspace.branchName)}. Do not switch, rename, or re-point this branch; keep all commits on it.`,
+    );
   }
   if (normalized.dependencyBlockedInteraction) {
     lines.push("- dependency-blocked interaction: yes");
@@ -2881,6 +2936,8 @@ export async function runChildProcess(
         let logChain: Promise<void> = Promise.resolve();
         let terminalResultSeen = false;
         let terminalCleanupStarted = false;
+        let terminalCleanupSignal: NodeJS.Signals | null = null;
+        let terminalCleanupForceKilled = false;
         let terminalCleanupTimer: NodeJS.Timeout | null = null;
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
@@ -2920,9 +2977,12 @@ export async function runChildProcess(
             terminalCleanupTimer = null;
             if (terminalCleanupStarted || timedOut) return;
             terminalCleanupStarted = true;
+            terminalCleanupSignal = "SIGTERM";
             signalRunningProcess({ child, processGroupId }, "SIGTERM");
             terminalCleanupKillTimer = setTimeout(() => {
               terminalCleanupKillTimer = null;
+              terminalCleanupSignal = "SIGKILL";
+              terminalCleanupForceKilled = true;
               signalRunningProcess({ child, processGroupId }, "SIGKILL");
             }, Math.max(1, opts.graceSec) * 1000);
           }, graceMs);
@@ -3015,6 +3075,17 @@ export async function runChildProcess(
                 stderr,
                 pid: child.pid ?? null,
                 startedAt,
+                terminalResultCleanup: terminalCleanupStarted
+                  ? {
+                    kind: "terminal_result_cleanup",
+                    stopped: true,
+                    stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+                    reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+                    terminalResultSeen,
+                    signal: terminalCleanupSignal,
+                    forceKilled: terminalCleanupForceKilled,
+                  }
+                  : null,
               });
               });
           });

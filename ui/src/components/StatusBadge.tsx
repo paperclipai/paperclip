@@ -25,6 +25,8 @@ function sentenceCaseStatus(status: string): string {
 /**
  * Generic status badge for runs / goals / approvals (not task status).
  */
+// design-allow(pill-pattern): DECISION-SHEET.md C8 — status badges keep the bespoke WCAG-tuned
+// .status-chip color-mix mechanic and do not wrap the Badge primitive.
 export function StatusBadge({ status }: { status: string }) {
   return (
     <span
@@ -67,7 +69,7 @@ export function AgentStatusCapsule({ status }: { status: string }) {
   return (
     <span
       aria-hidden
-      className={cn("status-fill inline-block h-4 w-2 rounded-[4px] shrink-0", motion)}
+      className={cn("status-fill inline-block h-4 w-2 rounded-(--rad-4) shrink-0", motion)}
       style={scStyle(cssVar)}
     />
   );
