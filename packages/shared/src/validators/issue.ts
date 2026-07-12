@@ -888,6 +888,11 @@ export const requestConfirmationToolActionResultSchema = z.object({
   status: z.enum(["approved", "executing", "executed", "failed", "expired"]),
   errorCode: z.string().trim().min(1).max(120).nullable().optional(),
   errorMessage: z.string().trim().min(1).max(4000).nullable().optional(),
+  // Populated on `executed` so the card can report the outcome (e.g. "Row 42
+  // added") instead of a bare checkmark, with an optional deep-link when the
+  // connector returns a URL (PAP-13745 §5 Executed / Peak-End).
+  resultSummary: z.string().trim().min(1).max(4000).nullable().optional(),
+  resultHref: z.string().trim().url().max(2000).nullable().optional(),
   updatedAt: z.string().datetime({ offset: true }),
 });
 

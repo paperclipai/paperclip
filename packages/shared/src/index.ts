@@ -822,6 +822,8 @@ export type {
   RequestConfirmationTarget,
   RequestConfirmationPayload,
   RequestConfirmationResult,
+  RequestConfirmationToolActionPayload,
+  RequestConfirmationToolActionResult,
   RequestCheckboxConfirmationOption,
   RequestCheckboxConfirmationPayload,
   RequestCheckboxConfirmationResult,

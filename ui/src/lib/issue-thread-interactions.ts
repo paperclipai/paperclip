@@ -19,6 +19,8 @@ export type {
   RequestConfirmationPayload,
   RequestConfirmationResult,
   RequestConfirmationTarget,
+  RequestConfirmationToolActionPayload,
+  RequestConfirmationToolActionResult,
   SuggestedTaskDraft,
   SuggestTasksInteraction,
   SuggestTasksPayload,
