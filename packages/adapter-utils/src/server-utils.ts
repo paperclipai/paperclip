@@ -615,6 +615,18 @@ type PaperclipWakeExecutionWorkspace = {
   branchName: string | null;
 };
 
+type PaperclipWakeReport = {
+  id: string;
+  targetIssueId: string;
+  originIssueId: string;
+  originRunId: string;
+  originAgentId: string;
+  fingerprint: string;
+  payload: Record<string, unknown>;
+  wakeRequested: boolean;
+  createdAt: string | null;
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
@@ -639,6 +651,7 @@ type PaperclipWakePayload = {
   commentIds: string[];
   latestCommentId: string | null;
   comments: PaperclipWakeComment[];
+  reports: PaperclipWakeReport[];
   requestedCount: number;
   includedCount: number;
   missingCount: number;
@@ -678,6 +691,28 @@ function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | n
     createdAt: asString(comment.createdAt, "").trim() || null,
     authorType: asString(author.type, "").trim() || null,
     authorId: asString(author.id, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakeReport(value: unknown): PaperclipWakeReport | null {
+  const report = parseObject(value);
+  const id = asString(report.id, "").trim();
+  const targetIssueId = asString(report.targetIssueId, "").trim();
+  const originIssueId = asString(report.originIssueId, "").trim();
+  const originRunId = asString(report.originRunId, "").trim();
+  const originAgentId = asString(report.originAgentId, "").trim();
+  const fingerprint = asString(report.fingerprint, "").trim();
+  if (!id || !targetIssueId || !originIssueId || !originRunId || !originAgentId || !fingerprint) return null;
+  return {
+    id,
+    targetIssueId,
+    originIssueId,
+    originRunId,
+    originAgentId,
+    fingerprint,
+    payload: parseObject(report.payload),
+    wakeRequested: asBoolean(report.wakeRequested, false),
+    createdAt: asString(report.createdAt, "").trim() || null,
   };
 }
 
@@ -1175,6 +1210,11 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .map((entry) => normalizePaperclipWakeComment(entry))
         .filter((entry): entry is PaperclipWakeComment => Boolean(entry))
     : [];
+  const reports = Array.isArray(payload.reports)
+    ? payload.reports
+        .map((entry) => normalizePaperclipWakeReport(entry))
+        .filter((entry): entry is PaperclipWakeReport => Boolean(entry))
+    : [];
   const commentWindow = parseObject(payload.commentWindow);
   const commentIds = Array.isArray(payload.commentIds)
     ? payload.commentIds
@@ -1210,7 +1250,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
   const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && reports.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1238,6 +1278,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     commentIds,
     latestCommentId: asString(payload.latestCommentId, "").trim() || null,
     comments,
+    reports,
     requestedCount: asNumber(commentWindow.requestedCount, comments.length || commentIds.length),
     includedCount: asNumber(commentWindow.includedCount, comments.length),
     missingCount: asNumber(commentWindow.missingCount, 0),
@@ -1665,6 +1706,17 @@ export function renderPaperclipWakePrompt(
       lines.push("[comment body truncated]");
     }
     lines.push("");
+  }
+
+  if (normalized.reports.length > 0) {
+    lines.push("Cross-issue reports in delivery order:");
+    for (const [index, report] of normalized.reports.entries()) {
+      lines.push(
+        `${index + 1}. report ${report.id} from issue ${report.originIssueId} run ${report.originRunId}`,
+        JSON.stringify(report.payload),
+        "",
+      );
+    }
   }
 
   return lines.join("\n").trim();

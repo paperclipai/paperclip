@@ -12830,7 +12830,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   : null,
               startedAt: meta.startedAt,
             });
-            await acknowledgePendingReports();
           },
           authToken: authToken ?? undefined,
         });

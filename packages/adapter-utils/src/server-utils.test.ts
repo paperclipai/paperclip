@@ -821,6 +821,36 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
+  it("preserves cross-issue reports in adapter payloads and prompts", () => {
+    const payload = {
+      reports: [
+        {
+          id: "report-1",
+          targetIssueId: "issue-target",
+          originIssueId: "issue-origin",
+          originRunId: "run-origin",
+          originAgentId: "agent-origin",
+          fingerprint: "audit-result",
+          payload: {
+            type: "audit.result",
+            summary: "Audit passed",
+            data: { checks: 9 },
+          },
+          wakeRequested: true,
+          createdAt: "2026-07-12T16:00:00.000Z",
+        },
+      ],
+    };
+
+    const serialized = stringifyPaperclipWakePayload(payload);
+    expect(JSON.parse(serialized ?? "{}")).toMatchObject(payload);
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("Cross-issue reports in delivery order:");
+    expect(prompt).toContain("report report-1 from issue issue-origin run run-origin");
+    expect(prompt).toContain('"summary":"Audit passed"');
+  });
+
   it("escapes backticks and strips control characters in the branch guard", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_assigned",
