@@ -427,6 +427,10 @@ const MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS = 12_000;
 const MAX_AGENT_SESSION_MESSAGE_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+// KEN-6185: in-flight runs older than this (by updatedAt) no longer block
+// timer wakes — abandoned queued/scheduled_retry zombies would otherwise
+// starve an agent forever, since reapOrphanedRuns only reaps "running" runs.
+const TIMER_INFLIGHT_GUARD_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -17775,7 +17779,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // never applies to them: a timer tick landing mid-run would start a
       // second concurrent run that re-executes the agent's in_progress issue
       // with side effects that are not gated on checkout. Skip the wake while
-      // any run for this agent is still in flight.
+      // any run for this agent is still in flight. Runs whose last activity is
+      // older than the staleness bound are ignored so an abandoned queued/
+      // scheduled_retry zombie cannot starve an agent's timer wakes forever
+      // (reapOrphanedRuns only reaps "running" runs).
+      const inFlightCutoff = new Date(Date.now() - TIMER_INFLIGHT_GUARD_MAX_AGE_MS);
       const inFlightRun = await db
         .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
         .from(heartbeatRuns)
@@ -17783,6 +17791,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           and(
             eq(heartbeatRuns.agentId, agentId),
             inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+            gte(heartbeatRuns.updatedAt, inFlightCutoff),
           ),
         )
         .limit(1)
