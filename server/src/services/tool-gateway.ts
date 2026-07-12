@@ -217,6 +217,26 @@ type HeaderPolicySummary = {
 type RemoteHttpExecutionResult = {
   result: unknown;
   headerSummary?: HeaderPolicySummary;
+  execution?: RemoteHttpExecutionAudit;
+};
+
+type RemoteHttpExecutionAudit = {
+  transport: "remote_http";
+  request: {
+    protocol: "MCP JSON-RPC 2.0";
+    httpMethod: "POST";
+    endpoint: string;
+    mcpMethod: "tools/call";
+    requestId: string;
+    upstreamToolName: string;
+    dispatched: true;
+  };
+  response?: {
+    httpStatus: number;
+    contentType: string | null;
+    bodySizeBytes: number;
+    upstreamRequestId: string | null;
+  };
 };
 
 type LocalStdioRuntimeTemplate = {
@@ -270,6 +290,22 @@ function isSensitivePassthroughHeader(name: string) {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function auditSafeEndpoint(endpoint: string): string {
+  try {
+    const url = new URL(endpoint);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return "configured remote MCP endpoint";
+  }
+}
+
+function executionAuditFromError(error: unknown): RemoteHttpExecutionAudit | undefined {
+  if (!(error instanceof ToolGatewayHttpError)) return undefined;
+  const execution = error.details.execution;
+  if (!execution || typeof execution !== "object" || Array.isArray(execution)) return undefined;
+  return execution as RemoteHttpExecutionAudit;
 }
 
 function generateGatewayToken(sessionId: string) {
@@ -2835,6 +2871,19 @@ export function createToolGatewayService(
       credentialHeaders,
       callerHeaders,
     });
+    const requestId = `paperclip-tool-${randomUUID()}`;
+    const execution: RemoteHttpExecutionAudit = {
+      transport: "remote_http",
+      request: {
+        protocol: "MCP JSON-RPC 2.0",
+        httpMethod: "POST",
+        endpoint: auditSafeEndpoint(endpoint),
+        mcpMethod: "tools/call",
+        requestId,
+        upstreamToolName: entry.toolName,
+        dispatched: true,
+      },
+    };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
     timer.unref?.();
@@ -2847,7 +2896,7 @@ export function createToolGatewayService(
         signal: controller.signal,
         body: JSON.stringify({
           jsonrpc: "2.0",
-          id: `paperclip-tool-${randomUUID()}`,
+          id: requestId,
           method: "tools/call",
           params: {
             name: entry.toolName,
@@ -2856,12 +2905,22 @@ export function createToolGatewayService(
         }),
       });
       const body = await readBoundedRemoteResponse(response);
+      execution.response = {
+        httpStatus: response.status,
+        contentType: response.headers.get("content-type"),
+        bodySizeBytes: Buffer.byteLength(body, "utf8"),
+        upstreamRequestId:
+          response.headers.get("x-request-id")
+          ?? response.headers.get("x-zapier-request-id")
+          ?? response.headers.get("traceparent"),
+      };
       if (!response.ok) {
         await markRemoteConnectionHealth(connection, "error", "Remote MCP server returned an HTTP error.");
         throw new ToolGatewayHttpError(502, "Remote MCP server returned an HTTP error", "remote_http_status", {
           status: response.status,
           connectionId: connection.id,
           catalogEntryId: entry.id,
+          execution,
         });
       }
       let payload: unknown;
@@ -2872,6 +2931,7 @@ export function createToolGatewayService(
         throw new ToolGatewayHttpError(502, "Remote MCP server returned invalid JSON", "remote_http_invalid_json", {
           connectionId: connection.id,
           catalogEntryId: entry.id,
+          execution,
         });
       }
       const payloadRecord = asRecord(payload);
@@ -2887,6 +2947,7 @@ export function createToolGatewayService(
           code: typeof errorRecord?.code === "number" ? errorRecord.code : null,
           connectionId: connection.id,
           catalogEntryId: entry.id,
+          execution,
         });
       }
       if (!Object.prototype.hasOwnProperty.call(payloadRecord, "result")) {
@@ -2898,20 +2959,27 @@ export function createToolGatewayService(
       }
       const result = normalizeMcpToolResult(payloadRecord.result);
       await markRemoteConnectionHealth(connection, "ok", "Remote MCP server responded to tools/call.");
-      return { result, headerSummary };
+      return { result, headerSummary, execution };
     } catch (error) {
-      if (error instanceof ToolGatewayHttpError) throw error;
+      if (error instanceof ToolGatewayHttpError) {
+        throw new ToolGatewayHttpError(error.status, error.message, error.reasonCode, {
+          ...error.details,
+          execution: error.details.execution ?? execution,
+        });
+      }
       if (error instanceof Error && error.name === "AbortError") {
         await markRemoteConnectionHealth(connection, "error", "Remote MCP tool call timed out.");
         throw new ToolGatewayHttpError(504, "Remote MCP tool call timed out", "tool_timeout", {
           connectionId: connection.id,
           catalogEntryId: entry.id,
+          execution,
         });
       }
       await markRemoteConnectionHealth(connection, "error", "Remote MCP tool call failed.");
       throw new ToolGatewayHttpError(502, "Remote MCP tool call failed", "remote_http_fetch_failed", {
         connectionId: connection.id,
         catalogEntryId: entry.id,
+        execution,
       });
     } finally {
       clearTimeout(timer);
@@ -3577,6 +3645,7 @@ export function createToolGatewayService(
         metadata: {
           source: "test",
           headerSummary: connectedMcpExecution.headerSummary ?? undefined,
+          execution: connectedMcpExecution.execution,
         },
         tool: args.tool,
       });
@@ -3597,9 +3666,11 @@ export function createToolGatewayService(
           tool: args.tool.name,
           ...toolAuditMetadata(args.tool),
           durationMs: Date.now() - startedAt,
+          argumentsSummary: args.argumentsSummary,
           result: summarizeResult(resultValidation.value),
           resultSummary: resultValidation.summary,
           headerSummary: connectedMcpExecution.headerSummary ?? undefined,
+          execution: connectedMcpExecution.execution,
         },
       });
       return {
@@ -3638,6 +3709,7 @@ export function createToolGatewayService(
         metadata: {
           source: "test",
           ...(err instanceof ToolContentValidationError ? { findings: err.findings } : {}),
+          ...(executionAuditFromError(err) ? { execution: executionAuditFromError(err) } : {}),
         },
         tool: args.tool,
       });
@@ -3660,6 +3732,7 @@ export function createToolGatewayService(
           argumentsSummary: args.argumentsSummary,
           durationMs: Date.now() - startedAt,
           error: message,
+          ...(executionAuditFromError(err) ? { execution: executionAuditFromError(err) } : {}),
         },
       });
       return {
@@ -4678,6 +4751,7 @@ export function createToolGatewayService(
             tool: "search_tools",
             virtualToolName: "search_tools",
             durationMs: Date.now() - startedAt,
+            argumentsSummary: argumentValidation.summary,
             result: summarizeResult(resultValidation.value),
             resultSummary: resultValidation.summary,
           },
@@ -5048,6 +5122,7 @@ export function createToolGatewayService(
           metadata: {
             ...(virtualToolName ? { virtualToolName, targetToolName: tool.name } : {}),
             ...(connectedMcpExecution?.headerSummary ? { headerSummary: connectedMcpExecution.headerSummary } : {}),
+            ...(connectedMcpExecution ? { execution: connectedMcpExecution.execution } : {}),
           },
           tool,
         });
@@ -5068,9 +5143,11 @@ export function createToolGatewayService(
             targetToolName: virtualToolName ? tool.name : undefined,
             ...toolAuditMetadata(tool),
             durationMs: Date.now() - startedAt,
+            argumentsSummary: effectiveArgumentsSummary,
             result: summarizeResult(resultValidation.value),
             resultSummary: resultValidation.summary,
             headerSummary: connectedMcpExecution?.headerSummary ?? undefined,
+            execution: connectedMcpExecution?.execution ?? undefined,
           },
         });
         return {
@@ -5126,6 +5203,7 @@ export function createToolGatewayService(
           metadata: {
             ...(virtualToolName ? { virtualToolName, targetToolName: tool.name } : {}),
             ...(normalizedError instanceof ToolContentValidationError ? { findings: normalizedError.findings } : {}),
+            ...(executionAuditFromError(normalizedError) ? { execution: executionAuditFromError(normalizedError) } : {}),
           },
           tool,
         });
@@ -5147,6 +5225,7 @@ export function createToolGatewayService(
             argumentsSummary: effectiveArgumentsSummary,
             durationMs: Date.now() - startedAt,
             error: message,
+            ...(executionAuditFromError(normalizedError) ? { execution: executionAuditFromError(normalizedError) } : {}),
           },
         });
         if (normalizedError instanceof ToolContentValidationError) {

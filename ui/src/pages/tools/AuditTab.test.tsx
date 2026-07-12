@@ -158,6 +158,52 @@ describe("AuditTab", () => {
     expect(container.textContent).toContain("deny_policy_block");
   });
 
+  it("shows redacted parameters and MCP transport diagnostics", async () => {
+    listActivityMock.mockResolvedValue({
+      events: [event({
+        action: "tool_gateway.call_completed",
+        normalizedOutcome: "allowed",
+        details: {
+          reasonCode: "tool_completed",
+          tool: "zapier:send_lead",
+          argumentsSummary: {
+            summary: JSON.stringify({ email: "person@example.com", apiToken: "***REDACTED***" }),
+          },
+          execution: {
+            transport: "remote_http",
+            request: {
+              httpMethod: "POST",
+              endpoint: "https://mcp.zapier.com/api/mcp",
+              mcpMethod: "tools/call",
+              requestId: "paperclip-tool-request-1",
+              dispatched: true,
+            },
+            response: {
+              httpStatus: 200,
+              contentType: "application/json",
+              bodySizeBytes: 321,
+              upstreamRequestId: "zapier-request-1",
+            },
+          },
+        },
+      })],
+      nextCursor: null,
+    });
+    await render();
+
+    await clickButton("used Send Email");
+    await clickButton("Details");
+    await flushReact();
+
+    expect(container.textContent).toContain("Parameters (redacted)");
+    expect(container.textContent).toContain("person@example.com");
+    expect(container.textContent).toContain("***REDACTED***");
+    expect(container.textContent).toContain("POST https://mcp.zapier.com/api/mcp");
+    expect(container.textContent).toContain("tools/call");
+    expect(container.textContent).toContain("HTTP status200");
+    expect(container.textContent).toContain("zapier-request-1");
+  });
+
   it("shows the true-empty state when there is no activity", async () => {
     listActivityMock.mockResolvedValue({ events: [], nextCursor: null });
     await render();

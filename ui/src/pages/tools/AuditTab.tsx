@@ -64,6 +64,28 @@ function detailStringArray(details: Record<string, unknown> | null, key: string)
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
+function detailRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function detailNumber(details: Record<string, unknown> | null, key: string): number | undefined {
+  const value = details?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function formattedArguments(details: Record<string, unknown> | null): string | undefined {
+  const summary = detailRecord(details?.argumentsSummary);
+  const serialized = typeof summary?.summary === "string" ? summary.summary : undefined;
+  if (!serialized) return undefined;
+  try {
+    return JSON.stringify(JSON.parse(serialized), null, 2);
+  } catch {
+    return serialized;
+  }
+}
+
 /** Plain-words "why" for the row expander, keyed off the reason code. */
 function plainReason(event: ToolGatewayActivityEvent): string {
   const code = detailString(event.details, "reasonCode");
@@ -121,6 +143,19 @@ function ActivityRow({
   const reasonCode = detailString(event.details, "reasonCode") ?? event.action.replace("tool_gateway.", "");
   const matchedRuleId = detailStringArray(event.details, "matchedPolicyIds").find((id) => ruleNamesById.has(id));
   const matchedRuleName = matchedRuleId ? ruleNamesById.get(matchedRuleId) : undefined;
+  const argumentsText = formattedArguments(event.details);
+  const execution = detailRecord(event.details?.execution);
+  const request = detailRecord(execution?.request);
+  const response = detailRecord(execution?.response);
+  const transport = detailString(execution, "transport");
+  const requestMethod = detailString(request, "httpMethod");
+  const endpoint = detailString(request, "endpoint");
+  const mcpMethod = detailString(request, "mcpMethod");
+  const requestId = detailString(request, "requestId");
+  const httpStatus = detailNumber(response, "httpStatus");
+  const contentType = detailString(response, "contentType");
+  const responseBytes = detailNumber(response, "bodySizeBytes");
+  const upstreamRequestId = detailString(response, "upstreamRequestId");
 
   return (
     <li className="text-sm">
@@ -195,6 +230,23 @@ function ActivityRow({
                 <DetailFact label="Reason code" value={reasonCode} mono />
                 <DetailFact label="Actor type" value={event.actorType ?? "—"} />
                 {runId ? <DetailFact label="Run ID" value={runId} mono /> : null}
+                {transport ? <DetailFact label="Transport" value={transport} mono /> : null}
+                {requestMethod && endpoint ? <DetailFact label="HTTP request" value={`${requestMethod} ${endpoint}`} mono /> : null}
+                {mcpMethod ? <DetailFact label="MCP method" value={mcpMethod} mono /> : null}
+                {requestId ? <DetailFact label="Request ID" value={requestId} mono /> : null}
+                {request ? <DetailFact label="Dispatched" value={request.dispatched === true ? "Yes" : "No"} /> : null}
+                {httpStatus !== undefined ? <DetailFact label="HTTP status" value={String(httpStatus)} mono /> : null}
+                {contentType ? <DetailFact label="Content type" value={contentType} mono /> : null}
+                {responseBytes !== undefined ? <DetailFact label="Response size" value={`${responseBytes} bytes`} /> : null}
+                {upstreamRequestId ? <DetailFact label="Upstream ID" value={upstreamRequestId} mono /> : null}
+                {argumentsText ? (
+                  <div className="space-y-1">
+                    <span className="text-muted-foreground">Parameters (redacted)</span>
+                    <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground">
+                      {argumentsText}
+                    </pre>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>

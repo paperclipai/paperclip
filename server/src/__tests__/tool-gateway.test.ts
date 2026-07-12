@@ -2055,6 +2055,33 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         .from(toolActionRequests)
         .where(eq(toolActionRequests.id, approvalRequest.id));
       expect(executedApproval.status).toBe("executed");
+      const approvedCompletion = (await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "tool_gateway.call_completed")))
+        .find((event) => event.details?.invocationId === approvalRequest.invocationId);
+      expect(approvedCompletion?.details).toMatchObject({
+        argumentsSummary: {
+          summary: expect.stringContaining('"value":"original"'),
+        },
+        execution: {
+          transport: "remote_http",
+          request: {
+            protocol: "MCP JSON-RPC 2.0",
+            httpMethod: "POST",
+            endpoint: fake.url,
+            mcpMethod: "tools/call",
+            requestId: expect.stringMatching(/^paperclip-tool-/),
+            upstreamToolName: "kv_set",
+            dispatched: true,
+          },
+          response: {
+            httpStatus: 200,
+            contentType: "application/json",
+            bodySizeBytes: expect.any(Number),
+          },
+        },
+      });
 
       const rejectedTool = await createRemoteMcpTool(db, company.id, {
         applicationKey: "rejected-app",
@@ -2483,6 +2510,28 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
           status: scenario.status === 504 ? "timed_out" : "failed",
           errorCode: scenario.reasonCode,
         });
+        const [failureAudit] = await db
+          .select()
+          .from(activityLog)
+          .where(eq(activityLog.action, scenario.status === 504 ? "tool_gateway.call_deferred" : "tool_gateway.call_failed"));
+        expect(failureAudit.details).toMatchObject({
+          argumentsSummary: {
+            summary: expect.stringContaining('"key":"alpha"'),
+          },
+          execution: {
+            transport: "remote_http",
+            request: {
+              endpoint: fake.url,
+              mcpMethod: "tools/call",
+              dispatched: true,
+            },
+          },
+        });
+        if (scenario.reasonCode === "remote_http_status") {
+          expect(failureAudit.details).toMatchObject({
+            execution: { response: { httpStatus: 503 } },
+          });
+        }
       } finally {
         await fake.close();
       }
