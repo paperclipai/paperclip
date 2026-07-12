@@ -47,19 +47,27 @@ export function createPgLiveEventsTransport(opts: {
   // destroyed connection) from warn to debug and drops late publishes.
   let closed = false;
 
-  // companyId -> { unlisten, handlers }
-  const subscriptions = new Map<
-    string,
-    {
-      handlers: Set<TransportEventHandler>;
-      // null while the LISTEN call is still in flight; populated once
-      // postgres-js resolves the dedicated listener handle.
-      unlisten: (() => Promise<void>) | null;
-      // Settles once the initial LISTEN completes (or fails); consumed by
-      // whenSubscribed so tests/tools get a deterministic readiness signal.
-      ready: Promise<void>;
-    }
-  >();
+  // Initial-LISTEN failures self-heal: the subscription entry stays seated
+  // (so the service layer's per-company handler remains valid) and the
+  // LISTEN is retried with capped exponential backoff.
+  const LISTEN_RETRY_INITIAL_MS = 1_000;
+  const LISTEN_RETRY_MAX_MS = 30_000;
+
+  interface Subscription {
+    handlers: Set<TransportEventHandler>;
+    // null while the LISTEN call is still in flight; populated once
+    // postgres-js resolves the dedicated listener handle.
+    unlisten: (() => Promise<void>) | null;
+    // Settles once the initial LISTEN completes (or fails); consumed by
+    // whenSubscribed so tests/tools get a deterministic readiness signal.
+    ready: Promise<void>;
+    // Pending LISTEN retry after a failure; cleared on unsubscribe/close.
+    retryTimer: ReturnType<typeof setTimeout> | null;
+    retryDelayMs: number;
+  }
+
+  // companyId -> subscription record
+  const subscriptions = new Map<string, Subscription>();
 
   function deliver(handlers: Set<TransportEventHandler>, event: LiveEvent) {
     // Snapshot handlers so an unsubscribe during delivery doesn't skew
@@ -92,18 +100,9 @@ export function createPgLiveEventsTransport(opts: {
     }
   }
 
-  function subscribe(companyId: string, handler: TransportEventHandler) {
-    let entry = subscriptions.get(companyId);
-    if (entry) {
-      entry.handlers.add(handler);
-      return;
-    }
+  function startListen(companyId: string, entry: Subscription, isRetry: boolean): Promise<void> {
     const channel = pgChannelForCompany(companyId);
-    const handlers = new Set<TransportEventHandler>([handler]);
-    // We must seat the subscription record BEFORE awaiting LISTEN so a
-    // racing unsubscribe sees consistent state. The unlisten slot is
-    // filled in once postgres-js resolves.
-    const ready = sql
+    return sql
       .listen(
         channel,
         (raw) => handleNotify(companyId, raw),
@@ -114,10 +113,9 @@ export function createPgLiveEventsTransport(opts: {
           // LISTEN/NOTIFY is at-most-once: anything NOTIFYed while the
           // socket was down is gone, so we deliver a synthetic
           // transport.resync event telling consumers to refetch.
-          const existing = subscriptions.get(companyId);
-          if (existing?.unlisten) {
+          if (subscriptions.get(companyId) === entry && entry.unlisten) {
             logger.info({ companyId, channel }, "live-events pg transport: LISTEN reconnected");
-            deliver(existing.handlers, {
+            deliver(entry.handlers, {
               id: 0,
               companyId,
               type: "transport.resync",
@@ -128,31 +126,71 @@ export function createPgLiveEventsTransport(opts: {
         },
       )
       .then((meta) => {
-        const current = subscriptions.get(companyId);
         // The entry may have been deleted while LISTEN was in flight, or
         // replaced by a newer subscribe after an unsubscribe (identity
-        // check on `handlers`). Either way this LISTEN is stale: unlisten
+        // check on the entry). Either way this LISTEN is stale: unlisten
         // immediately to avoid a leaked socket subscription / duplicate
         // delivery.
-        if (!current || current.handlers !== handlers) {
+        if (subscriptions.get(companyId) !== entry) {
           void meta.unlisten().catch(() => {});
           return;
         }
-        current.unlisten = () => meta.unlisten();
+        entry.unlisten = () => meta.unlisten();
+        entry.retryDelayMs = LISTEN_RETRY_INITIAL_MS;
+        if (isRetry) {
+          // The channel was dark between the original subscribe and this
+          // successful retry; anything NOTIFYed in that window is gone
+          // (at-most-once), so tell consumers to refetch.
+          logger.info({ companyId, channel }, "live-events pg transport: LISTEN established after retry");
+          deliver(entry.handlers, {
+            id: 0,
+            companyId,
+            type: "transport.resync",
+            createdAt: new Date().toISOString(),
+            payload: { __resync: true },
+          });
+        }
       })
       .catch((err) => {
-        logger.warn({ err, companyId, channel }, "live-events pg transport: LISTEN failed");
-        // Drop the seat so a later subscribe() can retry the LISTEN. Note
-        // that live-events.ts keeps its per-company handler registered, so
-        // cross-replica delivery for this company stays dead until the
-        // transport is reconfigured; only in-process events flow.
-        const current = subscriptions.get(companyId);
-        if (current && current.handlers === handlers) {
-          subscriptions.delete(companyId);
-        }
+        // Keep the seat and retry with backoff: the service layer's
+        // per-company handler stays registered, and once a retry lands the
+        // synthetic resync above tells consumers to refetch. Deleting the
+        // seat here would leave live-events.ts's transportHandlers entry
+        // pointing at nothing until the transport was reconfigured.
+        const delayMs = entry.retryDelayMs;
+        logger.warn(
+          { err, companyId, channel, retryInMs: delayMs },
+          "live-events pg transport: LISTEN failed; retrying",
+        );
+        if (closed || subscriptions.get(companyId) !== entry) return;
+        entry.retryDelayMs = Math.min(delayMs * 2, LISTEN_RETRY_MAX_MS);
+        entry.retryTimer = setTimeout(() => {
+          entry.retryTimer = null;
+          if (closed || subscriptions.get(companyId) !== entry) return;
+          entry.ready = startListen(companyId, entry, true);
+        }, delayMs);
+        entry.retryTimer.unref?.();
       });
-    entry = { handlers, unlisten: null, ready };
+  }
+
+  function subscribe(companyId: string, handler: TransportEventHandler) {
+    const existing = subscriptions.get(companyId);
+    if (existing) {
+      existing.handlers.add(handler);
+      return;
+    }
+    // We must seat the subscription record BEFORE awaiting LISTEN so a
+    // racing unsubscribe sees consistent state. The unlisten slot is
+    // filled in once postgres-js resolves.
+    const entry: Subscription = {
+      handlers: new Set<TransportEventHandler>([handler]),
+      unlisten: null,
+      ready: Promise.resolve(),
+      retryTimer: null,
+      retryDelayMs: LISTEN_RETRY_INITIAL_MS,
+    };
     subscriptions.set(companyId, entry);
+    entry.ready = startListen(companyId, entry, false);
   }
 
   function unsubscribe(companyId: string, handler: TransportEventHandler) {
@@ -161,6 +199,10 @@ export function createPgLiveEventsTransport(opts: {
     entry.handlers.delete(handler);
     if (entry.handlers.size > 0) return;
     subscriptions.delete(companyId);
+    if (entry.retryTimer) {
+      clearTimeout(entry.retryTimer);
+      entry.retryTimer = null;
+    }
     // If LISTEN hasn't resolved yet, the post-listen ready handler will
     // see the missing entry and unlisten itself.
     if (entry.unlisten) {
@@ -227,6 +269,10 @@ export function createPgLiveEventsTransport(opts: {
     const pending: Promise<unknown>[] = [];
     for (const [companyId, entry] of subscriptions) {
       subscriptions.delete(companyId);
+      if (entry.retryTimer) {
+        clearTimeout(entry.retryTimer);
+        entry.retryTimer = null;
+      }
       if (entry.unlisten) pending.push(entry.unlisten().catch(() => {}));
     }
     await Promise.allSettled(pending);
