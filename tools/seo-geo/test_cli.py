@@ -68,3 +68,43 @@ def test_http_fetch_respects_declared_charset():
         m.get("https://x.de/p", content="<html>schön</html>".encode("utf-8"),
               headers={"Content-Type": "text/html; charset=UTF-8"})
         assert "schön" in _http_fetch("https://x.de/p")
+
+
+def test_validate_reports_problems_and_exits_1(tmp_path, capsys):
+    sites = _write_sites(tmp_path)
+    cs = tmp_path / "bad.json"
+    cs.write_text(json.dumps({"site":"x","changes":[
+        {"target":"post","id":474,"field":"seo_title","old":None,"new":"z"*71},
+        {"target":"post","id":1,"field":"body","old":None,"new":"boese"},
+    ]}))
+    rc = main(["validate","--site","x","--sites",sites,"--changeset",str(cs),"--no-live"], {})
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "FEHLGESCHLAGEN" in out
+    assert "Whitelist" in out and "474" in out
+
+def test_validate_live_check_catches_forbidden_page(tmp_path, capsys):
+    sites = _write_sites(tmp_path)
+    cs = tmp_path / "cs.json"
+    cs.write_text(json.dumps({"site":"x","changes":[
+        {"target":"page","id":290,"field":"meta_description","old":None,"new":"d"*140}]}))
+    class C:
+        def check_editable(self, target, oid):
+            return "nicht editierbar (HTTP 403 rest_forbidden_context)"
+    rc = main(["validate","--site","x","--sites",sites,"--changeset",str(cs)],
+              {"X_WP_USER":"u","X_WP_PW":"p"}, client_factory=lambda s,a: C())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "403" in out and "290" in out
+
+def test_validate_clean_exits_0(tmp_path, capsys):
+    sites = _write_sites(tmp_path)
+    cs = tmp_path / "ok.json"
+    cs.write_text(json.dumps({"site":"x","changes":[
+        {"target":"page","id":1,"field":"meta_description","old":None,"new":"d"*140}]}))
+    class C:
+        def check_editable(self, t, i): return None
+    rc = main(["validate","--site","x","--sites",sites,"--changeset",str(cs)],
+              {"X_WP_USER":"u","X_WP_PW":"p"}, client_factory=lambda s,a: C())
+    assert rc == 0
+    assert "VALIDIERUNG OK" in capsys.readouterr().out

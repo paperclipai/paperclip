@@ -34,3 +34,25 @@ def test_set_llms_txt_hits_custom_route():
         res = _client().set_llms_txt("# Site\n")
         assert res["ok"] is True
         assert m.last_request.json() == {"content": "# Site\n"}
+
+
+def test_check_editable_ok():
+    with requests_mock.Mocker() as m:
+        m.get(f"{BASE}/wp/v2/pages/845", json={"id": 845})
+        assert _client().check_editable("page", 845) is None
+
+def test_check_editable_flags_forbidden():
+    # Die Datenschutzseite liefert 403 rest_forbidden_context fuer Redakteure
+    with requests_mock.Mocker() as m:
+        m.get(f"{BASE}/wp/v2/pages/290", status_code=403,
+              json={"code": "rest_forbidden_context"})
+        p = _client().check_editable("page", 290)
+        assert p is not None and "403" in p and "rest_forbidden_context" in p
+
+def test_check_editable_flags_missing():
+    with requests_mock.Mocker() as m:
+        m.get(f"{BASE}/wp/v2/posts/9999", status_code=404, json={"code": "rest_post_invalid_id"})
+        assert "404" in _client().check_editable("post", 9999)
+
+def test_check_editable_skips_site_target():
+    assert _client().check_editable("site", None) is None

@@ -51,6 +51,29 @@ def _cmd_audit(args, environ, fetch):
     write_report(report, data.get("report_root", "~/.paperclip/seo-geo"))
     return 0
 
+def _cmd_validate(args, environ, client_factory):
+    from changeset import validate_changeset
+    cs = json.loads(open(os.path.expanduser(args.changeset)).read())
+    problems = validate_changeset(cs)
+
+    if not args.no_live:
+        site = next(s for s in load_sites(args.sites) if s.name == args.site)
+        client = client_factory(site, resolve_credential(site, environ))
+        for i, c in enumerate(cs.get("changes", []), 1):
+            err = client.check_editable(c.get("target"), c.get("id"))
+            if err:
+                problems.append(f"#{i} id={c.get('id')}: {err}")
+
+    n = len(cs.get("changes", []))
+    if problems:
+        print(f"VALIDIERUNG FEHLGESCHLAGEN — {len(problems)} Problem(e) bei {n} Änderungen:")
+        for p in problems:
+            print(f"  ✗ {p}")
+        return 1
+    print(f"VALIDIERUNG OK — {n} Änderungen, keine Beanstandung.")
+    return 0
+
+
 def _http_fetch(url):
     import requests
     r = requests.get(url, timeout=30); r.raise_for_status()
@@ -70,7 +93,10 @@ def main(argv, environ, fetch=None, client_factory=None) -> int:
     ap = sub.add_parser("approve"); ap.add_argument("--changeset"); ap.add_argument("--root")
     apl = sub.add_parser("apply"); apl.add_argument("--site"); apl.add_argument("--sites")
     apl.add_argument("--root"); apl.add_argument("--dry-run", action="store_true")
+    v = sub.add_parser("validate"); v.add_argument("--site"); v.add_argument("--sites")
+    v.add_argument("--changeset"); v.add_argument("--no-live", action="store_true")
     args = p.parse_args(argv)
+    if args.cmd == "validate": return _cmd_validate(args, environ, client_factory)
     if args.cmd == "approve": return _cmd_approve(args, environ)
     if args.cmd == "apply": return _cmd_apply(args, environ, client_factory)
     if args.cmd == "audit": return _cmd_audit(args, environ, fetch)

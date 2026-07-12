@@ -9,11 +9,34 @@ _YOAST_MAP = {
     "focus_keyword": "_yoast_wpseo_focuskw",
 }
 
+_ENDPOINT = {"post": "posts", "page": "pages", "media": "media"}
+
+
 class WPClient:
     def __init__(self, rest_base, auth, session=None):
         self.base = rest_base.rstrip("/")
         self.auth = auth
         self.http = session or requests.Session()
+
+    def check_editable(self, target, obj_id):
+        """Prüft VOR dem Schreiben, ob das Objekt existiert und editierbar ist.
+
+        Liefert None wenn ok, sonst eine Fehlerbeschreibung. Fängt u.a. die von
+        WordPress geschützte Datenschutzseite ab (403 rest_forbidden_context für
+        Redakteure) sowie erfundene IDs (404).
+        """
+        ep = _ENDPOINT.get(target)
+        if ep is None:
+            return None  # target "site" hat kein Objekt zu prüfen
+        r = self.http.get(f"{self.base}/wp/v2/{ep}/{obj_id}",
+                          params={"context": "edit"}, auth=self.auth, timeout=30)
+        if r.status_code == 200:
+            return None
+        try:
+            code = r.json().get("code", "")
+        except ValueError:
+            code = ""
+        return f"nicht editierbar (HTTP {r.status_code} {code})".strip()
 
     def _post(self, path, payload):
         r = self.http.post(f"{self.base}{path}", json=payload, auth=self.auth, timeout=30)
