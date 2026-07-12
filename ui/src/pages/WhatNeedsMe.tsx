@@ -263,7 +263,7 @@ export function WhatNeedsMe() {
       window.removeEventListener("resize", checkScrollPosition);
       if (animationFrameId !== null) window.cancelAnimationFrame(animationFrameId);
     };
-  }, [loadMoreRows, renderPlan.hasMoreRows]);
+  }, [loadMoreRows, renderPlan.hasMoreRows, renderedRowLimit]);
 
   useEffect(() => {
     if (selectedAttentionId && !keyboardItems.some((item) => item.id === selectedAttentionId)) {
