@@ -3614,7 +3614,10 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
-    await allowToolsForAgent(db, company.id, agent.id, ["mcp-remote-fixture:update_note"]);
+    await allowToolsForAgent(db, company.id, agent.id, [
+      "mcp-remote-fixture:echo",
+      "mcp-remote-fixture:update_note",
+    ]);
     await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "Review note updates",
@@ -3628,6 +3631,16 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       agentId: agent.id,
       runId: run.id,
     });
+
+    const listedTool = (await gateway.listToolsForSession(session.token))
+      .find((tool) => tool.name === "mcp-remote-fixture:update_note");
+    expect(listedTool?.description).toBe(
+      "Remote HTTP MCP fixture that simulates a side-effecting write. Requires human approval: calling it posts an approval card on your task and you will be woken with the result once decided.",
+    );
+    expect((await gateway.listToolsForSession(session.token))
+      .find((tool) => tool.name === "mcp-remote-fixture:echo")?.description).toBe(
+      "Remote HTTP MCP fixture that echoes a message without spawning a local process.",
+    );
 
     await gateway.executeTool({
       sessionToken: session.token,

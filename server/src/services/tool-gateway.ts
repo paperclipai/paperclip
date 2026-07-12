@@ -96,6 +96,8 @@ const DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS: McpGatewayProtocolLimitOptions = {
   sessionSetup: { windowMs: 60 * 1000, max: 30 },
 };
 const DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITER_MAX_KEYS = 10_000;
+const TOOL_APPROVAL_DESCRIPTION_SUFFIX =
+  "Requires human approval: calling it posts an approval card on your task and you will be woken with the result once decided.";
 
 export type ToolGatewayProviderType =
   | "mcp_http_fixture"
@@ -1898,7 +1900,12 @@ export function createToolGatewayService(
     }));
     const visibleTools = decisions
       .filter(({ decision }) => decision.allowed || decision.decision === "require_approval")
-      .map(({ tool }) => tool);
+      .map(({ tool, decision }) => decision.decision === "require_approval"
+        ? {
+            ...tool,
+            description: [tool.description?.trim(), TOOL_APPROVAL_DESCRIPTION_SUFFIX].filter(Boolean).join(" "),
+          }
+        : tool);
     if (onDemandTargets.length > 0) {
       const targetDecisions = await Promise.all(onDemandTargets.map(async (tool) => {
         const decision = await policyService.decide(policyInputForTool({ session, tool }));
