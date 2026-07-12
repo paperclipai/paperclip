@@ -103,6 +103,8 @@ import {
 import { secretService } from "../services/secrets.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
+  SUCCESSFUL_RUN_HANDOFF_REPEAT_GUARD_NOTICE_BODY,
+  SUCCESSFUL_RUN_HANDOFF_REPEAT_NOTICE_THRESHOLD,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
 } from "../services/recovery/index.ts";
@@ -2658,6 +2660,99 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
     expect(recoveryIssues).toHaveLength(0);
+  });
+
+  it("suppresses repeated missing-disposition retries behind one board interaction after the notice threshold", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    await db.insert(issueComments).values([
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        authorType: "system",
+        body: SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        authorType: "system",
+        body: SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
+      },
+    ]);
+
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: ctx.runId,
+        body: "Completed the code change, but did not record a final disposition.",
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Completed the code change, but did not record a final disposition.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+    expect(wakeups.some((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toBe(false);
+
+    const interactions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(and(eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId)));
+    const awaitedInteractions = interactions.length > 0
+      ? interactions
+      : await waitForValue(async () => {
+        const rows = await db
+          .select()
+          .from(issueThreadInteractions)
+          .where(and(eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId)));
+        return rows.length > 0 ? rows : null;
+      }, 5_000);
+    expect(awaitedInteractions).toHaveLength(1);
+    expect(awaitedInteractions[0]).toMatchObject({
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: `successful_run_handoff_repeat_guard:${issueId}`,
+      createdByAgentId: agentId,
+    });
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_review");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.filter((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY)).toHaveLength(
+      SUCCESSFUL_RUN_HANDOFF_REPEAT_NOTICE_THRESHOLD - 1,
+    );
+    expect(comments.filter((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_REPEAT_GUARD_NOTICE_BODY)).toHaveLength(1);
+
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(activity).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: "issue.successful_run_handoff_escalated",
+        details: expect.objectContaining({
+          escalationReason: "repeat_notice_guard",
+          repeatedNoticeCount: SUCCESSFUL_RUN_HANDOFF_REPEAT_NOTICE_THRESHOLD,
+          threshold: SUCCESSFUL_RUN_HANDOFF_REPEAT_NOTICE_THRESHOLD,
+        }),
+      }),
+    ]));
   });
 
   it("redacts secret-bearing successful-run detected progress before handoff disclosure", async () => {

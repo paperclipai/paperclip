@@ -7,8 +7,11 @@ import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
 export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_handoff";
 export const SUCCESSFUL_RUN_MISSING_STATE_REASON = "successful_run_missing_state";
 export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 1;
+export const SUCCESSFUL_RUN_HANDOFF_REPEAT_NOTICE_THRESHOLD = 3;
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
+export const SUCCESSFUL_RUN_HANDOFF_REPEAT_GUARD_NOTICE_BODY =
+  "Paperclip stopped automatic missing-disposition retries after repeated identical notices. Board action is required before this issue resumes.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
   "Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner.";
 export const LEGACY_SUCCESSFUL_RUN_HANDOFF_NOTICE_PREFIXES = [
@@ -231,6 +234,49 @@ export function buildSuccessfulRunHandoffExhaustedNotice(input: {
             keyValueRow("Latest handoff run status", input.latestHandoffRunStatus),
             keyValueRow("Normalized cause", SUCCESSFUL_RUN_MISSING_STATE_REASON),
             keyValueRow("Missing disposition", input.missingDisposition),
+          ],
+        },
+      ],
+    },
+  };
+}
+
+export function buildSuccessfulRunHandoffRepeatGuardNotice(input: {
+  issue: NoticeIssue;
+  run: NoticeRun;
+  agent: NoticeAgent;
+  detectedProgressSummary: string;
+  repeatedNoticeCount: number;
+  threshold: number;
+  interactionId: string;
+}): SuccessfulRunHandoffNotice {
+  return {
+    body: SUCCESSFUL_RUN_HANDOFF_REPEAT_GUARD_NOTICE_BODY,
+    presentation: systemNoticePresentation({
+      tone: "danger",
+      title: "Repeated missing-disposition retries stopped",
+    }),
+    metadata: {
+      version: 1,
+      sourceRunId: input.run.id,
+      sections: [
+        {
+          title: "Board action",
+          rows: [
+            issueLinkRow("Source issue", input.issue),
+            agentLinkRow("Assignee", input.agent),
+            keyValueRow("Pending interaction", input.interactionId),
+            keyValueRow("Threshold", input.threshold),
+            keyValueRow("Repeated notice count", input.repeatedNoticeCount),
+          ],
+        },
+        {
+          title: "Run evidence",
+          rows: [
+            runLinkRow("Successful run", input.run),
+            keyValueRow("Normalized cause", SUCCESSFUL_RUN_MISSING_STATE_REASON),
+            keyValueRow("Detected progress", input.detectedProgressSummary),
+            keyValueRow("Automatic recovery", "suppressed until board action resolves"),
           ],
         },
       ],
