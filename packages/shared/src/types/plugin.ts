@@ -164,6 +164,13 @@ export interface PluginEnvironmentDriverDeclaration {
    * runtime config. Omit to use the standard key for `templateRefKind`.
    */
   templateConfigBinding?: PluginEnvironmentTemplateConfigBinding;
+  /**
+   * Config paths (dot notation) that scope where captured templates live for
+   * this provider, such as an API endpoint. When one of these changes on a
+   * saved environment, captured templates cannot be re-linked to the updated
+   * config and a fresh capture is required.
+   */
+  templateIdentityPaths?: string[];
   /** Provider supports best-effort deletion/cleanup of captured templates. */
   supportsTemplateDelete?: boolean;
   /** JSON Schema describing the driver's provider-specific configuration. */

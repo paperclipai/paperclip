@@ -28,6 +28,7 @@ import {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const execFileAsync = promisify(execFile);
+let seedGraphSequence = 0;
 
 type TestGraph = {
   companyId: string;
@@ -63,8 +64,9 @@ async function seedGraph(db: Db, input: {
   projectSourceType?: string;
   targetProjectSourceType?: string;
 }): Promise<TestGraph> {
-  const suffix = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-  const prefixSuffix = suffix.toUpperCase();
+  seedGraphSequence += 1;
+  const prefixSuffix = seedGraphSequence.toString(36).toUpperCase().padStart(4, "0");
+  const suffix = crypto.randomUUID().slice(0, 8);
   const companyId = crypto.randomUUID();
   const otherCompanyId = crypto.randomUUID();
   const goalId = crypto.randomUUID();

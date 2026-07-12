@@ -26,6 +26,7 @@ Use these files when reviewing or changing telemetry code:
 | Shared reusable enum domains | Named exports in `constants.ts` |
 | First-party typed emit helpers | `events.ts` |
 | Generic client behavior | `client.ts` |
+| Retention windows and event class assignments | `RETENTION_DAYS` and `EVENT_RETENTION_CLASS` in `retention.ts` |
 
 Do not copy generated event lists or dimension tables into this README. They
 will drift as the generated contract changes.
@@ -114,3 +115,21 @@ them.
 Before opening a pull request, verify that the emitted code, typed helpers, and
 generated telemetry contract agree. If they disagree, fix the contract or code
 rather than documenting around the mismatch in this README.
+
+## Retention
+
+Retention windows are documented in `retention.ts`. Each event is assigned a
+retention class; the class determines the window in days. This is a
+housekeeping and query-cost concern managed by data-infra, not a schema
+concern — updating a retention window does not require a schema version bump.
+
+Current classes:
+
+| Class | Window | Description |
+| --- | --- | --- |
+| `operational_enum_count` | 90 days | Enum/boolean/count/bucket events. No token material, no PII. |
+
+When a new event carries only enums, booleans, counts, or coarse buckets and
+no token material or PII, assign it to `operational_enum_count` in
+`EVENT_RETENTION_CLASS`. If no existing class fits, define a new class in
+`RETENTION_DAYS` and document it here.

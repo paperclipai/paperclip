@@ -120,6 +120,9 @@ function registerModuleMocks() {
     }),
     accessService: () => mockAccessService,
     agentService: () => ({ getById: vi.fn(async () => null) }),
+    companySkillService: () => ({
+      completeTestRunForIssue: vi.fn(async () => null),
+    }),
     documentAnnotationService: () => mockDocumentAnnotationService,
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),

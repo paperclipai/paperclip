@@ -555,7 +555,7 @@ export function InviteLandingPage() {
   return (
     <div className="min-h-screen bg-background px-6 py-12 text-foreground">
       <div className="mx-auto max-w-5xl">
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
+        <div className="grid gap-6 lg:grid-cols-(--gtc-36)">
           <section className={`${panelClassName} space-y-6`}>
             <div className="flex items-start gap-4">
               <InviteCompanyLogo
@@ -565,7 +565,7 @@ export function InviteLandingPage() {
                 className="h-16 w-16 rounded-none border border-border"
               />
               <div className="min-w-0">
-                <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">
+                <p className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">
                   You&apos;ve been invited to join Paperclip
                 </p>
                 <h1 className="mt-2 text-2xl font-semibold">
@@ -583,28 +583,28 @@ export function InviteLandingPage() {
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="border border-border p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Company</div>
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Company</div>
                 <div className="mt-1 text-sm text-foreground">{companyDisplayName}</div>
               </div>
               <div className="border border-border p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Invited by</div>
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Invited by</div>
                 <div className="mt-1 text-sm text-foreground">{invitedByUserName ?? "Paperclip board"}</div>
               </div>
               <div className="border border-border p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Requested access</div>
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Requested access</div>
                 <div className="mt-1 text-sm text-foreground">
                   {showsAgentForm ? "Agent join request" : requestedHumanRole ?? "Company access"}
                 </div>
               </div>
               <div className="border border-border p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Invite expires</div>
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Invite expires</div>
                 <div className="mt-1 text-sm text-foreground">{formatDate(invite.expiresAt)}</div>
               </div>
             </div>
 
             {inviteMessage ? (
               <div className="border border-amber-500/40 bg-amber-500/10 p-4">
-                <div className="text-xs uppercase tracking-[0.2em] text-amber-700 dark:text-amber-200/80">Message from inviter</div>
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-amber-700 dark:text-amber-200/80">Message from inviter</div>
                 <p className="mt-2 text-sm leading-6 text-amber-900 dark:text-amber-50">{inviteMessage}</p>
               </div>
             ) : null}

@@ -17,8 +17,8 @@ export function unauthorized(message = "Unauthorized") {
   return new HttpError(401, message);
 }
 
-export function forbidden(message = "Forbidden") {
-  return new HttpError(403, message);
+export function forbidden(message = "Forbidden", details?: unknown) {
+  return new HttpError(403, message, details);
 }
 
 export function notFound(message = "Not found") {

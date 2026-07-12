@@ -107,8 +107,9 @@ export function seedIssueDetailCache(
 export async function fetchIssueDetail(
   queryClient: QueryClient,
   issueRef: string,
+  options?: { signal?: AbortSignal },
 ): Promise<Issue> {
-  const issue = await issuesApi.get(issueRef);
+  const issue = options ? await issuesApi.get(issueRef, options) : await issuesApi.get(issueRef);
   return seedIssueDetailCache(queryClient, issue, { issueRef });
 }
 
@@ -121,7 +122,7 @@ export function getIssueDetailQueryOptions(
 ) {
   return {
     queryKey: queryKeys.issues.detail(issueRef),
-    queryFn: () => fetchIssueDetail(queryClient, issueRef),
+    queryFn: ({ signal }: { signal?: AbortSignal }) => fetchIssueDetail(queryClient, issueRef, { signal }),
     placeholderData: getCachedIssueDetail(queryClient, issueRef, options?.placeholderIssue ?? undefined),
   };
 }

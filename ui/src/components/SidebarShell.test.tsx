@@ -195,7 +195,7 @@ describe("SidebarShell", () => {
 
     // Open/close must be instant: the panel never animates its width, so neither
     // the transition nor its reduced-motion fallback should be present.
-    expect(panel().className).not.toContain("transition-[width]");
+    expect(panel().className).not.toContain("transition-(--tp-width)");
     expect(panel().className).not.toContain("motion-reduce:transition-none");
   });
 });
