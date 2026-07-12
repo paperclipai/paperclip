@@ -1766,6 +1766,82 @@ function isAssigneeSelfCommentOnTerminalIssue(input: {
   return input.actorId === input.assigneeAgentId;
 }
 
+function readToolActionExecutionStatus(value: unknown) {
+  return value === "approved"
+    || value === "executing"
+    || value === "executed"
+    || value === "failed"
+    || value === "expired"
+    ? value
+    : null;
+}
+
+function readToolActionContinuationContext(interaction: {
+  status: string;
+  payload?: unknown;
+  result?: unknown;
+}) {
+  const payload = readObject(interaction.payload);
+  const toolActionPayload = readObject(payload.toolAction);
+  const toolName = readNonEmptyString(toolActionPayload.toolName);
+  const actionRequestId = readNonEmptyString(toolActionPayload.actionRequestId);
+  if (!toolName || !actionRequestId) return null;
+
+  const result = readObject(interaction.result);
+  const toolActionResult = readObject(result.toolAction);
+  const declineReason = interaction.status === "rejected"
+    ? readNonEmptyString(result.reason)
+    : null;
+  const error = readNonEmptyString(toolActionResult.errorMessage);
+  const resultSummary = readNonEmptyString(toolActionResult.resultSummary);
+
+  if (interaction.status === "rejected") {
+    return {
+      toolName,
+      actionRequestId,
+      decision: "rejected",
+      executionStatus: "rejected",
+      ...(declineReason ? { declineReason } : {}),
+      instructions: `the action was declined${declineReason ? `: ${declineReason}` : ""}; do not retry the same call — adjust your approach or mark the task blocked/in_review with the decline reason.`,
+    };
+  }
+
+  if (interaction.status !== "accepted") return null;
+  const executionStatus = readToolActionExecutionStatus(toolActionResult.status);
+  if (!executionStatus) return null;
+
+  if (executionStatus === "executed") {
+    return {
+      toolName,
+      actionRequestId,
+      decision: "accepted",
+      executionStatus,
+      ...(resultSummary ? { resultSummary } : {}),
+      instructions: `the approved ${toolName} action already ran — do not call the tool again; continue with this result.`,
+    };
+  }
+
+  if (executionStatus === "failed") {
+    const failureMessage = error ?? "an unknown error";
+    return {
+      toolName,
+      actionRequestId,
+      decision: "accepted",
+      executionStatus,
+      ...(error ? { error } : {}),
+      instructions: `the approved action ran and failed with ${failureMessage}; adjust your approach — a fresh call will open a new approval.`,
+    };
+  }
+
+  return {
+    toolName,
+    actionRequestId,
+    decision: "accepted",
+    executionStatus,
+    instructions: `the approved ${toolName} action is ${executionStatus}; do not call the tool again while this approval is being processed.`,
+  };
+}
+
 function queueResolvedInteractionContinuationWakeup(input: {
   heartbeat: ReturnType<typeof heartbeatService>;
   issue: { id: string; assigneeAgentId: string | null; status: string };
@@ -1800,6 +1876,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
   const planTarget = readPlanConfirmationTargetForIssue(input.interaction.payload, input.issue.id);
   const interactionResult = readConfirmationResultForWake(input.interaction.result);
   const checkboxSelection = readCheckboxSelectionForWake(input.interaction);
+  const toolAction = readToolActionContinuationContext(input.interaction);
   const planReviewInteraction =
     planTarget && input.interaction.kind === "request_confirmation"
       ? {
@@ -1824,6 +1901,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       sourceRunId: input.interaction.sourceRunId ?? null,
       ...(planReviewInteraction ? { planReviewInteraction } : {}),
       ...(checkboxSelection ? { checkboxSelection } : {}),
+      ...(toolAction ? { toolAction } : {}),
       mutation: "interaction",
     },
     requestedByActorType: input.actor.actorType,
@@ -1838,6 +1916,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       sourceRunId: input.interaction.sourceRunId ?? null,
       ...(planReviewInteraction ? { planReviewInteraction } : {}),
       ...(checkboxSelection ? { checkboxSelection } : {}),
+      ...(toolAction ? { toolAction } : {}),
       wakeReason: "issue_commented",
       source: input.source,
       ...(forceFreshSession ? { forceFreshSession: true } : {}),
@@ -8996,13 +9075,14 @@ export function issueRoutes(
       const toolAction = interaction.payload && typeof interaction.payload === "object"
         ? (interaction.payload as { toolAction?: { actionRequestId?: unknown } }).toolAction
         : null;
+      let continuationInteraction = interaction;
       if (
         interaction.kind === "request_confirmation"
         && interaction.status === "accepted"
         && typeof toolAction?.actionRequestId === "string"
         && opts.approveToolActionRequest
       ) {
-        await opts.approveToolActionRequest({
+        const approvalResult = await opts.approveToolActionRequest({
           companyId: issue.companyId,
           issueId: issue.id,
           interactionId: interaction.id,
@@ -9012,6 +9092,24 @@ export function issueRoutes(
             userId: actor.actorType === "user" ? actor.actorId : null,
           },
         });
+        const approval = readObject(approvalResult);
+        const executionStatus = readToolActionExecutionStatus(approval.status);
+        if (executionStatus) {
+          const currentResult = readObject(interaction.result);
+          continuationInteraction = {
+            ...interaction,
+            result: {
+              ...currentResult,
+              toolAction: {
+                version: 1,
+                status: executionStatus,
+                errorMessage: readNonEmptyString(approval.error),
+                resultSummary: readNonEmptyString(approval.resultSummary),
+                updatedAt: new Date().toISOString(),
+              },
+            } as typeof interaction.result,
+          };
+        }
       }
       const continuationWakeIssue = continuationIssue ?? issue;
 
@@ -9090,14 +9188,14 @@ export function issueRoutes(
       queueResolvedInteractionContinuationWakeup({
         heartbeat,
         issue: continuationWakeIssue,
-        interaction,
+        interaction: continuationInteraction,
         actor,
         source: "issue.interaction.accept",
         forceFreshSession: acceptedPlanConfirmation,
         workspaceRefreshReason: acceptedPlanConfirmation ? "accepted_plan_confirmation" : null,
       });
 
-      res.json(interaction);
+      res.json(continuationInteraction);
     },
   );
 

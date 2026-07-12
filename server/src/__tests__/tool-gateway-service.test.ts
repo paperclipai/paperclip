@@ -294,6 +294,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(approved).toMatchObject({
       status: "executed",
       resolvedByUserId: "board-user",
+      resultSummary: expect.stringContaining("bodyLength"),
     });
 
     const result = await gateway.executeTool({

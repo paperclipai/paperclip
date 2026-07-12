@@ -1380,6 +1380,7 @@ export function createToolGatewayService(
     status: "approved" | "executing" | "executed" | "failed" | "expired";
     errorCode?: string | null;
     errorMessage?: string | null;
+    resultSummary?: string | null;
   }): Promise<void> {
     const [linked] = await db
       .select({
@@ -1432,6 +1433,7 @@ export function createToolGatewayService(
             status: input.status,
             errorCode: input.errorCode ?? null,
             errorMessage: input.errorMessage ?? null,
+            resultSummary: input.resultSummary ?? null,
             updatedAt: now.toISOString(),
           },
         } as unknown as NonNullable<typeof issueThreadInteractions.$inferInsert.result>,
@@ -3992,6 +3994,20 @@ export function createToolGatewayService(
     }
   }
 
+  async function actionRequestResolution(actionRequest: typeof toolActionRequests.$inferSelect) {
+    if (actionRequest.status !== "executed" && actionRequest.status !== "failed") return actionRequest;
+    const [invocation] = await db
+      .select()
+      .from(toolInvocations)
+      .where(eq(toolInvocations.id, actionRequest.invocationId))
+      .limit(1);
+    return {
+      ...actionRequest,
+      resultSummary: invocation?.resultSummary?.summary ?? null,
+      error: invocation?.errorMessage ?? null,
+    };
+  }
+
   async function markApprovedActionFailed(input: {
     actionRequestId: string;
     invocationId: string;
@@ -4169,7 +4185,11 @@ export function createToolGatewayService(
         updatedAt: now,
       }).where(eq(toolInvocations.id, invocation.id));
       await db.update(toolActionRequests).set({ status: "executed", resolvedAt: now, updatedAt: now }).where(eq(toolActionRequests.id, claimed.id));
-      await reflectToolActionInteractionLifecycle({ actionRequestId: claimed.id, status: "executed" });
+      await reflectToolActionInteractionLifecycle({
+        actionRequestId: claimed.id,
+        status: "executed",
+        resultSummary: resultValidation.summary.summary,
+      });
       await writeToolCallEvent({
         invocationId: invocation.id,
         actionRequestId: claimed.id,
@@ -5145,7 +5165,7 @@ export function createToolGatewayService(
             // reflected onto the accepted interaction for the continuation wake.
           }
           const [settled] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, actionRequest.id)).limit(1);
-          return settled ?? actionRequest;
+          return actionRequestResolution(settled ?? actionRequest);
         }
         return actionRequest;
       }
@@ -5190,7 +5210,7 @@ export function createToolGatewayService(
         }
       }
       const [settled] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, updated.id)).limit(1);
-      return settled ?? updated;
+      return actionRequestResolution(settled ?? updated);
     },
 
     async declineActionRequest(input: {
