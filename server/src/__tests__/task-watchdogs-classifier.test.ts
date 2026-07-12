@@ -50,6 +50,34 @@ describe("task watchdog subtree classifier", () => {
     });
   });
 
+  it("treats a future issue monitor as a live path", () => {
+    const result = classify({
+      issues: [issue({ monitorNextCheckAt: new Date("2026-06-17T20:30:00.000Z") })],
+      evaluatedAt: new Date("2026-06-17T20:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      state: "live",
+      liveIssueIds: [sourceId],
+    });
+  });
+
+  it("includes non-live monitor state in the stopped fingerprint", () => {
+    const first = classify({
+      issues: [issue({ monitorNextCheckAt: new Date("2026-06-17T19:00:00.000Z") })],
+      evaluatedAt: new Date("2026-06-17T20:00:00.000Z"),
+    });
+    const second = classify({
+      issues: [issue({ monitorNextCheckAt: new Date("2026-06-17T19:30:00.000Z") })],
+      evaluatedAt: new Date("2026-06-17T20:00:00.000Z"),
+    });
+
+    expect(first.state).toBe("stopped");
+    expect(second.state).toBe("stopped");
+    if (first.state !== "stopped" || second.state !== "stopped") return;
+    expect(first.stopFingerprint).not.toBe(second.stopFingerprint);
+  });
+
   it("treats terminal and waiting leaves as stopped work that needs verification", () => {
     const result = classify({
       issues: [

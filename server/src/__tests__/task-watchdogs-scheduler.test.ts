@@ -11,6 +11,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueThreadInteractions,
   issueWorkProducts,
   issues,
   issueWatchdogs,
@@ -44,6 +45,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     await db.delete(issueWorkProducts);
     await db.delete(issueDocuments);
     await db.delete(documents);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -389,6 +391,108 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes).toHaveLength(1);
   });
 
+  it("re-wakes an identical fingerprint after conditional acceptance expires", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-REARM", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [initial] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, initial!.watchdogIssueId!));
+
+    const accepted = await service.reconcileTaskWatchdogs({ companyId });
+    expect(accepted).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    const [conditionallyReviewed] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, initial!.id));
+    expect(conditionallyReviewed).toMatchObject({
+      reviewAcceptanceKind: "conditional",
+      sameFingerprintReviewCount: 1,
+    });
+
+    await db.update(issueWatchdogs).set({ reviewExpiresAt: new Date(Date.now() - 1_000) }).where(eq(issueWatchdogs.id, initial!.id));
+    const rearmed = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(rearmed).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(2);
+    expect(wakes[0]?.opts?.idempotencyKey).not.toBe(wakes[1]?.opts?.idempotencyKey);
+    expect(wakes[1]?.opts?.idempotencyKey).toContain(":1");
+  });
+
+  it("escalates instead of silently re-reviewing at the identical-fingerprint bound", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-ESCALATE", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const completedAt = new Date();
+    await db.update(issues).set({ status: "done", updatedAt: new Date(completedAt.getTime() - 1_000) })
+      .where(eq(issues.id, watchdog!.watchdogIssueId!));
+    await db.update(issueWatchdogs).set({
+      lastReviewedFingerprint: watchdog!.lastObservedFingerprint,
+      reviewAcceptanceKind: "conditional",
+      reviewExpiresAt: new Date(completedAt.getTime() - 1_000),
+      sameFingerprintReviewCount: 3,
+      lastCompletedAt: completedAt,
+    }).where(eq(issueWatchdogs.id, watchdog!.id));
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 0, escalated: 1 });
+    expect(wakes).toHaveLength(1);
+    const interactions = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, sourceId));
+    expect(interactions).toHaveLength(1);
+    expect(interactions[0]).toMatchObject({ kind: "ask_user_questions", status: "pending" });
+
+    const repeated = await service.reconcileTaskWatchdogs({ companyId });
+    expect(repeated).toMatchObject({ checked: 1, triggered: 0, escalated: 1 });
+    expect(wakes).toHaveLength(1);
+    const repeatedInteractions = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, sourceId));
+    expect(repeatedInteractions).toHaveLength(1);
+  });
+
+  it("keeps terminal acceptance suppressed for an identical fingerprint", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-TERMINAL", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "succeeded",
+      invocationSource: "assignment",
+      contextSnapshot: {
+        issueId: watchdog!.watchdogIssueId!,
+        taskWatchdog: {
+          stopFingerprint: watchdog!.lastObservedFingerprint!,
+          reviewAcceptance: { kind: "terminal" },
+        },
+      },
+    });
+    await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, watchdog!.watchdogIssueId!));
+
+    const firstSuppressed = await service.reconcileTaskWatchdogs({ companyId });
+    const secondSuppressed = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(firstSuppressed).toMatchObject({ triggered: 0, alreadyReviewed: 1 });
+    expect(secondSuppressed).toMatchObject({ triggered: 0, alreadyReviewed: 1 });
+    expect(wakes).toHaveLength(1);
+    const [reviewed] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, watchdog!.id));
+    expect(reviewed).toMatchObject({
+      reviewAcceptanceKind: "terminal",
+      reviewExpiresAt: null,
+      sameFingerprintReviewCount: 0,
+    });
+  });
+
   it("marks a completed watchdog fingerprint reviewed, then reuses the same issue for a later stopped state", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-3", status: "done" });
@@ -531,6 +635,64 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       latestCommentAt: later.toISOString(),
       latestDocumentAt: new Date(later.getTime() + 1_000).toISOString(),
       latestWorkProductAt: new Date(later.getTime() + 2_000).toISOString(),
+    });
+  });
+
+  it("does not seal a fingerprint after the server rejected that review as stale", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-STALE-REVIEW", status: "blocked" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      contextSnapshot: {
+        issueId: watchdog!.watchdogIssueId!,
+        taskWatchdog: {
+          watchedIssueId: sourceId,
+          stopFingerprint: watchdog!.lastObservedFingerprint!,
+        },
+      },
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: sourceId,
+      authorType: "agent",
+      body: "The source changed while the watchdog was reviewing it.",
+      createdAt: new Date(Date.now() + 1_000),
+      updatedAt: new Date(Date.now() + 1_000),
+    });
+
+    const rejected = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint: watchdog!.lastObservedFingerprint!,
+      runId,
+    });
+    expect(rejected.allowed).toBe(false);
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ status: "done", updatedAt: new Date(Date.now() + 2_000) })
+      .where(eq(issues.id, watchdog!.watchdogIssueId!));
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(2);
+    const [updatedWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, watchdog!.id));
+    expect(updatedWatchdog?.lastReviewedFingerprint).toBeNull();
+    const [reviewRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(reviewRun?.contextSnapshot).toMatchObject({
+      taskWatchdog: { reviewRejectedAsStale: true },
     });
   });
 

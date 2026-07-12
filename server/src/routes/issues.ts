@@ -314,6 +314,7 @@ function noopTaskWatchdogService(): TaskWatchdogService {
       live: 0,
       pendingFirstRun: 0,
       alreadyReviewed: 0,
+      escalated: 0,
       skipped: 0,
       watchdogIssueIds: [],
     }),
