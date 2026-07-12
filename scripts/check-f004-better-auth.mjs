@@ -7,7 +7,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const FLOOR = "1.6.11";
-const TARGET = "1.6.20";
 
 function readJson(file) {
   try {
@@ -41,9 +40,11 @@ function inspect(root) {
   const installedVersion = installed?.version;
   const failures = [];
 
-  if (manifestVersion !== TARGET) failures.push("F004_MANIFEST_NOT_TARGET");
+  if (!parseVersion(manifestVersion)) failures.push("F004_MANIFEST_NOT_EXACT");
+  else if (!atLeast(manifestVersion, FLOOR)) failures.push("F004_MANIFEST_BELOW_FLOOR");
   if (!installedVersion) failures.push("F004_INSTALLED_UNRESOLVED");
-  else if (installedVersion !== TARGET) failures.push("F004_INSTALLED_NOT_TARGET");
+  else if (!parseVersion(installedVersion)) failures.push("F004_INSTALLED_INVALID");
+  else if (!atLeast(installedVersion, FLOOR)) failures.push("F004_INSTALLED_BELOW_FLOOR");
   if (manifestVersion && installedVersion && manifestVersion !== installedVersion) {
     failures.push("F004_MANIFEST_INSTALLED_MISMATCH");
   }
@@ -77,40 +78,60 @@ function selfTest() {
     fixture(vulnerable, "1.4.18", "1.4.18");
     results.push(inspect(vulnerable));
     assert.deepEqual(results.at(-1), {
-      failures: ["F004_MANIFEST_NOT_TARGET", "F004_INSTALLED_NOT_TARGET"],
+      failures: ["F004_MANIFEST_BELOW_FLOOR", "F004_INSTALLED_BELOW_FLOOR"],
       floorMet: false,
       manifestVersion: "1.4.18",
       installedVersion: "1.4.18",
     });
 
     const target = path.join(base, "target");
-    fixture(target, TARGET, TARGET);
+    fixture(target, "1.6.20", "1.6.20");
     results.push(inspect(target));
     assert.deepEqual(results.at(-1), {
       failures: [],
       floorMet: true,
-      manifestVersion: TARGET,
-      installedVersion: TARGET,
+      manifestVersion: "1.6.20",
+      installedVersion: "1.6.20",
+    });
+
+    const safeLater = path.join(base, "safe-later");
+    fixture(safeLater, "1.6.21", "1.6.21");
+    results.push(inspect(safeLater));
+    assert.deepEqual(results.at(-1), {
+      failures: [],
+      floorMet: true,
+      manifestVersion: "1.6.21",
+      installedVersion: "1.6.21",
     });
 
     const mismatch = path.join(base, "mismatch");
-    fixture(mismatch, TARGET, FLOOR);
+    fixture(mismatch, "1.6.20", FLOOR);
     results.push(inspect(mismatch));
     assert.deepEqual(results.at(-1), {
-      failures: ["F004_INSTALLED_NOT_TARGET", "F004_MANIFEST_INSTALLED_MISMATCH"],
+      failures: ["F004_MANIFEST_INSTALLED_MISMATCH"],
       floorMet: true,
-      manifestVersion: TARGET,
+      manifestVersion: "1.6.20",
       installedVersion: FLOOR,
     });
 
     const unresolved = path.join(base, "unresolved");
-    fixture(unresolved, TARGET, null);
+    fixture(unresolved, "1.6.20", null);
     results.push(inspect(unresolved));
     assert.deepEqual(results.at(-1), {
       failures: ["F004_INSTALLED_UNRESOLVED"],
       floorMet: false,
-      manifestVersion: TARGET,
+      manifestVersion: "1.6.20",
       installedVersion: "unresolved",
+    });
+
+    const ranged = path.join(base, "ranged");
+    fixture(ranged, "^1.6.20", "1.6.20");
+    results.push(inspect(ranged));
+    assert.deepEqual(results.at(-1), {
+      failures: ["F004_MANIFEST_NOT_EXACT", "F004_MANIFEST_INSTALLED_MISMATCH"],
+      floorMet: false,
+      manifestVersion: "^1.6.20",
+      installedVersion: "1.6.20",
     });
 
     const red = results.filter((result) => result.failures.length > 0).length;
@@ -129,7 +150,7 @@ if (process.argv.includes("--self-test")) {
   console.log(result.floorMet ? "F004_ADVISORY_FLOOR_GREEN" : "F004_ADVISORY_FLOOR_RED");
   for (const failure of result.failures) console.log(failure);
   console.log(
-    `${result.failures.length ? "F004_VERSION_GATE_RED" : "F004_VERSION_GATE_GREEN"} manifest=${result.manifestVersion} installed=${result.installedVersion} floor=${FLOOR} target=${TARGET}`,
+    `${result.failures.length ? "F004_VERSION_GATE_RED" : "F004_VERSION_GATE_GREEN"} manifest=${result.manifestVersion} installed=${result.installedVersion} floor=${FLOOR}`,
   );
   if (result.failures.length) process.exitCode = 1;
 }
