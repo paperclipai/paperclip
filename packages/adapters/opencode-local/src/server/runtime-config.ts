@@ -21,6 +21,69 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// Recursively replace {env:VAR} placeholders with the resolved value. Used to bake
+// gateway provider secrets (e.g. the LLM-gateway virtual key) into opencode.json
+// SERVER-SIDE, where the value is reliably present. OpenCode's own {env:...}
+// resolution happens inside the (possibly sandboxed) run process, whose env
+// plumbing is not guaranteed to carry the key to OpenCode's spawned server -- so
+// we resolve it here. Unresolvable placeholders are left intact for OpenCode to try.
+function expandEnvPlaceholders<T>(value: T, resolve: (name: string) => string | undefined): T {
+  if (typeof value === "string") {
+    return value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) => {
+      const resolved = resolve(name);
+      return resolved !== undefined && resolved.length > 0 ? resolved : match;
+    }) as unknown as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => expandEnvPlaceholders(entry, resolve)) as unknown as T;
+  }
+  if (isPlainObject(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      out[key] = expandEnvPlaceholders(entry, resolve);
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
+function parseProviderConfig(
+  raw: unknown,
+  resolveEnv: (name: string) => string | undefined,
+  notes: string[],
+): Record<string, unknown> | null {
+  if (typeof raw !== "string" || raw.trim().length === 0) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Surface the misconfiguration instead of silently dropping the provider
+    // block; an unparseable value would otherwise be undiagnosable.
+    notes.push("PAPERCLIP_OPENCODE_PROVIDERS contains invalid JSON; custom providers ignored.");
+    return null;
+  }
+  if (!isPlainObject(parsed)) {
+    notes.push(
+      "PAPERCLIP_OPENCODE_PROVIDERS is set but is not a JSON object; custom providers ignored.",
+    );
+    return null;
+  }
+  // Only keep provider entries that are themselves objects; surface the ones
+  // we drop so a malformed entry is just as diagnosable as malformed JSON.
+  const providers: Record<string, unknown> = {};
+  const skipped: string[] = [];
+  for (const [key, value] of Object.entries(parsed)) {
+    if (isPlainObject(value)) providers[key] = expandEnvPlaceholders(value, resolveEnv);
+    else skipped.push(key);
+  }
+  if (skipped.length > 0) {
+    notes.push(
+      `PAPERCLIP_OPENCODE_PROVIDERS: skipped provider(s) with non-object values: ${skipped.join(", ")}.`,
+    );
+  }
+  return Object.keys(providers).length > 0 ? providers : null;
+}
+
 async function readJsonObject(filepath: string): Promise<Record<string, unknown>> {
   try {
     const raw = await fs.readFile(filepath, "utf8");
@@ -81,13 +144,55 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const existingPermission = isPlainObject(existingConfig.permission)
     ? existingConfig.permission
     : {};
-  const nextConfig = {
+  const notes = [
+    "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
+  ];
+
+  // Merge gateway/custom provider definitions supplied via PAPERCLIP_OPENCODE_PROVIDERS
+  // (a JSON object in OpenCode's `provider` shape). OpenCode resolves a `--model
+  // provider/model` only when that model exists in a provider's `models` map, and
+  // OPENCODE_ALLOW_ALL_MODELS does NOT bypass its internal getModel(). So routing a
+  // gateway model (e.g. an EU LLM gateway exposing OpenAI-compatible /v1) requires a
+  // custom provider with an explicit models map. We accept it as config (not
+  // hard-coded) so the gateway URL, key env, and model list stay declarative.
+  const resolveEnv = (name: string): string | undefined => input.env[name] ?? process.env[name];
+  const gatewayProviders = parseProviderConfig(
+    input.env.PAPERCLIP_OPENCODE_PROVIDERS ?? process.env.PAPERCLIP_OPENCODE_PROVIDERS,
+    resolveEnv,
+    notes,
+  );
+  const existingProvider = isPlainObject(existingConfig.provider) ? existingConfig.provider : {};
+  const nextProvider = gatewayProviders
+    ? { ...existingProvider, ...gatewayProviders }
+    : existingProvider;
+  if (gatewayProviders) {
+    notes.push(
+      `Injected ${Object.keys(gatewayProviders).length} custom OpenCode provider(s) from PAPERCLIP_OPENCODE_PROVIDERS: ${Object.keys(gatewayProviders).join(", ")}.`,
+    );
+  }
+
+  const nextConfig: Record<string, unknown> = {
     ...existingConfig,
     permission: {
       ...existingPermission,
       external_directory: "allow",
     },
   };
+  if (Object.keys(nextProvider).length > 0) {
+    nextConfig.provider = nextProvider;
+  }
+
+  // Pin OpenCode's auxiliary "small" model (used for session-title generation and
+  // other helper tasks) via PAPERCLIP_OPENCODE_SMALL_MODEL. OpenCode otherwise
+  // defaults the small model to a built-in provider default (e.g. a claude-* model
+  // for the anthropic provider); when that provider is repointed at a gateway that
+  // does not serve that exact model, the title-gen call fails and aborts the run.
+  // Setting small_model to a gateway-served model keeps every call on supported models.
+  const smallModel = (input.env.PAPERCLIP_OPENCODE_SMALL_MODEL ?? process.env.PAPERCLIP_OPENCODE_SMALL_MODEL)?.trim();
+  if (smallModel) {
+    nextConfig.small_model = smallModel;
+    notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
+  }
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
 
   return {
@@ -95,9 +200,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       ...input.env,
       XDG_CONFIG_HOME: runtimeConfigHome,
     },
-    notes: [
-      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
-    ],
+    notes,
     cleanup: async () => {
       await fs.rm(runtimeConfigHome, { recursive: true, force: true });
     },

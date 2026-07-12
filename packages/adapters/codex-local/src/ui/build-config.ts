@@ -1,8 +1,5 @@
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
-import {
-  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-  DEFAULT_CODEX_LOCAL_MODEL,
-} from "../index.js";
+import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "../index.js";
 
 function parseCommaArgs(value: string): string[] {
   return value
@@ -70,8 +67,16 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   const ac: Record<string, unknown> = {};
   if (v.cwd) ac.cwd = v.cwd;
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
-  ac.model = v.model || DEFAULT_CODEX_LOCAL_MODEL;
+  if (v.model) ac.model = v.model;
   if (v.thinkingEffort) ac.modelReasoningEffort = v.thinkingEffort;
+  if (v.codexEngine === "cli" || v.codexEngine === "acp") ac.engine = v.codexEngine;
+  if (v.codexEngine === "acp") {
+    if (v.codexAcpAgentCommand) ac.agentCommand = v.codexAcpAgentCommand;
+    ac.mode = v.codexAcpMode ?? "persistent";
+    ac.nonInteractivePermissions = v.codexAcpNonInteractivePermissions ?? "deny";
+    if (v.codexAcpStateDir) ac.stateDir = v.codexAcpStateDir;
+    ac.warmHandleIdleMs = v.codexAcpWarmHandleIdleMs ?? 0;
+  }
   ac.timeoutSec = 0;
   ac.graceSec = 15;
   const env = parseEnvBindings(v.envBindings);
