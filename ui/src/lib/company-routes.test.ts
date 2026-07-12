@@ -35,4 +35,15 @@ describe("company routes", () => {
     expect(applyCompanyPrefix("/search?q=hello%20world", "PAP")).toBe("/PAP/search?q=hello%20world");
     expect(toCompanyRelativePath("/PAP/search?q=foo")).toBe("/search?q=foo");
   });
+
+  it("treats /assistant and /digest as board routes, not company prefixes", () => {
+    for (const route of ["assistant", "digest"]) {
+      expect(isBoardPathWithoutPrefix(`/${route}`)).toBe(true);
+      // Regression: without this, `/assistant` is read as a company prefix
+      // ("ASSISTANT") and the sidebar link lands on a "company not found" page.
+      expect(extractCompanyPrefixFromPath(`/${route}`)).toBeNull();
+      expect(applyCompanyPrefix(`/${route}`, "PAP")).toBe(`/PAP/${route}`);
+      expect(toCompanyRelativePath(`/PAP/${route}`)).toBe(`/${route}`);
+    }
+  });
 });
