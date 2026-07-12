@@ -1174,6 +1174,7 @@ function routineRevisionSnapshotRoutine(routine: typeof routines.$inferSelect): 
     status: routine.status as RoutineRevisionSnapshotV1["routine"]["status"],
     concurrencyPolicy: routine.concurrencyPolicy as RoutineRevisionSnapshotV1["routine"]["concurrencyPolicy"],
     catchUpPolicy: routine.catchUpPolicy as RoutineRevisionSnapshotV1["routine"]["catchUpPolicy"],
+    evolutionMode: routine.evolutionMode as RoutineRevisionSnapshotV1["routine"]["evolutionMode"],
     originKind: routine.originKind,
     originId: routine.originId,
     variables: routine.variables ?? [],

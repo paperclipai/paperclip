@@ -1142,6 +1142,7 @@ export function builtInAgentService(db: Db) {
         status: routine.status,
         concurrencyPolicy: routine.concurrencyPolicy,
         catchUpPolicy: routine.catchUpPolicy,
+        evolutionMode: "off",
         variables: routine.variables,
       }, actor);
     if (!nextRoutine) throw notFound("Built-in routine not found");

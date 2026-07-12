@@ -3,6 +3,8 @@ import type {
   IssuePriority,
   RoutineCatchUpPolicy,
   RoutineConcurrencyPolicy,
+  RoutineEvolutionMode,
+  RoutineEvolutionProposalStatus,
   RoutineStatus,
   RoutineTriggerKind,
   RoutineTriggerSigningMode,
@@ -80,6 +82,8 @@ export interface Routine {
   status: string;
   concurrencyPolicy: string;
   catchUpPolicy: string;
+  evolutionMode: string;
+  consecutiveAutoEvolutions: number;
   originKind?: string;
   originId?: string | null;
   variables: RoutineVariable[];
@@ -123,6 +127,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   status: RoutineStatus;
   concurrencyPolicy: RoutineConcurrencyPolicy;
   catchUpPolicy: RoutineCatchUpPolicy;
+  evolutionMode: RoutineEvolutionMode;
   originKind?: string;
   originId?: string | null;
   variables: RoutineVariable[];
@@ -250,3 +255,27 @@ export interface RoutineListItem extends Routine {
   lastRun: RoutineRunSummary | null;
   activeIssue: RoutineIssueSummary | null;
 }
+
+export interface RoutineEvolutionProposal {
+  id: string;
+  companyId: string;
+  routineId: string;
+  baseRevisionNumber: number;
+  proposedTitle: string | null;
+  proposedDescription: string;
+  changeSummary: string;
+  rationale: string | null;
+  status: RoutineEvolutionProposalStatus;
+  createdByAgentId: string | null;
+  createdByRunId: string | null;
+  decidedByUserId: string | null;
+  decidedAt: Date | null;
+  appliedRevisionId: string | null;
+  createdAt: Date;
+}
+
+/** Result of POST /routines/:id/evolve — shape depends on evolutionMode and whether a change was proposed. */
+export type RoutineEvolveResult =
+  | { status: "noop"; routine: Routine }
+  | { status: "applied"; routine: Routine; revision: RoutineRevision }
+  | { status: "proposed"; routine: Routine; proposal: RoutineEvolutionProposal };

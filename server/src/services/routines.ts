@@ -20,6 +20,7 @@ import {
   pluginManagedResources,
   plugins,
   projects,
+  routineEvolutionProposals,
   routineRevisions,
   routineRuns,
   routineDocuments,
@@ -29,9 +30,13 @@ import {
 import type {
   CreateRoutine,
   CreateRoutineTrigger,
+  DecideRoutineEvolutionProposal,
+  EvolveRoutine,
   Routine,
   RoutineDetail,
   RoutineDescriptionDocument,
+  RoutineEvolutionProposal,
+  RoutineEvolveResult,
   RoutineListItem,
   RoutineManagedByPlugin,
   RoutineRevision,
@@ -45,6 +50,7 @@ import type {
   UpdateRoutineTrigger,
 } from "@paperclipai/shared";
 import {
+  ROUTINE_EVOLUTION_AUTO_FREEZE_CAP,
   WORKSPACE_BRANCH_ROUTINE_VARIABLE,
   getBuiltinRoutineVariableValues,
   extractRoutineVariableNames,
@@ -505,6 +511,7 @@ function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSna
     status: routine.status as RoutineRevisionSnapshotV1["routine"]["status"],
     concurrencyPolicy: routine.concurrencyPolicy as RoutineRevisionSnapshotV1["routine"]["concurrencyPolicy"],
     catchUpPolicy: routine.catchUpPolicy as RoutineRevisionSnapshotV1["routine"]["catchUpPolicy"],
+    evolutionMode: routine.evolutionMode as RoutineRevisionSnapshotV1["routine"]["evolutionMode"],
     variables: routine.variables ?? [],
     env: routine.env ?? null,
     responsibleUserId: routine.responsibleUserId ?? null,
@@ -561,6 +568,15 @@ function mapRoutineRevision(row: typeof routineRevisions.$inferSelect): RoutineR
   return {
     ...row,
     snapshot: row.snapshot as RoutineRevisionSnapshotV1,
+  };
+}
+
+function mapRoutineEvolutionProposal(
+  row: typeof routineEvolutionProposals.$inferSelect,
+): RoutineEvolutionProposal {
+  return {
+    ...row,
+    status: row.status as RoutineEvolutionProposal["status"],
   };
 }
 
@@ -1580,6 +1596,48 @@ export function routineService(
       );
   }
 
+  /**
+   * The self-rewrite step injected into a run's issue description when the routine's
+   * evolutionMode is not "off". This is orchestration on top of the existing revision
+   * spine: it never edits routine.description directly — it only tells the run's agent
+   * how to call POST /routines/:id/evolve, which reuses appendRoutineRevision (auto) or
+   * creates a gated proposal (gated).
+   */
+  function buildRoutineEvolutionStepSection(routine: RoutineRow): string {
+    const modeNote = routine.evolutionMode === "gated"
+      ? "This routine runs in GATED evolution mode: your proposal is recorded and held for human "
+        + "approval. It will NOT change this routine's live behavior until a board member approves it "
+        + "(or is discarded if rejected)."
+      : "This routine runs in AUTO evolution mode: your proposed change is applied immediately via the "
+        + "routine's normal revision history, takes effect starting with the NEXT run, and is fully "
+        + "reversible (a board member or the assigned agent can restore any prior revision at any time). "
+        + "Repeated unattended self-evolutions are capped — after "
+        + `${ROUTINE_EVOLUTION_AUTO_FREEZE_CAP} consecutive auto-applied changes with no human review, `
+        + "this routine is automatically switched to gated mode.";
+    return [
+      "---",
+      "",
+      "## Routine self-evolution step (required final step of this run)",
+      "",
+      "This is a real, required part of completing this run — not optional busywork. Now that you have "
+        + "finished the work above, reflect on what THIS run's result taught you about how this routine's "
+        + "instructions should read.",
+      "",
+      "Decide whether the routine's instructions should change to make the next run more effective. Only "
+        + "additive or clarifying edits to the task steps are appropriate here — you MUST NOT weaken, remove, "
+        + "or soften any escalation path, budget limit, or safety guardrail that already appears in the "
+        + "current instructions.",
+      "",
+      `Then call \`POST /routines/${routine.id}/evolve\` with a JSON body of EITHER:`,
+      "- `{ \"description\": \"<the full, complete replacement routine instructions>\", \"changeSummary\": \"<why "
+        + "you changed it>\" }` to propose new instructions, or",
+      "- `{ \"noChange\": true, \"changeSummary\": \"<why nothing needed to change>\" }` if the current "
+        + "instructions are already right.",
+      "",
+      modeNote,
+    ].join("\n");
+  }
+
   async function dispatchRoutineRun(input: {
     routine: typeof routines.$inferSelect;
     trigger: typeof routineTriggers.$inferSelect | null;
@@ -1630,7 +1688,10 @@ export function routineService(
     const allVariables = { ...getBuiltinRoutineVariableValues(), ...automaticVariables, ...resolvedVariables };
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
     const baseDescription = interpolateRoutineTemplate(input.routine.description, allVariables);
-    const description = [baseDescription, input.descriptionAppendix]
+    const evolutionStep = input.routine.evolutionMode !== "off"
+      ? buildRoutineEvolutionStepSection(input.routine)
+      : null;
+    const description = [baseDescription, input.descriptionAppendix, evolutionStep]
       .filter((part): part is string => Boolean(part && part.trim()))
       .join("\n\n");
     const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
@@ -2082,6 +2143,7 @@ export function routineService(
             status,
             concurrencyPolicy: input.concurrencyPolicy,
             catchUpPolicy: input.catchUpPolicy,
+            evolutionMode: input.evolutionMode,
             variables,
             env,
             responsibleUserId,
@@ -2192,6 +2254,7 @@ export function routineService(
           status: nextStatus,
           concurrencyPolicy: patch.concurrencyPolicy ?? locked.concurrencyPolicy,
           catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
+          evolutionMode: patch.evolutionMode ?? locked.evolutionMode,
           variables: nextVariables,
           env: nextEnv,
           responsibleUserId: locked.responsibleUserId ?? responsibleUserId,
@@ -2229,6 +2292,10 @@ export function routineService(
           }
         }
 
+        // A human/board actor directly editing the routine is a "human touch" for the
+        // self-evolution loop-guard: it resets the consecutive-auto-evolution counter,
+        // same as restoring a revision or deciding a gated proposal does.
+        const resetsEvolutionLoopGuard = Boolean(actor.userId);
         const [updated] = await txDb
           .update(routines)
           .set({
@@ -2242,6 +2309,8 @@ export function routineService(
             status: candidate.status,
             concurrencyPolicy: candidate.concurrencyPolicy,
             catchUpPolicy: candidate.catchUpPolicy,
+            evolutionMode: candidate.evolutionMode,
+            consecutiveAutoEvolutions: resetsEvolutionLoopGuard ? 0 : locked.consecutiveAutoEvolutions,
             variables: candidate.variables,
             env: candidate.env,
             responsibleUserId: candidate.responsibleUserId,
@@ -2578,6 +2647,11 @@ export function routineService(
             status: routineSnapshot.status,
             concurrencyPolicy: routineSnapshot.concurrencyPolicy,
             catchUpPolicy: routineSnapshot.catchUpPolicy,
+            // Pre-evolution-feature revisions have no evolutionMode in their snapshot; default to "off".
+            evolutionMode: routineSnapshot.evolutionMode ?? "off",
+            // A restore is always a deliberate, gated action (assertBoardCanAssignTasks), so it
+            // counts as a human touch for the self-evolution loop-guard.
+            consecutiveAutoEvolutions: 0,
             variables: routineSnapshot.variables,
             env: routineSnapshot.env,
             updatedByAgentId: actor.agentId ?? null,
@@ -2663,6 +2737,243 @@ export function routineService(
           secretMaterials: [...recreatedWebhookSecrets.values()].map((entry) => entry.secretMaterial),
         };
       });
+      return result;
+    },
+
+    // POST /routines/:id/evolve — the landing endpoint for the self-rewrite step injected
+    // by dispatchRoutineRun. Reuses appendRoutineRevision (auto) so this stays on the same
+    // audited/revisioned/reversible path as every other routine edit; never rebuilds it.
+    evolveRoutine: async (
+      routineId: string,
+      input: EvolveRoutine,
+      actor: Actor,
+    ): Promise<RoutineEvolveResult> => {
+      const routine = await getRoutineById(routineId);
+      if (!routine) throw notFound("Routine not found");
+      if (routine.evolutionMode === "off") {
+        throw conflict("Routine evolution is not enabled for this routine (evolutionMode is \"off\")");
+      }
+
+      if (input.noChange) {
+        return { status: "noop", routine };
+      }
+
+      const description = input.description?.trim();
+      if (!description) {
+        throw unprocessable("description is required unless noChange is true");
+      }
+
+      if (routine.evolutionMode === "gated") {
+        const [proposal] = await db
+          .insert(routineEvolutionProposals)
+          .values({
+            companyId: routine.companyId,
+            routineId: routine.id,
+            baseRevisionNumber: routine.latestRevisionNumber,
+            proposedTitle: null,
+            proposedDescription: description,
+            changeSummary: input.changeSummary,
+            rationale: input.rationale ?? null,
+            status: "pending",
+            createdByAgentId: actor.agentId ?? null,
+            createdByRunId: actor.runId ?? null,
+          })
+          .returning();
+        return { status: "proposed", routine, proposal: mapRoutineEvolutionProposal(proposal) };
+      }
+
+      // mode === "auto": apply immediately via the audited revision path.
+      const result = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await tx.execute(sql`select id from ${routines} where ${routines.id} = ${routine.id} for update`);
+        const locked = await txDb
+          .select()
+          .from(routines)
+          .where(eq(routines.id, routine.id))
+          .then((rows) => rows[0] ?? null);
+        if (!locked) throw notFound("Routine not found");
+
+        const [updated] = await txDb
+          .update(routines)
+          .set({
+            description,
+            updatedByAgentId: actor.agentId ?? null,
+            updatedByUserId: actor.userId ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(routines.id, locked.id))
+          .returning();
+        if (!updated) throw notFound("Routine not found");
+
+        const appended = await appendRoutineRevision(txDb, updated, actor, {
+          changeSummary: input.changeSummary,
+        });
+
+        // Loop-guard: an evolve call with no board/human actor is an unattended self-evolution.
+        // Track consecutive occurrences with no human touch; freeze to "gated" past the cap so a
+        // routine can't drift unattended forever (the "not a dead end" guarantee).
+        let finalRoutine = appended.routine;
+        let frozeAtCount: number | null = null;
+        if (!actor.userId) {
+          const nextCount = (locked.consecutiveAutoEvolutions ?? 0) + 1;
+          const shouldFreeze = nextCount > ROUTINE_EVOLUTION_AUTO_FREEZE_CAP;
+          const [afterGuard] = await txDb
+            .update(routines)
+            .set({
+              consecutiveAutoEvolutions: shouldFreeze ? 0 : nextCount,
+              evolutionMode: shouldFreeze ? "gated" : appended.routine.evolutionMode,
+            })
+            .where(eq(routines.id, locked.id))
+            .returning();
+          if (afterGuard) finalRoutine = afterGuard;
+          if (shouldFreeze) frozeAtCount = nextCount;
+        }
+
+        return { revision: appended.revision, routine: finalRoutine, frozeAtCount };
+      });
+
+      if (result.frozeAtCount !== null) {
+        try {
+          await logActivity(db, {
+            companyId: routine.companyId,
+            actorType: "system",
+            actorId: "routine-evolution-loop-guard",
+            agentId: actor.agentId ?? null,
+            runId: actor.runId ?? null,
+            action: "routine.evolution_frozen",
+            entityType: "routine",
+            entityId: routine.id,
+            details: { consecutiveAutoEvolutions: result.frozeAtCount, cap: ROUTINE_EVOLUTION_AUTO_FREEZE_CAP },
+          });
+        } catch (err) {
+          logger.warn({ err, routineId: routine.id }, "failed to log routine evolution freeze");
+        }
+      }
+
+      return { status: "applied", routine: result.routine, revision: result.revision };
+    },
+
+    listEvolutionProposals: async (routineId: string): Promise<RoutineEvolutionProposal[]> => {
+      const routine = await getRoutineById(routineId);
+      if (!routine) throw notFound("Routine not found");
+      const rows = await db
+        .select()
+        .from(routineEvolutionProposals)
+        .where(and(
+          eq(routineEvolutionProposals.companyId, routine.companyId),
+          eq(routineEvolutionProposals.routineId, routine.id),
+        ))
+        .orderBy(desc(routineEvolutionProposals.createdAt));
+      return rows.map(mapRoutineEvolutionProposal);
+    },
+
+    // Shared approve/reject path for gated evolution proposals. Approve reuses
+    // appendRoutineRevision (same audited path as restoreRevision/update) and resets the
+    // loop-guard counter, since a human (or the owning agent, per the same ownership rule
+    // restoreRevision already uses) deciding a proposal is a human checkpoint.
+    decideEvolutionProposal: async (
+      routineId: string,
+      proposalId: string,
+      decision: "approved" | "rejected",
+      actor: Actor,
+    ): Promise<{ proposal: RoutineEvolutionProposal; routine: Routine; revision: RoutineRevision | null }> => {
+      const routine = await getRoutineById(routineId);
+      if (!routine) throw notFound("Routine not found");
+
+      if (decision === "rejected") {
+        const now = new Date();
+        const [updated] = await db
+          .update(routineEvolutionProposals)
+          .set({
+            status: "rejected",
+            decidedByUserId: actor.userId ?? null,
+            decidedAt: now,
+          })
+          .where(and(
+            eq(routineEvolutionProposals.id, proposalId),
+            eq(routineEvolutionProposals.companyId, routine.companyId),
+            eq(routineEvolutionProposals.routineId, routine.id),
+            eq(routineEvolutionProposals.status, "pending"),
+          ))
+          .returning();
+        if (!updated) {
+          const existing = await db
+            .select()
+            .from(routineEvolutionProposals)
+            .where(and(
+              eq(routineEvolutionProposals.id, proposalId),
+              eq(routineEvolutionProposals.routineId, routine.id),
+            ))
+            .then((rows) => rows[0] ?? null);
+          if (!existing) throw notFound("Routine evolution proposal not found");
+          throw conflict("Routine evolution proposal is no longer pending");
+        }
+        return { proposal: mapRoutineEvolutionProposal(updated), routine, revision: null };
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await tx.execute(
+          sql`select id from ${routineEvolutionProposals} where ${routineEvolutionProposals.id} = ${proposalId} for update`,
+        );
+        const proposal = await txDb
+          .select()
+          .from(routineEvolutionProposals)
+          .where(and(
+            eq(routineEvolutionProposals.id, proposalId),
+            eq(routineEvolutionProposals.companyId, routine.companyId),
+            eq(routineEvolutionProposals.routineId, routine.id),
+          ))
+          .then((rows) => rows[0] ?? null);
+        if (!proposal) throw notFound("Routine evolution proposal not found");
+        if (proposal.status !== "pending") throw conflict("Routine evolution proposal is no longer pending");
+
+        await tx.execute(sql`select id from ${routines} where ${routines.id} = ${routine.id} for update`);
+        const locked = await txDb
+          .select()
+          .from(routines)
+          .where(eq(routines.id, routine.id))
+          .then((rows) => rows[0] ?? null);
+        if (!locked) throw notFound("Routine not found");
+
+        const now = new Date();
+        const [updatedRoutine] = await txDb
+          .update(routines)
+          .set({
+            title: proposal.proposedTitle ?? locked.title,
+            description: proposal.proposedDescription,
+            consecutiveAutoEvolutions: 0,
+            updatedByUserId: actor.userId ?? null,
+            updatedByAgentId: actor.agentId ?? null,
+            updatedAt: now,
+          })
+          .where(eq(routines.id, locked.id))
+          .returning();
+        if (!updatedRoutine) throw notFound("Routine not found");
+
+        const appended = await appendRoutineRevision(txDb, updatedRoutine, actor, {
+          changeSummary: proposal.changeSummary,
+        });
+
+        const [decidedProposal] = await txDb
+          .update(routineEvolutionProposals)
+          .set({
+            status: "approved",
+            decidedByUserId: actor.userId ?? null,
+            decidedAt: now,
+            appliedRevisionId: appended.revision.id,
+          })
+          .where(eq(routineEvolutionProposals.id, proposal.id))
+          .returning();
+        if (!decidedProposal) throw notFound("Routine evolution proposal not found");
+
+        return {
+          proposal: mapRoutineEvolutionProposal(decidedProposal),
+          routine: appended.routine,
+          revision: appended.revision,
+        };
+      });
+
       return result;
     },
 

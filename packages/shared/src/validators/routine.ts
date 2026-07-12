@@ -3,6 +3,7 @@ import {
   ISSUE_PRIORITIES,
   ROUTINE_CATCH_UP_POLICIES,
   ROUTINE_CONCURRENCY_POLICIES,
+  ROUTINE_EVOLUTION_MODES,
   ROUTINE_STATUSES,
   ROUTINE_TRIGGER_KINDS,
   ROUTINE_TRIGGER_SIGNING_MODES,
@@ -70,6 +71,7 @@ export const createRoutineSchema = z.object({
   status: z.enum(ROUTINE_STATUSES).optional().default("active"),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional().default("coalesce_if_active"),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional().default("skip_missed"),
+  evolutionMode: z.enum(ROUTINE_EVOLUTION_MODES).optional().default("off"),
   variables: z.array(routineVariableSchema).optional().default([]),
   env: envConfigSchema.optional().nullable(),
 });
@@ -94,6 +96,7 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
   status: z.enum(ROUTINE_STATUSES),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES),
+  evolutionMode: z.enum(ROUTINE_EVOLUTION_MODES).optional().default("off"),
   variables: z.array(routineVariableSchema),
   env: envConfigSchema.nullable().default(null),
   responsibleUserId: z.string().nullable().default(null),
@@ -173,3 +176,29 @@ export type RunRoutine = z.infer<typeof runRoutineSchema>;
 
 export const rotateRoutineTriggerSecretSchema = z.object({});
 export type RotateRoutineTriggerSecret = z.infer<typeof rotateRoutineTriggerSecretSchema>;
+
+// POST /routines/:id/evolve — the self-rewrite step's landing endpoint. Exactly one of
+// `description` (propose new instructions) or `noChange: true` (explicit no-op) is required.
+export const evolveRoutineSchema = z.object({
+  description: z.string().trim().min(1).optional(),
+  noChange: z.boolean().optional(),
+  changeSummary: z.string().trim().min(1).max(4000),
+  rationale: z.string().trim().min(1).max(8000).optional().nullable(),
+}).superRefine((value, ctx) => {
+  const hasDescription = typeof value.description === "string" && value.description.length > 0;
+  const hasNoChange = value.noChange === true;
+  if (hasDescription === hasNoChange) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Provide exactly one of `description` or `noChange: true`",
+    });
+  }
+});
+
+export type EvolveRoutine = z.infer<typeof evolveRoutineSchema>;
+
+export const decideRoutineEvolutionProposalSchema = z.object({
+  note: z.string().trim().max(4000).optional().nullable(),
+});
+
+export type DecideRoutineEvolutionProposal = z.infer<typeof decideRoutineEvolutionProposalSchema>;

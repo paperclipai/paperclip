@@ -20,6 +20,8 @@ import {
   projectWorkspaces,
   projects,
   routineDocuments,
+  routineEvolutionProposals,
+  routineRevisions,
   routineRuns,
   routines,
   routineTriggers,
@@ -29,6 +31,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { ROUTINE_EVOLUTION_AUTO_FREEZE_CAP } from "@paperclipai/shared";
 import { issueService } from "../services/issues.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import * as providerRegistry from "../secrets/provider-registry.ts";
@@ -67,6 +70,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(companySecretBindings);
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
+    await db.delete(routineEvolutionProposals);
     await db.delete(routines);
     await db.delete(routineDocuments);
     await db.delete(documents);
@@ -2221,5 +2225,260 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const run = await svc.firePublicTrigger(trigger.publicId!, { payload: { source: "test" } });
 
     expect(run).toMatchObject({ source: "webhook", status: "issue_created" });
+  });
+
+  describe("evolveRoutine", () => {
+    async function insertHeartbeatRun(companyId: string, agentId: string) {
+      const [run] = await db
+        .insert(heartbeatRuns)
+        .values({ companyId, agentId })
+        .returning();
+      return run!.id;
+    }
+
+    it("rejects with a conflict when evolutionMode is off", async () => {
+      const { routine, svc } = await seedFixture();
+      expect(routine.evolutionMode).toBe("off");
+
+      await expect(
+        svc.evolveRoutine(routine.id, { noChange: true, changeSummary: "no change needed" }, {}),
+      ).rejects.toThrow(/evolution is not enabled/i);
+    });
+
+    it("auto mode applies the new description immediately via a new revision", async () => {
+      const { companyId, agentId, routine, svc } = await seedFixture();
+      await db.update(routines).set({ evolutionMode: "auto" }).where(eq(routines.id, routine.id));
+      const runId = await insertHeartbeatRun(companyId, agentId);
+
+      const result = await svc.evolveRoutine(
+        routine.id,
+        { description: "Run the frog routine, then check the pond too", changeSummary: "Add pond check" },
+        { agentId, runId },
+      );
+
+      expect(result.status).toBe("applied");
+      if (result.status !== "applied") throw new Error("expected applied result");
+      expect(result.revision.revisionNumber).toBe(routine.latestRevisionNumber + 1);
+      expect(result.revision.changeSummary).toBe("Add pond check");
+      expect(result.routine.description).toBe("Run the frog routine, then check the pond too");
+
+      const persisted = await db.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0]!);
+      expect(persisted.description).toBe("Run the frog routine, then check the pond too");
+      expect(persisted.latestRevisionNumber).toBe(routine.latestRevisionNumber + 1);
+      expect(persisted.consecutiveAutoEvolutions).toBe(1);
+    });
+
+    it("noChange records no revision and leaves the routine untouched", async () => {
+      const { companyId, agentId, routine, svc } = await seedFixture();
+      await db.update(routines).set({ evolutionMode: "auto" }).where(eq(routines.id, routine.id));
+      const runId = await insertHeartbeatRun(companyId, agentId);
+
+      const result = await svc.evolveRoutine(
+        routine.id,
+        { noChange: true, changeSummary: "Instructions are already right" },
+        { agentId, runId },
+      );
+
+      expect(result.status).toBe("noop");
+      const persisted = await db.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0]!);
+      expect(persisted.description).toBe(routine.description);
+      expect(persisted.latestRevisionNumber).toBe(routine.latestRevisionNumber);
+      expect(persisted.consecutiveAutoEvolutions).toBe(0);
+    });
+
+    it("freezes evolutionMode to gated after the auto-evolution loop-guard cap is exceeded", async () => {
+      const { companyId, agentId, routine, svc } = await seedFixture();
+      await db.update(routines).set({ evolutionMode: "auto" }).where(eq(routines.id, routine.id));
+
+      let lastResult;
+      for (let i = 0; i < ROUTINE_EVOLUTION_AUTO_FREEZE_CAP + 1; i += 1) {
+        const runId = await insertHeartbeatRun(companyId, agentId);
+        lastResult = await svc.evolveRoutine(
+          routine.id,
+          { description: `Iteration ${i}`, changeSummary: `Self-evolution ${i}` },
+          { agentId, runId },
+        );
+      }
+
+      expect(lastResult?.status).toBe("applied");
+      const persisted = await db.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0]!);
+      // The (cap + 1)th unattended self-evolution trips the guard: it freezes to "gated"
+      // and the counter resets so a fresh gated window starts clean.
+      expect(persisted.evolutionMode).toBe("gated");
+      expect(persisted.consecutiveAutoEvolutions).toBe(0);
+
+      const frozenLog = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "routine.evolution_frozen"))
+        .then((rows) => rows[0] ?? null);
+      expect(frozenLog).not.toBeNull();
+      expect(frozenLog?.entityId).toBe(routine.id);
+    });
+
+    it("a human-authored update resets the auto-evolution loop-guard counter", async () => {
+      const { companyId, agentId, routine, svc } = await seedFixture();
+      await db.update(routines).set({ evolutionMode: "auto" }).where(eq(routines.id, routine.id));
+      const runId = await insertHeartbeatRun(companyId, agentId);
+      await svc.evolveRoutine(routine.id, { description: "Self edit", changeSummary: "self" }, { agentId, runId });
+
+      let persisted = await db.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0]!);
+      expect(persisted.consecutiveAutoEvolutions).toBe(1);
+
+      await svc.update(routine.id, { title: "ascii frog (reviewed)" }, { userId: "board-user" });
+
+      persisted = await db.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0]!);
+      expect(persisted.consecutiveAutoEvolutions).toBe(0);
+    });
+
+    it("gated mode records a pending proposal without changing the live routine", async () => {
+      const { companyId, agentId, routine, svc } = await seedFixture();
+      await db.update(routines).set({ evolutionMode: "gated" }).where(eq(routines.id, routine.id));
+      const runId = await insertHeartbeatRun(companyId, agentId);
+      const originalDescription = routine.description;
+
+      const result = await svc.evolveRoutine(
+        routine.id,
+        { description: "Proposed new instructions", changeSummary: "Try a gated proposal" },
+        { agentId, runId },
+      );
+
+      expect(result.status).toBe("proposed");
+      if (result.status !== "proposed") throw new Error("expected proposed result");
+      expect(result.proposal.status).toBe("pending");
+      expect(result.proposal.proposedDescription).toBe("Proposed new instructions");
+      expect(result.proposal.createdByAgentId).toBe(agentId);
+      expect(result.proposal.createdByRunId).toBe(runId);
+
+      const persisted = await db.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0]!);
+      expect(persisted.description).toBe(originalDescription);
+      expect(persisted.latestRevisionNumber).toBe(routine.latestRevisionNumber);
+
+      const proposals = await svc.listEvolutionProposals(routine.id);
+      expect(proposals).toHaveLength(1);
+      expect(proposals[0]?.id).toBe(result.proposal.id);
+    });
+
+    it("approving a gated proposal applies it via a new revision and resets the loop-guard", async () => {
+      const { companyId, agentId, routine, svc } = await seedFixture();
+      await db.update(routines).set({ evolutionMode: "gated", consecutiveAutoEvolutions: 3 }).where(eq(routines.id, routine.id));
+      const runId = await insertHeartbeatRun(companyId, agentId);
+      const proposeResult = await svc.evolveRoutine(
+        routine.id,
+        { description: "Approved instructions", changeSummary: "Try a gated proposal" },
+        { agentId, runId },
+      );
+      if (proposeResult.status !== "proposed") throw new Error("expected proposed result");
+
+      const decided = await svc.decideEvolutionProposal(
+        routine.id,
+        proposeResult.proposal.id,
+        "approved",
+        { userId: "board-user" },
+      );
+
+      expect(decided.proposal.status).toBe("approved");
+      expect(decided.proposal.decidedByUserId).toBe("board-user");
+      expect(decided.revision).not.toBeNull();
+      expect(decided.routine.description).toBe("Approved instructions");
+
+      const persisted = await db.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0]!);
+      expect(persisted.description).toBe("Approved instructions");
+      expect(persisted.latestRevisionNumber).toBe(routine.latestRevisionNumber + 1);
+      expect(persisted.consecutiveAutoEvolutions).toBe(0);
+    });
+
+    it("rejecting a gated proposal marks it rejected without touching the live routine", async () => {
+      const { companyId, agentId, routine, svc } = await seedFixture();
+      await db.update(routines).set({ evolutionMode: "gated" }).where(eq(routines.id, routine.id));
+      const runId = await insertHeartbeatRun(companyId, agentId);
+      const proposeResult = await svc.evolveRoutine(
+        routine.id,
+        { description: "Rejected instructions", changeSummary: "Try a gated proposal" },
+        { agentId, runId },
+      );
+      if (proposeResult.status !== "proposed") throw new Error("expected proposed result");
+
+      const decided = await svc.decideEvolutionProposal(
+        routine.id,
+        proposeResult.proposal.id,
+        "rejected",
+        { userId: "board-user" },
+      );
+
+      expect(decided.proposal.status).toBe("rejected");
+      expect(decided.proposal.decidedByUserId).toBe("board-user");
+      expect(decided.revision).toBeNull();
+
+      const persisted = await db.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0]!);
+      expect(persisted.description).toBe(routine.description);
+      expect(persisted.latestRevisionNumber).toBe(routine.latestRevisionNumber);
+    });
+
+    it("rejects deciding a proposal that is already decided", async () => {
+      const { companyId, agentId, routine, svc } = await seedFixture();
+      await db.update(routines).set({ evolutionMode: "gated" }).where(eq(routines.id, routine.id));
+      const runId = await insertHeartbeatRun(companyId, agentId);
+      const proposeResult = await svc.evolveRoutine(
+        routine.id,
+        { description: "Instructions", changeSummary: "Try a gated proposal" },
+        { agentId, runId },
+      );
+      if (proposeResult.status !== "proposed") throw new Error("expected proposed result");
+
+      await svc.decideEvolutionProposal(routine.id, proposeResult.proposal.id, "rejected", { userId: "board-user" });
+
+      await expect(
+        svc.decideEvolutionProposal(routine.id, proposeResult.proposal.id, "approved", { userId: "board-user" }),
+      ).rejects.toThrow(/no longer pending/i);
+    });
+
+    it("does not inject a self-rewrite step into the run when evolutionMode is off", async () => {
+      const { routine, svc } = await seedFixture();
+      expect(routine.evolutionMode).toBe("off");
+
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      const issue = await db
+        .select({ description: issues.description })
+        .from(issues)
+        .where(eq(issues.id, run.linkedIssueId!))
+        .then((rows) => rows[0]!);
+
+      expect(issue.description ?? "").not.toMatch(/Routine self-evolution step/);
+    });
+
+    it("injects a gated-mode self-rewrite step with the evolve endpoint instructions", async () => {
+      const { routine, svc } = await seedFixture();
+      await db.update(routines).set({ evolutionMode: "gated" }).where(eq(routines.id, routine.id));
+
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      const issue = await db
+        .select({ description: issues.description })
+        .from(issues)
+        .where(eq(issues.id, run.linkedIssueId!))
+        .then((rows) => rows[0]!);
+
+      expect(issue.description).toMatch(/Routine self-evolution step \(required final step of this run\)/i);
+      expect(issue.description).toContain(`POST /routines/${routine.id}/evolve`);
+      expect(issue.description).toMatch(/GATED evolution mode/);
+      expect(issue.description).toMatch(/held for human/i);
+    });
+
+    it("injects an auto-mode self-rewrite step noting the change is immediate and reversible", async () => {
+      const { routine, svc } = await seedFixture();
+      await db.update(routines).set({ evolutionMode: "auto" }).where(eq(routines.id, routine.id));
+
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      const issue = await db
+        .select({ description: issues.description })
+        .from(issues)
+        .where(eq(issues.id, run.linkedIssueId!))
+        .then((rows) => rows[0]!);
+
+      expect(issue.description).toMatch(/AUTO evolution mode/);
+      expect(issue.description).toContain(`POST /routines/${routine.id}/evolve`);
+      expect(issue.description).toMatch(/reversible/i);
+      expect(issue.description).toMatch(new RegExp(`${ROUTINE_EVOLUTION_AUTO_FREEZE_CAP} consecutive`));
+    });
   });
 });

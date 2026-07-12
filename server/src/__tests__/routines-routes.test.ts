@@ -114,6 +114,9 @@ const mockRoutineService = vi.hoisted(() => ({
   rotateTriggerSecret: vi.fn(),
   runRoutine: vi.fn(),
   firePublicTrigger: vi.fn(),
+  evolveRoutine: vi.fn(),
+  listEvolutionProposals: vi.fn(),
+  decideEvolutionProposal: vi.fn(),
 }));
 
 const mockAnnotationService = vi.hoisted(() => ({
@@ -647,5 +650,278 @@ describe("routine routes", () => {
       runId: null,
     });
     expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
+  });
+
+  describe("POST /routines/:id/evolve", () => {
+    it("applies an auto-mode evolution and logs routine.evolution_applied", async () => {
+      mockRoutineService.evolveRoutine.mockResolvedValue({
+        status: "applied",
+        routine: { ...routine, evolutionMode: "auto" },
+        revision: { ...revision, revisionNumber: 2, changeSummary: "Clarify step 3" },
+      });
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+        runId: "88888888-8888-4888-8888-888888888888",
+      });
+
+      const res = await request(app)
+        .post(`/api/routines/${routineId}/evolve`)
+        .send({ description: "New instructions", changeSummary: "Clarify step 3" });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ status: "applied" });
+      expect(mockRoutineService.evolveRoutine).toHaveBeenCalledWith(
+        routineId,
+        { description: "New instructions", changeSummary: "Clarify step 3" },
+        { agentId, userId: null, runId: "88888888-8888-4888-8888-888888888888" },
+      );
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "routine.evolution_applied",
+        entityId: routineId,
+        runId: "88888888-8888-4888-8888-888888888888",
+      }));
+    });
+
+    it("records a no-op evolution and logs routine.evolution_noop", async () => {
+      mockRoutineService.evolveRoutine.mockResolvedValue({ status: "noop", routine });
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+        runId: "88888888-8888-4888-8888-888888888888",
+      });
+
+      const res = await request(app)
+        .post(`/api/routines/${routineId}/evolve`)
+        .send({ noChange: true, changeSummary: "Instructions are already right" });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ status: "noop" });
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "routine.evolution_noop",
+        entityId: routineId,
+      }));
+    });
+
+    it("returns a pending proposal for gated mode and logs routine.evolution_proposed", async () => {
+      const proposal = {
+        id: "proposal-1",
+        companyId,
+        routineId,
+        baseRevisionNumber: 1,
+        proposedTitle: null,
+        proposedDescription: "New instructions",
+        changeSummary: "Clarify step 3",
+        rationale: null,
+        status: "pending",
+        createdByAgentId: agentId,
+        createdByRunId: "88888888-8888-4888-8888-888888888888",
+        decidedByUserId: null,
+        decidedAt: null,
+        appliedRevisionId: null,
+        createdAt: new Date("2026-03-20T00:00:00.000Z"),
+      };
+      mockRoutineService.evolveRoutine.mockResolvedValue({
+        status: "proposed",
+        routine: { ...routine, evolutionMode: "gated" },
+        proposal,
+      });
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+        runId: "88888888-8888-4888-8888-888888888888",
+      });
+
+      const res = await request(app)
+        .post(`/api/routines/${routineId}/evolve`)
+        .send({ description: "New instructions", changeSummary: "Clarify step 3" });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ status: "proposed", proposal: { id: "proposal-1" } });
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "routine.evolution_proposed",
+        entityId: routineId,
+      }));
+    });
+
+    it("rejects evolve with 409 when the service reports evolutionMode off", async () => {
+      const { conflict } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+      mockRoutineService.evolveRoutine.mockRejectedValue(conflict("Routine evolution is not enabled for this routine (evolutionMode is \"off\")"));
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+        runId: "88888888-8888-4888-8888-888888888888",
+      });
+
+      const res = await request(app)
+        .post(`/api/routines/${routineId}/evolve`)
+        .send({ noChange: true, changeSummary: "no change" });
+
+      expect(res.status).toBe(409);
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("rejects an evolve request that supplies neither description nor noChange", async () => {
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+        runId: "88888888-8888-4888-8888-888888888888",
+      });
+
+      const res = await request(app)
+        .post(`/api/routines/${routineId}/evolve`)
+        .send({ changeSummary: "missing both" });
+
+      expect(res.status).toBe(400);
+      expect(mockRoutineService.evolveRoutine).not.toHaveBeenCalled();
+    });
+
+    it("forbids an agent from evolving a routine assigned to someone else", async () => {
+      const app = await createApp({
+        type: "agent",
+        agentId: otherAgentId,
+        companyId,
+      });
+
+      const res = await request(app)
+        .post(`/api/routines/${routineId}/evolve`)
+        .send({ noChange: true, changeSummary: "no change" });
+
+      expect(res.status).toBe(403);
+      expect(mockRoutineService.evolveRoutine).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("routine evolution proposals", () => {
+    const proposal = {
+      id: "proposal-1",
+      companyId,
+      routineId,
+      baseRevisionNumber: 1,
+      proposedTitle: null,
+      proposedDescription: "New instructions",
+      changeSummary: "Clarify step 3",
+      rationale: null,
+      status: "pending",
+      createdByAgentId: agentId,
+      createdByRunId: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      appliedRevisionId: null,
+      createdAt: new Date("2026-03-20T00:00:00.000Z"),
+    };
+
+    it("lists evolution proposals for the assigned agent", async () => {
+      mockRoutineService.listEvolutionProposals.mockResolvedValue([proposal]);
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+      });
+
+      const res = await request(app).get(`/api/routines/${routineId}/evolution-proposals`);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual([proposal].map((p) => ({ ...p, createdAt: p.createdAt.toISOString() })));
+      expect(mockRoutineService.listEvolutionProposals).toHaveBeenCalledWith(routineId);
+    });
+
+    it("forbids a non-assigned agent from listing evolution proposals", async () => {
+      const app = await createApp({
+        type: "agent",
+        agentId: otherAgentId,
+        companyId,
+      });
+
+      const res = await request(app).get(`/api/routines/${routineId}/evolution-proposals`);
+
+      expect(res.status).toBe(403);
+      expect(mockRoutineService.listEvolutionProposals).not.toHaveBeenCalled();
+    });
+
+    it("approves a proposal and logs routine.evolution_proposal_approved", async () => {
+      mockRoutineService.decideEvolutionProposal.mockResolvedValue({
+        proposal: { ...proposal, status: "approved", decidedByUserId: "board-user" },
+        routine: { ...routine, description: "New instructions" },
+        revision: { ...revision, revisionNumber: 2 },
+      });
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await request(app)
+        .post(`/api/routines/${routineId}/evolution-proposals/${proposal.id}/approve`)
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(mockRoutineService.decideEvolutionProposal).toHaveBeenCalledWith(
+        routineId,
+        proposal.id,
+        "approved",
+        { agentId: null, userId: "board-user", runId: null },
+      );
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "routine.evolution_proposal_approved",
+        entityId: routineId,
+      }));
+    });
+
+    it("rejects a proposal and logs routine.evolution_proposal_rejected", async () => {
+      mockRoutineService.decideEvolutionProposal.mockResolvedValue({
+        proposal: { ...proposal, status: "rejected", decidedByUserId: "board-user" },
+        routine,
+        revision: null,
+      });
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await request(app)
+        .post(`/api/routines/${routineId}/evolution-proposals/${proposal.id}/reject`)
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(mockRoutineService.decideEvolutionProposal).toHaveBeenCalledWith(
+        routineId,
+        proposal.id,
+        "rejected",
+        { agentId: null, userId: "board-user", runId: null },
+      );
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "routine.evolution_proposal_rejected",
+        entityId: routineId,
+      }));
+    });
+
+    it("requires tasks:assign permission for a non-admin board member to approve a proposal", async () => {
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: [companyId],
+      });
+
+      const res = await request(app)
+        .post(`/api/routines/${routineId}/evolution-proposals/${proposal.id}/approve`)
+        .send({});
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("tasks:assign");
+      expect(mockRoutineService.decideEvolutionProposal).not.toHaveBeenCalled();
+    });
   });
 });

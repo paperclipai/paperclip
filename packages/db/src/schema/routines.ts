@@ -36,6 +36,8 @@ export const routines = pgTable(
     catchUpPolicy: text("catch_up_policy").notNull().default("skip_missed"),
     activityGatePolicy: text("activity_gate_policy").notNull().default("always"),
     activityGateScope: text("activity_gate_scope").notNull().default("company"),
+    evolutionMode: text("evolution_mode").notNull().default("off"),
+    consecutiveAutoEvolutions: integer("consecutive_auto_evolutions").notNull().default(0),
     originKind: text("origin_kind").notNull().default("manual"),
     originId: text("origin_id"),
     variables: jsonb("variables").$type<RoutineVariable[]>().notNull().default([]),
@@ -169,5 +171,37 @@ export const routineRuns = pgTable(
     dispatchFingerprintIdx: index("routine_runs_dispatch_fingerprint_idx").on(table.routineId, table.dispatchFingerprint),
     linkedIssueIdx: index("routine_runs_linked_issue_idx").on(table.linkedIssueId),
     idempotencyIdx: index("routine_runs_trigger_idempotency_idx").on(table.triggerId, table.idempotencyKey),
+  }),
+);
+
+// Gated self-evolution proposals: when a routine's evolutionMode is "gated", a run's
+// self-rewrite step lands here instead of touching the live routine description. A human
+// (or the assigned agent, via the same ownership rules as routine revisions/restores) must
+// approve or reject before the proposal can affect the routine, via appendRoutineRevision.
+export const routineEvolutionProposals = pgTable(
+  "routine_evolution_proposals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    routineId: uuid("routine_id").notNull().references(() => routines.id, { onDelete: "cascade" }),
+    baseRevisionNumber: integer("base_revision_number").notNull(),
+    proposedTitle: text("proposed_title"),
+    proposedDescription: text("proposed_description").notNull(),
+    changeSummary: text("change_summary").notNull(),
+    rationale: text("rationale"),
+    status: text("status").notNull().default("pending"),
+    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    decidedByUserId: text("decided_by_user_id"),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    appliedRevisionId: uuid("applied_revision_id").references(() => routineRevisions.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyRoutineStatusIdx: index("routine_evolution_proposals_company_routine_status_idx").on(
+      table.companyId,
+      table.routineId,
+      table.status,
+    ),
   }),
 );

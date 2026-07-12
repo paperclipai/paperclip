@@ -1,10 +1,12 @@
-import { Router, type Request } from "express";
+import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   createRoutineSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   createRoutineTriggerSchema,
+  decideRoutineEvolutionProposalSchema,
+  evolveRoutineSchema,
   rotateRoutineTriggerSecretSchema,
   runRoutineSchema,
   updateDocumentAnnotationThreadSchema,
@@ -448,6 +450,111 @@ export function routineRoutes(
     await remapRoutineDescriptionAnnotations(req, routine.id);
     res.json(result);
   });
+
+  // Landing endpoint for the self-rewrite step dispatchRoutineRun injects into a run's
+  // description when evolutionMode !== "off". Same ownership rule as PATCH/restore: the
+  // assigned agent can evolve its own routine, board can evolve any routine in-company.
+  router.post("/routines/:id/evolve", validate(evolveRoutineSchema), async (req, res) => {
+    const routine = await assertCanManageExistingRoutine(req, req.params.id as string);
+    if (!routine) {
+      res.status(404).json({ error: "Routine not found" });
+      return;
+    }
+    const result = await svc.evolveRoutine(routine.id, req.body, {
+      agentId: req.actor.type === "agent" ? req.actor.agentId : null,
+      userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
+      runId: req.actor.runId ?? null,
+    });
+    const actor = getActorInfo(req);
+    const action = result.status === "noop"
+      ? "routine.evolution_noop"
+      : result.status === "proposed"
+        ? "routine.evolution_proposed"
+        : "routine.evolution_applied";
+    await logActivity(db, {
+      companyId: routine.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action,
+      entityType: "routine",
+      entityId: routine.id,
+      details: {
+        status: result.status,
+        changeSummary: req.body.changeSummary,
+        proposalId: result.status === "proposed" ? result.proposal.id : null,
+        revisionId: result.status === "applied" ? result.revision.id : null,
+        revisionNumber: result.status === "applied" ? result.revision.revisionNumber : null,
+      },
+    });
+    if (result.status === "applied") {
+      await remapRoutineDescriptionAnnotations(req, routine.id);
+    }
+    res.json(result);
+  });
+
+  router.get("/routines/:id/evolution-proposals", async (req, res) => {
+    const routine = await assertCanManageExistingRoutine(req, req.params.id as string);
+    if (!routine) {
+      res.status(404).json({ error: "Routine not found" });
+      return;
+    }
+    const result = await svc.listEvolutionProposals(routine.id);
+    res.json(result);
+  });
+
+  async function decideEvolutionProposalRoute(
+    req: Request,
+    res: Response,
+    decision: "approved" | "rejected",
+  ) {
+    const routine = await assertCanManageExistingRoutine(req, req.params.id as string);
+    if (!routine) {
+      res.status(404).json({ error: "Routine not found" });
+      return;
+    }
+    // The human checkpoint for gated evolution: a board member (with tasks:assign) or the
+    // routine's own assigned agent, same ownership rule PATCH/restore already use.
+    await assertBoardCanAssignTasks(req, routine.companyId);
+    const result = await svc.decideEvolutionProposal(routine.id, req.params.pid as string, decision, {
+      agentId: req.actor.type === "agent" ? req.actor.agentId : null,
+      userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
+      runId: req.actor.runId ?? null,
+    });
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: routine.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: decision === "approved" ? "routine.evolution_proposal_approved" : "routine.evolution_proposal_rejected",
+      entityType: "routine",
+      entityId: routine.id,
+      details: {
+        proposalId: result.proposal.id,
+        revisionId: result.revision?.id ?? null,
+        revisionNumber: result.revision?.revisionNumber ?? null,
+      },
+    });
+    if (result.revision) {
+      await remapRoutineDescriptionAnnotations(req, routine.id);
+    }
+    res.json(result);
+  }
+
+  router.post(
+    "/routines/:id/evolution-proposals/:pid/approve",
+    validate(decideRoutineEvolutionProposalSchema),
+    (req, res) => decideEvolutionProposalRoute(req, res, "approved"),
+  );
+
+  router.post(
+    "/routines/:id/evolution-proposals/:pid/reject",
+    validate(decideRoutineEvolutionProposalSchema),
+    (req, res) => decideEvolutionProposalRoute(req, res, "rejected"),
+  );
 
   router.get("/routines/:id/runs", async (req, res) => {
     const routine = await svc.get(req.params.id as string);

@@ -552,6 +552,23 @@ export type RoutineConcurrencyPolicy = (typeof ROUTINE_CONCURRENCY_POLICIES)[num
 export const ROUTINE_CATCH_UP_POLICIES = ["skip_missed", "enqueue_missed_with_cap"] as const;
 export type RoutineCatchUpPolicy = (typeof ROUTINE_CATCH_UP_POLICIES)[number];
 
+// Governs whether a routine may rewrite its own instructions as a step of its own run.
+// - off:   no self-rewrite step is injected into the run; POST /routines/:id/evolve is disabled (409).
+// - auto:  the self-rewrite step is injected; evolve applies immediately via the audited
+//          revision path (effective next fire, reversible via restoreRevision).
+// - gated: the self-rewrite step is injected; evolve creates a pending proposal that a human
+//          must approve before it changes the live routine.
+export const ROUTINE_EVOLUTION_MODES = ["off", "auto", "gated"] as const;
+export type RoutineEvolutionMode = (typeof ROUTINE_EVOLUTION_MODES)[number];
+
+export const ROUTINE_EVOLUTION_PROPOSAL_STATUSES = ["pending", "approved", "rejected", "superseded"] as const;
+export type RoutineEvolutionProposalStatus = (typeof ROUTINE_EVOLUTION_PROPOSAL_STATUSES)[number];
+
+// Loop-guard: after this many CONSECUTIVE auto-applied self-evolutions with no human touch
+// (no board/user-authored revision, restore, or proposal decision in between), a routine's
+// evolutionMode is force-flipped from "auto" to "gated" so a human has to look at it.
+export const ROUTINE_EVOLUTION_AUTO_FREEZE_CAP = 5;
+
 export const ROUTINE_TRIGGER_KINDS = ["schedule", "webhook", "api"] as const;
 export type RoutineTriggerKind = (typeof ROUTINE_TRIGGER_KINDS)[number];
 

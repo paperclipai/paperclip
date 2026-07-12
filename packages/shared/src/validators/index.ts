@@ -563,12 +563,16 @@ export {
   routineRevisionSnapshotSchema,
   runRoutineSchema,
   rotateRoutineTriggerSecretSchema,
+  evolveRoutineSchema,
+  decideRoutineEvolutionProposalSchema,
   type CreateRoutine,
   type UpdateRoutine,
   type CreateRoutineTrigger,
   type UpdateRoutineTrigger,
   type RunRoutine,
   type RotateRoutineTriggerSecret,
+  type EvolveRoutine,
+  type DecideRoutineEvolutionProposal,
 } from "./routine.js";
 
 export {
