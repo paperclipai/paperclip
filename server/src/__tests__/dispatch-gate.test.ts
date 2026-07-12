@@ -7,7 +7,12 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { findActiveServerAdapter, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "../adapters/index.js";
+import type {
+  AdapterEnvironmentTestContext,
+  AdapterEnvironmentTestResult,
+  AdapterExecutionContext,
+  AdapterExecutionResult,
+} from "../adapters/index.js";
 import {
   acquireDispatchGate,
   CLAUDE_LOCAL_DEFAULT_SCOPE,
@@ -61,11 +66,53 @@ function synthesizeBlocked(blocked: DispatchGateBlockedResult): AdapterExecution
   };
 }
 
+// Mirrors registry.ts's runClaudeHelloProbeThroughGate: gates only the single
+// inference-producing call, not the whole environment test.
+function runFakeHelloProbeThroughGate<T>(run: () => Promise<T>): Promise<T | null> {
+  return withDispatchGate<T | null>(
+    CLAUDE_LOCAL_DEFAULT_SCOPE,
+    { kind: "hello_probe", id: randomUUID() },
+    run,
+    { onBlocked: () => null },
+  );
+}
+
 describeEmbeddedPostgres("dispatch gate", () => {
   let db!: Db;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let fakeExecute: (ctx: AdapterExecutionContext) => Promise<AdapterExecutionResult> = async () => OK_RESULT;
   let fakeExecuteCalls = 0;
+  let fakeReadOnlyCheckCalls = 0;
+  let fakeHelloProbeCalls = 0;
+
+  // Mirrors the real two-layer composition: an "adapter package" function with
+  // a read-only check that always runs, plus one inference-producing "hello"
+  // call it only mediates via ctx.runInferenceProbe when a caller supplies
+  // one — exactly like packages/adapters/claude-local/src/server/test.ts.
+  async function fakeClaudeTestEnvironment(
+    ctx: AdapterEnvironmentTestContext,
+  ): Promise<AdapterEnvironmentTestResult> {
+    fakeReadOnlyCheckCalls += 1;
+    const runInferenceProbe = ctx.runInferenceProbe ?? (<T,>(run: () => Promise<T>) => run());
+    const probe = await runInferenceProbe(async () => {
+      fakeHelloProbeCalls += 1;
+      return "hello" as const;
+    });
+    if (probe === null) {
+      return {
+        adapterType: "claude_local",
+        status: "warn",
+        checks: [{ code: "claude_hello_probe_gate_blocked", level: "warn", message: "blocked" }],
+        testedAt: new Date().toISOString(),
+      };
+    }
+    return {
+      adapterType: "claude_local",
+      status: "pass",
+      checks: [{ code: "claude_command_resolvable", level: "info", message: "ok" }],
+      testedAt: new Date().toISOString(),
+    };
+  }
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-dispatch-gate-");
@@ -88,25 +135,18 @@ describeEmbeddedPostgres("dispatch gate", () => {
           },
           { classifyQuota: classifyFakeQuota, onBlocked: synthesizeBlocked },
         ),
+      // Wraps the fake "adapter package" function the same way registry.ts's
+      // claudeTestEnvironmentWithGate wraps the real claudeTestEnvironment:
+      // injects the gate only via runInferenceProbe, nothing else.
       testEnvironment: (ctx) =>
-        withDispatchGate(
-          CLAUDE_LOCAL_DEFAULT_SCOPE,
-          { kind: "hello_probe", id: randomUUID() },
-          async () => ({ adapterType: "claude_local", status: "pass" as const, checks: [], testedAt: new Date().toISOString() }),
-          {
-            onBlocked: (blocked) => ({
-              adapterType: "claude_local",
-              status: "fail" as const,
-              checks: [{ code: `dispatch_gate_${blocked.reason}`, level: "error" as const, message: "blocked" }],
-              testedAt: new Date().toISOString(),
-            }),
-          },
-        ),
+        fakeClaudeTestEnvironment({ ...ctx, runInferenceProbe: runFakeHelloProbeThroughGate }),
     });
   }, 20_000);
 
   afterEach(async () => {
     fakeExecuteCalls = 0;
+    fakeReadOnlyCheckCalls = 0;
+    fakeHelloProbeCalls = 0;
     fakeExecute = async () => OK_RESULT;
     await db.delete(dispatchGateState);
   });
@@ -272,9 +312,13 @@ describeEmbeddedPostgres("dispatch gate", () => {
     expect(executeResult.errorCode).toBe("dispatch_gate_ownership_active");
     expect(fakeExecuteCalls).toBe(0);
 
+    // The environment test's read-only check still runs — only the single
+    // inference-producing hello-probe call is mediated by the gate.
     const testEnvResult = await adapter.testEnvironment({ companyId: "c1", adapterType: "claude_local", config: {} });
-    expect(testEnvResult.status).toBe("fail");
-    expect(testEnvResult.checks[0]?.code).toBe("dispatch_gate_ownership_active");
+    expect(fakeReadOnlyCheckCalls).toBe(1);
+    expect(fakeHelloProbeCalls).toBe(0);
+    expect(testEnvResult.status).toBe("warn");
+    expect(testEnvResult.checks[0]?.code).toBe("claude_hello_probe_gate_blocked");
 
     // Board chat, login, and the hello probe are read-only-distinct owner
     // kinds but mediate through this exact same primitive before they ever
@@ -285,5 +329,18 @@ describeEmbeddedPostgres("dispatch gate", () => {
     }
 
     await releaseDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, owner);
+  });
+
+  it("runs the read-only check and the hello probe when the gate is free, releasing afterward", async () => {
+    const adapter = findActiveServerAdapter("claude_local")!;
+
+    const testEnvResult = await adapter.testEnvironment({ companyId: "c1", adapterType: "claude_local", config: {} });
+    expect(fakeReadOnlyCheckCalls).toBe(1);
+    expect(fakeHelloProbeCalls).toBe(1);
+    expect(testEnvResult.status).toBe("pass");
+    expect(testEnvResult.checks[0]?.code).toBe("claude_command_resolvable");
+
+    const [row] = await db.select().from(dispatchGateState).where(eq(dispatchGateState.scopeKey, CLAUDE_LOCAL_DEFAULT_SCOPE));
+    expect(row?.ownershipState).toBe("idle");
   });
 });

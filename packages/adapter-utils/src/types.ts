@@ -249,6 +249,17 @@ export interface AdapterEnvironmentTestContext {
     bindHost?: string | null;
     allowedHostnames?: string[];
   };
+  /**
+   * Optional hook wrapping only the single real inference-producing probe
+   * call (e.g. Claude's "hello" probe), so a caller can mediate launch
+   * ownership around just that call while every other read-only check
+   * (cwd validation, command resolvability, `--help` flag detection, etc.)
+   * runs unmediated. Returning `null` means the caller declined to run the
+   * probe (e.g. blocked); the adapter must treat that as "probe not run"
+   * and report accordingly rather than crash. Defaults to identity when
+   * omitted (the adapter runs the probe directly, as before this hook existed).
+   */
+  runInferenceProbe?: <T>(run: () => Promise<T>) => Promise<T | null>;
 }
 
 /** Payload for the onHireApproved adapter lifecycle hook (e.g. join-request or hire_agent approval). */

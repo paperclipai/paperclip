@@ -226,21 +226,6 @@ function synthesizeBlockedExecutionResult(blocked: DispatchGateBlockedResult): A
   };
 }
 
-function synthesizeBlockedTestEnvironmentResult(blocked: DispatchGateBlockedResult): AdapterEnvironmentTestResult {
-  return {
-    adapterType: "claude_local",
-    status: "fail",
-    checks: [
-      {
-        code: `dispatch_gate_${blocked.reason}`,
-        level: "error",
-        message: dispatchGateBlockedMessage(blocked),
-      },
-    ],
-    testedAt: new Date().toISOString(),
-  };
-}
-
 const claudeExecuteStamped = stampClaudeAgentIdHeader(claudeExecute);
 
 const claudeExecuteWithGate = (ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> =>
@@ -251,15 +236,25 @@ const claudeExecuteWithGate = (ctx: AdapterExecutionContext): Promise<AdapterExe
     { classifyQuota: classifyClaudeExecutionQuota, onBlocked: synthesizeBlockedExecutionResult },
   );
 
+/**
+ * Gates only the single real inference call inside testEnvironment (the
+ * "hello" probe) via the adapter's `runInferenceProbe` hook — every other
+ * check it runs (cwd validation, command resolvability, the `--help`-based
+ * effort-flag probe) is read-only and stays outside the execution slot.
+ */
+function runClaudeHelloProbeThroughGate<T>(run: () => Promise<T>): Promise<T | null> {
+  return withDispatchGate<T | null>(
+    CLAUDE_LOCAL_DEFAULT_SCOPE,
+    { kind: "hello_probe", id: randomUUID() },
+    run,
+    { onBlocked: () => null },
+  );
+}
+
 const claudeTestEnvironmentWithGate = (
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> =>
-  withDispatchGate(
-    CLAUDE_LOCAL_DEFAULT_SCOPE,
-    { kind: "hello_probe", id: randomUUID() },
-    () => claudeTestEnvironment(ctx),
-    { onBlocked: synthesizeBlockedTestEnvironmentResult },
-  );
+  claudeTestEnvironment({ ...ctx, runInferenceProbe: runClaudeHelloProbeThroughGate });
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
