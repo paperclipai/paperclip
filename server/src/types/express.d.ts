@@ -24,6 +24,11 @@ declare global {
           status?: string;
         }>;
         isInstanceAdmin?: boolean;
+        /** Trusted-gateway stack context; set only when source === "cloud_tenant". */
+        cloudStack?: {
+          stackId: string;
+          stackRole: "owner" | "admin" | "member" | "support";
+        };
         keyId?: string;
         keyScope?: AgentApiKeyScope;
         runId?: string;
