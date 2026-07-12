@@ -131,7 +131,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
           align="start"
           side="bottom"
           collisionPadding={16}
-          className="w-[min(20rem,calc(100vw-2rem))] p-1"
+          className="w-(--sz-calc-6) p-1"
           disablePortal={disablePortal}
           onOpenAutoFocus={(event) => {
             event.preventDefault();

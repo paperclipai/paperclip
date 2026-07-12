@@ -4,6 +4,7 @@ import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { BOOTSTRAP_FALLBACK_COMMAND } from "@/bootstrapSetup";
 import type { AuthSession } from "@paperclipai/shared";
+import { Card } from "@/components/ui/card";
 
 type BootstrapPendingPageProps = {
   claimAvailable: boolean;
@@ -36,7 +37,7 @@ function CliFallback({ hasActiveInvite = false }: { hasActiveInvite?: boolean })
 function StateChrome({ children }: { children: ReactNode }) {
   return (
     <div className="mx-auto max-w-xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">{children}</div>
+      <Card className="block p-6">{children}</Card>
     </div>
   );
 }

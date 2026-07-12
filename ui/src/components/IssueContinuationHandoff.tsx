@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { cn, relativeTime } from "../lib/utils";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { Check, ChevronDown, ChevronRight, Copy, History } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 
 type IssueContinuationHandoffProps = {
   document: IssueDocument | null | undefined;
@@ -77,11 +78,11 @@ export function IssueContinuationHandoff({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium text-foreground">{title}</span>
-            <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase text-muted-foreground">
+            <Badge variant="outline" className="border-border font-mono text-(length:--text-nano) uppercase text-muted-foreground">
               handoff
-            </span>
+            </Badge>
           </div>
-          <div className="text-[11px] text-muted-foreground">
+          <div className="text-(length:--text-micro) text-muted-foreground">
             Updated {relativeTime(document.updatedAt)}
             {document.latestRevisionNumber > 0 ? ` - revision ${document.latestRevisionNumber}` : ""}
           </div>

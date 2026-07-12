@@ -57,7 +57,7 @@ export function ReusableExecutionWorkspaceSelect<TWorkspace extends ReusableExec
       renderOption={(option, { selected }) => (
         <span className="flex min-w-0 flex-col">
           <span className={cn("truncate", selected && "font-medium")}>{option.label}</span>
-          <span className="truncate text-[11px] text-muted-foreground">
+          <span className="truncate text-(length:--text-micro) text-muted-foreground">
             {option.workspace.status ? `${option.workspace.status} - ` : ""}
             {option.description}
           </span>

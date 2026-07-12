@@ -12,16 +12,61 @@ const {
   createDbMock,
   detectPortMock,
   deriveAuthTrustedOriginsMock,
+  environmentCustomImagesServiceMock,
+  environmentCustomImagesServiceFactoryMock,
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
   fakeServer,
+  heartbeatServiceFactoryMock,
+  heartbeatServiceMock,
   loadConfigMock,
+  resolveHeartbeatSchedulingSuppressionMock,
+  routineServiceFactoryMock,
+  routineServiceMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
   const createDbMock = vi.fn(() => ({}) as never);
   const detectPortMock = vi.fn(async (port: number) => port);
   const deriveAuthTrustedOriginsMock = vi.fn(() => []);
+  const resolveHeartbeatSchedulingSuppressionMock = vi.fn(() => ({
+    suppressed: false,
+    reason: null,
+  }));
+  const heartbeatServiceMock = {
+    resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
+    reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
+    promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
+    resumeQueuedRuns: vi.fn(async () => undefined),
+    reconcileStrandedAssignedIssues: vi.fn(async () => ({
+      assignmentDispatched: 0,
+      dispatchRequeued: 0,
+      continuationRequeued: 0,
+      successfulRunHandoffEscalated: 0,
+      escalated: 0,
+      skipped: 0,
+      issueIds: [],
+    })),
+    reconcileIssueGraphLiveness: vi.fn(async () => ({
+      escalationsCreated: 0,
+      dependencyWakesHealed: 0,
+    })),
+    reconcileTaskWatchdogs: vi.fn(async () => ({ triggered: 0 })),
+    scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
+    sweepStaleIssueLocks: vi.fn(async () => ({ cleared: 0 })),
+    reconcileProductivityReviews: vi.fn(async () => ({ created: 0, updated: 0, failed: 0 })),
+    sweepExpiredRuntimeStatuses: vi.fn(() => 0),
+    tickTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
+  };
+  const heartbeatServiceFactoryMock = vi.fn(() => heartbeatServiceMock);
+  const environmentCustomImagesServiceMock = {
+    cleanupExpiredSetupSessions: vi.fn(async () => ({ scanned: 0, timedOut: 0, failed: 0 })),
+  };
+  const environmentCustomImagesServiceFactoryMock = vi.fn(() => environmentCustomImagesServiceMock);
+  const routineServiceMock = {
+    tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
+  };
+  const routineServiceFactoryMock = vi.fn(() => routineServiceMock);
   const feedbackExportServiceMock = {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
@@ -43,10 +88,17 @@ const {
     createDbMock,
     detectPortMock,
     deriveAuthTrustedOriginsMock,
+    environmentCustomImagesServiceMock,
+    environmentCustomImagesServiceFactoryMock,
     feedbackExportServiceMock,
     feedbackServiceFactoryMock,
     fakeServer,
+    heartbeatServiceFactoryMock,
+    heartbeatServiceMock,
     loadConfigMock,
+    resolveHeartbeatSchedulingSuppressionMock,
+    routineServiceFactoryMock,
+    routineServiceMock,
   };
 });
 
@@ -144,20 +196,8 @@ vi.mock("../services/index.js", () => ({
   })),
   feedbackService: feedbackServiceFactoryMock,
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
-  heartbeatService: vi.fn(() => ({
-    reapOrphanedRuns: vi.fn(async () => undefined),
-    promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
-    resumeQueuedRuns: vi.fn(async () => undefined),
-    reconcileStrandedAssignedIssues: vi.fn(async () => ({
-      dispatchRequeued: 0,
-      continuationRequeued: 0,
-      successfulRunHandoffEscalated: 0,
-      escalated: 0,
-      skipped: 0,
-      issueIds: [],
-    })),
-    tickTimers: vi.fn(async () => ({ enqueued: 0 })),
-  })),
+  environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
+  heartbeatService: heartbeatServiceFactoryMock,
   instanceSettingsService: vi.fn(() => ({
     getGeneral: vi.fn(async () => ({
       backupRetention: {
@@ -178,10 +218,15 @@ vi.mock("../services/index.js", () => ({
     failed: 0,
     seededAgentIds: [],
   })),
-  reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
-  routineService: vi.fn(() => ({
-    tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
+  reconcileBuiltInAgentsOnStartup: vi.fn(async () => ({
+    scanned: 0,
+    reconciled: 0,
+    unknown: 0,
+    duplicates: 0,
   })),
+  reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
+  resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
+  routineService: routineServiceFactoryMock,
 }));
 
 vi.mock("../storage/index.js", () => ({
@@ -190,6 +235,10 @@ vi.mock("../storage/index.js", () => ({
 
 vi.mock("../services/feedback-share-client.js", () => ({
   createFeedbackTraceShareClientFromConfig: vi.fn(() => ({ id: "feedback-share-client" })),
+}));
+
+vi.mock("../services/plugin-worker-manager.js", () => ({
+  createPluginWorkerManager: vi.fn(() => ({ id: "plugin-worker-manager" })),
 }));
 
 vi.mock("../startup-banner.js", () => ({
@@ -215,6 +264,10 @@ describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     loadConfigMock.mockReturnValue(buildTestConfig());
+    resolveHeartbeatSchedulingSuppressionMock.mockReturnValue({
+      suppressed: false,
+      reason: null,
+    });
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
@@ -231,6 +284,43 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+  });
+
+  it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    resolveHeartbeatSchedulingSuppressionMock.mockReturnValue({
+      suppressed: true,
+      reason: "worktree_instance",
+    });
+    let intervalCallback: (() => void) | null = null;
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation(((callback: () => void) => {
+        intervalCallback = callback;
+        return 1 as unknown as ReturnType<typeof setInterval>;
+      }) as typeof setInterval);
+
+    try {
+      await startServer();
+
+      expect(heartbeatServiceMock.reapOrphanedRuns).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+      expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(1);
+
+      expect(intervalCallback).not.toBeNull();
+      intervalCallback?.();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+      expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
+      expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(2);
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
   });
 
   it("refuses authenticated public startup without an external database URL", async () => {

@@ -254,6 +254,9 @@ const storybookSecrets: CompanySecret[] = [
 	  {
 	    id: "secret-openai",
 	    companyId: COMPANY_ID,
+	    scope: "company",
+	    ownerUserId: null,
+	    userSecretDefinitionId: null,
 	    key: "openai-api-key",
 	    name: "OPENAI_API_KEY",
 	    provider: "local_encrypted",
@@ -275,6 +278,9 @@ const storybookSecrets: CompanySecret[] = [
 	  {
 	    id: "secret-ops-webhook",
 	    companyId: COMPANY_ID,
+	    scope: "company",
+	    ownerUserId: null,
+	    userSecretDefinitionId: null,
 	    key: "ops-webhook-token",
 	    name: "OPS_WEBHOOK_TOKEN",
 	    provider: "local_encrypted",
@@ -309,6 +315,7 @@ const adapterFixtures: AdapterInfo[] = [
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: true,
       supportsModelProfiles: true,
+      supportsAcp: true,
     },
   },
   {
@@ -324,6 +331,7 @@ const adapterFixtures: AdapterInfo[] = [
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: true,
       supportsModelProfiles: true,
+      supportsAcp: true,
     },
   },
   {
@@ -339,6 +347,7 @@ const adapterFixtures: AdapterInfo[] = [
       supportsLocalAgentJwt: false,
       requiresMaterializedRuntimeSkills: false,
       supportsModelProfiles: false,
+      supportsAcp: false,
     },
   },
 ];

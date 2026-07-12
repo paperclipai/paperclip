@@ -322,9 +322,9 @@ describe("RoutineRunVariablesDialog", () => {
     });
 
     const dialogContent = Array.from(document.body.querySelectorAll("div")).find((element) =>
-      typeof element.className === "string" && element.className.includes("max-h-[calc(100dvh-2rem)]"),
+      typeof element.className === "string" && element.className.includes("max-h-(--sz-calc-18)"),
     );
-    expect(dialogContent?.className).toContain("h-[calc(100dvh-2rem)]");
+    expect(dialogContent?.className).toContain("h-(--sz-calc-18)");
     expect(dialogContent?.className).toContain("overflow-hidden");
 
     const notesInput = document.querySelector("textarea");
@@ -337,7 +337,7 @@ describe("RoutineRunVariablesDialog", () => {
     expect(formScrollRegion?.contains(notesInput)).toBe(true);
 
     const footer = Array.from(document.body.querySelectorAll("div")).find((element) =>
-      typeof element.className === "string" && element.className.includes("pb-[calc(1rem+env(safe-area-inset-bottom))]"),
+      typeof element.className === "string" && element.className.includes("pb-(--sz-calc-19)"),
     );
     expect(footer?.className).toContain("shrink-0");
     expect(footer?.contains(formScrollRegion ?? null)).toBe(false);

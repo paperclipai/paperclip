@@ -43,6 +43,10 @@ const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
 }));
 
+const mockAccessApi = vi.hoisted(() => ({
+  listUserDirectory: vi.fn(),
+}));
+
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
@@ -73,6 +77,10 @@ vi.mock("../api/auth", () => ({
   authApi: mockAuthApi,
 }));
 
+vi.mock("../api/access", () => ({
+  accessApi: mockAccessApi,
+}));
+
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
@@ -96,7 +104,14 @@ vi.mock("../lib/recent-assignees", () => ({
 }));
 
 vi.mock("../lib/assignees", () => ({
-  formatAssigneeUserLabel: () => "Me",
+  formatAssigneeUserLabel: (userId: string | null | undefined, currentUserId?: string | null, userLabelMap?: Map<string, string>) => {
+    if (!userId) return null;
+    return userLabelMap?.get(userId) ?? (userId === currentUserId ? "You" : "User");
+  },
+  formatUserLabel: (userId: string | null | undefined, userLabelMap?: Map<string, string>) => {
+    if (!userId) return null;
+    return userLabelMap?.get(userId) ?? "User";
+  },
 }));
 
 vi.mock("./StatusIcon", () => ({
@@ -110,7 +125,7 @@ vi.mock("./PriorityIcon", () => ({
 }));
 
 vi.mock("./Identity", () => ({
-  Identity: ({ name }: { name: string }) => <span>{name}</span>,
+  Identity: ({ name, shape }: { name: string; shape?: string }) => <span data-shape={shape ?? "circle"}>{name}</span>,
 }));
 
 vi.mock("./AgentIconPicker", () => ({
@@ -119,6 +134,7 @@ vi.mock("./AgentIconPicker", () => ({
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string } & ComponentProps<"a">) => <a href={to} {...props}>{children}</a>,
+  useCaseHref: () => (caseId: string) => `/cases/${caseId}`,
 }));
 
 vi.mock("@/components/ui/separator", () => ({
@@ -189,6 +205,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
+    responsibleUserId: null,
     checkoutRunId: null,
     executionRunId: null,
     executionAgentNameKey: null,
@@ -425,6 +442,20 @@ describe("IssueProperties", () => {
     mockIssuesApi.upsertWatchdog.mockResolvedValue({});
     mockIssuesApi.deleteWatchdog.mockResolvedValue({ ok: true });
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
+    mockAccessApi.listUserDirectory.mockResolvedValue({
+      users: [
+        {
+          principalId: "user-1",
+          status: "active",
+          user: { id: "user-1", name: "Riley Board", email: "riley@example.com", image: null },
+        },
+        {
+          principalId: "user-2",
+          status: "active",
+          user: { id: "user-2", name: "Morgan Product", email: "morgan@example.com", image: null },
+        },
+      ],
+    });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableTaskWatchdogs: false,
     });
@@ -432,6 +463,133 @@ describe("IssueProperties", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("shows assignee and originating without responsible wording", async () => {
+    mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "CodexCoder", status: "active", adapterType: "codex_local" }]);
+    const root = renderProperties(container, {
+      issue: createIssue({
+        assigneeAgentId: "agent-1",
+        createdByUserId: "user-1",
+        responsibleUserId: "user-2",
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Assignee");
+      expect(container.textContent).toContain("CodexCoder");
+      expect(container.textContent).toContain("Originating");
+      expect(container.textContent).toContain("Riley Board");
+      expect(container.textContent).not.toContain("Morgan Product");
+      expect(container.textContent).not.toContain("Responsible");
+      expect(container.textContent).not.toContain("Kicked off by");
+      expect(container.textContent).not.toContain("Created by");
+      expect(container.querySelector('[data-shape="square"]')?.textContent).toContain("CodexCoder");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("shows originating without merged responsible wording when responsible is derived from the creator", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        createdByUserId: "user-1",
+        responsibleUserId: null,
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Originating");
+      expect(container.textContent).toContain("Riley Board");
+      expect(container.textContent).not.toContain("Kicked off by");
+      expect(container.textContent).not.toContain("Kicked off by · responsible");
+      expect(container.textContent).not.toContain("(auto)");
+      expect(container.textContent).not.toContain("Created by");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("shows originating agent without responsible wording", async () => {
+    mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "CodexCoder", status: "active", adapterType: "codex_local" }]);
+    const root = renderProperties(container, {
+      issue: createIssue({
+        createdByAgentId: "agent-1",
+        createdByUserId: null,
+        responsibleUserId: null,
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Originating");
+      expect(container.textContent).toContain("CodexCoder");
+      expect(container.textContent).toContain("Assignee");
+      expect(container.textContent).toContain("Unassigned");
+      expect(container.textContent).not.toContain("Responsible");
+      expect(container.textContent).not.toContain("Kicked off by");
+      expect(container.querySelector('[data-shape="square"]')?.textContent).toContain("CodexCoder");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("attributes an agent-created issue to the transitive responsible user with a via affordance", async () => {
+    mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "CodexCoder", status: "active", adapterType: "codex_local" }]);
+    const root = renderProperties(container, {
+      issue: createIssue({
+        createdByAgentId: "agent-1",
+        createdByUserId: null,
+        responsibleUserId: "user-2",
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Originating");
+      expect(container.textContent).toContain("Morgan Product");
+      expect(container.textContent).toContain("via CodexCoder");
+      expect(container.textContent).not.toContain("Responsible");
+      expect(container.textContent).not.toContain("Kicked off by");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("shows originating responsible user for a routine execution with no creator", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        createdByAgentId: null,
+        createdByUserId: null,
+        responsibleUserId: "user-2",
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Originating");
+      expect(container.textContent).toContain("Morgan Product");
+      expect(container.textContent).not.toContain("via ");
+    });
+
+    act(() => root.unmount());
   });
 
   it("groups the assignee picker and gates a live-run reassign behind an interrupt confirm", async () => {
@@ -1410,7 +1568,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("hides model options when the issue uses the assignee default", async () => {
+  it("hides model options when the issue uses the responsible default", async () => {
     mockAgentsApi.list.mockResolvedValue([
       {
         id: "agent-1",

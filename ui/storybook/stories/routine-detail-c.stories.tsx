@@ -78,6 +78,7 @@ const routine: RoutineDetailType = {
   projectId: storybookProjects[0]?.id ?? null,
   goalId: null,
   parentIssueId: null,
+  responsibleUserId: null,
   title: "Send the weekly digest to {{customer_name}}",
   description:
     "Compile last week's shipped work and email a digest to {{customer_name}} by {{deadline}}.\n\nKeep it to five bullets.",
