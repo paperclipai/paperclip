@@ -245,6 +245,15 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "timeout",
 ]);
 
+// Skills source unreadable during a deploy worktree swap. Retryable like the
+// generic transient set, but the swap window is measured at ~18–20 min — far
+// longer than the 60s×3 (~3 min) generic backoff, which would exhaust its
+// attempts *inside the same swap window* and false-escalate the issue to
+// `blocked`. These codes get a dedicated, swap-window-spanning backoff instead.
+const WORKTREE_SWAP_CONTINUATION_ERROR_CODES = new Set<string>([
+  "skills_source_unavailable",
+]);
+
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "agent_not_invokable",
   "agent_not_found",
@@ -263,6 +272,11 @@ const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+// Worktree-swap backoff: base 5 min, exponential. With 4 attempts the retries
+// land at +5, +15, +35 min cumulative before escalating — so the last retry
+// clears the ~18–20 min swap window instead of burning out inside it.
+const CONTINUATION_RECOVERY_WORKTREE_SWAP_MAX_ATTEMPTS = 4;
+const CONTINUATION_RECOVERY_WORKTREE_SWAP_BASE_BACKOFF_MS = 5 * 60_000;
 
 type ContinuationRetryClassification = {
   kind: "transient_infra" | "non_retryable" | "default";
@@ -275,6 +289,14 @@ export function classifyContinuationFailure(latestRun: LatestIssueRun): Continua
   const errorCode = readNonEmptyString(latestRun?.errorCode);
   if (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode)) {
     return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
+  }
+  if (errorCode && WORKTREE_SWAP_CONTINUATION_ERROR_CODES.has(errorCode)) {
+    return {
+      kind: "transient_infra",
+      maxAttempts: CONTINUATION_RECOVERY_WORKTREE_SWAP_MAX_ATTEMPTS,
+      baseBackoffMs: CONTINUATION_RECOVERY_WORKTREE_SWAP_BASE_BACKOFF_MS,
+      errorCode,
+    };
   }
   if (errorCode && TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) {
     return {
