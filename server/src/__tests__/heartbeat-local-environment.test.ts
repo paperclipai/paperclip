@@ -97,6 +97,7 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values({
@@ -124,7 +125,7 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
     const localRows = await db
       .select()
       .from(environments)
-      .where(and(eq(environments.companyId, companyId), eq(environments.driver, "local")));
+      .where(eq(environments.driver, "local"));
     expect(localRows).toHaveLength(1);
     expect(localRows[0]?.name).toBe("Local");
 

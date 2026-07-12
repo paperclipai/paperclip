@@ -132,6 +132,14 @@ The active-lock lifecycle is part of the checkout contract:
 
 Stale-lock recovery is crash recovery, not a retry loop. Paperclip must not clear or adopt locks held by non-terminal runs. After stale cleanup, a checkout `409` should mean a real live owner, status/assignee mismatch, unresolved blocker, or active gate still prevents checkout. Agents must treat that `409` as an ownership conflict and stop rather than retrying the same checkout.
 
+### Pre-dispatch configuration validation
+
+Pre-dispatch configuration validation is a distinct gate that runs after ownership and checkout are resolved but before the control plane actually dispatches a run.
+
+> Before a run is dispatched, required secret/env bindings are validated; missing bindings produce a surfaced configuration-incomplete blocker, not a dispatched run.
+
+A configuration-incomplete result is a gate outcome, not a runtime failure. It is one of the active gates that a checkout-time or dispatch-time check can surface instead of starting a run, and it leaves the issue in an explicit waiting state that names the missing binding. Surfacing the blocker keeps the issue healthy under the liveness contract while preventing a run that is guaranteed to fail once it cannot resolve its required secret/env bindings. A dispatched-then-failed run is the wrong shape for missing configuration: the missing binding is a known pre-dispatch condition, so the control plane must surface it as a configuration-incomplete blocker rather than letting the run start and then fail.
+
 ## 6. Parent/Sub-Issue vs Blockers
 
 Paperclip uses two different relationships for different jobs.
@@ -218,6 +226,8 @@ The accepted interaction by itself is only evidence that the plan was approved. 
 
 If the live run disappears, Paperclip must repair, resume, or visibly block the existing claim. It must not leave the source issue in a state where a second run can interpret the same acceptance as fresh permission to create sibling issues again.
 
+Once decomposition completes and the umbrella's remaining work is "wait for the children to finish," the umbrella must hold a first-class waiting path — a `blocked`-by-children state — not merely `in_progress` resting on `parentId` rollup. `parentId` is not a dependency (§6), so an `in_progress` umbrella with no run, no wake, and no blockers looks stranded to recovery. If the executor instead parks the continuation as waiting-for-review, recovery converts that park into the missing dependency wait (§9.2, "Deliberate wait is not a lost run").
+
 ### Concurrent and repeat attempts
 
 Every later run that encounters the same accepted-plan fingerprint must consult the durable claim/result before creating children.
@@ -247,6 +257,29 @@ The valid action-path primitives are:
 - a human owner via `assigneeUserId`
 - a first-class blocker chain whose unresolved leaf issues are themselves healthy
 - an open explicit recovery action that names the owner and action needed to restore liveness
+
+### Durable external waits and heartbeat finalization
+
+An external wait counts as a live or waiting path only when the next move survives the current heartbeat and is represented in Paperclip's durable control-plane state. Valid external-wait shapes are:
+
+- a one-shot issue monitor or other persisted scheduled wake that names the responsible assignee, next check time, and bounded timeout/attempt policy
+- a first-class blocker or `blocked` disposition that names the external owner and concrete action required to unblock the issue
+- a delegated child issue with a responsible owner and its own healthy action path, plus a blocker edge when the source issue must wait for that child; `parentId` alone is not a dependency
+
+An unmanaged local process is not a durable action path. Shell jobs started with `&`, `nohup`, local polling loops, detached PTY sessions, adapter child processes, or similar background watchers do not keep an issue live unless Paperclip persists them as a run or pairs a managed runtime service with a monitor, scheduled wake, blocker, or delegated issue that owns the next check. A PID, session id, log file, comment, or promise to check later is evidence only. The process may be killed when the adapter invocation or heartbeat exits and cannot be assumed observable or recoverable by another worker.
+
+Before a heartbeat finalizes, its issue disposition must therefore be evaluated from durable Paperclip state, not from processes still visible only to that heartbeat. An agent-owned issue may remain `in_progress` after the heartbeat only when another valid action-path primitive already exists. If the only claimed continuation is a local/background watcher, finalization treats the issue as having no live path even when the process has not yet been observed exiting.
+
+If useful deliverable work can continue without the external result, the agent should continue that work or delegate it rather than parking the issue. Use `blocked` only for a real dependency that prevents productive progress. Use a monitor when the assignee owns a bounded future check, and use delegated child work when another owner can make progress independently.
+
+Recovery from an invalid external wait is bounded and idempotent:
+
+1. Record bounded evidence that the completed heartbeat left no durable action path, including the terminal run and any reported local watcher metadata without treating that metadata as liveness.
+2. Queue at most one normal-model continuation for the same source state and recovery fingerprint so the assignee can inspect the external result, replace the watcher with a durable wait, continue productive work, or choose a valid disposition.
+3. If that continuation also exits without creating a durable path, do not queue another equivalent continuation. Move the issue to `blocked` only when a real external dependency can be named; otherwise open or update an explicit recovery action with a named owner and concrete repair/escalation action.
+4. New durable source activity may produce a new recovery fingerprint, but unchanged killed/local-watcher evidence must not create an infinite wake/recovery loop.
+
+This rule is intentionally conservative: local watcher evidence can help the recovery owner decide what happened, but only persisted control-plane state can prove that the work will move again.
 
 ### Comment and document activity wake sources
 
@@ -297,9 +330,15 @@ A workspace-coherent adapter path means:
 - the effective cwd exists or is provider-reachable, according to the workspace provider
 - when the adapter or workspace strategy relies on git state, the cwd is git-valid for the selected workspace: it resolves to the expected repository root, required base refs or branch metadata can be resolved, and runtime-created worktrees are still registered or explicitly recoverable
 
+Adapter-backed liveness also requires control-plane reachability from the agent's actual mutation surface, not just from the host adapter process. If the agent is expected to use Bash, shell tools, runtime helpers, or in-sandbox command execution to update issues, create comments, upload artifacts, or submit review decisions, the `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` visible to that surface must route to Paperclip successfully.
+
+For sandbox-backed local adapters, Paperclip may satisfy that contract with a run-scoped in-sandbox bridge. The host adapter keeps the real run JWT on the host side, injects only the bridge URL/token into the sandbox tool environment, and forwards allowed Paperclip API requests with the run id attached. The bridge credentials are execution plumbing, not user-facing context: they must not be written into prompts, visible comments, issue documents, restored workspace files, or durable logs. Agents and skills must use the env vars available in Bash/curl rather than assuming that the host's localhost API URL is reachable from browser or web-extraction tools inside the sandbox.
+
 The state `projectWorkspaceId` plus `executionWorkspaceId` without `projectId` is invalid for project-scoped execution. Paperclip may treat it as recoverable only when it can derive exactly one owning project from the execution workspace, project workspace, or source issue in the same company and then repair the persisted state before delivery. If the owning project is missing, ambiguous, or cross-company, the queued adapter run must not be counted as a live path.
 
 Workspace incoherence feeds into the same non-terminal liveness and stranded assigned-work model as a disappeared run. The recovery path should first fail or reject the incoherent wake, then either repair and requeue one bounded continuation for the same assignee or surface an explicit recovery action. It must not leave an agent-owned `in_progress` issue healthy solely because a wake record exists that would invoke the adapter in the wrong cwd, a non-git directory where git is required, an unrelated project workspace, or an unrecoverable missing worktree.
+
+For runtime-created `git_worktree` execution workspaces, branch coherence is part of workspace coherence. The persisted execution workspace branch is the recorded branch for future dispatch. Reusing that workspace must verify that the worktree is still registered and that `HEAD` is on the recorded branch. Successful run finalization must perform the same check before recording `workspace_finalize=succeeded`. If the run switched to a publishing/PR branch without updating the execution workspace record, finalization may auto-restore the recorded branch only when the worktree is clean, still registered, and the recorded branch points at the current `HEAD`; the repair is recorded as a workspace operation before the successful finalize row. If that safe repair cannot be proven, finalization records a failed workspace finalize and the run fails with bounded evidence for the expected and actual branch. A branch change is sanctioned when a control-plane path updates the execution workspace record before finalization, when publishing work happens in a separate worktree and the managed issue worktree remains on its recorded branch, or when the finalizer performs this clean same-commit restoration.
 
 ### Explicit recovery actions
 
@@ -367,7 +406,7 @@ A healthy active-work state means at least one of these is true:
 - there is an active one-shot monitor that will wake the assignee for a future check
 - there is an open explicit recovery action for the lost execution path
 
-An agent-owned `in_progress` issue is stalled when it has no active run, no queued continuation, and no explicit recovery surface. A still-running but silent process is not automatically stalled; it is handled by the active-run watchdog contract.
+An agent-owned `in_progress` issue is stalled when it has no active run, no queued continuation, no persisted monitor, and no explicit recovery surface. An unmanaged local/background watcher does not satisfy any of those conditions. A Paperclip-tracked run that is still running but silent is not automatically stalled; it is handled by the active-run watchdog contract.
 
 ### `in_review`
 
@@ -385,6 +424,8 @@ A healthy `in_review` issue has at least one valid action path:
 Agent-assigned `in_review` with no typed participant is only healthy when one of the other paths exists. Assignment to the same agent that produced the handoff is not, by itself, a review path.
 
 An `in_review` issue is stalled when it has no typed participant, no pending interaction or approval, no user owner, no active monitor, no active run, no queued wake, and no explicit recovery action. Paperclip should surface that state as recovery work rather than silently completing the issue or leaving blocker chains parked indefinitely.
+
+When an execution-policy review stage has a pending agent participant, the participant's run is part of the review path only while it is live or queued. If that participant run reaches a terminal state while `executionState.status` remains `pending`, no decision has been recorded. Paperclip should queue one bounded normal-model recovery wake for the same participant when the agent is invokable and no other review path exists. If that recovery run also finishes while the stage remains pending, or the participant cannot be invoked, Paperclip must move the source issue to an explicit blocked/recovery path instead of leaving `in_review` to drift silently.
 
 ### Issue monitors
 
@@ -460,6 +501,19 @@ Recovery rule:
 
 This is an active-work continuity recovery.
 
+The same bounded rule applies when the previous heartbeat reported waiting on a local/background watcher and that watcher was killed, disappeared, or was never represented by a durable Paperclip primitive. Paperclip queues at most one continuation for the same recovery fingerprint. If the continuation also leaves only local watcher evidence, Paperclip must surface a real blocker or explicit recovery action instead of repeating continuation recovery. A new monitor, scheduled wake, healthy delegated blocker issue, or other durable source mutation resolves that recovery fingerprint normally.
+
+#### Deliberate wait is not a lost run
+
+A continuation that the staleness gate cancelled with `issue_continuation_waiting_on_review` is a *deliberate park*, not a disappeared execution path. The latest run reported that the issue is waiting for review/approval (for example, an umbrella issue whose work was just decomposed into sub-tasks). Treating that park as a stranded run would retry it, then escalate it to `blocked` with a recovery action and an operator-facing failure notice — even though nothing failed and there is nothing for a human to do.
+
+Recovery rule for a parked-for-review continuation:
+
+- if the issue has a real waiting target — open (non-terminal) sub-tasks or existing unresolved blockers — Paperclip converts the deliberate wait into a first-class dependency wait: it sets the issue `blocked` by those issues, keeps the original assignee, and posts a plain-language comment explaining that the task will resume automatically when its dependencies finish. The issue then self-resumes through the normal `issue_blockers_resolved` path; no recovery action or escalation owner is involved
+- if the issue has no waiting target, the park is indistinguishable from a genuine strand and falls through to the standard §9.2 escalation, preserving stranded detection
+
+This keeps the post-decomposition umbrella (§7) on a real waiting path instead of relying on `parentId` rollup, which §6 does not treat as a dependency.
+
 ### 9.3 Recovery model-profile lane
 
 Cheap model profiles are only for status-only operational recovery overhead. Paperclip may request `modelProfile: "cheap"` for bounded recovery-owner work that updates task liveness, clears bad status, records a disposition, or asks for human/manager intervention. Those wakes must carry guard context such as `allowDeliverableWork: false`, `allowDocumentUpdates: false`, and `resumeRequiresNormalModel: true`.
@@ -480,7 +534,87 @@ On startup and on the periodic recovery loop, Paperclip now does five things in 
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
 
-## 11. Silent Active-Run Watchdog
+## 11. Task Watchdog for Issue Trees
+
+A task watchdog watches a configured issue subtree after that subtree has stopped moving. It is a product-level verification and recovery mechanism for selected work, not a process monitor.
+
+Keep the three watchdog/recovery concepts separate:
+
+- task watchdog: watches a configured source issue plus non-watchdog descendants and asks whether the stopped subtree is legitimate
+- silent active-run watchdog: watches a still-running process that has stopped producing output
+- liveness recovery: repairs stranded control-plane paths when a non-terminal issue has no live, waiting, or recovery path
+
+### Configuration and scan scope
+
+A source issue may have at most one active task watchdog configuration. The configuration names a same-company, invokable watchdog agent and optional custom instructions.
+
+The scan scope is:
+
+- the source issue
+- descendants reached through `parentId`
+- excluding every issue whose `originKind` is `task_watchdog`
+- excluding every descendant below an excluded task-watchdog issue
+
+The reusable watchdog issue is a child of the watched source issue for audit and navigation, but it is excluded from the watched work subtree. This prevents recursive watchdog loops.
+
+### Stopped-subtree evaluation
+
+Task watchdog evaluation is conservative. If any included issue has a live run, queued wake, or scheduled retry that should fire without intervention, the subtree is live and the task watchdog does not run.
+
+If no included issue has a live path, Paperclip computes a stop fingerprint from durable subtree state, including at least:
+
+- included leaf issue ids, statuses, assignees, and latest durable update timestamps
+- first-class blockers and unresolved blocker leaf summaries
+- pending interactions and approvals that define waiting paths
+- active monitors and scheduled retries
+- terminal or cancelled leaf evidence
+- the watchdog configuration revision, including watchdog agent and instructions changes
+
+If the fingerprint equals the watchdog's last reviewed fingerprint, Paperclip suppresses another watchdog wake. If the fingerprint is new, Paperclip creates or reopens the reusable watchdog issue and wakes the configured watchdog agent with the source issue, watchdog config, stop fingerprint, leaf summary, default mandate, custom instructions, and server-derived capability metadata that names the allowed operations, denied operations, reusable watchdog issue, and non-watchdog target scope.
+
+Changing the watchdog agent or custom instructions invalidates the reviewed fingerprint and forces a fresh evaluation even if the subtree state did not otherwise change.
+
+### Live path created by watchdog work
+
+An active watchdog issue or queued watchdog wake can be the visible recovery path for a stopped watched subtree, but it is not proof that the original deliverable work is complete. It means the next action is watchdog verification.
+
+When the source issue is non-terminal and has no other live path, the product should expose the watchdog issue or source-scoped recovery action as the reason the subtree is covered. When correctness requires the source issue to wait on watchdog review, the source issue should be blocked on the reusable watchdog issue or an equivalent explicit recovery action. Do not rely on parent/child structure alone.
+
+### Watchdog authority during execution
+
+The watchdog agent acts in a scoped capacity, not as the original deliverable worker and not as the board. The server must enforce the authority contract in `doc/SPEC-implementation.md` from persisted watchdog context. Prompt text and custom instructions may guide the watchdog's judgment, but they cannot grant authority outside the watched subtree or beyond the allowed mutation and interaction list.
+
+Watchdogs must not create visible probe issues, comments, or throwaway tasks to discover capability boundaries. They should rely on the wake capability metadata and explicit API denials, then record any denied operation as evidence in the reusable watchdog issue.
+
+The watchdog should verify stopped leaves against comments, documents, work products, tests, screenshots, blockers, review state, and run context. It should not accept "I could not" or "waiting for approval" as sufficient by itself.
+
+When work should continue, the watchdog restores a live path inside the watched subtree: reopen or reassign stuck work, create follow-up issues, repair blockers, set a monitor, or resolve an eligible plan confirmation. When the stopped state is legitimate, the watchdog records why and leaves the subtree with a valid terminal, waiting, blocked, review, or explicit recovery path.
+
+### Eligible interaction decisions
+
+A task watchdog may resolve only eligible `request_confirmation` plan confirmations. Eligibility is defined in `doc/SPEC-implementation.md` and must be checked by the server at decision time. The critical constraints are:
+
+- the interaction is pending, targeted at the current `plan` document revision for an included subtree issue, and explicitly marked as a plan-approval confirmation
+- accepting it authorizes only decomposition or task-level continuation inside the watched subtree
+- the plan is not asking for board-only governance, spend, hiring, security, deployment, secret, destructive data, legal/compliance, cross-company, or other sensitive approval
+- no newer durable source activity or policy reserves the decision for a human, CTO, Security, or the board
+
+The watchdog cannot resolve `request_checkbox_confirmation`, `ask_user_questions`, `suggest_tasks`, linked approvals, execution-policy decisions unless it is the typed participant outside watchdog capacity, or document comments written as freeform approval.
+
+### Completion and fingerprint updates
+
+The watchdog's reviewed fingerprint should update only after the watchdog issue reaches a valid disposition:
+
+- `done` with evidence that the stopped state is acceptable
+- `in_review` with a real reviewer, approval, interaction, user owner, monitor, or recovery path
+- `blocked` with first-class blockers or a named external owner/action
+- a watchdog mutation that restores live work, where the subsequent source-subtree mutation naturally changes the stop fingerprint
+
+If the watchdog moved work forward, Paperclip should not mark the old fingerprint as permanently acceptable just because the watchdog issue completed. The next scan should observe the changed subtree state and either suppress because work is live or compute a new stopped fingerprint later.
+
+Task watchdogs must not silently mark source work done from prose comments, must not duplicate child trees for the same accepted plan revision, and must not create another task-watchdog issue for the same source issue.
+
+## 12. Silent Active-Run Watchdog
 
 An active run can still be unhealthy even when its process is `running`. Paperclip treats prolonged output silence as a watchdog signal, not as proof that the run is failed.
 
@@ -532,7 +666,7 @@ This is distinct from productivity review. Productivity review asks whether an a
 
 Detached process cleanup is operational hygiene, not source issue liveness. Cleanup should be best-effort and auditable. If cleanup fails but the source issue is already terminal with same-run durable evidence, Paperclip should preserve the cleanup failure on the run/watchdog audit trail and route only the cleanup concern to bounded recovery when a real owner/action remains.
 
-## 12. Auto-Recover vs Explicit Recovery vs Human Escalation
+## 13. Auto-Recover vs Explicit Recovery vs Human Escalation
 
 Paperclip uses three different recovery outcomes, depending on how much it can safely infer.
 
@@ -576,7 +710,7 @@ Examples:
 
 In these cases Paperclip should leave a visible issue/comment trail instead of silently retrying.
 
-## 13. What This Does Not Mean
+## 14. What This Does Not Mean
 
 These semantics do not change V1 into an auto-reassignment system.
 
@@ -593,7 +727,7 @@ The recovery model is intentionally conservative:
 - open an explicit recovery action when the system can identify a bounded recovery owner/action
 - escalate visibly when the system cannot safely keep going
 
-## 14. Practical Interpretation
+## 15. Practical Interpretation
 
 For a board operator, the intended meaning is:
 

@@ -133,6 +133,49 @@ describe("resolveEnvironmentExecutionTarget", () => {
     });
   });
 
+  it("keeps sandbox targets on callback bridge execution even when lease metadata advertises SSH access", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: {
+        provider: "fake-plugin",
+        reuseLease: false,
+        timeoutMs: 30_000,
+      },
+    });
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "claude_local",
+      environment: {
+        id: "env-1",
+        driver: "sandbox",
+        config: {
+          provider: "fake-plugin",
+        },
+      },
+      leaseId: "lease-1",
+      leaseMetadata: {
+        remoteCwd: "/home/sandbox/paperclip-workspace",
+        sshAccess: {
+          type: "ssh",
+          host: "ssh.example.test",
+          port: 22,
+          username: "paperclip",
+        },
+      },
+      lease: null,
+      environmentRuntime: null,
+    });
+
+    expect(target).toMatchObject({
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "fake-plugin",
+      remoteCwd: "/home/sandbox/paperclip-workspace",
+    });
+  });
+
   it("resolves SSH execution targets in bridge mode", async () => {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "ssh",

@@ -100,17 +100,11 @@ export function CompanySettingsSidebar() {
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
-        <div className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <div className="px-3 pb-1 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
           Company settings
         </div>
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
-          <SidebarNavItem
-            to="/company/settings/environments"
-            label="Environments"
-            icon={MonitorCog}
-            end
-          />
           {showCloudUpstream ? (
             <SidebarNavItem
               to="/company/settings/cloud-upstream"
@@ -140,7 +134,7 @@ export function CompanySettingsSidebar() {
           <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
           <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
         </div>
-        <div className="mt-5 px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <div className="mt-5 px-3 pb-1 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
           Instance settings
         </div>
         <div className="flex flex-col gap-0.5">
@@ -154,6 +148,12 @@ export function CompanySettingsSidebar() {
             to={`${INSTANCE_SETTINGS_PATH_PREFIX}/general`}
             label="General"
             icon={SlidersHorizontal}
+            end
+          />
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`}
+            label="Environments"
+            icon={MonitorCog}
             end
           />
           <SidebarNavItem

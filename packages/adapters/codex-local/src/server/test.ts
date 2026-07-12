@@ -25,6 +25,7 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 import { prepareManagedCodexHome } from "./codex-home.js";
+import { resolveCodexExecutionEngineForRun, testCodexAcpEnvironment } from "./acp.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -79,11 +80,15 @@ async function prepareCodexHelloProbe(input: {
 }> {
   let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
   let preparedRuntimeWorkspaceLocalDir: string | null = null;
+  let probeHomeLocalDir: string | null = null;
 
   const cleanup = async () => {
     await preparedRuntime?.restoreWorkspace().catch(() => {});
     if (preparedRuntimeWorkspaceLocalDir) {
       await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
+    }
+    if (probeHomeLocalDir) {
+      await fs.rm(probeHomeLocalDir, { recursive: true, force: true }).catch(() => {});
     }
   };
 
@@ -91,6 +96,39 @@ async function prepareCodexHelloProbe(input: {
     const managedHome = await prepareManagedCodexHome(process.env, async () => {}, input.companyId, {
       apiKey: null,
     });
+
+    // Upload only the credential/config files the login probe needs, not the
+    // entire managed CODEX_HOME. A real managed home accumulates hundreds of MB
+    // of session/state history (`sessions/`, `state_*.sqlite`, …); tarring and
+    // streaming all of it into the sandbox made the environment Test probe take
+    // many minutes and look like it hung. The hello probe only needs auth.
+    probeHomeLocalDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), `paperclip-codex-probe-home-${input.runId}-`),
+    );
+    let seededAuth = false;
+    for (const file of ["auth.json", "config.toml"]) {
+      // `fs.readFile` follows the managed home's `auth.json` symlink into the
+      // host's `~/.codex`, so we copy the resolved bytes as a plain file.
+      const contents = await fs.readFile(path.join(managedHome, file)).catch(() => null);
+      if (contents) {
+        await fs.writeFile(path.join(probeHomeLocalDir, file), contents);
+        if (file === "auth.json") seededAuth = true;
+      }
+    }
+
+    // When the host has no Codex credentials to seed, don't override CODEX_HOME.
+    // Pointing Codex at an empty uploaded home would mask any login already
+    // baked into the sandbox (e.g. a captured custom-image snapshot); leaving
+    // CODEX_HOME unset lets the probe exercise that in-sandbox login instead.
+    if (!seededAuth) {
+      return {
+        command: input.command,
+        args: input.args,
+        env: { ...input.env },
+        cleanup,
+      };
+    }
+
     preparedRuntimeWorkspaceLocalDir = await fs.mkdtemp(
       path.join(os.tmpdir(), `paperclip-codex-envtest-${input.runId}-`),
     );
@@ -109,7 +147,7 @@ async function prepareCodexHelloProbe(input: {
       assets: [
         {
           key: "home",
-          localDir: managedHome,
+          localDir: probeHomeLocalDir,
           followSymlinks: true,
         },
       ],
@@ -157,7 +195,24 @@ async function prepareCodexHelloProbe(input: {
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
+  const engineSelection = await resolveCodexExecutionEngineForRun({
+    config: parseObject(ctx.config),
+    executionTarget: ctx.executionTarget,
+  });
+  if (engineSelection.engine === "acp") {
+    return testCodexAcpEnvironment(ctx);
+  }
+
   const checks: AdapterEnvironmentCheck[] = [];
+  if (!engineSelection.explicit && engineSelection.fallbackReason) {
+    checks.push({
+      code: "codex_acp_default_fallback",
+      level: "warn",
+      message: "Codex ACP default is unavailable; testing the Codex CLI fallback lane.",
+      detail: engineSelection.fallbackReason,
+      hint: "Fix the ACP prerequisite to use the default ACP lane, or set engine=cli to pin the CLI lane.",
+    });
+  }
   const config = parseObject(ctx.config);
   const command = asString(config.command, "codex");
   const target = ctx.executionTarget ?? null;

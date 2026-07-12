@@ -4,29 +4,36 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
+import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
+import { builtInAgentRoutes } from "./routes/built-in-agents.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
+import { caseRoutes } from "./routes/cases.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
 import { routineRoutes } from "./routes/routines.js";
+import { pipelineRoutes } from "./routes/pipelines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
+import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
+import { attentionRoutes } from "./routes/attention.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
@@ -66,6 +73,7 @@ import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
+import { apiCompression } from "./middleware/api-compression.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -139,6 +147,7 @@ export async function createApp(
       }): Promise<unknown>;
     };
     databaseBackupService?: InstanceDatabaseBackupService;
+    databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
@@ -155,9 +164,15 @@ export async function createApp(
   },
 ) {
   const app = express();
+  app.locals.paperclipDb = db;
   const captureRawBody = (req: express.Request, _res: express.Response, buf: Buffer) => {
     (req as unknown as { rawBody: Buffer }).rawBody = buf;
   };
+
+  // Respect the operator's `TRUST_PROXY` env var (see middleware/trust-proxy.ts).
+  // Default is unset → Express trusts nothing, which is the only safe choice
+  // when the server may be reachable without a known reverse proxy in front.
+  applyTrustProxy(app, parseTrustProxyEnv(process.env.TRUST_PROXY));
 
   app.use(COMPANY_IMPORT_API_PATH, express.json({
     limit: PORTABLE_JSON_BODY_LIMIT,
@@ -167,6 +182,7 @@ export async function createApp(
     limit: DEFAULT_JSON_BODY_LIMIT,
     verify: captureRawBody,
   }));
+  app.use("/api", apiCompression());
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
@@ -208,12 +224,14 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+      databaseBackupHealth: opts.databaseBackupHealth,
     }),
   );
   api.use(openApiRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(companySkillRoutes(db));
+  api.use(builtInAgentRoutes(db));
   api.use(teamsCatalogRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
@@ -222,17 +240,21 @@ export async function createApp(
     feedbackExportService: opts.feedbackExportService,
     pluginWorkerManager: workerManager,
   }));
+  api.use(caseRoutes(db, opts.storageService));
   api.use(issueTreeControlRoutes(db));
   api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(pipelineRoutes(db));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
-  api.use(executionWorkspaceRoutes(db));
+  api.use(executionWorkspaceRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(goalRoutes(db));
+  api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
+  api.use(attentionRoutes(db));
   api.use(userProfileRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));

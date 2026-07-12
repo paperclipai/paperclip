@@ -4,10 +4,10 @@ import { supportsAdapterModelRefresh } from "./AgentConfigForm";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
 
 describe("supportsAdapterModelRefresh", () => {
-  it("enables the model refresh action for Claude, Codex, and ACPX adapters", () => {
+  it("enables the model refresh action for Claude and Codex adapters", () => {
     expect(supportsAdapterModelRefresh("claude_local")).toBe(true);
     expect(supportsAdapterModelRefresh("codex_local")).toBe(true);
-    expect(supportsAdapterModelRefresh("acpx_local")).toBe(true);
+    expect(supportsAdapterModelRefresh("acpx_local")).toBe(false);
   });
 
   it("keeps the refresh action hidden for adapters without a live refresh hook", () => {
@@ -19,12 +19,12 @@ describe("supportsAdapterModelRefresh", () => {
 function makeEnvironment(overrides: Partial<Environment>): Environment {
   return {
     id: "env-1",
-    companyId: "co-1",
     name: "Env",
     description: null,
     driver: "local",
     status: "active",
     config: {},
+    envVars: {},
     metadata: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),

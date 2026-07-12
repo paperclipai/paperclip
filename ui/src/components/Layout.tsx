@@ -17,6 +17,7 @@ import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
+import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { SidebarShell } from "./SidebarShell";
 import { SecondarySidebar } from "./SecondarySidebar";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
@@ -31,11 +32,14 @@ import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
 import {
+  applyMainContentScrollTop,
+  NavigationScrollMemory,
   resetNavigationScroll,
   shouldResetScrollOnNavigation,
 } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { scheduleMainContentFocus } from "../lib/main-content-focus";
+import { pinDocumentScrollToZero } from "../lib/pin-document-scroll";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
 import { PluginSlotMount, resolveRouteSidebarSlot, usePluginSlots } from "../plugins/slots";
@@ -46,6 +50,16 @@ function getCompanyRouteSegment(pathname: string, companyPrefix: string | undefi
   if (segments.length < 2) return null;
   if (segments[0]?.toUpperCase() !== companyPrefix.toUpperCase()) return null;
   return segments[1]?.toLowerCase() ?? null;
+}
+
+function isSkillsStoreRoute(pathname: string, companyPrefix: string | undefined) {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments[0]?.toLowerCase() === "skills") return true;
+  if (!companyPrefix) return false;
+  return (
+    segments[0]?.toUpperCase() === companyPrefix.toUpperCase() &&
+    segments[1]?.toLowerCase() === "skills"
+  );
 }
 
 export function Layout() {
@@ -78,10 +92,15 @@ export function Layout() {
   const location = useLocation();
   const navigationType = useNavigationType();
   const isCompanySettingsRoute = location.pathname.includes("/company/settings");
+  // The Skills Store renders its own secondary (category) sidebar, so the main
+  // app nav collapses to its rail throughout the Skills Store section (PAP-10879).
+  const isSkillsRoute = isSkillsStoreRoute(location.pathname, companyPrefix);
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
   const mainContentRef = useRef<HTMLElement | null>(null);
+  const scrollMemory = useRef(new NavigationScrollMemory());
+  const activeScrollKey = useRef<string>(location.key);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const matchedCompany = useMemo(() => {
@@ -148,10 +167,11 @@ export function Layout() {
   // is active, but does NOT mutate the persisted preference. Clearing the force
   // on cleanup restores the user's expanded/collapsed choice when navigating
   // off the takeover route (PAP-10694).
+  const forceRailCollapsed = hasSecondarySidebar || isSkillsRoute;
   useLayoutEffect(() => {
-    setForceCollapsed(hasSecondarySidebar);
+    setForceCollapsed(forceRailCollapsed);
     return () => setForceCollapsed(false);
-  }, [hasSecondarySidebar, setForceCollapsed]);
+  }, [forceRailCollapsed, setForceCollapsed]);
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
@@ -328,6 +348,7 @@ export function Layout() {
     onToggleCollapse: toggleCollapse,
     onTogglePanel: togglePanel,
     onShowShortcuts: () => setShortcutsOpen(true),
+    onGoToInbox: () => navigate("/inbox"),
   });
 
   useEffect(() => {
@@ -420,11 +441,22 @@ export function Layout() {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
 
-    document.body.style.overflow = isMobile ? "visible" : "hidden";
+    document.body.style.overflow = isMobile ? "visible" : "clip";
 
     return () => {
       document.body.style.overflow = previousOverflow;
     };
+  }, [isMobile]);
+
+  // `scrollIntoView` walks every ancestor scroll container. On a long thread
+  // the post-submit `scrollIntoView` on the new comment reaches `<html>` and
+  // animates `documentElement.scrollTop` via the browser's internal scroll
+  // algorithm, which bypasses the CSS `overflow` on the root element and
+  // visually shifts the entire shell (sidebar included) off-screen. Pin
+  // both roots to scrollTop=0 on every scroll tick.
+  useEffect(() => {
+    if (isMobile) return;
+    return pinDocumentScrollToZero();
   }, [isMobile]);
 
   useEffect(() => {
@@ -433,7 +465,20 @@ export function Layout() {
     return scheduleMainContentFocus(mainContent);
   }, [location.pathname]);
 
+  // Continuously record the scroll offset of the active history entry so a
+  // later back/forward navigation can restore it (see NavigationScrollMemory).
   useEffect(() => {
+    const main = mainContentRef.current;
+    if (!main) return;
+    const recordScroll = () => {
+      scrollMemory.current.remember(activeScrollKey.current, main.scrollTop);
+    };
+    main.addEventListener("scroll", recordScroll, { passive: true });
+    return () => main.removeEventListener("scroll", recordScroll);
+  }, []);
+
+  useLayoutEffect(() => {
+    const main = mainContentRef.current;
     const shouldResetScroll = shouldResetScrollOnNavigation({
       previousPathname: previousPathname.current,
       pathname: location.pathname,
@@ -443,27 +488,44 @@ export function Layout() {
 
     previousPathname.current = location.pathname;
 
-    if (!shouldResetScroll) return;
-    resetNavigationScroll(mainContentRef.current);
-  }, [location.pathname, navigationType]);
+    const isHistoryPop = navigationType === "POP";
+    const restoredScrollTop = isHistoryPop ? scrollMemory.current.recall(location.key) : 0;
+    activeScrollKey.current = location.key;
+
+    if (isHistoryPop) {
+      applyMainContentScrollTop(main, restoredScrollTop);
+      // Cached page content can finish laying out a frame after commit; re-apply
+      // once it has so the restored offset isn't clamped to a shorter interim height.
+      const raf = requestAnimationFrame(() => applyMainContentScrollTop(main, restoredScrollTop));
+      return () => cancelAnimationFrame(raf);
+    }
+
+    if (shouldResetScroll) {
+      resetNavigationScroll(main);
+    }
+  }, [location.key, location.pathname, location.state, navigationType]);
 
   return (
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
       <div
       className={cn(
-        "bg-background text-foreground pt-[env(safe-area-inset-top)]",
-        isMobile ? "min-h-dvh" : "flex h-dvh flex-col overflow-hidden",
+        "bg-background text-foreground pt-(--sz-safe-top)",
+        // overflow-x-clip on mobile keeps a stray wide descendant from making the
+        // whole viewport scroll horizontally. clip (not hidden) leaves overflow-y
+        // computed as visible, so native body scroll + the sticky breadcrumb keep
+        // working.
+        isMobile ? "min-h-dvh overflow-x-clip" : "flex h-dvh flex-col overflow-clip",
       )}
       >
       <a
         href="#main-content"
-        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[200] focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-(--z-200) focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         Skip to Main Content
       </a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
-      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-hidden")}>
+      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
         {isMobile && sidebarOpen && (
           <button
             type="button"
@@ -476,7 +538,7 @@ export function Layout() {
         {isMobile ? (
           <div
             className={cn(
-              "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-[env(safe-area-inset-top)] transition-transform duration-100 ease-out",
+              "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-(--sz-safe-top) transition-transform duration-100 ease-out",
               sidebarOpen ? "translate-x-0" : "-translate-x-full"
             )}
           >
@@ -536,7 +598,12 @@ export function Layout() {
               tabIndex={-1}
               className={cn(
                 "flex-1 p-4 outline-none md:p-6",
-                isMobile ? "overflow-visible pb-[calc(5rem+env(safe-area-inset-bottom))]" : "overflow-auto",
+                // Reserve the scrollbar gutter on desktop so pages whose height
+                // changes (e.g. switching skill-detail tabs) don't widen/shift
+                // when the vertical scrollbar appears or disappears (PAP-10907).
+                isMobile
+                  ? "overflow-visible pb-(--sz-calc-14)"
+                  : "overflow-auto [scrollbar-gutter:stable]",
               )}
             >
               {hasUnknownCompanyPrefix ? (
@@ -545,7 +612,9 @@ export function Layout() {
                   requestedPrefix={companyPrefix ?? selectedCompany?.issuePrefix}
                 />
               ) : (
-                <Outlet />
+                <RouteErrorBoundary>
+                  <Outlet />
+                </RouteErrorBoundary>
               )}
             </main>
             <PropertiesPanel />

@@ -15,6 +15,8 @@ import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, projectService, logActivity, workspaceOperationService } from "../services/index.js";
 import { conflict, forbidden } from "../errors.js";
+import { externalObjectService } from "../services/external-objects.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -44,6 +46,10 @@ export function projectRoutes(db: Db) {
   const access = accessService(db);
   const secretsSvc = secretService(db);
   const workspaceOperations = workspaceOperationService(db);
+  const instanceSettings = instanceSettingsService(db);
+  const externalObjectsSvc = externalObjectService(db, {
+    enabled: async () => (await instanceSettings.getExperimental()).enableExternalObjects === true,
+  });
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const environmentsSvc = environmentService(db);
 
@@ -133,6 +139,18 @@ export function projectRoutes(db: Db) {
     if (!project) return;
     if (!(await assertProjectReadAllowed(req, res, project))) return;
     res.json(project);
+  });
+
+  router.get("/projects/:id/external-object-summary", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+    const summary = await externalObjectsSvc.getProjectSummary(project.id);
+    res.json(summary);
   });
 
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {

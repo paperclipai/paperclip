@@ -286,6 +286,178 @@ describe("useLiveRunTranscripts", () => {
     container.remove();
   });
 
+  it("keeps identical same-timestamp log records that carry distinct seq values", async () => {
+    const ts = "2026-04-20T00:00:00.000Z";
+    const tokenRow = (seq: number) =>
+      JSON.stringify({ ts, stream: "stdout", chunk: '{"type":"acpx.text_delta","text":" the"}\n', seq });
+    logMock.mockImplementationOnce(async () => ({
+      runId: "run-1",
+      store: "memory",
+      logRef: "log-1",
+      content: `${tokenRow(1)}\n${tokenRow(2)}\n${tokenRow(3)}\n`,
+      nextOffset: 300,
+    }));
+
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "running", adapterType: "gemini_local" }],
+        enableRealtimeUpdates: false,
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    const lastCall = buildTranscriptMock.mock.calls.at(-1) as unknown[] | undefined;
+    expect(lastCall?.[0]).toEqual([
+      { ts, stream: "stdout", chunk: '{"type":"acpx.text_delta","text":" the"}\n', seq: 1 },
+      { ts, stream: "stdout", chunk: '{"type":"acpx.text_delta","text":" the"}\n', seq: 2 },
+      { ts, stream: "stdout", chunk: '{"type":"acpx.text_delta","text":" the"}\n', seq: 3 },
+    ]);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("keeps repeated unsequenced structured text deltas instead of content-deduping tokens", async () => {
+    const ts = "2026-04-20T00:00:00.000Z";
+    const tokenRow = JSON.stringify({
+      ts,
+      stream: "stdout",
+      chunk: '{"type":"acpx.text_delta","text":" the"}\n',
+    });
+    logMock.mockImplementationOnce(async () => ({
+      runId: "run-1",
+      store: "memory",
+      logRef: "log-1",
+      content: `${tokenRow}\n${tokenRow}\n${tokenRow}\n`,
+      nextOffset: 300,
+    }));
+
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "running", adapterType: "gemini_local" }],
+        enableRealtimeUpdates: false,
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    const lastCall = buildTranscriptMock.mock.calls.at(-1) as unknown[] | undefined;
+    expect(lastCall?.[0]).toEqual([
+      { ts, stream: "stdout", chunk: '{"type":"acpx.text_delta","text":" the"}\n', seq: undefined },
+      { ts, stream: "stdout", chunk: '{"type":"acpx.text_delta","text":" the"}\n', seq: undefined },
+      { ts, stream: "stdout", chunk: '{"type":"acpx.text_delta","text":" the"}\n', seq: undefined },
+    ]);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("orders and dedupes sequenced chunks across websocket and persisted-log delivery", async () => {
+    type RunLogResult = { runId: string; store: string; logRef: string; content: string; nextOffset: number };
+    let resolveLog: ((value: RunLogResult) => void) | null = null;
+    logMock.mockImplementationOnce(
+      () =>
+        new Promise<RunLogResult>((resolve) => {
+          resolveLog = resolve;
+        }),
+    );
+
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "running", adapterType: "gemini_local" }],
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    const socket = FakeWebSocket.instances[0]!;
+
+    const sendLogEvent = (seq: number, chunk: string) => {
+      socket.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            companyId: "company-1",
+            type: "heartbeat.run.log",
+            createdAt: "2026-04-20T00:00:01.000Z",
+            payload: {
+              runId: "run-1",
+              ts: "2026-04-20T00:00:01.000Z",
+              stream: "stdout",
+              chunk,
+              seq,
+            },
+          }),
+        }),
+      );
+    };
+
+    // The websocket races ahead of the poller and its seq-2 chunk arrives
+    // tail-truncated.
+    await act(async () => {
+      sendLogEvent(2, "rld\n");
+      sendLogEvent(3, "!\n");
+      await Promise.resolve();
+    });
+
+    const persistedRow = (seq: number, chunk: string) =>
+      JSON.stringify({ ts: "2026-04-20T00:00:00.500Z", stream: "stdout", chunk, seq });
+    await act(async () => {
+      resolveLog?.({
+        runId: "run-1",
+        store: "memory",
+        logRef: "log-1",
+        content: `${persistedRow(1, "hello\n")}\n${persistedRow(2, "world\n")}\n${persistedRow(3, "!\n")}\n`,
+        nextOffset: 300,
+      });
+      await Promise.resolve();
+    });
+
+    const lastCall = buildTranscriptMock.mock.calls.at(-1) as unknown[] | undefined;
+    expect(lastCall?.[0]).toEqual([
+      { ts: "2026-04-20T00:00:00.500Z", stream: "stdout", chunk: "hello\n", seq: 1 },
+      { ts: "2026-04-20T00:00:00.500Z", stream: "stdout", chunk: "world\n", seq: 2 },
+      { ts: "2026-04-20T00:00:01.000Z", stream: "stdout", chunk: "!\n", seq: 3 },
+    ]);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
   it("rebuilds only the transcript for the run that receives live output", async () => {
     function Harness() {
       useLiveRunTranscripts({

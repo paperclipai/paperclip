@@ -9,6 +9,8 @@ import { PriorityIcon } from "./PriorityIcon";
 import { StatusIcon } from "./StatusIcon";
 import {
   defaultIssueFilterState,
+  externalObjectFilterLabel,
+  externalObjectFilterOrder,
   issueFilterArraysEqual,
   issueFilterLabel,
   issuePriorityOrder,
@@ -17,6 +19,8 @@ import {
   toggleIssueFilterValue,
   type IssueFilterState,
 } from "../lib/issue-filters";
+import { externalObjectIconForCategory } from "../lib/external-objects";
+import { externalObjectStatusIcon } from "../lib/status-colors";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 
 type AgentOption = {
@@ -55,6 +59,7 @@ export function IssueFiltersPopover({
   projects,
   labels,
   currentUserId,
+  enableExternalObjectFilters = true,
   enableRoutineVisibilityFilter = false,
   buttonVariant = "ghost",
   iconOnly = false,
@@ -68,6 +73,7 @@ export function IssueFiltersPopover({
   projects?: ProjectOption[];
   labels?: LabelOption[];
   currentUserId?: string | null;
+  enableExternalObjectFilters?: boolean;
   enableRoutineVisibilityFilter?: boolean;
   buttonVariant?: "ghost" | "outline";
   iconOnly?: boolean;
@@ -111,8 +117,8 @@ export function IssueFiltersPopover({
         <Button variant={buttonVariant} size={iconOnly ? "icon" : "sm"} className={`text-xs ${iconOnly ? "relative h-8 w-8 shrink-0" : ""} ${activeFilterCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`} title={iconOnly ? (activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter") : undefined}>
           <Filter className={iconOnly ? "h-3.5 w-3.5" : "h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1"} />
           {!iconOnly && <span className="hidden sm:inline">{activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}</span>}
-          {!iconOnly && activeFilterCount > 0 ? <span className="ml-0.5 text-[10px] font-medium sm:hidden">{activeFilterCount}</span> : null}
-          {iconOnly && activeFilterCount > 0 ? <span className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-[9px] font-bold text-white">{activeFilterCount}</span> : null}
+          {!iconOnly && activeFilterCount > 0 ? <span className="ml-0.5 text-(length:--text-nano) font-medium sm:hidden">{activeFilterCount}</span> : null}
+          {iconOnly && activeFilterCount > 0 ? <span className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-(length:--text-nano) font-bold text-white">{activeFilterCount}</span> : null}
           {!iconOnly && activeFilterCount > 0 ? (
             <X
               className="ml-1 hidden h-3 w-3 sm:block"
@@ -126,7 +132,7 @@ export function IssueFiltersPopover({
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="w-[min(780px,calc(100vw-2rem))] max-h-[min(80vh,42rem)] overflow-y-auto overscroll-contain p-0"
+        className="w-(--sz-calc-10) max-h-(--sz-calc-9) overflow-y-auto overscroll-contain p-0"
       >
         <div className="space-y-3 p-3">
           <div className="flex items-center justify-between">
@@ -204,14 +210,14 @@ export function IssueFiltersPopover({
 
             <div className="min-w-0 space-y-3">
               <div className="space-y-1">
-                <span className="text-xs text-muted-foreground">Assignee</span>
+                <span className="text-xs text-muted-foreground">Responsible</span>
                 <div className="max-h-32 space-y-0.5 overflow-y-auto">
                   <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
                     <Checkbox
                       checked={state.assignees.includes("__unassigned")}
                       onCheckedChange={() => onChange({ assignees: toggleIssueFilterValue(state.assignees, "__unassigned") })}
                     />
-                    <span className="text-sm">No assignee</span>
+                    <span className="text-sm">No responsible</span>
                   </label>
                   {currentUserId ? (
                     <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
@@ -340,6 +346,39 @@ export function IssueFiltersPopover({
                         <span className="text-sm">{workspace.name}</span>
                       </label>
                     ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {enableExternalObjectFilters ? (
+                <div className="space-y-1">
+                  <span className="text-xs text-muted-foreground">External object status</span>
+                  <div className="space-y-0.5">
+                    {externalObjectFilterOrder.map((value) => {
+                      const iconCategory = value === "failed" ? "failed"
+                        : value === "waiting" ? "waiting"
+                        : value === "running" ? "running"
+                        : value === "auth_required" ? "auth_required"
+                        : value === "unreachable" ? "unreachable"
+                        : value === "stale" ? "unknown"
+                        : "closed";
+                      const Icon = externalObjectIconForCategory(iconCategory);
+                      const tone = externalObjectStatusIcon[iconCategory] ?? "";
+                      const textTone = tone.split(" ").filter((c) => c.startsWith("text-")).join(" ");
+                      return (
+                        <label
+                          key={value}
+                          className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50"
+                        >
+                          <Checkbox
+                            checked={state.externalObjectStatuses.includes(value)}
+                            onCheckedChange={() => onChange({ externalObjectStatuses: toggleIssueFilterValue(state.externalObjectStatuses, value) })}
+                          />
+                          <Icon className={`h-3.5 w-3.5 shrink-0 ${textTone}`} aria-hidden="true" />
+                          <span className="text-sm">{externalObjectFilterLabel(value)}</span>
+                        </label>
+                      );
+                    })}
                   </div>
                 </div>
               ) : null}

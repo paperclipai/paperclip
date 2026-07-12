@@ -514,6 +514,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     const rootIssueId = randomUUID();
     const childIssueId = randomUUID();
     const grandchildIssueId = randomUUID();
+    const harnessIssueId = randomUUID();
     const siblingIssueId = randomUUID();
 
     await db.insert(companies).values({
@@ -562,6 +563,18 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
         priority: "medium",
         issueNumber: 3,
         identifier: "TST-3",
+      },
+      {
+        id: harnessIssueId,
+        companyId,
+        parentId: rootIssueId,
+        title: "Hidden skill test harness",
+        status: "done",
+        priority: "medium",
+        issueNumber: 5,
+        identifier: "TST-5",
+        workMode: "skill_test",
+        harnessKind: "skill_test",
       },
       {
         id: siblingIssueId,
@@ -653,6 +666,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     const rootIssueId = randomUUID();
     const childIssueId = randomUUID();
     const grandchildIssueId = randomUUID();
+    const harnessIssueId = randomUUID();
     const siblingIssueId = randomUUID();
 
     await db.insert(companies).values({
@@ -711,11 +725,24 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
         issueNumber: 4,
         identifier: "TST-4",
       },
+      {
+        id: harnessIssueId,
+        companyId,
+        parentId: rootIssueId,
+        title: "Harness child",
+        status: "done",
+        priority: "medium",
+        workMode: "skill_test",
+        harnessKind: "skill_test",
+        issueNumber: 5,
+        identifier: "TST-5",
+      },
     ]);
 
     const linkedViaContextRunId = randomUUID();
     const linkedViaActivityRunId = randomUUID();
     const grandchildRunId = randomUUID();
+    const harnessRunId = randomUUID();
     const siblingRunId = randomUUID();
     const livePartialRunId = randomUUID();
 
@@ -751,6 +778,17 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
         startedAt: new Date("2026-04-10T00:10:00.000Z"),
         finishedAt: new Date("2026-04-10T00:10:30.000Z"),
         contextSnapshot: { issueId: grandchildIssueId },
+      },
+      // 45s harness run under root - should be excluded from visible issue tree rollups
+      {
+        id: harnessRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "completed",
+        startedAt: new Date("2026-04-10T00:15:00.000Z"),
+        finishedAt: new Date("2026-04-10T00:15:45.000Z"),
+        contextSnapshot: { issueId: harnessIssueId },
       },
       // sibling run NOT under root – should be excluded
       {
