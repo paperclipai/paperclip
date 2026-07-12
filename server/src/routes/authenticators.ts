@@ -24,6 +24,12 @@ function parseTotpInput(raw: string) {
     if (url.protocol !== "otpauth:" || url.hostname !== "totp") throw unprocessable("Only TOTP authenticator URIs are supported");
     const secret = url.searchParams.get("secret")?.replace(/\s+/g, "").toUpperCase();
     if (!secret) throw unprocessable("Authenticator URI is missing a secret");
+    const algorithm = (url.searchParams.get("algorithm") ?? "SHA1").toUpperCase().replaceAll("-", "");
+    const digits = Number.parseInt(url.searchParams.get("digits") ?? "6", 10);
+    const period = Number.parseInt(url.searchParams.get("period") ?? "30", 10);
+    if (algorithm !== "SHA1" || digits !== 6 || period !== 30) {
+      throw unprocessable("The native authenticator vault currently supports 6-digit SHA1 TOTP codes with a 30-second period");
+    }
     const label = decodeURIComponent(url.pathname.replace(/^\//, ""));
     const split = label.indexOf(":");
     return {
@@ -67,9 +73,16 @@ export function authenticatorRoutes(db: Db) {
 
   router.get("/companies/:companyId/authenticators", async (req, res) => {
     const companyId = req.params.companyId as string;
-    await requirePermission(req, access, companyId, "secrets:manage");
-    const records = await db.select().from(companyAuthenticators).where(eq(companyAuthenticators.companyId, companyId));
+    assertCompanyAccess(req, companyId);
+    const actor = getActorInfo(req);
+    let records = await db.select().from(companyAuthenticators).where(eq(companyAuthenticators.companyId, companyId));
     const bindings = await db.select().from(companyAuthenticatorAgents).where(eq(companyAuthenticatorAgents.companyId, companyId));
+    if (actor.actorType === "agent") {
+      const assignedIds = new Set(bindings.filter((binding) => binding.agentId === actor.agentId).map((binding) => binding.authenticatorId));
+      records = records.filter((record) => assignedIds.has(record.id));
+    } else {
+      await requirePermission(req, access, companyId, "secrets:manage");
+    }
     res.json(records.map(({ secretId: _secretId, ...record }) => ({
       ...record,
       agentIds: bindings.filter((binding) => binding.authenticatorId === record.id).map((binding) => binding.agentId),

@@ -108,3 +108,60 @@ test("downloads the newest Paperclip image and does not expose its reusable seed
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("enrolls and retrieves native authenticators without emitting the seed", async () => {
+  const requests = [];
+  const server = http.createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    requests.push({ method: request.method, path: request.url, body: body ? JSON.parse(body) : null });
+    response.setHeader("content-type", "application/json");
+    if (request.method === "POST" && request.url === "/api/companies/company-1/authenticators") {
+      response.statusCode = 201;
+      response.end(JSON.stringify({ id: "auth-1", name: "Google", agentIds: ["agent-1"] }));
+      return;
+    }
+    if (request.method === "GET" && request.url === "/api/companies/company-1/authenticators") {
+      response.end(JSON.stringify([{ id: "auth-1", name: "Google", issuer: "Google", accountName: "person@example.com" }]));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/authenticators/auth-1/code") {
+      response.end(JSON.stringify({ code: "123456", expiresAt: "2026-07-13T00:00:30.000Z" }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+
+  try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const env = {
+      ...process.env,
+      PAPERCLIP_API_URL: `http://127.0.0.1:${address.port}`,
+      PAPERCLIP_API_KEY: "test-token",
+      PAPERCLIP_COMPANY_ID: "company-1",
+      PAPERCLIP_AGENT_ID: "agent-1",
+      PAPERCLIP_TASK_ID: "issue-1",
+      PAPERCLIP_RUN_ID: "run-1",
+    };
+    const enrolled = await execFileAsync(process.execPath, [scriptPath, "--uri", "otpauth://totp/Google:person@example.com?secret=JBSWY3DPEHPK3PXP", "--save-name", "Google"], { env });
+    assert.deepEqual(JSON.parse(enrolled.stdout), { id: "auth-1", name: "Google", agentIds: ["agent-1"], saved: true, source: "otpauth URI" });
+    assert.ok(!enrolled.stdout.includes("JBSWY3DPEHPK3PXP"));
+
+    const current = await execFileAsync(process.execPath, [scriptPath, "--current-native", "Google"], { env });
+    assert.deepEqual(JSON.parse(current.stdout), { code: "123456", expiresAt: "2026-07-13T00:00:30.000Z", name: "Google", id: "auth-1" });
+    assert.deepEqual(requests[0], {
+      method: "POST",
+      path: "/api/companies/company-1/authenticators",
+      body: { name: "Google", secret: "JBSWY3DPEHPK3PXP", agentIds: ["agent-1"] },
+    });
+    assert.deepEqual(requests.slice(1), [
+      { method: "GET", path: "/api/companies/company-1/authenticators", body: null },
+      { method: "POST", path: "/api/authenticators/auth-1/code", body: { issueId: "issue-1", runId: "run-1" } },
+    ]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

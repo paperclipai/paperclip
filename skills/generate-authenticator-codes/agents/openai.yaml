@@ -1,4 +1,4 @@
 interface:
-  display_name: "Authenticator Codes"
-  short_description: "Generate TOTP codes safely from QR screenshots"
-  default_prompt: "Use $generate-authenticator-codes to read the attached authenticator QR screenshot and complete the 2FA step safely."
+  display_name: "Paperclip Authenticator"
+  short_description: "Enroll and use company 2FA generators safely"
+  default_prompt: "Use $generate-authenticator-codes to enroll the attached QR screenshot in Paperclip's company authenticator vault, assign it to me, and use its current 2FA code safely."

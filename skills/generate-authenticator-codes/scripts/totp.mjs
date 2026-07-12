@@ -137,7 +137,7 @@ function decodeQrImage(imagePath) {
 
 function paperclipRequestHeaders() {
   const apiKey = process.env.PAPERCLIP_API_KEY?.trim();
-  if (!apiKey) fail("PAPERCLIP_API_KEY is required to read a Paperclip attachment");
+  if (!apiKey) fail("PAPERCLIP_API_KEY is required to use Paperclip authenticator APIs");
   return { Authorization: `Bearer ${apiKey}` };
 }
 
@@ -147,10 +147,63 @@ function paperclipUrl(pathname) {
   return new URL(pathname, apiUrl.endsWith("/") ? apiUrl : `${apiUrl}/`);
 }
 
-async function fetchPaperclip(pathname) {
-  const response = await fetch(paperclipUrl(pathname), { headers: paperclipRequestHeaders() });
-  if (!response.ok) fail(`Paperclip attachment request failed with HTTP ${response.status}`);
+async function fetchPaperclip(pathname, init = {}) {
+  const headers = { ...paperclipRequestHeaders(), ...(init.body ? { "content-type": "application/json" } : {}), ...init.headers };
+  const response = await fetch(paperclipUrl(pathname), { ...init, headers });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    fail(`Paperclip request failed with HTTP ${response.status}${detail ? `: ${detail.slice(0, 240)}` : ""}`);
+  }
   return response;
+}
+
+function companyId() {
+  const value = process.env.PAPERCLIP_COMPANY_ID?.trim();
+  if (!value) fail("PAPERCLIP_COMPANY_ID is required to use the company authenticator vault");
+  return value;
+}
+
+async function listNativeAuthenticators() {
+  const response = await fetchPaperclip(`/api/companies/${encodeURIComponent(companyId())}/authenticators`);
+  const records = await response.json();
+  if (!Array.isArray(records)) fail("Paperclip returned an invalid authenticator list");
+  return records;
+}
+
+function selectNativeAuthenticator(records, selector) {
+  const normalized = String(selector).trim().toLowerCase();
+  const exact = records.find((record) => record.id === selector || String(record.name).toLowerCase() === normalized);
+  if (exact) return exact;
+  const matches = records.filter((record) => String(record.name).toLowerCase().includes(normalized));
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) fail(`Several assigned authenticators match "${selector}"; use the exact name or id`);
+  fail(`No assigned authenticator matches "${selector}"`);
+}
+
+async function currentNativeCode(selector) {
+  const record = selectNativeAuthenticator(await listNativeAuthenticators(), selector);
+  const response = await fetchPaperclip(`/api/authenticators/${encodeURIComponent(record.id)}/code`, {
+    method: "POST",
+    body: JSON.stringify({
+      issueId: process.env.PAPERCLIP_TASK_ID?.trim() || undefined,
+      runId: process.env.PAPERCLIP_RUN_ID?.trim() || undefined,
+    }),
+  });
+  return { ...(await response.json()), name: record.name, id: record.id };
+}
+
+async function saveNativeAuthenticator(name, config, assignedAgentIds) {
+  if (config.algorithm !== "SHA1" || config.digits !== 6 || config.period !== 30) {
+    fail("The native authenticator vault currently supports 6-digit SHA1 TOTP codes with a 30-second period");
+  }
+  const currentAgentId = process.env.PAPERCLIP_AGENT_ID?.trim();
+  const agentIds = [...new Set([currentAgentId, ...assignedAgentIds].filter(Boolean))];
+  const response = await fetchPaperclip(`/api/companies/${encodeURIComponent(companyId())}/authenticators`, {
+    method: "POST",
+    body: JSON.stringify({ name, secret: config.secret, agentIds }),
+  });
+  const record = await response.json();
+  return { id: record.id, name: record.name, agentIds: record.agentIds, saved: true };
 }
 
 async function decodePaperclipAttachment(attachmentId, filename = null) {
@@ -236,6 +289,10 @@ async function main() {
       at: { type: "string" },
       "min-validity": { type: "string", default: "8" },
       "code-only": { type: "boolean", default: false },
+      "list-native": { type: "boolean", default: false },
+      "current-native": { type: "string" },
+      "save-name": { type: "string" },
+      "assign-agent": { type: "string", multiple: true, default: [] },
       help: { type: "boolean", short: "h", default: false },
     },
     strict: true,
@@ -243,12 +300,32 @@ async function main() {
 
   if (values.help) {
     process.stdout.write(
-      "Usage: totp.mjs (--issue ID | --attachment ID | --image FILE | --uri URI | --secret BASE32) [--algorithm SHA1|SHA256|SHA512] [--digits 6|8] [--period 30] [--min-validity 8] [--code-only]\n",
+      "Usage: totp.mjs --list-native | --current-native NAME_OR_ID | (--issue ID | --attachment ID | --image FILE | --uri URI | --secret BASE32) [--save-name NAME] [--assign-agent UUID] [--algorithm SHA1|SHA256|SHA512] [--digits 6|8] [--period 30] [--min-validity 8] [--code-only]\n",
     );
     return;
   }
 
+  const nativeModes = [values["list-native"], values["current-native"]].filter(Boolean);
+  if (nativeModes.length > 1) fail("Use only one of --list-native or --current-native");
+  if (values["list-native"]) {
+    const records = await listNativeAuthenticators();
+    process.stdout.write(`${JSON.stringify(records.map(({ id, name, issuer, accountName }) => ({ id, name, issuer, accountName })))}\n`);
+    return;
+  }
+  if (values["current-native"]) {
+    const result = await currentNativeCode(values["current-native"]);
+    process.stdout.write(values["code-only"] ? `${result.code}\n` : `${JSON.stringify(result)}\n`);
+    return;
+  }
+
   const { config, source } = await resolveInput(values);
+  if (values["save-name"]) {
+    const name = values["save-name"].trim();
+    if (!name) fail("--save-name cannot be empty");
+    const result = await saveNativeAuthenticator(name, config, values["assign-agent"]);
+    process.stdout.write(`${JSON.stringify({ ...result, source })}\n`);
+    return;
+  }
   const explicitTimestamp = values.at !== undefined;
   let timestampMs = parseTimestamp(values.at);
   const minValidity = Number.parseInt(values["min-validity"], 10);
