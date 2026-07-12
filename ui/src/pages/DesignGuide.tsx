@@ -24,11 +24,18 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { InlineBanner } from "@/components/InlineBanner";
+import { BuiltInAgentBadge, BuiltInLifecycleChip } from "@/components/BuiltInAgentBadges";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable-panels";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
@@ -267,6 +274,9 @@ const DESIGN_GUIDE_SECRETS: CompanySecret[] = [
   {
     id: "dg-github",
     companyId: "dg",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
     key: "github_token",
     name: "GITHUB_TOKEN",
     provider: "local_encrypted",
@@ -288,6 +298,9 @@ const DESIGN_GUIDE_SECRETS: CompanySecret[] = [
   {
     id: "dg-db",
     companyId: "dg",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
     key: "db_connection",
     name: "DB_CONNECTION",
     provider: "local_encrypted",
@@ -316,7 +329,7 @@ function EnvironmentVariablesEditorShowcase() {
     STRIPE_API_KEY: { type: "plain", value: "sk-live-51H8xL0aBcDeFgHiJkLmNoPq" },
   });
   return (
-    <div className="max-w-[640px] rounded-md border border-border p-4">
+    <div className="max-w-(--sz-640px) rounded-md border border-border p-4">
       <EnvironmentVariablesEditor
         value={env}
         secrets={DESIGN_GUIDE_SECRETS}
@@ -397,10 +410,10 @@ export function DesignGuide() {
             <div className="flex flex-wrap gap-2">
               {[
                 "avatar", "badge", "breadcrumb", "button", "card", "checkbox", "collapsible",
-                "command", "dialog", "dropdown-menu", "input", "label", "popover", "scroll-area",
-                "select", "separator", "sheet", "skeleton", "tabs", "textarea", "tooltip",
+                "command", "dialog", "dropdown-menu", "input", "label", "popover", "resizable-panels",
+                "scroll-area", "select", "separator", "sheet", "skeleton", "tabs", "textarea", "tooltip",
               ].map((name) => (
-                <Badge key={name} variant="outline" className="font-mono text-[10px]">
+                <Badge key={name} variant="outline" className="font-mono text-(length:--text-nano)">
                   {name}
                 </Badge>
               ))}
@@ -412,8 +425,9 @@ export function DesignGuide() {
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
                 "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
                 "PropertiesPanel", "Sidebar", "CommandPalette", "EnvironmentVariablesEditor",
+                "InlineBanner", "BuiltInAgentGate", "BuiltInAgentBadge",
               ].map((name) => (
-                <Badge key={name} variant="ghost" className="font-mono text-[10px]">
+                <Badge key={name} variant="ghost" className="font-mono text-(length:--text-nano)">
                   {name}
                 </Badge>
               ))}
@@ -657,9 +671,9 @@ export function DesignGuide() {
               ["on_demand", "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"],
               ["automation", "bg-muted text-muted-foreground"],
             ].map(([label, cls]) => (
-              <span key={label} className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>
+              <Badge variant="ghost" key={label} className={`px-1.5 text-(length:--text-nano) ${cls}`}>
                 {label}
-              </span>
+              </Badge>
             ))}
           </div>
         </SubSection>
@@ -736,7 +750,7 @@ export function DesignGuide() {
             {Array.from({ length: AGENT_GRADIENT_COUNT }, (_, i) => (
               <div key={i} className="flex flex-col items-center gap-1.5">
                 <AgentCapsule state="online" size="sm" gradient={i + 1} />
-                <span className="text-[10px] font-mono text-muted-foreground">{i + 1}</span>
+                <span className="text-(length:--text-nano) font-mono text-muted-foreground">{i + 1}</span>
               </div>
             ))}
           </div>
@@ -1112,7 +1126,7 @@ export function DesignGuide() {
             }
             identifier="PAP-001"
             title="Implement authentication flow"
-            subtitle="Assigned to Agent Alpha"
+            subtitle="Responsible: Agent Alpha"
             trailing={<IssueStatusBadge status="in_progress" />}
             onClick={() => {}}
           />
@@ -1373,7 +1387,7 @@ export function DesignGuide() {
               </div>
               <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
                 <div
-                  className={`h-full rounded-full transition-[width,background-color] duration-150 ${color}`}
+                  className={`h-full rounded-full transition-(--tp-width-background-color) duration-150 ${color}`}
                   style={{ width: `${pct}%` }}
                 />
               </div>
@@ -1396,10 +1410,10 @@ export function DesignGuide() {
           <div className="text-foreground">[12:00:17] INFO  Reconnected successfully</div>
           <div className="flex items-center gap-1.5">
             <span className="relative flex h-1.5 w-1.5">
-              <span className="absolute inline-flex h-full w-full rounded-full bg-cyan-400 animate-pulse" />
-              <span className="inline-flex h-full w-full rounded-full bg-cyan-400" />
+              <span className="absolute inline-flex h-full w-full rounded-full bg-blue-400 animate-pulse" />
+              <span className="inline-flex h-full w-full rounded-full bg-blue-500" />
             </span>
-            <span className="text-cyan-400">Live</span>
+            <span className="text-blue-600 dark:text-blue-400">Live</span>
           </div>
         </div>
       </Section>
@@ -1418,7 +1432,7 @@ export function DesignGuide() {
             <PriorityIcon priority="high" />
           </div>
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Assignee</span>
+            <span className="text-xs text-muted-foreground">Responsible</span>
             <div className="flex items-center gap-1.5">
               <Avatar size="sm"><AvatarFallback>A</AvatarFallback></Avatar>
               <span className="text-xs">Agent Alpha</span>
@@ -1436,7 +1450,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title="Navigation Patterns">
         <SubSection title="Sidebar nav items">
-          <div className="w-60 border border-border rounded-md p-3 space-y-0.5 bg-card">
+          <Card className="block w-60 p-3 space-y-0.5">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
               <LayoutDashboard className="h-4 w-4" />
               Dashboard
@@ -1444,9 +1458,9 @@ export function DesignGuide() {
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <CircleDot className="h-4 w-4" />
               Issues
-              <span className="ml-auto text-xs bg-primary text-primary-foreground rounded-full px-1.5 py-0.5">
+              <Badge variant="ghost" className="ml-auto bg-primary text-primary-foreground px-1.5">
                 12
-              </span>
+              </Badge>
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <Bot className="h-4 w-4" />
@@ -1456,7 +1470,7 @@ export function DesignGuide() {
               <Hexagon className="h-4 w-4" />
               Projects
             </div>
-          </div>
+          </Card>
         </SubSection>
 
         <SubSection title="View toggle">
@@ -1615,16 +1629,16 @@ export function DesignGuide() {
         </p>
 
         <SubSection title="TeamRow (browse list)">
-          <div className="w-[28rem] rounded-md border border-border">
-            <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <div className="w-(--sz-28rem) rounded-md border border-border">
+            <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
               Bundled · 1
             </div>
             <TeamRow team={sampleTeam} selected onSelect={() => {}} />
-            <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
               Optional · 2
             </div>
             <TeamRow team={optionalTeam} selected={false} onSelect={() => {}} />
-            <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
               Installed · 2
             </div>
             <TeamRow team={sampleTeam} selected={false} onSelect={() => {}} installed={outOfDateInstalledState} />
@@ -1719,7 +1733,7 @@ export function DesignGuide() {
             return (
               <div key={name as string} className="flex flex-col items-center gap-1.5 p-2">
                 <LucideIcon className="h-4 w-4 text-muted-foreground" />
-                <span className="text-[10px] text-muted-foreground font-mono">{name as string}</span>
+                <span className="text-(length:--text-nano) text-muted-foreground font-mono">{name as string}</span>
               </div>
             );
           })}
@@ -1773,6 +1787,102 @@ export function DesignGuide() {
           for all 10 states.
         </p>
         <EnvironmentVariablesEditorShowcase />
+      </Section>
+
+      <Section title="Resizable Panels">
+        <p className="text-sm text-muted-foreground">
+          Design-system wrapper over <span className="font-mono">react-resizable-panels</span>{" "}
+          (Skill Studio D2). Drag a handle to resize; panels accept percentage or pixel
+          (<span className="font-mono">minSize="240px"</span>) constraints and the middle panel is
+          collapsible. Use anywhere a split view is needed.
+        </p>
+        <div className="h-48 max-w-2xl overflow-hidden rounded-md border border-border">
+          <ResizablePanelGroup>
+            <ResizablePanel id="a" minSize="120px" className="bg-muted/30">
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                Panel A
+              </div>
+            </ResizablePanel>
+            <ResizableHandle />
+            <ResizablePanel id="b" minSize="120px" collapsible collapsedSize="40px" className="bg-muted/10">
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                Panel B (collapsible)
+              </div>
+            </ResizablePanel>
+            <ResizableHandle />
+            <ResizablePanel id="c" minSize="120px" className="bg-muted/30">
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                Panel C
+              </div>
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        </div>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  INLINE BANNER + BUILT-IN AGENTS                              */}
+      {/* ============================================================ */}
+      <Section title="Inline Banner">
+        <p className="text-sm text-muted-foreground">
+          Token-backed full-width notice (<span className="font-mono">brandBanner</span> tones). Use{" "}
+          <span className="font-mono">info</span> for provenance/context and{" "}
+          <span className="font-mono">warning</span> for paused/attention. Supports an optional bold
+          title and a trailing actions slot. Replaces hand-rolled{" "}
+          <span className="font-mono">bg-yellow-*</span>/<span className="font-mono">bg-blue-*</span>{" "}
+          banners.
+        </p>
+        <div className="space-y-3">
+          <InlineBanner
+            tone="info"
+            title="Built-in agent"
+            actions={<Button variant="outline" size="sm">Reset to defaults</Button>}
+          >
+            Ships with Paperclip and powers <strong>Briefs</strong>. It can be paused but not deleted.
+          </InlineBanner>
+          <InlineBanner
+            tone="warning"
+            title="Briefs is paused."
+            actions={
+              <>
+                <Button variant="ghost" size="sm">View agent</Button>
+                <Button size="sm">Resume agent</Button>
+              </>
+            }
+          >
+            Its built-in agent was paused 2 days ago, so new briefs aren't being generated.
+          </InlineBanner>
+          <InlineBanner tone="info" compact>
+            Compact variant for embedding inside dialogs and modals.
+          </InlineBanner>
+        </div>
+      </Section>
+
+      <Section title="Built-in Agent Badges">
+        <p className="text-sm text-muted-foreground">
+          Provenance badge (constant, blue) plus a derived lifecycle chip (amber) for attention
+          states. The lifecycle chip is separate from the agent status vocabulary and only shows for{" "}
+          <span className="font-mono">needs_setup</span> / <span className="font-mono">pending_approval</span>.
+        </p>
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-1.5">
+            <BuiltInAgentBadge />
+            <BuiltInLifecycleChip status="needs_setup" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <BuiltInAgentBadge />
+            <BuiltInLifecycleChip status="pending_approval" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <BuiltInAgentBadge compact />
+            <BuiltInLifecycleChip status="needs_setup" compact />
+          </div>
+        </div>
+        <p className="mt-3 text-sm text-muted-foreground">
+          <span className="font-mono">&lt;BuiltInAgentGate agentKey&gt;</span> composes{" "}
+          <span className="font-mono">PageSkeleton</span> + <span className="font-mono">EmptyState</span>{" "}
+          + <span className="font-mono">InlineBanner</span> to render the loading / setup /
+          pending-approval / paused / ready states of a feature that depends on a built-in agent.
+        </p>
       </Section>
     </div>
   );

@@ -10,6 +10,8 @@ import {
   updateAgentInstructionsBundleSchema,
   upsertAgentInstructionsFileSchema,
   createAgentKeySchema,
+  builtInAgentEmptyMutationSchema,
+  builtInAgentProvisionSchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
   agentSkillSyncSchema,
@@ -52,6 +54,11 @@ import {
   createSecretSchema,
   updateSecretSchema,
   rotateSecretSchema,
+  rotateUserSecretValueSchema,
+  createUserSecretDefinitionSchema,
+  updateUserSecretDefinitionSchema,
+  createUserSecretValueSchema,
+  updateUserSecretValueSchema,
   // Approval
   createApprovalSchema,
   resolveApprovalSchema,
@@ -67,6 +74,7 @@ import {
   // Sidebar
   upsertSidebarOrderPreferenceSchema,
   // Execution workspaces
+  reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
@@ -83,9 +91,16 @@ import {
   startEnvironmentCustomImageSetupSessionSchema,
   // Company skills
   companySkillCreateSchema,
+  companySkillFileDeleteSchema,
   companySkillFileUpdateSchema,
   companySkillImportSchema,
   companySkillProjectScanRequestSchema,
+  companySkillTestInputCreateSchema,
+  companySkillTestInputUpdateSchema,
+  companySkillTestRunCreateSchema,
+  companySkillTestRunListQuerySchema,
+  companySkillTestRunTemplateCreateSchema,
+  companySkillTestRunTemplateUpdateSchema,
   // Issue tree
   createIssueTreeHoldSchema,
   previewIssueTreeControlSchema,
@@ -96,6 +111,7 @@ import {
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
   respondIssueThreadInteractionSchema,
+  submitIssueThreadInteractionVerdictsSchema,
   // Auth / profile
   updateCurrentUserProfileSchema,
   // Company portability (legacy routes)
@@ -656,6 +672,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
   "GET /api/companies/{companyId}/user-directory",
+  "POST /api/execution-workspaces/{id}/reconcile-branch",
   "GET /api/board-api-keys",
   "POST /api/board-api-keys",
   "DELETE /api/board-api-keys/{keyId}",
@@ -672,6 +689,16 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/secret-provider-configs/{id}",
   "POST /api/secret-provider-configs/{id}/default",
   "POST /api/secret-provider-configs/{id}/health",
+  "GET /api/companies/{companyId}/user-secret-definitions",
+  "POST /api/companies/{companyId}/user-secret-definitions",
+  "PATCH /api/companies/{companyId}/user-secret-definitions/{definitionId}",
+  "DELETE /api/companies/{companyId}/user-secret-definitions/{definitionId}",
+  "GET /api/companies/{companyId}/user-secret-definitions/{definitionId}/coverage",
+  "GET /api/companies/{companyId}/me/user-secrets",
+  "POST /api/companies/{companyId}/me/user-secrets",
+  "PATCH /api/companies/{companyId}/me/user-secrets/{secretId}",
+  "POST /api/companies/{companyId}/me/user-secrets/{secretId}/rotate",
+  "DELETE /api/companies/{companyId}/me/user-secrets/{secretId}",
   "POST /api/companies/{companyId}/secrets/remote-import",
   "POST /api/companies/{companyId}/secrets/remote-import/preview",
   "GET /api/secrets/{id}/usage",
@@ -732,6 +759,8 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/routines",
   "POST /api/routines/{id}/triggers",
   "POST /api/companies/{companyId}/secrets",
+  "POST /api/companies/{companyId}/user-secret-definitions",
+  "POST /api/companies/{companyId}/me/user-secrets",
   "POST /api/companies/{companyId}/skills",
   "POST /api/companies/{companyId}/skills/import",
   "POST /api/join-requests/{requestId}/claim-api-key",
@@ -863,6 +892,37 @@ registry.registerPath({
       deploymentMode: z.string().optional(),
       bootstrapStatus: z.enum(["ready", "bootstrap_pending"]).optional(),
       bootstrapInviteActive: z.boolean().optional(),
+      databaseBackup: z.object({
+        enabled: z.boolean(),
+        status: z.enum(["ok", "warning"]),
+        backupDir: z.string().optional(),
+        maxAgeHours: z.number().optional(),
+        latestBackup: z.object({
+          name: z.string(),
+          path: z.string(),
+          mtime: z.string().datetime(),
+          ageHours: z.number(),
+          sizeBytes: z.number(),
+        }).nullable().optional(),
+        lastFailure: z.object({
+          path: z.string(),
+          mtime: z.string().datetime(),
+          message: z.string(),
+        }).nullable().optional(),
+        warnings: z.array(z.object({
+          code: z.enum([
+            "database_backup_check_failed",
+            "database_backup_last_failure",
+            "database_backup_missing",
+            "database_backup_stale",
+          ]),
+          message: z.string(),
+        })),
+      }).optional(),
+      warnings: z.array(z.object({
+        code: z.string(),
+        message: z.string(),
+      })).optional(),
       serverInfo: z.object({
         processStartedAt: z.string().datetime(),
         git: z.union([
@@ -1086,6 +1146,105 @@ for (const route of [
 }
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/built-in-agents",
+  tags: ["agents"],
+  summary: "List built-in agent provisioning state",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/built-in-agents/{key}/status",
+  tags: ["agents"],
+  summary: "Get built-in agent bundle status",
+  request: { params: z.object({ companyId: z.string(), key: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/built-in-agents/{key}/reconcile",
+  tags: ["agents"],
+  summary: "Reconcile built-in agent managed resources",
+  request: {
+    params: z.object({ companyId: z.string(), key: z.string() }),
+    body: jsonBody(builtInAgentEmptyMutationSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/built-in-agents/{key}/provision",
+  tags: ["agents"],
+  summary: "Provision a built-in agent",
+  request: {
+    params: z.object({ companyId: z.string(), key: z.string() }),
+    body: jsonBody(builtInAgentProvisionSchema),
+  },
+  responses: {
+    200: r.ok(),
+    202: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/built-in-agents/{key}/reset",
+  tags: ["agents"],
+  summary: "Reset a built-in agent",
+  request: { params: z.object({ companyId: z.string(), key: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+for (const route of [
+  ["enable", "Enable a built-in routine schedule", 200],
+  ["disable", "Disable a built-in routine schedule", 200],
+  ["run", "Run a built-in routine once", 202],
+] as const) {
+  registry.registerPath({
+    method: "post",
+    path: `/api/companies/{companyId}/built-in-agents/{key}/routines/{routineKey}/${route[0]}`,
+    tags: ["agents"],
+    summary: route[1],
+    request: {
+      params: z.object({ companyId: z.string(), key: z.string(), routineKey: z.string() }),
+      body: jsonBody(builtInAgentEmptyMutationSchema),
+    },
+    responses: {
+      [route[2]]: r.ok(),
+      400: r.badRequest,
+      401: r.unauthorized,
+      403: r.forbidden,
+      404: r.notFound,
+      409: r.conflict,
+      422: r.unprocessable,
+    },
+  });
+}
 
 registry.registerPath({
   method: "get",
@@ -1479,8 +1638,12 @@ registry.registerPath({
   path: "/api/companies/{companyId}/issues",
   tags: ["issues"],
   summary: "List issues in a company",
-  request: { params: z.object({ companyId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  description: "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ view: z.enum(["compact"]).optional() }).passthrough(),
+  },
+  responses: { 200: r.ok(), 304: { description: "Not Modified" }, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -2256,6 +2419,111 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/user-secret-definitions",
+  tags: ["secrets"],
+  summary: "List user secret definitions",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/user-secret-definitions",
+  tags: ["secrets"],
+  summary: "Create a user secret definition",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createUserSecretDefinitionSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/companies/{companyId}/user-secret-definitions/{definitionId}",
+  tags: ["secrets"],
+  summary: "Update a user secret definition",
+  request: {
+    params: z.object({ companyId: z.string(), definitionId: z.string() }),
+    body: jsonBody(updateUserSecretDefinitionSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/user-secret-definitions/{definitionId}",
+  tags: ["secrets"],
+  summary: "Delete a user secret definition",
+  request: { params: z.object({ companyId: z.string(), definitionId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/user-secret-definitions/{definitionId}/coverage",
+  tags: ["secrets"],
+  summary: "Get user secret definition coverage",
+  request: { params: z.object({ companyId: z.string(), definitionId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/me/user-secrets",
+  tags: ["secrets"],
+  summary: "List my user secret values",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/me/user-secrets",
+  tags: ["secrets"],
+  summary: "Create my user secret value",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createUserSecretValueSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/companies/{companyId}/me/user-secrets/{secretId}",
+  tags: ["secrets"],
+  summary: "Update my user secret value",
+  request: {
+    params: z.object({ companyId: z.string(), secretId: z.string() }),
+    body: jsonBody(updateUserSecretValueSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/me/user-secrets/{secretId}/rotate",
+  tags: ["secrets"],
+  summary: "Rotate my user secret value",
+  request: {
+    params: z.object({ companyId: z.string(), secretId: z.string() }),
+    body: jsonBody(rotateUserSecretValueSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/me/user-secrets/{secretId}",
+  tags: ["secrets"],
+  summary: "Delete my user secret value",
+  request: { params: z.object({ companyId: z.string(), secretId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
 // ─── Approvals ───────────────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -2548,6 +2816,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/attention",
+  tags: ["inbox"],
+  summary: "List decision-only attention feed items",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/sidebar-preferences/me",
   tags: ["sidebar"],
   summary: "Get current user sidebar preferences",
@@ -2599,14 +2876,25 @@ registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/inbox-dismissals",
   tags: ["inbox"],
-  summary: "Create an inbox dismissal",
+  summary: "Create an inbox dismissal or snooze",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(z.object({
-      itemKey: z.string().trim().min(1).regex(/^(approval|join|run):.+$/, "Unsupported inbox item key"),
+      itemKey: z.string().trim().min(1).regex(/^(approval|join|run|attention):.+$/, "Unsupported inbox item key"),
+      kind: z.enum(["dismiss", "snooze"]).optional(),
+      snoozedUntil: z.string().datetime().optional(),
     })),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/inbox-dismissals/{itemKey}",
+  tags: ["inbox"],
+  summary: "Restore an inbox dismissal or snooze",
+  request: { params: z.object({ companyId: z.string(), itemKey: z.string() }) },
+  responses: { 204: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 // ─── Instance settings ────────────────────────────────────────────────────────
@@ -3168,6 +3456,18 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/issues/{id}/interactions/{interactionId}/verdicts",
+  tags: ["issues"],
+  summary: "Submit item verdicts on an issue thread interaction",
+  request: {
+    params: z.object({ id: z.string(), interactionId: z.string() }),
+    body: jsonBody(submitIssueThreadInteractionVerdictsSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/issues/{id}/children",
   tags: ["issues"],
   summary: "Create child issues",
@@ -3368,6 +3668,153 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/skills/{skillId}/files",
+  tags: ["skills"],
+  summary: "Delete a skill file or folder",
+  request: {
+    params: z.object({ companyId: z.string(), skillId: z.string() }),
+    body: jsonBody(companySkillFileDeleteSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-inputs",
+  tags: ["skills"],
+  summary: "List skill test inputs",
+  request: { params: z.object({ companyId: z.string(), skillId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-inputs",
+  tags: ["skills"],
+  summary: "Create a skill test input",
+  request: {
+    params: z.object({ companyId: z.string(), skillId: z.string() }),
+    body: jsonBody(companySkillTestInputCreateSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-inputs/{inputId}",
+  tags: ["skills"],
+  summary: "Update a skill test input",
+  request: {
+    params: z.object({ companyId: z.string(), skillId: z.string(), inputId: z.string() }),
+    body: jsonBody(companySkillTestInputUpdateSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-inputs/{inputId}",
+  tags: ["skills"],
+  summary: "Delete a skill test input",
+  request: { params: z.object({ companyId: z.string(), skillId: z.string(), inputId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/skill-test-run-templates",
+  tags: ["skills"],
+  summary: "List skill test-run templates",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skill-test-run-templates",
+  tags: ["skills"],
+  summary: "Create a skill test-run template",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companySkillTestRunTemplateCreateSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/companies/{companyId}/skill-test-run-templates/{templateId}",
+  tags: ["skills"],
+  summary: "Update a skill test-run template",
+  request: {
+    params: z.object({ companyId: z.string(), templateId: z.string() }),
+    body: jsonBody(companySkillTestRunTemplateUpdateSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/skill-test-run-templates/{templateId}",
+  tags: ["skills"],
+  summary: "Delete a skill test-run template",
+  request: { params: z.object({ companyId: z.string(), templateId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-runs",
+  tags: ["skills"],
+  summary: "List skill test runs",
+  request: {
+    params: z.object({ companyId: z.string(), skillId: z.string() }),
+    query: companySkillTestRunListQuerySchema,
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-runs/{runId}",
+  tags: ["skills"],
+  summary: "Get a skill test run",
+  request: { params: z.object({ companyId: z.string(), skillId: z.string(), runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-runs",
+  tags: ["skills"],
+  summary: "Create a skill test run",
+  request: {
+    params: z.object({ companyId: z.string(), skillId: z.string() }),
+    body: jsonBody(companySkillTestRunCreateSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-runs/{runId}/cancel",
+  tags: ["skills"],
+  summary: "Cancel a skill test run",
+  request: { params: z.object({ companyId: z.string(), skillId: z.string(), runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/skills/{skillId}/test-runs/{runId}",
+  tags: ["skills"],
+  summary: "Delete a skill test run",
+  request: { params: z.object({ companyId: z.string(), skillId: z.string(), runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/skills/import",
   tags: ["skills"],
@@ -3473,6 +3920,18 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/execution-workspaces/{id}/reconcile-branch",
+  tags: ["execution-workspaces"],
+  summary: "Reconcile an execution workspace branch record",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(reconcileExecutionWorkspaceBranchSchema),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/execution-workspaces/{id}/runtime-services/{action}",
   tags: ["execution-workspaces"],
   summary: "Control a runtime service in a workspace",
@@ -3538,6 +3997,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/environments/{id}/delete-blast-radius",
+  tags: ["environments"],
+  summary: "Get environment delete blast radius",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/environments/{id}/leases",
   tags: ["environments"],
   summary: "List leases for an environment",
@@ -3572,7 +4040,7 @@ registry.registerPath({
   tags: ["environments"],
   summary: "Delete an environment",
   request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({
@@ -4695,6 +5163,7 @@ for (const route of [
   ["get", "/api/companies/{companyId}/skills/{skillId}/versions/{versionId}", "Get a skill version"],
   ["post", "/api/companies/{companyId}/skills/{skillId}/star", "Star a company skill"],
   ["delete", "/api/companies/{companyId}/skills/{skillId}/star", "Unstar a company skill"],
+  ["get", "/api/companies/{companyId}/skills/{skillId}/fork-precheck", "Preview company skill fork impact"],
   ["post", "/api/companies/{companyId}/skills/{skillId}/fork", "Fork a company skill"],
   ["get", "/api/companies/{companyId}/skills/{skillId}/comments", "List skill comments"],
   ["post", "/api/companies/{companyId}/skills/{skillId}/comments", "Create a skill comment"],
@@ -4832,6 +5301,27 @@ registerCurrentRoute({
   tags: ["routines"],
   summary: "Update a routine description annotation thread",
   body: updateDocumentAnnotationThreadSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/issues/{id}/diagnostics/blockers",
+  tags: ["issues"],
+  summary: "Get blocker diagnostics for an issue",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/issues/{id}/diagnostics/wakes",
+  tags: ["issues"],
+  summary: "Get wake diagnostics for an issue",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/issues/{id}/diagnostics/subtree",
+  tags: ["issues"],
+  summary: "Get bounded subtree wake and blocker diagnostics for an issue",
 });
 
 registerCurrentRoute({

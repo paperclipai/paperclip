@@ -67,13 +67,28 @@ import { resolveSkillSummaryText } from "../lib/company-skill-summary";
 import {
   parseSkillRoute,
   skillRoute,
+  skillStudioNewRoute,
+  skillStudioRoute,
   withRouteSkill,
   resolveSkillRouteToken,
   type CompanySkillRouteSubject,
 } from "../lib/company-skill-routes";
+import {
+  SKILL_CREATE_ACCENTS,
+  buildBlankSkillDraft,
+  buildForkSkillDraft,
+  defaultSkillMarkdown,
+  normalizeSkillDraftSlug,
+  skillAccentColor,
+  skillCreateDraftToPayload,
+  splitCategoryDraft,
+  type SkillCreateDraft,
+} from "../lib/skill-create";
+import { SkillCardIcon } from "../components/SkillCardIcon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 import {
   AlertTriangle,
   ArrowUpCircle,
@@ -98,6 +113,7 @@ import {
   Link2,
   Lock,
   ExternalLink,
+  FlaskConical,
   Paperclip,
   Pause,
   Pencil,
@@ -336,7 +352,7 @@ function SourceFilterMenu({
         >
           <Filter className="h-3.5 w-3.5" />
           {activeFilterCount > 0 ? (
-            <span className="absolute -right-0.5 -top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-[9px] font-bold text-white">
+            <span className="absolute -right-0.5 -top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-(length:--text-nano) font-bold text-white">
               {activeFilterCount}
             </span>
           ) : null}
@@ -382,13 +398,13 @@ function CatalogFilterMenu({
         >
           <Filter className="h-3.5 w-3.5" />
           {activeFilterCount > 0 ? (
-            <span className="absolute -right-0.5 -top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-[9px] font-bold text-white">
+            <span className="absolute -right-0.5 -top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-(length:--text-nano) font-bold text-white">
               {activeFilterCount}
             </span>
           ) : null}
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="max-h-[min(28rem,70vh)] w-56 overflow-y-auto">
+      <DropdownMenuContent align="end" className="max-h-(--sz-calc-32) w-56 overflow-y-auto">
         <DropdownMenuLabel>Type</DropdownMenuLabel>
         <DropdownMenuRadioGroup value={kindFilter} onValueChange={(next) => onKindChange(next as "all" | "bundled" | "optional")}>
           <DropdownMenuRadioItem value="all">All</DropdownMenuRadioItem>
@@ -422,13 +438,13 @@ function TrustChip({ level }: { level: CompanySkillTrustLevel }) {
       icon: Folder,
       label: "Includes assets",
       tooltip: "Ships images, fonts, or other non-script files.",
-      className: "border-cyan-500/30 bg-cyan-500/10 text-cyan-200",
+      className: "border-cyan-500/30 bg-cyan-500/10 text-cyan-800 dark:text-cyan-200",
     },
     scripts_executables: {
       icon: AlertTriangle,
       label: "Includes scripts",
       tooltip: "Ships executable scripts. Review before installing.",
-      className: "border-amber-500/40 bg-amber-500/10 text-amber-200",
+      className: "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200",
     },
   } as const;
   const config = map[level] ?? map.markdown_only;
@@ -436,10 +452,10 @@ function TrustChip({ level }: { level: CompanySkillTrustLevel }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]", config.className)}>
+        <Badge variant="outline" className={cn("text-(length:--text-micro)", config.className)}>
           <Icon className="h-3 w-3" aria-hidden="true" />
           {config.label}
-        </span>
+        </Badge>
       </TooltipTrigger>
       <TooltipContent>{config.tooltip}</TooltipContent>
     </Tooltip>
@@ -453,7 +469,7 @@ function CompatChip({ compatibility }: { compatibility: CompanySkillCompatibilit
       icon: HelpCircle,
       label: "Unknown format",
       tooltip: "Paperclip could not validate this skill as Agent Skills markdown. Install at your own risk.",
-      className: "border-yellow-500/40 bg-yellow-500/10 text-yellow-200",
+      className: "border-yellow-500/40 bg-yellow-500/10 text-yellow-800 dark:text-yellow-200",
     },
     invalid: {
       icon: XOctagon,
@@ -467,10 +483,10 @@ function CompatChip({ compatibility }: { compatibility: CompanySkillCompatibilit
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]", config.className)}>
+        <Badge variant="outline" className={cn("text-(length:--text-micro)", config.className)}>
           <Icon className="h-3 w-3" aria-hidden="true" />
           {config.label}
-        </span>
+        </Badge>
       </TooltipTrigger>
       <TooltipContent>{config.tooltip}</TooltipContent>
     </Tooltip>
@@ -482,7 +498,7 @@ function ProvenanceBadge({ packageName, packageVersion }: { packageName: string 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="inline-flex items-center gap-1 rounded border border-border bg-muted/30 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+        <span className="inline-flex items-center gap-1 rounded border border-border bg-muted/30 px-1.5 py-0.5 font-mono text-(length:--text-nano) text-muted-foreground">
           <Boxes className="h-3 w-3" aria-hidden="true" />
           <span>{packageName}{packageVersion ? ` v${packageVersion}` : ""}</span>
         </span>
@@ -542,46 +558,7 @@ export type DiscoveryCard = {
   sourceLabel?: string | null;
 };
 
-// Stable palette used to auto-assign an accent colour to a skill when the
-// backend has not stored an explicit one. Colour is derived from the skill key
-// so the same skill always lands on the same hue.
-const DISCOVERY_ACCENTS = [
-  "#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444",
-  "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#22c55e",
-  "#3b82f6", "#a855f7",
-];
-
-function skillAccentColor(key: string, explicit: string | null | undefined): string {
-  const trimmed = explicit?.trim();
-  if (trimmed) return trimmed;
-  let hash = 0;
-  for (let i = 0; i < key.length; i += 1) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
-  return DISCOVERY_ACCENTS[hash % DISCOVERY_ACCENTS.length];
-}
-
-function SkillCardIcon({ card, size = 36 }: { card: DiscoveryCard; size?: number }) {
-  if (card.iconUrl) {
-    return (
-      <img
-        src={card.iconUrl}
-        alt=""
-        className="shrink-0 rounded-md object-cover"
-        style={{ width: size, height: size }}
-      />
-    );
-  }
-  const accent = skillAccentColor(card.key, card.color);
-  const letter = (card.slug || card.name || "?").trim().charAt(0).toUpperCase();
-  return (
-    <span
-      aria-hidden="true"
-      className="flex shrink-0 items-center justify-center rounded-md font-semibold text-white"
-      style={{ width: size, height: size, backgroundColor: accent, fontSize: Math.round(size * 0.42) }}
-    >
-      {letter}
-    </span>
-  );
-}
+export { SkillCardIcon } from "../components/SkillCardIcon";
 
 function discoveryVersionLabel(skill: {
   packageVersion: string | null;
@@ -605,24 +582,6 @@ function uniqueCategories(values: (string | null | undefined)[]): string[] {
   return out;
 }
 
-function normalizeSkillDraftSlug(value: string) {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
-}
-
-function splitCategoryDraft(value: string) {
-  return Array.from(
-    new Set(value
-      .split(",")
-      .map((entry) => normalizeSkillDraftSlug(entry))
-      .filter(Boolean)),
-  );
-}
-
 function categorySetKey(categories: string[]) {
   return [...categories].sort().join(",");
 }
@@ -631,32 +590,6 @@ function skillSettingsToastBody(skill: Pick<CompanySkillDetail, "categories" | "
   const sharing = skill.sharingScope === "private" ? "Sharing: private" : "Sharing: company";
   const categories = skill.categories.length ? `Categories: ${skill.categories.join(", ")}` : "Categories: none";
   return `${sharing} | ${categories}`;
-}
-
-function defaultSkillMarkdown(name: string, tagline: string) {
-  const title = name.trim() || "New Skill";
-  const summary = tagline.trim() || "Describe when agents should use this skill.";
-  return [
-    "---",
-    `name: ${title}`,
-    `description: ${summary}`,
-    "---",
-    "",
-    `# ${title}`,
-    "",
-    summary,
-    "",
-    "## When To Use",
-    "",
-    "- Use this skill when the task needs its specialized workflow.",
-    "",
-    "## Workflow",
-    "",
-    "1. Inspect the task context.",
-    "2. Apply the workflow carefully.",
-    "3. Report what changed and how it was verified.",
-    "",
-  ].join("\n");
 }
 
 // Merge installed company skills and the install catalog into one card model.
@@ -791,9 +724,9 @@ function SkillStat({ icon: Icon, value }: { icon: typeof Star; value: string }) 
 
 function SkillCategoryChip({ label }: { label: string }) {
   return (
-    <span className="inline-flex items-center rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[10px] capitalize text-muted-foreground">
+    <Badge variant="outline" className="border-border bg-muted/40 text-(length:--text-nano) capitalize text-muted-foreground">
       {label}
-    </span>
+    </Badge>
   );
 }
 
@@ -803,7 +736,9 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
       type="button"
       onClick={() => onOpen(card)}
       className={cn(
-        "group flex h-full min-h-[11.5rem] flex-col rounded-md border border-border p-4 text-left transition-colors hover:border-primary hover:bg-accent/30 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        // Quiet interactive-card affordance (DECISION-SHEET: one recipe for
+        // clickable cards): pointer cursor, border darkens, slight lift.
+        "group flex h-full min-h-(--sz-11_5rem) flex-col rounded-lg border border-border bg-card p-4 text-left cursor-pointer transition-colors hover:border-foreground/20 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         card.required && "bg-muted/30",
       )}
     >
@@ -828,7 +763,7 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
       </div>
 
       {card.forkedFrom ? (
-        <div className="mt-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+        <div className="mt-2 inline-flex items-center gap-1 text-(length:--text-micro) text-muted-foreground">
           <GitFork className="h-3 w-3" aria-hidden="true" />
           Forked
         </div>
@@ -846,7 +781,7 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
 
       <div className="mt-auto pt-3">
         {/* Stats: installed agents · stars · forks — stars/forks only when > 0. */}
-        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
           <span>{card.agentCount} {card.agentCount === 1 ? "agent" : "agents"}</span>
           {card.starCount > 0 ? (
             <>
@@ -863,18 +798,18 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-1">
           {card.installed ? (
-            <span className="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-300">
+            <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-(length:--text-nano) text-emerald-700 dark:text-emerald-300">
               Installed
-            </span>
+            </Badge>
           ) : null}
           {card.categories.slice(0, 2).map((category) => (
             <SkillCategoryChip key={category} label={category} />
           ))}
           {card.required ? (
-            <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-border bg-muted/60 px-2 py-0.5 text-[10px] text-muted-foreground">
+            <Badge variant="outline" className="ml-auto border-border bg-muted/60 text-(length:--text-nano) text-muted-foreground">
               <Lock className="h-3 w-3" aria-hidden="true" />
               Bundled
-            </span>
+            </Badge>
           ) : null}
         </div>
       </div>
@@ -996,7 +931,7 @@ export function DiscoveryGrid({
     // On desktop the store is bounded to the viewport so the category sidebar
     // and the results pane each scroll independently (PAP-10907). Mobile keeps
     // the natural page flow.
-    <div className="flex min-h-[calc(100vh-12rem)] md:h-[calc(100dvh-6rem)] md:min-h-0 md:overflow-hidden">
+    <div className="flex min-h-(--sz-calc-30) md:h-(--sz-calc-33) md:min-h-0 md:overflow-hidden">
       {/* Secondary category sidebar — the main app nav collapses to a rail while
           this is present (handled in Layout). */}
       <aside className="hidden w-60 shrink-0 flex-col overflow-hidden border-r border-border md:flex">
@@ -1004,7 +939,7 @@ export function DiscoveryGrid({
           <h2 className="text-sm font-semibold text-foreground">Skills Store</h2>
           <p className="text-xs text-muted-foreground">Discover, install, fork, share</p>
         </div>
-        <div className="px-4 pb-1 pt-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        <div className="px-4 pb-1 pt-3 text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
           Categories
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto pb-4">
@@ -1020,7 +955,7 @@ export function DiscoveryGrid({
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Search + sort + actions */}
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
-          <div className="flex h-9 min-w-[12rem] flex-1 items-center gap-2 rounded-md border border-border px-2.5">
+          <div className="flex h-9 min-w-(--sz-12rem) flex-1 items-center gap-2 rounded-md border border-border px-2.5">
             <Search className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             <input
               value={search}
@@ -1078,6 +1013,12 @@ export function DiscoveryGrid({
             title="Scan project workspaces for skills"
           >
             <RefreshCw className={cn("h-4 w-4", scanPending && "animate-spin")} />
+          </Button>
+          <Button asChild variant="outline" size="sm">
+            <Link to="/skills/studio">
+              <FlaskConical className="h-3.5 w-3.5" />
+              Studio
+            </Link>
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -1137,19 +1078,19 @@ export function DiscoveryGrid({
             <TabsList variant="line" className="p-0">
               <TabsTrigger value="all" className="px-3">
                 <span>All</span>
-                <span className="ml-1.5 text-[11px] text-muted-foreground">{tabCounts.all}</span>
+                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.all}</span>
               </TabsTrigger>
               <TabsTrigger value="installed" className="px-3">
                 <span>Installed</span>
-                <span className="ml-1.5 text-[11px] text-muted-foreground">{tabCounts.installed}</span>
+                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.installed}</span>
               </TabsTrigger>
               <TabsTrigger value="catalog" className="px-3">
                 <span>Catalog</span>
-                <span className="ml-1.5 text-[11px] text-muted-foreground">{tabCounts.catalog}</span>
+                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.catalog}</span>
               </TabsTrigger>
               <TabsTrigger value="bundled" className="px-3">
                 <span>Bundled</span>
-                <span className="ml-1.5 text-[11px] text-muted-foreground">{tabCounts.bundled}</span>
+                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.bundled}</span>
               </TabsTrigger>
             </TabsList>
           </Tabs>
@@ -1218,51 +1159,6 @@ export function DiscoveryGrid({
   );
 }
 
-type SkillCreateDraft = {
-  name: string;
-  slug: string;
-  tagline: string;
-  description: string;
-  color: string;
-  categories: string[];
-  markdown: string;
-  sharingScope: Exclude<CompanySkillSharingScope, "public_link">;
-  forkedFromSkillId: string | null;
-  forkedFromName: string | null;
-};
-
-function buildBlankSkillDraft(): SkillCreateDraft {
-  return {
-    name: "",
-    slug: "",
-    tagline: "",
-    description: "",
-    color: DISCOVERY_ACCENTS[0]!,
-    categories: [],
-    markdown: defaultSkillMarkdown("", ""),
-    sharingScope: "company",
-    forkedFromSkillId: null,
-    forkedFromName: null,
-  };
-}
-
-function buildForkSkillDraft(skill: CompanySkillDetail): SkillCreateDraft {
-  const name = `${skill.name} Fork`;
-  const slug = normalizeSkillDraftSlug(`${skill.slug}-fork`);
-  return {
-    name,
-    slug,
-    tagline: skill.tagline ?? "",
-    description: skill.description ?? "",
-    color: skill.color ?? skillAccentColor(skill.key, null),
-    categories: skill.categories,
-    markdown: skill.markdown.replace(/^name:\s*.*$/m, `name: ${name}`),
-    sharingScope: "company",
-    forkedFromSkillId: skill.id,
-    forkedFromName: skill.name,
-  };
-}
-
 function NewSkillWizard({
   initialDraft,
   onCreate,
@@ -1294,22 +1190,8 @@ function NewSkillWizard({
 
   const nameValid = draft.name.trim().length > 0;
   const effectiveSlug = draft.slug.trim() || normalizeSkillDraftSlug(draft.name);
-  const effectiveMarkdown = draft.markdown.trim().length > 0
-    ? draft.markdown
-    : defaultSkillMarkdown(draft.name, draft.tagline);
-
   function submit() {
-    onCreate({
-      name: draft.name.trim(),
-      slug: effectiveSlug || null,
-      description: draft.description.trim() || draft.tagline.trim() || null,
-      markdown: effectiveMarkdown,
-      color: draft.color,
-      tagline: draft.tagline.trim() || null,
-      categories: draft.categories,
-      sharingScope: draft.sharingScope,
-      forkedFromSkillId: draft.forkedFromSkillId,
-    });
+    onCreate(skillCreateDraftToPayload(draft));
   }
 
   return (
@@ -1387,24 +1269,10 @@ function NewSkillWizard({
               size={48}
               card={{
                 key: effectiveSlug || draft.name || "new-skill",
-                skillId: null,
-                catalogRef: null,
                 name: draft.name || "New Skill",
                 slug: effectiveSlug || "skill",
-                author: "you",
-                version: null,
-                tagline: draft.tagline || null,
-                description: draft.tagline,
-                categories: draft.categories,
                 iconUrl: null,
                 color: draft.color,
-                starCount: 0,
-                agentCount: 0,
-                forkCount: 0,
-                installed: false,
-                required: false,
-                forkedFrom: Boolean(draft.forkedFromSkillId),
-                updatedAt: Date.now(),
               }}
             />
             <div className="min-w-0">
@@ -1415,7 +1283,7 @@ function NewSkillWizard({
           <div>
             <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted-foreground">Color</label>
             <div className="flex flex-wrap gap-2">
-              {DISCOVERY_ACCENTS.map((color) => (
+              {SKILL_CREATE_ACCENTS.map((color) => (
                 <button
                   key={color}
                   type="button"
@@ -1450,12 +1318,12 @@ function NewSkillWizard({
           <Textarea
             value={draft.markdown}
             onChange={(event) => patchDraft({ markdown: event.target.value })}
-            className="h-[clamp(14rem,45vh,28rem)] resize-y font-mono text-xs"
+            className="h-(--sz-calc-34) resize-y font-mono text-xs"
           />
         </div>
       ) : (
         <div className="space-y-4 text-sm">
-          <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-y-2">
+          <div className="grid grid-cols-(--gtc-26) gap-y-2">
             <span className="text-muted-foreground">Name</span>
             <span>{draft.name || "Untitled"}</span>
             <span className="text-muted-foreground">Slug</span>
@@ -1588,7 +1456,7 @@ function CatalogList({
       <div key={skill.id} className="border-b border-border">
         <div
           className={cn(
-            "group grid grid-cols-[minmax(0,1fr)_2.25rem] items-center gap-x-1 px-3 py-1.5 hover:bg-accent/30",
+            "group grid grid-cols-(--gtc-3) items-center gap-x-1 px-3 py-1.5 hover:bg-accent/30",
             isSelected && "text-foreground",
           )}
         >
@@ -1601,14 +1469,14 @@ function CatalogList({
               <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground opacity-75 transition-opacity group-hover:opacity-100">
                 <Boxes className={cn("h-3.5 w-3.5", skill.kind === "optional" && "opacity-70")} aria-hidden="true" />
               </span>
-              <span className="min-w-0 overflow-hidden text-[13px] font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
+              <span className="min-w-0 overflow-hidden text-(length:--text-compact) font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
                 {skill.name}
               </span>
             </span>
           </Link>
           <button
             type="button"
-            className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-sm text-muted-foreground opacity-80 transition-[background-color,color,opacity] hover:bg-accent hover:text-foreground group-hover:opacity-100"
+            className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-sm text-muted-foreground opacity-80 transition-(--tp-background-color-color-opacity) hover:bg-accent hover:text-foreground group-hover:opacity-100"
             onClick={() => onToggleSkill(skill.id)}
             aria-label={expanded ? `Collapse ${skill.name}` : `Expand ${skill.name}`}
           >
@@ -1618,8 +1486,8 @@ function CatalogList({
         <div
           aria-hidden={!expanded}
           className={cn(
-            "grid overflow-hidden transition-[grid-template-rows,opacity] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
-            expanded ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+            "grid overflow-hidden transition-(--tp-grid-template-rows-opacity) duration-200 ease-(--e-cubic-bezier-0_16-1-0_3-1)",
+            expanded ? "grid-rows-(--gtr-2) opacity-100" : "grid-rows-(--gtr-3) opacity-0",
           )}
         >
           <div className="min-h-0 overflow-hidden">
@@ -1726,7 +1594,7 @@ function CatalogDetailPane({
     );
   } else if (hashOutOfSync) {
     cta = (
-      <Button onClick={onUpdate} disabled={loadingPrimaryAction} className="border-amber-500/40 bg-amber-500/20 text-amber-100 hover:bg-amber-500/30">
+      <Button onClick={onUpdate} disabled={loadingPrimaryAction} className="border-amber-500/40 bg-amber-500/20 text-amber-900 dark:text-amber-100 hover:bg-amber-500/30">
         <ArrowUpCircle className="mr-1.5 h-3.5 w-3.5" />
         Update from catalog
       </Button>
@@ -1769,36 +1637,36 @@ function CatalogDetailPane({
           {hashOutOfSync ? (
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-200">
+                <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-(length:--text-micro) text-amber-800 dark:text-amber-200">
                   <ArrowUpCircle className="h-3 w-3" aria-hidden="true" />
                   Update available
-                </span>
+                </Badge>
               </TooltipTrigger>
               <TooltipContent>Catalog content hash has changed since this skill was installed.</TooltipContent>
             </Tooltip>
           ) : null}
           {skill.requires.length > 0 ? (
-            <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">
+            <Badge variant="outline" className="border-border bg-muted/40 text-(length:--text-micro) text-muted-foreground">
               Requires: {skill.requires.join(", ")}
-            </span>
+            </Badge>
           ) : null}
           {skill.recommendedForRoles.length > 0 ? (
-            <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">
+            <Badge variant="outline" className="border-border bg-muted/40 text-(length:--text-micro) text-muted-foreground">
               Roles: {skill.recommendedForRoles.join(" · ")}
-            </span>
+            </Badge>
           ) : null}
           {skill.tags.length > 0 ? (
-            <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">
+            <Badge variant="outline" className="border-border bg-muted/40 text-(length:--text-micro) text-muted-foreground">
               Tags: {skill.tags.join(" · ")}
-            </span>
+            </Badge>
           ) : null}
         </div>
 
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <span className="uppercase tracking-[0.18em]">Key</span>
+          <span className="uppercase tracking-(--tracking-caps)">Key</span>
           <span className="font-mono">{skill.key}</span>
-          <span className="uppercase tracking-[0.18em]">·</span>
-          <span className="uppercase tracking-[0.18em]">Hash</span>
+          <span className="uppercase tracking-(--tracking-caps)">·</span>
+          <span className="uppercase tracking-(--tracking-caps)">Hash</span>
           <span className="font-mono">{skill.contentHash.slice(0, 24)}…</span>
           <CopyText
             text={skill.contentHash}
@@ -1816,7 +1684,7 @@ function CatalogDetailPane({
         <div className="truncate font-mono text-sm">{selectedPath}</div>
       </div>
 
-      <div className="min-h-[400px] px-5 py-5">
+      <div className="min-h-(--sz-400px) px-5 py-5">
         {fileQuery.isLoading ? (
           <PageSkeleton variant="detail" />
         ) : fileQuery.error ? (
@@ -1900,14 +1768,14 @@ function InstallPreviewDialog({
 
         <div className="space-y-4 text-sm">
           <div className="rounded-md border border-border p-3">
-            <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-y-2 text-xs">
+            <div className="grid grid-cols-(--gtc-26) gap-y-2 text-xs">
               <div className="text-muted-foreground">Trust</div>
               <div className="flex items-center gap-2">
                 <TrustChip level={skill.trustLevel} />
                 {skill.trustLevel === "markdown_only" ? (
                   <span className="text-muted-foreground">Safe</span>
                 ) : skill.trustLevel === "scripts_executables" ? (
-                  <span className="text-amber-200">Review required</span>
+                  <span className="text-amber-800 dark:text-amber-200">Review required</span>
                 ) : (
                   <span className="text-muted-foreground">Non-script assets</span>
                 )}
@@ -1930,7 +1798,7 @@ function InstallPreviewDialog({
               <div className="text-muted-foreground">Provenance</div>
               <div className="min-w-0">
                 <div className="truncate">{packageName ?? "—"}{packageVersion ? ` v${packageVersion}` : ""}</div>
-                <div className="truncate font-mono text-[11px] text-muted-foreground">{skill.contentHash}</div>
+                <div className="truncate font-mono text-(length:--text-micro) text-muted-foreground">{skill.contentHash}</div>
               </div>
             </div>
           </div>
@@ -1941,17 +1809,17 @@ function InstallPreviewDialog({
             </div>
             <div className="max-h-48 overflow-y-auto">
               {skill.files.map((file) => (
-                <div key={file.path} className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-3 border-b border-border/50 px-3 py-1.5 text-xs last:border-b-0">
+                <div key={file.path} className="grid grid-cols-(--gtc-27) items-center gap-x-3 border-b border-border/50 px-3 py-1.5 text-xs last:border-b-0">
                   <span className="truncate font-mono text-muted-foreground">{file.path}</span>
-                  <span className="rounded border border-border bg-muted/40 px-1 py-0.5 text-[10px] uppercase text-muted-foreground">{file.kind}</span>
-                  <span className="text-[11px] text-muted-foreground">{formatBytes(file.sizeBytes)}</span>
+                  <span className="rounded border border-border bg-muted/40 px-1 py-0.5 text-(length:--text-nano) uppercase text-muted-foreground">{file.kind}</span>
+                  <span className="text-(length:--text-micro) text-muted-foreground">{formatBytes(file.sizeBytes)}</span>
                 </div>
               ))}
             </div>
           </div>
 
           {conflict ? (
-            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200">
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
               An existing skill with key <span className="font-mono">{conflict.key}</span> is installed (
               {conflict.sourceLabel ?? conflict.sourceType}). Installing will {defaultAction === "update" ? "overwrite the catalog content" : "replace the existing skill"}.
             </div>
@@ -2126,13 +1994,13 @@ function AttachAgentsPopover({
                     <span className="flex items-center gap-1.5">
                       <span className="truncate">{agent.name}</span>
                       {agent.paused ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-amber-500">
+                        <Badge variant="outline" className="[&>svg]:size-2.5 border-amber-500/30 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-wide text-amber-500">
                           <Pause className="h-2.5 w-2.5" aria-hidden="true" />
                           Paused
-                        </span>
+                        </Badge>
                       ) : null}
                     </span>
-                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    <span className="text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                       {agent.adapterType}
                       {agent.required ? " · required" : ""}
                       {!agent.supportsSkills ? " · skills not supported" : ""}
@@ -2194,7 +2062,7 @@ function SkillTree({
             <div key={node.path ?? node.name}>
               <div
                 className={cn(
-                  "group grid w-full grid-cols-[minmax(0,1fr)_2.25rem] items-center gap-x-1 pr-3 text-left text-sm text-muted-foreground hover:bg-accent/30 hover:text-foreground",
+                  "group grid w-full grid-cols-(--gtc-3) items-center gap-x-1 pr-3 text-left text-sm text-muted-foreground hover:bg-accent/30 hover:text-foreground",
                   SKILL_TREE_ROW_HEIGHT_CLASS,
                 )}
               >
@@ -2211,7 +2079,7 @@ function SkillTree({
                 </button>
                 <button
                   type="button"
-                  className="flex h-9 w-9 items-center justify-center self-center rounded-sm text-muted-foreground opacity-70 transition-[background-color,color,opacity] hover:bg-accent hover:text-foreground group-hover:opacity-100"
+                  className="flex h-9 w-9 items-center justify-center self-center rounded-sm text-muted-foreground opacity-70 transition-(--tp-background-color-color-opacity) hover:bg-accent hover:text-foreground group-hover:opacity-100"
                   onClick={() => node.path && onToggleDir(node.path)}
                 >
                   {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
@@ -2322,7 +2190,7 @@ function SkillList({
           <div key={skill.id} className="border-b border-border">
             <div
               className={cn(
-                "group grid grid-cols-[minmax(0,1fr)_2.25rem] items-center gap-x-1 px-3 py-1.5 hover:bg-accent/30",
+                "group grid grid-cols-(--gtc-3) items-center gap-x-1 px-3 py-1.5 hover:bg-accent/30",
                 skill.id === selectedSkillId && "text-foreground",
               )}
             >
@@ -2341,14 +2209,14 @@ function SkillList({
                     </TooltipTrigger>
                     <TooltipContent side="top">{source.managedLabel}</TooltipContent>
                   </Tooltip>
-                  <span className="min-w-0 overflow-hidden text-[13px] font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
+                  <span className="min-w-0 overflow-hidden text-(length:--text-compact) font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
                     {skill.name}
                   </span>
                 </span>
               </Link>
               <button
                 type="button"
-                className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-sm text-muted-foreground opacity-80 transition-[background-color,color,opacity] hover:bg-accent hover:text-foreground group-hover:opacity-100"
+                className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-sm text-muted-foreground opacity-80 transition-(--tp-background-color-color-opacity) hover:bg-accent hover:text-foreground group-hover:opacity-100"
                 onClick={() => onToggleSkill(skill.id)}
                 aria-label={expanded ? `Collapse ${skill.name}` : `Expand ${skill.name}`}
               >
@@ -2358,8 +2226,8 @@ function SkillList({
             <div
               aria-hidden={!expanded}
               className={cn(
-                "grid overflow-hidden transition-[grid-template-rows,opacity] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
-                expanded ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+                "grid overflow-hidden transition-(--tp-grid-template-rows-opacity) duration-200 ease-(--e-cubic-bezier-0_16-1-0_3-1)",
+                expanded ? "grid-rows-(--gtr-2) opacity-100" : "grid-rows-(--gtr-3) opacity-0",
               )}
             >
               <div className="min-h-0 overflow-hidden">
@@ -2455,8 +2323,8 @@ function SkillVersionDiffDialog({
   );
   const lineClassesByKind: Record<DiffRow["kind"], string> = {
     context: "bg-transparent",
-    removed: "bg-red-500/10 text-red-100",
-    added: "bg-green-500/10 text-green-100",
+    removed: "bg-red-500/10 text-red-900 dark:text-red-100",
+    added: "bg-green-500/10 text-green-900 dark:text-green-100",
   };
   const markerByKind: Record<DiffRow["kind"], string> = {
     context: " ",
@@ -2472,14 +2340,14 @@ function SkillVersionDiffDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] w-full !max-w-[90%] flex-col overflow-hidden">
+      <DialogContent className="flex max-h-(--sz-85vh) w-full !max-w-(--pct-90) flex-col overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <DialogHeader className="shrink-0">
             <DialogTitle>Diff · skill files</DialogTitle>
           </DialogHeader>
           <div className="flex flex-wrap items-center gap-3 text-xs">
             <label className="flex items-center gap-2">
-              <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 font-medium uppercase tracking-wider text-red-400">Old</span>
+              <Badge variant="outline" className="border-red-500/30 bg-red-500/10 uppercase tracking-wider text-red-400">Old</Badge>
               <select
                 value={leftVersionId ?? ""}
                 onChange={(event) => onLeftVersionChange(event.target.value || null)}
@@ -2492,7 +2360,7 @@ function SkillVersionDiffDialog({
               </select>
             </label>
             <label className="flex items-center gap-2">
-              <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 font-medium uppercase tracking-wider text-green-400">New</span>
+              <Badge variant="outline" className="border-green-500/30 bg-green-500/10 uppercase tracking-wider text-green-400">New</Badge>
               <select
                 value={right?.id ?? ""}
                 onChange={(event) => onRightVersionChange(event.target.value || null)}
@@ -2528,8 +2396,8 @@ function SkillVersionDiffDialog({
             ) : left?.id === right.id ? (
               <div className="p-6 text-center text-sm text-muted-foreground">Both sides are the same version.</div>
             ) : (
-              <div className="font-mono text-[12px] leading-6">
-                <div className="grid grid-cols-[56px_56px_24px_minmax(0,1fr)] border-b border-border/60 bg-muted/30 px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+              <div className="font-mono text-xs leading-6">
+                <div className="grid grid-cols-(--gtc-1) border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
                   <span>Old</span>
                   <span>New</span>
                   <span />
@@ -2538,7 +2406,7 @@ function SkillVersionDiffDialog({
                 {diffRows.map((row, index) => (
                   <div
                     key={`${row.kind}-${index}-${row.oldLineNumber ?? "x"}-${row.newLineNumber ?? "x"}`}
-                    className={cn("grid grid-cols-[56px_56px_24px_minmax(0,1fr)] gap-0 border-b border-border/30 px-3", lineClassesByKind[row.kind])}
+                    className={cn("grid grid-cols-(--gtc-1) gap-0 border-b border-border/30 px-3", lineClassesByKind[row.kind])}
                   >
                     <span className="select-none border-r border-border/30 pr-3 text-right text-muted-foreground">{row.oldLineNumber ?? ""}</span>
                     <span className="select-none border-r border-border/30 px-3 text-right text-muted-foreground">{row.newLineNumber ?? ""}</span>
@@ -2594,6 +2462,7 @@ export function SkillDetailPage({
   updateSettingsPending,
   onDelete,
   deletePending,
+  studioHref,
 }: {
   detail: CompanySkillDetail | null | undefined;
   catalogSource?: CatalogSkillSource | null;
@@ -2633,6 +2502,7 @@ export function SkillDetailPage({
   updateSettingsPending: boolean;
   onDelete: () => void;
   deletePending: boolean;
+  studioHref?: string;
 }) {
   const [diffOpen, setDiffOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2686,6 +2556,7 @@ export function SkillDetailPage({
   }
 
   const skill = detail;
+  const resolvedStudioHref = studioHref ?? skillStudioRoute(skill.id);
   const source = sourceMeta(skill.sourceBadge, skill.sourceLabel);
   const SourceIcon = source.icon;
   const body = file?.markdown ? stripFrontmatter(file.content) : file?.content ?? "";
@@ -2717,10 +2588,9 @@ export function SkillDetailPage({
     ? githubSource.url
       ?? `https://${githubSource.hostname}/${githubSource.owner}/${githubSource.repo}/tree/${githubSource.ref}/${githubSource.path}`.replace(/\/$/, "")
     : null;
-  // Fallback for non-catalog skills: the recorded locator/path, middle-truncated
-  // so long file paths stay readable in the narrow sidebar.
+  // Fallback for non-catalog skills: the recorded locator/path wraps inside
+  // the narrow sidebar instead of widening the page.
   const sourceLocatorText = skill.sourcePath || skill.sourceLocator || null;
-  const sourceLocatorDisplay = sourceLocatorText ? middleTruncate(sourceLocatorText, 44) : null;
   const sourceHref =
     skill.homepageUrl
     ?? (sourceLocatorText && /^(https?:\/\/|[\w.-]+\.[a-z]{2,}\/)/i.test(sourceLocatorText)
@@ -2731,7 +2601,7 @@ export function SkillDetailPage({
 
   function renderFilesBody() {
     return (
-      <div className="grid min-h-[560px] gap-0 lg:grid-cols-[13rem_minmax(0,1fr)]">
+      <div className="grid min-h-(--sz-560px) gap-0 lg:grid-cols-(--gtc-28)">
         <aside className="border-b border-border pb-3 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-3">
           <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Files</div>
           <SkillTree
@@ -2778,6 +2648,17 @@ export function SkillDetailPage({
                     <Pencil className="mr-1.5 h-3.5 w-3.5" /> Edit
                   </Button>
                 )
+              ) : !skill.editable ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={onFork}
+                  title={skill.editableReason ?? "Fork this skill to edit it."}
+                >
+                  <GitFork className="mr-1.5 h-3.5 w-3.5" />
+                  Fork
+                </Button>
               ) : null}
             </div>
           </div>
@@ -2787,12 +2668,12 @@ export function SkillDetailPage({
             <div className="text-sm text-muted-foreground">Select a file to inspect.</div>
           ) : editMode && file.editable ? (
             file.markdown ? (
-              <MarkdownEditor value={draft} onChange={setDraft} bordered={false} className="min-h-[520px]" />
+              <MarkdownEditor value={draft} onChange={setDraft} bordered={false} className="min-h-(--sz-520px)" />
             ) : (
               <Textarea
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
-                className="min-h-[520px] rounded-none border-0 bg-transparent px-0 py-0 font-mono text-sm shadow-none focus-visible:ring-0"
+                className="min-h-(--sz-520px) rounded-none border-0 bg-transparent px-0 py-0 font-mono text-sm shadow-none focus-visible:ring-0"
               />
             )
           ) : file.markdown && viewMode === "preview" ? (
@@ -2827,7 +2708,7 @@ export function SkillDetailPage({
           </div>
           <div className="min-w-0 border-b border-border py-2">
             <div className="text-xs text-muted-foreground">Source</div>
-            <div className="mt-1 truncate">{skill.sourcePath ?? source.label}</div>
+            <div className="mt-1 min-w-0 [overflow-wrap:anywhere]">{sourceLocatorText ?? source.label}</div>
           </div>
           <div className="min-w-0 border-b border-border py-2">
             <div className="text-xs text-muted-foreground">Version</div>
@@ -2835,7 +2716,19 @@ export function SkillDetailPage({
           </div>
           <div className="min-w-0 border-b border-border py-2">
             <div className="text-xs text-muted-foreground">Mode</div>
-            <div className="mt-1">{skill.editable ? "Editable" : skill.editableReason ?? "Read only"}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              {skill.editable ? (
+                "Editable"
+              ) : (
+                <>
+                  <span>Read only</span>
+                  <Button type="button" variant="outline" size="xs" onClick={onFork}>
+                    <GitFork className="mr-1 h-3 w-3" />
+                    Fork
+                  </Button>
+                </>
+              )}
+            </div>
           </div>
         </section>
       </div>
@@ -2866,7 +2759,7 @@ export function SkillDetailPage({
             <div className="py-6 text-sm text-muted-foreground">No saved versions yet.</div>
           ) : (
             sortedVersions.map((version) => (
-              <div key={version.id} className="grid gap-2 border-b border-border px-0 py-3 text-sm last:border-b-0 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <div key={version.id} className="grid gap-2 border-b border-border px-0 py-3 text-sm last:border-b-0 sm:grid-cols-(--gtc-13)">
                 <div className="min-w-0">
                   <div className="font-medium">{versionLabel(version)}</div>
                   <div className="mt-1 text-xs text-muted-foreground">
@@ -2933,10 +2826,10 @@ export function SkillDetailPage({
                     <div className="flex items-center gap-1.5">
                       <span className="truncate font-medium">{agent.name}</span>
                       {meta?.paused ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-amber-500">
+                        <Badge variant="outline" className="[&>svg]:size-2.5 border-amber-500/30 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-wide text-amber-500">
                           <Pause className="h-2.5 w-2.5" aria-hidden="true" />
                           Paused
-                        </span>
+                        </Badge>
                       ) : null}
                     </div>
                     <div className="mt-0.5 text-xs text-muted-foreground">{agent.adapterType}</div>
@@ -2965,7 +2858,7 @@ export function SkillDetailPage({
         : renderOverviewBody();
 
   return (
-    <div className="min-h-[calc(100vh-12rem)]">
+    <div className="min-h-(--sz-calc-30)">
       <div className="border-b border-border px-4 py-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
@@ -2973,24 +2866,10 @@ export function SkillDetailPage({
               <SkillCardIcon
                 card={{
                   key: detail.key,
-                  skillId: detail.id,
-                  catalogRef: null,
                   name: detail.name,
                   slug: detail.slug,
-                  author: detail.authorName ?? source.label,
-                  version: null,
-                  tagline: detail.tagline,
-                  description: detail.description,
-                  categories: detail.categories,
                   iconUrl: detail.iconUrl,
                   color: detail.color,
-                  starCount: detail.starCount,
-                  agentCount: detail.attachedAgentCount,
-                  forkCount: detail.forkCount,
-                  installed: true,
-                  required: false,
-                  forkedFrom: Boolean(detail.forkedFromSkillId),
-                  updatedAt: new Date(detail.updatedAt).getTime() || 0,
                 }}
                 size={44}
               />
@@ -3051,6 +2930,12 @@ export function SkillDetailPage({
               "Installs" counts agents that currently have this skill attached
               (PAP-10907); stars and fork are interactive. */}
           <div className="flex flex-wrap items-center justify-end gap-1">
+            <Button variant="outline" size="sm" asChild>
+              <Link to={resolvedStudioHref}>
+                <FlaskConical className="mr-1.5 h-3.5 w-3.5" />
+                Open in Studio
+              </Link>
+            </Button>
             <div className="flex items-center overflow-hidden rounded-md border border-border">
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -3088,7 +2973,7 @@ export function SkillDetailPage({
         </div>
       </div>
 
-      <div className="grid gap-6 px-4 py-4 xl:grid-cols-[minmax(0,1fr)_18rem]">
+      <div className="grid gap-6 px-4 py-4 xl:grid-cols-(--gtc-29)">
         <main className="min-w-0">
           <Tabs value={activeTab} onValueChange={(value) => onTabChange(value as SkillDetailTab)}>
             {/* Underlined tab strip: the bottom padding keeps the active-tab
@@ -3168,12 +3053,12 @@ export function SkillDetailPage({
                     target="_blank"
                     rel="noreferrer"
                     title={githubRepoText ?? undefined}
-                    className="mt-0.5 flex max-w-full items-center gap-1 text-xs text-muted-foreground no-underline transition-colors hover:text-foreground"
+                    className="mt-0.5 flex max-w-full items-start gap-1 text-xs text-muted-foreground no-underline transition-colors [overflow-wrap:anywhere] hover:text-foreground"
                   >
-                    <span className="truncate">{githubRepoText}</span>
+                    <span className="min-w-0 [overflow-wrap:anywhere]">{githubRepoText}</span>
                     <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
                   </a>
-                  <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" title={githubSource.commit}>
+                  <div className="mt-0.5 truncate font-mono text-(length:--text-micro) text-muted-foreground" title={githubSource.commit}>
                     {githubSource.ref}
                     {githubSource.commit ? ` · ${githubSource.commit.slice(0, 7)}` : ""}
                   </div>
@@ -3184,21 +3069,21 @@ export function SkillDetailPage({
                 <SourceIcon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 <div className="min-w-0">
                   <div className="text-foreground">{source.label}</div>
-                  {sourceLocatorDisplay ? (
+                  {sourceLocatorText ? (
                     sourceHref ? (
                       <a
                         href={sourceHref}
                         target="_blank"
                         rel="noreferrer"
                         title={sourceLocatorText ?? undefined}
-                        className="mt-0.5 flex max-w-full items-center gap-1 text-xs text-muted-foreground no-underline transition-colors hover:text-foreground"
+                        className="mt-0.5 flex max-w-full items-start gap-1 text-xs text-muted-foreground no-underline transition-colors [overflow-wrap:anywhere] hover:text-foreground"
                       >
-                        <span className="truncate">{sourceLocatorDisplay}</span>
+                        <span className="min-w-0 [overflow-wrap:anywhere]">{sourceLocatorText}</span>
                         <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
                       </a>
                     ) : (
-                      <div className="mt-0.5 truncate text-xs text-muted-foreground" title={sourceLocatorText ?? undefined}>
-                        {sourceLocatorDisplay}
+                      <div className="mt-0.5 min-w-0 text-xs text-muted-foreground [overflow-wrap:anywhere]" title={sourceLocatorText ?? undefined}>
+                        {sourceLocatorText}
                       </div>
                     )
                   ) : (
@@ -3451,6 +3336,12 @@ function SkillPane({
             )}
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button variant="outline" size="sm" asChild>
+              <Link to={skillStudioRoute(detail.id)}>
+                <FlaskConical className="mr-1.5 h-3.5 w-3.5" />
+                Open in Studio
+              </Link>
+            </Button>
             <Button
               variant="ghost"
               size="sm"
@@ -3478,13 +3369,13 @@ function SkillPane({
         <div className="mt-4 space-y-3 border-t border-border pt-4 text-sm">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <div className="flex min-w-0 items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Source</span>
+              <span className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Source</span>
               <span className="flex min-w-0 items-center gap-2">
                 <SourceIcon className="h-3.5 w-3.5 text-muted-foreground" />
                 {detail.sourcePath && displaySourcePath ? (
                   <>
                     <span
-                      className="block min-w-0 max-w-[min(34rem,55vw)] truncate font-mono text-xs text-muted-foreground"
+                      className="block min-w-0 max-w-(--sz-calc-35) truncate font-mono text-xs text-muted-foreground"
                       title={detail.sourcePath}
                     >
                       {displaySourcePath}
@@ -3506,7 +3397,7 @@ function SkillPane({
             </div>
             {detail.sourceType === "github" && (
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Pin</span>
+                <span className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Pin</span>
                 <span className="font-mono text-xs">{currentPin ?? "untracked"}</span>
                 {updateStatus?.trackingRef && (
                   <span className="text-xs text-muted-foreground">tracking {updateStatus.trackingRef}</span>
@@ -3539,25 +3430,25 @@ function SkillPane({
               </div>
             )}
             <div className="flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Key</span>
+              <span className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Key</span>
               <span className="font-mono text-xs">{detail.key}</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Mode</span>
+              <span className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Mode</span>
               <span>{detail.editable ? "Editable" : "Read only"}</span>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Trust</span>
+            <span className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Trust</span>
             <TrustChip level={detail.trustLevel} />
             <CompatChip compatibility={detail.compatibility} />
             {readonlyMetadataValue(detail.metadata, "userModifiedAt") ? (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/40 bg-violet-500/10 px-2 py-0.5 text-[11px] text-violet-200">
+                  <Badge variant="outline" className="border-violet-500/40 bg-violet-500/10 text-(length:--text-micro) text-violet-200">
                     <Pencil className="h-3 w-3" aria-hidden="true" />
                     Locally modified
-                  </span>
+                  </Badge>
                 </TooltipTrigger>
                 <TooltipContent>You have edited this skill after installing. Updates from the catalog will overwrite your changes.</TooltipContent>
               </Tooltip>
@@ -3570,7 +3461,7 @@ function SkillPane({
           </div>
           <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
             <div className="flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Used by</span>
+              <span className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Used by</span>
               <AttachAgentsPopover
                 agents={attachAgents}
                 attachedAgentIds={usedBy.map((agent) => agent.id)}
@@ -3642,7 +3533,7 @@ function SkillPane({
         </div>
       </div>
 
-      <div className="min-h-[560px] px-5 py-5">
+      <div className="min-h-(--sz-560px) px-5 py-5">
         {fileLoading ? (
           <PageSkeleton variant="detail" />
         ) : !file ? (
@@ -3653,13 +3544,13 @@ function SkillPane({
               value={draft}
               onChange={setDraft}
               bordered={false}
-              className="min-h-[520px]"
+              className="min-h-(--sz-520px)"
             />
           ) : (
             <Textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
-              className="min-h-[520px] rounded-none border-0 bg-transparent px-0 py-0 font-mono text-sm shadow-none focus-visible:ring-0"
+              className="min-h-(--sz-520px) rounded-none border-0 bg-transparent px-0 py-0 font-mono text-sm shadow-none focus-visible:ring-0"
             />
           )
         ) : file.markdown && viewMode === "preview" ? (
@@ -3714,12 +3605,11 @@ export function CompanySkills() {
   }>({ open: false, catalogSkill: null, conflict: null, defaultSlug: null, defaultForce: false, defaultAction: "install", error: null });
   const [discoverySearch, setDiscoverySearch] = useState("");
   const [discoverySort, setDiscoverySort] = useState<DiscoverySort>("agents");
-  const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  const [createDraft, setCreateDraft] = useState<SkillCreateDraft>(() => buildBlankSkillDraft());
   const [createError, setCreateError] = useState<string | null>(null);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const parsedRoute = useMemo(() => parseSkillRoute(routePath), [routePath]);
-  const routeSkillToken = parsedRoute.skillToken;
+  const isStudioNew = routePath === "studio/new";
+  const routeSkillToken = isStudioNew ? null : parsedRoute.skillToken;
   const selectedPath = parsedRoute.filePath;
   const viewParam = searchParams.get("view");
   const activeView: "installed" | "catalog" = viewParam === "catalog" ? "catalog" : "installed";
@@ -3738,9 +3628,10 @@ export function CompanySkills() {
       ? "files"
       : "overview";
   const discoveryCategory = searchParams.get("category");
+  const studioForkFromId = isStudioNew ? searchParams.get("forkFrom")?.trim() || null : null;
   // Discovery grid owns `/skills` whenever no specific skill or catalog entry is
   // selected; selecting either drops into the existing master/detail surfaces.
-  const isDiscovery = !routeSkillToken && !selectedCatalogRef;
+  const isDiscovery = !isStudioNew && !routeSkillToken && !selectedCatalogRef;
 
   function setDiscoveryTab(tab: DiscoveryTab) {
     setSearchParams((current) => {
@@ -3789,18 +3680,17 @@ export function CompanySkills() {
     setCatalogSelectedPath(path);
   }
 
-  function openCreateWizard(initialDraft: SkillCreateDraft = buildBlankSkillDraft()) {
-    setCreateDraft(initialDraft);
+  useEffect(() => {
+    if (!isStudioNew) return;
     setCreateError(null);
-    setCreateDialogOpen(true);
-  }
+  }, [isStudioNew, studioForkFromId]);
 
   useEffect(() => {
     setBreadcrumbs([
       { label: "Skills", href: "/skills" },
-      ...(routeSkillToken ? [{ label: "Detail" }] : []),
+      ...(isStudioNew ? [{ label: studioForkFromId ? "Fork skill" : "New skill" }] : routeSkillToken ? [{ label: "Detail" }] : []),
     ]);
-  }, [routeSkillToken, setBreadcrumbs]);
+  }, [isStudioNew, routeSkillToken, setBreadcrumbs, studioForkFromId]);
 
   // The old split catalog view no longer exists — catalog/bundled skills now open
   // as a regular full page keyed by `?catalog=<ref>`. Strip the legacy `view`
@@ -3850,6 +3740,20 @@ export function CompanySkills() {
     queryFn: () => companySkillsApi.versions(selectedCompanyId!, selectedSkillId!),
     enabled: Boolean(selectedCompanyId && selectedSkillId),
   });
+
+  const studioForkDetailQuery = useQuery({
+    queryKey: queryKeys.companySkills.detail(selectedCompanyId ?? "", studioForkFromId ?? ""),
+    queryFn: () => companySkillsApi.detail(selectedCompanyId!, studioForkFromId!),
+    enabled: Boolean(selectedCompanyId && isStudioNew && studioForkFromId),
+  });
+
+  const studioDraft = useMemo(() => {
+    if (!isStudioNew) return buildBlankSkillDraft();
+    if (studioForkFromId) {
+      return studioForkDetailQuery.data ? buildForkSkillDraft(studioForkDetailQuery.data) : buildBlankSkillDraft();
+    }
+    return buildBlankSkillDraft();
+  }, [isStudioNew, studioForkDetailQuery.data, studioForkFromId]);
 
   const updateStatusQuery = useQuery({
     queryKey: queryKeys.companySkills.updateStatus(selectedCompanyId ?? "", selectedSkillId ?? ""),
@@ -3969,31 +3873,6 @@ export function CompanySkills() {
     },
   });
 
-  const createSkill = useMutation({
-    mutationFn: (payload: CompanySkillCreateRequest) => companySkillsApi.create(selectedCompanyId!, payload),
-    onSuccess: async (skill) => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
-      navigate(routeForSkill(skill));
-      setCreateDialogOpen(false);
-      setCreateError(null);
-      setCreateDraft(buildBlankSkillDraft());
-      pushToast({
-        tone: "success",
-        title: skill.forkedFromSkillId ? "Skill fork created" : "Skill created",
-        body: `${skill.name} is now editable in the Paperclip workspace.`,
-      });
-    },
-    onError: (error) => {
-      const message = error instanceof Error ? error.message : "Failed to create skill.";
-      setCreateError(message);
-      pushToast({
-        tone: "error",
-        title: "Skill creation failed",
-        body: message,
-      });
-    },
-  });
-
   const scanProjects = useMutation({
     mutationFn: () => companySkillsApi.scanProjects(selectedCompanyId!),
     onMutate: () => {
@@ -4029,6 +3908,30 @@ export function CompanySkills() {
         tone: "error",
         title: "Project skill scan failed",
         body: error instanceof Error ? error.message : "Failed to scan project workspaces.",
+      });
+    },
+  });
+
+
+  const createSkill = useMutation({
+    mutationFn: (payload: CompanySkillCreateRequest) => companySkillsApi.create(selectedCompanyId!, payload),
+    onSuccess: async (skill) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
+      navigate(routeForSkill(skill));
+      setCreateError(null);
+      pushToast({
+        tone: "success",
+        title: skill.forkedFromSkillId ? "Skill fork created" : "Skill created",
+        body: `${skill.name} is now editable in the Paperclip workspace.`,
+      });
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Failed to create skill.";
+      setCreateError(message);
+      pushToast({
+        tone: "error",
+        title: "Skill creation failed",
+        body: message,
       });
     },
   });
@@ -4438,6 +4341,11 @@ export function CompanySkills() {
   const catalogSourceForDetail = activeDetail
     ? (catalogListQuery.data ?? []).find((entry) => entry.key === activeDetail.key)?.source ?? null
     : null;
+  const studioBackHref = studioForkDetailQuery.data ? routeForSkill(studioForkDetailQuery.data) : "/skills";
+  const studioTitle = studioForkFromId ? "Fork skill" : "Create a new skill";
+  const studioDescription = studioForkFromId
+    ? "Review the fork metadata and create an editable company copy."
+    : "Create an editable company skill in the Paperclip workspace.";
 
   return (
     <>
@@ -4553,26 +4461,6 @@ export function CompanySkills() {
         }}
       />
 
-      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-        <DialogContent className="flex max-h-[85vh] flex-col overflow-y-auto sm:max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>{createDraft.forkedFromSkillId ? "Fork skill" : "Create a new skill"}</DialogTitle>
-            <DialogDescription>
-              {createDraft.forkedFromSkillId
-                ? "Review the fork metadata and create an editable company copy."
-                : "Create an editable company skill in the Paperclip workspace."}
-            </DialogDescription>
-          </DialogHeader>
-          <NewSkillWizard
-            initialDraft={createDraft}
-            onCreate={(payload) => createSkill.mutate(payload)}
-            isPending={createSkill.isPending}
-            error={createError}
-            onCancel={() => setCreateDialogOpen(false)}
-          />
-        </DialogContent>
-      </Dialog>
-
       <Dialog open={importDialogOpen} onOpenChange={setImportDialogOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -4621,7 +4509,38 @@ export function CompanySkills() {
         </DialogContent>
       </Dialog>
 
-      {isDiscovery ? (
+      {isStudioNew ? (
+        <div className="min-h-(--sz-calc-30)">
+          <div className="border-b border-border px-4 py-5">
+            <Link
+              to={studioBackHref}
+              className="mb-3 inline-flex items-center gap-1.5 text-sm text-muted-foreground no-underline transition-colors hover:text-foreground"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Back
+            </Link>
+            <h1 className="text-2xl font-semibold">{studioTitle}</h1>
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{studioDescription}</p>
+          </div>
+          <div className="px-4 py-4">
+            <div className="max-w-3xl">
+              {studioForkFromId && studioForkDetailQuery.isLoading ? (
+                <PageSkeleton variant="detail" />
+              ) : studioForkFromId && !studioForkDetailQuery.data ? (
+                <EmptyState icon={Boxes} message="Fork source skill not found." />
+              ) : (
+                <NewSkillWizard
+                  initialDraft={studioDraft}
+                  onCreate={(payload) => createSkill.mutate(payload)}
+                  isPending={createSkill.isPending}
+                  error={createError}
+                  onCancel={() => navigate(studioBackHref)}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      ) : isDiscovery ? (
         <DiscoveryGrid
           tab={discoveryTab}
           tabCounts={discoveryTabCounts}
@@ -4639,7 +4558,7 @@ export function CompanySkills() {
           loading={skillsQuery.isLoading || catalogListQuery.isLoading}
           error={skillsQuery.error?.message ?? catalogListQuery.error?.message ?? null}
           totalCount={discoveryCards.length}
-          onCreate={() => openCreateWizard()}
+          onCreate={() => navigate(skillStudioNewRoute())}
           onImport={() => setImportDialogOpen(true)}
           onBrowseCatalog={() => setDiscoveryTab("catalog")}
           onScan={() => scanProjects.mutate()}
@@ -4693,16 +4612,17 @@ export function CompanySkills() {
           installUpdatePending={installUpdate.isPending}
           onToggleStar={() => toggleStar.mutate()}
           starPending={toggleStar.isPending}
-          onFork={() => activeDetail && openCreateWizard(buildForkSkillDraft(activeDetail))}
+          onFork={() => activeDetail && navigate(skillStudioNewRoute(activeDetail.id))}
           onUpdateSettings={(updates) => activeDetail && updateSkillSettings.mutate({ skillId: activeDetail.id, updates })}
           updateSettingsPending={updateSkillSettings.isPending}
           onDelete={openDeleteDialog}
           deletePending={deleteSkill.isPending}
+          studioHref={skillStudioRoute(selectedSkillId)}
         />
       ) : selectedCatalogRef ? (
         // Catalog / optional / bundled skills open as a regular full page in the
         // new store — no modal, no legacy split view (PAP-10907).
-        <div className="min-h-[calc(100vh-12rem)]">
+        <div className="min-h-(--sz-calc-30)">
           <div className="border-b border-border px-4 py-3">
             <Link
               to={backToStoreHref}
@@ -4717,7 +4637,7 @@ export function CompanySkills() {
           ) : !selectedCatalogSkill ? (
             <EmptyState icon={Boxes} message="Catalog skill not found." />
           ) : (
-            <div className="grid gap-0 xl:grid-cols-[14rem_minmax(0,1fr)]">
+            <div className="grid gap-0 xl:grid-cols-(--gtc-30)">
               <aside className="border-b border-border px-3 py-4 xl:border-b-0 xl:border-r">
                 <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Files</div>
                 <SkillTree
@@ -4756,7 +4676,7 @@ export function CompanySkills() {
           )}
         </div>
       ) : (
-        <div className="min-h-[calc(100vh-12rem)]">
+        <div className="min-h-(--sz-calc-30)">
           {skillsQuery.isLoading ? (
             <PageSkeleton variant="detail" />
           ) : (

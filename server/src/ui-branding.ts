@@ -16,6 +16,13 @@ export type WorktreeUiBranding = {
   color: string | null;
   textColor: string | null;
   faviconHref: string | null;
+  /**
+   * Runtime instance id for this worktree preview. Surfaced to the client so
+   * the experimental "Run tasks in this worktree" card can fail closed when a
+   * copied settings row was armed in a different instance. Null outside a
+   * worktree or when the runtime id is unset.
+   */
+  instanceId: string | null;
 };
 
 function isTruthyEnvValue(value: string | undefined): boolean {
@@ -185,6 +192,7 @@ export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): Wor
       color: null,
       textColor: null,
       faviconHref: null,
+      instanceId: null,
     };
   }
 
@@ -198,6 +206,7 @@ export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): Wor
     color,
     textColor,
     faviconHref: createFaviconDataUrl(color, textColor),
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID),
   };
 }
 
@@ -240,6 +249,9 @@ export function renderRuntimeBrandingMeta(
     parts.push(`<meta name="paperclip-worktree-name" content="${escapeHtmlAttribute(branding.name)}" />`);
     parts.push(`<meta name="paperclip-worktree-color" content="${escapeHtmlAttribute(branding.color)}" />`);
     parts.push(`<meta name="paperclip-worktree-text-color" content="${escapeHtmlAttribute(branding.textColor)}" />`);
+    if (branding.instanceId) {
+      parts.push(`<meta name="paperclip-instance-id" content="${escapeHtmlAttribute(branding.instanceId)}" />`);
+    }
   }
   return parts.join("\n");
 }

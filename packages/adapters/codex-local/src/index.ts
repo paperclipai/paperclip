@@ -5,9 +5,9 @@ export const label = "Codex";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 
-export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.5";
+export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.6";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
-export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.5", "gpt-5.4"] as const;
+export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.6", "gpt-5.5", "gpt-5.4"] as const;
 
 function normalizeModelId(model: string | null | undefined): string {
   return typeof model === "string" ? model.trim() : "";
@@ -28,9 +28,8 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
   if (isCodexLocalManualModel(model)) return true;
   const normalizedModel = typeof model === "string" ? model.trim() : "";
   // Empty means we're omitting --model so the Codex CLI picks its own default.
-  // On subscription auth that's gpt-5.5 (fast-mode capable); manual model IDs
-  // are also treated as supported. Match that policy: pass the fast-mode
-  // overrides through and let the CLI reject them if the chosen model can't use them.
+  // Manual model IDs are also treated as supported: pass the fast-mode overrides
+  // through and let the CLI reject them if the chosen model can't use them.
   if (!normalizedModel) return true;
   return CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.includes(
     normalizedModel as (typeof CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS)[number],
@@ -39,7 +38,11 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
 
 export const models = [
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
+  { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+  { id: "gpt-5.6-terra", label: "gpt-5.6-terra" },
+  { id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
   { id: "gpt-5.4", label: "gpt-5.4" },
+  { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
   { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
   { id: "gpt-5", label: "gpt-5" },
   { id: "o3", label: "o3" },
@@ -69,13 +72,14 @@ export const agentConfigurationDoc = `# codex_local agent configuration
 Adapter: codex_local
 
 Core fields:
+- engine (string, optional): leave unset/auto to use ACP when prerequisites pass and fall back to the Codex CLI with diagnostics. Use "cli" to pin the CLI lane or "acp" to require ACP.
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to stdin prompt at runtime
 - model (string, optional): Codex model id
 - modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high|xhigh) passed via -c model_reasoning_effort=...
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
-- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.5, GPT-5.4 and passed through for manual model IDs
+- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.6, GPT-5.5, GPT-5.4 and passed through for manual model IDs
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
@@ -87,6 +91,11 @@ Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
 - outputInactivityTimeoutMs (number | null, optional): inactivity monitor around the codex child. Resets on every parsed JSONL event from stdout. Defaults to 7 * 60_000 ms when unset or non-positive. Set to \`null\` to disable the monitor entirely (only do this for known-slow tasks; the platform-level 1h silent-run safety net still applies). On fire, the adapter sends SIGTERM to the process group, waits 5s, then SIGKILL, and surfaces the run as failed with errorMessage "monitor: no codex output for {N}m {S}s".
+- agentCommand (string, optional): ACP server command override used only when engine="acp"; defaults to the package-local codex-acp binary
+- mode (string, optional): ACP session mode when engine="acp"; persistent or oneshot
+- nonInteractivePermissions (string, optional): ACP non-interactive permission fallback when engine="acp"; deny or fail
+- stateDir (string, optional): ACP state directory override when engine="acp"
+- warmHandleIdleMs (number, optional): warm ACP process idle timeout when engine="acp"; defaults to 0
 
 Notes:
 - Prompts are piped via stdin (Codex receives "-" prompt argument).
@@ -95,6 +104,7 @@ Notes:
 - Paperclip injects desired local skills into the effective CODEX_HOME/skills/ directory at execution time so Codex can discover "$paperclip" and related skills without polluting the project working directory. For new and updated agents, Paperclip assigns an isolated managed home at ~/.paperclip/instances/<id>/companies/<companyId>/agents/<agentId>/codex-home/skills/; when CODEX_HOME is explicitly overridden in adapter config, that override is used instead.
 - New and updated codex_local agents persist an empty OPENAI_API_KEY override by default so a host-level OPENAI_API_KEY cannot leak into Codex runs through process inheritance. Explicit CODEX_HOME overrides must not point at the shared company codex-home, $CODEX_HOME, or ~/.codex.
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
-- Fast mode is supported on GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
+- Fast mode is supported on GPT-5.6, GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
+- Codex ACP is the preferred auto lane when Node >=22.13.0 and the Codex ACP server are available. It reuses shared ACP prompt/runtime guidance, selected skill materialization into CODEX_HOME/skills, model/reasoning/fast-mode session config, and existing quota-window reporting. Auto selection falls back to CLI when ACP prerequisites are unavailable; explicit engine="acp" fails loudly.
 `;

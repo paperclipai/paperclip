@@ -9,6 +9,7 @@ import { dashboardApi } from "../api/dashboard";
 import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "./useSharedPolling";
 import {
   buildInboxDismissedAtByKey,
   computeInboxBadgeData,
@@ -88,9 +89,28 @@ export function useInboxDismissals(companyId: string | null | undefined) {
     },
     onSettled: () => {
       if (!companyId) return;
-      queryClient.invalidateQueries({ queryKey });
-      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+      invalidateDismissalConsumers();
     },
+  });
+
+  function invalidateDismissalConsumers() {
+    if (!companyId) return;
+    queryClient.invalidateQueries({ queryKey });
+    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+    // The attention feed derives its rows from server-side dismissals, so any
+    // dismiss/snooze/restore must re-pull it to keep the queue and curtains in sync.
+    queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
+  }
+
+  const snoozeMutation = useMutation({
+    mutationFn: ({ itemKey, snoozedUntil }: { itemKey: string; snoozedUntil: string }) =>
+      inboxDismissalsApi.snooze(companyId!, itemKey, snoozedUntil),
+    onSettled: invalidateDismissalConsumers,
+  });
+
+  const restoreMutation = useMutation({
+    mutationFn: ({ itemKey }: { itemKey: string }) => inboxDismissalsApi.restore(companyId!, itemKey),
+    onSettled: invalidateDismissalConsumers,
   });
 
   const dismissedAtByKey = useMemo(
@@ -102,7 +122,9 @@ export function useInboxDismissals(companyId: string | null | undefined) {
     dismissals,
     dismissedAtByKey,
     dismiss: (itemKey: string) => dismissMutation.mutate({ itemKey }),
-    isPending: dismissMutation.isPending,
+    snooze: (itemKey: string, snoozedUntil: string) => snoozeMutation.mutate({ itemKey, snoozedUntil }),
+    restore: (itemKey: string) => restoreMutation.mutate({ itemKey }),
+    isPending: dismissMutation.isPending || snoozeMutation.isPending || restoreMutation.isPending,
   };
 }
 
@@ -169,14 +191,29 @@ export function useInboxBadge(companyId: string | null | undefined) {
     retry: false,
   });
 
-  const { data: dashboard } = useQuery({
-    queryKey: queryKeys.dashboard(companyId!),
+  const dashboardQueryKey = queryKeys.dashboard(companyId!);
+  const sharedDashboard = useSharedPollingQuery({
+    companyId,
+    resourceKey: "dashboard",
+    queryKey: dashboardQueryKey,
+    enabled: !!companyId,
+  });
+  const { data: dashboard, dataUpdatedAt: dashboardUpdatedAt } = useQuery({
+    queryKey: dashboardQueryKey,
     queryFn: () => dashboardApi.summary(companyId!),
     enabled: !!companyId,
   });
+  usePublishSharedQueryData(sharedDashboard, dashboard, dashboardUpdatedAt);
 
-  const { data: mineIssuesRaw = [] } = useQuery({
-    queryKey: queryKeys.issues.listMineByMe(companyId!),
+  const mineIssuesQueryKey = queryKeys.issues.listMineByMe(companyId!);
+  const sharedMineIssues = useSharedPollingQuery({
+    companyId,
+    resourceKey: "inbox-badge:mine-issues",
+    queryKey: mineIssuesQueryKey,
+    enabled: !!companyId,
+  });
+  const { data: mineIssuesRaw = [], dataUpdatedAt: mineIssuesUpdatedAt } = useQuery({
+    queryKey: mineIssuesQueryKey,
     queryFn: () =>
       issuesApi.list(companyId!, {
         touchedByUserId: "me",
@@ -188,6 +225,7 @@ export function useInboxBadge(companyId: string | null | undefined) {
     refetchOnWindowFocus: false,
     staleTime: INBOX_BADGE_HOT_PATH_STALE_MS,
   });
+  usePublishSharedQueryData(sharedMineIssues, mineIssuesRaw, mineIssuesUpdatedAt);
 
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;

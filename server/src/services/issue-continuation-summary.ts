@@ -94,7 +94,7 @@ function extractPathCandidates(...texts: Array<string | null | undefined>) {
 
 function inferMode(issue: IssueSummaryInput, run: RunSummaryInput) {
   if (issue.status === "done" || issue.status === "in_review") return "review";
-  if (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled") return "implementation";
+  if (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled" || run.status === "interrupted") return "implementation";
   if (issue.status === "backlog" || issue.status === "todo") return "plan";
   return "implementation";
 }

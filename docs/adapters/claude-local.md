@@ -8,7 +8,8 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 ## Prerequisites
 
 - Claude Code CLI installed (`claude` command available)
-- `ANTHROPIC_API_KEY` set in the environment or agent config
+- Either `ANTHROPIC_API_KEY` in adapter env/host env, or a Claude Code
+  subscription login available to the execution target
 
 ## Configuration Fields
 
@@ -68,6 +69,33 @@ On-call checklist if you see this in production:
 ## Skills Injection
 
 The adapter creates a temporary directory with symlinks to Paperclip skills and passes it via `--add-dir`. This makes skills discoverable without polluting the agent's working directory.
+
+## Remote credential ownership
+
+`claude_local` uses a snapshot-owns-auth topology for managed sandbox execution
+targets. When the run uses a sandbox execution target and no explicit
+`CLAUDE_CONFIG_DIR` is configured, Paperclip creates a remote
+`CLAUDE_CONFIG_DIR` under the run's Claude runtime directory. It uploads
+sanitized host-side settings such as `settings.json` and `CLAUDE.md`, but the
+managed seed does not upload host Claude credential files.
+
+After the seed is copied, the remote materialization command checks the
+execution target's own `$HOME/.claude` directory. For each missing credential
+file, it copies `.credentials.json` or `credentials.json` from that remote home
+into the managed `CLAUDE_CONFIG_DIR`. That means credentials baked into the
+sandbox image win for managed remote Claude runs.
+
+Worked example: a sandbox image contains `$HOME/.claude/.credentials.json` from
+its own Claude Code login. Paperclip starts a managed remote `claude_local` run,
+uploads only the sanitized config seed, and sets `CLAUDE_CONFIG_DIR` to the
+remote runtime config path. Because the managed config has no credential file,
+the adapter copies the sandbox image's `$HOME/.claude/.credentials.json` into
+that path before invoking Claude. The sandbox snapshot owns the credential for
+the run.
+
+This differs from [`codex_local`](/adapters/codex-local), where a
+Paperclip-managed sandbox run uploads a host-owned `CODEX_HOME/auth.json` and
+therefore shadows any Codex login already present inside the sandbox image.
 
 For manual local CLI usage outside heartbeat runs (for example running as `claudecoder` directly), use:
 
