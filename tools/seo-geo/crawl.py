@@ -31,9 +31,19 @@ def parse_page(url: str, html: str) -> PageSignals:
         except (ValueError, TypeError):
             continue
         for node in (data if isinstance(data, list) else [data]):
-            t = node.get("@type") if isinstance(node, dict) else None
-            if isinstance(t, str):
-                types.append(t)
+            if not isinstance(node, dict):
+                continue
+            # Yoast & Co. verpacken die Typen in @graph statt in einem Top-Level-@type.
+            graph = node.get("@graph")
+            inner = graph if isinstance(graph, list) else [node]
+            for n in inner:
+                if not isinstance(n, dict):
+                    continue
+                t = n.get("@type")
+                if isinstance(t, str):
+                    types.append(t)
+                elif isinstance(t, list):
+                    types.extend(x for x in t if isinstance(x, str))
     return PageSignals(
         url=url,
         title=title,

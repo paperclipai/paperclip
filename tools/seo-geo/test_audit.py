@@ -43,3 +43,17 @@ def test_write_report_emits_json_and_md(tmp_path):
     data = json.loads(open(jpath).read())
     assert data["site_name"] == "x"
     assert "## Findings" in open(mpath).read()
+
+
+def test_llms_txt_with_bom_is_detected():
+    # Yoast liefert llms.txt mit UTF-8-BOM vor dem '#'
+    pages = {"https://x.de/a": "<html><head></head><body></body></html>"}
+    fetch = _fetch_factory(pages, llms="﻿# Meine Site\n\n> Beschreibung\n")
+    report = run_audit(SITE, fetch, ["https://x.de/a"])
+    assert report.site_level["llms_txt_present"] is True
+
+def test_missing_llms_txt_still_false():
+    pages = {"https://x.de/a": "<html><head></head><body></body></html>"}
+    fetch = _fetch_factory(pages, llms="<!DOCTYPE html><html>404</html>")
+    report = run_audit(SITE, fetch, ["https://x.de/a"])
+    assert report.site_level["llms_txt_present"] is False

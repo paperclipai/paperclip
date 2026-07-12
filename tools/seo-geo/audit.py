@@ -25,7 +25,9 @@ def run_audit(site, fetch, sitemap_urls) -> AuditReport:
         llms = fetch(site.url.rstrip("/") + "/llms.txt")
     except Exception:
         llms = ""
-    site_level = {"llms_txt_present": bool(llms and llms.strip().startswith("#"))}
+    # Yoast liefert llms.txt mit UTF-8-BOM aus — den vor der Prüfung entfernen.
+    cleaned = (llms or "").lstrip("﻿").strip()
+    site_level = {"llms_txt_present": cleaned.startswith("#")}
     return AuditReport(site.name, pages, findings, site_level)
 
 def write_report(report: AuditReport, report_root: str):
