@@ -138,7 +138,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
   async function seedFixture(input?: {
     agentStatus?: "active" | "paused";
-    issueStatus?: "in_progress" | "in_review";
+    issueStatus?: "in_progress" | "in_review" | "blocked";
     monitorAttemptCount?: number;
     monitor?: Record<string, unknown>;
   }) {
@@ -336,6 +336,32 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(heartbeatRuns.agentId, participantAgentId));
     expect(participantRuns).toHaveLength(1);
     expect(participantRuns[0]?.errorCode).not.toBe("issue_assignee_changed");
+  });
+
+  it("triggers due issue monitors on blocked issues", async () => {
+    const { issueId, agentId } = await seedFixture({ issueStatus: "blocked" });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    const result = await heartbeat.tickTimers(tickAt);
+
+    expect(result.enqueued).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.status).toBe("blocked");
+    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+      status: "triggered",
+      lastTriggeredAt: tickAt.toISOString(),
+      attemptCount: 1,
+    });
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.reason).toBe("issue_monitor_due");
   });
 
   it("lets the board trigger a scheduled issue monitor immediately", async () => {
