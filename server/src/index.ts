@@ -987,7 +987,12 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
       throw err;
     } finally {
-      await lock.release().catch(() => {});
+      await lock.release().catch((err) => {
+        logger.warn(
+          { err },
+          "database backup: failed to release session advisory lock; it will be released when Postgres detects the dead connection",
+        );
+      });
       databaseBackupInFlight = false;
     }
   };

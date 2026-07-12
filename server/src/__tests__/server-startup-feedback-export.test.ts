@@ -250,6 +250,21 @@ vi.mock("../board-claim.js", () => ({
   initializeBoardClaimChallenge: vi.fn(async () => undefined),
 }));
 
+// The scheduler runtime only starts once this replica wins the leadership
+// lease; grant it immediately so the suppression test below can observe the
+// runtime's startup pass and interval ticks.
+vi.mock("../services/scheduler-leadership.js", () => ({
+  createSchedulerLeadership: vi.fn((opts: { onAcquired: () => void | Promise<void> }) => ({
+    start: () => {
+      void opts.onAcquired();
+    },
+    stop: vi.fn(async () => undefined),
+  })),
+  registerSchedulerLeadershipForHealth: vi.fn(),
+  getRegisteredSchedulerLeadership: vi.fn().mockReturnValue(null),
+  getSchedulerHealth: vi.fn(async () => ({ candidate: true, isLeader: true })),
+}));
+
 vi.mock("../auth/better-auth.js", () => ({
   createBetterAuthHandler: vi.fn(() => undefined),
   createBetterAuthInstance: createBetterAuthInstanceMock,
@@ -305,6 +320,10 @@ describe("startServer feedback export wiring", () => {
 
     try {
       await startServer();
+      // The mocked leadership grants the lease via a floating onAcquired()
+      // promise; flush microtasks so the runtime's startup pass (suppression
+      // check + setup cleanup + timer installation) settles before asserting.
+      for (let i = 0; i < 10; i++) await Promise.resolve();
 
       expect(heartbeatServiceMock.reapOrphanedRuns).not.toHaveBeenCalled();
       expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
