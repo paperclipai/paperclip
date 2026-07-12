@@ -157,8 +157,9 @@ if [ "$sync_state" = true ]; then
 fi
 
 # A Camoufox fallback is a provider change, not a different browser identity.
-# If it produced newer cookies, merge them into the native issue daemon before
-# the next action and then persist the combined company/project profile.
+# agent-browser's `state load` prepares future launches but does not mutate an
+# already-running Chromium context. A newer Camoufox state therefore restarts
+# only this issue daemon and supplies that state at context launch.
 import_camoufox=false
 if [ "$sync_state" = true ] && [ -s "$camoufox_state_path" ]; then
   if [ ! -s "$state_path" ] || [ "$camoufox_state_path" -nt "$state_path" ]; then
@@ -166,22 +167,21 @@ if [ "$sync_state" = true ] && [ -s "$camoufox_state_path" ]; then
   fi
 fi
 
-if [ "$sync_state" = true ] && { [ -s "$state_path" ] || [ "$import_camoufox" = true ]; }; then
-  acquire_lock || exit $?
-  # `state load` merges into an already-running issue daemon.
-  if [ "$first" = "open" ] || [ "$first" = "paperclip-sync-camoufox" ]; then
-    # Explicitly start the isolated daemon before loading. This also works on
-    # agent-browser releases where AGENT_BROWSER_STATE launch loading is late
-    # or incomplete, then the caller's real `open <url>` uses the same daemon.
-    "$REAL_AGENT_BROWSER" open >/dev/null 2>&1 || true
+if [ "$sync_state" = true ] && [ "$import_camoufox" = true ]; then
+  "$REAL_AGENT_BROWSER" close >/dev/null 2>&1 || true
+elif [ "$sync_state" = true ] && [ -s "$state_path" ]; then
+  # Existing issue daemons ignore the launch-only variable and retain their
+  # tabs, but some releases still forward it to a daemon that was launched
+  # without an encryption key. Only provide it when no live daemon exists.
+  daemon_pid_file="${AGENT_BROWSER_SOCKET_DIR:-}/$issue_identity.pid"
+  daemon_socket="${AGENT_BROWSER_SOCKET_DIR:-}/$issue_identity.sock"
+  daemon_pid="$(cat "$daemon_pid_file" 2>/dev/null || printf '0')"
+  case "$daemon_pid" in
+    ''|*[!0-9]*) daemon_pid=0 ;;
+  esac
+  if [ ! -S "$daemon_socket" ] || [ "$daemon_pid" -le 0 ] || ! kill -0 "$daemon_pid" 2>/dev/null; then
+    export AGENT_BROWSER_STATE="$state_path"
   fi
-  if [ -s "$state_path" ]; then
-    "$REAL_AGENT_BROWSER" state load "$state_path" >/dev/null 2>&1 || true
-  fi
-  if [ "$import_camoufox" = true ]; then
-    "$REAL_AGENT_BROWSER" state load "$camoufox_state_path" >/dev/null 2>&1 || true
-  fi
-  release_lock
 fi
 
 if [ "$first" = "paperclip-sync-camoufox" ]; then
@@ -190,7 +190,11 @@ if [ "$first" = "paperclip-sync-camoufox" ]; then
     http://*|https://*|about:blank) ;;
     *) echo "[paperclip-browser] invalid Camoufox sync URL" >&2; exit 64 ;;
   esac
-  "$REAL_AGENT_BROWSER" open "$sync_url" >/dev/null
+  # Camoufox writes standard Playwright JSON. Do not ask agent-browser to
+  # decrypt that plaintext launch state; subsequent shared saves remain
+  # encrypted because the wrapper's key is still present.
+  env -u AGENT_BROWSER_ENCRYPTION_KEY AGENT_BROWSER_STATE="$camoufox_state_path" \
+    "$REAL_AGENT_BROWSER" open "$sync_url" >/dev/null
   status=$?
   if [ "$status" -eq 0 ]; then
     acquire_lock || exit $?
@@ -206,7 +210,12 @@ if [ "$sync_state" = true ] && [ "$first" = "close" ]; then
   release_lock
 fi
 
-"$REAL_AGENT_BROWSER" "$@"
+if [ "$import_camoufox" = true ]; then
+  env -u AGENT_BROWSER_ENCRYPTION_KEY AGENT_BROWSER_STATE="$camoufox_state_path" \
+    "$REAL_AGENT_BROWSER" "$@"
+else
+  "$REAL_AGENT_BROWSER" "$@"
+fi
 status=$?
 
 if [ "$sync_state" = true ] && [ "$first" != "close" ] && [ "$status" -eq 0 ]; then
