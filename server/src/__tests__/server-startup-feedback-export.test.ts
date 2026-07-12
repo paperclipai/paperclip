@@ -229,6 +229,22 @@ vi.mock("../services/index.js", () => ({
   routineService: routineServiceFactoryMock,
 }));
 
+vi.mock("../services/container.js", () => ({
+  createServiceContainer: vi.fn(() => ({
+    get heartbeat() {
+      return heartbeatServiceFactoryMock();
+    },
+    get routines() {
+      return routineServiceFactoryMock();
+    },
+    get instanceSettings() {
+      return {
+        getExperimental: vi.fn(async () => ({})),
+      };
+    },
+  })),
+}));
+
 vi.mock("../storage/index.js", () => ({
   createStorageServiceFromConfig: vi.fn(() => ({ id: "storage-service" })),
 }));

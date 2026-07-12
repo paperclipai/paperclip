@@ -40,14 +40,13 @@ import {
   backfillPrincipalAccessCompatibility,
   bootstrapExecutionPolicyFromEnv,
   environmentCustomImageService,
-  heartbeatService,
   instanceSettingsService,
   reconcileBuiltInAgentsOnStartup,
   reconcileCloudUpstreamRunsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
-  routineService,
 } from "./services/index.js";
+import { createServiceContainer } from "./services/container.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
@@ -658,6 +657,7 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+  const services = createServiceContainer(db as any, { pluginWorkerManager });
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -691,6 +691,7 @@ export async function startServer(): Promise<StartedServer> {
     betterAuthHandler,
     resolveSession,
     pluginWorkerManager,
+    services,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
@@ -835,12 +836,12 @@ export async function startServer(): Promise<StartedServer> {
   };
 
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const heartbeat = services.heartbeat;
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
-    const routines = routineService(db as any, { pluginWorkerManager });
+    const routines = services.routines;
     const worktreeRunExecutionActivation = await resolveWorktreeRunExecutionActivationState({
-      getExperimental: () => instanceSettingsService(db).getExperimental(),
+      getExperimental: () => services.instanceSettings.getExperimental(),
     });
     logger.info(
       {

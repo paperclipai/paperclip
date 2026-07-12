@@ -29,6 +29,7 @@ import {
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
 } from "@paperclipai/shared";
+import type { ServiceContainer } from "../services/container.js";
 import {
   resolvePaperclipInstanceRootForAdapter,
   readPaperclipSkillSyncPreference,
@@ -138,7 +139,7 @@ function readRunIssueId(context: Record<string, unknown> | null) {
 
 export function agentRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: { pluginWorkerManager?: PluginWorkerManager; services?: ServiceContainer } = {},
 ) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
   // declare capability flags explicitly.
@@ -179,7 +180,7 @@ export function agentRoutes(
   const KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET: ReadonlySet<string> = new Set(KNOWN_INSTRUCTIONS_BUNDLE_KEYS);
 
   const router = Router();
-  const svc = agentService(db);
+  const svc = options.services?.agents ?? agentService(db);
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
@@ -187,18 +188,18 @@ export function agentRoutes(
   const environmentRuntime = environmentRuntimeService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
-  const heartbeat = heartbeatService(db, {
+  const heartbeat = options.services?.heartbeat ?? heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
-  const secretsSvc = secretService(db);
+  const secretsSvc = options.services?.secrets ?? secretService(db);
   const instructions = agentInstructionsService();
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
-  const instanceSettings = instanceSettingsService(db);
-  const issuesSvc = issueService(db);
-  const recoveryActionsSvc = issueRecoveryActionService(db);
+  const instanceSettings = options.services?.instanceSettings ?? instanceSettingsService(db);
+  const issuesSvc = options.services?.issues ?? issueService(db);
+  const recoveryActionsSvc = options.services?.issueRecoveryActions ?? issueRecoveryActionService(db);
   const changeConsentGate = changeConsentGateService(db);
   const builtInAgents = builtInAgentService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";

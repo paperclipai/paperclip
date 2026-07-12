@@ -89,6 +89,7 @@ import {
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
+import type { ServiceContainer } from "../services/container.js";
 import { validate } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
 import {
@@ -2469,12 +2470,13 @@ export function issueRoutes(
     pluginWorkerManager?: PluginWorkerManager;
     taskWatchdogEnqueueWakeup?: TaskWatchdogServiceDeps["enqueueWakeup"] | null;
     issueListDiagnostics?: IssueListDiagnostics;
+    services?: ServiceContainer;
   } = {},
 ) {
   const router = Router();
-  const svc = issueService(db);
+  const svc = opts.services?.issues ?? issueService(db);
   const access = accessService(db);
-  const heartbeat = heartbeatService(db, {
+  const heartbeat = opts.services?.heartbeat ?? heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
   const feedback = feedbackService(db);
@@ -2485,19 +2487,19 @@ export function issueRoutes(
     return searchSvc;
   };
   const searchRateLimiter = opts.searchRateLimiter ?? defaultCompanySearchRateLimiter;
-  const instanceSettings = instanceSettingsService(db);
-  const agentsSvc = agentService(db);
-  const projectsSvc = projectService(db);
+  const instanceSettings = opts.services?.instanceSettings ?? instanceSettingsService(db);
+  const agentsSvc = opts.services?.agents ?? agentService(db);
+  const projectsSvc = opts.services?.projects ?? projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
-  const recoveryActionsSvc = issueRecoveryActionService(db);
+  const recoveryActionsSvc = opts.services?.issueRecoveryActions ?? issueRecoveryActionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const companySkillsSvc = companySkillService(db);
   const documentAnnotationsSvc = documentAnnotationService(db);
   const issueReferencesSvc = issueReferenceService(db);
-  const issueThreadInteractionsSvc = issueThreadInteractionService(db);
+  const issueThreadInteractionsSvc = opts.services?.issueThreadInteractions ?? issueThreadInteractionService(db);
   const taskWatchdogFactory: TaskWatchdogServiceFactory | undefined = Object.prototype.hasOwnProperty.call(
     serviceIndex,
     "taskWatchdogService",
@@ -2513,7 +2515,7 @@ export function issueRoutes(
     pluginWorkerManager: opts.pluginWorkerManager,
     enabled: async () => (await instanceSettings.getExperimental()).enableExternalObjects === true,
   });
-  const routinesSvc = routineService(db, {
+  const routinesSvc = opts.services?.routines ?? routineService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
   const environmentRuntime = environmentRuntimeService(db, {
