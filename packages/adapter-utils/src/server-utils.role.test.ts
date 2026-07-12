@@ -86,14 +86,14 @@ describe("resolvePaperclipDesiredSkillNames — role-scoped filtering", () => {
     }
   });
 
-  it("explicit desiredSkills override: IC gets explicitly-desired manager-only skill", () => {
+  it("explicit desiredSkills cannot bypass IC manager-only restriction", () => {
     const explicitConfig = {
       paperclipSkillSync: {
         desiredSkills: ["paperclipai/paperclip/autoplan"],
       },
     };
     const result = resolvePaperclipDesiredSkillNames(explicitConfig, entries, "engineer");
-    expect(result).toContain("paperclipai/paperclip/autoplan");
+    expect(result).not.toContain("paperclipai/paperclip/autoplan");
     expect(result).not.toContain("paperclipai/paperclip/paperclip-create-agent");
     expect(result).not.toContain("paperclipai/paperclip/plan-ceo-review");
     for (const key of icSafeKeys) {
