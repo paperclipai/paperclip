@@ -2812,6 +2812,8 @@ export function routineService(
         // Loop-guard: an evolve call with no board/human actor is an unattended self-evolution.
         // Track consecutive occurrences with no human touch; freeze to "gated" past the cap so a
         // routine can't drift unattended forever (the "not a dead end" guarantee).
+        // NOTE: a human restoreRevision restores the snapshot's evolutionMode and resets this
+        // counter, so a human can intentionally reset (un-do) this freeze — that's deliberate.
         let finalRoutine = appended.routine;
         let frozeAtCount: number | null = null;
         if (!actor.userId) {

@@ -514,11 +514,18 @@ export function routineRoutes(
       res.status(404).json({ error: "Routine not found" });
       return;
     }
-    // The human checkpoint for gated evolution: a board member (with tasks:assign) or the
-    // routine's own assigned agent, same ownership rule PATCH/restore already use.
+    // The human checkpoint for gated evolution MUST be a human. An agent may PROPOSE
+    // (POST /evolve) and may run auto mode, but the whole point of gated mode is that a
+    // human decides — so an agent (even the routine's own assignee) can never approve or
+    // reject a proposal. Self-approval would be no involvement at all.
+    if (req.actor.type === "agent") {
+      throw forbidden("Gated routine-evolution proposals require human approval (board actor).");
+    }
+    // Board actors still go through the normal company-access + tasks:assign permission gate.
     await assertBoardCanAssignTasks(req, routine.companyId);
+    // Actor is guaranteed non-agent here (agents were rejected above), so this is always a human.
     const result = await svc.decideEvolutionProposal(routine.id, req.params.pid as string, decision, {
-      agentId: req.actor.type === "agent" ? req.actor.agentId : null,
+      agentId: null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
       runId: req.actor.runId ?? null,
     });

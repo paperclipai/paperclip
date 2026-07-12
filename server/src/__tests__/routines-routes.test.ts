@@ -923,5 +923,39 @@ describe("routine routes", () => {
       expect(res.body.error).toContain("tasks:assign");
       expect(mockRoutineService.decideEvolutionProposal).not.toHaveBeenCalled();
     });
+
+    it("forbids the assigned agent from approving its own gated proposal (human-only checkpoint)", async () => {
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+        runId: "88888888-8888-4888-8888-888888888888",
+      });
+
+      const res = await request(app)
+        .post(`/api/routines/${routineId}/evolution-proposals/${proposal.id}/approve`)
+        .send({});
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("human approval");
+      expect(mockRoutineService.decideEvolutionProposal).not.toHaveBeenCalled();
+    });
+
+    it("forbids the assigned agent from rejecting a gated proposal (human-only checkpoint)", async () => {
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+        runId: "88888888-8888-4888-8888-888888888888",
+      });
+
+      const res = await request(app)
+        .post(`/api/routines/${routineId}/evolution-proposals/${proposal.id}/reject`)
+        .send({});
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("human approval");
+      expect(mockRoutineService.decideEvolutionProposal).not.toHaveBeenCalled();
+    });
   });
 });
