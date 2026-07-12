@@ -1602,7 +1602,9 @@ export function IssuesList({
       ) : null}
 
       {/* Toolbar */}
-      <div className="flex items-center justify-between gap-2 sm:gap-3">
+      {/* On mobile let the control cluster wrap to its own line so the search box
+          and the icon buttons never crush each other into a clipped ~24px row. */}
+      <div className="flex items-center justify-between gap-2 max-sm:flex-wrap max-sm:gap-y-2 sm:gap-3">
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
           <Button size="sm" variant="outline" onClick={() => openCreateIssueDialog()}>
             <Plus className="h-4 w-4 sm:mr-1" />
@@ -1617,7 +1619,9 @@ export function IssuesList({
           />
         </div>
 
-        <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
+        {/* Mobile: enforce a >=44px tap-target height on every toolbar button
+            (height-only so labelled controls keep their intrinsic width). */}
+        <div className="flex items-center gap-1 shrink-0 max-sm:[&_button]:h-11 max-sm:[&_button]:min-h-11 sm:gap-1">
           {/* View mode toggle */}
           <div className="flex items-center border border-border rounded-md overflow-hidden mr-1" role="group" aria-label="View mode">
             <button

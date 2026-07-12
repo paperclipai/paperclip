@@ -215,6 +215,10 @@ export function Projects() {
                         key={project.id}
                         leading={<ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="sm" />}
                         title={project.name}
+                        // Wrap the project name on mobile instead of ellipsizing it to
+                        // an indistinguishable stub ("aash-vibes.c…"); keep the single-line
+                        // truncate on wide layouts. Mirrors the agents-index pattern.
+                        titleTextClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
                         subtitle={project.description ?? undefined}
                         reserveSubtitleSpace
                         to={projectUrl(project)}
