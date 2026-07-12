@@ -109,6 +109,7 @@ export type ToolGatewayProviderType =
 export interface ConnectedMcpGatewayMetadata {
   applicationId: string;
   applicationKey: string | null;
+  applicationDisplayName: string;
   connectionId: string;
   catalogEntryId: string;
   transport: "remote_http" | "local_stdio";
@@ -132,6 +133,7 @@ export interface ToolGatewayDescriptor extends AgentToolDescriptor {
   risk: "read" | "write" | "destructive";
   applicationId?: string | null;
   applicationKey?: string | null;
+  applicationDisplayName?: string | null;
   connectionId?: string | null;
   catalogEntryId?: string | null;
   upstreamToolName?: string | null;
@@ -886,6 +888,7 @@ export function createToolGatewayService(
       const providerMetadata: ConnectedMcpGatewayMetadata = {
         applicationId: application.id,
         applicationKey,
+        applicationDisplayName: application.name,
         connectionId: connection.id,
         catalogEntryId: catalogEntry.id,
         transport: connection.transport,
@@ -913,6 +916,7 @@ export function createToolGatewayService(
         risk,
         applicationId: application.id,
         applicationKey,
+        applicationDisplayName: application.name,
         connectionId: connection.id,
         catalogEntryId: catalogEntry.id,
         upstreamToolName: catalogEntry.toolName,
@@ -1369,6 +1373,71 @@ export function createToolGatewayService(
     });
   }
 
+  async function reflectToolActionInteractionLifecycle(input: {
+    actionRequestId: string;
+    status: "approved" | "executing" | "executed" | "failed" | "expired";
+    errorCode?: string | null;
+    errorMessage?: string | null;
+  }): Promise<void> {
+    const [linked] = await db
+      .select({
+        companyId: toolActionRequests.companyId,
+        interactionId: toolActionRequests.interactionId,
+      })
+      .from(toolActionRequests)
+      .where(eq(toolActionRequests.id, input.actionRequestId))
+      .limit(1);
+    if (!linked?.interactionId) return;
+
+    const [interaction] = await db
+      .select({
+        status: issueThreadInteractions.status,
+        result: issueThreadInteractions.result,
+      })
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.id, linked.interactionId),
+        eq(issueThreadInteractions.companyId, linked.companyId),
+      ))
+      .limit(1);
+    if (!interaction) return;
+
+    const currentResult = interaction.result && typeof interaction.result === "object"
+      ? interaction.result as unknown as Record<string, unknown>
+      : null;
+    const outcome = typeof currentResult?.outcome === "string"
+      ? currentResult.outcome
+      : interaction.status === "accepted"
+        ? "accepted"
+        : interaction.status === "rejected"
+          ? "rejected"
+          : interaction.status === "expired" || input.status === "expired"
+            ? "stale_target"
+            : null;
+    if (!outcome) return;
+
+    const now = new Date();
+    await db
+      .update(issueThreadInteractions)
+      .set({
+        ...(input.status === "expired" && interaction.status === "pending"
+          ? { status: "expired", resolvedAt: now }
+          : {}),
+        result: {
+          ...(currentResult ?? { version: 1, outcome }),
+          toolAction: {
+            version: 1,
+            status: input.status,
+            errorCode: input.errorCode ?? null,
+            errorMessage: input.errorMessage ?? null,
+            updatedAt: now.toISOString(),
+          },
+        } as unknown as NonNullable<typeof issueThreadInteractions.$inferInsert.result>,
+        updatedAt: now,
+      })
+      .where(eq(issueThreadInteractions.id, linked.interactionId));
+  }
+
   async function requestApprovalForRecordedToolCall(input: {
     invocation: typeof toolInvocations.$inferSelect;
     actionRequest: typeof toolActionRequests.$inferSelect | null;
@@ -1433,6 +1502,7 @@ export function createToolGatewayService(
       });
     }
     const actionRequest = input.actionRequest;
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
 
     let signedArguments: ReturnType<typeof signToolArguments>;
     try {
@@ -1532,7 +1602,7 @@ export function createToolGatewayService(
         idempotencyKey: `tool-action:${actionRequest.id}`,
         title: "Approve tool action",
         summary: `${input.tool.name} requires approval before Paperclip will execute it.`,
-        continuationPolicy: "wake_assignee_on_accept",
+        continuationPolicy: "wake_assignee",
         payload: {
           version: 1,
           prompt: `Approve ${input.tool.name}?`,
@@ -1546,6 +1616,21 @@ export function createToolGatewayService(
             key: `tool-action:${actionRequest.id}`,
             revisionId: canonicalArgumentsHash,
             label: input.tool.name,
+          },
+          toolAction: {
+            version: 1,
+            actionRequestId: actionRequest.id,
+            invocationId: input.invocation.id,
+            toolName: input.tool.name,
+            toolDisplayName: input.tool.displayName?.trim() || input.tool.name,
+            connectionId: input.tool.connectionId ?? null,
+            applicationId: input.tool.applicationId ?? null,
+            appDisplayName: input.tool.applicationDisplayName?.trim() || null,
+            risk: input.tool.risk === "destructive" ? "destructive" : "write",
+            previewMarkdown,
+            argumentsSummaryJson: input.argumentsSummary.summary,
+            argumentsHash: canonicalArgumentsHash,
+            expiresAt: expiresAt.toISOString(),
           },
         },
       },
@@ -1561,7 +1646,7 @@ export function createToolGatewayService(
         signedArguments,
         previewMarkdown,
         approvalId: formalApprovalId,
-        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        expiresAt,
         updatedAt: new Date(),
       })
       .where(eq(toolActionRequests.id, actionRequest.id));
@@ -3754,6 +3839,7 @@ export function createToolGatewayService(
   async function runApprovedTestInvocation(
     invocation: typeof toolInvocations.$inferSelect,
     parameters: unknown,
+    actionRequestId: string,
   ): Promise<void> {
     const agentId = invocation.agentId;
     if (!invocation.connectionId || !agentId) return;
@@ -3791,6 +3877,12 @@ export function createToolGatewayService(
           updatedAt: new Date(),
         })
         .where(eq(toolInvocations.id, invocation.id));
+      await reflectToolActionInteractionLifecycle({
+        actionRequestId,
+        status: "failed",
+        errorCode: "tool_not_found",
+        errorMessage: `Tool "${invocation.toolName}" is no longer connected`,
+      });
       return;
     }
     const argumentsSummary = validateToolContent({
@@ -3812,6 +3904,7 @@ export function createToolGatewayService(
         reasonCode: "approval_granted",
         matchedPolicyIds: invocation.matchedPolicyIds ?? [],
       });
+      await reflectToolActionInteractionLifecycle({ actionRequestId, status: "executed" });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await db
@@ -3824,6 +3917,12 @@ export function createToolGatewayService(
           updatedAt: new Date(),
         })
         .where(eq(toolInvocations.id, invocation.id));
+      await reflectToolActionInteractionLifecycle({
+        actionRequestId,
+        status: "failed",
+        errorCode: "tool_execution_failed",
+        errorMessage: message,
+      });
     }
   }
 
@@ -4625,6 +4724,7 @@ export function createToolGatewayService(
         }
       }
       if (actionRequest.status === "approved") {
+        await reflectToolActionInteractionLifecycle({ actionRequestId: actionRequest.id, status: "approved" });
         return actionRequest;
       }
       const now = new Date();
@@ -4646,11 +4746,16 @@ export function createToolGatewayService(
         .update(toolInvocations)
         .set({ approvalState: "approved", updatedAt: now })
         .where(eq(toolInvocations.id, invocation.id));
+      await reflectToolActionInteractionLifecycle({ actionRequestId: updated.id, status: "approved" });
       // A test-tab ask-first request has no agent run to carry out the parked
       // call, so approving it is what runs it. Execute against the signed
       // arguments and record the result on the invocation for the live panel.
       if (isTestOriginInvocation(invocation)) {
-        await runApprovedTestInvocation({ ...invocation, approvalState: "approved" }, signedPayload.arguments);
+        await runApprovedTestInvocation(
+          { ...invocation, approvalState: "approved" },
+          signedPayload.arguments,
+          updated.id,
+        );
       }
       return updated;
     },
@@ -4848,10 +4953,18 @@ export function createToolGatewayService(
           throw new ToolGatewayHttpError(409, "Approved action request is for a different tool", "action_tool_mismatch");
         }
         if (actionRequest.expiresAt && actionRequest.expiresAt.getTime() <= Date.now()) {
-          await db
+          const expiredAt = new Date();
+          const [expired] = await db
             .update(toolActionRequests)
-            .set({ status: "expired", updatedAt: new Date() })
-            .where(and(eq(toolActionRequests.id, actionRequest.id), eq(toolActionRequests.status, "pending")));
+            .set({ status: "expired", resolvedAt: expiredAt, updatedAt: expiredAt })
+            .where(and(
+              eq(toolActionRequests.id, actionRequest.id),
+              inArray(toolActionRequests.status, ["pending", "approved"]),
+            ))
+            .returning({ id: toolActionRequests.id });
+          if (expired) {
+            await reflectToolActionInteractionLifecycle({ actionRequestId: expired.id, status: "expired" });
+          }
           throw new ToolGatewayHttpError(409, "Tool action request approval has expired", "action_expired");
         }
         if (actionRequest.status === "pending" && actionRequest.interactionId) {
@@ -4889,6 +5002,7 @@ export function createToolGatewayService(
               throw new ToolGatewayHttpError(409, "Tool action request has already been resolved", "action_already_resolved");
             }
             actionRequest = approved;
+            await reflectToolActionInteractionLifecycle({ actionRequestId: approved.id, status: "approved" });
             await writeToolCallEvent({
               invocationId: storedInvocation.id,
               actionRequestId: actionRequest.id,
@@ -4980,6 +5094,7 @@ export function createToolGatewayService(
         if (!consumed) {
           throw new ToolGatewayHttpError(409, "Tool action request was already consumed", "action_already_consumed");
         }
+        await reflectToolActionInteractionLifecycle({ actionRequestId: consumed.id, status: "executing" });
         invocationId = storedInvocation.id as typeof invocationId;
         effectiveParameters = storedParameters;
         effectiveArgumentsSummary = storedArgumentValidation.summary;
@@ -5140,6 +5255,12 @@ export function createToolGatewayService(
             updatedAt: new Date(),
           })
           .where(eq(toolInvocations.id, invocationId));
+        if (input.approvedActionRequestId) {
+          await reflectToolActionInteractionLifecycle({
+            actionRequestId: input.approvedActionRequestId,
+            status: "executed",
+          });
+        }
         await writeToolCallEvent({
           invocationId,
           actionRequestId: input.approvedActionRequestId ?? null,
@@ -5222,6 +5343,14 @@ export function createToolGatewayService(
             updatedAt: new Date(),
           })
           .where(eq(toolInvocations.id, invocationId));
+        if (input.approvedActionRequestId) {
+          await reflectToolActionInteractionLifecycle({
+            actionRequestId: input.approvedActionRequestId,
+            status: "failed",
+            errorCode: reasonCode,
+            errorMessage: message,
+          });
+        }
         await writeToolCallEvent({
           invocationId,
           actionRequestId: input.approvedActionRequestId ?? null,

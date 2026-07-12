@@ -2006,6 +2006,38 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         status: "pending",
         canonicalArgumentsHash: expect.any(String),
       });
+      const [approvalInteraction] = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, approvalRequest.interactionId!));
+      expect(approvalInteraction).toMatchObject({
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: `Approve ${approvalToolName}?`,
+          detailsMarkdown: expect.stringContaining('"value":"original"'),
+          target: {
+            type: "custom",
+            key: `tool-action:${approvalRequest.id}`,
+          },
+          toolAction: {
+            version: 1,
+            actionRequestId: approvalRequest.id,
+            invocationId: approvalRequest.invocationId,
+            toolName: approvalToolName,
+            toolDisplayName: expect.any(String),
+            connectionId: approvalTool.connection.id,
+            applicationId: approvalTool.application.id,
+            appDisplayName: approvalTool.application.name,
+            risk: "write",
+            previewMarkdown: approvalRequest.previewMarkdown,
+            argumentsSummaryJson: expect.stringContaining('"value":"original"'),
+            argumentsHash: approvalRequest.canonicalArgumentsHash,
+            expiresAt: approvalRequest.expiresAt!.toISOString(),
+          },
+        },
+      });
       const [approvalInvocation] = await db
         .select()
         .from(toolInvocations)
@@ -2023,6 +2055,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         .update(issueThreadInteractions)
         .set({
           status: "accepted",
+          result: { version: 1, outcome: "accepted" },
           resolvedByAgentId: agent.id,
           resolvedAt: new Date(),
         })
@@ -2055,6 +2088,21 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         .from(toolActionRequests)
         .where(eq(toolActionRequests.id, approvalRequest.id));
       expect(executedApproval.status).toBe("executed");
+      const [completedInteraction] = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, approvalRequest.interactionId!));
+      expect(completedInteraction.result).toMatchObject({
+        version: 1,
+        outcome: "accepted",
+        toolAction: {
+          version: 1,
+          status: "executed",
+          errorCode: null,
+          errorMessage: null,
+          updatedAt: expect.any(String),
+        },
+      });
       const approvedCompletion = (await db
         .select()
         .from(activityLog)
@@ -3605,7 +3653,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       issueId: issue.id,
       kind: "request_confirmation",
       status: "pending",
-      continuationPolicy: "wake_assignee_on_accept",
+      continuationPolicy: "wake_assignee",
     });
   });
 
