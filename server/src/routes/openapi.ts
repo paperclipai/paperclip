@@ -5197,6 +5197,19 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "post",
+  path: "/api/instance/settings/experimental/dispatch-gate/claude-local/resume-quota",
+  tags: ["instance-settings"],
+  summary: "Resume a Claude-local dispatch gate quota block",
+  responses: {
+    200: r.ok(z.object({ scopeKey: z.string(), ok: z.literal(true) }).strict()),
+    401: r.unauthorized,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registerCurrentRoute({
   method: "get",
   path: "/api/issues/{id}/accepted-plan-decompositions",
   tags: ["issues"],
