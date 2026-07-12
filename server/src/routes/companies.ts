@@ -17,7 +17,7 @@ import {
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
-import { badRequest, forbidden } from "../errors.js";
+import { badRequest, conflict, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
@@ -30,6 +30,11 @@ import {
   logActivity,
   workTimelineService,
 } from "../services/index.js";
+import {
+  canCreateStackCompany,
+  cloudTenantCompanyId,
+  isCompanyIdConflict,
+} from "../services/cloud-tenant-company.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
@@ -372,14 +377,29 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.post("/", validate(createCompanySchema), async (req, res) => {
     assertBoard(req);
-    if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
+    const cloudStack = req.actor.source === "cloud_tenant" ? req.actor.cloudStack : undefined;
+    const createsOwnStackCompany = canCreateStackCompany(cloudStack);
+    if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin || createsOwnStackCompany)) {
       throw forbidden("Instance admin required");
     }
     const ownerPrincipalId = req.actor.userId ?? "local-board";
-    const company = await svc.create({
-      ...req.body,
-      defaultResponsibleUserId: req.body.defaultResponsibleUserId ?? ownerPrincipalId,
-    });
+    let company;
+    try {
+      company = await svc.create({
+        ...req.body,
+        // A cloud tenant only ever creates the one company its stack routes
+        // to: the id is server-derived from the stack, never client-supplied,
+        // so gateway slug->company routing keeps working and a tenant cannot
+        // create arbitrary companies.
+        ...(createsOwnStackCompany ? { id: cloudTenantCompanyId(cloudStack.stackId) } : {}),
+        defaultResponsibleUserId: req.body.defaultResponsibleUserId ?? ownerPrincipalId,
+      });
+    } catch (error) {
+      if (createsOwnStackCompany && isCompanyIdConflict(error)) {
+        throw conflict("This workspace's company has already been created");
+      }
+      throw error;
+    }
     await access.ensureMembership(company.id, "user", ownerPrincipalId, "owner", "active");
     await access.ensureRoleDefaultGrants(
       company.id,
