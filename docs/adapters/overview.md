@@ -31,6 +31,8 @@ When a heartbeat fires, Paperclip:
 | [Process](/adapters/process) | `process` | Executes arbitrary shell commands |
 | [HTTP](/adapters/http) | `http` | Sends webhooks to external agents |
 
+Local CLI adapters such as `codex_local` and `claude_local` can use provider API keys or existing CLI subscription/OAuth sessions. See [Subscription CLI auth](/adapters/subscription-cli-auth) for the API-key-free setup.
+
 ### Hermes local vs gateway
 
 Use `hermes_local` when Paperclip should start the local `hermes` CLI on the

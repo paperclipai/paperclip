@@ -1,0 +1,24 @@
+# Optional override: let local CLI adapters use existing subscription/OAuth homes.
+#
+# Usage:
+#   docker compose \
+#     -f docker/docker-compose.quickstart.yml \
+#     -f docker/docker-compose.subscription-auth.yml \
+#     up
+#
+# Defaults mount the operator's Codex and Claude Code homes read-only. Override
+# CODEX_HOME / CLAUDE_CONFIG_DIR to point at dedicated Paperclip auth-home copies
+# if the CLIs need writable refresh state.
+
+services:
+  paperclip:
+    environment:
+      CODEX_HOME: /host-cli-auth/codex
+      CLAUDE_CONFIG_DIR: /host-cli-auth/claude
+      # Keep provider API-key variables empty so local adapters use CLI
+      # subscription/session auth instead of API-key mode.
+      OPENAI_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+    volumes:
+      - ${CODEX_HOME:-${HOME}/.codex}:/host-cli-auth/codex:ro
+      - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/host-cli-auth/claude:ro

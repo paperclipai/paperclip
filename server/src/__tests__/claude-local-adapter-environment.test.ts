@@ -228,6 +228,39 @@ describe("claude_local environment diagnostics", () => {
     expect(codes).not.toContain("claude_anthropic_api_key_overrides_subscription");
   });
 
+  it("reports subscription mode possible when CLAUDE_CONFIG_DIR points at a synthetic OAuth home and no API key is set", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-subscription-auth-"));
+    const claudeConfigDir = path.join(root, "claude-home");
+    const cwd = path.join(root, "workspace");
+
+    try {
+      await fs.mkdir(claudeConfigDir, { recursive: true });
+      await fs.writeFile(path.join(claudeConfigDir, ".credentials.json"), JSON.stringify({ token: "fake-token" }), "utf8");
+      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.CLAUDE_CODE_USE_BEDROCK;
+      delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "claude_local",
+        config: {
+          command: process.execPath,
+          cwd,
+          env: {
+            CLAUDE_CONFIG_DIR: claudeConfigDir,
+            ANTHROPIC_API_KEY: "",
+          },
+        },
+      });
+
+      expect(result.checks.some((check) => check.code === "claude_subscription_mode_possible")).toBe(true);
+      expect(result.checks.some((check) => check.code === "claude_anthropic_api_key_overrides_subscription")).toBe(false);
+      expect(result.checks.some((check) => check.level === "error")).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("creates a missing working directory when cwd is absolute", async () => {
     const cwd = path.join(
       os.tmpdir(),

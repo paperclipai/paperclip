@@ -8,7 +8,9 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 ## Prerequisites
 
 - Codex CLI installed (`codex` command available)
-- `OPENAI_API_KEY` set in the environment or agent config
+- Either `OPENAI_API_KEY` set in the environment/agent config, or a Codex CLI subscription/OAuth session available through `CODEX_HOME` / `~/.codex`
+
+For API-key-free local operation, see [Subscription CLI auth](/adapters/subscription-cli-auth).
 
 ## Configuration Fields
 
@@ -45,6 +47,8 @@ Paperclip currently applies that only when the selected model is `gpt-5.4`. On o
 
 When Paperclip is running inside a managed worktree instance (`PAPERCLIP_IN_WORKTREE=true`), the adapter instead uses a worktree-isolated `CODEX_HOME` under the Paperclip instance so Codex skills, sessions, logs, and other runtime state do not leak across checkouts. It seeds that isolated home from the user's main Codex home for shared auth/config continuity.
 
+For Docker deployments, mount the desired Codex home into the container and set `CODEX_HOME` to that mounted path. The example `docker/docker-compose.subscription-auth.yml` keeps the mount read-only by default.
+
 ### Per-agent isolation and auth seeding
 
 For `codex_local` agents the server isolation guard pins each agent to a per-agent home (`<instance>/companies/<companyId>/agents/<agentId>/codex-home`) and sets `OPENAI_API_KEY=""` so an agent can never spend against the host API key or share another agent's Codex state.
@@ -77,5 +81,5 @@ The environment test checks:
 
 - Codex CLI is installed and accessible
 - Working directory is absolute and available (auto-created if missing and permitted)
-- Authentication signal (`OPENAI_API_KEY` presence)
+- Authentication signal (`OPENAI_API_KEY` presence or native Codex auth under `CODEX_HOME`)
 - A live hello probe (`codex exec --json -` with prompt `Respond with hello.`) to verify the CLI can actually run
