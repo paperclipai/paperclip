@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it } from "vitest";
 import { canCreateStackCompany, cloudTenantCompanyId } from "../services/cloud-tenant-company.js";
 
 // The route body is exercised end-to-end in the live check (see the plan's
@@ -12,7 +12,7 @@ describe("company create authorization for cloud tenants", () => {
     };
     const cloudStack = actor.source === "cloud_tenant" ? actor.cloudStack : undefined;
     expect(canCreateStackCompany(cloudStack)).toBe(true);
-    expect(cloudTenantCompanyId(cloudStack!.stackId)).toBe(cloudTenantCompanyId("stack-abc"));
+    expect(cloudTenantCompanyId(cloudStack!.stackId)).toBe("77a7e424-8c06-51f6-9363-bb7e3491582b");
   });
 
   it("member/support may not create", () => {
