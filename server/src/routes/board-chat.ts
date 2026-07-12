@@ -86,12 +86,17 @@ function appendCapped(buf: string, chunk: string, cap: number): string {
 /**
  * Confirmed quota/session-limit text reuses the adapter's own narrow
  * classifier — the same one the registered `execute` path uses — so board
- * chat never runs a second, competing quota detector. Our own 120s timeout
- * kill is always a confirmed, understood outcome, never quota and never
- * ambiguous. A process killed by something other than our own timeout that
- * produced neither a parseable result nor any stderr text at all is
- * genuinely ambiguous — we cannot confirm what happened, so it fails closed
- * to `unknown` rather than being assumed idle.
+ * chat never runs a second, competing quota detector.
+ *
+ * Precedence: confirmed quota evidence always wins, even over our own
+ * timeout kill — a process that was stuck retrying after a quota hit and
+ * only got cut off by our 120s watchdog still produced a confirmed quota
+ * result, and that must not be discarded just because *we* were the ones
+ * who ended it. Only once quota evidence is ruled out does timedOut resolve
+ * to a plain, understood idle release. A process killed by something other
+ * than our own timeout that produced neither a parseable result nor any
+ * stderr text at all is genuinely ambiguous — we cannot confirm what
+ * happened, so it fails closed to `unknown` rather than being assumed idle.
  */
 function classifyBoardChatOutcome(outcome: {
   timedOut: boolean;
@@ -99,18 +104,20 @@ function classifyBoardChatOutcome(outcome: {
   lastResultEvent: Record<string, unknown> | null;
   stderrTail: string;
 }): DispatchGateSettlement {
-  if (outcome.timedOut) return { kind: "idle" };
-  if (outcome.signalKilled && !outcome.lastResultEvent && !outcome.stderrTail.trim()) {
-    return { kind: "unknown" };
-  }
-
   const classifierInput = {
     parsed: outcome.lastResultEvent,
     stderr: outcome.stderrTail,
     errorMessage: outcome.lastResultEvent ? describeClaudeFailure(outcome.lastResultEvent) : null,
   };
-  if (!isClaudeProviderQuotaError(classifierInput)) return { kind: "idle" };
-  return { kind: "quota", blockedUntil: extractClaudeRetryNotBefore(classifierInput), reason: "provider_quota" };
+  if (isClaudeProviderQuotaError(classifierInput)) {
+    return { kind: "quota", blockedUntil: extractClaudeRetryNotBefore(classifierInput), reason: "provider_quota" };
+  }
+
+  if (outcome.timedOut) return { kind: "idle" };
+  if (outcome.signalKilled && !outcome.lastResultEvent && !outcome.stderrTail.trim()) {
+    return { kind: "unknown" };
+  }
+  return { kind: "idle" };
 }
 
 export function boardChatRoutes(
@@ -460,9 +467,17 @@ export function boardChatRoutes(
     proc.on("error", async (err) => {
       clearTimeout(timeout);
       releaseSlot();
-      // Spawn itself failed (e.g. ENOENT) — no process ever ran, so the gate
-      // is safe to release outright; `close` may also fire after this and
-      // will no-op since the row is already idle.
+      // Node only emits `error` here for a failed spawn (e.g. ENOENT) — no
+      // process (and therefore no pid) was ever created, so there is no
+      // launch result to classify and no later `close` event for this
+      // process will ever fire (Node ties `close` to the child's stdio
+      // streams closing, which requires a process to have actually started).
+      // Releasing outright to idle is therefore a confirmed, non-ambiguous
+      // terminal transition, not a guess. Even if that invariant were ever
+      // violated and `close` fired anyway, every settlement call is scoped
+      // to this exact gateOwner (kind+id) — a stale second settlement can
+      // only match a row still held by this same owner, so it is either a
+      // safe no-op (owner already changed) or reapplies the same idle state.
       await releaseDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner);
       console.error("[board/chat/stream spawn error]", err);
       if (res.writable) {

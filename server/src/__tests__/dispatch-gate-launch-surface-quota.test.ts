@@ -16,6 +16,7 @@ import {
   CLAUDE_LOCAL_DEFAULT_SCOPE,
   releaseDispatchGate,
   setDispatchGateDb,
+  settleDispatchGateResult,
   withDispatchGate,
 } from "../services/dispatch-gate.js";
 
@@ -329,7 +330,11 @@ describeEmbeddedPostgres("dispatch gate launch-surface quota settlement", () => 
       expect(row?.operatorResumeRequired).toBe(false);
     });
 
-    it("does not classify our own 120s-timeout kill as quota, even with quota-shaped stdout", async () => {
+    // Precedence matrix: confirmed quota evidence must win over our own
+    // timeout kill — a process stuck retrying after a real quota hit that we
+    // happened to cut off at 120s still produced a confirmed quota result,
+    // and ending it ourselves must not erase that evidence.
+    it("persists a quota block when our own 120s-timeout kill co-occurs with confirmed quota evidence", async () => {
       // Only setTimeout/clearTimeout are faked, and shouldAdvanceTime keeps
       // them running in real wall-clock time until explicitly jumped — so
       // the real Postgres I/O (which never calls setTimeout for a plain
@@ -349,15 +354,50 @@ describeEmbeddedPostgres("dispatch gate launch-surface quota settlement", () => 
 
         await vi.waitFor(() => expect(mockSpawn).toHaveBeenCalled());
 
+        // Confirmed quota text arrives before we give up and kill it.
+        fakeProc.stdout.emit(
+          "data",
+          Buffer.from(
+            streamJsonLine({
+              type: "result",
+              is_error: true,
+              result: "You've hit your session limit - resets at 4pm (America/Chicago).",
+            }),
+          ),
+        );
+
         vi.advanceTimersByTime(120_001);
         expect(fakeProc.kill).toHaveBeenCalledWith("SIGTERM");
 
-        // Even if quota-shaped text arrived right before the kill, our own
-        // timeout classification takes precedence and is never quota.
-        fakeProc.stdout.emit(
-          "data",
-          Buffer.from(streamJsonLine({ type: "result", is_error: true, result: "Claude usage limit reached." })),
-        );
+        fakeProc.exitCode = null;
+        fakeProc.emit("close", null, "SIGTERM");
+        await pending;
+
+        const [row] = await db.select().from(dispatchGateState).where(eq(dispatchGateState.scopeKey, CLAUDE_LOCAL_DEFAULT_SCOPE));
+        expect(row?.ownershipState).toBe("idle");
+        expect(row?.blockedUntil).not.toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("releases to idle on our own 120s-timeout kill when there is no quota evidence", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        const app = await boardChatApp();
+        const fakeProc = makeFakeProc();
+        mockSpawn.mockReturnValue(fakeProc);
+
+        const pending = request(app)
+          .post("/api/board/chat/stream")
+          .send({ companyId: "company-1", message: "hello" })
+          .then(() => undefined, () => undefined);
+
+        await vi.waitFor(() => expect(mockSpawn).toHaveBeenCalled());
+
+        vi.advanceTimersByTime(120_001);
+        expect(fakeProc.kill).toHaveBeenCalledWith("SIGTERM");
+
         fakeProc.exitCode = null;
         fakeProc.emit("close", null, "SIGTERM");
         await pending;
@@ -368,6 +408,36 @@ describeEmbeddedPostgres("dispatch gate launch-surface quota settlement", () => 
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("is idempotent and owner-scoped: a stale settlement after an earlier one cannot clobber a different owner's row", async () => {
+      const staleOwner = { kind: "board_chat", id: randomUUID() };
+
+      // First settlement: releases the (never-really-acquired-here) owner —
+      // simulates the `error` handler's release firing once.
+      await acquireDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, staleOwner);
+      await releaseDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, staleOwner);
+
+      // A different request now legitimately holds the gate.
+      const currentOwner = { kind: "board_chat", id: randomUUID() };
+      const acquired = await acquireDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, currentOwner);
+      expect(acquired.ok).toBe(true);
+
+      // A stale second settlement for the OLD owner (e.g. a hypothetical
+      // late-firing `close` after `error` already settled) must not touch
+      // the current owner's active row.
+      await settleDispatchGateResult(
+        CLAUDE_LOCAL_DEFAULT_SCOPE,
+        staleOwner,
+        undefined,
+        () => ({ kind: "idle" }) as const,
+      );
+
+      const [row] = await db.select().from(dispatchGateState).where(eq(dispatchGateState.scopeKey, CLAUDE_LOCAL_DEFAULT_SCOPE));
+      expect(row?.ownershipState).toBe("active");
+      expect(row?.ownerId).toBe(currentOwner.id);
+
+      await releaseDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, currentOwner);
     });
   });
 
