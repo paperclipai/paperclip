@@ -126,15 +126,7 @@ import {
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
 
-/**
- * Confirmed quota/session-limit text reuses the adapter's own narrow
- * classifier — the same one the registered `execute` path uses — so login
- * never runs a second, competing quota detector. `claude login` is a plain
- * request/response call (not stream-json), so there is no structured result
- * event to parse; the classifier's stdout/stderr fallback carries the
- * signal. A run our own timeout cut short is a confirmed, understood
- * outcome, never a quota result.
- */
+/** Reuses the adapter's narrow quota classifier (stdout/stderr fallback, since `claude login` has no structured result event); our own timeout is never a quota result. */
 function classifyClaudeLoginQuota(result: {
   timedOut: boolean;
   stdout: string;

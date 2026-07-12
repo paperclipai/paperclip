@@ -44,12 +44,7 @@ function requireDb(): Db {
   return _db;
 }
 
-/**
- * Atomically claim the scope for `owner`. Runs entirely inside one DB
- * transaction: locks the scope row (creating it if absent), rejects an
- * active/unknown owner or a live quota block, and only then persists
- * ownership — so acquisition is never decided from in-memory state.
- */
+/** Atomically claims the scope inside one row-locked transaction, rejecting an active/unknown owner or live quota block; ownership is committed before any launch, never decided from in-memory state. */
 export async function acquireDispatchGate(
   scopeKey: string,
   owner: DispatchGateOwner,
@@ -99,11 +94,7 @@ export async function acquireDispatchGate(
   });
 }
 
-/**
- * Release to idle. Only takes effect if `owner` still holds the scope as
- * active — a single atomic UPDATE, no separate lock statement needed since
- * there is no read-then-write gap to protect.
- */
+/** Releases to idle only if `owner` still holds the scope as active (owner-scoped, single atomic UPDATE). */
 export async function releaseDispatchGate(scopeKey: string, owner: DispatchGateOwner): Promise<void> {
   await requireDb()
     .update(dispatchGateState)
@@ -167,15 +158,10 @@ export async function resumeDispatchGate(scopeKey: string): Promise<void> {
 }
 
 /**
- * Apply a settled outcome to the gate: a confirmed quota result persists the
- * block as part of the same transition that frees ownership, a confirmed
- * non-quota result releases to idle, and anything else — including the
- * classifier itself throwing — fails closed to `unknown` rather than being
- * assumed safe. Shared by every launch surface that settles a result outside
- * of `withDispatchGate`'s run()-wrapping shape: board chat and Claude login
- * both acquire the gate well before a result becomes available (an
- * event-driven child process, or a call awaited far from the acquire site),
- * so they cannot use `run()` to bracket acquisition and settlement.
+ * Applies a settled outcome: confirmed quota persists the block, confirmed
+ * non-quota releases idle, anything else (including the classifier throwing)
+ * fails closed to `unknown`. Shared by board chat and login, which acquire the
+ * gate before a result exists and so can't use withDispatchGate's run() shape.
  */
 export async function settleDispatchGateResult<TResult>(
   scopeKey: string,
@@ -203,12 +189,7 @@ export async function settleDispatchGateResult<TResult>(
   }
 }
 
-/**
- * Wrap an async launch function with the gate: acquire, run, then settle via
- * `settleDispatchGateResult`. A thrown/rejected `run` leaves ownership
- * ambiguous before a result even exists, so it transitions to `unknown`
- * directly — never inferred as a clean release.
- */
+/** Acquires, runs, then settles via settleDispatchGateResult; a thrown/rejected run leaves ownership ambiguous and goes straight to unknown, never inferred as a clean release. */
 export async function withDispatchGate<TResult>(
   scopeKey: string,
   owner: DispatchGateOwner,

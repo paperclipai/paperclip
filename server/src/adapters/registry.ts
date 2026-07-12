@@ -191,15 +191,6 @@ The standalone ACPX adapter has been retired. Use:
 Paperclip keeps this tombstone registered so stale acpx_local rows fail clearly instead of falling back to the process adapter.
 `;
 
-function dispatchGateBlockedMessage(blocked: DispatchGateBlockedResult): string {
-  if (blocked.reason === "quota_blocked") {
-    return blocked.operatorResumeRequired
-      ? "Claude Code is blocked on a provider quota limit pending operator resume."
-      : `Claude Code is blocked on a provider quota limit until ${blocked.blockedUntil?.toISOString() ?? "an unknown time"}.`;
-  }
-  return `Claude Code is already in use (owner: ${blocked.ownerKind ?? "unknown"}/${blocked.ownerId ?? "unknown"}, state: ${blocked.reason}).`;
-}
-
 /** Reuses the adapter's own structured classification — no competing quota detector. */
 function classifyClaudeExecutionQuota(
   result: AdapterExecutionResult,
@@ -213,14 +204,19 @@ function classifyClaudeExecutionQuota(
 }
 
 function synthesizeBlockedExecutionResult(blocked: DispatchGateBlockedResult): AdapterExecutionResult {
+  const errorMessage =
+    blocked.reason === "quota_blocked"
+      ? blocked.operatorResumeRequired
+        ? "Claude Code is blocked on a provider quota limit pending operator resume."
+        : `Claude Code is blocked on a provider quota limit until ${blocked.blockedUntil?.toISOString() ?? "an unknown time"}.`
+      : `Claude Code is already in use (owner: ${blocked.ownerKind ?? "unknown"}/${blocked.ownerId ?? "unknown"}, state: ${blocked.reason}).`;
   return {
     exitCode: null,
     signal: null,
     timedOut: false,
     errorCode: `dispatch_gate_${blocked.reason}`,
-    errorMessage: dispatchGateBlockedMessage(blocked),
-    // Ownership contention is transient (existing retry scheduling applies); a
-    // live quota block reuses the existing provider_quota recovery path.
+    errorMessage,
+    // Ownership contention is transient; a live quota block reuses the existing provider_quota recovery path.
     errorFamily: blocked.reason === "quota_blocked" ? "provider_quota" : "transient_upstream",
     retryNotBefore: blocked.blockedUntil ? blocked.blockedUntil.toISOString() : null,
   };
@@ -236,12 +232,7 @@ const claudeExecuteWithGate = (ctx: AdapterExecutionContext): Promise<AdapterExe
     { classifyQuota: classifyClaudeExecutionQuota, onBlocked: synthesizeBlockedExecutionResult },
   );
 
-/**
- * Gates only the single real inference call inside testEnvironment (the
- * "hello" probe) via the adapter's `runInferenceProbe` hook — every other
- * check it runs (cwd validation, command resolvability, the `--help`-based
- * effort-flag probe) is read-only and stays outside the execution slot.
- */
+/** Gates only the hello-probe call via runInferenceProbe; every other testEnvironment check stays read-only and outside the gate. */
 function runClaudeHelloProbeThroughGate<T>(run: () => Promise<T>): Promise<T | null> {
   return withDispatchGate<T | null>(
     CLAUDE_LOCAL_DEFAULT_SCOPE,

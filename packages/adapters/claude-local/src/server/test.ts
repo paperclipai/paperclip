@@ -356,11 +356,7 @@ export async function testEnvironment(
         asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
       );
 
-      // Only this call actually produces an inference session — everything
-      // else in testEnvironment (cwd checks, command resolvability, the
-      // --help-based effort-flag probe above) is read-only. `runInferenceProbe`
-      // lets the caller mediate launch ownership around just this call; a
-      // `null` result means the caller declined to run it (e.g. blocked).
+      // Only this call produces inference; every other check above is read-only and stays outside the gate.
       const runInferenceProbe = ctx.runInferenceProbe ?? (<T,>(run: () => Promise<T>) => run());
       const probe = await runInferenceProbe(() =>
         runAdapterExecutionTargetProcess(runId, target, command, args, {
