@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent } from "react";
+import { memo, useState, type KeyboardEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlarmClock,
@@ -65,7 +65,8 @@ interface AttentionQueueRowProps {
   item: AttentionItem;
   companyId: string;
   expanded: boolean;
-  onToggleExpand: () => void;
+  /** Receives the row's item so the parent can pass one stable callback for every row. */
+  onToggleExpand: (item: AttentionItem) => void;
   onDismiss: (item: AttentionItem) => void;
   onSnooze?: (item: AttentionItem, snoozedUntil: string) => void;
   /** Restore a snoozed/dismissed row (curtain variant only). */
@@ -78,7 +79,14 @@ interface AttentionQueueRowProps {
   selected?: boolean;
 }
 
-export function AttentionQueueRow({
+/**
+ * Memoized (PAP-13784): the queue renders every feed row in one flat list, so
+ * without memo a single keyboard-selection or expand toggle re-renders every
+ * row (each carrying a Radix dropdown + mutation). All props are stable or
+ * primitive; `item` identity is preserved across refetches by react-query's
+ * structural sharing.
+ */
+export const AttentionQueueRow = memo(function AttentionQueueRow({
   item,
   companyId,
   expanded,
@@ -108,13 +116,13 @@ export function AttentionQueueRow({
   const expandable = inline;
 
   const activate = () => {
-    if (expandable) onToggleExpand();
+    if (expandable) onToggleExpand(item);
   };
   const onHeaderKeyDown = (e: KeyboardEvent) => {
     if (!expandable) return;
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      onToggleExpand();
+      onToggleExpand(item);
     }
   };
 
@@ -122,6 +130,10 @@ export function AttentionQueueRow({
     <div
       className={cn(
         "relative flex flex-col overflow-hidden border border-border bg-card",
+        // The feed is uncapped, so off-screen rows must not cost layout/paint
+        // while scrolling. The intrinsic-size estimate only matters before a
+        // row's first paint; `auto` keeps the real measured height afterwards.
+        "[content-visibility:auto] [contain-intrinsic-size:auto_104px]",
         "motion-safe:transition-[opacity,transform,border-color,background-color] motion-safe:duration-200 motion-safe:ease-out hover:border-border/80",
         isHidden && "bg-muted/30 opacity-80 hover:opacity-100",
         selected && "border-ring ring-1 ring-ring",
@@ -256,7 +268,7 @@ export function AttentionQueueRow({
           </div>
 
           <div className="mt-auto flex flex-col items-end gap-1" data-attention-actions="true">
-            {!expanded && <CompactDecisionActions item={item} companyId={companyId} onOpen={onToggleExpand} />}
+            {!expanded && <CompactDecisionActions item={item} companyId={companyId} onOpen={() => onToggleExpand(item)} />}
 
             <div className="flex items-start justify-end gap-1">
               {!inline && href && (
@@ -292,7 +304,7 @@ export function AttentionQueueRow({
       )}
     </div>
   );
-}
+});
 
 type CompactDecisionAction = "accept" | "approve" | "reject" | "request_revision";
 

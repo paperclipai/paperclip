@@ -2,7 +2,7 @@
 
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
-import type { AnchorHTMLAttributes, ReactElement } from "react";
+import { useState, type AnchorHTMLAttributes, type ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AttentionItem, AttentionSourceKind } from "@paperclipai/shared";
@@ -32,6 +32,13 @@ vi.mock("../api/issues", () => ({
     rejectInteraction: vi.fn(),
   },
 }));
+
+// Spy on `relativeTime` (called exactly once per active-row render) so the
+// memoization test below can count row renders without a profiling build.
+vi.mock("../lib/utils", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/utils")>();
+  return { ...original, relativeTime: vi.fn(original.relativeTime) };
+});
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -439,6 +446,30 @@ describe("AttentionQueueRow", () => {
     const thumbnailStack = image?.parentElement?.parentElement;
     expect(thumbnailStack?.getAttribute("class")).toContain("items-center");
     expect(thumbnailStack?.parentElement?.getAttribute("class")).toContain("items-center");
+  });
+
+  it("is memoized — a parent re-render with identical props does not re-render the row", async () => {
+    const { relativeTime } = await import("../lib/utils");
+    const item = buildItem();
+    let bump: () => void = () => {};
+    function Harness() {
+      const [, setTick] = useState(0);
+      bump = () => setTick((n) => n + 1);
+      return (
+        <AttentionQueueRow
+          item={item}
+          companyId="c1"
+          expanded={false}
+          onToggleExpand={noop}
+          onDismiss={noop}
+        />
+      );
+    }
+    render(<Harness />);
+    const rendersAfterMount = vi.mocked(relativeTime).mock.calls.length;
+    expect(rendersAfterMount).toBeGreaterThan(0);
+    act(() => bump());
+    expect(vi.mocked(relativeTime).mock.calls.length).toBe(rendersAfterMount);
   });
 
   it("does not expose a toggle button for non-inline rows", () => {
