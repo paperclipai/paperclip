@@ -11,7 +11,7 @@
  *    partial unique index (`onConflictDoNothing` returns no rows for a
  *    duplicate non-null external id).
  * 2. The real partial unique index against embedded Postgres (migration
- *    0099), asserting `onConflictDoNothing` yields an empty `returning`
+ *    0147), asserting `onConflictDoNothing` yields an empty `returning`
  *    for duplicate (plugin_id, webhook_key, external_id) and that NULL
  *    external ids are never deduplicated.
  */

@@ -6,6 +6,7 @@ export { cloudUpstreamConnections, cloudUpstreamRuns } from "./cloud_upstreams.j
 export { instanceUserRoles } from "./instance_user_roles.js";
 export { userSidebarPreferences } from "./user_sidebar_preferences.js";
 export { agents } from "./agents.js";
+export { builtInManagedResources } from "./built_in_managed_resources.js";
 export { agentMemberships } from "./agent_memberships.js";
 export { boardApiKeys } from "./board_api_keys.js";
 export { cliAuthChallenges } from "./cli_auth_challenges.js";
@@ -43,6 +44,14 @@ export { externalObjectMentions } from "./external_object_mentions.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";
 export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
+export {
+  cases,
+  caseAttachments,
+  caseDocuments,
+  caseEvents,
+  caseIssueLinks,
+  caseLabels,
+} from "./cases.js";
 export {
   pipelineCases,
   pipelineCaseIssueLinks,
@@ -84,11 +93,21 @@ export { approvals } from "./approvals.js";
 export { approvalComments } from "./approval_comments.js";
 export { activityLog } from "./activity_log.js";
 export { companySecretProviderConfigs } from "./company_secret_provider_configs.js";
+export { userSecretDefinitions } from "./user_secret_definitions.js";
 export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { companySecretBindings } from "./company_secret_bindings.js";
+export { userSecretDeclarations } from "./user_secret_declarations.js";
 export { secretAccessEvents } from "./secret_access_events.js";
-export { companySkills, companySkillVersions, companySkillStars, companySkillComments } from "./company_skills.js";
+export {
+  companySkills,
+  companySkillVersions,
+  companySkillStars,
+  companySkillComments,
+  companySkillTestInputs,
+  companySkillTestRunTemplates,
+  companySkillTestRuns,
+} from "./company_skills.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";

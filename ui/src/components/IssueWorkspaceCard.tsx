@@ -16,6 +16,7 @@ import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Check, Copy, FileSearch, FolderOpen, FolderSearch, GitBranch, Pencil, X } from "lucide-react";
 import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
+import { Badge } from "@/components/ui/badge";
 
 /* -------------------------------------------------------------------------- */
 /*  Utility helpers (mirrored from IssueProperties for self-containment)      */
@@ -144,9 +145,9 @@ function statusBadge(status: string) {
     archived: "bg-muted text-muted-foreground",
   };
   return (
-    <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium", colors[status] ?? colors.idle)}>
+    <Badge variant="ghost" className={cn("text-(length:--text-nano) px-1.5", colors[status] ?? colors.idle)}>
       {status.replace(/_/g, " ")}
-    </span>
+    </Badge>
   );
 }
 
@@ -405,7 +406,7 @@ export function IssueWorkspaceCard({
           )}
           {workspace?.repoUrl && (
             <div className="flex items-center gap-1.5 text-muted-foreground">
-              <span className="text-[11px]">Repo:</span>
+              <span className="text-(length:--text-micro)">Repo:</span>
               <CopyableInline value={workspace.repoUrl} mono />
             </div>
           )}
@@ -447,7 +448,7 @@ export function IssueWorkspaceCard({
             <div className="pt-0.5">
               <Link
                 to={currentWorkspaceLink}
-                className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                className="text-(length:--text-micro) text-muted-foreground hover:text-foreground hover:underline"
               >
                 View workspace details →
               </Link>
@@ -493,7 +494,7 @@ export function IssueWorkspaceCard({
 
           {/* Current workspace summary when editing */}
           {workspace && (
-            <div className="text-[11px] text-muted-foreground space-y-0.5 pt-1 border-t border-border/50">
+            <div className="text-(length:--text-micro) text-muted-foreground space-y-0.5 pt-1 border-t border-border/50">
               <div style={{ overflowWrap: "anywhere" }}>
                 Current:{" "}
                 {currentWorkspaceLink ? (

@@ -65,6 +65,8 @@ import type {
   IssueThreadInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
+  RequestItemVerdictsInteraction,
+  RequestItemVerdictValue,
   SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
 import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "../lib/issue-thread-interactions";
@@ -76,6 +78,7 @@ import {
   type IssueTimelineWorkspace,
 } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -162,6 +165,7 @@ import {
 } from "../lib/transcriptPresentation";
 import { buildAgentMentionHref } from "@paperclipai/shared";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
+import { brandChipBadge } from "../lib/status-colors";
 import { nextWorkMode, titleForPendingWorkMode, workModeMetaFor, workModeMetaList } from "../lib/work-mode-meta";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -169,7 +173,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp, Trash2 } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
-import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
+import {
+  IssueRecoveryActionCard,
+  type RecoveryReissueRequest,
+  type RecoveryResolveOutcome,
+} from "./IssueRecoveryActionCard";
 import { SourceTrustBadge } from "./SourceTrustBadge";
 
 interface IssueChatMessageContext {
@@ -215,10 +223,16 @@ interface IssueChatMessageContext {
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
+  onSubmitInteractionVerdicts?: (
+    interaction: RequestItemVerdictsInteraction,
+    verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
+  ) => Promise<void> | void;
   onUploadImage?: (file: File) => Promise<string>;
   issueStatus?: string;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   externalReferences?: MarkdownExternalReferenceMap;
+  /** Linkify `PAP-C7` case chips in comment bodies (experimental Cases flag). */
+  linkCaseReferences?: boolean;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -228,7 +242,7 @@ const IssueChatCtx = createContext<IssueChatMessageContext>({
   successfulRunHandoff: null,
 });
 
-const AGENT_COMMENT_BUBBLE_WIDTH_CLASS = "max-w-[calc(100%-0.5rem)] sm:max-w-[85%]";
+const AGENT_COMMENT_BUBBLE_WIDTH_CLASS = "max-w-(--sz-calc-7) sm:max-w-(--pct-85)";
 
 export type IssueChatRunFinalizationAction = {
   id: "cancel" | "done";
@@ -416,11 +430,21 @@ interface IssueChatThreadProps {
   activeRun?: ActiveRunForIssue | null;
   issueId?: string | null;
   blockedBy?: IssueRelationIssueSummary[];
+  /** Company-wide set of issue ids with a live (queued/running) run. */
+  liveIssueIds?: ReadonlySet<string>;
   blockerAttention?: IssueBlockerAttention | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
   recoveryAction?: IssueRecoveryAction | null;
   onResolveRecoveryAction?: (outcome: RecoveryResolveOutcome) => void;
+  onReissueIsolatedRecoveryAction?: (request: RecoveryReissueRequest) => void;
+  reissueIsolatedRecoveryActionPending?: boolean;
+  onReconcileForwardRecoveryAction?: () => void;
+  onBreakGlassOverrideRecoveryAction?: (reason: string) => void;
+  onQuarantineRestoreRecoveryAction?: () => void;
+  quarantineRestoreRecoveryActionPending?: boolean;
+  canBreakGlassRecoveryAction?: boolean;
+  reconcileRecoveryActionPending?: boolean;
   canFalsePositiveRecoveryAction?: boolean;
   legacyRecoverySourceIssue?: {
     identifier: string | null;
@@ -463,6 +487,7 @@ interface IssueChatThreadProps {
   showComposer?: boolean;
   showJumpToLatest?: boolean;
   autoScrollToLatestOnInitialLoad?: boolean;
+  autoScrollToHashOnInitialLoad?: boolean;
   emptyMessage?: string;
   footer?: ReactNode;
   variant?: "full" | "embedded";
@@ -498,6 +523,10 @@ interface IssueChatThreadProps {
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
+  onSubmitInteractionVerdicts?: (
+    interaction: RequestItemVerdictsInteraction,
+    verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
+  ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
   issueWorkMode?: IssueWorkMode;
   /**
@@ -507,6 +536,8 @@ interface IssueChatThreadProps {
    */
   onRefreshLatestComments?: () => Promise<unknown> | void;
   externalReferences?: MarkdownExternalReferenceMap;
+  /** Linkify `PAP-C7` case chips in comment bodies (experimental Cases flag). */
+  linkCaseReferences?: boolean;
 }
 
 type IssueChatErrorBoundaryProps = {
@@ -636,24 +667,24 @@ function IssueChatFallbackThread({
       </div>
 
       {messages.length === 0 ? (
-        <div className={cn(
-          "text-center text-sm text-muted-foreground",
+        <Card className={cn(
+          "block shadow-none text-center text-sm text-muted-foreground",
           variant === "embedded"
-            ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
-            : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
+            ? "border-dashed border-border/70 bg-background/60 px-4 py-6"
+            : "border-dashed px-6 py-10",
         )}>
           {emptyMessage}
-        </div>
+        </Card>
       ) : (
         <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
           {messages.map((message) => {
             const lines = fallbackTextParts(message);
             return (
-              <div key={message.id} className="rounded-xl border border-border/60 bg-card/70 px-4 py-3">
+              <Card key={message.id} className="block border-border/60 bg-card/70 px-4 py-3">
                 <div className="mb-2 flex items-center gap-2 text-sm">
                   <span className="font-medium text-foreground">{fallbackAuthorLabel(message)}</span>
                   {message.createdAt ? (
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className="text-(length:--text-micro) text-muted-foreground">
                       {commentDateLabel(message.createdAt)}
                     </span>
                   ) : null}
@@ -667,7 +698,7 @@ function IssueChatFallbackThread({
                     <p className="text-sm text-muted-foreground">No message content.</p>
                   )}
                 </div>
-              </div>
+              </Card>
             );
           })}
         </div>
@@ -768,7 +799,7 @@ function commentDateLabel(date: Date | string | undefined): string {
 }
 
 const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed, onAccent }: { text: string; recessed?: boolean; onAccent?: boolean }) {
-  const { onImageClick, externalReferences } = useContext(IssueChatCtx);
+  const { onImageClick, externalReferences, linkCaseReferences } = useContext(IssueChatCtx);
   if (isSuccessfulRunHandoffComment(text)) {
     return <SuccessfulRunHandoffCommentCallout text={text} recessed={recessed} onImageClick={onImageClick} />;
   }
@@ -779,6 +810,7 @@ const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed, onAc
       softBreaks
       onImageClick={onImageClick}
       externalReferences={externalReferences}
+      linkCaseReferences={linkCaseReferences}
     >
       {text}
     </WorkspaceFileMarkdownBody>
@@ -1049,7 +1081,7 @@ function IssueChatReasoningPart({ text }: { text: string }) {
         {ticker.exiting !== null && (
           <span
             key={`out-${ticker.key}`}
-            className="cot-line-exit absolute inset-x-0 truncate text-[13px] italic leading-5 text-muted-foreground/70"
+            className="cot-line-exit absolute inset-x-0 truncate text-(length:--text-compact) italic leading-5 text-muted-foreground/70"
             onAnimationEnd={() => setTicker((t) => ({ ...t, exiting: null }))}
           >
             {ticker.exiting}
@@ -1058,7 +1090,7 @@ function IssueChatReasoningPart({ text }: { text: string }) {
         <span
           key={`in-${ticker.key}`}
           className={cn(
-            "absolute inset-x-0 truncate text-[13px] italic leading-5 text-muted-foreground/70",
+            "absolute inset-x-0 truncate text-(length:--text-compact) italic leading-5 text-muted-foreground/70",
             ticker.key > 0 && "cot-line-enter",
           )}
         >
@@ -1106,7 +1138,7 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
         {ticker.exiting !== null && (
           <span
             key={`out-${ticker.key}`}
-            className="cot-line-exit absolute inset-x-0 truncate text-[13px] leading-5 text-muted-foreground/70"
+            className="cot-line-exit absolute inset-x-0 truncate text-(length:--text-compact) leading-5 text-muted-foreground/70"
             onAnimationEnd={() => setTicker((t) => ({ ...t, exiting: null }))}
           >
             {ticker.exiting}
@@ -1115,7 +1147,7 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
         <span
           key={`in-${ticker.key}`}
           className={cn(
-            "absolute inset-x-0 truncate text-[13px] leading-5 text-muted-foreground/70",
+            "absolute inset-x-0 truncate text-(length:--text-compact) leading-5 text-muted-foreground/70",
             ticker.key > 0 && "cot-line-enter",
           )}
         >
@@ -1216,7 +1248,7 @@ function IssueChatToolPart({
           className="flex w-full items-center gap-2 rounded-md py-0.5 text-left transition-colors hover:bg-accent/5"
           onClick={() => setOpen((current) => !current)}
         >
-          <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground/80">
+          <span className="min-w-0 flex-1 truncate text-(length:--text-compact) text-muted-foreground/80">
             {title}
             {!intentDetail && summary ? <span className="ml-1.5 text-muted-foreground/50">{summary}</span> : null}
           </span>
@@ -1230,16 +1262,16 @@ function IssueChatToolPart({
           <div className="mt-1 space-y-2 pb-1">
             {nonIntentDetails.length > 0 ? (
               <div>
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
+                <div className="mb-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground/60">
                   Input
                 </div>
                 <dl className="space-y-1.5">
                   {nonIntentDetails.map((detail) => (
                     <div key={`${detail.label}:${detail.value}`}>
-                      <dt className="text-[10px] font-medium text-muted-foreground/60">
+                      <dt className="text-(length:--text-nano) font-medium text-muted-foreground/60">
                         {detail.label}
                       </dt>
-                      <dd className={cn("text-xs leading-5 text-foreground/70", detail.tone === "code" && "font-mono text-[11px]")}>
+                      <dd className={cn("text-xs leading-5 text-foreground/70", detail.tone === "code" && "font-mono text-(length:--text-micro)")}>
                         {detail.value}
                       </dd>
                     </div>
@@ -1248,18 +1280,18 @@ function IssueChatToolPart({
               </div>
             ) : rawArgsText ? (
               <div>
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
+                <div className="mb-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground/60">
                   Input
                 </div>
-                <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-[11px] leading-4 text-foreground/70">{rawArgsText}</CopyablePreBlock>
+                <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-(length:--text-micro) leading-4 text-foreground/70">{rawArgsText}</CopyablePreBlock>
               </div>
             ) : null}
             {result !== undefined ? (
               <div>
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
+                <div className="mb-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground/60">
                   Result
                 </div>
-                <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-[11px] leading-4 text-foreground/70">{resultText}</CopyablePreBlock>
+                <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-(length:--text-micro) leading-4 text-foreground/70">{resultText}</CopyablePreBlock>
               </div>
             ) : null}
           </div>
@@ -1426,12 +1458,12 @@ function IssueChatUserMessage({
     void onDeleteComment?.(commentId);
   };
   const messageBody = (
-    <div className={cn("flex min-w-0 max-w-[85%] flex-col", isCurrentUser && "items-end")}>
+    <div className={cn("flex min-w-0 max-w-(--pct-85) flex-col", isCurrentUser && "items-end")}>
       <div className={cn("mb-1 flex items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
         <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
         <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
         {followUpRequested ? (
-          <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+          <Badge variant="outline" className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)">
             Follow-up
           </Badge>
         ) : null}
@@ -1441,28 +1473,29 @@ function IssueChatUserMessage({
           "min-w-0 max-w-full overflow-hidden break-all rounded-2xl px-4 py-2.5",
           // Tail-hugging corner: flatten the bottom corner nearest the avatar so
           // the bubble points at it (bottom-right for the right-aligned human).
-          isCurrentUser ? "rounded-br-[4px]" : "rounded-bl-[4px]",
+          isCurrentUser ? "rounded-br-(--rad-4)" : "rounded-bl-(--rad-4)",
           queued
             ? "bg-amber-50/80 dark:bg-amber-500/10"
             : deleted
               ? "bg-muted/50 text-muted-foreground"
             : isCurrentUser
-              // Liveness blue (#2563EB) for the human's own messages (PAP-95 rev 5).
-              ? "bg-[#2563EB] text-white"
+              // Liveness blue (--liveness-blue, decoupled from --status-task-in_progress
+              // in DECISION-SHEET.md A6) for the human's own messages (PAP-95 rev 5).
+              ? "bg-(--liveness-blue) text-white"
               : "bg-muted",
           pending && "opacity-80",
         )}
       >
         {queued ? (
           <div className="mb-1.5 flex items-center gap-2">
-            <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+            <Badge variant="outline" className="border-amber-400/60 bg-amber-100/70 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
               {queueBadgeLabel}
-            </span>
+            </Badge>
             {queueTargetRunId && onInterruptQueued ? (
               <Button
                 size="sm"
                 variant="outline"
-                className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                className="h-6 border-red-300 px-2 text-(length:--text-micro) text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
                 disabled={isInterruptingQueuedRun}
                 onClick={() => void onInterruptQueued(queueTargetRunId)}
               >
@@ -1473,7 +1506,7 @@ function IssueChatUserMessage({
               <Button
                 size="sm"
                 variant="outline"
-                className="h-6 border-amber-300 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
+                className="h-6 border-amber-300 px-2 text-(length:--text-micro) text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
                 onClick={() => onCancelQueued(commentId)}
               >
                 Cancel
@@ -1491,7 +1524,7 @@ function IssueChatUserMessage({
       </div>
 
       {pending ? (
-        <div className={cn("mt-1 flex px-1 text-[11px] text-muted-foreground", isCurrentUser ? "justify-end" : "justify-start")}>
+        <div className={cn("mt-1 flex px-1 text-(length:--text-micro) text-muted-foreground", isCurrentUser ? "justify-end" : "justify-start")}>
           Sending...
         </div>
       ) : (
@@ -1505,7 +1538,7 @@ function IssueChatUserMessage({
             <TooltipTrigger asChild>
               <a
                 href={anchorId ? `#${anchorId}` : undefined}
-                className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                className="text-(length:--text-micro) text-muted-foreground hover:text-foreground hover:underline"
               >
                 {message.createdAt ? commentDateLabel(message.createdAt) : ""}
               </a>
@@ -1731,7 +1764,7 @@ function IssueChatAssistantMessage({
         <TooltipTrigger asChild>
           <a
             href={anchorId ? `#${anchorId}` : undefined}
-            className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+            className="text-(length:--text-micro) text-muted-foreground hover:text-foreground hover:underline"
           >
             {message.createdAt ? commentDateLabel(message.createdAt) : ""}
           </a>
@@ -1813,14 +1846,14 @@ function IssueChatAssistantMessage({
                 <AgentIcon icon={agentIcon} className="h-4 w-4" />
               ) : (
                 <Avatar size="sm" className="size-5">
-                  <AvatarFallback className="text-[10px]">{initialsForName(authorName)}</AvatarFallback>
+                  <AvatarFallback className="text-(length:--text-nano)">{initialsForName(authorName)}</AvatarFallback>
                 </Avatar>
               )}
             </span>
             <span className="text-sm font-medium text-foreground">{authorName}</span>
             <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
             {followUpRequested ? (
-              <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+              <Badge variant="outline" className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)">
                 Follow-up
               </Badge>
             ) : null}
@@ -1878,7 +1911,7 @@ function IssueChatAssistantMessage({
               <span className="text-xs text-muted-foreground/60">{chainOfThoughtLabel?.toLowerCase()}</span>
               <span className="ml-auto flex items-center gap-1.5">
                 {message.createdAt ? (
-                  <span className="text-[11px] text-muted-foreground/50">
+                  <span className="text-(length:--text-micro) text-muted-foreground/50">
                     {commentDateLabel(message.createdAt)}
                   </span>
                 ) : null}
@@ -1890,15 +1923,22 @@ function IssueChatAssistantMessage({
               <span className="text-sm font-medium text-foreground">{authorName}</span>
               <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
               {followUpRequested ? (
-                <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+                <Badge variant="outline" className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)">
                   Follow-up
                 </Badge>
               ) : null}
               {isRunning ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
+                // Gallery feedback r1: running chip uses the canonical brand blue
+                // (brandChipBadge.blue), not cyan; layout/size classes unchanged.
+                <Badge variant="outline"
+                  className={cn(
+                    "text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)",
+                    brandChipBadge.blue,
+                  )}
+                >
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Running
-                </span>
+                </Badge>
               ) : null}
             </div>
           )}
@@ -2221,7 +2261,7 @@ function ExpiredRequestConfirmationActivity({
         </a>
         <button
           type="button"
-          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 text-(length:--text-micro) font-medium text-muted-foreground transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           aria-expanded={expanded}
           aria-controls={detailsId}
           onClick={() => setExpanded((current) => !current)}
@@ -2338,7 +2378,7 @@ function isStaleSuccessfulRunHandoffNotice(input: {
 
 function StaleDispositionWarningMetadataRow({ row }: { row: SystemNoticeMetadataRow }) {
   const label = (
-    <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+    <span className="text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
       {row.label}
     </span>
   );
@@ -2348,7 +2388,7 @@ function StaleDispositionWarningMetadataRow({ row }: { row: SystemNoticeMetadata
         return <span>{row.value}</span>;
       case "code":
         return (
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--text-micro) text-foreground/80">
             {row.value}
           </code>
         );
@@ -2379,7 +2419,7 @@ function StaleDispositionWarningMetadataRow({ row }: { row: SystemNoticeMetadata
         const runShort = row.runId.length > 12 ? `${row.runId.slice(0, 8)}...` : row.runId;
         const content = (
           <>
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--text-micro) text-foreground/80">
               {runShort}
             </code>
             {row.status ? <span>{row.status}</span> : null}
@@ -2397,7 +2437,7 @@ function StaleDispositionWarningMetadataRow({ row }: { row: SystemNoticeMetadata
   })();
 
   return (
-    <div className="grid grid-cols-[7.5rem_minmax(0,1fr)] gap-2 text-xs leading-5">
+    <div className="grid grid-cols-(--gtc-7) gap-2 text-xs leading-5">
       {label}
       <div className="min-w-0 break-words text-foreground/80">{value}</div>
     </div>
@@ -2454,7 +2494,7 @@ function StaleDispositionWarningDetails({
       {sections.map((section) => (
         <div key={metadataSectionKey(section)} className="space-y-1.5">
           {section.title ? (
-            <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            <div className="text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
               {section.title}
             </div>
           ) : null}
@@ -2501,7 +2541,7 @@ function StaleDispositionWarningRow({
             </span>
             <span className="ml-auto flex items-center gap-1.5">
               {message.createdAt ? (
-                <span data-testid="stale-disposition-warning-time" className="text-[11px] text-muted-foreground/50">
+                <span data-testid="stale-disposition-warning-time" className="text-(length:--text-micro) text-muted-foreground/50">
                   {commentDateLabel(message.createdAt)}
                 </span>
               ) : null}
@@ -2622,7 +2662,7 @@ function SystemNoticeCommentRow({
             <TooltipTrigger asChild>
               <a
                 href={anchorId ? `#${anchorId}` : undefined}
-                className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                className="text-(length:--text-micro) text-muted-foreground hover:text-foreground hover:underline"
               >
                 {message.createdAt ? commentDateLabel(message.createdAt) : ""}
               </a>
@@ -2676,7 +2716,7 @@ function IssueChatMetadataRow({
   return (
     <div id={anchorId} data-testid={testid}>
       <div className="ml-3 flex items-start gap-2.5 border-l-2 border-border/50 py-0.5 pl-3">
-        <span className="mt-px flex size-[18px] shrink-0 items-center justify-center rounded-full border border-border/70 bg-muted/30 text-muted-foreground/60">
+        <span className="mt-px flex size-(--sz-18px) shrink-0 items-center justify-center rounded-full border border-border/70 bg-muted/30 text-muted-foreground/60">
           {icon}
         </span>
         <div className="min-w-0 flex-1 space-y-1">{children}</div>
@@ -2694,6 +2734,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onRejectInteraction,
     onSubmitInteractionAnswers,
     onCancelInteraction,
+    onSubmitInteractionVerdicts,
     onUploadImage,
     externalReferences,
   } = useContext(IssueChatCtx);
@@ -2752,6 +2793,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             onRejectInteraction={onRejectInteraction}
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
             onCancelInteraction={onCancelInteraction}
+            onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
             onUploadImage={onUploadImage}
             externalReferences={externalReferences}
           />
@@ -2790,7 +2832,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
 
         {statusChange ? (
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
-            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+            <span className="text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground/70">
               Status
             </span>
             <span className="text-muted-foreground">{humanizeValue(statusChange.from)}</span>
@@ -2802,7 +2844,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         {assigneeChange ? (
           <div className="space-y-1">
             <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
-              <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+              <span className="text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground/70">
                 Assignee
               </span>
               <AssigneeChip assignee={assigneeChange.from} resolvers={handoffResolvers} />
@@ -2821,7 +2863,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
 
         {workspaceChange ? (
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
-            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+            <span className="text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground/70">
               Workspace
             </span>
             <span className="text-muted-foreground">
@@ -2853,7 +2895,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
           <span className="text-muted-foreground">run</span>
           <Link
             to={`/agents/${runAgentId}/runs/${runId}`}
-            className="inline-flex items-center rounded-md border border-border bg-accent/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+            className="inline-flex items-center rounded-md border border-border bg-accent/40 px-1.5 py-0.5 font-mono text-(length:--text-nano) text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
           >
             {runId.slice(0, 8)}
           </Link>
@@ -3852,9 +3894,9 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       data-testid="issue-chat-composer"
       data-pending-work-mode={pendingWorkMode}
       className={cn(
-        "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
+        "relative rounded-md border border-border/70 bg-background/95 p-(--sz-15px) shadow-(--shadow-extract-4) backdrop-blur transition-(--tp-border-color-background-color-box-shadow) duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-(--shadow-extract-5)",
         pendingWorkModeMeta.classes.container,
-        isDragOver && "border-primary/45 bg-background shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]",
+        isDragOver && "border-primary/45 bg-background shadow-(--shadow-extract-7)",
       )}
       onKeyDownCapture={handleComposerKeyDown}
       onDragEnterCapture={handleFileDragEnter}
@@ -3865,7 +3907,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       {isDragOver && canAcceptFiles ? (
         <div
           data-testid="issue-chat-composer-drop-overlay"
-          className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-sm border border-dashed border-primary/55 bg-background/75 px-4 py-3 text-center shadow-sm backdrop-blur-[2px] dark:bg-background/65"
+          className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-sm border border-dashed border-primary/55 bg-background/75 px-4 py-3 text-center shadow-sm backdrop-blur-(--blur-2px) dark:bg-background/65"
         >
           <div className="flex max-w-md items-center gap-3 rounded-md bg-background/80 px-3 py-2 text-left shadow-sm ring-1 ring-border/60">
             <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
@@ -3891,7 +3933,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         imageUploadHandler={onImageUpload}
         fileDropTarget="parent"
         bordered={false}
-        contentClassName="max-h-[28dvh] overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
+        contentClassName="max-h-(--sz-28dvh) overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
       />
 
       {coachVisible && plainNameCandidate ? (
@@ -3906,7 +3948,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       ) : null}
 
       {composerHint ? (
-        <div className="inline-flex items-center rounded-full border border-border/70 bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
+        <div className="inline-flex items-center rounded-full border border-border/70 bg-muted/30 px-2 py-1 text-(length:--text-micro) text-muted-foreground">
           {composerHint}
         </div>
       ) : null}
@@ -3998,7 +4040,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                   aria-keyshortcuts="Meta+Period Control+Period"
                   title={titleForPendingWorkMode(pendingWorkMode)}
                   className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors",
+                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-(length:--text-micro) font-semibold transition-colors",
                     pendingWorkModeMeta.classes.chip,
                   )}
                 >
@@ -4037,7 +4079,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                     </button>
                   );
                 })}
-                <div className="mt-1 border-t px-2 py-1.5 text-[10px] text-muted-foreground">
+                <div className="mt-1 border-t px-2 py-1.5 text-(length:--text-nano) text-muted-foreground">
                   Cmd/Ctrl+. cycles modes
                 </div>
               </PopoverContent>
@@ -4050,14 +4092,14 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             ref={reassignTriggerRef}
             value={reassignTarget}
             options={reassignOptions}
-            placeholder="Assignee"
-            noneLabel="No assignee"
-            searchPlaceholder="Search assignees..."
-            emptyMessage="No assignees found."
+            placeholder="Responsible"
+            noneLabel="No responsible"
+            searchPlaceholder="Search responsible..."
+            emptyMessage="No responsible found."
             onChange={setReassignTarget}
             className="h-8 text-xs"
             renderTriggerValue={(option) => {
-              if (!option) return <span className="text-muted-foreground">Assignee</span>;
+              if (!option) return <span className="text-muted-foreground">Responsible</span>;
               const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
               const agent = agentId ? agentMap?.get(agentId) : null;
               return (
@@ -4102,10 +4144,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           }}
         >
           <AlertDialogHeader>
-            <AlertDialogTitle>No assignee selected</AlertDialogTitle>
+            <AlertDialogTitle>No responsible selected</AlertDialogTitle>
             <AlertDialogDescription>
               This comment will be posted without an assignee, so no agent will be woken
-              to act on it. Go back to pick an assignee, or send anyway.
+              to act on it. Go back to pick a responsible, or send anyway.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -4144,11 +4186,20 @@ export function IssueChatThread({
   activeRun = null,
   issueId = null,
   blockedBy = [],
+  liveIssueIds,
   blockerAttention = null,
   successfulRunHandoff = null,
   scheduledRetry = null,
   recoveryAction = null,
   onResolveRecoveryAction,
+  onReissueIsolatedRecoveryAction,
+  reissueIsolatedRecoveryActionPending = false,
+  onReconcileForwardRecoveryAction,
+  onBreakGlassOverrideRecoveryAction,
+  onQuarantineRestoreRecoveryAction,
+  quarantineRestoreRecoveryActionPending = false,
+  canBreakGlassRecoveryAction = false,
+  reconcileRecoveryActionPending = false,
   canFalsePositiveRecoveryAction = false,
   legacyRecoverySourceIssue = null,
   companyId,
@@ -4178,7 +4229,8 @@ export function IssueChatThread({
   composerHint = null,
   showComposer = true,
   showJumpToLatest,
-  autoScrollToLatestOnInitialLoad = true,
+  autoScrollToLatestOnInitialLoad = false,
+  autoScrollToHashOnInitialLoad = false,
   emptyMessage,
   footer,
   variant = "full",
@@ -4196,6 +4248,7 @@ export function IssueChatThread({
   onRejectInteraction,
   onSubmitInteractionAnswers,
   onCancelInteraction,
+  onSubmitInteractionVerdicts,
   composerRef,
   issueWorkMode,
   onWorkModeChange,
@@ -4204,9 +4257,11 @@ export function IssueChatThread({
   onResumeFromBacklog,
   resumeFromBacklogPending = false,
   externalReferences,
+  linkCaseReferences = false,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
+  const didInitialHashScrollDecisionRef = useRef(false);
   const virtualizedThreadRef = useRef<VirtualizedIssueChatThreadListHandle | null>(null);
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -4472,23 +4527,34 @@ export function IssueChatThread({
 
   useEffect(() => {
     const hash = location.hash || (typeof window !== "undefined" ? window.location.hash : "");
-    if (
-      !(
-        hash.startsWith("#comment-")
-        || hash.startsWith("#activity-")
-        || hash.startsWith("#run-")
-        || hash.startsWith("#interaction-")
-      )
-    ) return;
-    if (messages.length === 0 || lastScrolledHashRef.current === hash) return;
+    const isThreadHash = hash.startsWith("#comment-")
+      || hash.startsWith("#activity-")
+      || hash.startsWith("#run-")
+      || hash.startsWith("#interaction-");
+    if (messages.length === 0) return;
+    if (!isThreadHash) {
+      if (!didInitialHashScrollDecisionRef.current) {
+        didInitialHashScrollDecisionRef.current = true;
+      }
+      return;
+    }
+    if (lastScrolledHashRef.current === hash) return;
     const targetId = hash.slice(1);
     if (targetId.startsWith("comment-")) {
       const targetMessage = messages.find((message) => issueChatMessageAnchorId(message) === targetId);
       if (targetMessage && issueChatMessageIsDeleted(targetMessage)) {
+        didInitialHashScrollDecisionRef.current = true;
         lastScrolledHashRef.current = hash;
         if (typeof window !== "undefined") {
           window.history.replaceState(null, "", `${location.pathname}${location.search}`);
         }
+        return;
+      }
+    }
+    if (!didInitialHashScrollDecisionRef.current) {
+      didInitialHashScrollDecisionRef.current = true;
+      if (!autoScrollToHashOnInitialLoad) {
+        lastScrolledHashRef.current = hash;
         return;
       }
     }
@@ -4510,12 +4576,11 @@ export function IssueChatThread({
       cancelAnimationFrame(frame);
       window.clearTimeout(timeout);
     };
-  }, [location.hash, messageAnchorIndex, messages, useVirtualizedThread]);
+  }, [autoScrollToHashOnInitialLoad, location.hash, messageAnchorIndex, messages, useVirtualizedThread]);
 
-  // On first thread load, land on the latest comment instead of defaulting to
-  // the top (board rev-2 feedback for PAP-95). A deep-link hash takes
-  // precedence — the hash-scroll effect above owns that case. Runs once per
-  // mount, after messages first populate.
+  // Optional legacy behavior: callers may explicitly request landing on the
+  // latest comment. The shared default stays off so ordinary page loads keep
+  // the user's initial viewport stable.
   useEffect(() => {
     if (didInitialLatestScrollRef.current) return;
     if (!autoScrollToLatestOnInitialLoad) return;
@@ -4716,6 +4781,7 @@ export function IssueChatThread({
   const stableOnRejectInteraction = useStableEvent(onRejectInteraction);
   const stableOnSubmitInteractionAnswers = useStableEvent(onSubmitInteractionAnswers);
   const stableOnCancelInteraction = useStableEvent(onCancelInteraction);
+  const stableOnSubmitInteractionVerdicts = useStableEvent(onSubmitInteractionVerdicts);
   const stableOnUploadImage = useStableEvent(imageUploadHandler);
 
   const chatCtx = useMemo<IssueChatMessageContext>(
@@ -4740,10 +4806,12 @@ export function IssueChatThread({
       onRejectInteraction: stableOnRejectInteraction,
       onSubmitInteractionAnswers: stableOnSubmitInteractionAnswers,
       onCancelInteraction: stableOnCancelInteraction,
+      onSubmitInteractionVerdicts: stableOnSubmitInteractionVerdicts,
       onUploadImage: stableOnUploadImage,
       issueStatus,
       successfulRunHandoff,
       externalReferences,
+      linkCaseReferences,
     }),
     [
       feedbackDataSharingPreference,
@@ -4766,10 +4834,12 @@ export function IssueChatThread({
       stableOnRejectInteraction,
       stableOnSubmitInteractionAnswers,
       stableOnCancelInteraction,
+      stableOnSubmitInteractionVerdicts,
       stableOnUploadImage,
       issueStatus,
       successfulRunHandoff,
       externalReferences,
+      linkCaseReferences,
     ],
   );
 
@@ -4815,14 +4885,14 @@ export function IssueChatThread({
               className={variant === "embedded" ? "space-y-3" : "space-y-4"}
             >
               {messages.length === 0 ? (
-                <div className={cn(
-                  "text-center text-sm text-muted-foreground",
+                <Card className={cn(
+                  "block shadow-none text-center text-sm text-muted-foreground",
                   variant === "embedded"
-                    ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
-                    : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
+                    ? "border-dashed border-border/70 bg-background/60 px-4 py-6"
+                    : "border-dashed px-6 py-10",
                 )}>
                   {resolvedEmptyMessage}
-                </div>
+                </Card>
               ) : messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD ? (
                 <VirtualizedIssueChatThreadList
                   ref={virtualizedThreadRef}
@@ -4862,6 +4932,14 @@ export function IssueChatThread({
                       action={recoveryAction}
                       agentMap={agentMap}
                       onResolve={onResolveRecoveryAction}
+                      onReissueIsolated={onReissueIsolatedRecoveryAction}
+                      reissuePending={reissueIsolatedRecoveryActionPending}
+                      onReconcileForward={onReconcileForwardRecoveryAction}
+                      onBreakGlassOverride={onBreakGlassOverrideRecoveryAction}
+                      onQuarantineRestore={onQuarantineRestoreRecoveryAction}
+                      quarantineRestorePending={quarantineRestoreRecoveryActionPending}
+                      canBreakGlass={canBreakGlassRecoveryAction}
+                      reconcilePending={reconcileRecoveryActionPending}
                       canFalsePositive={canFalsePositiveRecoveryAction}
                     />
                   ) : null}
@@ -4899,6 +4977,8 @@ export function IssueChatThread({
                     issueId={issueId}
                     issueStatus={issueStatus}
                     blockers={unresolvedBlockers}
+                    allBlockers={blockedBy}
+                    liveIssueIds={liveIssueIds}
                     blockerAttention={blockerAttention}
                     successfulRunHandoff={recoveryAction ? null : successfulRunHandoff}
                     scheduledRetry={scheduledRetry}
@@ -4928,7 +5008,7 @@ export function IssueChatThread({
           <div
             ref={composerViewportAnchorRef}
             data-testid="issue-chat-composer-dock"
-            className="sticky bottom-[calc(env(safe-area-inset-bottom)+20px)] z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
+            className="sticky bottom-(--sz-calc-8) z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
           >
             <IssueChatComposer
               ref={composerRef}

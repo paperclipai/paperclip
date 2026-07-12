@@ -41,7 +41,7 @@ function formatMs(value: number | null) {
 function MetricTile({ label, value, testId }: { label: string; value: string; testId: string }) {
   return (
     <div className="rounded-md border border-border bg-background px-3 py-2">
-      <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+      <div className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
         {label}
       </div>
       <div data-testid={testId} className="mt-1 font-mono text-sm text-foreground">
@@ -109,7 +109,7 @@ export function IssueChatLongThreadPerf() {
       <div className="flex flex-col gap-3 border-b border-border pb-5 lg:flex-row lg:items-end lg:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="font-mono text-[11px]">
+            <Badge variant="outline" className="font-mono text-(length:--text-micro)">
               {fixture.issue.identifier}
             </Badge>
             <Badge variant="secondary">{fixture.issue.status.replace(/_/g, " ")}</Badge>
@@ -122,13 +122,13 @@ export function IssueChatLongThreadPerf() {
             sub-issues, and sidebar context.
           </p>
         </div>
-        <div className="grid min-w-[280px] grid-cols-2 gap-2">
+        <div className="grid min-w-(--sz-280px) grid-cols-2 gap-2">
           <MetricTile label="Fixture rows" value={String(rowTarget)} testId="perf-fixture-row-target" />
           <MetricTile label="Markdown rows" value={String(LONG_THREAD_MARKDOWN_COMMENT_COUNT)} testId="perf-fixture-markdown-rows" />
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="grid gap-4 xl:grid-cols-(--gtc-40)">
         <main className="min-w-0 space-y-4">
           <Card className="border-border/70">
             <CardHeader className="pb-2">

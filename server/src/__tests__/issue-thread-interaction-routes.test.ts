@@ -18,6 +18,7 @@ const mockInteractionService = vi.hoisted(() => ({
   rejectSuggestedTasks: vi.fn(),
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
   answerQuestions: vi.fn(),
+  submitItemVerdicts: vi.fn(),
   cancelQuestions: vi.fn(),
 }));
 
@@ -71,6 +72,9 @@ function registerModuleMocks() {
       })),
     }),
     clampIssueListLimit: (value: number) => value,
+    companySkillService: () => ({
+      completeTestRunForIssue: vi.fn(async () => null),
+    }),
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     ISSUE_LIST_MAX_LIMIT: 1000,
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
@@ -281,6 +285,48 @@ describe.sequential("issue thread interaction routes", () => {
       updatedAt: "2026-04-20T12:06:00.000Z",
       resolvedAt: "2026-04-20T12:06:00.000Z",
     });
+    mockInteractionService.submitItemVerdicts.mockResolvedValue({
+      interaction: {
+        id: "interaction-verdicts",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_item_verdicts",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: "comment-verdicts",
+        sourceRunId: "run-verdicts",
+        payload: {
+          version: 1,
+          prompt: "Review generated artifacts.",
+          items: [
+            { id: "api", label: "API route" },
+            { id: "docs", label: "Docs" },
+          ],
+          verdicts: ["approve", "reject"],
+          requireReasonOn: ["reject"],
+          allowBulkApprove: true,
+        },
+        result: {
+          version: 1,
+          outcome: "resolved",
+          complete: false,
+          items: [
+            {
+              id: "docs",
+              verdict: "reject",
+              reason: "Missing examples",
+              resolvedByUserId: "local-board",
+              resolvedAt: "2026-04-20T12:06:00.000Z",
+            },
+          ],
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:06:00.000Z",
+        resolvedAt: null,
+      },
+      newlyResolvedItemIds: ["docs"],
+    });
     mockInteractionService.cancelQuestions.mockResolvedValue({
       id: "interaction-2",
       companyId: "company-1",
@@ -462,6 +508,68 @@ describe.sequential("issue thread interaction routes", () => {
       expect.anything(),
       expect.objectContaining({
         action: "issue.thread_interaction_answered",
+      }),
+    );
+  });
+
+  it("submits item verdicts and emits one continuation wake with resolved item ids", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-verdicts/verdicts")
+      .send({
+        verdicts: [{ id: "docs", verdict: "reject", reason: "Missing examples" }],
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.submitItemVerdicts).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-verdicts",
+      { verdicts: [{ id: "docs", verdict: "reject", reason: "Missing examples" }] },
+      expect.objectContaining({ userId: "local-board" }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        reason: "issue_commented",
+        idempotencyKey: expect.stringMatching(
+          /^request_item_verdicts:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:interaction-verdicts:/,
+        ),
+        payload: expect.objectContaining({
+          interactionId: "interaction-verdicts",
+          interactionKind: "request_item_verdicts",
+          interactionStatus: "pending",
+          sourceCommentId: "comment-verdicts",
+          sourceRunId: "run-verdicts",
+          newlyResolvedItemIds: ["docs"],
+          itemVerdicts: {
+            newlyResolvedItemIds: ["docs"],
+            coalesceWindowMs: 2000,
+          },
+        }),
+        contextSnapshot: expect.objectContaining({
+          interactionId: "interaction-verdicts",
+          interactionKind: "request_item_verdicts",
+          interactionStatus: "pending",
+          newlyResolvedItemIds: ["docs"],
+          itemVerdicts: {
+            newlyResolvedItemIds: ["docs"],
+            coalesceWindowMs: 2000,
+          },
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_item_verdicts_submitted",
+        details: expect.objectContaining({
+          interactionKind: "request_item_verdicts",
+          newlyResolvedItemCount: 1,
+          newlyResolvedItemIds: ["docs"],
+          complete: false,
+        }),
       }),
     );
   });

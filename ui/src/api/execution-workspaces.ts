@@ -115,4 +115,25 @@ export const executionWorkspacesApi = {
       sanitizeWorkspaceRuntimeControlTarget(target),
     ),
   update: (id: string, data: Record<string, unknown>) => api.patch<ExecutionWorkspace>(`/execution-workspaces/${id}`, data),
+  /**
+   * Reconcile a git-worktree branch divergence via the S4 (`PAP-1586`) op.
+   *
+   * Hits `POST /execution-workspaces/:id/reconcile-branch`. That route is the reviewed,
+   * OpenAPI-documented backend contract and already ships on `master`: it was merged ahead of this
+   * client change in `server/src/routes/execution-workspaces.ts` (route registration:
+   * `router.post("/execution-workspaces/:id/reconcile-branch", ...)`, landed in PR #9170, with the
+   * `forward` auto-reconcile path in PR #9172). This client is therefore additive against an
+   * existing endpoint, not a call to a missing one. Keep this path byte-identical to the backend
+   * route; the drift is pinned by a regression test in `execution-workspaces.test.ts`.
+   * - `mode: "forward"` — server re-verifies `ancestryVerdict === "ancestor"` (client hint is
+   *   never trusted); no `reason` needed.
+   * - `mode: "override"` — audited break-glass; the server rejects agent actors, re-checks
+   *   `runtime:manage` permission, and requires a non-empty operator `reason`.
+   * - `mode: "quarantine_restore"` — lossless dirty-worktree repair; the server quarantines the
+   *   dirty changes onto a rescue branch and restores the recorded branch. No `reason` needed.
+   */
+  reconcile: (
+    id: string,
+    body: { mode: "forward" } | { mode: "override"; reason: string } | { mode: "quarantine_restore" },
+  ) => api.post<ExecutionWorkspace>(`/execution-workspaces/${id}/reconcile-branch`, body),
 };
