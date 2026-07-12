@@ -8,7 +8,46 @@ import {
   isClaudeRefusalResult,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
+  stripClaudeHookEventLines,
 } from "./parse.js";
+
+// A SessionStart hook (e.g. a plugin that injects the previous session's
+// summary) emits `hook_started` / `hook_response` events on the stream-json
+// channel before Claude's own output. This reproduces a successful `hello`
+// probe whose injected hook summary happens to mention a past auth failure.
+// See https://github.com/paperclipai/paperclip/issues/4439.
+const HELLO_PROBE_WITH_HOOK_STDOUT = [
+  JSON.stringify({
+    type: "system",
+    subtype: "hook_started",
+    hook_event: "SessionStart",
+    hook_name: "SessionStart:startup",
+    hook_id: "abc123",
+  }),
+  JSON.stringify({
+    type: "system",
+    subtype: "hook_response",
+    hook_event: "SessionStart",
+    hook_name: "SessionStart:startup",
+    output:
+      "Previous session summary — Tasks: investigated why the probe showed 'Not logged in · Please run /login' and hit a 'usage limit reached' warning.",
+    exit_code: 0,
+    outcome: "success",
+  }),
+  JSON.stringify({ type: "system", subtype: "init", session_id: "s1", model: "claude-opus-4-8" }),
+  JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "text", text: "Hello!" }] },
+    session_id: "s1",
+  }),
+  JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "Hello!",
+    session_id: "s1",
+  }),
+].join("\n");
 
 describe("detectClaudeLoginRequired", () => {
   it("classifies Claude's invalid API key login prompt as auth required", () => {
@@ -29,6 +68,50 @@ describe("detectClaudeLoginRequired", () => {
         stderr: "Invalid API key",
       }).requiresLogin,
     ).toBe(false);
+  });
+
+  it("ignores login-looking text inside SessionStart hook events on a successful run (#4439)", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: "Hello!",
+        },
+        stdout: HELLO_PROBE_WITH_HOOK_STDOUT,
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("still detects a genuine auth failure in the result event despite hook noise", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "system",
+        subtype: "hook_response",
+        hook_event: "SessionStart",
+        output: "hello from the hook",
+      }),
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        result: "Not logged in · Please run /login",
+      }),
+    ].join("\n");
+    expect(
+      detectClaudeLoginRequired({
+        parsed: {
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          result: "Not logged in · Please run /login",
+        },
+        stdout,
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(true);
   });
 });
 
@@ -135,6 +218,21 @@ describe("isClaudeTransientUpstreamError", () => {
     expect(
       isClaudeTransientUpstreamError({
         errorMessage: "Invalid request_error: Unknown parameter 'foo'.",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not classify usage-limit wording inside a hook event as transient (#4439)", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: "Hello!",
+        },
+        stdout: HELLO_PROBE_WITH_HOOK_STDOUT,
+        stderr: "",
       }),
     ).toBe(false);
   });
@@ -343,5 +441,38 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+});
+
+describe("stripClaudeHookEventLines", () => {
+  it("removes hook lifecycle events but keeps init/assistant/result lines", () => {
+    const out = stripClaudeHookEventLines(HELLO_PROBE_WITH_HOOK_STDOUT);
+    expect(out).not.toContain("hook_started");
+    expect(out).not.toContain("hook_response");
+    expect(out).not.toContain("Please run /login");
+    expect(out).toContain('"subtype":"init"');
+    expect(out).toContain('"type":"assistant"');
+    expect(out).toContain('"type":"result"');
+  });
+
+  it("detects hook events tagged only by hook metadata (no hook subtype)", () => {
+    const line = JSON.stringify({
+      type: "system",
+      subtype: "",
+      hook_name: "SessionStart:startup",
+      output: "unauthorized: not logged in",
+    });
+    expect(stripClaudeHookEventLines(line)).toBe("");
+  });
+
+  it("leaves non-hook system, assistant, and non-JSON lines untouched", () => {
+    const init = JSON.stringify({ type: "system", subtype: "init", session_id: "s1" });
+    const plain = "not json at all";
+    const stdout = [init, plain].join("\n");
+    expect(stripClaudeHookEventLines(stdout)).toBe(stdout);
+  });
+
+  it("returns the input unchanged when it is empty", () => {
+    expect(stripClaudeHookEventLines("")).toBe("");
   });
 });
