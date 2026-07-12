@@ -1027,6 +1027,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           const project = {
             id: `project-${projects.size + 1}`,
             companyId,
+            parentProjectId: null,
             urlKey: declaration.projectKey,
             goalId: null,
             goalIds: [],

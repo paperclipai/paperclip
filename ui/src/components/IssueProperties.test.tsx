@@ -340,6 +340,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     id: "project-1",
     companyId: "company-1",
     urlKey: "project-1",
+    parentProjectId: null,
     goalId: null,
     goalIds: [],
     goals: [],

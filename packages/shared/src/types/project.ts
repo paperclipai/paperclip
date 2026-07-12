@@ -78,6 +78,7 @@ export interface ProjectManagedByPlugin {
 export interface Project {
   id: string;
   companyId: string;
+  parentProjectId: string | null;
   urlKey: string;
   /** @deprecated Use goalIds / goals instead */
   goalId: string | null;

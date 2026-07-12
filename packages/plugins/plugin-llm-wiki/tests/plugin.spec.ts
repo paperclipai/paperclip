@@ -522,6 +522,7 @@ function existingProject(): Project {
   return {
     id: "55555555-5555-4555-8555-555555555555",
     companyId: COMPANY_ID,
+    parentProjectId: null,
     urlKey: "existing-wiki-project",
     goalId: null,
     goalIds: [],
