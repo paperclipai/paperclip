@@ -520,6 +520,48 @@ describeEmbeddedPostgres("dispatch gate launch-surface quota settlement", () => 
       expect(row?.blockedUntil).toBeNull();
     });
 
+    // Precedence matrix: confirmed quota evidence must win over our own
+    // timeout kill, mirroring the same fix already proven for board chat.
+    it("persists a quota block when our own login timeout co-occurs with confirmed quota evidence", async () => {
+      mockRunClaudeLogin.mockResolvedValue({
+        exitCode: 1,
+        signal: null,
+        timedOut: true,
+        stdout: "You've hit your session limit - resets at 4pm (America/Chicago).",
+        stderr: "",
+        loginUrl: null,
+      });
+
+      const app = await loginApp();
+      const res = await request(app).post(`/api/agents/${claudeAgentId}/claude-login`).send({});
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+      const [row] = await db.select().from(dispatchGateState).where(eq(dispatchGateState.scopeKey, CLAUDE_LOCAL_DEFAULT_SCOPE));
+      expect(row?.ownershipState).toBe("idle");
+      expect(row?.blockedUntil).not.toBeNull();
+
+      await expectEveryOtherSurfaceBlocked();
+    });
+
+    it("releases to idle on a login timeout with no quota evidence", async () => {
+      mockRunClaudeLogin.mockResolvedValue({
+        exitCode: 1,
+        signal: null,
+        timedOut: true,
+        stdout: "",
+        stderr: "",
+        loginUrl: null,
+      });
+
+      const app = await loginApp();
+      const res = await request(app).post(`/api/agents/${claudeAgentId}/claude-login`).send({});
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+      const [row] = await db.select().from(dispatchGateState).where(eq(dispatchGateState.scopeKey, CLAUDE_LOCAL_DEFAULT_SCOPE));
+      expect(row?.ownershipState).toBe("idle");
+      expect(row?.blockedUntil).toBeNull();
+    });
+
     it("marks ownership unknown when runClaudeLogin throws (thrown/ambiguous result)", async () => {
       mockRunClaudeLogin.mockRejectedValue(new Error("simulated crash mid-login"));
 

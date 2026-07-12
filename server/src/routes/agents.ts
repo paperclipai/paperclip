@@ -126,16 +126,18 @@ import {
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
 
-/** Reuses the adapter's narrow quota classifier (stdout/stderr fallback, since `claude login` has no structured result event); our own timeout is never a quota result. */
+/** Reuses the adapter's narrow quota classifier (stdout/stderr fallback, since `claude login` has no structured result event); quota evidence always takes precedence over a timeout classification. */
 function classifyClaudeLoginQuota(result: {
   timedOut: boolean;
   stdout: string;
   stderr: string;
 }): DispatchGateSettlement {
-  if (result.timedOut) return { kind: "idle" };
   const classifierInput = { parsed: null, stdout: result.stdout, stderr: result.stderr, errorMessage: null };
-  if (!isClaudeProviderQuotaError(classifierInput)) return { kind: "idle" };
-  return { kind: "quota", blockedUntil: extractClaudeRetryNotBefore(classifierInput), reason: "provider_quota" };
+  if (isClaudeProviderQuotaError(classifierInput)) {
+    return { kind: "quota", blockedUntil: extractClaudeRetryNotBefore(classifierInput), reason: "provider_quota" };
+  }
+  if (result.timedOut) return { kind: "idle" };
+  return { kind: "idle" };
 }
 
 function readRunLogLimitBytes(value: unknown) {
