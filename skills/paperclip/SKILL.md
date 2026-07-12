@@ -248,10 +248,11 @@ Load `references/workflows.md` when the task matches one of these:
 Authorized managers can install company skills independently of hiring, then assign or remove those skills on agents.
 
 - Install and inspect company skills with the company skills API.
+- Update an editable company SOP/skill through the company skills API so the canonical source, database metadata, and audit trail stay synchronized. Never edit an adapter's ephemeral runtime copy or symlink as the source of truth.
 - Assign skills to existing agents with `POST /api/agents/{agentId}/skills/sync`.
 - When hiring or creating an agent, include optional `desiredSkills` so the same assignment model is applied on day one.
 
-If you are asked to install a skill for the company or an agent you MUST read:
+If you are asked to install, inspect, update, repair, propagate, or prove a skill/SOP for the company or an agent you MUST read:
 `skills/paperclip/references/company-skills.md`
 
 ## MCP Server Configuration
@@ -304,6 +305,7 @@ For commands, response fields, and MCP tools, read:
 - **Capability before dispatch.** Before assigning a lane, verify the target agent has the required adapter/runtime, desired company skills, MCP/credential access, and environment access. If not, route to a capable owner or create one bounded provisioning lane first; do not wake an incapable agent repeatedly and ask the board to bridge the gap.
 - **Outputs are first-class.** A success comment is not the deliverable. Store the required document, preview, file, attachment, or external link, then register every contract-declared completion item as a qualifying issue work product and include acceptance-check evidence before marking work complete.
 - **Repeated failures become durable fixes.** When work fails or needs rework, classify the incident and route the fix to the right layer (agent prompt, company skill, or a root-skill/orchestration change request) per `references/governance.md`. Do not only fix the task; fix the mechanism.
+- **Explicit SOP corrections are execution directives.** When the board or an authorized manager explicitly says to update, fix, or add an SOP/skill, inspect the installed skill inventory and edit the canonical binding file(s) in the same work path unless they asked for discussion or a plan only. A plan, TRD, wiki page, issue comment, adapter/config change, or proposed diff is not proof that an SOP changed. Follow `references/governance.md` and `references/company-skills.md`; report `SOP updated` only after file read-back, validation, and affected-agent propagation evidence. Keep this separate from agent-generated improvement suggestions, which still follow the governed suggestion/review path.
 - **Preserve workspace continuity for follow-ups.** Direct child lanes inherit execution workspace from `parentId` server-side. For sibling lanes or non-child follow-ups on the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId` explicitly.
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
 - **Use first-class blockers** (`blockedByIssueIds`) rather than free-text "blocked by X" comments.

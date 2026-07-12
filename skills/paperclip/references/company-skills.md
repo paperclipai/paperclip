@@ -1,6 +1,6 @@
 # Company Skills Workflow
 
-Use this reference when a board user, CEO, or manager asks you to find a skill, install it into the company library, or assign it to an agent.
+Use this reference when a board user, CEO, or manager asks you to find, install, update, repair, propagate, or prove a company skill or SOP, or assign it to an agent.
 
 ## What Exists
 
@@ -25,6 +25,8 @@ The canonical model is:
 - `GET /api/companies/:companyId/skills`
 - `POST /api/companies/:companyId/skills/refresh`
 - `GET /api/companies/:companyId/skills/:skillId`
+- `GET /api/companies/:companyId/skills/:skillId/files?path=SKILL.md`
+- `PATCH /api/companies/:companyId/skills/:skillId/files`
 - `POST /api/companies/:companyId/skills/import`
 - `POST /api/companies/:companyId/skills/scan-projects`
 - `POST /api/companies/:companyId/skills/:skillId/install-update`
@@ -112,6 +114,46 @@ curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-i
 curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>/files?path=SKILL.md" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
+
+Before editing, inspect the detail response for `key`, `sourceType`, `editable`, `editableReason`, `sourcePath`, `fileInventory`, and `usedByAgents`. Resolve the existing skill by its responsibility and contents; do not create a duplicate merely because the newest request uses different wording.
+
+## Update An Existing Company SOP Or Skill
+
+An explicit instruction from the board or an authorized manager to update/fix/add a company SOP is an implementation directive unless they asked for discussion or planning only.
+
+1. List and inspect the installed skills as shown above.
+2. Read every affected `SKILL.md` and any referenced file needed for the procedure.
+3. Confirm `editable: true`. Only `local_path` company skills can be edited in place. Bundled Paperclip, skills.sh, GitHub, and URL sources are read-only in the company library; update their real source or use an explicitly approved local replacement.
+4. Patch the canonical file through the API. Do not edit an agent's `$CODEX_HOME/skills` entry, adapter staging directory, or the managed `__runtime__` copy.
+
+Encode multiline content from a file so markdown is preserved:
+
+```sh
+jq -n \
+  --arg path "SKILL.md" \
+  --rawfile content /tmp/edited-SKILL.md \
+  '{path: $path, content: $content}' \
+| curl -sS -X PATCH \
+    "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>/files" \
+    -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+    -H "Content-Type: application/json" \
+    --data-binary @-
+```
+
+5. Read the file back through `GET .../files?path=SKILL.md` and verify the returned content, parsed name/description, and `updatedAt` rather than trusting the write response alone.
+6. Refresh the content-aware inventory after filesystem/source edits or when immediate propagation proof is required:
+
+```sh
+curl -sS -X POST \
+  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/refresh" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+7. Verify propagation. Use `usedByAgents` from skill detail plus `GET /api/agents/:agentId/skills`; sync only when an intended agent is missing the canonical key. On a subsequent heartbeat, use `paperclipSkillTelemetry` as preparation evidence. Do not claim a skill was invoked solely because it was available or prepared.
+
+Completion evidence must name the exact skill key/id and edited file, show the binding diff or revision, record validation/read-back results, and inventory every affected agent assignment. A plan, TRD, wiki entry, issue comment, repository adapter, or runtime-copy edit is not proof that the SOP changed.
 
 ## Assign Skills To An Existing Agent
 

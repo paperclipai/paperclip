@@ -33,6 +33,24 @@ Recommend a **root skill change** (escalate to the Paperclip maintainer/instance
 
 Company skills may **extend** root invariants (add stricter local checks) but must never contradict or weaken them. If a company instruction conflicts with a root skill, the root skill wins; flag the conflict.
 
+## Board-directed SOP and skill changes
+
+Keep an explicit board/authorized-manager directive separate from an agent-generated improvement suggestion:
+
+- **Explicit directive** — authorization to implement the requested SOP/skill change now, subject to the actor's normal mutation permission and any stated scope. Do not convert it into an improvement suggestion, plan approval, or documentation-only lane unless the requester asked to discuss or plan first.
+- **Agent-generated suggestion** — proposed durable improvement. Record and route it through the governed suggestion/review path; do not silently mutate binding instructions from autonomous feedback.
+
+For an explicit directive, use this sequence:
+
+1. **Inventory before drafting.** List the company's installed skills and inspect the likely matches, their canonical keys/ids, source type, editability, source path, files, and attached agents. Search by the procedure's real domain and existing responsibility, not only by the wording in the newest comment.
+2. **Route to the binding layer.** Put repeatable company procedure in one or more company skills; repo/workspace developer rules in `AGENTS.md`; universal Paperclip behavior in the bundled root skill source; mechanically guaranteed behavior in orchestration/server code. Update every binding layer required by the directive instead of substituting one layer for another.
+3. **Edit the canonical source.** For an editable company skill, use the company skills file API described in `company-skills.md`. Do not edit `$CODEX_HOME/skills`, adapter staging directories, `__runtime__` materializations, or other ephemeral copies. For a read-only bundled or remote skill, update its real source repository or create an explicitly approved local replacement; if you lack that authority or source, name the exact blocker.
+4. **Preserve the package.** Keep valid frontmatter, existing relevant procedure, references, scripts, and metadata. Make the smallest durable change that covers the failure class.
+5. **Validate and propagate.** Read the edited file back through the API, validate the package/frontmatter and any scripts, refresh the company skill inventory, verify every affected role remains assigned to the intended skill key, and capture runtime skill telemetry or equivalent next-run evidence when available.
+6. **Report literal proof.** Name the exact skill keys and file paths, summarize the binding diff, list validation results, and provide the affected-agent propagation inventory. Until those exist, say `skill update in progress`, not `SOP updated`.
+
+Plans, TRDs, wiki decisions, issue comments, repository adapters, and configuration can support a skill change, but none of them is a substitute for changing and propagating the binding skill file requested by the board.
+
 ## Incident-to-skill loop
 
 Do not only fix the failed task. Fix the mechanism that allowed that failure class.
