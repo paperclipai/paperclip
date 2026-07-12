@@ -7,7 +7,7 @@ import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } f
 import { and, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
-import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
+import { isNonEmptyString, syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
 import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
@@ -356,10 +356,6 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function nonEmptyString(value: unknown) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
 function uniqueNonEmptyStrings(values: string[]) {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -583,15 +579,15 @@ function assertAdapterAllowed(definition: BuiltInAgentDefinition, adapterType: s
 function hasCompleteAdapterConfig(adapterType: string, adapterConfig: unknown) {
   if (!isPlainRecord(adapterConfig)) return false;
   if (["process", "command"].includes(adapterType)) {
-    return nonEmptyString(adapterConfig.command) || nonEmptyString(adapterConfig.script);
+    return isNonEmptyString(adapterConfig.command) || isNonEmptyString(adapterConfig.script);
   }
   if (adapterType === "http") {
-    return nonEmptyString(adapterConfig.url) || nonEmptyString(adapterConfig.endpoint) || nonEmptyString(adapterConfig.webhookUrl);
+    return isNonEmptyString(adapterConfig.url) || isNonEmptyString(adapterConfig.endpoint) || isNonEmptyString(adapterConfig.webhookUrl);
   }
   if (adapterType === "openclaw_gateway" || adapterType === "hermes_gateway") {
-    return nonEmptyString(adapterConfig.baseUrl) || nonEmptyString(adapterConfig.url);
+    return isNonEmptyString(adapterConfig.baseUrl) || isNonEmptyString(adapterConfig.url);
   }
-  return nonEmptyString(adapterConfig.model);
+  return isNonEmptyString(adapterConfig.model);
 }
 
 export function deriveBuiltInAgentStatus(agent: Pick<Agent, "adapterType" | "adapterConfig" | "status" | "pausedAt"> | null): BuiltInAgentStatus {

@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } from "@paperclipai/shared";
+import { readNonEmptyTrimmedString as asNonEmptyString } from "@paperclipai/shared";
 import { documentService } from "./documents.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
@@ -52,10 +53,6 @@ function truncateText(value: string, maxChars: number) {
   const trimmed = value.trim();
   if (trimmed.length <= maxChars) return trimmed;
   return `${trimmed.slice(0, Math.max(0, maxChars - 20)).trimEnd()}\n[truncated]`;
-}
-
-function asNonEmptyString(value: unknown) {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function readResultSummary(resultJson: Record<string, unknown> | null | undefined) {

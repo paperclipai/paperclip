@@ -2,6 +2,7 @@ import type { Db } from "@paperclipai/db";
 import { issueThreadInteractions } from "@paperclipai/db";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import type { RequestConfirmationPayload, RequestConfirmationResult } from "@paperclipai/shared";
+import { readNonEmptyTrimmedString as readNonEmptyString } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 
 export const AGENT_PROFILE_CHANGE_CONSENT_FIELDS = ["name", "role", "title", "capabilities"] as const;
@@ -39,10 +40,6 @@ export function touchesAgentProfileChangeConsentFields(patchData: Record<string,
   return AGENT_PROFILE_CHANGE_CONSENT_FIELDS.some((key) =>
     Object.prototype.hasOwnProperty.call(patchData, key),
   );
-}
-
-function readNonEmptyString(value: unknown) {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function payloadHasDisplayedDiff(payload: RequestConfirmationPayload) {

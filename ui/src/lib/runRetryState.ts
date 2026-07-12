@@ -1,4 +1,5 @@
 import { formatDateTime } from "./utils";
+import { readNonEmptyTrimmedString as readNonEmptyString } from "@paperclipai/shared";
 
 type RetryAwareRun = {
   status: string;
@@ -26,10 +27,6 @@ const RETRY_REASON_LABELS: Record<string, string> = {
   issue_continuation_needed: "Continuation needed",
   max_turns_continuation: "Max-turn continuation",
 };
-
-function readNonEmptyString(value: unknown) {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
 
 function joinFragments(parts: Array<string | null>) {
   const filtered = parts.filter((part): part is string => Boolean(part));

@@ -11,6 +11,7 @@ import {
   MODEL_PROFILE_KEYS,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
+  readNonEmptyString,
   type BillingType,
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
@@ -2060,10 +2061,6 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
   const preferredIndex = rows.findIndex((row) => row.id === preferredWorkspaceId);
   if (preferredIndex <= 0) return rows;
   return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
-}
-
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {

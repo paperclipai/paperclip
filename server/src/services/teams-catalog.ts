@@ -21,6 +21,7 @@ import type {
   CompanyPortabilitySource,
 } from "@paperclipai/shared";
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
+import { readNonEmptyTrimmedString as readNonEmptyString } from "@paperclipai/shared";
 import { parseFrontmatterMarkdown } from "@paperclipai/shared/frontmatter";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { agentService } from "./agents.js";
@@ -223,12 +224,6 @@ export async function listCatalogTeams(query: CatalogTeamListQuery = {}): Promis
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function readNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }
 
 interface CatalogTeamProvenance {

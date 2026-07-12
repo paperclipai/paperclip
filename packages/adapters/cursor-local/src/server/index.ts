@@ -3,10 +3,7 @@ export { listCursorSkills, syncCursorSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
-
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
+import { readNonEmptyTrimmedString as readNonEmptyString } from "@paperclipai/adapter-utils";
 
 export const sessionCodec: AdapterSessionCodec = {
   deserialize(raw: unknown) {

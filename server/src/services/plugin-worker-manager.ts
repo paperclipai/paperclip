@@ -23,6 +23,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import { readNonEmptyTrimmedString as readNonEmptyString } from "@paperclipai/shared";
 import {
   JSONRPC_VERSION,
   JSONRPC_ERROR_CODES,
@@ -494,10 +495,6 @@ export function createPluginWorkerHandle(
     clearTimeout(pending.timer);
     pendingRequests.delete(id);
     pending.resolve(response);
-  }
-
-  function readNonEmptyString(value: unknown): string | null {
-    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
   }
 
   function isRecord(value: unknown): value is Record<string, unknown> {

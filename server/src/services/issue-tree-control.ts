@@ -21,6 +21,7 @@ import {
   type IssueTreePreviewRun,
   type IssueTreePreviewWarning,
 } from "@paperclipai/shared";
+import { readNonEmptyTrimmedString } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
 type IssueRow = typeof issues.$inferSelect;
@@ -90,8 +91,7 @@ type VerifiedInteractionActor = {
 
 function readNonEmptyStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
-  const value = (record as Record<string, unknown>)[key];
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  return readNonEmptyTrimmedString((record as Record<string, unknown>)[key]);
 }
 
 function readInteractionWakeCommentId(record: unknown) {

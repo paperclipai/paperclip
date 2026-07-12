@@ -28,6 +28,7 @@ import {
   type PluginManagedProjectDeclaration,
   type PluginManagedProjectResolution,
 } from "@paperclipai/shared";
+import { readNonEmptyTrimmedString as readNonEmptyString } from "@paperclipai/shared";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -420,12 +421,6 @@ function resolveGoalIds(data: { goalIds?: string[]; goalId?: string | null }): s
     return data.goalId ? [data.goalId] : [];
   }
   return undefined;
-}
-
-function readNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }
 
 function normalizeWorkspaceCwd(value: unknown): string | null {

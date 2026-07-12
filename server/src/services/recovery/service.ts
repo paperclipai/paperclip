@@ -4,6 +4,7 @@ import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  readNonEmptyString,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
@@ -184,10 +185,6 @@ export type RunOutputSilenceSummary = {
   evaluationIssueIdentifier: string | null;
   evaluationIssueAssigneeAgentId: string | null;
 };
-
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
 
 function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
   if (!run) return null;

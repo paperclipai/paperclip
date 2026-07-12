@@ -16,6 +16,7 @@ import {
   issueWorkProducts,
 } from "@paperclipai/db";
 import type { IssueWatchdog, IssueWatchdogSummary } from "@paperclipai/shared";
+import { readNonEmptyString } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { logActivity } from "./activity-log.js";
@@ -459,10 +460,6 @@ async function assertWatchdogAgentInvokable(dbOrTx: any, companyId: string, agen
     throw conflict("Cannot assign watchdog to an agent that is not invokable", invokability);
   }
   return agent;
-}
-
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
 function issueIdFromRunContext(contextSnapshot: unknown) {

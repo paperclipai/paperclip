@@ -49,6 +49,7 @@
  */
 
 import type { PluginCapability } from "@paperclipai/shared";
+import { readNonEmptyTrimmedString as readNonEmptyString } from "@paperclipai/shared";
 import type { WorkerHostCallContext, WorkerToHostMethods, WorkerToHostMethodName } from "./protocol.js";
 import { PLUGIN_RPC_ERROR_CODES } from "./protocol.js";
 
@@ -524,10 +525,6 @@ export function createHostClientHandlers(
 
   function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
-  }
-
-  function readNonEmptyString(value: unknown): string | null {
-    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
   }
 
   function requestedCompanyScope(

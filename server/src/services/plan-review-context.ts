@@ -14,6 +14,7 @@ import type {
   PlanReviewInteractionResultContext,
   PlanReviewInteractionTargetContext,
 } from "@paperclipai/shared";
+import { readNonEmptyTrimmedString as nonEmptyString } from "@paperclipai/shared";
 import { parseObject } from "../adapters/utils.js";
 
 export const PLAN_REVIEW_CONTEXT_LIMITS = {
@@ -33,10 +34,6 @@ type BuildPlanReviewContextInput = {
   includeForAnnotationDelta?: boolean;
   interactionId?: string | null;
 };
-
-function nonEmptyString(value: unknown) {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
 
 function truncateText(value: string, maxChars: number) {
   if (value.length <= maxChars) return { text: value, truncated: false };
