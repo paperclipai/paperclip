@@ -7,6 +7,8 @@ const ASSIGNEE_AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const mockIssueService = vi.hoisted(() => ({
   create: vi.fn(),
   getById: vi.fn(),
+  list: vi.fn(),
+  assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -223,6 +225,9 @@ describe("issue update comment wakeups", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockIssueService.update.mockReset();
+    mockIssueService.list.mockResolvedValue([]);
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.getDependencyReadiness.mockResolvedValue({
@@ -536,6 +541,121 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
+  });
+
+  it("applies an embedded harness Next owner clause and wakes the resolved owner", async () => {
+    const authorAgentId = "44444444-4444-4444-8444-444444444444";
+    const ctoAgentId = "55555555-5555-4555-8555-555555555555";
+    const existing = makeIssue({
+      status: "in_progress",
+      assigneeAgentId: authorAgentId,
+      assigneeUserId: null,
+      parentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    });
+    const commentBody = [
+      "Blocked on the platform configuration.",
+      "Canonical stage: platform recovery. Current owner: Founding Engineer. Next owner: CTO/Paperclip platform owner. Return owner: Founding Engineer after approval.",
+    ].join("\n");
+    const afterInitialUpdate = makeIssue({
+      ...existing,
+      status: "blocked",
+    });
+    const afterHandoff = makeIssue({
+      ...existing,
+      status: "todo",
+      assigneeAgentId: ctoAgentId,
+      assigneeUserId: null,
+    });
+
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update
+      .mockResolvedValueOnce(afterInitialUpdate)
+      .mockResolvedValueOnce(afterHandoff);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-embedded-next-owner",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: commentBody,
+    });
+    const ctoAgent = { id: ctoAgentId, companyId: "company-1", name: "CTO", status: "running", role: "cto" };
+    mockAgentService.list.mockResolvedValue([ctoAgent]);
+    mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, raw: string) => ({
+      ambiguous: false,
+      agent: raw === "CTO" ? ctoAgent : null,
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: authorAgentId,
+      companyId: "company-1",
+      runId: "run-embedded-next-owner",
+    }))
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "blocked",
+        comment: commentBody,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenNthCalledWith(
+      2,
+      existing.id,
+      expect.objectContaining({
+        assigneeAgentId: ctoAgentId,
+        assigneeUserId: null,
+        actorAgentId: authorAgentId,
+        status: "todo",
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ctoAgentId,
+      expect.objectContaining({
+        reason: "next_owner_handoff",
+        payload: expect.objectContaining({
+          commentId: "comment-embedded-next-owner",
+          sourceLine: expect.stringContaining("Next owner: CTO/Paperclip platform owner"),
+        }),
+      }),
+    );
+  });
+
+  it("rejects an unresolved Next owner contract before saving a comment or status change", async () => {
+    const authorAgentId = "44444444-4444-4444-8444-444444444444";
+    const existing = makeIssue({
+      status: "todo",
+      assigneeAgentId: authorAgentId,
+      assigneeUserId: null,
+    });
+    const commentBody =
+      "Canonical stage: recovery. Current owner: Engineer. Next owner: Missing Platform Owner. Return owner: Engineer.";
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockAgentService.list.mockResolvedValue([]);
+    mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: null });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: authorAgentId,
+      companyId: "company-1",
+      runId: "run-unresolved-next-owner",
+    }))
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "blocked",
+        comment: commentBody,
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      error: expect.stringContaining("Next owner handoff could not be resolved"),
+      details: expect.objectContaining({
+        code: "next_owner_handoff_unresolved",
+        reason: "no_assignable_agent",
+        references: ["Missing Platform Owner"],
+      }),
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("applies pure agent Next owner comments as assignment handoffs and wakes the resolved owner", async () => {

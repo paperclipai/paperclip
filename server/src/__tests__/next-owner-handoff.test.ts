@@ -33,6 +33,17 @@ describe("next owner handoff parsing", () => {
     ]);
   });
 
+  it("extracts an embedded Next owner clause from harness summary prose", () => {
+    const line = "Canonical stage: platform recovery. Current owner: Founding Engineer. Next owner: CTO/Paperclip platform owner. Return owner: CTO technical sign-off.";
+    expect(extractNextOwnerHandoffReferences(line)).toEqual([
+      {
+        line,
+        explicitAgentIds: [],
+        references: ["CTO", "Paperclip platform owner"],
+      },
+    ]);
+  });
+
   it("ignores next action lines without a next owner contract", () => {
     expect(extractNextOwnerHandoffReferences("Next action: CEO should decide.")).toEqual([]);
   });

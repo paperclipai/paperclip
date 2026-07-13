@@ -1,6 +1,8 @@
 const AGENT_LINK_PATTERN = /agent:\/\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/gi;
-const NEXT_OWNER_LINE_PATTERN =
-  /^\s*(?:[-*]\s*)?(?:\*\*)?\s*next\s+owner(?:\s*\/\s*action)?(?:\*\*)?\s*[:：]\s*(.+)$/i;
+const NEXT_OWNER_LABEL_PATTERN =
+  /(?:\*\*)?\bnext\s+owner(?:\s*\/\s*action)?(?:\*\*)?\s*[:：]\s*/gi;
+const NEXT_OWNER_CLAUSE_BOUNDARY_PATTERN =
+  /(?:[.!?;]\s+|\s+)(?:\*\*)?(?:canonical\s+stage|current\s+owner|return\s+owner|next\s+(?:action|wake\s+path)|residual\s+risk|recommended\s+(?:unblock|path)|alternative)(?:\*\*)?\s*[:：]/i;
 
 const ROLE_REFERENCES = new Set(["ceo", "cto", "cmo", "cfo", "qa", "pm", "devops", "security"]);
 const GENERIC_REFERENCES = new Set([
@@ -62,16 +64,24 @@ function splitReferenceCandidates(raw: string) {
 export function extractNextOwnerHandoffReferences(body: string): NextOwnerHandoffReference[] {
   const handoffs: NextOwnerHandoffReference[] = [];
   for (const line of body.split(/\r?\n/)) {
-    const match = line.match(NEXT_OWNER_LINE_PATTERN);
-    if (!match?.[1]) continue;
+    const labels = [...line.matchAll(NEXT_OWNER_LABEL_PATTERN)];
+    for (const [index, label] of labels.entries()) {
+      const start = (label.index ?? 0) + label[0].length;
+      const end = labels[index + 1]?.index ?? line.length;
+      const clause = line.slice(start, end);
+      const boundaryIndex = clause.search(NEXT_OWNER_CLAUSE_BOUNDARY_PATTERN);
+      const rawTarget = (boundaryIndex >= 0 ? clause.slice(0, boundaryIndex) : clause)
+        .replace(/[.!?;]+\s*$/, "")
+        .trim();
+      if (!rawTarget) continue;
 
-    const rawTarget = match[1].trim();
-    const explicitAgentIds = unique([...rawTarget.matchAll(AGENT_LINK_PATTERN)].map((item) => item[1].toLowerCase()));
-    handoffs.push({
-      line: line.trim(),
-      explicitAgentIds,
-      references: explicitAgentIds.length > 0 ? [] : unique(splitReferenceCandidates(rawTarget)),
-    });
+      const explicitAgentIds = unique([...rawTarget.matchAll(AGENT_LINK_PATTERN)].map((item) => item[1].toLowerCase()));
+      handoffs.push({
+        line: line.trim(),
+        explicitAgentIds,
+        references: explicitAgentIds.length > 0 ? [] : unique(splitReferenceCandidates(rawTarget)),
+      });
+    }
   }
   return handoffs;
 }

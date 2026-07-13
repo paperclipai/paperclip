@@ -462,6 +462,32 @@ async function resolveNextOwnerHandoff(input: {
   };
 }
 
+async function preflightNextOwnerHandoff(input: {
+  companyId: string;
+  body: string;
+  actor: ReturnType<typeof getActorInfo>;
+  agents: NextOwnerAgentResolver;
+}): Promise<NextOwnerHandoffResolution | null> {
+  if (input.actor.actorType !== "agent") return null;
+  const resolution = await resolveNextOwnerHandoff({
+    companyId: input.companyId,
+    body: input.body,
+    agents: input.agents,
+  });
+  if (resolution.kind !== "unresolved") return resolution;
+
+  throw unprocessable("Next owner handoff could not be resolved to exactly one active company agent", {
+    code: "next_owner_handoff_unresolved",
+    reason: resolution.reason,
+    references: resolution.references,
+    candidateAgentIds: resolution.candidateAgentIds,
+    ambiguousReferences: resolution.ambiguousReferences,
+    sourceLines: resolution.handoffs.map((handoff) => handoff.line),
+    requiredAction:
+      "Use one exact active agent name/role or an agent:// link. For a board/user decision, create an issue-thread interaction instead of a Next owner agent handoff.",
+  });
+}
+
 function normalizeAgentAuthorityValue(value: unknown) {
   return typeof value === "string" ? value.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
 }
@@ -474,6 +500,7 @@ async function applyNextOwnerHandoff(input: {
   issues: Pick<ReturnType<typeof issueService>, "getDependencyReadiness" | "update">;
   agents: NextOwnerAgentResolver;
   visibility: Pick<ReturnType<typeof issueVisibilityService>, "ensureCollaborator">;
+  resolution?: NextOwnerHandoffResolution;
 }): Promise<{ issue: IssueRouteIssue; applied: NextOwnerHandoffApplied | null }> {
   if (
     input.actor.actorType !== "agent" ||
@@ -483,11 +510,13 @@ async function applyNextOwnerHandoff(input: {
     return { issue: input.issue, applied: null };
   }
 
-  const nextOwnerResolution = await resolveNextOwnerHandoff({
-    companyId: input.issue.companyId,
-    body: input.comment.body,
-    agents: input.agents,
-  });
+  const nextOwnerResolution =
+    input.resolution ??
+    (await resolveNextOwnerHandoff({
+      companyId: input.issue.companyId,
+      body: input.comment.body,
+      agents: input.agents,
+    }));
 
   if (nextOwnerResolution.kind === "resolved") {
     const targetAgent = nextOwnerResolution.agent;
@@ -4820,6 +4849,14 @@ export function issueRoutes(
       budgetLimits,
       ...updateFields
     } = req.body;
+    const nextOwnerHandoffResolution = commentBody
+      ? await preflightNextOwnerHandoff({
+          companyId: existing.companyId,
+          body: commentBody,
+          actor,
+          agents: agentsSvc,
+        })
+      : null;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {
@@ -5526,6 +5563,7 @@ export function issueRoutes(
         issues: svc,
         agents: agentsSvc,
         visibility,
+        resolution: nextOwnerHandoffResolution ?? undefined,
       });
       issue = nextOwnerHandoff.issue;
       if (nextOwnerHandoff.applied) {
@@ -7052,6 +7090,12 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const nextOwnerHandoffResolution = await preflightNextOwnerHandoff({
+      companyId: issue.companyId,
+      body: req.body.body,
+      actor,
+      agents: agentsSvc,
+    });
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
@@ -7251,6 +7295,7 @@ export function issueRoutes(
       issues: svc,
       agents: agentsSvc,
       visibility,
+      resolution: nextOwnerHandoffResolution ?? undefined,
     });
     currentIssue = nextOwnerHandoff.issue;
     nextOwnerHandoffApplied = nextOwnerHandoff.applied;
