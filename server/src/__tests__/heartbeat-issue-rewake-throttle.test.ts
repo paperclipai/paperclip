@@ -74,19 +74,31 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       if (!runs.some((run) => run.status === "queued" || run.status === "running")) break;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    await db.delete(environmentLeases);
-    await db.delete(issueComments);
-    await db.delete(issues);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(activityLog);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agentRuntimeState);
-    await db.delete(agents);
-    await db.delete(environments);
-    await db.delete(executionWorkspaces);
-    await db.delete(companySkills);
-    await db.delete(companies);
+    // Post-run bookkeeping (run-event records, follow-up wake scheduling) can
+    // still write for a moment after a run reaches a terminal status, so a
+    // single delete sweep can hit a foreign-key violation when a late insert
+    // lands between two deletes. Retry the sweep until it goes through clean.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await db.delete(environmentLeases);
+        await db.delete(issueComments);
+        await db.delete(issues);
+        await db.delete(heartbeatRunEvents);
+        await db.delete(activityLog);
+        await db.delete(heartbeatRuns);
+        await db.delete(agentWakeupRequests);
+        await db.delete(agentRuntimeState);
+        await db.delete(agents);
+        await db.delete(environments);
+        await db.delete(executionWorkspaces);
+        await db.delete(companySkills);
+        await db.delete(companies);
+        break;
+      } catch (error) {
+        if (attempt >= 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
   });
 
   afterAll(async () => {
