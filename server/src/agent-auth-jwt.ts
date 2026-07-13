@@ -20,6 +20,10 @@ export interface LocalAgentJwtClaims {
   aud?: string;
   instance_id?: string;
   jti?: string;
+  // OAuth connections referenced by this run's adapter config. The runtime
+  // proxy uses this list to scope token-resolve and revoke calls to the
+  // exact connections this run was granted at dispatch time.
+  oauth?: { connectionIds: string[] };
 }
 
 const JWT_ALGORITHM = "HS256";
@@ -120,6 +124,7 @@ export function createLocalAgentJwt(
   runId: string,
   responsibleUserId?: string | null,
   keyScope: AgentApiKeyScope = { kind: "standard" },
+  oauth?: { connectionIds: string[] },
 ) {
   const config = jwtConfig();
   if (!config) return null;
@@ -137,6 +142,7 @@ export function createLocalAgentJwt(
     iss: config.issuer,
     aud: config.audience,
     instance_id: config.instanceId,
+    ...(oauth ? { oauth } : {}),
   };
 
   const header = {
@@ -232,6 +238,21 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   const instanceClaim = typeof claims.instance_id === "string" ? claims.instance_id : undefined;
   if (instanceClaim && instanceClaim !== config.instanceId) return null;
 
+  let oauth: { connectionIds: string[] } | undefined;
+  const oauthClaim = claims.oauth;
+  if (
+    oauthClaim &&
+    typeof oauthClaim === "object" &&
+    !Array.isArray(oauthClaim) &&
+    Array.isArray((oauthClaim as { connectionIds?: unknown }).connectionIds)
+  ) {
+    const ids = (oauthClaim as { connectionIds: unknown[] }).connectionIds.filter(
+      (id): id is string => typeof id === "string",
+    );
+    oauth = { connectionIds: ids };
+  }
+
+
   return {
     sub,
     company_id: companyId,
@@ -245,5 +266,6 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
     ...(audience ? { aud: audience } : {}),
     ...(instanceClaim ? { instance_id: instanceClaim } : {}),
     jti: typeof claims.jti === "string" ? claims.jti : undefined,
+    ...(oauth ? { oauth } : {}),
   };
 }

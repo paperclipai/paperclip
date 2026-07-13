@@ -823,7 +823,12 @@ export async function resolveExecutionRunAdapterConfig(input: {
           : undefined,
       )
     : { env: {}, secretKeys: new Set<string>(), manifest: [] };
-  const { config: resolvedConfig, secretKeys, manifest } = await input.secretsSvc.resolveAdapterConfigForRuntime(
+  const {
+    config: resolvedConfig,
+    secretKeys,
+    manifest,
+    oauthConnectionIds,
+  } = await input.secretsSvc.resolveAdapterConfigForRuntime(
     input.companyId,
     executionRunConfig,
     input.agentId
@@ -951,6 +956,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
       ...(projectEnvResolution.manifest ?? []),
       ...(routineEnvResolution.manifest ?? []),
     ],
+    oauthConnectionIds: oauthConnectionIds ?? [],
   };
 }
 
@@ -4995,6 +5001,10 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  // OAuth wiring: when present, runtime resolution will resolve oauth_token
+  // bindings (lazy refresh + access-token decryption). Tests/embedded callers
+  // can omit it; the resolver throws on oauth_token bindings without it.
+  oauthDeps?: Parameters<typeof secretService>[1];
   runtimeEnv?: Record<string, string | undefined>;
 }
 
@@ -5072,7 +5082,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   };
 
   const runLogStore = getRunLogStore();
-  const secretsSvc = secretService(db);
+  const secretsSvc = secretService(db, options.oauthDeps);
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -11487,7 +11497,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueId,
       explicitRunScopedSkillKeys: runScopedMentionedSkillKeys,
     });
-    const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
+    const { resolvedConfig, secretKeys, secretManifest, oauthConnectionIds } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,
       adapterType: agent.adapterType,
@@ -12577,6 +12587,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           run.id,
           run.responsibleUserId,
           localAgentJwtScope,
+          oauthConnectionIds.length > 0
+            ? { connectionIds: oauthConnectionIds }
+            : undefined,
         )
         : null;
       if (adapter.supportsLocalAgentJwt && !authToken) {

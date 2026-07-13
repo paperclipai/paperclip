@@ -17,6 +17,9 @@ import {
   userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
+import { oauthConnections } from "@paperclipai/db/schema/oauth";
+import type { ProviderRegistry } from "../oauth/registry.js";
+import type { refreshConnection as refreshConnectionImpl, RefreshDeps } from "../oauth/refresh.js";
 import type {
   AgentEnvConfig,
   CompanySecretBindingTarget,
@@ -378,6 +381,7 @@ async function cleanupPreparedProviderWrite(input: {
 type CanonicalEnvBinding =
   | { type: "plain"; value: string }
   | { type: "secret_ref"; secretId: string; version: number | "latest" }
+  | { type: "oauth_token"; connectionId: string }
   | {
       type: "user_secret_ref";
       key: string;
@@ -489,6 +493,9 @@ function canonicalizeBinding(binding: EnvBinding): CanonicalEnvBinding {
   if (binding.type === "plain") {
     return { type: "plain", value: String(binding.value) };
   }
+  if (binding.type === "oauth_token") {
+    return { type: "oauth_token", connectionId: binding.connectionId };
+  }
   if (binding.type === "user_secret_ref") {
     return {
       type: "user_secret_ref",
@@ -586,8 +593,18 @@ function assertSelectableProviderConfig(config: {
   }
 }
 
-export function secretService(db: Db) {
+export interface SecretServiceOAuthDeps {
+  registry: ProviderRegistry;
+  // refreshFn is wired late to break the secrets <-> refresh circular import.
+  // app.ts injects the production `refreshConnection` from `../oauth/refresh.js`
+  // here; tests can supply a stub. When undefined, the resolver throws if it
+  // hits a stale oauth_token branch that requires refresh.
+  refreshFn?: (deps: RefreshDeps) => ReturnType<typeof refreshConnectionImpl>;
+}
+
+export function secretService(db: Db, oauthDeps?: SecretServiceOAuthDeps) {
   const authorization = authorizationService(db);
+
 
   type NormalizeEnvOptions = {
     strictMode?: boolean;
@@ -1149,6 +1166,19 @@ export function secretService(db: Db) {
         continue;
       }
 
+      if (binding.type === "oauth_token") {
+        // Persistence path: oauth_token bindings reference an oauth_connections
+        // row, not a companySecrets row. Existence is validated at runtime by
+        // resolveAdapterConfigForRuntime; here we just preserve the binding
+        // shape so it round-trips through persistence.
+        normalized[key] = {
+          type: "oauth_token",
+          connectionId: binding.connectionId,
+          field: "access",
+        };
+        continue;
+      }
+
       await assertSecretInCompany(companyId, binding.secretId);
       normalized[key] = {
         type: "secret_ref",
@@ -1228,7 +1258,7 @@ export function secretService(db: Db) {
         version: binding.version,
       };
     }
-    if (binding.type === "user_secret_ref") {
+    if (binding.type === "user_secret_ref" || binding.type === "oauth_token") {
       throw unprocessable(`${input.key} must be a string, plain binding, or company secret reference`);
     }
     const value = binding.value.trim();
@@ -1890,7 +1920,7 @@ export function secretService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  return {
+  const api = {
     listProviders: () => listSecretProviders(),
 
     checkProviders: () => checkSecretProviders(),
@@ -3650,6 +3680,41 @@ export function secretService(db: Db) {
       return refs;
     },
 
+    upsertSecretByName: async (
+      companyId: string,
+      input: { name: string; value: string },
+      actor?: { userId?: string | null; agentId?: string | null },
+    ) => {
+      const existing = await getByName(companyId, input.name);
+      if (existing) {
+        if (existing.status === "active") {
+          return await api.rotate(existing.id, { value: input.value }, actor);
+        }
+        if (existing.status === "deleted") {
+          // Stale row from a partially-failed previous `remove()` (the
+          // provider's deleteOrArchive threw before the final hard-delete,
+          // leaving the row renamed and status=deleted). The normal
+          // getByName filter excludes deleted rows so this branch is
+          // unreachable in the happy path; if we ever land here, purge the
+          // dead row and fall through to create. Reconnects after a
+          // disconnect must always work — a permanent throw here would
+          // dead-letter that path.
+          await db
+            .delete(companySecrets)
+            .where(eq(companySecrets.id, existing.id));
+        } else {
+          throw unprocessable(
+            `Secret exists in non-active state: ${input.name}`,
+          );
+        }
+      }
+      return await api.create(
+        companyId,
+        { name: input.name, provider: "local_encrypted", value: input.value },
+        actor,
+      );
+    },
+
     remove: removeSecretInternal,
 
     normalizeAdapterConfigForPersistence: async (
@@ -3718,6 +3783,13 @@ export function secretService(db: Db) {
           resolved[key] = secretResolution.value;
           manifest.push(secretResolution.manifestEntry);
           secretKeys.add(key);
+        } else if (binding.type === "oauth_token") {
+          // oauth_token bindings are not expected on project env (which only
+          // accepts secret_ref / plain via the project secrets API). Surface a
+          // clear error rather than silently dropping or falling through.
+          throw unprocessable(
+            `oauth_token bindings are not supported in project env (key: ${key})`,
+          );
         } else {
           const secretResolution = await secretService(db).resolveUserSecretValue(
             companyId,
@@ -4070,10 +4142,16 @@ export function secretService(db: Db) {
       adapterConfig: Record<string, unknown>,
       context?: Omit<SecretConsumerContext, "configPath">,
       opts?: ResolveAdapterConfigForRuntimeOptions,
-    ): Promise<{ config: Record<string, unknown>; secretKeys: Set<string>; manifest: RuntimeSecretManifestEntry[] }> => {
+    ): Promise<{
+      config: Record<string, unknown>;
+      secretKeys: Set<string>;
+      manifest: RuntimeSecretManifestEntry[];
+      oauthConnectionIds: string[];
+    }> => {
       const resolved = { ...adapterConfig };
       const secretKeys = new Set<string>();
       const manifest: RuntimeSecretManifestEntry[] = [];
+      const oauthConnectionIds = new Set<string>();
       if (Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
         const record = asRecord(adapterConfig.env);
         if (!record) {
@@ -4106,7 +4184,7 @@ export function secretService(db: Db) {
               env[key] = secretResolution.value;
               manifest.push(secretResolution.manifestEntry);
               secretKeys.add(key);
-            } else {
+            } else if (binding.type === "user_secret_ref") {
               if (opts?.skipUserSecrets) continue;
               const secretResolution = await secretService(db).resolveUserSecretValue(
                 companyId,
@@ -4129,6 +4207,136 @@ export function secretService(db: Db) {
                 manifest.push(secretResolution.manifestEntry);
                 secretKeys.add(key);
               }
+            } else {
+              // oauth_token binding
+              if (!oauthDeps) {
+                throw unprocessable(
+                  "oauth_token bindings require server OAuth wiring (registry not configured)",
+                );
+              }
+              const conn = await db.query.oauthConnections.findFirst({
+                where: and(
+                  eq(oauthConnections.id, binding.connectionId),
+                  eq(oauthConnections.companyId, companyId),
+                ),
+              });
+              if (!conn) {
+                const e = new Error(
+                  `oauth_connection_missing: ${binding.connectionId}`,
+                ) as Error & { errorCode: string };
+                e.errorCode = "oauth_connection_missing";
+                throw e;
+              }
+              if (conn.status === "revoked") {
+                const e = new Error(
+                  `oauth_connection_revoked: ${conn.providerId}`,
+                ) as Error & { errorCode: string };
+                e.errorCode = "oauth_connection_revoked";
+                throw e;
+              }
+              if (conn.status === "error") {
+                const e = new Error(
+                  `oauth_provider_unavailable: ${conn.providerId}`,
+                ) as Error & { errorCode: string };
+                e.errorCode = "oauth_provider_unavailable";
+                throw e;
+              }
+              // Lazy refresh: if the access token will expire within the lazy
+              // window AND we have a refresh token on file, attempt a refresh
+              // BEFORE reading the (possibly expired) access secret. On success
+              // we use the freshly-rotated plaintext returned by refreshFn; on
+              // permanent revocation we propagate `oauth_connection_revoked`;
+              // on transient failure we fall back to the existing access secret
+              // unless it's already past expiry, in which case we surface
+              // `oauth_refresh_failed`.
+              const LAZY_WINDOW_MS = 60 * 1000;
+              const expiresInMs = conn.accessTokenExpiresAt
+                ? conn.accessTokenExpiresAt.getTime() - Date.now()
+                : Number.POSITIVE_INFINITY;
+              const needsRefresh =
+                !!conn.refreshTokenSecretId && expiresInMs < LAZY_WINDOW_MS;
+
+              // When the access token is already expired AND there is no refresh
+              // token to recover with, fail loudly. The previous behaviour fell
+              // through and returned the expired plaintext, so agents hit the
+              // upstream provider with a guaranteed-401 token.
+              if (
+                !conn.refreshTokenSecretId &&
+                conn.accessTokenExpiresAt &&
+                expiresInMs <= 0
+              ) {
+                const e = new Error(
+                  `oauth_access_token_expired: ${conn.providerId}`,
+                ) as Error & { errorCode: string };
+                e.errorCode = "oauth_access_token_expired";
+                throw e;
+              }
+
+              let resolvedAccessToken: string | null = null;
+              if (needsRefresh) {
+                if (!oauthDeps.refreshFn) {
+                  const e = new Error(
+                    "oauth_refresh_unwired: refreshFn not configured",
+                  ) as Error & { errorCode: string };
+                  e.errorCode = "oauth_refresh_unwired";
+                  throw e;
+                }
+                const refreshResult = await oauthDeps.refreshFn({
+                  connectionId: conn.id,
+                  db,
+                  registry: oauthDeps.registry,
+                  secretService: api,
+                });
+                if (refreshResult.outcome === "success") {
+                  resolvedAccessToken = refreshResult.accessToken;
+                } else if (refreshResult.outcome === "revoked") {
+                  const e = new Error(
+                    `oauth_connection_revoked: ${conn.providerId}`,
+                  ) as Error & { errorCode: string };
+                  e.errorCode = "oauth_connection_revoked";
+                  throw e;
+                } else if (expiresInMs <= 0) {
+                  // transient or skipped, but the existing token is already
+                  // expired — there is nothing safe to fall back to.
+                  const e = new Error(
+                    `oauth_refresh_failed: ${refreshResult.outcome}`,
+                  ) as Error & { errorCode: string };
+                  e.errorCode = "oauth_refresh_failed";
+                  throw e;
+                }
+                // transient/skipped with non-expired token: fall through and read
+                // the existing secret below.
+              }
+
+              let manifestEntry: RuntimeSecretManifestEntry;
+              if (resolvedAccessToken !== null) {
+                manifestEntry = {
+                  configPath: `env.${key}`,
+                  envKey: key,
+                  secretId: conn.accessTokenSecretId,
+                  secretKey: `oauth:${conn.providerId}:access`,
+                  version: 0,
+                  provider: "local_encrypted",
+                  outcome: "success",
+                };
+              } else {
+                const secretResolution = await resolveSecretValueInternal(
+                  companyId,
+                  conn.accessTokenSecretId,
+                  "latest",
+                  undefined,
+                );
+                resolvedAccessToken = secretResolution.value;
+                manifestEntry = {
+                  ...secretResolution.manifestEntry,
+                  configPath: `env.${key}`,
+                  envKey: key,
+                };
+              }
+              env[key] = resolvedAccessToken;
+              manifest.push(manifestEntry);
+              secretKeys.add(key);
+              oauthConnectionIds.add(conn.id);
             }
           }
           resolved.env = env;
@@ -4140,6 +4348,13 @@ export function secretService(db: Db) {
         if (!parsed.success) continue;
         const binding = canonicalizeBinding(parsed.data as EnvBinding);
         if (binding.type === "plain") continue;
+        if (binding.type === "oauth_token") {
+          // oauth_token bindings are only supported in env; adapter schema
+          // secret fields expect secret_ref / user_secret_ref values.
+          throw unprocessable(
+            `oauth_token bindings are not supported for adapter config field: ${key}`,
+          );
+        }
         if (binding.type === "user_secret_ref") {
           if (opts?.skipUserSecrets) {
             delete resolved[key];
@@ -4183,7 +4398,13 @@ export function secretService(db: Db) {
         manifest.push(secretResolution.manifestEntry);
         secretKeys.add(key);
       }
-      return { config: resolved, secretKeys, manifest };
+      return {
+        config: resolved,
+        secretKeys,
+        manifest,
+        oauthConnectionIds: Array.from(oauthConnectionIds),
+      };
     },
   };
+  return api;
 }

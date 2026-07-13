@@ -509,6 +509,7 @@ export {
 export {
   envBindingPlainSchema,
   envBindingSecretRefSchema,
+  envBindingOAuthTokenSchema,
   envBindingUserSecretRefSchema,
   envBindingSchema,
   envConfigSchema,

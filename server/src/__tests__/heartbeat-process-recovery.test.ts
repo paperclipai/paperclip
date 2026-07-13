@@ -1968,20 +1968,31 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       executionRunId: retryRun?.id ?? null,
     });
 
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    // The failed execution is finalized on a detached promise (executeRun is
+    // fire-and-forget from resumeQueuedRuns), and the resume-failure comment +
+    // interaction-result update are its last writes. Poll for them instead of
+    // reading immediately so the assertions cannot race the writer.
+    const comments = await waitForValue(async () => {
+      const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      return rows.length > 0 ? rows : null;
+    });
     expect(comments).toHaveLength(1);
-    expect(comments[0]).toMatchObject({
+    expect(comments?.[0]).toMatchObject({
       authorType: "system",
       createdByRunId: runId,
       body: "Agent failed to resume after approval: `adapter_failed` — retrying (attempt 1/3)",
     });
 
-    const interaction = await db
-      .select({ result: issueThreadInteractions.result })
-      .from(issueThreadInteractions)
-      .where(eq(issueThreadInteractions.id, interactionId))
-      .then((rows) => rows[0] ?? null);
-    expect(interaction?.result).toMatchObject({
+    const interactionResult = await waitForValue(async () => {
+      const row = await db
+        .select({ result: issueThreadInteractions.result })
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0] ?? null);
+      const result = row?.result as { resumeFailure?: unknown } | null;
+      return result?.resumeFailure ? result : null;
+    });
+    expect(interactionResult).toMatchObject({
       version: 1,
       outcome: "accepted",
       resumeFailure: {

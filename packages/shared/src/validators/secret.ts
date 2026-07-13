@@ -30,12 +30,19 @@ export const envBindingUserSecretRefSchema = z.object({
   allowMissingOverride: z.boolean().optional().default(false),
 });
 
+export const envBindingOAuthTokenSchema = z.object({
+  type: z.literal("oauth_token"),
+  connectionId: z.string().uuid(),
+  field: z.literal("access").default("access"),
+});
+
 // Backward-compatible union that accepts legacy inline values.
 export const envBindingSchema = z.union([
   z.string(),
   envBindingPlainSchema,
   envBindingSecretRefSchema,
   envBindingUserSecretRefSchema,
+  envBindingOAuthTokenSchema,
 ]);
 
 export const envConfigSchema = z.record(z.string(), envBindingSchema);
