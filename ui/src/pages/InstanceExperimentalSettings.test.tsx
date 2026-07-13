@@ -480,4 +480,51 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     const enabledToggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
     expect(enabledToggle?.getAttribute("aria-checked")).toBe("true");
   });
+
+  it("removes the auto-recovery confirmation overlay after enabling and running", async () => {
+    mockInstanceSettingsApi.previewIssueGraphLivenessAutoRecovery.mockResolvedValue(emptyRecoveryPreview());
+    mockInstanceSettingsApi.runIssueGraphLivenessAutoRecovery.mockResolvedValue({
+      findings: 0,
+      autoRecoveryEnabled: true,
+      lookbackHours: 24,
+      cutoff: "2026-07-12T16:00:00.000Z",
+      escalationsCreated: 0,
+      existingEscalations: 0,
+      skipped: 0,
+      skippedAutoRecoveryDisabled: 0,
+    });
+    await renderPage();
+
+    const toggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Confirm auto-recovery");
+    expect(document.body.querySelector('[data-slot="dialog-overlay"]')).not.toBeNull();
+
+    const enableAndRunButton = [...document.body.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Enable",
+    );
+
+    await act(async () => {
+      enableAndRunButton?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableIssueGraphLivenessAutoRecovery: true,
+      issueGraphLivenessAutoRecoveryLookbackHours: 24,
+    });
+    expect(mockInstanceSettingsApi.runIssueGraphLivenessAutoRecovery).toHaveBeenCalledWith({
+      lookbackHours: 24,
+    });
+    expect(document.body.textContent).not.toContain("Confirm auto-recovery");
+    expect(document.body.querySelector('[data-slot="dialog-overlay"]')).toBeNull();
+    const enabledToggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
+    expect(enabledToggle?.getAttribute("aria-checked")).toBe("true");
+  });
 });

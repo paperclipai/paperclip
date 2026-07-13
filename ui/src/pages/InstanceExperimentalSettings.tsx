@@ -792,13 +792,11 @@ export function InstanceExperimentalSettings() {
 
       {previewDialogOpen ? (
         <RecoveryPreviewDialog
-          open={previewDialogOpen}
+          open
           onOpenChange={(open) => {
-            if (open) {
-              setPreviewDialogOpen(true);
-              return;
+            if (!open) {
+              closeRecoveryPreview();
             }
-            closeRecoveryPreview();
           }}
           preview={pendingPreview}
           onEnableOnly={enableOnly}
