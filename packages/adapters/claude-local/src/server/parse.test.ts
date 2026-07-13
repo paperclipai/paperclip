@@ -420,6 +420,6 @@ describe("parseClaudeStreamJson usage extraction", () => {
       outputTokens: 1_800,
       cachedInputTokens: 20,
     });
-    expect(parsed.usageBasis).toBeNull();
+    expect(parsed.usageBasis).toBe("per_run");
   });
 });

@@ -313,7 +313,7 @@ Codex emits JSONL events. Parse line-by-line and extract:
    - `cached_input_tokens`
    - `output_tokens`
 
-Codex JSONL currently may not include cost; store token usage and leave cost null/unknown unless available.
+Codex JSONL currently may not include cost; store token usage as per-run totals and mark the ledger row `unpriced` unless a cost is available.
 
 ## 7.3 Common local adapter process handling
 
