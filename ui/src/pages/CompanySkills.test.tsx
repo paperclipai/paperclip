@@ -390,6 +390,26 @@ describe("SkillDetailPage settings", () => {
     expect(onFork).toHaveBeenCalledOnce();
   });
 
+  it("renders long source paths in full so they can wrap inside the sidebar", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const longSourcePath = "/srv/paperclip/home/paperclipai/paperclip/.agents/skills/prepare-pr/SKILL.md";
+    const node = await renderSkillDetail([v1], {
+      activeTab: "agents",
+      detail: makeDetail(v1, {
+        sourcePath: longSourcePath,
+        sourceLocator: null,
+      }),
+    });
+
+    const sourceValue = Array.from(node.querySelectorAll("div")).find((element) =>
+      element.textContent === longSourcePath,
+    );
+
+    expect(sourceValue).toBeTruthy();
+    expect(sourceValue?.className).toContain("[overflow-wrap:anywhere]");
+    expect(node.textContent).not.toContain("...");
+  });
+
   it("saves normalized category edits from the settings dialog", async () => {
     const v1 = makeVersion(1, "# Demo Skill");
     const onUpdateSettings = vi.fn();

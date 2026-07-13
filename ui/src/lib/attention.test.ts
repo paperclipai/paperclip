@@ -16,6 +16,7 @@ import {
   isInlineResolvable,
   loadAttentionGroupBy,
   NO_GROUP_SENTINEL,
+  planAttentionRenderRows,
   saveAttentionGroupBy,
   severityBadge,
   severityStyle,
@@ -399,5 +400,79 @@ describe("buildAttentionFilterOptions", () => {
     expect(options.workspaces.map((w) => w.id)).toEqual(["w1"]);
     expect(options.hasNoProject).toBe(true);
     expect(options.hasNoWorkspace).toBe(true);
+  });
+});
+
+describe("planAttentionRenderRows (PAP-13784 incremental rendering)", () => {
+  const items = (prefix: string, count: number) =>
+    Array.from({ length: count }, (_, i) => buildItem({ id: `${prefix}${i}` }));
+
+  it("allocates the budget across groups in document order", () => {
+    const plan = planAttentionRenderRows({
+      groups: [
+        { key: "g1", label: "One", items: items("a", 3) },
+        { key: "g2", label: "Two", items: items("b", 3) },
+      ],
+      collapsedGroupKeys: new Set(),
+      snoozedItems: [],
+      snoozedOpen: false,
+      dismissedItems: [],
+      dismissedOpen: false,
+      limit: 4,
+    });
+    expect(plan.groupRows.get("g1")).toHaveLength(3);
+    expect(plan.groupRows.get("g2")).toHaveLength(1);
+    expect(plan.hasMoreRows).toBe(true);
+  });
+
+  it("renders everything and reports no more rows when the budget covers the feed", () => {
+    const plan = planAttentionRenderRows({
+      groups: [{ key: "g1", label: null, items: items("a", 5) }],
+      collapsedGroupKeys: new Set(),
+      snoozedItems: items("s", 2),
+      snoozedOpen: true,
+      dismissedItems: items("d", 2),
+      dismissedOpen: true,
+      limit: 9,
+    });
+    expect(plan.groupRows.get("g1")).toHaveLength(5);
+    expect(plan.snoozedRows).toHaveLength(2);
+    expect(plan.dismissedRows).toHaveLength(2);
+    expect(plan.hasMoreRows).toBe(false);
+  });
+
+  it("collapsed groups and closed curtains consume no budget and never truncate", () => {
+    const plan = planAttentionRenderRows({
+      groups: [
+        { key: "g1", label: "One", items: items("a", 50) },
+        { key: "g2", label: "Two", items: items("b", 2) },
+      ],
+      collapsedGroupKeys: new Set(["g1"]),
+      snoozedItems: items("s", 50),
+      snoozedOpen: false,
+      dismissedItems: [],
+      dismissedOpen: false,
+      limit: 2,
+    });
+    expect(plan.groupRows.get("g1")).toHaveLength(0);
+    expect(plan.groupRows.get("g2")).toHaveLength(2);
+    expect(plan.snoozedRows).toHaveLength(0);
+    expect(plan.hasMoreRows).toBe(false);
+  });
+
+  it("curtains draw from the same budget after the active groups", () => {
+    const plan = planAttentionRenderRows({
+      groups: [{ key: "g1", label: null, items: items("a", 3) }],
+      collapsedGroupKeys: new Set(),
+      snoozedItems: items("s", 5),
+      snoozedOpen: true,
+      dismissedItems: items("d", 5),
+      dismissedOpen: true,
+      limit: 5,
+    });
+    expect(plan.groupRows.get("g1")).toHaveLength(3);
+    expect(plan.snoozedRows).toHaveLength(2);
+    expect(plan.dismissedRows).toHaveLength(0);
+    expect(plan.hasMoreRows).toBe(true);
   });
 });

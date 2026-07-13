@@ -67,6 +67,13 @@ function startLeaderCoordinator(channel: MemorySharedChannel) {
   return coordinator;
 }
 
+function getCoordinatorCaches(coordinator: SharedPollingCoordinator) {
+  return coordinator as unknown as {
+    latestResults: Map<string, unknown>;
+    lastPublished: Map<string, unknown>;
+  };
+}
+
 describe("LeaderElection", () => {
   it("elects one visible leader and keeps the second visible tab as follower", () => {
     let now = 1_000;
@@ -266,6 +273,120 @@ describe("SharedPollingCoordinator", () => {
     expect(channel.posts[1]).toEqual({ ...original, from: "leader" });
     expect(channel.posts[1]?.at).toBe(5_000);
     expect(channel.posts[1]?.dataUpdatedAt).toBe(123);
+
+    coordinator.stop();
+  });
+
+  it("bounds cached results with LRU eviction and removes idle entries on ticks", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const channel = new MemorySharedChannel();
+    const coordinator = startLeaderCoordinator(channel);
+
+    for (let index = 1; index <= 32; index += 1) {
+      coordinator.publish(`company:resource-${index}`, { index }, index);
+    }
+    channel.emit({ type: "request", key: "company:resource-1", from: "follower", at: 1_000 });
+    coordinator.publish("company:resource-1", { index: 1, refreshed: true }, 33);
+    coordinator.publish("company:resource-33", { index: 33 }, 34);
+
+    const caches = getCoordinatorCaches(coordinator);
+    expect(caches.latestResults.size).toBe(32);
+    expect(caches.lastPublished.size).toBe(32);
+    expect(caches.latestResults.has("company:resource-1")).toBe(true);
+    expect(caches.lastPublished.has("company:resource-1")).toBe(true);
+    expect(caches.latestResults.has("company:resource-2")).toBe(false);
+    expect(caches.lastPublished.has("company:resource-2")).toBe(false);
+
+    vi.advanceTimersByTime(5 * 60_000 + 10_000);
+    expect(caches.latestResults.size).toBe(0);
+    expect(caches.lastPublished.size).toBe(0);
+
+    coordinator.stop();
+  });
+
+  it("retains listenerless broadcasts through quick resource resubscriptions", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const channel = new MemorySharedChannel();
+    const coordinator = startLeaderCoordinator(channel);
+    const message = {
+      type: "result" as const,
+      key: "company:live-runs",
+      from: "follower",
+      at: 1_000,
+      dataUpdatedAt: 100,
+      data: [{ id: "run-1" }],
+    };
+
+    channel.emit(message);
+    expect(getCoordinatorCaches(coordinator).latestResults.size).toBe(1);
+
+    const firstListener = vi.fn();
+    const unsubscribe = coordinator.subscribeResource(message.key, firstListener);
+    expect(firstListener).toHaveBeenCalledWith(message);
+    expect(getCoordinatorCaches(coordinator).latestResults.size).toBe(1);
+
+    unsubscribe();
+    expect(getCoordinatorCaches(coordinator).latestResults.size).toBe(1);
+
+    const remountedListener = vi.fn();
+    const unsubscribeRemounted = coordinator.subscribeResource(message.key, remountedListener);
+    expect(remountedListener).toHaveBeenCalledWith(message);
+
+    unsubscribeRemounted();
+    vi.advanceTimersByTime(5 * 60_000 + 10_000);
+    expect(getCoordinatorCaches(coordinator).latestResults.size).toBe(0);
+
+    coordinator.stop();
+  });
+
+  it("keeps active publish dedupe entries when inactive keys exceed the cache limit", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const channel = new MemorySharedChannel();
+    const coordinator = startLeaderCoordinator(channel);
+    const unsubscribe = coordinator.subscribeResource("company:resource-1", vi.fn());
+
+    for (let index = 1; index <= 33; index += 1) {
+      coordinator.publish(`company:resource-${index}`, { index }, index);
+    }
+    coordinator.publish("company:resource-1", { index: 1 }, 34);
+
+    expect(channel.posts.filter((message) => message.type === "result")).toHaveLength(33);
+    const caches = getCoordinatorCaches(coordinator);
+    expect(caches.latestResults.size).toBe(33);
+    expect(caches.lastPublished.size).toBe(33);
+    expect(caches.lastPublished.has("company:resource-1")).toBe(true);
+
+    vi.advanceTimersByTime(5 * 60_000 + 10_000);
+    expect(caches.latestResults.size).toBe(1);
+    expect(caches.lastPublished.size).toBe(1);
+    coordinator.publish("company:resource-1", { index: 1 }, 35);
+    expect(channel.posts.filter((message) => message.type === "result")).toHaveLength(33);
+
+    unsubscribe();
+    vi.advanceTimersByTime(5 * 60_000 - 1);
+    expect(caches.latestResults.size).toBe(1);
+    expect(caches.lastPublished.size).toBe(1);
+    vi.advanceTimersByTime(10_001);
+    expect(caches.latestResults.size).toBe(0);
+    expect(caches.lastPublished.size).toBe(0);
+
+    coordinator.stop();
+  });
+
+  it("skips fingerprint traversal for older-or-equal publish snapshots", () => {
+    const channel = new MemorySharedChannel();
+    const coordinator = startLeaderCoordinator(channel);
+    const ownKeys = vi.fn(() => []);
+    const staleData = new Proxy({}, { ownKeys });
+
+    coordinator.publish("company:live-runs", [{ id: "run-1" }], 100);
+    coordinator.publish("company:live-runs", staleData, 100);
+
+    expect(ownKeys).not.toHaveBeenCalled();
+    expect(channel.posts.filter((message) => message.type === "result")).toHaveLength(1);
 
     coordinator.stop();
   });

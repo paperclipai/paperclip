@@ -2588,10 +2588,9 @@ export function SkillDetailPage({
     ? githubSource.url
       ?? `https://${githubSource.hostname}/${githubSource.owner}/${githubSource.repo}/tree/${githubSource.ref}/${githubSource.path}`.replace(/\/$/, "")
     : null;
-  // Fallback for non-catalog skills: the recorded locator/path, middle-truncated
-  // so long file paths stay readable in the narrow sidebar.
+  // Fallback for non-catalog skills: the recorded locator/path wraps inside
+  // the narrow sidebar instead of widening the page.
   const sourceLocatorText = skill.sourcePath || skill.sourceLocator || null;
-  const sourceLocatorDisplay = sourceLocatorText ? middleTruncate(sourceLocatorText, 44) : null;
   const sourceHref =
     skill.homepageUrl
     ?? (sourceLocatorText && /^(https?:\/\/|[\w.-]+\.[a-z]{2,}\/)/i.test(sourceLocatorText)
@@ -2709,7 +2708,7 @@ export function SkillDetailPage({
           </div>
           <div className="min-w-0 border-b border-border py-2">
             <div className="text-xs text-muted-foreground">Source</div>
-            <div className="mt-1 truncate">{skill.sourcePath ?? source.label}</div>
+            <div className="mt-1 min-w-0 [overflow-wrap:anywhere]">{sourceLocatorText ?? source.label}</div>
           </div>
           <div className="min-w-0 border-b border-border py-2">
             <div className="text-xs text-muted-foreground">Version</div>
@@ -3054,9 +3053,9 @@ export function SkillDetailPage({
                     target="_blank"
                     rel="noreferrer"
                     title={githubRepoText ?? undefined}
-                    className="mt-0.5 flex max-w-full items-center gap-1 text-xs text-muted-foreground no-underline transition-colors hover:text-foreground"
+                    className="mt-0.5 flex max-w-full items-start gap-1 text-xs text-muted-foreground no-underline transition-colors [overflow-wrap:anywhere] hover:text-foreground"
                   >
-                    <span className="truncate">{githubRepoText}</span>
+                    <span className="min-w-0 [overflow-wrap:anywhere]">{githubRepoText}</span>
                     <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
                   </a>
                   <div className="mt-0.5 truncate font-mono text-(length:--text-micro) text-muted-foreground" title={githubSource.commit}>
@@ -3070,21 +3069,21 @@ export function SkillDetailPage({
                 <SourceIcon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 <div className="min-w-0">
                   <div className="text-foreground">{source.label}</div>
-                  {sourceLocatorDisplay ? (
+                  {sourceLocatorText ? (
                     sourceHref ? (
                       <a
                         href={sourceHref}
                         target="_blank"
                         rel="noreferrer"
                         title={sourceLocatorText ?? undefined}
-                        className="mt-0.5 flex max-w-full items-center gap-1 text-xs text-muted-foreground no-underline transition-colors hover:text-foreground"
+                        className="mt-0.5 flex max-w-full items-start gap-1 text-xs text-muted-foreground no-underline transition-colors [overflow-wrap:anywhere] hover:text-foreground"
                       >
-                        <span className="truncate">{sourceLocatorDisplay}</span>
+                        <span className="min-w-0 [overflow-wrap:anywhere]">{sourceLocatorText}</span>
                         <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
                       </a>
                     ) : (
-                      <div className="mt-0.5 truncate text-xs text-muted-foreground" title={sourceLocatorText ?? undefined}>
-                        {sourceLocatorDisplay}
+                      <div className="mt-0.5 min-w-0 text-xs text-muted-foreground [overflow-wrap:anywhere]" title={sourceLocatorText ?? undefined}>
+                        {sourceLocatorText}
                       </div>
                     )
                   ) : (

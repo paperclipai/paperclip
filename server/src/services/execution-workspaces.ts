@@ -1667,7 +1667,7 @@ export function executionWorkspaceService(db: Db) {
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         // Runtime-service activation takes this same row lock before spawning
-        // local services and holds it until the running service row is persisted.
+        // local services and persists a `starting` row before releasing it.
         const lockedRow = await tx
           .select()
           .from(executionWorkspaces)
