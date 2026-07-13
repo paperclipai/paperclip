@@ -158,6 +158,18 @@ async function waitForRunToSettle(
   return heartbeat.getRun(runId);
 }
 
+/**
+ * resumeQueuedRuns is now a validation-only sweep (execution moved to the
+ * per-replica run executors), so tests drive the executor claim + execute
+ * path explicitly after the sweep. Failure/retry chains inside executeRun
+ * still dispatch follow-up runs through the per-agent path on their own.
+ */
+async function resumeAndExecuteQueuedRuns(heartbeat: ReturnType<typeof heartbeatService>) {
+  await heartbeat.resumeQueuedRuns();
+  const claimed = await heartbeat.claimRunsForExecution(50);
+  await Promise.all(claimed.map((runId) => heartbeat.executeRun(runId)));
+}
+
 async function waitForValue<T>(
   read: () => Promise<T | null | undefined>,
   timeoutMs = 3_000,
@@ -614,7 +626,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const executorHeartbeat = heartbeatService(db);
     const reaperHeartbeat = heartbeatService(db);
 
+    // The adapter blocks until released below, so claim + start execution
+    // without awaiting completion (resumeAndExecuteQueuedRuns would deadlock).
     await executorHeartbeat.resumeQueuedRuns();
+    const claimedRunIds = await executorHeartbeat.claimRunsForExecution(50);
+    const executionSettled = Promise.all(claimedRunIds.map((id) => executorHeartbeat.executeRun(id)));
     await Promise.race([
       adapterStarted,
       new Promise<never>((_, reject) => {
@@ -647,6 +663,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     releaseAdapter();
     const settledRun = await waitForRunToSettle(executorHeartbeat, runId, 5_000);
     expect(settledRun?.status).toBe("succeeded");
+    await executionSettled;
   });
 
   async function seedStrandedIssueFixture(input: {
@@ -1797,7 +1814,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const heartbeat = heartbeatService(db);
 
-    await heartbeat.resumeQueuedRuns();
+    await resumeAndExecuteQueuedRuns(heartbeat);
     await waitForRunToSettle(heartbeat, runId);
 
     const runs = await waitForValue(async () => {
@@ -1899,7 +1916,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
 
     const heartbeat = heartbeatService(db);
-    await heartbeat.resumeQueuedRuns();
+    await resumeAndExecuteQueuedRuns(heartbeat);
 
     const runs = await waitForValue(async () => {
       const rows = await db
@@ -2267,7 +2284,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const heartbeat = heartbeatService(db);
 
-    await heartbeat.resumeQueuedRuns();
+    await resumeAndExecuteQueuedRuns(heartbeat);
     await waitForRunToSettle(heartbeat, runId, 5_000);
 
     expect(mockAdapterExecute).not.toHaveBeenCalled();
@@ -2350,7 +2367,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agents.id, agentId));
 
     const heartbeat = heartbeatService(db);
-    await heartbeat.resumeQueuedRuns();
+    await resumeAndExecuteQueuedRuns(heartbeat);
     await waitForRunToSettle(heartbeat, runId, 5_000);
 
     expect(mockAdapterExecute).not.toHaveBeenCalled();
@@ -2436,7 +2453,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const heartbeat = heartbeatService(db);
 
-    await heartbeat.resumeQueuedRuns();
+    await resumeAndExecuteQueuedRuns(heartbeat);
     await waitForRunToSettle(heartbeat, runId, 5_000);
 
     const handoffWakeups = await waitForValue(async () => {
@@ -2539,7 +2556,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const heartbeat = heartbeatService(db);
 
-    await heartbeat.resumeQueuedRuns();
+    await resumeAndExecuteQueuedRuns(heartbeat);
     await waitForRunToSettle(heartbeat, runId, 5_000);
 
     const handoffWakeups = await waitForValue(async () => {
@@ -2620,7 +2637,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const heartbeat = heartbeatService(db);
 
-    await heartbeat.resumeQueuedRuns();
+    await resumeAndExecuteQueuedRuns(heartbeat);
     const settledRun = await waitForRunToSettle(heartbeat, runId, 5_000);
 
     const handoffWakeups = await waitForValue(async () => {
@@ -2686,7 +2703,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const heartbeat = heartbeatService(db);
 
-    await heartbeat.resumeQueuedRuns();
+    await resumeAndExecuteQueuedRuns(heartbeat);
     await waitForRunToSettle(heartbeat, runId, 5_000);
 
     const handoffWakeups = await waitForValue(async () => {
@@ -3597,7 +3614,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
 
     const heartbeat = heartbeatService(db);
-    await heartbeat.resumeQueuedRuns();
+    await resumeAndExecuteQueuedRuns(heartbeat);
     const reviewRecoveryRun = await waitForValue(async () => {
       const runs = await db
         .select()
@@ -3622,7 +3639,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const heartbeat = heartbeatService(db);
 
-    await heartbeat.resumeQueuedRuns();
+    await resumeAndExecuteQueuedRuns(heartbeat);
     const settledRun = await waitForRunToSettle(heartbeat, runId, 8_000);
     expect(settledRun?.status).toBe("succeeded");
 
@@ -3648,7 +3665,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { companyId, agentId, issueId, runId, stageId } = await seedInReviewParticipantRunFixture();
     const heartbeat = heartbeatService(db);
 
-    await heartbeat.resumeQueuedRuns();
+    await resumeAndExecuteQueuedRuns(heartbeat);
     const reviewRecoveryRun = await waitForValue(async () => {
       const runs = await db
         .select()

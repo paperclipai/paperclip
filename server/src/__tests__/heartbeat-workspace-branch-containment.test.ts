@@ -160,6 +160,17 @@ async function createForwardBranchMismatch(input: {
   await runGit(input.worktreePath, ["commit", "-m", "Add actual branch work"]);
 }
 
+/**
+ * resumeQueuedRuns is a validation-only sweep on this branch (execution moved
+ * to the per-replica run executors), so tests drive the executor claim +
+ * execute path explicitly after the sweep.
+ */
+async function resumeAndExecuteQueuedRuns(heartbeat: Heartbeat) {
+  await heartbeat.resumeQueuedRuns();
+  const claimed = await heartbeat.claimRunsForExecution(50);
+  await Promise.all(claimed.map((runId) => heartbeat.executeRun(runId)));
+}
+
 async function waitForRunToFinish(heartbeat: Heartbeat, runId: string, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -1081,7 +1092,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     }
 
     const heartbeat = heartbeatService(db);
-    await heartbeat.resumeQueuedRuns();
+    await resumeAndExecuteQueuedRuns(heartbeat);
 
     await expectContainedWorkspaceBranchFailure({
       db,
@@ -1194,7 +1205,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     });
 
     const heartbeat = heartbeatService(db);
-    await heartbeat.resumeQueuedRuns();
+    await resumeAndExecuteQueuedRuns(heartbeat);
 
     await expectForwardBranchReconciled({
       db,

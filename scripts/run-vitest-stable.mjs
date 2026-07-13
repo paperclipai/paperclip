@@ -21,7 +21,9 @@ const nonServerProjects = [
   "paperclipai",
 ];
 const routeTestPattern = /[^/]*(?:route|routes|authz)[^/]*\.test\.ts$/;
+// Suites that boot an embedded Postgres are resource-heavy and belong in the serialized shards.
 const additionalSerializedServerTests = new Set([
+  "server/src/__tests__/advisory-locks.test.ts",
   "server/src/__tests__/approval-routes-idempotency.test.ts",
   "server/src/__tests__/assets.test.ts",
   "server/src/__tests__/authz-company-access.test.ts",
@@ -32,6 +34,7 @@ const additionalSerializedServerTests = new Set([
   "server/src/__tests__/health-dev-server-token.test.ts",
   "server/src/__tests__/health.test.ts",
   "server/src/__tests__/heartbeat-dependency-scheduling.test.ts",
+  "server/src/__tests__/heartbeat-executor-claims.test.ts",
   "server/src/__tests__/heartbeat-issue-liveness-escalation.test.ts",
   "server/src/__tests__/heartbeat-process-recovery.test.ts",
   "server/src/__tests__/invite-accept-existing-member.test.ts",
@@ -43,9 +46,13 @@ const additionalSerializedServerTests = new Set([
   "server/src/__tests__/issues-checkout-wakeup.test.ts",
   "server/src/__tests__/issues-service.test.ts",
   "server/src/__tests__/opencode-local-adapter-environment.test.ts",
+  "server/src/__tests__/plugin-artifact-replication.test.ts",
+  "server/src/__tests__/plugin-job-scheduler-claim.test.ts",
+  "server/src/__tests__/plugin-webhook-dedup.test.ts",
   "server/src/__tests__/project-routes-env.test.ts",
   "server/src/__tests__/redaction.test.ts",
   "server/src/__tests__/routines-e2e.test.ts",
+  "server/src/__tests__/scheduler-leadership.test.ts",
 ]);
 let invocationIndex = 0;
 const serializedModeName = "serialized";

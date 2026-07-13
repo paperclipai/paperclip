@@ -1413,7 +1413,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       },
     });
 
+    // The sweep only validates; execution goes through the executor claim path.
     await heartbeat.resumeQueuedRuns();
+    const claimed = await heartbeat.claimRunsForExecution(10);
+    await Promise.all(claimed.map((id) => heartbeat.executeRun(id)));
 
     await waitForCondition(async () => {
       const run = await db
@@ -1452,7 +1455,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       wakeReason: "issue_assigned",
     });
 
+    // The sweep only validates; execution goes through the executor claim path.
     await heartbeat.resumeQueuedRuns();
+    const claimed = await heartbeat.claimRunsForExecution(10);
+    await Promise.all(claimed.map((id) => heartbeat.executeRun(id)));
 
     await waitForCondition(async () => {
       const run = await db

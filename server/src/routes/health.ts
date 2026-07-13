@@ -13,7 +13,10 @@ import {
   type DatabaseBackupHealthWarning,
   type InspectDatabaseBackupHealthOptions,
 } from "../services/database-backup-health.js";
+import { getLiveEventsTransportHealth } from "../services/live-events.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { getRegisteredPluginReplication } from "../services/plugin-artifact-replication.js";
+import { getSchedulerHealth } from "../services/scheduler-leadership.js";
 import { serverVersion } from "../version.js";
 
 function shouldExposeFullHealthDetails(
@@ -34,6 +37,8 @@ function hasDevServerStatusToken(providedToken: string | undefined) {
   if (expected.length !== provided.length) return false;
   return timingSafeEqual(expected, provided);
 }
+
+let lastNotificationQueueWarnAtMs = 0;
 
 function redactedDatabaseBackupWarning(warning: DatabaseBackupHealthWarning): DatabaseBackupHealthWarning {
   const messages: Record<DatabaseBackupHealthWarning["code"], string> = {
@@ -108,6 +113,25 @@ export function healthRoutes(
     res.status(202).json({ status: "restart_requested" });
   });
 
+  /**
+   * GET /api/health/ready — readiness probe (vs. `GET /api/health`, which
+   * stays a liveness view: a healthy process that is deliberately held out
+   * of rotation must not be restarted by a liveness check).
+   *
+   * Readiness gate (PAPERCLIP_PLUGINS_MUST_SYNC, multi-replica): a replica
+   * that has not yet converged on the latest plugin snapshot must not be
+   * routed traffic — it would serve a stale plugin tree. Deliberately
+   * minimal: plugin-sync gate only, 200 whenever no gate applies.
+   */
+  router.get("/ready", (_req, res) => {
+    const pluginReplication = getRegisteredPluginReplication();
+    if (pluginReplication?.mustSync && !pluginReplication.isSynced()) {
+      res.status(503).json({ ready: false, reason: "plugin snapshot sync pending" });
+      return;
+    }
+    res.json({ ready: true });
+  });
+
   router.get("/", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;
     const exposeFullDetails = shouldExposeFullHealthDetails(
@@ -143,6 +167,20 @@ export function healthRoutes(
         ...(exposeFullDetails ? { serverInfo } : {}),
       });
       return;
+    }
+
+    const liveEvents = await getLiveEventsTransportHealth();
+    if (liveEvents.mode === "transport" && (liveEvents.notificationQueueUsage ?? 0) > 0.5) {
+      // Health probes fire every few seconds; during a queue incident one
+      // warning per minute is signal, one per probe is noise.
+      const now = Date.now();
+      if (now - lastNotificationQueueWarnAtMs > 60_000) {
+        lastNotificationQueueWarnAtMs = now;
+        logger.warn(
+          { notificationQueueUsage: liveEvents.notificationQueueUsage },
+          "Postgres notification queue is filling — a lagging LISTEN session is holding back cleanup",
+        );
+      }
     }
 
     let bootstrapStatus: "ready" | "bootstrap_pending" = "ready";
@@ -190,6 +228,11 @@ export function healthRoutes(
       });
     }
 
+    // Fetched before the redacted/full branch: the operator identifies the
+    // leader pod via unauthenticated probes; booleans only — the lease row
+    // (ids/hostnames) stays in the full-details view.
+    const scheduler = await getSchedulerHealth(db);
+
     const databaseBackup = opts.databaseBackupHealth
       ? inspectDatabaseBackupHealth(opts.databaseBackupHealth)
       : undefined;
@@ -207,6 +250,7 @@ export function healthRoutes(
         ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
         ...(redactedWarnings ? { warnings: redactedWarnings } : {}),
         ...(devServer ? { devServer } : {}),
+        scheduler: { candidate: scheduler.candidate, isLeader: scheduler.isLeader },
       });
       return;
     }
@@ -223,9 +267,11 @@ export function healthRoutes(
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
       serverInfo,
+      liveEvents,
       ...(databaseBackup ? { databaseBackup } : {}),
       ...(warnings ? { warnings } : {}),
       ...(devServer ? { devServer } : {}),
+      scheduler,
     });
   });
 

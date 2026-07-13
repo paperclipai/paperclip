@@ -27,6 +27,11 @@ const testServerInfo = {
     },
   },
 } as const;
+const mockGetLiveEventsTransportHealth = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({ mode: "in-process" }),
+);
+const mockGetSchedulerHealth = vi.hoisted(() => vi.fn().mockResolvedValue({ candidate: false, isLeader: false }));
+const mockGetRegisteredPluginReplication = vi.hoisted(() => vi.fn().mockReturnValue(null));
 
 function createHealthyDb(): Db {
   return {
@@ -37,6 +42,21 @@ function createHealthyDb(): Db {
 vi.mock("../dev-server-status.js", () => ({
   readPersistedDevServerStatus: mockReadPersistedDevServerStatus,
   toDevServerHealthStatus: vi.fn(),
+}));
+
+vi.mock("../services/live-events.js", () => ({
+  getLiveEventsTransportHealth: mockGetLiveEventsTransportHealth,
+}));
+
+vi.mock("../services/scheduler-leadership.js", () => ({
+  getSchedulerHealth: mockGetSchedulerHealth,
+  registerSchedulerLeadershipForHealth: vi.fn(),
+  getRegisteredSchedulerLeadership: vi.fn().mockReturnValue(null),
+}));
+
+vi.mock("../services/plugin-artifact-replication.js", () => ({
+  getRegisteredPluginReplication: mockGetRegisteredPluginReplication,
+  registerPluginReplicationForHealth: vi.fn(),
 }));
 
 function createApp(
@@ -63,6 +83,8 @@ describe("GET /health", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockReadPersistedDevServerStatus.mockReturnValue(undefined);
+    mockGetSchedulerHealth.mockResolvedValue({ candidate: false, isLeader: false });
+    mockGetRegisteredPluginReplication.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -89,6 +111,7 @@ describe("GET /health", () => {
       status: "ok",
       version: serverVersion,
       serverInfo: testServerInfo,
+      liveEvents: { mode: "in-process" },
     });
   });
 
@@ -296,6 +319,9 @@ describe("GET /health", () => {
           message: "Latest database backup is stale.",
         },
       ],
+      // Scheduler candidacy booleans ride on the redacted view too — the
+      // operator identifies the leader pod via unauthenticated probes.
+      scheduler: { candidate: false, isLeader: false },
     });
   });
 
@@ -336,6 +362,7 @@ describe("GET /health", () => {
       deploymentExposure: "public",
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
+      scheduler: { candidate: false, isLeader: false },
     });
     expect(res.body.serverInfo).toBeUndefined();
   });
@@ -373,8 +400,133 @@ describe("GET /health", () => {
       deploymentExposure: "public",
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
+      scheduler: { candidate: false, isLeader: false },
     });
     expect(res.body.serverInfo).toBeUndefined();
+  });
+
+  it("redacted response does not include leader block even when mock returns one", async () => {
+    mockGetSchedulerHealth.mockResolvedValue({
+      candidate: true,
+      isLeader: true,
+      leader: {
+        leaderId: "leader-uuid",
+        hostname: "pod-0",
+        electedAt: "2026-01-01T00:00:00.000Z",
+        expiresAt: "2026-01-01T00:00:15.000Z",
+      },
+    });
+    const devServerStatus = await import("../dev-server-status.js");
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
+    const { healthRoutes } = await import("../routes/health.js");
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([{ count: 1 }]),
+        })),
+      })),
+    } as unknown as Db;
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as any).actor = { type: "none", source: "none" };
+      next();
+    });
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        authReady: true,
+        companyDeletionEnabled: false,
+      }),
+    );
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    // booleans are present
+    expect(res.body.scheduler).toEqual({ candidate: true, isLeader: true });
+    // lease row must NOT be present in the redacted view
+    expect(res.body.scheduler).not.toHaveProperty("leader");
+  });
+
+  it("GET /health/ready returns 503 not-ready while plugin snapshot sync is pending under mustSync", async () => {
+    mockGetRegisteredPluginReplication.mockReturnValue({
+      mustSync: true,
+      isSynced: () => false,
+    });
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+    } as unknown as Db;
+    const app = createApp(db);
+
+    const res = await request(app).get("/health/ready");
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ ready: false, reason: "plugin snapshot sync pending" });
+    // Readiness is the plugin-sync gate only — no db probe.
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it("GET /health stays a 200 liveness view while plugin snapshot sync is pending under mustSync", async () => {
+    mockGetRegisteredPluginReplication.mockReturnValue({
+      mustSync: true,
+      isSynced: () => false,
+    });
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+    } as unknown as Db;
+    const app = createApp(db);
+
+    const res = await request(app).get("/health");
+
+    // The sync gate lives on /health/ready only: gating liveness too would
+    // make orchestrators restart a healthy pod that is merely catching up.
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: "ok", version: serverVersion });
+  });
+
+  it("GET /health/ready returns ready once the plugin snapshot sync completed under mustSync", async () => {
+    mockGetRegisteredPluginReplication.mockReturnValue({
+      mustSync: true,
+      isSynced: () => true,
+    });
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+    } as unknown as Db;
+    const app = createApp(db);
+
+    const res = await request(app).get("/health/ready");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ready: true });
+  });
+
+  it("GET /health/ready does not gate when mustSync is off, even while unsynced", async () => {
+    mockGetRegisteredPluginReplication.mockReturnValue({
+      mustSync: false,
+      isSynced: () => false,
+    });
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+    } as unknown as Db;
+    const app = createApp(db);
+
+    const res = await request(app).get("/health/ready");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ready: true });
+  });
+
+  it("GET /health/ready returns ready when no plugin replication is registered", async () => {
+    mockGetRegisteredPluginReplication.mockReturnValue(null);
+    const app = createApp();
+
+    const res = await request(app).get("/health/ready");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ready: true });
   });
 
   it("keeps detailed metadata for authenticated requests in authenticated mode", async () => {
@@ -420,6 +572,7 @@ describe("GET /health", () => {
         companyDeletionEnabled: false,
       },
       serverInfo: testServerInfo,
+      scheduler: { candidate: false, isLeader: false },
     });
   });
 });
