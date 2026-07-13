@@ -528,12 +528,11 @@ describe("renderPaperclipWakePrompt", () => {
       "A custom Playwright/Puppeteer script, direct headless browser, reusable launch helper, or screenshots are not a substitute",
     );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "never pass agent-browser session/profile/state/CDP/provider overrides or override HOME",
+      "Camoufox is the only enabled managed browser provider",
     );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Run managed browser commands sequentially");
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("agent-browser tab new <url>");
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Google domains are routed through Camoufox");
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("never copy or merge cookies between them");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("never invoke `agent-browser`");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Run managed Camoufox actions sequentially");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("another page within the same Camoufox context");
   });
 
   it("adds a hard managed-browser gate when a board comment requests live navigation", () => {
@@ -553,14 +552,12 @@ describe("renderPaperclipWakePrompt", () => {
 
     expect(prompt).toContain("HARD LIVE-BROWSER GATE:");
     expect(prompt).toContain("paperclip-browser-open <url>");
-    expect(prompt).toContain("Do not use direct Playwright/Puppeteer");
-    expect(prompt).toContain("custom or reusable `launch.js`");
+    expect(prompt).toContain("Camoufox is the only enabled managed browser provider");
+    expect(prompt).toContain("Do not use ordinary Chromium, agent-browser, direct Puppeteer");
     expect(prompt).toContain("uploaded screenshots as a substitute");
-    expect(prompt).toContain("Never pass `--session`, `--session-name`, `--profile`, `--state`");
-    expect(prompt).toContain("Run browser actions sequentially");
-    expect(prompt).toContain("agent-browser tab <original-tab-id>");
-    expect(prompt).toContain("Google domains and Google's insecure-browser rejection must use Camoufox");
-    expect(prompt).toContain("never copy or merge cookies between providers");
+    expect(prompt).toContain("Managed runs reject direct agent-browser commands");
+    expect(prompt).toContain("Run Camoufox actions sequentially");
+    expect(prompt).toContain("create a second page in the same Camoufox context");
   });
 
   it("adds the execution contract to scoped wake prompts", () => {

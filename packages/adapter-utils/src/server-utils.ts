@@ -170,11 +170,10 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
   "- When the board explicitly requests the live, native, or managed browser, use Paperclip's managed browser commands. A custom Playwright/Puppeteer script, direct headless browser, reusable launch helper, or screenshots are not a substitute for the live browser stream.",
-  "- Browser sessions belong to issues, not heartbeat runs. Do not open or attach to a browser merely because an earlier comment used one. Only run browser commands when the current work needs navigation; managed commands automatically reconnect to the issue's existing session.",
-  "- Paperclip owns browser identity: never pass agent-browser session/profile/state/CDP/provider overrides or override HOME. If a managed profile is briefly busy, retry the managed command; never create a private browser session as fallback.",
-  "- Run managed browser commands sequentially and wait for each to finish. Agent-browser and Camoufox have independent authentication state: never copy or merge cookies between them; authenticate each provider separately when needed.",
-  "- Google domains are routed through Camoufox for browser-security compatibility. Always open google.com or *.google.com with `paperclip-browser-open <url>`; never bypass the launcher with a direct agent-browser open/tab command. If an OAuth flow lands on Google's insecure-browser rejection, restart the original flow through Camoufox instead of retrying credentials in agent-browser.",
-  "- For email OTP, OAuth, or approval flows, preserve the original page and use agent-browser tabs: record the original tab id, open mail or the identity provider with `agent-browser tab new <url>`, then switch back with `agent-browser tab <original-tab-id>`. Do not navigate the original login tab away and rely on Back.",
+  "- Browser profile state belongs to the selected company/project profile, not a heartbeat run. Do not open a browser merely because an earlier comment used one; only run browser commands when the current work needs navigation.",
+  "- Camoufox is the only enabled managed browser provider. Start with `paperclip-browser-open <url>` or `paperclip-camoufox <url>` and never invoke `agent-browser`; managed Paperclip runs reject direct agent-browser commands.",
+  "- Run managed Camoufox actions sequentially and wait for each to finish. Reuse the selected Camoufox profile state and never create a private browser profile or override Paperclip's profile/scope environment.",
+  "- For email OTP, OAuth, or approval flows, preserve the original page and open the secondary service in another page within the same Camoufox context. Do not navigate the original login page away and rely on Back.",
 ].join("\n");
 
 export interface PaperclipSkillEntry {
@@ -878,15 +877,13 @@ export function renderPaperclipWakePrompt(
       "",
       "HARD LIVE-BROWSER GATE:",
       "- The board explicitly requested visible navigation in Paperclip's native live browser. This is an execution requirement, not a request for screenshot evidence.",
-      "- Start navigation with `paperclip-browser-open <url>` and perform each meaningful follow-up action with `agent-browser` so the issue viewport receives continuous frames.",
-      "- The managed browser automatically reuses this issue's existing session across comments, wakes, and agent handoffs. Do not launch a browser just because an earlier comment used one, and do not reopen the current URL merely to attach.",
-      "- Do not use direct Playwright/Puppeteer, `headless: true`, a custom or reusable `launch.js`, an opaque batch browser script, or uploaded screenshots as a substitute, even if that path worked previously.",
-      "- Existing scripts may inform selectors or workflow logic, but the requested interaction itself must be replayed through observable managed-browser commands.",
-      "- Never pass `--session`, `--session-name`, `--profile`, `--state`, `--cdp`, `--auto-connect`, or provider overrides, and never override `HOME`; those detach the browser from the issue/profile selected by Paperclip.",
-      "- Use `paperclip-browser-open <url> --camoufox` only when the board explicitly requests Camoufox; otherwise allow the managed launcher to fall back after a detected browser-security challenge.",
-      "- Run browser actions sequentially and wait for each command to finish. Keep agent-browser and Camoufox authentication independent; never copy or merge cookies between providers.",
-      "- Google domains and Google's insecure-browser rejection must use Camoufox. Use `paperclip-browser-open <url>` so direct Google URLs or OAuth redirects route automatically; do not open a Google URL with a direct agent-browser command.",
-      "- If authentication requires email OTP or another site, preserve the original login tab, open the secondary site with `agent-browser tab new <url>`, and switch back with `agent-browser tab <original-tab-id>`. The live viewer follows the active tab; do not destroy pending login state by reusing one tab.",
+      "- Camoufox is the only enabled managed browser provider. Start navigation with `paperclip-browser-open <url>` or `paperclip-camoufox <url>`; never invoke `agent-browser`.",
+      "- Reuse the selected company/project Camoufox profile state across comments, wakes, and agent handoffs. Do not launch a browser just because an earlier comment used one, and do not reopen the current URL merely to produce evidence.",
+      "- Do not use ordinary Chromium, agent-browser, direct Puppeteer, `headless: true`, an opaque batch browser script, or uploaded screenshots as a substitute.",
+      "- Existing scripts may inform selectors or workflow logic, but the requested interaction itself must run through virtual-headful Camoufox and publish observable frames to the issue.",
+      "- Never override Paperclip's browser profile, scope, artifact, or runtime-home environment. Managed runs reject direct agent-browser commands even when a provider override is supplied.",
+      "- Run Camoufox actions sequentially and wait for each command to finish. Reuse Camoufox's saved storage state; do not create a private browser profile.",
+      "- If authentication requires email OTP or another site, keep the original login page open and create a second page in the same Camoufox context, then return to the original page. Do not destroy pending login state by reusing one page.",
       "- Before claiming visible progress, verify that managed browser commands have executed in this heartbeat. If the managed browser cannot run, report that blocker instead of silently switching to an invisible browser.",
     );
   }

@@ -13,7 +13,7 @@ def safe(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]", "_", value)[:120] or "default"
 
 
-parser = argparse.ArgumentParser(description="Open a URL with Paperclip's managed Camoufox fallback")
+parser = argparse.ArgumentParser(description="Open a URL with Paperclip's managed Camoufox browser")
 parser.add_argument("url")
 parser.add_argument("--screenshot")
 args = parser.parse_args()

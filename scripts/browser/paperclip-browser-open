@@ -7,59 +7,18 @@ if [ "$#" -lt 1 ]; then
 fi
 
 URL="$1"
-FORCE_PROVIDER="${PAPERCLIP_BROWSER_PROVIDER:-}"
-if [ "${2:-}" = "--camoufox" ] || [ "$FORCE_PROVIDER" = "camoufox" ]; then
-  exec paperclip-camoufox "$URL"
+
+case "${2:-}" in
+  ""|--camoufox) ;;
+  *)
+    echo "[paperclip-browser] unsupported provider option '${2:-}'; Camoufox is the only enabled managed provider" >&2
+    exit 64
+    ;;
+esac
+
+if [ "${PAPERCLIP_BROWSER_PROVIDER:-}" = "agent-browser" ]; then
+  echo "[paperclip-browser] ignoring PAPERCLIP_BROWSER_PROVIDER=agent-browser; agent-browser is disabled" >&2
 fi
 
-url_host() {
-  printf '%s' "$1" \
-    | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*://([^/@]+@)?([^/:?#]+).*#\2#' \
-    | tr '[:upper:]' '[:lower:]'
-}
-
-is_google_host() {
-  case "$(url_host "$1")" in
-    google.com|*.google.com) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-is_browser_security_block() {
-  printf '%s' "$1" | grep -Eiq \
-    "Just a moment|Verify you are human|Attention Required|Access denied|cf-chl-|challenge-platform|captcha|403 Forbidden|429 Too Many Requests|Couldn.t sign you in|browser or app may not be secure|Try using a different browser"
-}
-
-if is_google_host "$URL"; then
-  echo "[paperclip-browser] Google domain detected; using provider=camoufox" >&2
-  exec paperclip-camoufox "$URL"
-fi
-
-agent-browser open "$URL"
-TITLE="$(agent-browser get title 2>/dev/null || true)"
-SNAPSHOT="$(agent-browser snapshot -c 2>/dev/null || true)"
-CURRENT_URL="$(agent-browser get url 2>/dev/null || true)"
-SIGNAL="$TITLE $SNAPSHOT $CURRENT_URL"
-
-if is_google_host "$CURRENT_URL"; then
-  echo "[paperclip-browser] navigation reached Google; switching provider=camoufox" >&2
-  agent-browser close >/dev/null 2>&1 || true
-  exec paperclip-camoufox "$URL"
-fi
-
-if is_browser_security_block "$SIGNAL"; then
-  echo "[paperclip-browser] agent-browser block signal detected; retrying once" >&2
-  agent-browser reload >/dev/null 2>&1 || true
-  TITLE="$(agent-browser get title 2>/dev/null || true)"
-  SNAPSHOT="$(agent-browser snapshot -c 2>/dev/null || true)"
-  CURRENT_URL="$(agent-browser get url 2>/dev/null || true)"
-  SIGNAL="$TITLE $SNAPSHOT $CURRENT_URL"
-fi
-
-if is_google_host "$CURRENT_URL" || is_browser_security_block "$SIGNAL"; then
-  echo "[paperclip-browser] switching provider=camoufox" >&2
-  agent-browser close >/dev/null 2>&1 || true
-  exec paperclip-camoufox "$URL"
-fi
-
-printf '%s\n' '{"provider":"agent-browser","status":"ready"}'
+echo "[paperclip-browser] using provider=camoufox (agent-browser disabled)" >&2
+exec paperclip-camoufox "$URL"

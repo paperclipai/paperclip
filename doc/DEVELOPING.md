@@ -187,12 +187,14 @@ Every local install keeps runtime state directly under the selected instance roo
 
 ## Managed browser automation
 
-The production image includes `agent-browser` and Camoufox. The bundled
-`browser-automation` skill defines provider fallback, live issue visibility,
-credential handling, and session scoping. Store `AGENT_BROWSER_ENCRYPTION_KEY`
-and site credentials as company secrets, then bind them to an agent or project
-environment. Set `AGENT_BROWSER_RESTORE` in project env when projects must
-not share login state. Project env overrides agent defaults during issue runs.
+The production image currently uses Camoufox as its only enabled managed
+browser provider. `paperclip-browser-open` always selects virtual-headful
+Camoufox, and managed direct `agent-browser` commands are rejected. The bundled
+`browser-automation` skill defines live issue visibility, credential handling,
+and company/project profile scoping. Store site credentials as company secrets,
+then bind them to an agent or project environment. Assign a project-specific
+profile in Browsers → Profiles when projects must not share login state.
+Project env overrides agent defaults during issue runs.
 
 `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` override the home root and instance id respectively. `paperclipai onboard` echoes the resolved values in its banner (`Local home: <home> | instance: <id> | config: <path>`) so you can confirm where state will land before continuing.
 

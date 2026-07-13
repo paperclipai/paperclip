@@ -6,9 +6,8 @@ PROFILE_NAME="${AGENT_BROWSER_SESSION_NAME:-}"
 PROFILE_ROOT="${PAPERCLIP_BROWSER_PROFILE_ROOT:-/paperclip/browser-profiles}"
 RUNTIME_HOME="${PAPERCLIP_BROWSER_RUNTIME_HOME:-}"
 
-if [ -z "$PROFILE_NAME" ] || [ -z "${PAPERCLIP_COMPANY_ID:-}" ]; then
-  exec "$REAL_AGENT_BROWSER" "$@"
-fi
+echo "[paperclip-browser] agent-browser is disabled; use paperclip-browser-open or paperclip-camoufox" >&2
+exit 69
 
 for argument in "$@"; do
   case "$argument" in
