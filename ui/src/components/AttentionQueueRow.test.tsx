@@ -203,6 +203,25 @@ describe("AttentionQueueRow", () => {
     expect(onToggleExpand).toHaveBeenCalledTimes(1);
   });
 
+  it("exposes the visible expand chevron as an accessible button", () => {
+    const onToggleExpand = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem()}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+
+    const chevronButton = container?.querySelector('button[aria-label="Expand decision"]');
+    expect(chevronButton).toBeTruthy();
+    expect(chevronButton?.getAttribute("aria-expanded")).toBe("false");
+    act(() => chevronButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onToggleExpand).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
+  });
+
   it("does not navigate on title click — the title is plain text, not a link", () => {
     render(
       <AttentionQueueRow

@@ -165,17 +165,17 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
       <span className={cn("absolute inset-y-0 left-0 w-1", tone.accent)} aria-hidden />
 
       <div className="flex items-start gap-2 py-3 pl-4 pr-3">
-        {/* Expand affordance / spacer gutter — keeps headlines aligned across the
-            list. Presentational; the real toggle is the headline button below so
-            AT hears a single control (plan §2/§5). */}
+        {/* Expand affordance / spacer gutter — keeps headlines aligned across the list. */}
         {expandable ? (
-          <span
-            className="mt-0.5 shrink-0 cursor-pointer text-muted-foreground"
-            aria-hidden
+          <button
+            type="button"
+            className="mt-0.5 shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none"
+            aria-label={expanded ? "Collapse decision" : "Expand decision"}
+            aria-expanded={expanded}
             onClick={activate}
           >
             {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-          </span>
+          </button>
         ) : (
           <span className="mt-0.5 hidden h-4 w-4 shrink-0 @xl:block" aria-hidden />
         )}
@@ -255,7 +255,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             </div>
           </div>
 
-          {/* Headline — the sole expand target for inline rows. Title now wraps
+          {/* Headline — the primary expand target for inline rows. Title now wraps
               to two lines instead of truncating to a sliver on narrow screens. */}
           <div
             className={cn(
