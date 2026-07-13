@@ -46,6 +46,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseLocalProcessSandboxExtraPaths,
+  resolveLocalProcessSandboxWorkspaceDir,
   type LocalProcessSandboxOptions,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
@@ -497,13 +498,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     onLog,
   });
   const sharedClaudeConfigDir = resolveSharedClaudeConfigDir(process.env);
+  const localSandboxWorkspaceDir = resolveLocalProcessSandboxWorkspaceDir({
+    executionCwd: effectiveExecutionCwd,
+    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceWorktreePath,
+  });
   const localProcessSandbox: LocalProcessSandboxOptions | null =
     config.filesystemScope === "workspace" && !executionTargetIsRemote
       ? {
-          workspaceDir: effectiveExecutionCwd,
+          workspaceDir: localSandboxWorkspaceDir,
           managedPaths: [
-            { path: sharedClaudeConfigDir, access: "rw" },
-            { path: path.join(path.dirname(sharedClaudeConfigDir), ".claude.json"), access: "rw" },
+            { path: sharedClaudeConfigDir, access: "rw", createIfMissing: "directory" },
+            { path: path.join(path.dirname(sharedClaudeConfigDir), ".claude.json"), access: "rw", createIfMissing: "file" },
             { path: promptBundle.addDir, access: "ro" },
           ],
           extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
@@ -515,7 +521,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.CLAUDE_CONFIG_DIR = sharedClaudeConfigDir;
     await onLog(
       "stdout",
-      `[paperclip] Confining Claude filesystem access to workspace "${effectiveExecutionCwd}" and declared adapter paths.\n`,
+      `[paperclip] Confining Claude filesystem access to workspace "${localSandboxWorkspaceDir}" and declared adapter paths.\n`,
     );
   }
   const useManagedRemoteClaudeConfig =

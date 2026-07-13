@@ -40,6 +40,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseLocalProcessSandboxExtraPaths,
+  resolveLocalProcessSandboxWorkspaceDir,
   type LocalProcessSandboxOptions,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
@@ -636,11 +637,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ),
     );
     const billingType = resolveCodexBillingType(effectiveEnv);
+    const localSandboxWorkspaceDir = resolveLocalProcessSandboxWorkspaceDir({
+      executionCwd: effectiveExecutionCwd,
+      workspaceCwd: effectiveWorkspaceCwd,
+      workspaceWorktreePath,
+    });
     const localProcessSandbox: LocalProcessSandboxOptions | null =
       config.filesystemScope === "workspace" && !executionTargetIsRemote
         ? {
-            workspaceDir: effectiveExecutionCwd,
-            managedPaths: [{ path: effectiveCodexHome, access: "rw" }],
+            workspaceDir: localSandboxWorkspaceDir,
+            managedPaths: [{ path: effectiveCodexHome, access: "rw", createIfMissing: "directory" }],
             extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
             homeDir: effectiveCodexHome,
             command: asString(config.filesystemSandboxCommand, "bwrap"),
@@ -649,7 +655,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (localProcessSandbox) {
       await onLog(
         "stdout",
-        `[paperclip] Confining Codex filesystem access to workspace "${effectiveExecutionCwd}" and declared adapter paths.\n`,
+        `[paperclip] Confining Codex filesystem access to workspace "${localSandboxWorkspaceDir}" and declared adapter paths.\n`,
       );
     }
     const runtimeEnv = Object.fromEntries(

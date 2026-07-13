@@ -2,7 +2,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildLocalProcessSandboxSpawnTarget, parseLocalProcessSandboxExtraPaths } from "./local-process-sandbox.js";
+import {
+  buildLocalProcessSandboxSpawnTarget,
+  parseLocalProcessSandboxExtraPaths,
+  resolveLocalProcessSandboxWorkspaceDir,
+} from "./local-process-sandbox.js";
 import { runChildProcess } from "./server-utils.js";
 
 const cleanup: string[] = [];
@@ -37,6 +41,45 @@ describe("local process sandbox", () => {
     expect(target.args).toContain("--tmpfs");
     expect(target.args).toContain(workspace);
     expect(target.args).toContain(managedHome);
+  });
+
+  it("keeps the realized workspace root when execution starts in a subdirectory", () => {
+    expect(resolveLocalProcessSandboxWorkspaceDir({
+      executionCwd: "/workspace/packages/server",
+      workspaceCwd: "/workspace/packages/server",
+      workspaceWorktreePath: "/workspace",
+    })).toBe("/workspace");
+  });
+
+  it("creates missing adapter-managed writable paths before mounting them", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-sandbox-managed-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    const managedFile = path.join(root, "managed-home", ".tool.json");
+    await fs.mkdir(workspace);
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: [],
+      cwd: workspace,
+      options: {
+        workspaceDir: workspace,
+        managedPaths: [{ path: managedFile, access: "rw", createIfMissing: "file" }],
+      },
+    });
+    await expect(fs.stat(managedFile)).resolves.toMatchObject({ size: 0 });
+    expect(target.args).toContain(managedFile);
+  });
+
+  it("rejects missing declared extra paths instead of silently omitting them", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-sandbox-extra-"));
+    cleanup.push(workspace);
+    const missingPath = path.join(workspace, "missing");
+    await expect(buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: [],
+      cwd: workspace,
+      options: { workspaceDir: workspace, extraPaths: [{ path: missingPath, access: "rw" }] },
+    })).rejects.toThrow(`Sandbox path "${missingPath}" does not exist.`);
   });
 
   it("fails clearly when Bubblewrap is unavailable", async () => {
