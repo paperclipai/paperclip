@@ -13,7 +13,9 @@ import {
   type DatabaseBackupHealthWarning,
   type InspectDatabaseBackupHealthOptions,
 } from "../services/database-backup-health.js";
+import { getLiveEventsTransportHealth } from "../services/live-events.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { getSchedulerHealth } from "../services/scheduler-leadership.js";
 import { serverVersion } from "../version.js";
 
 function shouldExposeFullHealthDetails(
@@ -34,6 +36,8 @@ function hasDevServerStatusToken(providedToken: string | undefined) {
   if (expected.length !== provided.length) return false;
   return timingSafeEqual(expected, provided);
 }
+
+let lastNotificationQueueWarnAtMs = 0;
 
 function redactedDatabaseBackupWarning(warning: DatabaseBackupHealthWarning): DatabaseBackupHealthWarning {
   const messages: Record<DatabaseBackupHealthWarning["code"], string> = {
@@ -145,6 +149,20 @@ export function healthRoutes(
       return;
     }
 
+    const liveEvents = await getLiveEventsTransportHealth();
+    if (liveEvents.mode === "transport" && (liveEvents.notificationQueueUsage ?? 0) > 0.5) {
+      // Health probes fire every few seconds; during a queue incident one
+      // warning per minute is signal, one per probe is noise.
+      const now = Date.now();
+      if (now - lastNotificationQueueWarnAtMs > 60_000) {
+        lastNotificationQueueWarnAtMs = now;
+        logger.warn(
+          { notificationQueueUsage: liveEvents.notificationQueueUsage },
+          "Postgres notification queue is filling — a lagging LISTEN session is holding back cleanup",
+        );
+      }
+    }
+
     let bootstrapStatus: "ready" | "bootstrap_pending" = "ready";
     let bootstrapInviteActive = false;
     if (opts.deploymentMode === "authenticated") {
@@ -190,6 +208,11 @@ export function healthRoutes(
       });
     }
 
+    // Fetched before the redacted/full branch: the operator identifies the
+    // leader pod via unauthenticated probes; booleans only — the lease row
+    // (ids/hostnames) stays in the full-details view.
+    const scheduler = await getSchedulerHealth(db);
+
     const databaseBackup = opts.databaseBackupHealth
       ? inspectDatabaseBackupHealth(opts.databaseBackupHealth)
       : undefined;
@@ -207,6 +230,7 @@ export function healthRoutes(
         ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
         ...(redactedWarnings ? { warnings: redactedWarnings } : {}),
         ...(devServer ? { devServer } : {}),
+        scheduler: { candidate: scheduler.candidate, isLeader: scheduler.isLeader },
       });
       return;
     }
@@ -223,9 +247,11 @@ export function healthRoutes(
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
       serverInfo,
+      liveEvents,
       ...(databaseBackup ? { databaseBackup } : {}),
       ...(warnings ? { warnings } : {}),
       ...(devServer ? { devServer } : {}),
+      scheduler,
     });
   });
 
