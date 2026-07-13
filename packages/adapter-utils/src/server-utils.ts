@@ -173,6 +173,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Browser sessions belong to issues, not heartbeat runs. Do not open or attach to a browser merely because an earlier comment used one. Only run browser commands when the current work needs navigation; managed commands automatically reconnect to the issue's existing session.",
   "- Paperclip owns browser identity: never pass agent-browser session/profile/state/CDP/provider overrides or override HOME. If a managed profile is briefly busy, retry the managed command; never create a private browser session as fallback.",
   "- Run managed browser commands sequentially and wait for each to finish. Agent-browser and Camoufox have independent authentication state: never copy or merge cookies between them; authenticate each provider separately when needed.",
+  "- For email OTP, OAuth, or approval flows, preserve the original page and use agent-browser tabs: record the original tab id, open mail or the identity provider with `agent-browser tab new <url>`, then switch back with `agent-browser tab <original-tab-id>`. Do not navigate the original login tab away and rely on Back.",
 ].join("\n");
 
 export interface PaperclipSkillEntry {
@@ -883,6 +884,7 @@ export function renderPaperclipWakePrompt(
       "- Never pass `--session`, `--session-name`, `--profile`, `--state`, `--cdp`, `--auto-connect`, or provider overrides, and never override `HOME`; those detach the browser from the issue/profile selected by Paperclip.",
       "- Use `paperclip-browser-open <url> --camoufox` only when the board explicitly requests Camoufox; otherwise allow the managed launcher to fall back after a detected browser-security challenge.",
       "- Run browser actions sequentially and wait for each command to finish. Keep agent-browser and Camoufox authentication independent; never copy or merge cookies between providers.",
+      "- If authentication requires email OTP or another site, preserve the original login tab, open the secondary site with `agent-browser tab new <url>`, and switch back with `agent-browser tab <original-tab-id>`. The live viewer follows the active tab; do not destroy pending login state by reusing one tab.",
       "- Before claiming visible progress, verify that managed browser commands have executed in this heartbeat. If the managed browser cannot run, report that blocker instead of silently switching to an invisible browser.",
     );
   }

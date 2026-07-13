@@ -38,6 +38,21 @@ Paperclip renders commands containing `agent-browser` or `camoufox` as browser a
 
 Run browser commands sequentially and wait for each command to finish before starting the next one. Snapshot references belong to the page state that produced them; overlapping `open`, `snapshot`, and `click` calls can invalidate those references even though Paperclip protects the issue daemon with a command queue.
 
+## Multi-tab authentication and OTP flows
+
+Agent-browser sessions support multiple tabs. Preserve the original login, OAuth, checkout, or form page when authentication requires information from email or another site. Do not navigate the original tab to Gmail and rely on Back; that can discard form state, PKCE/OAuth state, or a pending challenge.
+
+Use this pattern:
+
+1. Run `agent-browser tab list` and retain the original tab id.
+2. Run `agent-browser tab new https://mail.google.com` (or the required identity-provider URL). The new tab becomes active and the live viewer follows it.
+3. Retrieve the required OTP or approval in the second tab without posting it to comments or durable artifacts.
+4. Run `agent-browser tab <original-tab-id>` to return to the preserved login page. The live viewer follows the active tab.
+5. Take a fresh snapshot, locate the current OTP field, enter the value, and continue.
+6. Close only the temporary mail tab when it is no longer needed. Do not close the issue browser while the workflow is active.
+
+Tabs share the same issue-owned browser context and selected agent-browser profile, including cookies and authenticated state. Another issue still receives a different browser session. Camoufox does not currently provide the same persistent interactive multi-tab workflow; for an OTP flow requiring tab switching, keep agent-browser unless a browser-security block makes that impossible, then report the human authentication limitation explicitly.
+
 Existing automation scripts may be read for selectors and workflow knowledge, but they do not satisfy an explicit live-browser request. If managed navigation fails, report the blocker; never silently fall back to an invisible custom browser.
 
 ## Scope and persistent login state
