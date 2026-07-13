@@ -65,4 +65,5 @@ Notes:
 - The Claude ACP lane requires Node >=22.12.0 and @agentclientprotocol/claude-agent-acp to be installed with this adapter package. Auto engine selection falls back to CLI when those prerequisites are unavailable; explicit engine="acp" fails loudly.
 - For ACP runs, model selection is passed through ANTHROPIC_MODEL at ACP server startup; Paperclip-managed Claude permissions and ephemeral skill materialization are handled by the shared ACP engine.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
+- Subscription (Claude Pro/Max) auth in headless/remote runs, where there is no on-disk Claude login, can be provided by setting CLAUDE_CODE_OAUTH_TOKEN in env (mint one with \`claude setup-token\`). Subscription usage/quota reporting requires an on-disk login and is unavailable with token-only auth.
 `;
