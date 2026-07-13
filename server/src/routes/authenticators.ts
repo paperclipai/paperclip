@@ -3,7 +3,7 @@ import { Router } from "express";
 import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { agents, companyAuthenticatorAgents, companyAuthenticators } from "@paperclipai/db";
+import { agents, companyAuthenticatorAgents, companyAuthenticators, companySecretBindings } from "@paperclipai/db";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { accessService, logActivity, secretService } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo, requirePermission } from "./authz.js";
@@ -16,6 +16,43 @@ const createSchema = z.object({
   agentIds: z.array(z.string().uuid()).optional().default([]),
 });
 const bindSchema = z.object({ agentIds: z.array(z.string().uuid()) });
+
+function authenticatorCodePath(authenticatorId: string) {
+  return `authenticators.${authenticatorId}.code`;
+}
+
+export async function replaceAgentBindings(
+  db: Db,
+  record: typeof companyAuthenticators.$inferSelect,
+  agentIds: string[],
+) {
+  const configPath = authenticatorCodePath(record.id);
+  await db.transaction(async (tx) => {
+    await tx.delete(companyAuthenticatorAgents).where(eq(companyAuthenticatorAgents.authenticatorId, record.id));
+    await tx.delete(companySecretBindings).where(and(
+      eq(companySecretBindings.companyId, record.companyId),
+      eq(companySecretBindings.secretId, record.secretId),
+      eq(companySecretBindings.targetType, "agent"),
+      eq(companySecretBindings.configPath, configPath),
+    ));
+    if (agentIds.length === 0) return;
+    await tx.insert(companyAuthenticatorAgents).values(agentIds.map((agentId) => ({
+      companyId: record.companyId,
+      authenticatorId: record.id,
+      agentId,
+    })));
+    await tx.insert(companySecretBindings).values(agentIds.map((agentId) => ({
+      companyId: record.companyId,
+      secretId: record.secretId,
+      targetType: "agent",
+      targetId: agentId,
+      configPath,
+      versionSelector: "latest",
+      required: true,
+      label: record.name,
+    })));
+  });
+}
 
 function parseTotpInput(raw: string) {
   const value = raw.trim();
@@ -113,7 +150,7 @@ export function authenticatorRoutes(db: Db) {
     }).returning();
     if (input.agentIds.length > 0) {
       const valid = await db.select({ id: agents.id }).from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, input.agentIds)));
-      await db.insert(companyAuthenticatorAgents).values(valid.map((agent) => ({ companyId, authenticatorId: record!.id, agentId: agent.id }))).onConflictDoNothing();
+      await replaceAgentBindings(db, record!, valid.map((agent) => agent.id));
     }
     res.status(201).json({ ...record, secretId: undefined, agentIds: input.agentIds });
   });
@@ -124,8 +161,7 @@ export function authenticatorRoutes(db: Db) {
     if (!record) throw notFound("Authenticator not found");
     await requirePermission(req, access, record.companyId, "secrets:manage");
     const valid = input.agentIds.length === 0 ? [] : await db.select({ id: agents.id }).from(agents).where(and(eq(agents.companyId, record.companyId), inArray(agents.id, input.agentIds)));
-    await db.delete(companyAuthenticatorAgents).where(eq(companyAuthenticatorAgents.authenticatorId, record.id));
-    if (valid.length > 0) await db.insert(companyAuthenticatorAgents).values(valid.map((agent) => ({ companyId: record.companyId, authenticatorId: record.id, agentId: agent.id })));
+    await replaceAgentBindings(db, record, valid.map((agent) => agent.id));
     res.json({ ok: true, agentIds: valid.map((agent) => agent.id) });
   });
 
@@ -140,15 +176,15 @@ export function authenticatorRoutes(db: Db) {
     } else {
       await requirePermission(req, access, record.companyId, "secrets:manage");
     }
-    const seed = await secrets.resolveSecretValue(record.companyId, record.secretId, "latest", {
+    const seed = await secrets.resolveSecretValue(record.companyId, record.secretId, "latest", actor.actorType === "agent" ? {
       consumerType: "agent",
-      consumerId: actor.agentId ?? actor.actorId,
-      configPath: `authenticators.${record.id}.code`,
+      consumerId: actor.agentId!,
+      configPath: authenticatorCodePath(record.id),
       actorType: actor.actorType,
       actorId: actor.actorId,
       issueId: typeof req.body?.issueId === "string" ? req.body.issueId : null,
       heartbeatRunId: typeof req.body?.runId === "string" ? req.body.runId : null,
-    });
+    } : undefined);
     const generated = currentTotp(seed);
     await logActivity(db, { companyId: record.companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, action: "authenticator.code_generated", entityType: "company_authenticator", entityId: record.id, details: { issueId: req.body?.issueId ?? null, expiresAt: generated.expiresAt } });
     res.json(generated);
