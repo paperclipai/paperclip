@@ -73,6 +73,11 @@ import {
 } from "../services/company-member-roles.js";
 import { humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
 import {
+  getInviteEmailTransport,
+  inviteEmailHook,
+  type InviteEmailPayload,
+} from "../services/invite-email.js";
+import {
   collapseDuplicatePendingHumanJoinRequests,
   findReusableHumanJoinRequest,
 } from "../lib/join-request-dedupe.js";
@@ -3283,6 +3288,17 @@ export function accessRoutes(
         created,
         companyBranding
       );
+
+      // Optional email delivery: when a recipient email is present and a
+      // transport is registered, send the invite. Otherwise the copyable
+      // inviteUrl below is the unchanged fallback.
+      await inviteEmailHook(getInviteEmailTransport(), {
+        email: (req.body.email as string | null | undefined) ?? null,
+        inviteUrl: inviteSummary.inviteUrl,
+        companyName: companyBranding.name ?? null,
+        role: (req.body.humanRole as InviteEmailPayload["role"]) ?? null,
+      });
+
       res.status(201).json({
         ...created,
         token,
