@@ -1,7 +1,7 @@
 # Execution Semantics
 
 Status: Current implementation guide
-Date: 2026-06-10
+Date: 2026-07-13
 Audience: Product and engineering
 
 This document explains how Paperclip interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, and blocker relationships.
@@ -339,6 +339,250 @@ The state `projectWorkspaceId` plus `executionWorkspaceId` without `projectId` i
 Workspace incoherence feeds into the same non-terminal liveness and stranded assigned-work model as a disappeared run. The recovery path should first fail or reject the incoherent wake, then either repair and requeue one bounded continuation for the same assignee or surface an explicit recovery action. It must not leave an agent-owned `in_progress` issue healthy solely because a wake record exists that would invoke the adapter in the wrong cwd, a non-git directory where git is required, an unrelated project workspace, or an unrecoverable missing worktree.
 
 For runtime-created `git_worktree` execution workspaces, branch coherence is part of workspace coherence. The persisted execution workspace branch is the recorded branch for future dispatch. Reusing that workspace must verify that the worktree is still registered and that `HEAD` is on the recorded branch. Successful run finalization must perform the same check before recording `workspace_finalize=succeeded`. If the run switched to a publishing/PR branch without updating the execution workspace record, finalization may auto-restore the recorded branch only when the worktree is clean, still registered, and the recorded branch points at the current `HEAD`; the repair is recorded as a workspace operation before the successful finalize row. If that safe repair cannot be proven, finalization records a failed workspace finalize and the run fails with bounded evidence for the expected and actual branch. A branch change is sanctioned when a control-plane path updates the execution workspace record before finalization, when publishing work happens in a separate worktree and the managed issue worktree remains on its recorded branch, or when the finalizer performs this clean same-commit restoration.
+
+### Authoritative workspace intent and completion attestation
+
+Workspace coherence answers whether Paperclip can invoke an adapter in the workspace it selected. Authoritative workspace intent answers a different question: whether that workspace is the declared place from which the requested outcome may be delivered. A coherent temporary directory, accumulated `project_primary` folder, or valid Git repository is not authoritative merely because issue prose names a path inside it.
+
+Paperclip must keep these objects distinct:
+
+1. **target declaration**: board/project configuration that says what kind of outcome this workspace may authoritatively deliver
+2. **workspace realization**: the concrete local or provider-managed workspace selected for a run
+3. **resolved target snapshot**: the immutable, provider-resolved target identity captured before dispatch
+4. **completion attestation**: provider-generated evidence that the resolved target received the declared delivery
+
+Issue titles, descriptions, comments, prompts, command output, and agent-supplied paths may explain intent or support review. They must not create, replace, or change any of these four objects. In particular, Paperclip must not infer an authoritative repository or remote checkout from an absolute path or repository name mentioned in prose.
+
+#### Declared target kinds
+
+Version 1 supports exactly three target kinds:
+
+##### `repository_checkout`
+
+Use this when completion means changing a registered source repository.
+
+The declaration includes:
+
+- a registered `projectWorkspaceId` and owning `projectId`
+- a credential-free canonical repository locator and its `repositoryFingerprint`
+- an expected ref or ref policy
+- the provider-resolved checkout root
+- a delivery method: `commit`, `push`, `pull_request`, `controlled_sync`, or `none`
+- whether successful workspace delivery is required before `done`
+
+`none` is valid for investigation or read-only work, but cannot satisfy a `workspace_delivery` completion requirement. A `project_primary` folder whose repository locator is null is not a repository checkout, even when the folder happens to contain a `.git` directory or repository-like files.
+
+Before dispatch, the provider must prove that the realized cwd resolves to the declared repository root, that its credential-free remote fingerprint equals the declaration, and that required ref/base metadata is resolvable. For Git worktrees it must also prove that the worktree remains registered and belongs to that repository.
+
+##### `remote_operator_checkout`
+
+Use this when the authoritative files live behind a registered environment/provider, including an operator-managed server checkout or a provider-owned remote workspace.
+
+The declaration includes:
+
+- a registered `environmentId` and provider key
+- a provider-owned private target reference that resolves to one absolute remote target path
+- a privacy-safe `targetFingerprint` and non-secret display label
+- an execution/delivery method: `remote_exec`, `provider_sync`, `operator_handoff`, or `controlled_sync`
+- whether successful workspace delivery is required before `done`
+
+The adapter must receive the exact provider-resolved target through the provider boundary. Copying the remote path into issue prose or asking an agent to `cd` there does not establish authority. `operator_handoff` may leave the issue in review or waiting for an operator confirmation; it does not itself attest delivery.
+
+##### `artifact_only`
+
+Use this for research, planning support, generated reports, images, exports, and other work whose authoritative output is an issue document, attachment, or work product rather than a repository or remote checkout.
+
+The declaration includes the allowed output classes (`issue_document`, `attachment`, and/or `work_product`) and whether at least one durable artifact is required. It does not require Git or a remote path. It may run in a managed `project_primary`, task-session, agent-home, or provider workspace as long as the normal coherence and security rules pass.
+
+An artifact-only run cannot satisfy a code, infrastructure, deployment, repository, or remote-checkout completion claim. If the requested outcome changes into one of those delivery classes, the issue's completion requirement and target declaration must be changed before another dispatch.
+
+#### Issue completion requirement
+
+Target capability and issue completion are separate declarations. Each issue has one versioned completion requirement:
+
+- `evidence_only`: no workspace delivery is claimed; comments/tests may be sufficient under the ordinary issue contract
+- `artifact`: terminal completion requires the declared durable artifact output
+- `workspace_delivery`: terminal completion requires a successful provider-generated delivery attestation for the resolved repository or remote target
+- `legacy_unspecified`: compatibility state for pre-migration issues only
+
+Project configuration may provide the default for newly created issues. An issue may select a narrower or stricter requirement, but an agent may not change an issue from `workspace_delivery` to a weaker requirement during the run that attempts completion. Weakening the requirement or substituting the authoritative target is a board/project-configuration mutation and is recorded in activity.
+
+New project-scoped issues must persist a concrete requirement at creation; the server must not derive it by scanning prose. A create request that omits the field uses the project's explicit default. If neither exists, it uses `evidence_only` only for an explicitly `artifact_only`/non-delivery project; otherwise it is configuration-incomplete before dispatch.
+
+#### Pre-dispatch validity
+
+Before an adapter run is dispatched, Paperclip resolves the effective declaration in this order:
+
+1. issue target override, when board-authorized and present
+2. selected project workspace target declaration
+3. project default target declaration
+
+Resolution is valid only when:
+
+- the declaration, issue, project, workspace, environment, and provider are in the same company
+- the declaration revision is current and enabled
+- the target kind can satisfy the issue completion requirement
+- the selected workspace can be realized by the declared provider
+- required repository/ref or remote-target fields resolve without ambiguity
+- the provider-derived target fingerprint matches the declaration
+- no credential-bearing locator, userinfo, token, signed query, or secret remote path is copied into public run context
+
+For `workspace_delivery`, a missing, ambiguous, disabled, cross-company, or mismatched target is a pre-dispatch `configuration_incomplete` gate. Paperclip must atomically leave the source issue `blocked` and upsert one source-scoped recovery action with:
+
+- kind `configuration_incomplete`
+- fingerprint `workspace_target:<issueId>:<completionRequirementRevision>:<effectiveTargetRevision-or-missing>`
+- owner: project lead when active/invokable, otherwise a board operator
+- next action: select, repair, or authorize the named project/issue target
+- wake policy `on_workspace_target_change`
+
+No adapter run is created. Reconciliation must not retry the gate while the fingerprint is unchanged. A target/requirement update revalidates the configuration, resolves the old recovery action, and queues at most one normal-model wake for the existing assignee when the issue can resume. This is the single waiting/recovery path for missing workspace intent; implementations must not also create a duplicate recovery issue or periodic retry.
+
+`artifact` and `evidence_only` work remain productive in an explicitly `artifact_only` target. Normal workspace coherence, secret binding, budget, approval, and ownership gates still apply.
+
+#### Durable target and attestation schema
+
+The implementation may normalize these records into tables or initially store the declarations in the existing project/issue JSON policy columns, but the API and durable uniqueness constraints must expose the following logical schema.
+
+`WorkspaceTargetDeclarationV1`:
+
+```ts
+type WorkspaceTargetDeclarationV1 = {
+  version: 1;
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  projectWorkspaceId: string | null;
+  kind: "repository_checkout" | "remote_operator_checkout" | "artifact_only";
+  revision: number;
+  enabled: boolean;
+  deliveryRequired: boolean;
+  providerKey: string;
+  repositoryFingerprint: string | null;
+  targetFingerprint: string;
+  displayLabel: string;
+  privateTargetRef: string | null;
+  expectedRef: string | null;
+  deliveryMethod:
+    | "commit" | "push" | "pull_request"
+    | "remote_exec" | "provider_sync" | "operator_handoff"
+    | "controlled_sync" | "none";
+  artifactClasses: Array<"issue_document" | "attachment" | "work_product">;
+};
+```
+
+Issues persist `completionRequirement`, `completionRequirementRevision`, and optional `workspaceTargetDeclarationId`. Projects persist the default requirement and default declaration id. Existing workspace ids remain realization selectors; they do not double as target declarations.
+
+Each dispatched run persists an immutable `resolvedWorkspaceTarget` snapshot in durable run context:
+
+```ts
+type ResolvedWorkspaceTargetV1 = {
+  version: 1;
+  declarationId: string;
+  declarationRevision: number;
+  kind: WorkspaceTargetDeclarationV1["kind"];
+  providerKey: string;
+  targetFingerprint: string;
+  repositoryFingerprint: string | null;
+  projectId: string | null;
+  projectWorkspaceId: string | null;
+  executionWorkspaceId: string | null;
+  checkoutRootFingerprint: string | null;
+  resolvedRef: string | null;
+  deliveryMethod: WorkspaceTargetDeclarationV1["deliveryMethod"];
+  resolvedAt: string;
+};
+```
+
+The provider writes append-only completion attestations. The minimum logical fields are:
+
+```ts
+type DeliveryAttestationV1 = {
+  version: 1;
+  id: string;
+  companyId: string;
+  issueId: string;
+  runId: string;
+  declarationId: string;
+  declarationRevision: number;
+  targetKind: WorkspaceTargetDeclarationV1["kind"];
+  targetFingerprint: string;
+  providerKey: string;
+  outcome: "succeeded" | "failed" | "not_attempted" | "operator_confirmation_required";
+  deliveryMethod: WorkspaceTargetDeclarationV1["deliveryMethod"];
+  sourceRevision: string | null;
+  deliveredRevision: string | null;
+  destinationRefFingerprint: string | null;
+  workspaceDirty: boolean | null;
+  operationId: string | null;
+  artifactIds: string[];
+  generatedAt: string;
+  providerSignature: string;
+};
+```
+
+The storage layer enforces one provider attestation per `(runId, declarationId, declarationRevision, deliveryMethod, operationId)` after normalizing null operation ids. Attestations are append-only; a retry or later delivery produces a new row rather than rewriting failed evidence. `providerSignature` is a server/provider authenticity value, not an agent-supplied string.
+
+#### Privacy-safe fingerprints
+
+Repository locators are canonicalized after credentials, URL userinfo, query parameters, and fragments are removed. Remote target paths and provider workspace references are secret-adjacent and are not returned in agent-readable issue/run/activity APIs.
+
+`repositoryFingerprint`, `targetFingerprint`, `checkoutRootFingerprint`, and destination fingerprints use versioned keyed hashing:
+
+```text
+v1:hmac-sha256(instance_attestation_key, companyId + "\n" + providerKey + "\n" + canonicalLocator)
+```
+
+The company id prevents cross-company correlation. The server may return the fingerprint, provider key, target kind, and a board-authored non-secret display label. It must redact `privateTargetRef`, raw remote absolute paths, credential-bearing remotes, and the HMAC key. Board-only configuration reads may resolve a redacted path hint through the provider, but ordinary agent, comment, activity, wake, and attestation projections must not expose it.
+
+#### Provider-generated evidence
+
+Attestation is generated from provider/workspace inspection, not from agent request fields or prose:
+
+- repository providers read the declared remote, root, ref, before/after revision, worktree state, and delivery operation result directly
+- remote providers resolve the private target reference, bind the operation to its target fingerprint, and record the provider operation result
+- artifact providers verify that referenced documents/attachments/work products are durable, company-scoped, and attached to the issue
+
+Builds, tests, screenshots, comments, and command logs remain valuable supporting evidence. They do not replace a successful delivery operation when `workspace_delivery` is required. Conversely, a successful delivery attestation proves the delivery path, not functional correctness; acceptance criteria may still require tests, deployment checks, or review.
+
+#### Terminal transition contract
+
+On a requested transition to `done`, the server evaluates the persisted issue requirement and provider evidence in the same transaction as the status change:
+
+- `evidence_only`: use the ordinary completion rules
+- `artifact`: require at least one allowed, durable, issue-linked artifact produced or updated by the completing run (or explicitly accepted from a prior run)
+- `workspace_delivery`: require a `succeeded` attestation whose company, issue, run, declaration id/revision, target fingerprint, and delivery method match the run's immutable target snapshot and the issue's current requirement revision
+- `legacy_unspecified`: preserve compatibility behavior and return an explicit `completionContract: legacy_unspecified` warning in API/UI projections
+
+Agents may reference an attestation id in a completion request, but they cannot submit attestation contents. When exactly one valid attestation exists for the completing run, the server may select it automatically.
+
+If required evidence is absent, failed, stale, belongs to another company/issue/run/target, or was generated before the current requirement/target revision, the server must not set `done` or `completedAt`. It returns `422 delivery_attestation_required` (or `artifact_attestation_required`) with the expected target fingerprint and allowed next actions. When the run has already ended and no live path remains, Paperclip upserts one source-scoped `delivery_attestation_incomplete` recovery action keyed by `(issueId, requirementRevision, declarationRevision, runId)`; the action must route to retry delivery, obtain the typed operator confirmation required by the provider, or correct the requirement through a board-authorized mutation. It must not automatically push, sync, guess a target, or wake the same failed completion repeatedly.
+
+An `operator_confirmation_required` attestation is a real waiting path only when it is paired with a pending typed interaction/approval or user owner. A comment saying that an operator should confirm is supporting evidence, not a waiting path.
+
+#### API projections and mutations
+
+Server and UI implementation must expose:
+
+- project/workspace configuration reads and board-authorized mutations for target declarations and project defaults
+- issue create/update fields for completion requirement and target selection, with activity for every change
+- issue, run, and heartbeat-context projections containing the effective declaration summary, immutable resolved target snapshot, completion-contract warning/error, and latest matching attestation summary
+- `GET /issues/:issueId/delivery-attestations` and `GET /heartbeat-runs/:runId/delivery-attestations`
+- terminal mutation errors with stable codes, expected declaration revision/fingerprint, and typed remediation actions
+
+Agent-readable APIs expose fingerprints and non-secret labels, never private target references. Declaration mutation is board/project-configuration authority; normal issue agents can read the effective contract and complete against it but cannot replace it.
+
+#### Migration and compatibility
+
+The migration is additive and non-destructive:
+
+1. Existing issues receive `completionRequirement = legacy_unspecified` and revision `1`.
+2. Existing projects receive no default declaration and `defaultCompletionRequirement = null`.
+3. Existing registered Git project workspaces may be offered as declaration candidates after credential-free remote/ref validation, but migration must not silently declare them authoritative.
+4. Existing repo-less `project_primary` folders remain usable for `legacy_unspecified`, `evidence_only`, and explicitly `artifact_only` work; they are never labeled repository checkouts and cannot satisfy a new `workspace_delivery` requirement.
+5. Newly created non-code projects may explicitly choose `artifact_only` and default new issues to `evidence_only` or `artifact`, so they remain productive without Git.
+6. Newly created delivery projects and issues must select a valid repository or remote target before dispatch.
+
+`legacy_unspecified` is a visible compatibility state, not a target kind and not a source for inferred authority. It prevents a release-wide stop for existing non-code and historical work while making the lack of provider attestation explicit. Operators can migrate projects incrementally; changing a project default affects only newly created issues unless an explicit bulk migration is previewed and applied. Historical `done` issues and their comments remain unchanged and are not retroactively attested.
 
 ### Explicit recovery actions
 
