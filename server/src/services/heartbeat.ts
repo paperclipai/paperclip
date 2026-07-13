@@ -2817,6 +2817,21 @@ function currentReviewParticipantAgentId(issue: DispatchOriginIssueSnapshot) {
   return participant?.type === "agent" ? participant.agentId : null;
 }
 
+function deriveDispatchOriginIssueId(input: {
+  issue: DispatchOriginIssueSnapshot | null;
+  contextSnapshot: Record<string, unknown>;
+  payload: Record<string, unknown> | null;
+}) {
+  return (
+    input.issue?.id ??
+    readNonEmptyString(input.contextSnapshot.issueId) ??
+    readNonEmptyString(input.contextSnapshot.taskId) ??
+    readNonEmptyString(input.payload?.issueId) ??
+    readNonEmptyString(input.payload?.taskId) ??
+    null
+  );
+}
+
 function validateWakeDispatchOrigin(input: {
   agent: Pick<typeof agents.$inferSelect, "id" | "role" | "name" | "permissions" | "metadata">;
   issue: DispatchOriginIssueSnapshot | null;
@@ -2825,7 +2840,7 @@ function validateWakeDispatchOrigin(input: {
   payload: Record<string, unknown> | null;
 }): DispatchOriginValidation {
   const wakeReason = readNonEmptyString(input.contextSnapshot.wakeReason) ?? input.reason;
-  const issueId = input.issue?.id ?? readNonEmptyString(input.contextSnapshot.issueId);
+  const issueId = deriveDispatchOriginIssueId(input);
   const issueAssignedToAgent =
     Boolean(input.issue) &&
     input.issue?.assigneeAgentId === input.agent.id &&
@@ -2836,6 +2851,19 @@ function validateWakeDispatchOrigin(input: {
     currentReviewParticipantAgentId(input.issue) === input.agent.id;
   const explicitInteractionWake = allowsIssueInteractionWake(input.contextSnapshot);
   const explicitSystemBypass = Boolean(wakeReason && ISSUE_DISPATCH_ORIGIN_BYPASS_WAKE_REASONS.has(wakeReason));
+
+  if (issueId && !input.issue && !explicitInteractionWake && !explicitSystemBypass) {
+    return {
+      allowed: false,
+      errorCode: "dispatch_origin_issue_not_assigned",
+      reason: "Wake denied because the target issue could not be resolved for the receiving agent",
+      details: {
+        issueId,
+        wakeReason,
+        source: readNonEmptyString(input.contextSnapshot.source),
+      },
+    };
+  }
 
   if (
     input.issue &&
@@ -10387,29 +10415,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    const wakeupPayload = run.wakeupRequestId
-      ? await db
-        .select({ payload: agentWakeupRequests.payload })
-        .from(agentWakeupRequests)
-        .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
-        .then((rows) => parseObject(rows[0]?.payload))
-      : null;
-    const dispatchOrigin = validateWakeDispatchOrigin({
-      agent,
-      issue,
-      contextSnapshot: context,
-      reason: wakeReason ?? run.scheduledRetryReason ?? null,
-      payload: wakeupPayload,
-    });
-    if (!dispatchOrigin.allowed) {
-      return {
-        stale: true,
-        errorCode: dispatchOrigin.errorCode,
-        reason: dispatchOrigin.reason,
-        details: dispatchOrigin.details,
-      };
-    }
-
     if (issue.status === "done" || issue.status === "cancelled") {
       if (!resumeIntent && !wakeCommentId) {
         return {
@@ -10464,6 +10469,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           };
         }
       }
+    }
+
+    const wakeupPayload = run.wakeupRequestId
+      ? await db
+        .select({ payload: agentWakeupRequests.payload })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+        .then((rows) => parseObject(rows[0]?.payload))
+      : null;
+    const dispatchOrigin = validateWakeDispatchOrigin({
+      agent,
+      issue,
+      contextSnapshot: context,
+      reason: wakeReason ?? run.scheduledRetryReason ?? null,
+      payload: wakeupPayload,
+    });
+    if (!dispatchOrigin.allowed) {
+      return {
+        stale: true,
+        errorCode: dispatchOrigin.errorCode,
+        reason: dispatchOrigin.reason,
+        details: dispatchOrigin.details,
+      };
     }
 
     return { stale: false };

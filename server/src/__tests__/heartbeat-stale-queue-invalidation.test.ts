@@ -408,6 +408,50 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(runRows).toHaveLength(0);
   });
 
+  it("denies issue-scoped wakes whose cited issue cannot be resolved for the receiving agent", async () => {
+    const { agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual",
+      payload: {
+        issueId,
+        request: "check the cited task before continuing",
+      },
+      contextSnapshot: { source: "manual.test" },
+    });
+
+    expect(run).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const [wakeup] = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+        error: agentWakeupRequests.error,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    const runRows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
+
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      reason: "dispatch_origin_issue_not_assigned",
+      error: expect.stringContaining("could not be resolved"),
+    });
+    expect(wakeup?.payload).toMatchObject({
+      issueId,
+      dispatchDenied: {
+        issueId,
+        source: "manual.test",
+      },
+    });
+    expect(runRows).toHaveLength(0);
+  });
+
   it("denies credential-recon wakes to assigned agents without the security whitelist", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({ agentRole: "engineer" });
     const issueId = randomUUID();
@@ -1267,6 +1311,67 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       status: "blocked",
       priority: "medium",
       assigneeAgentId: agentId,
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      invocationSource: "automation",
+      scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      contextExtras: {
+        retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_not_in_progress");
+    expect(run?.resultJson).toMatchObject({ stopReason: "issue_not_in_progress" });
+    expect(wakeup?.status).toBe("skipped");
+    expect(wakeup?.error).toContain("no longer in_progress");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("preserves the in_progress stale reason ahead of dispatch-origin denials for queued continuations", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Continuation with stale status metadata drift",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      assigneeUserId: "responsible-user",
     });
 
     const { runId, wakeupRequestId } = await seedQueuedRun({
