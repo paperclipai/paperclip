@@ -170,6 +170,11 @@ export function InstanceExperimentalSettings() {
   const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
   const [pendingPreview, setPendingPreview] = useState<IssueGraphLivenessAutoRecoveryPreview | null>(null);
 
+  function closeRecoveryPreview() {
+    setPreviewDialogOpen(false);
+    setPendingPreview(null);
+  }
+
   useEffect(() => {
     setBreadcrumbs([
       { label: "Settings", href: "/company/settings" },
@@ -239,7 +244,7 @@ export function InstanceExperimentalSettings() {
       instanceSettingsApi.runIssueGraphLivenessAutoRecovery({ lookbackHours }),
     onSuccess: async () => {
       setActionError(null);
-      setPreviewDialogOpen(false);
+      closeRecoveryPreview();
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings }),
         queryClient.invalidateQueries({ queryKey: queryKeys.health }),
@@ -310,21 +315,22 @@ export function InstanceExperimentalSettings() {
       setActionError("Lookback hours must be a whole number from 1 to 720.");
       return;
     }
+    closeRecoveryPreview();
     previewMutation.mutate(parsedLookbackHours);
   }
 
   function enableOnly() {
     if (!lookbackHoursIsValid) return;
+    closeRecoveryPreview();
     toggleMutation.mutate({
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: parsedLookbackHours,
-    }, {
-      onSuccess: () => setPreviewDialogOpen(false),
     });
   }
 
   function enableAndRun() {
     if (!lookbackHoursIsValid) return;
+    closeRecoveryPreview();
     toggleMutation.mutate({
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: parsedLookbackHours,
@@ -784,14 +790,20 @@ export function InstanceExperimentalSettings() {
         </div>
       </Card>
 
-      <RecoveryPreviewDialog
-        open={previewDialogOpen}
-        onOpenChange={setPreviewDialogOpen}
-        preview={pendingPreview}
-        onEnableOnly={enableOnly}
-        onEnableAndRun={enableAndRun}
-        isPending={recoveryActionPending}
-      />
+      {previewDialogOpen ? (
+        <RecoveryPreviewDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) {
+              closeRecoveryPreview();
+            }
+          }}
+          preview={pendingPreview}
+          onEnableOnly={enableOnly}
+          onEnableAndRun={enableAndRun}
+          isPending={recoveryActionPending}
+        />
+      ) : null}
     </div>
   );
 }
