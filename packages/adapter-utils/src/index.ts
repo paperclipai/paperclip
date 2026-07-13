@@ -36,6 +36,8 @@ export type {
   StdoutLineParser,
   CLIAdapterModule,
   CreateConfigValues,
+  AdapterCredentialOption,
+  AdapterCredentialSetup,
 } from "./types.js";
 export type {
   SessionCompactionPolicy,
