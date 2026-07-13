@@ -38,6 +38,7 @@ import {
   createDocumentAnnotationThreadSchema,
   createChildIssueSchema,
   createIssueSchema,
+  createIssueReportSchema,
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
   feedbackTargetTypeSchema,
@@ -116,6 +117,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { issueReportService } from "../services/issue-reports.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
@@ -2498,6 +2500,7 @@ export function issueRoutes(
   const documentAnnotationsSvc = documentAnnotationService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
+  const issueReportsSvc = issueReportService(db);
   const taskWatchdogFactory: TaskWatchdogServiceFactory | undefined = Object.prototype.hasOwnProperty.call(
     serviceIndex,
     "taskWatchdogService",
@@ -9569,6 +9572,103 @@ export function issueRoutes(
       return;
     }
     res.json(bundle);
+  });
+
+  router.get("/issues/:id/reports", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    res.json(await issueReportsSvc.listForIssue(issue.companyId, issue.id));
+  });
+
+  router.post("/issues/:id/reports", validate(createIssueReportSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const targetIssue = await svc.getById(id);
+    if (!targetIssue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, targetIssue.companyId);
+    if (req.actor.type !== "agent" || !req.actor.agentId) {
+      res.status(403).json({ error: "Only run actors can create cross-issue reports" });
+      return;
+    }
+    const runId = requireAgentRunId(req, res);
+    if (!runId) return;
+    if (!(await assertIssueReadAllowed(req, res, targetIssue))) return;
+
+    const originIssueId = await issueReportsSvc.resolveOrigin({
+      companyId: targetIssue.companyId,
+      agentId: req.actor.agentId,
+      runId,
+    });
+    const result = await issueReportsSvc.create({
+      companyId: targetIssue.companyId,
+      targetIssueId: targetIssue.id,
+      originIssueId,
+      originRunId: runId,
+      originAgentId: req.actor.agentId,
+      report: req.body,
+    });
+
+    const targetPolicy = normalizeIssueExecutionPolicy(targetIssue.executionPolicy ?? null);
+    const shouldWake =
+      req.body.requestWake === true
+      && targetPolicy?.reportWakePolicy === "on_receive"
+      && Boolean(targetIssue.assigneeAgentId)
+      && !targetIssue.assigneeUserId
+      && !isClosedIssueStatus(targetIssue.status);
+    if (shouldWake && targetIssue.assigneeAgentId) {
+      await heartbeat.wakeup(targetIssue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "report_received",
+        payload: {
+          issueId: targetIssue.id,
+          reportId: result.report.id,
+          originIssueId,
+          originRunId: runId,
+          fingerprint: result.report.fingerprint,
+        },
+        idempotencyKey: `report_received:${originIssueId}:${targetIssue.id}:${result.report.fingerprint}`,
+        requestedByActorType: "agent",
+        requestedByActorId: req.actor.agentId,
+        contextSnapshot: {
+          issueId: targetIssue.id,
+          taskId: targetIssue.id,
+          wakeReason: "report_received",
+          reportId: result.report.id,
+        },
+      });
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: targetIssue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: result.deduplicated ? "issue.report_deduplicated" : "issue.report_created",
+      entityType: "issue",
+      entityId: targetIssue.id,
+      details: {
+        reportId: result.report.id,
+        originIssueId,
+        originRunId: runId,
+        fingerprint: result.report.fingerprint,
+        reportType: result.report.payload.type,
+        wakeRequested: req.body.requestWake === true,
+        wakeAllowedByTargetPolicy: shouldWake,
+      },
+    });
+
+    res.status(result.deduplicated ? 200 : 201).json(result);
   });
 
   router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {

@@ -202,6 +202,7 @@ export const issueExecutionPolicySchema = z.object({
   commentRequired: z.boolean().optional().default(true),
   stages: z.array(issueExecutionStageSchema).default([]),
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
+  reportWakePolicy: z.enum(["never", "on_receive"]).optional().default("never"),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
 });
@@ -573,6 +574,27 @@ export const addIssueCommentSchema = z.object({
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
+
+export const issueReportPayloadSchema = z.object({
+  type: z.string().trim().min(1).max(120).regex(/^[a-z][a-z0-9_.-]*$/),
+  summary: z.string().trim().min(1).max(2_000).nullable().optional(),
+  data: z.record(z.string(), z.unknown()),
+}).strict().superRefine((value, ctx) => {
+  if (JSON.stringify(value).length > 32_000) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Report payload must not exceed 32,000 JSON characters",
+    });
+  }
+});
+
+export const createIssueReportSchema = z.object({
+  fingerprint: z.string().trim().min(1).max(240),
+  payload: issueReportPayloadSchema,
+  requestWake: z.boolean().optional().default(false),
+}).strict();
+
+export type CreateIssueReport = z.infer<typeof createIssueReportSchema>;
 
 export const issueThreadInteractionStatusSchema = z.enum(ISSUE_THREAD_INTERACTION_STATUSES);
 export const issueThreadInteractionKindSchema = z.enum(ISSUE_THREAD_INTERACTION_KINDS);

@@ -389,13 +389,21 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
 
   const reviewPreset = parsed.data.reviewPreset;
   const authorizationPolicy = parsed.data.authorizationPolicy;
+  const reportWakePolicy = parsed.data.reportWakePolicy;
 
-  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy) return null;
+  if (
+    stages.length === 0
+    && !monitor
+    && !reviewPreset
+    && !authorizationPolicy
+    && reportWakePolicy === "never"
+  ) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
     commentRequired: true,
     stages,
+    ...(reportWakePolicy === "on_receive" ? { reportWakePolicy } : {}),
     ...(monitor ? { monitor } : {}),
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),

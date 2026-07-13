@@ -72,6 +72,11 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(async () => []),
   listForIssue: vi.fn(async () => []),
 }));
+const mockIssueReportService = vi.hoisted(() => ({
+  resolveOrigin: vi.fn(),
+  create: vi.fn(),
+  listForIssue: vi.fn(),
+}));
 const mockIssueApprovalService = vi.hoisted(() => ({
   link: vi.fn(),
   unlink: vi.fn(),
@@ -159,6 +164,10 @@ function registerRouteMocks() {
 
   vi.doMock("../services/issues.js", () => ({
     issueService: () => mockIssueService,
+  }));
+
+  vi.doMock("../services/issue-reports.js", () => ({
+    issueReportService: () => mockIssueReportService,
   }));
 
   vi.doMock("../services/work-products.js", () => ({
@@ -429,6 +438,11 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
     mockIssueThreadInteractionService.listForIssue.mockReset();
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
+    mockIssueReportService.resolveOrigin.mockReset();
+    mockIssueReportService.resolveOrigin.mockResolvedValue(issueId);
+    mockIssueReportService.create.mockReset();
+    mockIssueReportService.listForIssue.mockReset();
+    mockIssueReportService.listForIssue.mockResolvedValue([]);
     mockIssueRecoveryActionService.getActiveForIssue.mockReset();
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(null);
     mockIssueRecoveryActionService.listActiveForIssues.mockReset();
@@ -840,6 +854,87 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
     expect(mockIssueThreadInteractionService.listForIssue).not.toHaveBeenCalled();
+  });
+
+  it("rejects cross-issue reports when the target is unreadable", async () => {
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      action: "issue:read",
+      reason: "deny_missing_grant",
+      explanation: "Missing permission.",
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/reports`)
+      .send({
+        fingerprint: "audit-v1",
+        payload: { type: "audit.result", data: { passed: true } },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueReportService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects cross-company report targets before storage", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      companyId: "88888888-8888-4888-8888-888888888888",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/reports`)
+      .send({
+        fingerprint: "audit-v1",
+        payload: { type: "audit.result", data: { passed: true } },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockIssueReportService.create).not.toHaveBeenCalled();
+  });
+
+  it("queues a target-policy report wake with tuple idempotency", async () => {
+    const reportId = "99999999-9999-4999-8999-999999999999";
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      executionPolicy: { reportWakePolicy: "on_receive" },
+    }));
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "issue:read",
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test read grant.",
+    });
+    mockIssueReportService.create.mockResolvedValue({
+      deduplicated: false,
+      report: {
+        id: reportId,
+        companyId,
+        targetIssueId: issueId,
+        originIssueId: issueId,
+        originRunId: peerActor().runId,
+        originAgentId: peerAgentId,
+        fingerprint: "audit-v1",
+        payload: { type: "audit.result", data: { passed: true } },
+        wakeRequested: true,
+        consumedByRunId: null,
+        consumedAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/reports`)
+      .send({
+        fingerprint: "audit-v1",
+        payload: { type: "audit.result", data: { passed: true } },
+        requestWake: true,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ownerAgentId, expect.objectContaining({
+      reason: "report_received",
+      idempotencyKey: `report_received:${issueId}:${issueId}:audit-v1`,
+    }));
   });
 
   it("allows mentioned peer agents to list comments through an issue read grant", async () => {

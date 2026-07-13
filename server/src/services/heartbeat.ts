@@ -80,6 +80,7 @@ import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
+import { issueReportService } from "./issue-reports.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
@@ -4069,6 +4070,7 @@ export function mergeCoalescedContextSnapshot(
 export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
+  runId?: string | null;
   contextSnapshot: Record<string, unknown>;
   continuationSummary?:
     | {
@@ -4114,7 +4116,18 @@ export async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
-  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  const pendingReports = issueId && input.runId
+    ? await issueReportService(input.db).listPending({
+        companyId: input.companyId,
+        targetIssueId: issueId,
+      })
+    : [];
+  if (
+    commentIds.length === 0
+    && Object.keys(executionStage).length === 0
+    && !issueSummary
+    && pendingReports.length === 0
+  ) return null;
 
   const commentRows =
     commentIds.length === 0
@@ -4335,6 +4348,17 @@ export async function buildPaperclipWakePayload(input: {
     commentIds,
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
+    reports: pendingReports.map((report) => ({
+      id: report.id,
+      targetIssueId: report.targetIssueId,
+      originIssueId: report.originIssueId,
+      originRunId: report.originRunId,
+      originAgentId: report.originAgentId,
+      fingerprint: report.fingerprint,
+      payload: report.payload,
+      wakeRequested: report.wakeRequested,
+      createdAt: report.createdAt.toISOString(),
+    })),
     annotationDeltas,
     planReviewContext,
     commentWindow: {
@@ -11277,6 +11301,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const paperclipWakePayload = await buildPaperclipWakePayload({
       db,
       companyId: agent.companyId,
+      runId: run.id,
       contextSnapshot: context,
       continuationSummary,
       issueSummary: issueRef
@@ -11298,6 +11323,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
     }
+    const pendingReportDeliveries = paperclipWakePayload?.reports.map((report) => ({
+      id: report.id,
+      originRunId: report.originRunId,
+    })) ?? [];
+    let pendingReportsAcknowledged = pendingReportDeliveries.length === 0;
+    const acknowledgePendingReports = async () => {
+      if (pendingReportsAcknowledged || !issueRef) return;
+      try {
+        await issueReportService(db).acknowledgePending({
+          companyId: agent.companyId,
+          targetIssueId: issueRef.id,
+          runId: run.id,
+          deliveries: pendingReportDeliveries,
+        });
+        pendingReportsAcknowledged = true;
+      } catch (error) {
+        logger.warn(
+          { err: error, runId: run.id, issueId: issueRef.id, reports: pendingReportDeliveries },
+          "failed to acknowledge delivered issue reports; reports will be retried",
+        );
+      }
+    };
     const taskMarkdown = buildPaperclipTaskMarkdown({
       issue: issueRef
         ? {
@@ -12881,6 +12928,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outcome = "succeeded";
       } else {
         outcome = "failed";
+      }
+      if (outcome === "succeeded") {
+        await acknowledgePendingReports();
       }
 
       const nextSessionState = resolveNextSessionState({

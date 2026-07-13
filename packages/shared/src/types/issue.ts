@@ -618,8 +618,31 @@ export interface IssueExecutionPolicy {
   commentRequired: boolean;
   stages: IssueExecutionStage[];
   monitor?: IssueExecutionMonitorPolicy | null;
+  reportWakePolicy?: "never" | "on_receive";
   reviewPreset?: LowTrustReviewPresetPolicy;
   authorizationPolicy?: TrustAuthorizationPolicy;
+}
+
+export interface IssueReportPayload {
+  type: string;
+  summary?: string | null;
+  data: Record<string, unknown>;
+}
+
+export interface IssueReport {
+  id: string;
+  companyId: string;
+  targetIssueId: string;
+  originIssueId: string;
+  originRunId: string;
+  originAgentId: string;
+  fingerprint: string;
+  payload: IssueReportPayload;
+  wakeRequested: boolean;
+  consumedByRunId: string | null;
+  consumedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface IssueExecutionMonitorState {
