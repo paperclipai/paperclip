@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import { asString, runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 
-const MODELS_CACHE_TTL_MS = 60_000;
+const MODELS_CACHE_TTL_MS = 5 * 60_000;
+const MODELS_CACHE_STALE_TTL_MS = 24 * 60 * 60_000;
+const MODELS_CACHE_MAX_ENTRIES = 64;
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -72,44 +74,78 @@ function resolvePiCommand(input: unknown): string {
   return asString(input, envOverride);
 }
 
-const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
-const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
-const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID"]);
+type DiscoveryCacheEntry = {
+  expiresAt: number;
+  staleUntil: number;
+  models: AdapterModel[];
+};
+
+const discoveryCache = new Map<string, DiscoveryCacheEntry>();
+const discoveryRequests = new Map<string, Promise<AdapterModel[]>>();
+const VOLATILE_ENV_KEY_EXACT = new Set([
+  "PAPERCLIP_AGENT_ID",
+  "PAPERCLIP_COMPANY_ID",
+  "PAPERCLIP_RUN_ID",
+  "PAPERCLIP_TASK_ID",
+  "PAPERCLIP_ISSUE_WORK_MODE",
+  "PAPERCLIP_WAKE_REASON",
+  "PAPERCLIP_WAKE_COMMENT_ID",
+  "PAPERCLIP_APPROVAL_ID",
+  "PAPERCLIP_APPROVAL_STATUS",
+  "PAPERCLIP_LINKED_ISSUE_IDS",
+  "PAPERCLIP_WAKE_PAYLOAD_JSON",
+  "PAPERCLIP_WORKSPACE_CWD",
+  "PAPERCLIP_WORKSPACE_SOURCE",
+  "PAPERCLIP_WORKSPACE_STRATEGY",
+  "PAPERCLIP_WORKSPACE_ID",
+  "PAPERCLIP_WORKSPACE_REPO_URL",
+  "PAPERCLIP_WORKSPACE_REPO_REF",
+  "PAPERCLIP_WORKSPACE_BRANCH",
+  "PAPERCLIP_WORKSPACE_WORKTREE_PATH",
+  "PAPERCLIP_WORKSPACES_JSON",
+]);
 
 function isVolatileEnvKey(key: string): boolean {
-  if (VOLATILE_ENV_KEY_EXACT.has(key)) return true;
-  return VOLATILE_ENV_KEY_PREFIXES.some((prefix) => key.startsWith(prefix));
+  return VOLATILE_ENV_KEY_EXACT.has(key);
 }
 
 function hashValue(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function discoveryEnvironment(env: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !isVolatileEnvKey(key)));
+}
+
 function discoveryCacheKey(command: string, cwd: string, env: Record<string, string>) {
   const envKey = Object.entries(env)
-    .filter(([key]) => !isVolatileEnvKey(key))
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => `${key}=${hashValue(value)}`)
     .join("\n");
   return `${command}\n${cwd}\n${envKey}`;
 }
 
-function pruneExpiredDiscoveryCache(now: number) {
-  for (const [key, value] of discoveryCache.entries()) {
-    if (value.expiresAt <= now) discoveryCache.delete(key);
+function cacheDiscovery(key: string, entry: DiscoveryCacheEntry) {
+  discoveryCache.delete(key);
+  discoveryCache.set(key, entry);
+  while (discoveryCache.size > MODELS_CACHE_MAX_ENTRIES) {
+    const oldestKey = discoveryCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    discoveryCache.delete(oldestKey);
   }
 }
 
-export async function discoverPiModels(input: {
-  command?: unknown;
-  cwd?: unknown;
-  env?: unknown;
-} = {}): Promise<AdapterModel[]> {
-  const command = resolvePiCommand(input.command);
-  const cwd = asString(input.cwd, process.cwd());
-  const env = normalizeEnv(input.env);
-  const runtimeEnv = normalizeEnv({ ...process.env, ...env });
+function pruneExpiredDiscoveryCache(now: number) {
+  for (const [key, value] of discoveryCache.entries()) {
+    if (value.staleUntil <= now) discoveryCache.delete(key);
+  }
+}
 
+async function runPiModelDiscovery(
+  command: string,
+  cwd: string,
+  runtimeEnv: Record<string, string>,
+): Promise<AdapterModel[]> {
   const result = await runChildProcess(
     `pi-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     command,
@@ -131,9 +167,21 @@ export async function discoverPiModels(input: {
     throw new Error(detail ? `\`pi --list-models\` failed: ${detail}` : "`pi --list-models` failed.");
   }
 
-  // Pi outputs model list to stderr, but fall back to stdout for older versions
-  const output = result.stderr || result.stdout;
+  // Current Pi writes model rows to stdout; older releases wrote them to stderr.
+  const output = result.stdout || result.stderr;
   return sortModels(dedupeModels(parseModelsOutput(output)));
+}
+
+export async function discoverPiModels(input: {
+  command?: unknown;
+  cwd?: unknown;
+  env?: unknown;
+} = {}): Promise<AdapterModel[]> {
+  const command = resolvePiCommand(input.command);
+  const cwd = asString(input.cwd, process.cwd());
+  const env = normalizeEnv(input.env);
+  const runtimeEnv = normalizeEnv({ ...process.env, ...env });
+  return runPiModelDiscovery(command, cwd, runtimeEnv);
 }
 
 function normalizeEnv(input: unknown): Record<string, string> {
@@ -155,15 +203,39 @@ export async function discoverPiModelsCached(input: {
   const command = resolvePiCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
-  const key = discoveryCacheKey(command, cwd, env);
+  const discoveryEnv = discoveryEnvironment(env);
+  const runtimeEnv = normalizeEnv({ ...process.env, ...discoveryEnv });
+  const key = discoveryCacheKey(command, cwd, runtimeEnv);
   const now = Date.now();
   pruneExpiredDiscoveryCache(now);
   const cached = discoveryCache.get(key);
   if (cached && cached.expiresAt > now) return cached.models;
 
-  const models = await discoverPiModels({ command, cwd, env });
-  discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
-  return models;
+  let request = discoveryRequests.get(key);
+  if (!request) {
+    request = runPiModelDiscovery(command, cwd, runtimeEnv)
+      .then((models) => {
+        const refreshedAt = Date.now();
+        cacheDiscovery(key, {
+          expiresAt: refreshedAt + MODELS_CACHE_TTL_MS,
+          staleUntil: refreshedAt + MODELS_CACHE_STALE_TTL_MS,
+          models,
+        });
+        return models;
+      })
+      .catch((error) => {
+        const stale = discoveryCache.get(key);
+        if (!stale || stale.staleUntil <= Date.now()) throw error;
+        console.warn("[paperclip] Pi model refresh failed; using cached models.");
+        return stale.models;
+      })
+      .finally(() => {
+        discoveryRequests.delete(key);
+      });
+    discoveryRequests.set(key, request);
+  }
+
+  return request;
 }
 
 export async function ensurePiModelConfiguredAndAvailable(input: {
@@ -207,4 +279,9 @@ export async function listPiModels(): Promise<AdapterModel[]> {
 
 export function resetPiModelsCacheForTests() {
   discoveryCache.clear();
+  discoveryRequests.clear();
+}
+
+export function piModelsCacheSizeForTests() {
+  return discoveryCache.size;
 }
