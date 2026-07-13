@@ -1009,6 +1009,41 @@
       "when": 1783641600000,
       "tag": "0145_inbox_dismissal_snooze_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 10000,
+      "version": "7",
+      "when": 1783645200000,
+      "tag": "10000_neo28_identity_auth_framework",
+      "breakpoints": true
+    },
+    {
+      "idx": 10001,
+      "version": "7",
+      "when": 1783648800000,
+      "tag": "10001_neo259_heartbeat_runs_auth_context",
+      "breakpoints": true
+    },
+    {
+      "idx": 10002,
+      "version": "7",
+      "when": 1783652400000,
+      "tag": "10002_mcp_server_registry",
+      "breakpoints": true
+    },
+    {
+      "idx": 10003,
+      "version": "7",
+      "when": 1783656000000,
+      "tag": "10003_company_mcp_client_enabled",
+      "breakpoints": true
+    },
+    {
+      "idx": 10004,
+      "version": "7",
+      "when": 1783659600000,
+      "tag": "10004_mcp_server_governance",
+      "breakpoints": true
     }
   ]
 }

@@ -12,8 +12,11 @@ type JournalFile = {
   }>;
 };
 
+// Fork migrations are reserved at 10000+ (5 digits) to stay clear of the
+// upstream 4-digit sequence permanently (NEO-419/NEO-422). Accept 4-OR-MORE
+// digit prefixes so both the upstream (0000-9999) and fork (10000+) ranges pass.
 function migrationNumber(value: string): string | null {
-  const match = value.match(/^(\d{4})_/);
+  const match = value.match(/^(\d{4,})_/);
   return match ? match[1] : null;
 }
 

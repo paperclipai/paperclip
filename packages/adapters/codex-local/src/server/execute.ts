@@ -35,7 +35,6 @@ import {
   renderTemplate,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
-  buildPaperclipMcpPrompt,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -801,92 +800,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (preparedRuntimeConfig.notes.length > 0) {
       commandNotes.unshift(...preparedRuntimeConfig.notes);
     }
-    if (forceFreshSession) {
-      notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
-    }
-    return notes;
-  })();
-  if (executionTargetIsSandbox) {
-    commandNotes.push(
-      "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
-    );
-  }
-  const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const prompt = joinPromptSections([
-    promptInstructionsPrefix,
-    renderedBootstrapPrompt,
-    wakePrompt,
-    mcpPrompt,
-    codexFallbackHandoffNote,
-    sessionHandoffNote,
-    renderedPrompt,
-  ]);
-  const promptMetrics = {
-    promptChars: prompt.length,
-    instructionsChars,
-    bootstrapPromptChars: renderedBootstrapPrompt.length,
-    wakePromptChars: wakePrompt.length,
-    mcpPromptChars: mcpPrompt.length,
-    sessionHandoffChars: sessionHandoffNote.length,
-    heartbeatPromptChars: renderedPrompt.length,
-  };
-
-  const runAttempt = async (resumeSessionId: string | null) => {
-    const execArgs = buildCodexExecArgs(
-      forceSaferInvocation ? { ...config, fastMode: false } : config,
-      {
-        resumeSessionId,
-        skipGitRepoCheck: executionTargetIsSandbox,
-      },
-    );
-    const args = execArgs.args;
-    const commandNotesWithFastMode =
-      execArgs.fastModeIgnoredReason == null
-        ? commandNotes
-        : [...commandNotes, execArgs.fastModeIgnoredReason];
-    if (onMeta) {
-      await onMeta({
-        adapterType: "codex_local",
-        command: resolvedCommand,
-        cwd: effectiveExecutionCwd,
-        commandNotes: commandNotesWithFastMode,
-        commandArgs: args.map((value, idx) => {
-          if (idx === args.length - 1 && value !== "-") return `<prompt ${prompt.length} chars>`;
-          return value;
-        }),
-        env: loggedEnv,
-        prompt,
-        promptMetrics,
-        context,
-      });
-    }
-
-    const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
-      cwd,
-      env,
-      stdin: prompt,
-      timeoutSec,
-      graceSec,
-      onSpawn,
-      onLog: async (stream, chunk) => {
-        if (stream !== "stderr") {
-          await onLog(stream, chunk);
-          return;
-        }
-        const cleaned = stripCodexRolloutNoise(chunk);
-        if (!cleaned.trim()) return;
-        await onLog(stream, cleaned);
-      },
-    });
-    const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
-    return {
-      proc: {
-        ...proc,
-        stderr: cleanedStderr,
-      },
-      rawStderr: proc.stderr,
-      parsed: parseCodexJsonl(proc.stdout),
     const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
     const prompt = joinPromptSections([
