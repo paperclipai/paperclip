@@ -367,7 +367,11 @@ async function resolveStagingRoot(localDir: string | undefined): Promise<string>
   }
   for (const candidate of candidates) {
     try {
+      // mkdir(recursive) resolves for an existing directory even when it is not
+      // writable, so the write bit has to be probed separately for the fallback
+      // to trigger rather than for a later mkdtemp to throw EACCES.
       await fs.mkdir(candidate, { recursive: true });
+      await fs.access(candidate, fsConstants.W_OK);
       return candidate;
     } catch {
       // Unwritable or missing parent - fall through to the next candidate.

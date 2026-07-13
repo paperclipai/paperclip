@@ -351,25 +351,18 @@ describe("ssh env-lab fixture", () => {
 
     await syncDirectoryToSsh({ spec, localDir, remoteDir });
 
-    // Poll both candidate roots during the transfer: the staging dir is removed once
-    // the sync completes, so it can only be observed while it is in flight.
-    const stagedIn = { tmpdir: false, besideWorkspace: false };
+    // The mkdtemp staging dir is removed once the sync completes, so it can only be
+    // caught in flight. Poll tmpdir for one: any sighting there is the bug.
+    const stagedIn = { tmpdir: false };
     const scan = () => {
-      const roots: Array<[keyof typeof stagedIn, string]> = [
-        ["tmpdir", privateTmp],
-        ["besideWorkspace", path.join(runRoot, ".paperclip-staging")],
-      ];
-      for (const [key, dir] of roots) {
-        // The staging root may not exist yet on early ticks.
-        let entries: string[] = [];
-        try {
-          entries = readdirSync(dir);
-        } catch {
-          continue;
-        }
-        if (entries.some((entry) => entry.startsWith("paperclip-ssh-sync-back-"))) {
-          stagedIn[key] = true;
-        }
+      let entries: string[] = [];
+      try {
+        entries = readdirSync(privateTmp);
+      } catch {
+        return;
+      }
+      if (entries.some((entry) => entry.startsWith("paperclip-ssh-sync-back-"))) {
+        stagedIn.tmpdir = true;
       }
     };
     const poller = setInterval(scan, 10);
@@ -384,11 +377,13 @@ describe("ssh env-lab fixture", () => {
       else process.env.TMPDIR = previousTmpdir;
     }
 
-    expect(stagedIn.tmpdir).toBe(false);
-    expect(stagedIn.besideWorkspace).toBe(true);
-    // The staging root itself is created (not the mkdtemp child, which is cleaned up),
-    // so this holds even if every poll tick missed the transfer window.
+    // The staging root itself survives the sync (only the mkdtemp child is cleaned up),
+    // so this is the load-bearing assertion: it holds regardless of poll timing.
     expect(existsSync(path.join(runRoot, ".paperclip-staging"))).toBe(true);
+    // The poller can only ever observe an in-flight staging dir, so a positive sighting
+    // is timing-dependent and not asserted on. A sighting under tmpdir is not: nothing
+    // in this sync may stage there, at any tick.
+    expect(stagedIn.tmpdir).toBe(false);
     // Staging off tmpdir must not change what lands in the workspace.
     await expect(readFile(path.join(restoreDir, "blob-0.bin"))).resolves.toEqual(
       Buffer.alloc(1024 * 1024, 1),
