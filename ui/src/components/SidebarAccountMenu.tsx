@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
 const FEEDBACK_URL = "https://paperclip.ing/feedback";
+const SOURCE_VERSION_RE = /\+\d+\.git\.([0-9a-f]{7,40})(?:\.dirty)?$/i;
 
 interface SidebarAccountMenuProps {
   deploymentMode?: DeploymentMode;
@@ -60,6 +61,12 @@ function deriveUserSlug(name: string | null | undefined, email: string | null | 
     if (slug) return slug;
   }
   return "me";
+}
+
+function formatVersionLabel(version: string): string {
+  const sourceVersion = version.match(SOURCE_VERSION_RE);
+  if (sourceVersion?.[1]) return sourceVersion[1].slice(0, 7);
+  return `v${version}`;
 }
 
 function MenuAction({ label, description, icon: Icon, onClick, href, external = false }: MenuActionProps) {
@@ -179,7 +186,7 @@ export function SidebarAccountMenu({
                 </div>
                 <p className="truncate text-sm text-muted-foreground">{secondaryLabel}</p>
                 {version ? (
-                  <p className="mt-1 text-xs text-muted-foreground">Paperclip v{version}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">Paperclip {formatVersionLabel(version)}</p>
                 ) : null}
               </div>
             </div>

@@ -151,4 +151,31 @@ describe("SidebarAccountMenu", () => {
       root.unmount();
     });
   });
+
+  it("shows the short commit sha instead of a version for source builds", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu
+            deploymentMode="authenticated"
+            version="2026.626.0+58.git.518fc71ce"
+            open
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Paperclip 518fc71");
+    expect(document.body.textContent).not.toContain("2026.626.0+58.git.518fc71ce");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });
