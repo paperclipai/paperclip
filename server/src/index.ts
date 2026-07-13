@@ -818,6 +818,11 @@ export async function startServer(): Promise<StartedServer> {
   let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<unknown>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+  // Guard: only one periodic reconcile chain may run at a time. Without this,
+  // if a chain takes longer than heartbeatSchedulerIntervalMs the next tick
+  // starts another chain while the first still holds DB connections, and the
+  // overlap compounds every tick (pool exhaustion / duplicated recovery work).
+  let periodicReconcileRunning = false;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -991,6 +996,11 @@ export async function startServer(): Promise<StartedServer> {
 
       if (heartbeatSchedulerStopped) return;
       if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
+        if (periodicReconcileRunning) {
+          logger.warn("periodic heartbeat reconcile skipped because the previous iteration is still running");
+          return;
+        }
+        periodicReconcileRunning = true;
         // Periodically reap orphaned runs (5-min staleness threshold) and make sure
         // persisted queued work is still being driven forward.
         trackHeartbeatSchedulerWork(heartbeat
@@ -1045,6 +1055,9 @@ export async function startServer(): Promise<StartedServer> {
           })
           .catch((err) => {
             logger.error({ err }, "periodic heartbeat recovery failed");
+          })
+          .finally(() => {
+            periodicReconcileRunning = false;
           }));
       }
       })();
