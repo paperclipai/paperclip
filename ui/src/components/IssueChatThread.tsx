@@ -26,6 +26,7 @@ import {
   type DragEvent as ReactDragEvent,
   type ErrorInfo,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MutableRefObject,
   type Ref,
   type ReactNode,
 } from "react";
@@ -40,9 +41,11 @@ import type {
   IssueRecoveryAction,
   IssueRelationIssueSummary,
   IssueScheduledRetry,
+  IssueCommentReplyToMetadata,
   SuccessfulRunHandoffState,
   IssueWorkMode,
 } from "@paperclipai/shared";
+import { buildReplyExcerpt, formatReplyAuthorName } from "../lib/comment-reply";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
@@ -170,7 +173,7 @@ import { nextWorkMode, titleForPendingWorkMode, workModeMetaFor, workModeMetaLis
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Reply, Search, Square, ThumbsDown, ThumbsUp, Trash2, X } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 import {
@@ -200,6 +203,14 @@ interface IssueChatMessageContext {
   onInterruptQueued?: (runId: string) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
+  /** Start a composer reply targeting this comment (sets the chip + focuses the composer). */
+  onReply?: (target: ReplyDraftTarget) => void;
+  /** Scroll to and briefly highlight a comment by id (jump-to-original from a quoted block). */
+  onScrollToComment?: (commentId: string) => void;
+  /** Comment id currently highlighted after a jump-to-original, so its bubble can pulse. */
+  highlightCommentId?: string | null;
+  /** Soft-deleted comment ids, so a sent reply whose target was deleted shows a tombstone. */
+  deletedCommentIds?: ReadonlySet<string>;
   onImageClick?: (src: string) => void;
   onAcceptInteraction?: (
     interaction:
@@ -416,6 +427,12 @@ interface IssueChatComposerProps {
   issueStatus?: string;
   issueWorkMode?: IssueWorkMode;
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
+  /** Active reply target rendered as a composer chip; controlled by the parent thread. */
+  replyingTo?: ReplyDraftTarget | null;
+  /** Clear the active reply target (chip X button or Escape on an empty editor). */
+  onClearReply?: () => void;
+  /** Jump to the reply target's original comment when the chip is clicked. */
+  onScrollToComment?: (commentId: string) => void;
 }
 
 interface IssueChatThreadProps {
@@ -466,7 +483,12 @@ interface IssueChatThreadProps {
     vote: FeedbackVoteValue,
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
-  onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
+  onAdd: (
+    body: string,
+    reopen?: boolean,
+    reassignment?: CommentReassignment,
+    replyToCommentId?: string | null,
+  ) => Promise<void>;
   onCancelRun?: () => Promise<void>;
   onStopRun?: (runId: string) => Promise<void>;
   stopRunLabel?: string;
@@ -763,6 +785,139 @@ function clearDraft(draftKey: string) {
   } catch {
     // Ignore localStorage failures.
   }
+}
+
+/**
+ * The active reply target held by the composer. Self-contained (author + excerpt) so the chip
+ * renders without re-resolving the original comment, and survives a reload via localStorage.
+ * Mirrors the CommentThread reply draft shape so the two composers share the same persisted key.
+ */
+interface ReplyDraftTarget {
+  commentId: string;
+  authorName: string;
+  excerpt: string;
+  excerptTruncated: boolean;
+}
+
+function replyDraftStorageKey(draftKey: string) {
+  return `${draftKey}:reply`;
+}
+
+function loadReplyDraft(draftKey: string): ReplyDraftTarget | null {
+  try {
+    const raw = localStorage.getItem(replyDraftStorageKey(draftKey));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ReplyDraftTarget>;
+    if (typeof parsed?.commentId !== "string" || typeof parsed?.excerpt !== "string") return null;
+    return {
+      commentId: parsed.commentId,
+      authorName: typeof parsed.authorName === "string" ? parsed.authorName : "comment",
+      excerpt: parsed.excerpt,
+      excerptTruncated: parsed.excerptTruncated === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveReplyDraft(draftKey: string, target: ReplyDraftTarget | null) {
+  try {
+    if (target) {
+      localStorage.setItem(replyDraftStorageKey(draftKey), JSON.stringify(target));
+    } else {
+      localStorage.removeItem(replyDraftStorageKey(draftKey));
+    }
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
+/** Plain-text join of a thread message's text parts, used to seed a reply excerpt. */
+function threadMessageText(message: ThreadMessage): string {
+  return message.content
+    .filter((part): part is TextMessagePart => part.type === "text")
+    .map((part) => part.text)
+    .join("\n\n");
+}
+
+/** Hover-reveal reply affordance shown in a comment bubble's action row. */
+function IssueChatReplyButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Reply"
+      aria-label="Reply to comment"
+      className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+    >
+      <Reply className="h-3.5 w-3.5" />
+      <span className="sr-only">Reply</span>
+    </button>
+  );
+}
+
+/**
+ * Compact quoted header rendered above a sent reply's body (accent bar + author + excerpt).
+ * `onAccent` adapts the treatment for the human's blue bubble; a deleted target shows a tombstone.
+ */
+function IssueChatReplyQuote({
+  replyTo,
+  agentMap,
+  currentUserId,
+  userProfileMap,
+  targetDeleted,
+  onAccent,
+  onClick,
+}: {
+  replyTo: IssueCommentReplyToMetadata;
+  agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
+  userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
+  targetDeleted: boolean;
+  onAccent?: boolean;
+  onClick?: () => void;
+}) {
+  const authorName = formatReplyAuthorName(replyTo, { agentMap, currentUserId, userProfileMap });
+  const barClass = onAccent ? "bg-white/60" : "bg-primary/40";
+  const authorClass = onAccent ? "text-white" : "text-foreground";
+  const excerptClass = onAccent ? "text-white/80" : "text-muted-foreground";
+  const surfaceClass = onAccent ? "bg-white/15" : "bg-muted/40";
+  const body = (
+    <span className="flex min-w-0 items-stretch gap-2">
+      <span aria-hidden className={cn("w-0.5 shrink-0 rounded-full", barClass)} />
+      <span className="min-w-0 flex-1 py-0.5 text-xs">
+        {targetDeleted ? (
+          <span className={cn("italic", excerptClass)}>Original comment deleted</span>
+        ) : (
+          <>
+            <span className={cn("font-medium", authorClass)}>{authorName}</span>{" "}
+            <span className={cn("line-clamp-2 align-baseline", excerptClass)}>
+              {replyTo.excerpt}
+              {replyTo.excerptTruncated ? "…" : ""}
+            </span>
+          </>
+        )}
+      </span>
+    </span>
+  );
+
+  if (targetDeleted || !onClick) {
+    return <div className={cn("mb-1.5 rounded-sm px-2 py-1", surfaceClass)}>{body}</div>;
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Jump to the original comment"
+      className={cn(
+        "mb-1.5 block w-full rounded-sm px-2 py-1 text-left transition-colors",
+        onAccent ? "bg-white/15 hover:bg-white/25" : "bg-muted/40 hover:bg-muted/70",
+      )}
+    >
+      {body}
+    </button>
+  );
 }
 
 function parseReassignment(target: string): PaperclipIssueRuntimeReassignment | null {
@@ -1414,10 +1569,17 @@ function IssueChatUserMessage({
     onDeleteComment,
     currentUserId,
     userProfileMap,
+    agentMap,
+    onReply,
+    onScrollToComment,
+    highlightCommentId,
+    deletedCommentIds,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const commentId = typeof custom.commentId === "string" ? custom.commentId : message.id;
+  const commentMetadata = isIssueCommentMetadata(custom.commentMetadata) ? custom.commentMetadata : null;
+  const replyTo = commentMetadata?.replyTo ?? null;
   const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
   const authorUserId = typeof custom.authorUserId === "string" ? custom.authorUserId : null;
   const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
@@ -1427,10 +1589,9 @@ function IssueChatUserMessage({
   const queueBadgeLabel = queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
   const pending = custom.clientStatus === "pending";
   const deleted = Boolean(custom.deletedAt);
-  const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
-  const [copied, setCopied] = useState(false);
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const toastActions = useOptionalToastActions();
+  const isOptimistic = commentId.startsWith("optimistic-");
+  const canReply = Boolean(onReply) && !deleted && !pending && !queued && !isOptimistic;
+  const isHighlighted = Boolean(highlightCommentId && highlightCommentId === commentId);
   const {
     isCurrentUser,
     authorName: resolvedAuthorName,
@@ -1441,6 +1602,21 @@ function IssueChatUserMessage({
     currentUserId,
     userProfileMap,
   });
+  const handleReply = () => {
+    const { excerpt, truncated } = buildReplyExcerpt(threadMessageText(message));
+    onReply?.({
+      commentId,
+      // Reuse the resolved bubble label so replying to another user shows their
+      // name (not "You") even when the message carries no custom.authorName.
+      authorName: resolvedAuthorName,
+      excerpt,
+      excerptTruncated: truncated,
+    });
+  };
+  const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
+  const [copied, setCopied] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const toastActions = useOptionalToastActions();
   const authorAvatar = (
     <Avatar size="sm" className="shrink-0">
       {avatarUrl ? <AvatarImage src={avatarUrl} alt={resolvedAuthorName} /> : null}
@@ -1518,6 +1694,17 @@ function IssueChatUserMessage({
           <div className="text-sm italic text-muted-foreground">Comment deleted</div>
         ) : (
           <div className="min-w-0 max-w-full space-y-3">
+            {replyTo ? (
+              <IssueChatReplyQuote
+                replyTo={replyTo}
+                agentMap={agentMap}
+                currentUserId={currentUserId}
+                userProfileMap={userProfileMap}
+                targetDeleted={deletedCommentIds?.has(replyTo.commentId) ?? false}
+                onAccent={isCurrentUser && !queued}
+                onClick={onScrollToComment ? () => onScrollToComment(replyTo.commentId) : undefined}
+              />
+            ) : null}
             <IssueChatTextParts message={message} onAccent={isCurrentUser && !queued} />
           </div>
         )}
@@ -1573,6 +1760,7 @@ function IssueChatUserMessage({
               {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
             </button>
           ) : null}
+          {canReply ? <IssueChatReplyButton onClick={handleReply} /> : null}
           {canDeleteComment ? (
             <button
               type="button"
@@ -1591,7 +1779,13 @@ function IssueChatUserMessage({
 
   return (
     <>
-      <div id={anchorId}>
+      <div
+        id={anchorId}
+        className={cn(
+          "rounded-2xl transition-colors duration-1000",
+          isHighlighted && "bg-primary/10 ring-2 ring-primary/40",
+        )}
+      >
         <div className={cn("group flex items-end gap-2", isCurrentUser && "justify-end")}>
           {isCurrentUser ? (
             <>
@@ -1649,9 +1843,17 @@ function IssueChatAssistantMessage({
     stoppingRunLabel = "Stopping...",
     stopRunVariant = "stop",
     runFinalizationActions = [],
+    currentUserId,
+    userProfileMap,
+    onReply,
+    onScrollToComment,
+    highlightCommentId,
+    deletedCommentIds,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
+  const commentMetadata = isIssueCommentMetadata(custom.commentMetadata) ? custom.commentMetadata : null;
+  const replyTo = commentMetadata?.replyTo ?? null;
   const authorName = typeof custom.authorName === "string"
     ? custom.authorName
     : typeof custom.runAgentName === "string"
@@ -1720,6 +1922,20 @@ function IssueChatAssistantMessage({
   const isGenuineComment =
     kind === "comment" && !!commentId && !isRunning && (hasCommentText || deleted);
 
+  const isOptimistic = commentId?.startsWith("optimistic-") ?? false;
+  const canReply = Boolean(onReply) && isGenuineComment && !!commentId && !deleted && !isOptimistic;
+  const isHighlighted = Boolean(highlightCommentId && commentId && highlightCommentId === commentId);
+  const handleReply = () => {
+    if (!commentId) return;
+    const { excerpt, truncated } = buildReplyExcerpt(threadMessageText(message));
+    onReply?.({
+      commentId,
+      authorName,
+      excerpt,
+      excerptTruncated: truncated,
+    });
+  };
+
   const agentAvatar = (
     <Avatar size="sm" className="shrink-0">
       {agentIcon ? (
@@ -1760,6 +1976,7 @@ function IssueChatAssistantMessage({
           onVote={handleVote}
         />
       ) : null}
+      {canReply ? <IssueChatReplyButton onClick={handleReply} /> : null}
       <Tooltip>
         <TooltipTrigger asChild>
           <a
@@ -1837,7 +2054,13 @@ function IssueChatAssistantMessage({
   // blue bubble in IssueChatUserMessage). See PAP-95 rev 6.
   if (isGenuineComment) {
     return (
-      <div id={anchorId}>
+      <div
+        id={anchorId}
+        className={cn(
+          "rounded-2xl transition-colors duration-1000",
+          isHighlighted && "bg-primary/10 ring-2 ring-primary/40",
+        )}
+      >
         <div className="group flex flex-col items-start py-1.5">
           {/* Icon + name together in a header ABOVE the bubble (PAP-95 rev 7). */}
           <div className="mb-1 flex items-center gap-1.5 px-1">
@@ -1872,6 +2095,16 @@ function IssueChatAssistantMessage({
               <div className="text-sm italic text-muted-foreground">Comment deleted</div>
             ) : (
               <div className="min-w-0 max-w-full space-y-3">
+                {replyTo ? (
+                  <IssueChatReplyQuote
+                    replyTo={replyTo}
+                    agentMap={agentMap}
+                    currentUserId={currentUserId}
+                    userProfileMap={userProfileMap}
+                    targetDeleted={deletedCommentIds?.has(replyTo.commentId) ?? false}
+                    onClick={onScrollToComment ? () => onScrollToComment(replyTo.commentId) : undefined}
+                  />
+                ) : null}
                 <IssueChatAssistantParts message={message} hasCoT={false} />
                 {notices.length > 0 ? (
                   <div className="space-y-2">
@@ -3540,6 +3773,9 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   issueStatus,
   issueWorkMode,
   onWorkModeChange,
+  replyingTo = null,
+  onClearReply,
+  onScrollToComment,
 }, forwardedRef) {
   const api = useAui();
   const [body, setBody] = useState("");
@@ -3585,6 +3821,17 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     if (!draftKey) return;
     setBody(loadDraft(draftKey));
   }, [draftKey]);
+
+  // Focus the editor when a reply target is newly selected (e.g. the user clicked Reply on a
+  // bubble). The first run is skipped so a reply draft rehydrated on load does not steal focus.
+  const previousReplyCommentIdRef = useRef<string | null>(replyingTo?.commentId ?? null);
+  useEffect(() => {
+    const nextReplyCommentId = replyingTo?.commentId ?? null;
+    if (nextReplyCommentId && nextReplyCommentId !== previousReplyCommentIdRef.current) {
+      editorRef.current?.focus();
+    }
+    previousReplyCommentIdRef.current = nextReplyCommentId;
+  }, [replyingTo?.commentId]);
 
   useEffect(() => {
     if (!draftKey) return;
@@ -3645,6 +3892,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       hasReassignment ? reassignTarget : currentAssigneeValue,
     ) ? true : undefined;
     const submittedBody = trimmed;
+    // An explicit reassignment goes through PATCH /issues, which cannot carry comment metadata,
+    // so a reply target cannot compose with a reassign under the current contract (the upstream
+    // handler drops it). Only forward the reply id on the plain comment path.
+    const replyToCommentId = !reassignment ? replyingTo?.commentId ?? null : null;
     const viewportSnapshot = captureComposerViewportSnapshot(composerContainerRef.current);
 
     const workModeChanged = pendingWorkMode !== resolvedIssueWorkMode;
@@ -3663,12 +3914,14 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           custom: {
             ...(reopen ? { reopen: true } : {}),
             ...(reassignment ? { reassignment } : {}),
+            ...(replyToCommentId ? { replyToCommentId } : {}),
           },
         },
       });
       queueViewportRestore(viewportSnapshot);
       await appendPromise;
       if (draftKey) clearDraft(draftKey);
+      onClearReply?.();
       setComposerAttachments([]);
       setReassignTarget(effectiveSuggestedAssigneeValue);
     } catch {
@@ -3877,6 +4130,13 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const PendingWorkModeIcon = pendingWorkModeMeta.icon;
 
   function handleComposerKeyDown(evt: ReactKeyboardEvent<HTMLDivElement>) {
+    // Escape clears the reply target, but only when the editor is empty so it does not swallow
+    // the editor's own Escape (e.g. dismissing the mention menu) while the user is typing.
+    if (evt.key === "Escape" && replyingTo && !body.trim()) {
+      evt.preventDefault();
+      onClearReply?.();
+      return;
+    }
     // Match the period via both `code` and `key`: iOS Safari with a hardware
     // keyboard often leaves `code` empty for cmd-period, so relying on it alone
     // lets the event fall through and triggers Safari's default cancel/dismiss
@@ -3923,11 +4183,43 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         </div>
       ) : null}
 
+      {replyingTo ? (
+        <div
+          data-testid="issue-chat-composer-reply-chip"
+          className="mb-2 flex items-stretch gap-2 rounded-md border border-border bg-muted/40 py-1.5 pl-2 pr-1.5"
+        >
+          <span aria-hidden className="w-0.5 shrink-0 rounded-full bg-primary/60" />
+          <button
+            type="button"
+            onClick={() => onScrollToComment?.(replyingTo.commentId)}
+            title="Jump to the original comment"
+            className="min-w-0 flex-1 text-left"
+          >
+            <span className="block text-xs font-medium text-foreground">
+              Replying to {replyingTo.authorName}
+            </span>
+            <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+              {replyingTo.excerpt}
+              {replyingTo.excerptTruncated ? "…" : ""}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onClearReply?.()}
+            title="Cancel reply"
+            aria-label="Cancel reply"
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center self-center rounded-md text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ) : null}
+
       <MarkdownEditor
         ref={editorRef}
         value={body}
         onChange={setBody}
-        placeholder="Reply"
+        placeholder={replyingTo ? `Reply to ${replyingTo.authorName}...` : "Reply"}
         mentions={mentions}
         onSubmit={handleSubmit}
         imageUploadHandler={onImageUpload}
@@ -4459,12 +4751,75 @@ export function IssueChatThread({
     return true;
   }
 
+  // --- Reply-to-comment composer state ---
+  const [replyingTo, setReplyingTo] = useState<ReplyDraftTarget | null>(null);
+  const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Soft-deleted comment ids, so a sent reply whose target was deleted shows a tombstone.
+  const deletedCommentIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const message of messages) {
+      const custom = message.metadata?.custom as Record<string, unknown> | undefined;
+      if (custom?.deletedAt) {
+        // Match the comment-id fallback used when rendering the message, so a deleted source
+        // without an explicit custom.commentId still marks its replies as tombstoned.
+        const commentId = typeof custom.commentId === "string" ? custom.commentId : message.id;
+        ids.add(commentId);
+      }
+    }
+    return ids;
+  }, [messages]);
+
+  // Load/persist the reply draft alongside the text draft so a reload keeps the pending reply.
+  useEffect(() => {
+    if (!draftKey) return;
+    setReplyingTo(loadReplyDraft(draftKey));
+  }, [draftKey]);
+  useEffect(() => {
+    if (!draftKey) return;
+    saveReplyDraft(draftKey, replyingTo);
+  }, [draftKey, replyingTo]);
+  useEffect(() => () => {
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+  }, []);
+
+  // Merge the parent-provided composer ref with an internal one so a bubble's Reply button can
+  // focus the composer without the parent having to thread focus back down.
+  const internalComposerRef = useRef<IssueChatComposerHandle | null>(null);
+  const setComposerRef = useCallback((handle: IssueChatComposerHandle | null) => {
+    internalComposerRef.current = handle;
+    if (typeof composerRef === "function") composerRef(handle);
+    else if (composerRef) (composerRef as MutableRefObject<IssueChatComposerHandle | null>).current = handle;
+  }, [composerRef]);
+
+  const scrollAndHighlightComment = useStableEvent((commentId: string) => {
+    const found = scrollToThreadAnchor(`comment-${commentId}`, { align: "center" });
+    if (found === false) return;
+    setHighlightCommentId(commentId);
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => {
+      setHighlightCommentId((current) => (current === commentId ? null : current));
+    }, 3000);
+  });
+
+  const handleRequestReply = useStableEvent((target: ReplyDraftTarget) => {
+    setReplyingTo(target);
+    // The composer also focuses on target change; focus here too so a repeat reply on the same
+    // comment (target unchanged) still brings the composer into view.
+    internalComposerRef.current?.focus();
+  });
+
+  const clearReply = useStableEvent(() => {
+    setReplyingTo(null);
+  });
+
   const runtime = usePaperclipIssueRuntime({
     messages,
     isRunning,
-    onSend: ({ body, reopen, reassignment }) => {
+    onSend: ({ body, reopen, reassignment, replyToCommentId }) => {
       pendingSubmitScrollRef.current = true;
-      return onAdd(body, reopen, reassignment);
+      return onAdd(body, reopen, reassignment, replyToCommentId);
     },
     onCancel: onCancelRun,
   });
@@ -4801,6 +5156,10 @@ export function IssueChatThread({
       onInterruptQueued: stableOnInterruptQueued,
       onCancelQueued: stableOnCancelQueued,
       onDeleteComment: stableOnDeleteComment,
+      onReply: handleRequestReply,
+      onScrollToComment: scrollAndHighlightComment,
+      highlightCommentId,
+      deletedCommentIds,
       onImageClick: stableOnImageClick,
       onAcceptInteraction: stableOnAcceptInteraction,
       onRejectInteraction: stableOnRejectInteraction,
@@ -4829,6 +5188,10 @@ export function IssueChatThread({
       stableOnInterruptQueued,
       stableOnCancelQueued,
       stableOnDeleteComment,
+      handleRequestReply,
+      scrollAndHighlightComment,
+      highlightCommentId,
+      deletedCommentIds,
       stableOnImageClick,
       stableOnAcceptInteraction,
       stableOnRejectInteraction,
@@ -5011,7 +5374,7 @@ export function IssueChatThread({
             className="sticky bottom-(--sz-calc-8) z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
           >
             <IssueChatComposer
-              ref={composerRef}
+              ref={setComposerRef}
               onImageUpload={imageUploadHandler}
               onAttachImage={onAttachImage}
               draftKey={draftKey}
@@ -5029,6 +5392,9 @@ export function IssueChatThread({
               issueStatus={issueStatus}
               issueWorkMode={issueWorkMode}
               onWorkModeChange={onWorkModeChange}
+              replyingTo={replyingTo}
+              onClearReply={clearReply}
+              onScrollToComment={scrollAndHighlightComment}
             />
           </div>
         ) : null}

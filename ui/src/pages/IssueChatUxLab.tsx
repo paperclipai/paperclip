@@ -16,6 +16,8 @@ import {
   issueChatUxLiveRuns,
   issueChatUxMentions,
   issueChatUxReassignOptions,
+  issueChatUxReplyComments,
+  issueChatUxReplyDraftKey,
   issueChatUxReviewComments,
   issueChatUxReviewEvents,
   issueChatUxSubmittingComments,
@@ -142,6 +144,24 @@ function RotatingReasoningDemo({ intervalMs = 2200 }: { intervalMs?: number }) {
 
 export function IssueChatUxLab() {
   const [showComposer, setShowComposer] = useState(true);
+
+  // Seed a composer reply draft so the reply-scenario section renders the chip on load.
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        `${issueChatUxReplyDraftKey}:reply`,
+        JSON.stringify({
+          commentId: "comment-reply-source",
+          authorName: "CodexCoder",
+          excerpt:
+            "I moved the composer reply chip above the editor and clamp the quoted source to 200 chars so long comments stay one line.",
+          excerptTruncated: true,
+        }),
+      );
+    } catch {
+      // Ignore localStorage failures in the lab preview.
+    }
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -293,6 +313,29 @@ export function IssueChatUxLab() {
           enableLiveTranscriptPolling={false}
           transcriptsByRunId={issueChatUxTranscriptsByRunId}
           hasOutputForRun={(runId) => issueChatUxTranscriptsByRunId.has(runId)}
+        />
+      </LabSection>
+
+      <LabSection
+        id="reply-to-comment"
+        eyebrow="Reply to comment"
+        title="Reply chip, quoted block, and tombstone"
+        description="Hover a bubble to reveal Reply, the composer shows a quoted/clamped source chip (click to jump to the original, X or Escape to clear), sent replies render a quoted header above the body, and a reply whose source was deleted falls back to an 'Original comment deleted' tombstone."
+        accentClassName="bg-[linear-gradient(180deg,rgba(16,185,129,0.06),transparent_28%),var(--background)]"
+      >
+        <IssueChatThread
+          comments={issueChatUxReplyComments}
+          linkedRuns={[]}
+          timelineEvents={[]}
+          issueStatus="in_progress"
+          agentMap={issueChatUxAgentMap}
+          currentUserId="user-1"
+          onAdd={noop}
+          onVote={noop}
+          draftKey={issueChatUxReplyDraftKey}
+          mentions={issueChatUxMentions}
+          showComposer={showComposer}
+          enableLiveTranscriptPolling={false}
         />
       </LabSection>
 

@@ -15,6 +15,7 @@ export interface PaperclipIssueRuntimeSendOptions {
   body: string;
   reopen?: boolean;
   reassignment?: PaperclipIssueRuntimeReassignment;
+  replyToCommentId?: string | null;
 }
 
 interface UsePaperclipIssueRuntimeOptions {
@@ -74,10 +75,14 @@ export function usePaperclipIssueRuntime({
             }
           : undefined;
 
+      const replyToCommentId =
+        typeof custom?.replyToCommentId === "string" && custom.replyToCommentId ? custom.replyToCommentId : null;
+
       await onSendRef.current({
         body,
         reopen: custom?.reopen === true ? true : undefined,
         reassignment,
+        replyToCommentId,
       });
     },
     ...(onCancel ? {

@@ -338,6 +338,75 @@ export const issueChatUxReviewEvents: IssueTimelineEvent[] = [
   },
 ];
 
+/**
+ * Reply-to-comment scenario: a sent reply with a quoted block, a reply whose
+ * source was deleted (tombstone), and the source comments they point back to. Seed
+ * {@link issueChatUxReplyDraftKey} in localStorage to also render the composer reply chip.
+ */
+export const issueChatUxReplyDraftKey = "paperclip:issue-comment-draft:issue-ux-reply";
+
+export const issueChatUxReplyComments: IssueChatComment[] = [
+  createComment({
+    id: "comment-reply-source",
+    authorAgentId: primaryAgent.id,
+    authorUserId: null,
+    body: "I moved the composer reply chip above the editor and clamp the quoted source to 200 chars so long comments stay one line.",
+    createdAt: new Date("2026-04-06T13:00:00.000Z"),
+    updatedAt: new Date("2026-04-06T13:00:00.000Z"),
+    runId: "run-reply-1",
+    runAgentId: primaryAgent.id,
+  }),
+  createComment({
+    id: "comment-reply-sent",
+    body: "Nice — can you make the quoted block jump to the original when clicked?",
+    createdAt: new Date("2026-04-06T13:02:00.000Z"),
+    updatedAt: new Date("2026-04-06T13:02:00.000Z"),
+    metadata: {
+      version: 1,
+      sections: [],
+      replyTo: {
+        commentId: "comment-reply-source",
+        authorType: "agent",
+        authorAgentId: primaryAgent.id,
+        authorUserId: null,
+        excerpt: "I moved the composer reply chip above the editor and clamp the quoted source to 200 chars so long comments stay one line.",
+        excerptTruncated: true,
+      },
+    },
+  }),
+  createComment({
+    id: "comment-reply-deleted-source",
+    body: "This source comment was removed after the reply was posted.",
+    createdAt: new Date("2026-04-06T13:04:00.000Z"),
+    updatedAt: new Date("2026-04-06T13:04:30.000Z"),
+    deletedAt: new Date("2026-04-06T13:05:00.000Z"),
+    deletedByType: "user",
+    deletedByUserId: "user-1",
+  }),
+  createComment({
+    id: "comment-reply-tombstone",
+    authorAgentId: reviewAgent.id,
+    authorUserId: null,
+    body: "Done — and when the source is deleted the quoted header falls back to a tombstone.",
+    createdAt: new Date("2026-04-06T13:06:00.000Z"),
+    updatedAt: new Date("2026-04-06T13:06:00.000Z"),
+    runId: "run-reply-2",
+    runAgentId: reviewAgent.id,
+    metadata: {
+      version: 1,
+      sections: [],
+      replyTo: {
+        commentId: "comment-reply-deleted-source",
+        authorType: "user",
+        authorAgentId: null,
+        authorUserId: "user-1",
+        excerpt: "This source comment was removed after the reply was posted.",
+        excerptTruncated: false,
+      },
+    },
+  }),
+];
+
 export const issueChatUxFeedbackVotes: FeedbackVote[] = [
   {
     id: "feedback-1",

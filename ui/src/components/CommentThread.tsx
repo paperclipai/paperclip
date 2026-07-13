@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type {
   Agent,
@@ -7,10 +7,12 @@ import type {
   FeedbackVote,
   FeedbackVoteValue,
   IssueComment,
+  IssueCommentReplyToMetadata,
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
+import { ArrowRight, Check, Copy, Paperclip, Reply, X } from "lucide-react";
+import { buildReplyExcerpt, formatReplyAuthorName } from "../lib/comment-reply";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
@@ -88,7 +90,12 @@ interface CommentThreadProps {
     vote: FeedbackVoteValue,
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
-  onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
+  onAdd: (
+    body: string,
+    reopen?: boolean,
+    reassignment?: CommentReassignment,
+    replyToCommentId?: string | null,
+  ) => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
@@ -133,6 +140,50 @@ function saveDraft(draftKey: string, value: string) {
 function clearDraft(draftKey: string) {
   try {
     localStorage.removeItem(draftKey);
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
+/**
+ * The active reply target held by the composer. Self-contained (author + excerpt) so the chip
+ * renders without re-resolving the original comment, and survives a reload via localStorage.
+ */
+interface ReplyDraftTarget {
+  commentId: string;
+  authorName: string;
+  excerpt: string;
+  excerptTruncated: boolean;
+}
+
+function replyDraftKey(draftKey: string) {
+  return `${draftKey}:reply`;
+}
+
+function loadReplyDraft(draftKey: string): ReplyDraftTarget | null {
+  try {
+    const raw = localStorage.getItem(replyDraftKey(draftKey));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ReplyDraftTarget>;
+    if (typeof parsed?.commentId !== "string" || typeof parsed?.excerpt !== "string") return null;
+    return {
+      commentId: parsed.commentId,
+      authorName: typeof parsed.authorName === "string" ? parsed.authorName : "comment",
+      excerpt: parsed.excerpt,
+      excerptTruncated: parsed.excerptTruncated === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveReplyDraft(draftKey: string, target: ReplyDraftTarget | null) {
+  try {
+    if (target) {
+      localStorage.setItem(replyDraftKey(draftKey), JSON.stringify(target));
+    } else {
+      localStorage.removeItem(replyDraftKey(draftKey));
+    }
   } catch {
     // Ignore localStorage failures.
   }
@@ -313,9 +364,79 @@ function CopyMarkdownButton({ text }: { text: string }) {
   );
 }
 
+function ReplyButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Reply"
+      aria-label="Reply to comment"
+      className={cn(
+        "inline-flex min-h-8 items-center justify-center rounded-md px-2 text-muted-foreground transition-[color,background-color,opacity] hover:bg-accent/60 hover:text-foreground",
+        // Hover-reveal on hover-capable pointers; always visible where hover is unavailable (touch).
+        "opacity-100 [@media(hover:hover)]:opacity-0 group-hover/comment:opacity-100 focus-visible:opacity-100",
+      )}
+    >
+      <Reply className="h-3.5 w-3.5" />
+      <span className="sr-only">Reply</span>
+    </button>
+  );
+}
+
+/** Compact quoted header rendered above a sent reply's body (accent bar + author + excerpt). */
+function ReplyQuote({
+  replyTo,
+  agentMap,
+  currentUserId,
+  targetDeleted,
+  onClick,
+}: {
+  replyTo: IssueCommentReplyToMetadata;
+  agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
+  targetDeleted: boolean;
+  onClick?: () => void;
+}) {
+  const authorName = formatReplyAuthorName(replyTo, { agentMap, currentUserId });
+  const body = (
+    <span className="flex min-w-0 items-stretch gap-2">
+      <span aria-hidden className="w-0.5 shrink-0 rounded-full bg-primary/40" />
+      <span className="min-w-0 flex-1 py-0.5 text-xs">
+        {targetDeleted ? (
+          <span className="italic text-muted-foreground">Original comment deleted</span>
+        ) : (
+          <>
+            <span className="font-medium text-foreground">{authorName}</span>{" "}
+            <span className="text-muted-foreground line-clamp-2 align-baseline">
+              {replyTo.excerpt}
+              {replyTo.excerptTruncated ? "…" : ""}
+            </span>
+          </>
+        )}
+      </span>
+    </span>
+  );
+
+  if (targetDeleted || !onClick) {
+    return <div className="mb-1.5 rounded-sm bg-muted/40 px-2 py-1">{body}</div>;
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Jump to the original comment"
+      className="mb-1.5 block w-full rounded-sm bg-muted/40 px-2 py-1 text-left transition-colors hover:bg-muted/70"
+    >
+      {body}
+    </button>
+  );
+}
+
 function CommentCard({
   comment,
   agentMap,
+  currentUserId,
   companyId,
   projectId,
   feedbackVote = null,
@@ -326,9 +447,13 @@ function CommentCard({
   highlightCommentId,
   queued = false,
   externalReferences,
+  onReply,
+  onScrollToComment,
+  replyTargetDeleted = false,
 }: {
   comment: CommentWithRunMeta;
   agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
   companyId?: string | null;
   projectId?: string | null;
   feedbackVote?: FeedbackVoteValue | null;
@@ -342,18 +467,24 @@ function CommentCard({
   highlightCommentId?: string | null;
   queued?: boolean;
   externalReferences?: MarkdownExternalReferenceMap;
+  onReply?: (comment: CommentWithRunMeta) => void;
+  onScrollToComment?: (commentId: string) => void;
+  replyTargetDeleted?: boolean;
 }) {
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
   const isDeleted = Boolean(comment.deletedAt);
   const followUpRequested = comment.followUpRequested === true;
+  const isOptimistic = comment.id.startsWith("optimistic-");
+  const replyTo = comment.metadata?.replyTo ?? null;
+  const canReply = Boolean(onReply) && !isDeleted && !isPending && !isQueued && !isOptimistic;
 
   return (
     <div
       key={comment.id}
       id={`comment-${comment.id}`}
-      className={`border p-3 overflow-hidden min-w-0 rounded-sm transition-colors duration-1000 ${
+      className={`group/comment border p-3 overflow-hidden min-w-0 rounded-sm transition-colors duration-1000 ${
         isQueued
           ? "border-amber-300/70 bg-amber-50/70 dark:border-amber-500/40 dark:bg-amber-500/10"
           : isHighlighted && !isDeleted
@@ -409,13 +540,29 @@ function CommentCard({
               {formatDateTime(comment.createdAt)}
             </a>
           )}
+          {canReply ? <ReplyButton onClick={() => onReply?.(comment)} /> : null}
           {!isDeleted ? <CopyMarkdownButton text={comment.body} /> : null}
         </span>
       </div>
       {isDeleted ? (
         <div className="text-sm italic text-muted-foreground">Comment deleted</div>
       ) : (
-        <MarkdownBody className="text-sm" softBreaks externalReferences={externalReferences}>{comment.body}</MarkdownBody>
+        <>
+          {replyTo ? (
+            <ReplyQuote
+              replyTo={replyTo}
+              agentMap={agentMap}
+              currentUserId={currentUserId}
+              targetDeleted={replyTargetDeleted}
+              onClick={
+                onScrollToComment && !replyTargetDeleted
+                  ? () => onScrollToComment(replyTo.commentId)
+                  : undefined
+              }
+            />
+          ) : null}
+          <MarkdownBody className="text-sm" softBreaks externalReferences={externalReferences}>{comment.body}</MarkdownBody>
+        </>
       )}
       {companyId && !isPending && !isDeleted ? (
         <div className="mt-2 space-y-2">
@@ -579,6 +726,9 @@ const TimelineList = memo(function TimelineList({
   votingTargetId,
   highlightCommentId,
   externalReferences,
+  onReply,
+  onScrollToComment,
+  deletedCommentIds,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
@@ -602,6 +752,9 @@ const TimelineList = memo(function TimelineList({
   votingTargetId?: string | null;
   highlightCommentId?: string | null;
   externalReferences?: MarkdownExternalReferenceMap;
+  onReply?: (comment: CommentWithRunMeta) => void;
+  onScrollToComment?: (commentId: string) => void;
+  deletedCommentIds?: Set<string>;
 }) {
   if (timeline.length === 0) {
     return <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
@@ -715,6 +868,7 @@ const TimelineList = memo(function TimelineList({
             key={comment.id}
             comment={comment}
             agentMap={agentMap}
+            currentUserId={currentUserId}
             companyId={companyId}
             projectId={projectId}
             feedbackVote={feedbackVoteByTargetId?.get(comment.id) ?? null}
@@ -724,6 +878,13 @@ const TimelineList = memo(function TimelineList({
             voting={votingTargetId === comment.id}
             highlightCommentId={highlightCommentId}
             externalReferences={externalReferences}
+            onReply={onReply}
+            onScrollToComment={onScrollToComment}
+            replyTargetDeleted={
+              comment.metadata?.replyTo
+                ? deletedCommentIds?.has(comment.metadata.replyTo.commentId) ?? false
+                : false
+            }
           />
         );
       })}
@@ -771,6 +932,7 @@ export function CommentThread({
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
   const [votingTargetId, setVotingTargetId] = useState<string | null>(null);
+  const [replyingTo, setReplyingTo] = useState<ReplyDraftTarget | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -847,9 +1009,47 @@ export function CommentThread({
       }));
   }, [agentMap, providedMentions]);
 
+  // Soft-deleted comment ids, so a sent reply whose target was deleted shows a tombstone.
+  const deletedCommentIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const comment of [...comments, ...queuedComments]) {
+      if (comment.deletedAt) ids.add(comment.id);
+    }
+    return ids;
+  }, [comments, queuedComments]);
+
+  const scrollToComment = useCallback((commentId: string) => {
+    if (typeof document === "undefined") return;
+    const el = document.getElementById(`comment-${commentId}`);
+    if (!el) return;
+    setHighlightCommentId(commentId);
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    window.setTimeout(() => {
+      setHighlightCommentId((current) => (current === commentId ? null : current));
+    }, 3000);
+  }, []);
+
+  const handleReply = useCallback(
+    (comment: CommentWithRunMeta) => {
+      const { excerpt, truncated } = buildReplyExcerpt(comment.body);
+      const authorName = formatReplyAuthorName(
+        {
+          authorType: comment.authorType,
+          authorAgentId: comment.authorAgentId,
+          authorUserId: comment.authorUserId,
+        },
+        { agentMap, currentUserId },
+      );
+      setReplyingTo({ commentId: comment.id, authorName, excerpt, excerptTruncated: truncated });
+      editorRef.current?.focus();
+    },
+    [agentMap, currentUserId],
+  );
+
   useEffect(() => {
     if (!draftKey) return;
     setBody(loadDraft(draftKey));
+    setReplyingTo(loadReplyDraft(draftKey));
   }, [draftKey]);
 
   useEffect(() => {
@@ -857,8 +1057,9 @@ export function CommentThread({
     if (draftTimer.current) clearTimeout(draftTimer.current);
     draftTimer.current = setTimeout(() => {
       saveDraft(draftKey, body);
+      saveReplyDraft(draftKey, replyingTo);
     }, DRAFT_DEBOUNCE_MS);
-  }, [body, draftKey]);
+  }, [body, replyingTo, draftKey]);
 
   useEffect(() => {
     return () => {
@@ -907,12 +1108,17 @@ export function CommentThread({
       hasReassignment ? reassignTarget : currentAssigneeValue,
     ) ? true : undefined;
     const submittedBody = trimmed;
+    const submittedReply = replyingTo;
 
     setSubmitting(true);
     setBody("");
+    setReplyingTo(null);
     try {
-      await onAdd(submittedBody, reopen, reassignment ?? undefined);
-      if (draftKey) clearDraft(draftKey);
+      await onAdd(submittedBody, reopen, reassignment ?? undefined, submittedReply?.commentId ?? null);
+      if (draftKey) {
+        clearDraft(draftKey);
+        saveReplyDraft(draftKey, null);
+      }
       setReassignTarget(effectiveSuggestedAssigneeValue);
     } catch {
       setBody((current) =>
@@ -921,9 +1127,25 @@ export function CommentThread({
           submittedBody,
         }),
       );
+      // Restore the reply target too so a failed send can be retried with its quote intact.
+      setReplyingTo((current) => current ?? submittedReply);
       // Parent mutation handlers surface the failure and the draft is restored for retry.
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  function clearReply() {
+    setReplyingTo(null);
+    if (draftKey) saveReplyDraft(draftKey, null);
+  }
+
+  function handleComposerKeyDown(evt: KeyboardEvent<HTMLDivElement>) {
+    // Escape clears the reply target only when the editor is empty (otherwise Escape is the
+    // editor's own concern, e.g. dismissing the mention menu).
+    if (evt.key === "Escape" && replyingTo && !body.trim()) {
+      evt.preventDefault();
+      clearReply();
     }
   }
 
@@ -982,6 +1204,9 @@ export function CommentThread({
         highlightCommentId={highlightCommentId}
         feedbackTermsUrl={feedbackTermsUrl}
         externalReferences={externalReferences}
+        onReply={handleReply}
+        onScrollToComment={scrollToComment}
+        deletedCommentIds={deletedCommentIds}
       />
 
       {liveRunSlot}
@@ -1010,11 +1235,18 @@ export function CommentThread({
                 key={comment.id}
                 comment={comment}
                 agentMap={agentMap}
+                currentUserId={currentUserId}
                 companyId={companyId}
                 projectId={projectId}
                 highlightCommentId={highlightCommentId}
                 queued
                 externalReferences={externalReferences}
+                onScrollToComment={scrollToComment}
+                replyTargetDeleted={
+                  comment.metadata?.replyTo
+                    ? deletedCommentIds.has(comment.metadata.replyTo.commentId)
+                    : false
+                }
               />
             ))}
           </div>
@@ -1026,12 +1258,40 @@ export function CommentThread({
           {composerDisabledReason}
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-2" onKeyDown={handleComposerKeyDown}>
+          {replyingTo ? (
+            <div className="flex items-stretch gap-2 rounded-md border border-border bg-muted/40 py-1.5 pl-2 pr-1.5">
+              <span aria-hidden className="w-0.5 shrink-0 rounded-full bg-primary/60" />
+              <button
+                type="button"
+                onClick={() => scrollToComment(replyingTo.commentId)}
+                title="Jump to the original comment"
+                className="min-w-0 flex-1 text-left"
+              >
+                <span className="block text-xs font-medium text-foreground">
+                  Replying to {replyingTo.authorName}
+                </span>
+                <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                  {replyingTo.excerpt}
+                  {replyingTo.excerptTruncated ? "…" : ""}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={clearReply}
+                title="Cancel reply"
+                aria-label="Cancel reply"
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center self-center rounded-md text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : null}
           <MarkdownEditor
             ref={editorRef}
             value={body}
             onChange={setBody}
-            placeholder="Leave a comment..."
+            placeholder={replyingTo ? `Reply to ${replyingTo.authorName}...` : "Leave a comment..."}
             mentions={mentions}
             onSubmit={handleSubmit}
             imageUploadHandler={imageUploadHandler}
