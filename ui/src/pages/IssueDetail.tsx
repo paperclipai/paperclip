@@ -73,6 +73,7 @@ import {
   type IssueCommentReassignment,
   type OptimisticIssueComment,
 } from "../lib/optimistic-issue-comments";
+import { buildOptimisticReplyTo } from "../lib/comment-reply";
 import { clearIssueExecutionRun, removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
@@ -193,6 +194,7 @@ import {
   type IssueRecoveryAction,
   type IssueAttachment,
   type IssueComment,
+  type IssueCommentReplyToMetadata,
   type IssueWorkProduct,
   type IssueWorkMode,
   type IssueThreadInteraction,
@@ -897,7 +899,12 @@ type IssueDetailChatTabProps = {
     vote: "up" | "down",
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
-  onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
+  onAdd: (
+    body: string,
+    reopen?: boolean,
+    reassignment?: CommentReassignment,
+    replyToCommentId?: string | null,
+  ) => Promise<void>;
   onImageUpload: (file: File) => Promise<string>;
   onAttachImage: (file: File) => Promise<IssueAttachment | void>;
   onInterruptQueued: (runId: string) => Promise<void>;
@@ -2408,9 +2415,15 @@ export function IssueDetail() {
   });
 
   const addComment = useMutation({
-    mutationFn: ({ body, reopen, interrupt }: { body: string; reopen?: boolean; interrupt?: boolean }) =>
-      issuesApi.addComment(issueId!, body, reopen, interrupt),
-    onMutate: async ({ body, reopen, interrupt }) => {
+    mutationFn: ({ body, reopen, interrupt, replyToCommentId }: {
+      body: string;
+      reopen?: boolean;
+      interrupt?: boolean;
+      replyToCommentId?: string | null;
+      replyToSnapshot?: IssueCommentReplyToMetadata | null;
+    }) =>
+      issuesApi.addComment(issueId!, body, reopen, interrupt, replyToCommentId),
+    onMutate: async ({ body, reopen, interrupt, replyToSnapshot }) => {
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(issueId!) });
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
 
@@ -2424,6 +2437,7 @@ export function IssueDetail() {
             authorUserId: currentUserId,
             clientStatus: queuedComment ? "queued" : "pending",
             queueTargetRunId: queuedComment?.id ?? null,
+            replyTo: replyToSnapshot ?? null,
           })
         : null;
 
@@ -3565,13 +3579,26 @@ export function IssueDetail() {
       sharingPreferenceAtSubmit: feedbackDataSharingPreference,
     });
   }, [feedbackDataSharingPreference, feedbackVoteMutation]);
-  const handleChatAdd = useCallback(async (body: string, reopen?: boolean, reassignment?: CommentReassignment) => {
+  const handleChatAdd = useCallback(async (
+    body: string,
+    reopen?: boolean,
+    reassignment?: CommentReassignment,
+    replyToCommentId?: string | null,
+  ) => {
     if (reassignment) {
+      // The reassign path goes through PATCH /issues, which does not carry comment metadata,
+      // so an explicit reassignment cannot also attach a reply target under the current contract.
       await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
       return;
     }
-    await addComment.mutateAsync({ body, reopen });
-  }, [addComment, addCommentAndReassign]);
+    // Build the reply snapshot from the loaded comment so the sent quote renders optimistically;
+    // the server rebuilds the authoritative snapshot from replyToCommentId.
+    const replyTarget = replyToCommentId
+      ? threadComments.find((comment) => comment.id === replyToCommentId)
+      : undefined;
+    const replyToSnapshot = replyTarget ? buildOptimisticReplyTo(replyTarget) : null;
+    await addComment.mutateAsync({ body, reopen, replyToCommentId, replyToSnapshot });
+  }, [addComment, addCommentAndReassign, threadComments]);
   const handleCommentImageUpload = useCallback(async (file: File) => {
     const attachment = await uploadAttachment.mutateAsync(file);
     return attachment.contentPath;

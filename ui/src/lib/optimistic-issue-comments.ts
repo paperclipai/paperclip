@@ -1,4 +1,4 @@
-import type { Issue, IssueComment } from "@paperclipai/shared";
+import type { Issue, IssueComment, IssueCommentReplyToMetadata } from "@paperclipai/shared";
 
 export interface IssueCommentReassignment {
   assigneeAgentId: string | null;
@@ -49,6 +49,7 @@ export function createOptimisticIssueComment(params: {
   authorUserId: string | null;
   clientStatus?: OptimisticIssueComment["clientStatus"];
   queueTargetRunId?: string | null;
+  replyTo?: IssueCommentReplyToMetadata | null;
 }): OptimisticIssueComment {
   const now = new Date();
   const clientId = createOptimisticCommentId();
@@ -62,7 +63,9 @@ export function createOptimisticIssueComment(params: {
     authorUserId: params.authorUserId,
     body: params.body,
     presentation: null,
-    metadata: null,
+    metadata: params.replyTo
+      ? { version: 1, sections: [], replyTo: params.replyTo }
+      : null,
     clientStatus: params.clientStatus ?? "pending",
     queueTargetRunId: params.queueTargetRunId ?? null,
     createdAt: now,

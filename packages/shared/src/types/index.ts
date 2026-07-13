@@ -387,6 +387,7 @@ export type {
   IssueComment,
   IssueCommentDerivedAuthorSource,
   IssueCommentMetadata,
+  IssueCommentReplyToMetadata,
   IssueCommentMetadataSection,
   IssueCommentMetadataRow,
   IssueCommentMetadataTextRow,
