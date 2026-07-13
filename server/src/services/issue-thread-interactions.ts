@@ -183,6 +183,33 @@ function isTerminalIssueStatus(status: string) {
   return status === "done" || status === "cancelled";
 }
 
+function buildCancelledInteractionResult(kind: string, reason: string | null) {
+  if (kind === "ask_user_questions") {
+    return {
+      version: 1 as const,
+      answers: [],
+      cancelled: true as const,
+      cancellationReason: reason,
+      summaryMarkdown: null,
+    };
+  }
+  if (kind === "suggest_tasks") {
+    return {
+      version: 1 as const,
+      cancelled: true as const,
+      cancellationReason: reason,
+    };
+  }
+  if (kind === "request_confirmation") {
+    return {
+      version: 1 as const,
+      outcome: "cancelled" as const,
+      reason,
+    };
+  }
+  throw unprocessable(`Unknown interaction kind: ${kind}`);
+}
+
 function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   issue: IssueResolutionContext;
   current: IssueThreadInteractionRow;
@@ -1235,25 +1262,7 @@ export function issueThreadInteractionService(db: Db) {
       const current = await getPendingInteractionForResolution({ issue, interactionId });
 
       const reason = data.reason?.trim() || null;
-      const result = current.kind === "ask_user_questions"
-        ? {
-            version: 1 as const,
-            answers: [],
-            cancelled: true as const,
-            cancellationReason: reason,
-            summaryMarkdown: null,
-          }
-        : current.kind === "suggest_tasks"
-          ? {
-              version: 1 as const,
-              cancelled: true as const,
-              cancellationReason: reason,
-            }
-          : {
-              version: 1 as const,
-              outcome: "cancelled" as const,
-              reason,
-            };
+      const result = buildCancelledInteractionResult(current.kind, reason);
       const [updated] = await db
         .update(issueThreadInteractions)
         .set({
@@ -1276,6 +1285,49 @@ export function issueThreadInteractionService(db: Db) {
 
       await touchIssue(db, issue.id);
       return hydrateInteraction(updated);
+    },
+
+    cancelPendingForTerminalIssue: async (
+      issue: { id: string; companyId: string; status: string },
+      actor: InteractionActor,
+    ) => {
+      if (!isTerminalIssueStatus(issue.status)) {
+        throw unprocessable("Pending interactions can only be retired for a terminal issue");
+      }
+
+      const pending = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.status, "pending"),
+        ));
+      if (pending.length === 0) return [];
+
+      const reason = `Issue marked ${issue.status}`;
+      const cancelled: IssueThreadInteraction[] = [];
+      for (const current of pending) {
+        const [updated] = await db
+          .update(issueThreadInteractions)
+          .set({
+            status: "cancelled",
+            result: buildCancelledInteractionResult(current.kind, reason),
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, current.id),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (updated) cancelled.push(hydrateInteraction(updated));
+      }
+
+      if (cancelled.length > 0) await touchIssue(db, issue.id);
+      return cancelled;
     },
   };
 }

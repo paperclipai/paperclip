@@ -813,6 +813,13 @@
       "when": 1783900800000,
       "tag": "0115_authenticator_secret_bindings",
       "breakpoints": true
+    },
+    {
+      "idx": 116,
+      "version": "7",
+      "when": 1783936800000,
+      "tag": "0116_retire_terminal_issue_interactions",
+      "breakpoints": true
     }
   ]
 }

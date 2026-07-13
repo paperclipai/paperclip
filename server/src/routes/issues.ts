@@ -5090,6 +5090,34 @@ export function issueRoutes(
       return;
     }
     let issue = issueResult;
+    const becameTerminal =
+      !isClosedIssueStatus(existing.status) && isClosedIssueStatus(issue.status);
+    if (becameTerminal) {
+      const retiredInteractions = await issueThreadInteractionService(db).cancelPendingForTerminalIssue(
+        { id: issue.id, companyId: issue.companyId, status: issue.status },
+        {
+          agentId: actor.agentId ?? null,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
+      if (retiredInteractions.length > 0) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.thread_interactions_cancelled",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            terminalStatus: issue.status,
+            interactionIds: retiredInteractions.map((interaction) => interaction.id),
+            interactionCount: retiredInteractions.length,
+          },
+        });
+      }
+    }
     await syncIssueBudgetLimits({ companyId: issue.companyId, issueId: issue.id, budgetLimits, actor });
     if (issue.assigneeUserId && issue.assigneeUserId !== existing.assigneeUserId) {
       await visibility.ensureCollaborator({

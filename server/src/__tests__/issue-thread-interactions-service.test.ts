@@ -507,6 +507,86 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect((await interactionsSvc.getById(interactionId))?.status).toBe("pending");
   });
 
+  it("retires every pending board interaction when its issue becomes terminal", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal issue with stale board waits",
+      status: "cancelled",
+      priority: "medium",
+    });
+    await db.insert(issueThreadInteractions).values([
+      {
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        payload: {
+          version: 1,
+          questions: [{
+            id: "recipient",
+            prompt: "Which recipient?",
+            required: true,
+            selectionMode: "single",
+            options: [{ id: "test", label: "Test recipient" }],
+          }],
+        },
+      },
+      {
+        companyId,
+        issueId,
+        kind: "suggest_tasks",
+        status: "pending",
+        payload: { version: 1, tasks: [{ clientKey: "delivery", title: "Deliver it" }] },
+      },
+      {
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        payload: { version: 1, prompt: "Proceed?" },
+      },
+    ]);
+
+    const retired = await interactionsSvc.cancelPendingForTerminalIssue(
+      { id: issueId, companyId, status: "cancelled" },
+      { userId: "local-board" },
+    );
+
+    expect(retired).toHaveLength(3);
+    expect(retired.map((interaction) => interaction.status)).toEqual([
+      "cancelled",
+      "cancelled",
+      "cancelled",
+    ]);
+    expect(retired).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "ask_user_questions",
+        result: expect.objectContaining({ cancelled: true, cancellationReason: "Issue marked cancelled" }),
+      }),
+      expect.objectContaining({
+        kind: "suggest_tasks",
+        result: expect.objectContaining({ cancelled: true, cancellationReason: "Issue marked cancelled" }),
+      }),
+      expect.objectContaining({
+        kind: "request_confirmation",
+        result: expect.objectContaining({ outcome: "cancelled", reason: "Issue marked cancelled" }),
+      }),
+    ]));
+    expect(await interactionsSvc.cancelPendingForTerminalIssue(
+      { id: issueId, companyId, status: "cancelled" },
+      { userId: "local-board" },
+    )).toEqual([]);
+  });
+
   it("persists validated answers for ask_user_questions interactions", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

@@ -20,6 +20,7 @@ const mockInteractionService = vi.hoisted(() => ({
   rejectSuggestedTasks: vi.fn(),
   answerQuestions: vi.fn(),
   cancelInteraction: vi.fn(),
+  cancelPendingForTerminalIssue: vi.fn(async () => []),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
