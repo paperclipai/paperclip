@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -316,6 +317,81 @@ describe("ssh env-lab fixture", () => {
     // The restored files round-tripped through the byte-counting transport.
     await expect(readFile(path.join(restoreDir, "blob-0.bin"))).resolves.toEqual(
       Buffer.alloc(256 * 1024, 1),
+    );
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  // Regression: sync-back staged its whole-workspace tar in os.tmpdir(). Where that is
+  // a quota-capped RAM tmpfs, a large workspace exhausts the quota, and the failure then
+  // surfaces on an unrelated write (the few-hundred-byte SSH key) as EDQUOT. Staging must
+  // land beside the destination workspace instead.
+  it("stages the sync-back tar beside the workspace, not in os.tmpdir()", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const localDir = path.join(rootDir, "sync-source");
+    // Restoring into runRoot/workspace means staging must appear in runRoot/.
+    const runRoot = path.join(rootDir, "run");
+    const restoreDir = path.join(runRoot, "workspace");
+    // os.tmpdir() is resolved from TMPDIR on every call, so pointing it at a private
+    // directory isolates this assertion from staging done by any concurrent test.
+    const privateTmp = path.join(rootDir, "private-tmp");
+
+    await mkdir(localDir, { recursive: true });
+    await mkdir(restoreDir, { recursive: true });
+    await mkdir(privateTmp, { recursive: true });
+    for (let index = 0; index < 8; index += 1) {
+      await writeFile(path.join(localDir, `blob-${index}.bin`), Buffer.alloc(1024 * 1024, index + 1));
+    }
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH staging directory test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+    const remoteDir = path.posix.join(started.workspaceDir, "staging-source");
+
+    await syncDirectoryToSsh({ spec, localDir, remoteDir });
+
+    // Poll both candidate roots during the transfer: the staging dir is removed once
+    // the sync completes, so it can only be observed while it is in flight.
+    const stagedIn = { tmpdir: false, besideWorkspace: false };
+    const scan = () => {
+      const roots: Array<[keyof typeof stagedIn, string]> = [
+        ["tmpdir", privateTmp],
+        ["besideWorkspace", path.join(runRoot, ".paperclip-staging")],
+      ];
+      for (const [key, dir] of roots) {
+        // The staging root may not exist yet on early ticks.
+        let entries: string[] = [];
+        try {
+          entries = readdirSync(dir);
+        } catch {
+          continue;
+        }
+        if (entries.some((entry) => entry.startsWith("paperclip-ssh-sync-back-"))) {
+          stagedIn[key] = true;
+        }
+      }
+    };
+    const poller = setInterval(scan, 10);
+
+    const previousTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = privateTmp;
+    try {
+      await syncDirectoryFromSsh({ spec, remoteDir, localDir: restoreDir });
+    } finally {
+      clearInterval(poller);
+      if (previousTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previousTmpdir;
+    }
+
+    expect(stagedIn.tmpdir).toBe(false);
+    expect(stagedIn.besideWorkspace).toBe(true);
+    // The staging root itself is created (not the mkdtemp child, which is cleaned up),
+    // so this holds even if every poll tick missed the transfer window.
+    expect(existsSync(path.join(runRoot, ".paperclip-staging"))).toBe(true);
+    // Staging off tmpdir must not change what lands in the workspace.
+    await expect(readFile(path.join(restoreDir, "blob-0.bin"))).resolves.toEqual(
+      Buffer.alloc(1024 * 1024, 1),
     );
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 

@@ -349,6 +349,35 @@ async function resolveCommandPath(command: string): Promise<string | null> {
   }
 }
 
+// Multi-GB payloads (workspace tars, git bundles) must not be staged in
+// os.tmpdir(): it is conventionally small, frequently RAM-backed, and often
+// quota-capped, so a large stage there can exhaust the quota and make even a
+// few-hundred-byte SSH key write fail with EDQUOT. Stage beside the workspace
+// the payload belongs to instead, which is disk-backed and also turns the
+// staging -> workspace move into a rename rather than a cross-device copy.
+// PAPERCLIP_STAGING_DIR overrides; os.tmpdir() remains the last-resort fallback.
+async function resolveStagingRoot(localDir: string | undefined): Promise<string> {
+  const candidates: string[] = [];
+  const configured = process.env.PAPERCLIP_STAGING_DIR?.trim();
+  if (configured) {
+    candidates.push(configured);
+  }
+  if (localDir) {
+    candidates.push(path.join(path.dirname(path.resolve(localDir)), ".paperclip-staging"));
+  }
+  for (const candidate of candidates) {
+    try {
+      await fs.mkdir(candidate, { recursive: true });
+      return candidate;
+    } catch {
+      // Unwritable or missing parent - fall through to the next candidate.
+    }
+  }
+  return os.tmpdir();
+}
+
+// Deliberately stays on os.tmpdir(): the payload is a few hundred bytes (an SSH
+// key or known-hosts entry), and it must not depend on a workspace path.
 async function withTempFile(
   prefix: string,
   contents: string,
@@ -761,7 +790,9 @@ async function importGitWorkspaceToSsh(input: {
   snapshot: LocalGitWorkspaceSnapshot;
   onProgress?: RuntimeProgressSink;
 }): Promise<void> {
-  const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-bundle-"));
+  const bundleDir = await fs.mkdtemp(
+    path.join(await resolveStagingRoot(input.localDir), "paperclip-ssh-bundle-"),
+  );
   const bundlePath = path.join(bundleDir, "workspace.bundle");
   // Per-import unique ref so concurrent imports against the same local repo
   // can't race on `update-ref` between this run's update and bundle create.
@@ -836,7 +867,9 @@ async function exportGitWorkspaceFromSsh(input: {
   resetLocalWorkspace?: boolean;
   onProgress?: RuntimeProgressSink;
 }): Promise<string> {
-  const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-bundle-"));
+  const bundleDir = await fs.mkdtemp(
+    path.join(await resolveStagingRoot(input.localDir), "paperclip-ssh-bundle-"),
+  );
   const bundlePath = path.join(bundleDir, "workspace.bundle");
   const importedRef = input.importedRef ?? `refs/paperclip/ssh-sync/imported/${randomUUID()}`;
 
@@ -1382,7 +1415,9 @@ export async function syncDirectoryFromSsh(input: {
   progressLabel?: string;
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
-  const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
+  const stagingDir = await fs.mkdtemp(
+    path.join(await resolveStagingRoot(input.localDir), "paperclip-ssh-sync-back-"),
+  );
   const remoteTarScript = [
     `cd ${shellQuote(input.remoteDir)}`,
     `tar ${[...tarExcludeArgs(input.exclude).map(shellQuote), "-cf", "-", "."].join(" ")}`,
@@ -1548,7 +1583,9 @@ export async function restoreWorkspaceFromSshExecution(input: {
 }): Promise<void> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   if (input.baselineSnapshot) {
-    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
+    const stagingDir = await fs.mkdtemp(
+      path.join(await resolveStagingRoot(input.localDir), "paperclip-ssh-sync-back-"),
+    );
     const importedRef = input.restoreGitHistory
       ? `refs/paperclip/ssh-sync/imported/${randomUUID()}`
       : null;
