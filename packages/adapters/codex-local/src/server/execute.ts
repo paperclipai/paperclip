@@ -39,6 +39,12 @@ import {
   joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  parseLocalProcessSandboxExtraPaths,
+  parseLocalProcessNetworkAllowlist,
+  parseLocalProcessNetworkScope,
+  type LocalProcessSandboxOptions,
+} from "@paperclipai/adapter-utils/local-process-sandbox";
+import {
   parseCodexJsonl,
   extractCodexRetryNotBefore,
   isCodexProviderQuotaError,
@@ -632,6 +638,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ),
     );
     const billingType = resolveCodexBillingType(effectiveEnv);
+    const networkScope = parseLocalProcessNetworkScope(config.networkScope);
+    const filesystemScope = config.filesystemScope === "workspace" ? "workspace" : null;
+    const localProcessSandbox: LocalProcessSandboxOptions | null =
+      (filesystemScope || networkScope) && !executionTargetIsRemote
+        ? {
+            workspaceDir: effectiveExecutionCwd,
+            filesystemScope,
+            managedPaths: [{ path: effectiveCodexHome, access: "rw" }],
+            extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+            homeDir: filesystemScope ? effectiveCodexHome : null,
+            networkScope,
+            networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
+            command: asString(config.filesystemSandboxCommand, "bwrap"),
+          }
+        : null;
+    if (localProcessSandbox) {
+      const scopes = [filesystemScope ? "workspace filesystem" : null, networkScope ? `${networkScope} network` : null]
+        .filter(Boolean)
+        .join(" and ");
+      await onLog(
+        "stdout",
+        `[paperclip] Confining Codex with ${scopes} scope.\n`,
+      );
+    }
     const runtimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv(effectiveEnv)).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -923,6 +953,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             await onLog(stream, cleaned);
           },
           runLogTail: paperclipBridge?.runLogTail,
+          localProcessSandbox,
         });
         const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
         return {

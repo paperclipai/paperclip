@@ -65,6 +65,18 @@ export async function resolveClaudeExecutionEngineForRun(
   input: ClaudeEngineResolutionInput,
 ): Promise<ClaudeEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
+  if (input.config.filesystemScope === "workspace" || input.config.networkScope === "deny" || input.config.networkScope === "allowlist") {
+    if (selection.explicit && selection.engine === "acp") {
+      throw new Error("Local filesystem/network confinement requires the Claude CLI engine; ACP confinement is not supported.");
+    }
+    return {
+      engine: "cli",
+      explicit: selection.explicit,
+      ...(!selection.explicit
+        ? { fallbackReason: "Local filesystem/network scope requires spawn-level confinement in the CLI lane." }
+        : {}),
+    };
+  }
   if (selection.explicit || selection.engine !== "acp") return selection;
 
   const fallbackReason = await defaultClaudeAcpFallbackReason(input);
