@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  claudeModelUsageTotals,
+  parseClaudeStreamJson,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeProviderQuotaError,
@@ -343,5 +345,81 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+});
+
+describe("claudeModelUsageTotals", () => {
+  it("sums per-model usage across models and counts cache writes as input", () => {
+    const totals = claudeModelUsageTotals({
+      "claude-fable-5": {
+        inputTokens: 100,
+        outputTokens: 70_000,
+        cacheReadInputTokens: 250_000,
+        cacheCreationInputTokens: 4_000,
+        costUSD: 1.2,
+      },
+      "claude-haiku-4-5": {
+        inputTokens: 50,
+        outputTokens: 7_000,
+        cacheReadInputTokens: 10_000,
+        cacheCreationInputTokens: 500,
+        costUSD: 0.05,
+      },
+    });
+    expect(totals).toEqual({
+      inputTokens: 4_650,
+      outputTokens: 77_000,
+      cachedInputTokens: 260_000,
+    });
+  });
+
+  it("returns null for missing or empty modelUsage", () => {
+    expect(claudeModelUsageTotals(undefined)).toBeNull();
+    expect(claudeModelUsageTotals({})).toBeNull();
+  });
+});
+
+describe("parseClaudeStreamJson usage extraction", () => {
+  const resultEvent = (extra: Record<string, unknown>) =>
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      session_id: "sess-1",
+      result: "done",
+      total_cost_usd: 1.25,
+      usage: { input_tokens: 10, output_tokens: 1_800, cache_read_input_tokens: 20 },
+      ...extra,
+    });
+
+  it("prefers modelUsage totals over the main-loop usage block and marks them per-run", () => {
+    const parsed = parseClaudeStreamJson(
+      `${resultEvent({
+        modelUsage: {
+          "claude-fable-5": {
+            inputTokens: 90,
+            outputTokens: 77_000,
+            cacheReadInputTokens: 300_000,
+            cacheCreationInputTokens: 2_000,
+          },
+        },
+      })}\n`,
+    );
+    expect(parsed.usage).toEqual({
+      inputTokens: 2_090,
+      outputTokens: 77_000,
+      cachedInputTokens: 300_000,
+    });
+    expect(parsed.usageBasis).toBe("per_run");
+    expect(parsed.costUsd).toBeCloseTo(1.25);
+  });
+
+  it("falls back to the result usage block when modelUsage is absent", () => {
+    const parsed = parseClaudeStreamJson(`${resultEvent({})}\n`);
+    expect(parsed.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 1_800,
+      cachedInputTokens: 20,
+    });
+    expect(parsed.usageBasis).toBeNull();
   });
 });
