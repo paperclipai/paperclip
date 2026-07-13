@@ -37,6 +37,7 @@ import {
 } from "@paperclipai/db";
 import type {
   PluginApiRouteDeclaration,
+  PluginRecord,
   PluginStatus,
   PaperclipPluginManifestV1,
   PluginBridgeErrorCode,
@@ -47,6 +48,7 @@ import {
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
+import { trySessionAdvisoryLock } from "../services/advisory-locks.js";
 import {
   getPluginUiContributionMetadata,
   listMissingDeclaredPluginEntrypoints,
@@ -84,7 +86,7 @@ import {
   extractSecretRefPathsFromConfig,
   PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
 } from "../services/plugin-secrets-handler.js";
-import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { HttpError, badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -422,6 +424,80 @@ export interface PluginRouteBridgeDeps {
   streamBus?: PluginStreamBus;
 }
 
+/**
+ * Optional dependencies for replicating runtime plugin-tree mutations
+ * (install / uninstall / upgrade) across replicas.
+ *
+ * When provided AND active, mutation handlers serialize cluster-wide via the
+ * session-scoped `"plugin-install"` advisory lock (409 on contention),
+ * converge the local tree onto max(generation) first, and publish a plugin
+ * tree snapshot before responding. When omitted or inactive (single-replica
+ * deployments), mutations run exactly as before.
+ *
+ * @see services/plugin-artifact-replication.ts
+ */
+export interface PluginRouteReplicationDeps {
+  replication: {
+    /** True when a shared storage provider is configured (multi-replica mode). */
+    isActive(): boolean;
+    /** Publish the local plugin tree as the next generation snapshot. */
+    publishSnapshot(): Promise<{ generation: number } | null>;
+    /** Converge the local tree onto max(generation). */
+    reconcile(): Promise<{ applied: boolean; generation: number | null }>;
+    /** Serialize `fn` against this replica's reconcile passes. */
+    runExclusive<T>(fn: () => Promise<T>): Promise<T>;
+  };
+  /**
+   * Direct (non-pooled) connection string for the session-scoped
+   * `"plugin-install"` advisory lock. Session scope keeps the minutes-long
+   * critical section (npm install + tar + upload) off a pooled transaction —
+   * see the `withAdvisoryXactLock` contract in services/advisory-locks.ts.
+   */
+  pluginMutationLockUrl: string;
+}
+
+/**
+ * Marker error: the local plugin-tree mutation succeeded but the snapshot
+ * publish did not, so other replicas would never converge on this change.
+ * Handlers map it to a 500 — better a loud failure the admin can retry than
+ * silent cross-replica divergence behind a 200.
+ */
+class PluginReplicationPublishError extends Error {
+  constructor(cause: unknown) {
+    super(
+      "plugin change applied locally but snapshot replication failed; retry the operation: " +
+        (cause instanceof Error ? cause.message : String(cause)),
+    );
+    this.name = "PluginReplicationPublishError";
+  }
+}
+
+/**
+ * Marker error: the session-scoped `"plugin-install"` advisory lock is held
+ * elsewhere (another mutation in flight, on this or another replica).
+ * Handlers map it to a 409 — the client retries once the other operation
+ * finished, instead of queueing behind a minutes-long npm install.
+ */
+class PluginMutationLockUnavailableError extends Error {
+  constructor() {
+    super("another plugin operation is in progress on this instance");
+    this.name = "PluginMutationLockUnavailableError";
+  }
+}
+
+/** Shared 409/500 mapping for the replicated mutation handlers. */
+function handleReplicatedMutationError(res: Response, err: unknown): boolean {
+  if (err instanceof PluginMutationLockUnavailableError) {
+    res.status(409).json({ error: err.message });
+    return true;
+  }
+  if (err instanceof PluginReplicationPublishError) {
+    res.status(500).json({ error: err.message });
+    return true;
+  }
+  return false;
+}
+
 interface PluginScopedApiRequest {
   routeKey: string;
   method: string;
@@ -507,6 +583,7 @@ export function pluginRoutes(
   webhookDeps?: PluginRouteWebhookDeps,
   toolDeps?: PluginRouteToolDeps,
   bridgeDeps?: PluginRouteBridgeDeps,
+  replicationDeps?: PluginRouteReplicationDeps,
 ) {
   const router = Router();
   const registry = pluginRegistryService(db);
@@ -515,6 +592,148 @@ export function pluginRoutes(
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
   });
   const issuesSvc = issueService(db);
+  const replication = replicationDeps?.replication;
+
+  /**
+   * Run a plugin-tree mutation. With replication active:
+   *
+   * 1. Acquire the session-scoped `"plugin-install"` advisory lock (held on
+   *    a dedicated direct connection — the critical section spans an npm
+   *    install plus tar+upload, far too long for a pooled transaction lock).
+   *    Held elsewhere → PluginMutationLockUnavailableError (409): peers and
+   *    concurrent local mutations are excluded for the whole section.
+   * 2. Inside `runExclusive` (no reconcile pass can swap the tree while the
+   *    mutation runs on this replica):
+   *    a. `reconcile()` — converge the LOCAL tree onto max(generation)
+   *       first. This replica may be generations behind (cross-replica
+   *       events do not exist yet; the lag bound is the 60s tick), and
+   *       mutating a stale tree would silently drop every newer peer
+   *       install from the snapshot this mutation publishes.
+   *    b. `fn` — the disk + registry mutation, now based on max(generation).
+   *    c. `publishSnapshot()` — callers respond and emit `plugin.ui.updated`
+   *       only after the publish, so peers never learn of a change that was
+   *       not replicated.
+   *
+   * With replication inactive `fn` runs directly: a single replica has no
+   * peers to race or to converge.
+   *
+   * @throws PluginMutationLockUnavailableError when the lock is contended
+   *         (mapped to 409 by the handlers).
+   * @throws PluginReplicationPublishError when `fn` succeeded but the
+   *         snapshot publish failed (mapped to 500 by the handlers).
+   */
+  async function withReplicatedPluginMutation<T>(fn: () => Promise<T>): Promise<T> {
+    if (!replication?.isActive() || !replicationDeps) return fn();
+    const lock = await trySessionAdvisoryLock(replicationDeps.pluginMutationLockUrl, "plugin-install");
+    if (!lock.acquired) throw new PluginMutationLockUnavailableError();
+    try {
+      return await replication.runExclusive(async () => {
+        await replication.reconcile();
+        const result = await fn();
+        try {
+          await replication.publishSnapshot();
+        } catch (err) {
+          throw new PluginReplicationPublishError(err);
+        }
+        return result;
+      });
+    } finally {
+      await lock.release();
+    }
+  }
+
+  /**
+   * Read the installed version of a plugin package from the plugin tree ON
+   * DISK, or null when the package (or its package.json) is absent or
+   * unreadable.
+   *
+   * The publish-heal branches below MUST gate on this, not only on the
+   * registry row: the row lives in the shared database and always survives a
+   * failed snapshot publish, but the DISK tree is per-generation. If a peer
+   * replica published a generation between the failed mutation and its retry,
+   * the `reconcile()` at the top of `withReplicatedPluginMutation` swaps in
+   * that snapshot — which was built from a tree that pre-dates the failed
+   * mutation — silently reverting the local disk while the row still claims
+   * the mutation happened. And the damage outlives that one retry: once the
+   * peer generation is absorbed, later reconciles no-op (`applied: false`)
+   * with the disk still contradicting the row, so gating on the reconcile
+   * result alone would not catch it either. Only the disk itself is ground
+   * truth for what a healed publish would spread cluster-wide.
+   */
+  /**
+   * True when `packageName` is safe to embed in a filesystem path under
+   * node_modules: relative, with no empty, `.`, or `..` segments. These
+   * values normally come from registry rows and the managed package.json the
+   * server wrote itself, but a forged value (attacker with DB write access —
+   * the same threat model as the snapshot tarball guard) must fail closed
+   * instead of steering reads or cleanup outside the plugin tree.
+   */
+  function isSafePluginPackageName(packageName: string): boolean {
+    if (packageName.length === 0 || path.isAbsolute(packageName)) return false;
+    return packageName
+      .split("/")
+      .every((segment) => segment !== "" && segment !== "." && segment !== "..");
+  }
+
+  async function readInstalledPackageVersion(
+    packageName: string,
+    packagePath?: string | null,
+  ): Promise<string | null> {
+    // Fail closed on traversal: an unsafe name or an out-of-tree resolved
+    // directory reads nothing, so the heals treat the package as "not on
+    // disk" and take their repair path instead.
+    if (!isSafePluginPackageName(packageName)) return null;
+    const pluginDir = path.resolve(loader.getLocalPluginDir());
+    const packageDir = path.resolve(
+      packagePath ?? path.join(pluginDir, "node_modules", ...packageName.split("/")),
+    );
+    if (!packageDir.startsWith(pluginDir + path.sep)) return null;
+    try {
+      const raw = await readFile(path.join(packageDir, "package.json"), "utf8");
+      const parsed = JSON.parse(raw) as { version?: unknown };
+      return typeof parsed.version === "string" ? parsed.version : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Remove plugin packages present in the managed tree that have no live
+   * (non-uninstalled) registry row.
+   *
+   * Used by the purge publish-heal: the purged row is hard-deleted, so the
+   * request's identifier can no longer be mapped to a package directory —
+   * instead the whole tree is swept. Candidates come from the plugin dir's
+   * own package.json `dependencies`: the loader `npm install --save`s every
+   * plugin there and nothing else writes to it, so plugin DEPENDENCIES
+   * (which live in the same node_modules) can never be candidates and a
+   * matching live row protects every legitimately installed plugin.
+   * `cleanupInstallArtifacts` is idempotent when the files are already gone.
+   */
+  async function removeOrphanedPluginPackages(): Promise<void> {
+    let dependencies: Record<string, unknown>;
+    try {
+      const raw = await readFile(path.join(loader.getLocalPluginDir(), "package.json"), "utf8");
+      dependencies = (JSON.parse(raw) as { dependencies?: Record<string, unknown> }).dependencies ?? {};
+    } catch {
+      return; // No managed-install manifest — nothing to sweep.
+    }
+    const liveRows = (await registry.listInstalled()) as Array<{ packageName: string }>;
+    const livePackages = new Set(liveRows.map((row) => row.packageName));
+    for (const packageName of Object.keys(dependencies)) {
+      if (livePackages.has(packageName)) continue;
+      // Same fail-closed guard as readInstalledPackageVersion: a forged
+      // dependency name must not steer cleanupInstallArtifacts outside the
+      // plugin tree.
+      if (!isSafePluginPackageName(packageName)) continue;
+      await loader.cleanupInstallArtifacts({
+        id: packageName,
+        pluginKey: packageName,
+        packageName,
+        packagePath: null,
+      } as PluginRecord);
+    }
+  }
 
   function matchScopedApiRoute(route: PluginApiRouteDeclaration, method: string, requestPath: string) {
     if (route.method !== method) return null;
@@ -1065,37 +1284,119 @@ export function pluginRoutes(
       return;
     }
 
+    // A local path references ONE replica's filesystem (often a dev checkout
+    // with symlinked node_modules); the snapshot tarball cannot meaningfully
+    // replicate it to peers, so reject it up front in multi-replica mode.
+    if (isLocalPath && replication?.isActive()) {
+      res.status(400).json({
+        error:
+          "local-path plugin installs are not replicable across replicas; publish the plugin as an npm package",
+      });
+      return;
+    }
+
     try {
       const installOptions = isLocalPath
         ? { localPath: trimmedPackage }
         : { packageName: trimmedPackage, version: version?.trim() };
 
-      const discovered = await loader.installPlugin(installOptions);
+      // The snapshot publishes whenever installPlugin resolved (even on the
+      // degraded paths below): the disk + registry mutation has happened by
+      // then and peers must converge on it regardless of how we respond.
+      const outcome = await withReplicatedPluginMutation(async () => {
+        let discovered;
+        try {
+          discovered = await loader.installPlugin(installOptions);
+        } catch (err) {
+          // Publish-heal: a prior install applied locally but its snapshot
+          // publish failed (the handler returned 500 and asked the caller to
+          // retry). The retry then hits the registry's "already installed"
+          // conflict. When the existing row matches the requested package
+          // AND the post-reconcile disk still carries its files, treat the
+          // retry as idempotent success — the wrapper re-publishes the
+          // snapshot on the way out, which is exactly the missing half.
+          // When the disk does NOT match the row (a peer generation
+          // published in between reverted the tree — see
+          // readInstalledPackageVersion), installPlugin cannot repair (the
+          // row 409s forever) but lifecycle.upgrade can: it re-fetches the
+          // package onto the reconciled tree, re-activates, and the wrapper
+          // publishes a tree that finally matches the registry.
+          if (
+            err instanceof HttpError &&
+            err.status === 409 &&
+            !isLocalPath &&
+            replication?.isActive()
+          ) {
+            const rows = await registry.listInstalled();
+            const match = rows.find((r) => r.packageName === trimmedPackage);
+            if (match) {
+              const diskVersion = await readInstalledPackageVersion(match.packageName, match.packagePath);
+              if (diskVersion !== null && diskVersion === match.version) {
+                const healed = await registry.getById(match.id);
+                return { kind: "healed", existingPlugin: healed, updated: healed } as const;
+              }
+              // Repair to the version the registry row already advertises —
+              // NOT the caller's spec: an unpinned request would fetch npm's
+              // CURRENT latest, which may have moved since the original
+              // install, and the publish would spread that unintended
+              // upgrade cluster-wide.
+              const repaired = await lifecycle.upgrade(match.id, match.version ?? version?.trim());
+              return { kind: "healed", existingPlugin: repaired, updated: repaired } as const;
+            }
+          }
+          throw err;
+        }
 
-      if (!discovered.manifest) {
+        if (!discovered.manifest) {
+          return { kind: "manifest_missing" } as const;
+        }
+
+        const existingPlugin = await registry.getByKey(discovered.manifest.id);
+        if (!existingPlugin) {
+          // This shouldn't happen since installPlugin already registers in the DB
+          return { kind: "not_registered" } as const;
+        }
+
+        // Transition to ready state
+        await lifecycle.load(existingPlugin.id);
+        const updated = await registry.getById(existingPlugin.id);
+        return { kind: "installed", existingPlugin, updated } as const;
+      });
+
+      if (outcome.kind === "manifest_missing") {
         res.status(500).json({ error: "Plugin installed but manifest is missing" });
         return;
       }
-
-      // Transition to ready state
-      const existingPlugin = await registry.getByKey(discovered.manifest.id);
-      if (existingPlugin) {
-        await lifecycle.load(existingPlugin.id);
-        const updated = await registry.getById(existingPlugin.id);
-        await logPluginMutationActivity(req, "plugin.installed", existingPlugin.id, {
-          pluginId: existingPlugin.id,
-          pluginKey: existingPlugin.pluginKey,
-          packageName: updated?.packageName ?? existingPlugin.packageName,
-          version: updated?.version ?? existingPlugin.version,
-          source: isLocalPath ? "local_path" : "npm",
-        });
-        publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: existingPlugin.id, action: "installed" } });
-        res.json(updated);
-      } else {
-        // This shouldn't happen since installPlugin already registers in the DB
+      if (outcome.kind === "not_registered") {
         res.status(500).json({ error: "Plugin installed but not found in registry" });
+        return;
       }
+
+      if (outcome.kind === "healed") {
+        // The original request mutated disk + registry but 500'd before
+        // reaching the emit below, so no `plugin.ui.updated` was ever fired
+        // for this install. This healed retry is the install's only success
+        // response — emit here too so peers get the fast event-triggered
+        // reconcile instead of waiting for the periodic safety tick.
+        if (outcome.existingPlugin) {
+          publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: outcome.existingPlugin.id, action: "installed" } });
+        }
+        res.json(outcome.updated);
+        return;
+      }
+
+      const { existingPlugin, updated } = outcome;
+      await logPluginMutationActivity(req, "plugin.installed", existingPlugin.id, {
+        pluginId: existingPlugin.id,
+        pluginKey: existingPlugin.pluginKey,
+        packageName: updated?.packageName ?? existingPlugin.packageName,
+        version: updated?.version ?? existingPlugin.version,
+        source: isLocalPath ? "local_path" : "npm",
+      });
+      publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: existingPlugin.id, action: "installed" } });
+      res.json(updated);
     } catch (err) {
+      if (handleReplicatedMutationError(res, err)) return;
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }
@@ -1842,8 +2143,10 @@ export function pluginRoutes(
    * - purge: If "true", permanently delete all plugin data (hard delete)
    *          Otherwise, soft-delete with 30-day data retention
    *
-   * Response: PluginRecord (the deleted record)
-   * Errors: 404 if plugin not found, 400 for lifecycle errors
+   * Response: PluginRecord (the deleted record), or null for an idempotent
+   *           replicated purge retry (see the publish-heal branches below)
+   * Errors: 404 if plugin not found (except replicated `purge=true`, which is
+   *         idempotent), 400 for lifecycle errors
    */
   router.delete("/plugins/:pluginId", async (req, res) => {
     assertInstanceAdmin(req);
@@ -1851,21 +2154,87 @@ export function pluginRoutes(
     const purge = req.query.purge === "true";
 
     const plugin = await resolvePlugin(registry, pluginId);
-    if (!plugin) {
+    if (!plugin && !(purge && replication?.isActive())) {
       res.status(404).json({ error: "Plugin not found" });
       return;
     }
 
     try {
-      const result = await lifecycle.unload(plugin.id, purge);
+      if (!plugin) {
+        // Publish-heal for purge retries (mirrors the install heal): a prior
+        // `?purge=true` hard-deleted the row and cleaned the local tree, but
+        // the snapshot publish failed (500, "retry the operation"). The
+        // retry finds no row, so without this branch it would 404 and no
+        // generation would ever record the purge — peers stay on the old
+        // snapshot and the next publish from any other replica would
+        // silently reinstate the plugin's files cluster-wide. Re-run the
+        // wrapper, then sweep before the publish: when no peer generation
+        // was published in between, the reconcile no-ops (the local marker
+        // still equals max(generation)) and the sweep finds nothing — the
+        // purged tree is republished as-is. When a peer DID publish, the
+        // reconcile reinstates the purged plugin's files from that
+        // pre-purge tree; the row is hard-deleted so the request's
+        // identifier can no longer locate them, and the sweep removes every
+        // managed plugin package without a live registry row instead (see
+        // removeOrphanedPluginPackages). A purge of an id that never
+        // existed takes the same path — an idempotent 200/null instead of a
+        // 404 is the price of healing without a tombstone.
+        await withReplicatedPluginMutation(async () => {
+          await removeOrphanedPluginPackages();
+        });
+        publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId, action: "uninstalled" } });
+        res.json(null);
+        return;
+      }
+
+      const outcome = await withReplicatedPluginMutation(async () => {
+        try {
+          const record = await lifecycle.unload(plugin.id, purge);
+          return { kind: "uninstalled", record } as const;
+        } catch (err) {
+          // Publish-heal: a prior soft uninstall applied locally but its
+          // snapshot publish failed. The retry finds the row already
+          // "uninstalled" and lifecycle.unload rejects it before the wrapper
+          // can publish. Treat the retry as idempotent success — the wrapper
+          // re-publishes on the way out, which is exactly the missing half.
+          // First, though, re-run the artifact cleanup: a peer generation
+          // published in between makes the reconcile above reinstate the
+          // plugin's files from a pre-uninstall tree (see
+          // readInstalledPackageVersion), and republishing without removing
+          // them would spread the files cluster-wide. cleanupInstallArtifacts
+          // is idempotent when the files are already gone.
+          // (A `?purge=true` retry with the row still present needs no heal:
+          // lifecycle.unload hard-deletes an already-uninstalled row.)
+          if (!purge && replication?.isActive()) {
+            const current = await registry.getById(plugin.id);
+            if (current?.status === "uninstalled") {
+              await loader.cleanupInstallArtifacts(current as PluginRecord);
+              return { kind: "healed", record: current } as const;
+            }
+          }
+          throw err;
+        }
+      });
+
+      if (outcome.kind === "healed") {
+        // The original request 500'd before the emit below fired, so this
+        // healed retry is the uninstall's only success response — emit here
+        // too so peers get the fast event-triggered reconcile instead of
+        // waiting for the periodic safety tick.
+        publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "uninstalled" } });
+        res.json(outcome.record);
+        return;
+      }
+
       await logPluginMutationActivity(req, "plugin.uninstalled", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
         purge,
       });
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "uninstalled" } });
-      res.json(result);
+      res.json(outcome.record);
     } catch (err) {
+      if (handleReplicatedMutationError(res, err)) return;
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }
@@ -2099,7 +2468,49 @@ export function pluginRoutes(
       // 2. Compare capabilities
       // 3. If new capabilities, mark as upgrade_pending
       // 4. Otherwise, transition to ready
-      const result = await lifecycle.upgrade(plugin.id, version);
+      const outcome = await withReplicatedPluginMutation(async () => {
+        // Publish-heal (mirrors the install/uninstall heals): a prior upgrade
+        // applied locally but its snapshot publish failed (500, "retry the
+        // operation"). A bare retry through lifecycle.upgrade does re-run —
+        // ready → ready is a valid transition and the capability diff is
+        // empty because the row's manifest was already updated — but it
+        // re-downloads the package from npm on every retry (a hard 400 if
+        // the registry is unreachable, plausible in the same incident that
+        // failed the publish). When the row already carries the exact
+        // requested version AND the post-reconcile disk really has that
+        // version's files, the local mutation is done: skip it and let the
+        // wrapper republish, which is exactly the missing half. The disk
+        // check is load-bearing: the row alone can lie when a peer
+        // generation published in between reverted the tree (see
+        // readInstalledPackageVersion) — in that case fall through, and
+        // lifecycle.upgrade repairs the tree by re-fetching the target.
+        // Unpinned or range requests never heal — their target is
+        // unknowable without asking npm, so they take the normal path.
+        if (replication?.isActive() && typeof version === "string") {
+          const target = version.trim().replace(/^[=v]/, "");
+          const current = await registry.getById(plugin.id);
+          if (current && current.status === "ready" && current.version === target) {
+            const diskVersion = await readInstalledPackageVersion(current.packageName, current.packagePath);
+            if (diskVersion === target) {
+              return { kind: "healed", record: current } as const;
+            }
+          }
+        }
+        const record = await lifecycle.upgrade(plugin.id, version);
+        return { kind: "upgraded", record } as const;
+      });
+
+      if (outcome.kind === "healed") {
+        // The original request 500'd before the emit below fired, so this
+        // healed retry is the upgrade's only success response — emit here
+        // too so peers get the fast event-triggered reconcile instead of
+        // waiting for the periodic safety tick.
+        publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
+        res.json(outcome.record);
+        return;
+      }
+
+      const result = outcome.record;
       await logPluginMutationActivity(req, "plugin.upgraded", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
@@ -2110,6 +2521,7 @@ export function pluginRoutes(
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
       res.json(result);
     } catch (err) {
+      if (handleReplicatedMutationError(res, err)) return;
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }
@@ -2514,6 +2926,14 @@ export function pluginRoutes(
    * verification is the plugin's responsibility.
    *
    * Response: `{ deliveryId: string, status: string }`
+   *
+   * Deliveries carrying a recognized provider idempotency header are
+   * deduplicated: a retry of a pending or successful delivery is answered
+   * `202 { status: "duplicate", requestId }` (no `deliveryId`) without
+   * re-dispatching to the worker. A retry of a FAILED delivery (the
+   * provider retries exactly because we answered 5xx) resets the existing
+   * row to pending and re-dispatches, reusing its delivery id.
+   *
    * Errors:
    * - 404 if plugin not found or endpointKey not declared
    * - 400 if plugin is not in ready state or lacks webhooks.receive capability
@@ -2588,19 +3008,92 @@ export function pluginRoutes(
     const parsedBody = req.body as unknown;
     const payload = (req.body as Record<string, unknown> | undefined) ?? {};
 
-    // Step 6: Record the delivery in the database
+    // Provider-supplied idempotency id, when present. Covers provider and
+    // load-balancer retries without guessing: no recognized header, no dedup.
+    // `x-request-id` is deliberately NOT in this chain — this codebase treats
+    // it as a tracing/correlation header (see sanitizePluginRequestHeaders),
+    // and proxies propagate one id across distinct calls, so keying dedup on
+    // it would swallow different events.
+    const externalId =
+      rawHeaders["x-github-delivery"] ??
+      rawHeaders["x-delivery-id"] ??
+      rawHeaders["idempotency-key"] ??
+      rawHeaders["x-idempotency-key"] ??
+      null;
+
+    // Step 6: Record the delivery in the database. The partial unique index
+    // on (plugin_id, webhook_key, external_id) makes retried deliveries with
+    // the same provider idempotency id a no-op insert (empty `returning`).
     const startedAt = new Date();
-    const [delivery] = await db
+    const inserted = await db
       .insert(pluginWebhookDeliveries)
       .values({
         pluginId: plugin.id,
         webhookKey: endpointKey,
+        externalId,
         status: "pending",
         payload,
         headers: rawHeaders,
         startedAt,
       })
+      .onConflictDoNothing()
       .returning({ id: pluginWebhookDeliveries.id });
+
+    let delivery = inserted[0];
+    if (!delivery) {
+      // Duplicate delivery (same provider idempotency id). Invariant:
+      // duplicates of pending/successful deliveries are acknowledged
+      // without re-dispatch; FAILED deliveries are retried. A failed
+      // delivery was answered with a 5xx, which is exactly when providers
+      // retry — swallowing that retry would lose the event forever.
+      const [existing] = externalId === null
+        ? []
+        : await db
+            .select({
+              id: pluginWebhookDeliveries.id,
+              status: pluginWebhookDeliveries.status,
+            })
+            .from(pluginWebhookDeliveries)
+            .where(
+              and(
+                eq(pluginWebhookDeliveries.pluginId, plugin.id),
+                eq(pluginWebhookDeliveries.webhookKey, endpointKey),
+                eq(pluginWebhookDeliveries.externalId, externalId),
+              ),
+            )
+            .limit(1);
+
+      if (!existing || existing.status !== "failed") {
+        res.status(202).json({ status: "duplicate", requestId });
+        return;
+      }
+
+      // Reset the failed row and fall through to the normal dispatch path,
+      // reusing its id as the delivery id. The reset is a conditional
+      // UPDATE: two replicas can race the same retry here, and only the
+      // one whose UPDATE matched the failed status may dispatch — the
+      // loser answers duplicate.
+      const reset = await db
+        .update(pluginWebhookDeliveries)
+        .set({
+          status: "pending",
+          startedAt,
+          error: null,
+          finishedAt: null,
+        })
+        .where(
+          and(
+            eq(pluginWebhookDeliveries.id, existing.id),
+            eq(pluginWebhookDeliveries.status, "failed"),
+          ),
+        )
+        .returning({ id: pluginWebhookDeliveries.id });
+      if (reset.length === 0) {
+        res.status(202).json({ status: "duplicate", requestId });
+        return;
+      }
+      delivery = { id: existing.id };
+    }
 
     // Step 7: Dispatch to the worker via handleWebhook RPC
     try {

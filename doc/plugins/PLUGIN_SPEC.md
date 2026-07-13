@@ -26,7 +26,7 @@ Current limitations to keep in mind:
 - Runtime npm installs assume `npm` is available in the running environment and that the host can reach the configured package registry.
 - Published npm packages are the intended install artifact for deployed plugins.
 - The repo example plugins under `packages/plugins/examples/` are development conveniences. They work from a source checkout and should not be assumed to exist in a generic published build unless they are explicitly shipped with that build.
-- Dynamic plugin install is not yet cloud-ready for horizontally scaled or ephemeral deployments. There is no shared artifact store, install coordination, or cross-node distribution layer yet.
+- Dynamic plugin install now supports horizontally scaled deployments via shared artifact store snapshot replication. A shared object storage provider triggers the replication path: the mutating replica acquires the `"plugin-install"` advisory lock, publishes the full plugin tree as a numbered generation snapshot, and every replica reconciles to the latest snapshot at startup, on live events, and on a 60-second tick. Local-path installs are rejected while replication is active — published npm packages are required. See [doc/plugin-replication.md](../plugin-replication.md) for full mechanics and configuration.
 - The current runtime ships a small host-provided plugin UI component kit through `@paperclipai/plugin-sdk/ui`, but does not support plugin asset uploads/reads yet. Treat plugin asset APIs as future-scope ideas, not current implementation promises.
 - Scoped plugin API routes are JSON-only and must be declared in `apiRoutes`.
   They mount under `/api/plugins/:pluginId/api/*`; plugins cannot shadow core
@@ -238,7 +238,7 @@ Suggested layout:
 
 The package install directory and the plugin data directory are separate.
 
-This on-disk model is the reason the current implementation expects a persistent writable host filesystem. Cloud-safe artifact replication is future work.
+This on-disk model is the reason the current implementation expects a persistent writable host filesystem. For multi-replica deployments, plugin artifact replication publishes the full plugin tree as a generation snapshot to shared object storage and reconciles every replica to the latest generation — eliminating the requirement for a shared persistent filesystem across nodes. See [doc/plugin-replication.md](../plugin-replication.md).
 
 ## 8.2 Operator Commands
 

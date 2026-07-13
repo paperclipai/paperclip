@@ -266,7 +266,7 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
       value: heartbeatEnabled,
       source: process.env.HEARTBEAT_SCHEDULER_ENABLED ? "env" : "default",
       required: false,
-      note: "Set to `false` to disable timer scheduling",
+      note: "Set to `false` to opt this replica out of scheduler leader election (traffic-only)",
     },
     {
       key: "PAPERCLIP_SECRETS_PROVIDER",
