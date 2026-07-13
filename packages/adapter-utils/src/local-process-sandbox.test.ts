@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildLocalProcessSandboxSpawnTarget,
+  parseLocalProcessFilesystemScope,
   parseLocalProcessNetworkAllowlist,
   parseLocalProcessNetworkScope,
   parseLocalProcessSandboxExtraPaths,
@@ -27,6 +28,9 @@ describe("local process sandbox", () => {
   });
 
   it("parses network scopes and exact-host allowlists", () => {
+    expect(parseLocalProcessFilesystemScope("workspace")).toBe("workspace");
+    expect(parseLocalProcessFilesystemScope(undefined)).toBeNull();
+    expect(() => parseLocalProcessFilesystemScope("workpace")).toThrow('filesystemScope must be "workspace"');
     expect(parseLocalProcessNetworkScope("deny")).toBe("deny");
     expect(parseLocalProcessNetworkScope("allowlist")).toBe("allowlist");
     expect(parseLocalProcessNetworkScope(undefined)).toBeNull();

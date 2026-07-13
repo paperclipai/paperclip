@@ -144,6 +144,12 @@ export function parseLocalProcessNetworkScope(value: unknown): LocalProcessNetwo
   throw new Error('networkScope must be "deny" or "allowlist".');
 }
 
+export function parseLocalProcessFilesystemScope(value: unknown): "workspace" | null {
+  if (value == null || value === "") return null;
+  if (value === "workspace") return value;
+  throw new Error('filesystemScope must be "workspace".');
+}
+
 function isNetworkTargetAllowed(hostname: string, port: string, rules: NetworkAllowlistRule[]): boolean {
   const normalizedHostname = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   return rules.some((rule) => rule.hostname === normalizedHostname && (rule.port === null || rule.port === port));
@@ -296,6 +302,9 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
     };
     for (const systemPath of SYSTEM_READ_PATHS) await mount(systemPath, "ro");
     for (const executablePath of await executableReadPaths(input.executable)) await mount(executablePath, "ro");
+    if (networkScope === "allowlist") {
+      for (const nodePath of await executableReadPaths(process.execPath)) await mount(nodePath, "ro");
+    }
     for (const managedPath of input.options.managedPaths ?? []) await mount(managedPath.path, managedPath.access);
     for (const extraPath of input.options.extraPaths ?? []) await mount(extraPath.path, extraPath.access);
     await mount(workspaceDir, "rw");

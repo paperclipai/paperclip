@@ -45,6 +45,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  parseLocalProcessFilesystemScope,
   parseLocalProcessSandboxExtraPaths,
   parseLocalProcessNetworkAllowlist,
   parseLocalProcessNetworkScope,
@@ -500,7 +501,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const sharedClaudeConfigDir = resolveSharedClaudeConfigDir(process.env);
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
-  const filesystemScope = config.filesystemScope === "workspace" ? "workspace" : null;
+  const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
   const localProcessSandbox: LocalProcessSandboxOptions | null =
     (filesystemScope || networkScope) && !executionTargetIsRemote
       ? {
