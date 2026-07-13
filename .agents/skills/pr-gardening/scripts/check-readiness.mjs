@@ -42,8 +42,9 @@ function assessGreptile(checkRuns) {
 export function readinessVerdict({ pullRequest, checks, greptile, behindBy, originatingIssue }) {
   const reasons = [];
   if (pullRequest.state !== "OPEN") reasons.push(reason("pr_not_open", `PR is ${pullRequest.state.toLowerCase()}`));
-  if (pullRequest.mergeable === "CONFLICTING") reasons.push(reason("merge_conflict", "GitHub reports merge conflicts"));
-  if (pullRequest.mergeable === "UNKNOWN") reasons.push(reason("mergeability_unknown", "GitHub has not resolved mergeability"));
+  const mergeable = pullRequest.mergeable ?? "UNKNOWN";
+  if (mergeable === "CONFLICTING") reasons.push(reason("merge_conflict", "GitHub reports merge conflicts"));
+  if (mergeable === "UNKNOWN") reasons.push(reason("mergeability_unknown", "GitHub has not resolved mergeability"));
   if (checks.pending.length > 0) {
     reasons.push(reason("checks_pending", `${checks.pending.length} check(s) are pending`, "blocking", { names: checks.pending.map((check) => check.name) }));
   }
@@ -127,8 +128,8 @@ export async function checkReadiness(candidatesDocument, options = {}) {
       headSha: pullRequest.headRefOid,
       baseRefName: pullRequest.baseRefName,
       headRefName: pullRequest.headRefName,
-      mergeable: pullRequest.mergeable.toLowerCase(),
-      mergeStateStatus: pullRequest.mergeStateStatus.toLowerCase(),
+      mergeable: (pullRequest.mergeable ?? "UNKNOWN").toLowerCase(),
+      mergeStateStatus: (pullRequest.mergeStateStatus ?? "UNKNOWN").toLowerCase(),
       reviewDecision: pullRequest.reviewDecision || null,
       behindBy: comparison.behind_by ?? 0,
       checks,

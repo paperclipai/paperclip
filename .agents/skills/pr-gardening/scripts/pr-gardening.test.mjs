@@ -104,6 +104,18 @@ test("drafts are report-only and missing Greptile blocks normal PRs", () => {
   assert.equal(readinessVerdict({ ...base, pullRequest: { ...base.pullRequest, isDraft: true } }).verdict, "report_only");
 });
 
+test("unresolved nullable mergeability is reported instead of crashing", () => {
+  const result = readinessVerdict({
+    pullRequest: { state: "OPEN", isDraft: false, mergeable: null, mergeStateStatus: null, reviewDecision: "" },
+    checks: { checks: [{}], pending: [], failing: [] },
+    greptile: { present: true, pending: false, clean: true },
+    behindBy: 0,
+    originatingIssue: { status: "done", identifier: "PAP-1" },
+  });
+  assert.equal(result.verdict, "needs_gardening");
+  assert.equal(result.reasons[0].code, "mergeability_unknown");
+});
+
 test("renders confidence groups and immutable guardrail", () => {
   const entry = {
     number: 1,
