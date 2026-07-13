@@ -69,7 +69,7 @@ function listFilesRecursive(rootDir) {
 
 function isRuntimeAsset(filePath) {
   const ext = path.extname(filePath).toLowerCase();
-  return ext !== ".ts" && ext !== ".js";
+  return !new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]).has(ext);
 }
 
 function checkServerRuntimeAssets() {
